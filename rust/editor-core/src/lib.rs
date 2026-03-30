@@ -693,7 +693,7 @@ mod tests {
     fn test_editor_core_version() {
         let version = editor_core_version();
         assert_eq!(
-            version, "0.1.0",
+            version, "0.1.1",
             "editor_core_version() should return the crate version from Cargo.toml"
         );
     }

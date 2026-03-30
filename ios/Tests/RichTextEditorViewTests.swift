@@ -202,6 +202,29 @@ final class RichTextEditorViewTests: XCTestCase {
         )
     }
 
+    func testUnauthorizedTextMutationReconcilesOnNextRunLoop() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p>")
+
+        let authorizedText = textView.textStorage.string
+
+        textView.textStorage.replaceCharacters(in: NSRange(location: 0, length: 1), with: "X")
+
+        XCTAssertEqual(textView.reconciliationCount, 1)
+        XCTAssertEqual(
+            textView.textStorage.string,
+            "Xello",
+            "reconciliation should not run synchronously inside the text storage edit callback"
+        )
+
+        flushMainQueue()
+
+        XCTAssertEqual(textView.textStorage.string, authorizedText)
+    }
+
     func testAdjustedCaretRectUsesBaselineAndFontMetrics() {
         let font = UIFont.systemFont(ofSize: 16)
         let adjusted = EditorTextView.adjustedCaretRect(

@@ -1806,7 +1806,7 @@ PODS:
     - React-utils (= 0.81.5)
     - ReactNativeDependencies
   - ReactNativeDependencies (0.81.5)
-  - ReactNativeProseEditor (0.1.0):
+  - ReactNativeProseEditor (0.1.1):
     - ExpoModulesCore
   - Yoga (0.0.0)
 

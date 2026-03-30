@@ -2,7 +2,7 @@
   "expo": {
     "name": "Native Editor Example",
     "slug": "native-editor-example",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "orientation": "portrait",
     "ios": {
       "supportsTablet": true,

@@ -140,6 +140,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
     /// and replaying a user input operation through Rust, including the
     /// trailing UIKit text-storage callbacks that arrive on the next run loop.
     private var interceptedInputDepth = 0
+    private var reconciliationWorkScheduled = false
 
     /// Coalesces selection sync until UIKit has finished resolving the
     /// current tap/drag gesture's final caret position.
@@ -1383,10 +1384,27 @@ extension EditorTextView: NSTextStorageDelegate {
             """
         )
 
-        // Reconcile by pulling the current editor state without rebuilding
-        // the Rust backend or clearing history.
-        let stateJSON = editorGetCurrentState(id: editorId)
-        applyUpdateJSON(stateJSON)
+        scheduleReconciliationFromRust()
+    }
+
+    private func scheduleReconciliationFromRust() {
+        guard !reconciliationWorkScheduled else { return }
+        reconciliationWorkScheduled = true
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.reconciliationWorkScheduled = false
+
+            guard !self.isApplyingRustState, !self.isInterceptingInput else { return }
+            guard self.editorId != 0 else { return }
+            guard self.textStorage.string != self.lastAuthorizedText else { return }
+
+            // Reconcile by pulling the current editor state without rebuilding
+            // the Rust backend or clearing history. This must run after the
+            // current NSTextStorage edit transaction has finished.
+            let stateJSON = editorGetCurrentState(id: self.editorId)
+            self.applyUpdateJSON(stateJSON)
+        }
     }
 }
 
