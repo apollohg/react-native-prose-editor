@@ -1,0 +1,13 @@
+# Android NDK linker configuration for cross-compilation.
+#
+# cargo-ndk handles linker resolution automatically when used via build-android.sh.
+# If you need to build without cargo-ndk, set these linker paths to your NDK toolchain:
+#
+# [target.aarch64-linux-android]
+# linker = "<NDK_PATH>/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android24-clang"
+#
+# [target.armv7-linux-androideabi]
+# linker = "<NDK_PATH>/toolchains/llvm/prebuilt/darwin-x86_64/bin/armv7a-linux-androideabi24-clang"
+#
+# [target.x86_64-linux-android]
+# linker = "<NDK_PATH>/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android24-clang"

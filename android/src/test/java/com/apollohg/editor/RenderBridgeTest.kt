@@ -1,0 +1,1228 @@
+package com.apollohg.editor
+
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.text.Layout
+import android.text.Spanned
+import android.text.SpannableStringBuilder
+import android.text.StaticLayout
+import android.text.TextPaint
+import android.text.style.AbsoluteSizeSpan
+import android.text.style.BackgroundColorSpan
+import android.text.style.ForegroundColorSpan
+import android.text.style.LeadingMarginSpan
+import android.text.style.StrikethroughSpan
+import android.text.style.StyleSpan
+import android.text.style.TypefaceSpan
+import android.text.style.URLSpan
+import android.text.style.UnderlineSpan
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+/**
+ * Unit tests for [RenderBridge] — conversion of RenderElement JSON into
+ * [SpannableStringBuilder] with appropriate spans.
+ *
+ * Uses Robolectric to provide Android framework classes (SpannableStringBuilder,
+ * span types, etc.) in a JVM test environment.
+ *
+ * NOTE: Robolectric must be in the test dependencies for these to run:
+ * ```gradle
+ * testImplementation("org.robolectric:robolectric:4.11.1")
+ * ```
+ *
+ * These tests mirror the iOS RenderBridgeTests.swift test suite.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+class RenderBridgeTest {
+
+    // ── Test Fixtures ───────────────────────────────────────────────────
+
+    private val baseFontSize = 16f
+    private val textColor = Color.BLACK
+
+    // ── Plain Text Rendering ────────────────────────────────────────────
+
+    /** A single paragraph with unstyled text should produce the text content. */
+    @Test
+    fun `render - plain paragraph`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Hello, world!", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertEquals(
+            "Plain paragraph should render as the text content",
+            "Hello, world!", result.toString()
+        )
+
+        // Verify foreground color span is present.
+        val colorSpans = result.getSpans(0, result.length, ForegroundColorSpan::class.java)
+        assertTrue(
+            "Should have at least one ForegroundColorSpan",
+            colorSpans.isNotEmpty()
+        )
+    }
+
+    // ── Bold Text Rendering ─────────────────────────────────────────────
+
+    /** Bold mark should produce a StyleSpan with Typeface.BOLD. */
+    @Test
+    fun `render - bold text`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "bold text", "marks": ["bold"]},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertEquals("bold text", result.toString())
+
+        val styleSpans = result.getSpans(0, result.length, StyleSpan::class.java)
+        assertTrue("Should have a StyleSpan", styleSpans.isNotEmpty())
+
+        val boldSpan = styleSpans.find { it.style == Typeface.BOLD }
+        assertNotNull(
+            "Should have a BOLD StyleSpan. Styles found: ${styleSpans.map { it.style }}",
+            boldSpan
+        )
+    }
+
+    // ── Italic Text Rendering ───────────────────────────────────────────
+
+    @Test
+    fun `render - italic text`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "italic text", "marks": ["italic"]},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertEquals("italic text", result.toString())
+
+        val styleSpans = result.getSpans(0, result.length, StyleSpan::class.java)
+        val italicSpan = styleSpans.find { it.style == Typeface.ITALIC }
+        assertNotNull(
+            "Should have an ITALIC StyleSpan. Styles found: ${styleSpans.map { it.style }}",
+            italicSpan
+        )
+    }
+
+    // ── Bold + Italic Combined ──────────────────────────────────────────
+
+    @Test
+    fun `render - bold italic`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "bold italic", "marks": ["bold", "italic"]},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        val styleSpans = result.getSpans(0, result.length, StyleSpan::class.java)
+        val boldItalicSpan = styleSpans.find { it.style == Typeface.BOLD_ITALIC }
+        assertNotNull(
+            "Should have a BOLD_ITALIC StyleSpan. Styles found: ${styleSpans.map { it.style }}",
+            boldItalicSpan
+        )
+    }
+
+    // ── Underline ───────────────────────────────────────────────────────
+
+    @Test
+    fun `render - underline`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "underlined", "marks": ["underline"]},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertEquals("underlined", result.toString())
+
+        val underlineSpans = result.getSpans(0, result.length, UnderlineSpan::class.java)
+        assertTrue(
+            "Should have an UnderlineSpan",
+            underlineSpans.isNotEmpty()
+        )
+    }
+
+    // ── Strikethrough ───────────────────────────────────────────────────
+
+    @Test
+    fun `render - strikethrough`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "struck", "marks": ["strike"]},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertEquals("struck", result.toString())
+
+        val strikeSpans = result.getSpans(0, result.length, StrikethroughSpan::class.java)
+        assertTrue(
+            "Should have a StrikethroughSpan",
+            strikeSpans.isNotEmpty()
+        )
+    }
+
+    // ── Code Mark (Monospace) ───────────────────────────────────────────
+
+    @Test
+    fun `render - code inline`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "code", "marks": ["code"]},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertEquals("code", result.toString())
+
+        val typefaceSpans = result.getSpans(0, result.length, TypefaceSpan::class.java)
+        val monoSpan = typefaceSpans.find { it.family == "monospace" }
+        assertNotNull(
+            "Code mark should produce monospace TypefaceSpan. " +
+                    "Families found: ${typefaceSpans.map { it.family }}",
+            monoSpan
+        )
+
+        val bgSpans = result.getSpans(0, result.length, BackgroundColorSpan::class.java)
+        assertTrue(
+            "Code mark should have a background color span",
+            bgSpans.isNotEmpty()
+        )
+    }
+
+    // ── Hard Break (Void Inline) ────────────────────────────────────────
+
+    /** A hardBreak void inline should render as a newline character. */
+    @Test
+    fun `render - hard break`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Line 1", "marks": []},
+            {"type": "voidInline", "nodeType": "hardBreak", "docPos": 7},
+            {"type": "textRun", "text": "Line 2", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertEquals(
+            "Hard break should render as newline. Got: '${result}'",
+            "Line 1\nLine 2", result.toString()
+        )
+    }
+
+    // ── Horizontal Rule (Void Block) ────────────────────────────────────
+
+    /** A horizontalRule should render as FFFC with a HorizontalRuleSpan. */
+    @Test
+    fun `render - horizontal rule`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Above", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "voidBlock", "nodeType": "horizontalRule", "docPos": 7},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Below", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        val string = result.toString()
+        assertTrue(
+            "Horizontal rule should contain object replacement character. Got: '$string'",
+            string.contains("\uFFFC")
+        )
+
+        val hrSpans = result.getSpans(0, result.length, HorizontalRuleSpan::class.java)
+        assertTrue(
+            "Should have a HorizontalRuleSpan",
+            hrSpans.isNotEmpty()
+        )
+    }
+
+    // ── Multiple Paragraphs ─────────────────────────────────────────────
+
+    /** Two consecutive paragraphs should be separated by a newline. */
+    @Test
+    fun `render - multiple paragraphs`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "First", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Second", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertEquals(
+            "Two paragraphs should be separated by a newline",
+            "First\nSecond", result.toString()
+        )
+    }
+
+    // ── Mixed Marks in Same Paragraph ───────────────────────────────────
+
+    @Test
+    fun `render - mixed marks in paragraph`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "normal ", "marks": []},
+            {"type": "textRun", "text": "bold", "marks": ["bold"]},
+            {"type": "textRun", "text": " end", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertEquals("normal bold end", result.toString())
+
+        // Check "normal " (offset 0-7) has no bold StyleSpan.
+        val normalStyleSpans = result.getSpans(0, 7, StyleSpan::class.java)
+        val normalBold = normalStyleSpans.find { it.style == Typeface.BOLD }
+        // The bold span should NOT cover the "normal " range.
+        if (normalBold != null) {
+            val spanStart = result.getSpanStart(normalBold)
+            assertTrue(
+                "'normal' range should not overlap with bold span (span starts at $spanStart)",
+                spanStart >= 7
+            )
+        }
+
+        // Check "bold" (offset 7-11) has bold StyleSpan.
+        val boldStyleSpans = result.getSpans(7, 11, StyleSpan::class.java)
+        val boldSpan = boldStyleSpans.find { it.style == Typeface.BOLD }
+        assertNotNull("'bold' should have BOLD StyleSpan", boldSpan)
+    }
+
+    // ── Mark Aliases ────────────────────────────────────────────────────
+
+    @Test
+    fun `render - strong alias for bold`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "strong", "marks": ["strong"]},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+        val styleSpans = result.getSpans(0, result.length, StyleSpan::class.java)
+        val boldSpan = styleSpans.find { it.style == Typeface.BOLD }
+        assertNotNull("'strong' should produce BOLD StyleSpan", boldSpan)
+    }
+
+    @Test
+    fun `render - em alias for italic`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "emphasis", "marks": ["em"]},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+        val styleSpans = result.getSpans(0, result.length, StyleSpan::class.java)
+        val italicSpan = styleSpans.find { it.style == Typeface.ITALIC }
+        assertNotNull("'em' should produce ITALIC StyleSpan", italicSpan)
+    }
+
+    @Test
+    fun `render - strikethrough alias for strike`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "deleted", "marks": ["strikethrough"]},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+        val strikeSpans = result.getSpans(0, result.length, StrikethroughSpan::class.java)
+        assertTrue("'strikethrough' should produce StrikethroughSpan", strikeSpans.isNotEmpty())
+    }
+
+    // ── All Marks Combined ──────────────────────────────────────────────
+
+    @Test
+    fun `render - all marks combined`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "everything", "marks": ["bold", "italic", "underline", "strike"]},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        val styleSpans = result.getSpans(0, result.length, StyleSpan::class.java)
+        val boldItalicSpan = styleSpans.find { it.style == Typeface.BOLD_ITALIC }
+        assertNotNull("Should have BOLD_ITALIC", boldItalicSpan)
+
+        val underlineSpans = result.getSpans(0, result.length, UnderlineSpan::class.java)
+        assertTrue("Should have underline", underlineSpans.isNotEmpty())
+
+        val strikeSpans = result.getSpans(0, result.length, StrikethroughSpan::class.java)
+        assertTrue("Should have strikethrough", strikeSpans.isNotEmpty())
+    }
+
+    // ── Ordered List ────────────────────────────────────────────────────
+
+    @Test
+    fun `render - ordered list item`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": true, "index": 1, "total": 2, "start": 1, "isFirst": true, "isLast": false}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "First item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": true, "index": 2, "total": 2, "start": 1, "isFirst": false, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Second item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+        val string = result.toString()
+
+        assertTrue(
+            "Ordered list should contain '1. ' marker. Got: '$string'",
+            string.contains("1. ")
+        )
+        assertTrue(
+            "Ordered list should contain '2. ' marker. Got: '$string'",
+            string.contains("2. ")
+        )
+        assertTrue("Should contain first item text", string.contains("First item"))
+        assertTrue("Should contain second item text", string.contains("Second item"))
+    }
+
+    // ── Unordered List ──────────────────────────────────────────────────
+
+    @Test
+    fun `render - unordered list item`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Bullet item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+        val string = result.toString()
+
+        assertTrue(
+            "Unordered list should contain bullet character. Got: '$string'",
+            string.contains("\u2022")
+        )
+        assertTrue("Should contain item text", string.contains("Bullet item"))
+    }
+
+    @Test
+    fun `render - unordered list marker keeps body text font metrics`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Bullet item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+        val markerSpans = result.getSpans(0, 1, AbsoluteSizeSpan::class.java)
+        val textSpans = result.getSpans(2, 3, AbsoluteSizeSpan::class.java)
+
+        assertTrue("Marker should have a size span", markerSpans.isNotEmpty())
+        assertTrue("Text should have a size span", textSpans.isNotEmpty())
+        assertEquals(textSpans[0].size, markerSpans[0].size)
+        assertEquals(baseFontSize.toInt(), textSpans[0].size)
+    }
+
+    // ── Opaque Atoms ────────────────────────────────────────────────────
+
+    @Test
+    fun `render - opaque inline atom`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "before ", "marks": []},
+            {"type": "opaqueInlineAtom", "label": "widget", "docPos": 8},
+            {"type": "textRun", "text": " after", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertTrue(
+            "Opaque inline atom should render as '[widget]'. Got: '${result}'",
+            result.toString().contains("[widget]")
+        )
+    }
+
+    @Test
+    fun `render - mention inline atom uses visible label and mention theme`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Hello ", "marks": []},
+            {"type": "opaqueInlineAtom", "nodeType": "mention", "label": "@Alice", "docPos": 7},
+            {"type": "textRun", "text": "!", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme(
+            mentions = EditorMentionTheme(
+                textColor = 0xff112233.toInt(),
+                backgroundColor = 0xffddeeff.toInt(),
+                fontWeight = "bold"
+            )
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme)
+
+        assertTrue(
+            "Mention inline atom should render its visible label. Got: '${result}'",
+            result.toString().contains("@Alice")
+        )
+        assertTrue(
+            "Mention inline atom should not use generic opaque brackets. Got: '${result}'",
+            !result.toString().contains("[@Alice]")
+        )
+    }
+
+    @Test
+    fun `render - opaque block atom`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Above", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "opaqueBlockAtom", "label": "codeBlock", "docPos": 7}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertTrue(
+            "Opaque block atom should render as '[codeBlock]'. Got: '${result}'",
+            result.toString().contains("[codeBlock]")
+        )
+    }
+
+    // ── Invalid / Edge Cases ────────────────────────────────────────────
+
+    @Test
+    fun `render - invalid JSON`() {
+        val result = RenderBridge.buildSpannable("not valid json", baseFontSize, textColor)
+        assertEquals(
+            "Invalid JSON should produce empty SpannableStringBuilder",
+            "", result.toString()
+        )
+    }
+
+    @Test
+    fun `render - empty array`() {
+        val result = RenderBridge.buildSpannable("[]", baseFontSize, textColor)
+        assertEquals(
+            "Empty array should produce empty SpannableStringBuilder",
+            "", result.toString()
+        )
+    }
+
+    // ── List Marker Generation ──────────────────────────────────────────
+
+    @Test
+    fun `list marker - ordered`() {
+        val ctx = org.json.JSONObject("""{"ordered": true, "index": 3}""")
+        val marker = RenderBridge.listMarkerString(ctx)
+        assertEquals("Ordered list item 3 should produce '3. '", "3. ", marker)
+    }
+
+    @Test
+    fun `list marker - unordered`() {
+        val ctx = org.json.JSONObject("""{"ordered": false, "index": 1}""")
+        val marker = RenderBridge.listMarkerString(ctx)
+        assertEquals(
+            "Unordered list should produce bullet + space",
+            "\u2022 ", marker
+        )
+    }
+
+    // ── Link Mark ───────────────────────────────────────────────────────
+
+    @Test
+    fun `render - link mark`() {
+        // Links are represented as JSON objects in the marks array, not plain strings.
+        // However, the current JSON format uses string marks. This test verifies
+        // that if a link mark object were present, URLSpan would be applied.
+        // For now, we test that the text renders correctly without error.
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "click here", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+        assertEquals("click here", result.toString())
+    }
+
+    // ── Depth Indentation ───────────────────────────────────────────────
+
+    @Test
+    fun `render - nested block indentation`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "indented", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertEquals("indented", result.toString())
+
+        // Check for LeadingMarginSpan with expected indent.
+        val marginSpans = result.getSpans(0, result.length, LeadingMarginSpan.Standard::class.java)
+        assertTrue(
+            "Depth 2 paragraph should have LeadingMarginSpan",
+            marginSpans.isNotEmpty()
+        )
+        val expectedIndent = (2 * LayoutConstants.INDENT_PER_DEPTH).toInt()
+        val actualIndent = marginSpans[0].getLeadingMargin(true)
+        assertEquals(
+            "Depth 2 paragraph should have ${expectedIndent}px indent",
+            expectedIndent, actualIndent
+        )
+    }
+
+    @Test
+    fun `render - theme overrides paragraph typography`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Styled", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "text": { "fontSize": 18, "color": "#112233" },
+              "paragraph": { "lineHeight": 28, "spacingAfter": 14 }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+
+        val colorSpans = result.getSpans(0, result.length, ForegroundColorSpan::class.java)
+        val sizeSpans = result.getSpans(0, result.length, AbsoluteSizeSpan::class.java)
+        val lineHeightSpans = result.getSpans(0, result.length, FixedLineHeightSpan::class.java)
+
+        assertTrue(colorSpans.any { it.foregroundColor == Color.parseColor("#112233") })
+        assertTrue(sizeSpans.any { it.size == 18 })
+        assertTrue(lineHeightSpans.isNotEmpty())
+    }
+
+    @Test
+    fun `render - paragraph does not inherit text line height when paragraph line height is unset`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Styled", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "text": { "fontSize": 18, "lineHeight": 28 },
+              "paragraph": { "spacingAfter": 14 }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+        val lineHeightSpans = result.getSpans(0, result.length, FixedLineHeightSpan::class.java)
+
+        assertTrue(lineHeightSpans.isEmpty())
+    }
+
+    @Test
+    fun `render - no spacer span when spacingAfter is unset`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "First paragraph", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Second paragraph", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+        val spacerSpans = result.getSpans(0, result.length, ParagraphSpacerSpan::class.java)
+
+        assertTrue("No spacer spans when theme has no spacingAfter", spacerSpans.isEmpty())
+    }
+
+    @Test
+    fun `render - paragraph spacing applied to inter-block newline via ParagraphSpacerSpan`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "First paragraph", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Second paragraph", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "paragraph": { "spacingAfter": 14 }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+        val separatorIndex = result.toString().indexOf('\n')
+
+        // Spacer span should be on the inter-block newline character.
+        val spacerSpans = result.getSpans(separatorIndex, separatorIndex + 1, ParagraphSpacerSpan::class.java)
+        assertTrue("Inter-block newline should have a ParagraphSpacerSpan", spacerSpans.isNotEmpty())
+
+        // No spacer span on paragraph content.
+        val firstParaSpans = result.getSpans(0, separatorIndex, ParagraphSpacerSpan::class.java)
+        assertTrue("Paragraph content should not have spacer spans", firstParaSpans.isEmpty())
+
+        val secondParaSpans = result.getSpans(separatorIndex + 1, result.length, ParagraphSpacerSpan::class.java)
+        assertTrue("Second paragraph content should not have spacer spans", secondParaSpans.isEmpty())
+    }
+
+    @Test
+    fun `render - list item spacing applies to sibling list item separator`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 2, "start": 1, "isFirst": true, "isLast": false}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "First item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 2, "total": 2, "start": 1, "isFirst": false, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Second item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "list": { "itemSpacing": 14 }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+        val separatorIndex = result.toString().indexOf('\n')
+
+        assertTrue("Expected a separator newline between list items", separatorIndex >= 0)
+        val spacerSpans = result.getSpans(separatorIndex, separatorIndex + 1, ParagraphSpacerSpan::class.java)
+        assertTrue("List item separator should receive ParagraphSpacerSpan from itemSpacing", spacerSpans.isNotEmpty())
+    }
+
+    @Test
+    fun `render - nested first list item does not inherit paragraph spacing when itemSpacing is zero`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Parent item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Nested item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "paragraph": { "spacingAfter": 14 },
+              "list": { "itemSpacing": 0 }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+        val separatorIndex = result.toString().indexOf('\n')
+
+        assertTrue("Expected a separator newline before nested list item", separatorIndex >= 0)
+        val spacerSpans = result.getSpans(separatorIndex, separatorIndex + 1, ParagraphSpacerSpan::class.java)
+        assertTrue(
+            "Nested list separator should not keep parent paragraph spacing when itemSpacing is zero",
+            spacerSpans.isEmpty()
+        )
+    }
+
+    @Test
+    fun `render - theme overrides list indentation`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "list": { "indent": 32, "markerScale": 1.5, "markerColor": "#334455" }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+        val marginSpans = result.getSpans(0, result.length, LeadingMarginSpan.Standard::class.java)
+        assertTrue(marginSpans.isNotEmpty())
+        assertEquals(64, marginSpans[0].getLeadingMargin(true))
+    }
+
+    @Test
+    fun `render - unordered marker scale does not widen list text gutter`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val baseTheme = EditorTheme.fromJson(
+            """
+            {
+              "text": { "fontSize": 40 },
+              "list": { "indent": 32, "markerScale": 1 }
+            }
+            """.trimIndent()
+        )
+        val scaledTheme = EditorTheme.fromJson(
+            """
+            {
+              "text": { "fontSize": 40 },
+              "list": { "indent": 32, "markerScale": 2 }
+            }
+            """.trimIndent()
+        )
+
+        val baseResult = RenderBridge.buildSpannable(json, baseFontSize, textColor, baseTheme, 1f)
+        val scaledResult = RenderBridge.buildSpannable(json, baseFontSize, textColor, scaledTheme, 1f)
+        val baseMargin = baseResult.getSpans(0, baseResult.length, LeadingMarginSpan.Standard::class.java).single()
+        val scaledMargin = scaledResult.getSpans(0, scaledResult.length, LeadingMarginSpan.Standard::class.java).single()
+
+        assertEquals(baseMargin.getLeadingMargin(false), scaledMargin.getLeadingMargin(false))
+    }
+
+    @Test
+    fun `render - themed list marker receives line height span`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "paragraph": { "lineHeight": 28 }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+        val markerLineHeightSpans = result.getSpans(0, 1, FixedLineHeightSpan::class.java)
+        assertTrue(markerLineHeightSpans.isNotEmpty())
+    }
+
+    @Test
+    fun `render - indented list item has larger leading margin than non-indented`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 2, "start": 1, "isFirst": true, "isLast": false}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "First item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Indented item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+        val text = result.toString()
+        val newlineIndex = text.indexOf('\n')
+
+        val allMargins = result.getSpans(0, result.length, LeadingMarginSpan.Standard::class.java)
+        assertTrue("List items should have LeadingMarginSpans", allMargins.isNotEmpty())
+
+        val firstItemMargin = allMargins.firstOrNull { result.getSpanStart(it) == 0 }
+        assertNotNull("First item should have a paragraph-scoped LeadingMarginSpan", firstItemMargin)
+
+        val indentedItemMargin = allMargins.firstOrNull { result.getSpanStart(it) > newlineIndex }
+        assertNotNull("Indented item should have its own paragraph-scoped LeadingMarginSpan", indentedItemMargin)
+
+        val firstIndent = firstItemMargin!!.getLeadingMargin(true)
+        val indentedIndent = indentedItemMargin!!.getLeadingMargin(true)
+
+        assertTrue(
+            "Indented item margin ($indentedIndent) should be greater than first item margin ($firstIndent)",
+            indentedIndent > firstIndent
+        )
+    }
+
+    @Test
+    fun `render - list indentation uses paragraph span flags`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Indented item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+        val marginSpans = result.getSpans(0, result.length, LeadingMarginSpan.Standard::class.java)
+
+        assertTrue("Indented list item should have a LeadingMarginSpan", marginSpans.isNotEmpty())
+        assertEquals(
+            "LeadingMarginSpan should be paragraph-scoped",
+            Spanned.SPAN_PARAGRAPH,
+            result.getSpanFlags(marginSpans[0])
+        )
+        assertEquals(
+            "LeadingMarginSpan should start at the list paragraph start, including the marker",
+            0,
+            result.getSpanStart(marginSpans[0])
+        )
+    }
+
+    @Test
+    fun `render - list paragraph uses a single leading margin span across multiple text runs`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Alpha", "marks": []},
+            {"type": "textRun", "text": " Beta", "marks": ["bold"]},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+        val marginSpans = result.getSpans(0, result.length, LeadingMarginSpan.Standard::class.java)
+        val paragraphSpans = marginSpans.filter { result.getSpanStart(it) == 0 }
+
+        assertEquals("Paragraph should have exactly one LeadingMarginSpan", 1, paragraphSpans.size)
+    }
+
+    @Test
+    fun `layout - sibling list items at same depth share the same visual left offset`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 3, "start": 1, "isFirst": true, "isLast": false}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "First", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 2, "total": 3, "start": 1, "isFirst": false, "isLast": false}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Second", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 3, "total": 3, "start": 1, "isFirst": false, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Third", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+        val paint = TextPaint().apply { textSize = baseFontSize }
+        val layout = StaticLayout.Builder
+            .obtain(result, 0, result.length, paint, 400)
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setIncludePad(false)
+            .build()
+
+        assertEquals("Expected one line per list item", 3, layout.lineCount)
+
+        val firstLeft = layout.getLineLeft(0)
+        val secondLeft = layout.getLineLeft(1)
+        val thirdLeft = layout.getLineLeft(2)
+
+        assertEquals("First and second sibling items should align", firstLeft, secondLeft, 0.01f)
+        assertEquals("Second and third sibling items should align", secondLeft, thirdLeft, 0.01f)
+    }
+
+    @Test
+    fun `layout - nested middle item does not shift trailing outer sibling`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 3, "start": 1, "isFirst": true, "isLast": false}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "First", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 2, "total": 3, "start": 1, "isFirst": false, "isLast": false}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Second", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Nested", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 3, "total": 3, "start": 1, "isFirst": false, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Third", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+        val paint = TextPaint().apply { textSize = baseFontSize }
+        val layout = StaticLayout.Builder
+            .obtain(result, 0, result.length, paint, 400)
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setIncludePad(false)
+            .build()
+
+        val text = result.toString()
+        val firstOffset = text.indexOf("First")
+        val secondOffset = text.indexOf("Second")
+        val nestedOffset = text.indexOf("Nested")
+        val thirdOffset = text.indexOf("Third")
+
+        val firstLeft = layout.getPrimaryHorizontal(firstOffset)
+        val secondLeft = layout.getPrimaryHorizontal(secondOffset)
+        val nestedLeft = layout.getPrimaryHorizontal(nestedOffset)
+        val thirdLeft = layout.getPrimaryHorizontal(thirdOffset)
+        val marginSummary = result
+            .getSpans(0, result.length, LeadingMarginSpan.Standard::class.java)
+            .joinToString(" | ") {
+                "start=${result.getSpanStart(it)} end=${result.getSpanEnd(it)} margin=${it.getLeadingMargin(true)}"
+            }
+
+        val outerAligned = kotlin.math.abs(firstLeft - secondLeft) <= 0.01f
+        val nestedIndented = nestedLeft > secondLeft
+        val trailingAligned = kotlin.math.abs(firstLeft - thirdLeft) <= 0.01f
+
+        if (!outerAligned || !nestedIndented || !trailingAligned) {
+            fail(
+                "Unexpected nested list layout: first=$firstLeft second=$secondLeft " +
+                    "nested=$nestedLeft third=$thirdLeft text=$text margins=$marginSummary"
+            )
+        }
+    }
+
+    @Test
+    fun `render - unordered list marker uses centered bullet span`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+        val bulletSpans = result.getSpans(0, 2, CenteredBulletSpan::class.java)
+
+        assertTrue(bulletSpans.isNotEmpty())
+    }
+
+    @Test
+    fun `FixedLineHeightSpan - pushes all extra space below baseline`() {
+        val span = FixedLineHeightSpan(30)
+        val fm = android.graphics.Paint.FontMetricsInt()
+        fm.ascent = -14
+        fm.top = -14
+        fm.descent = 6
+        fm.bottom = 6
+        // currentHeight = 6 - (-14) = 20, extra = 30 - 20 = 10
+
+        span.chooseHeight("x", 0, 1, 0, 0, fm)
+
+        assertEquals("ascent unchanged", -14, fm.ascent)
+        assertEquals("top unchanged", -14, fm.top)
+        assertEquals("descent increased by extra", 16, fm.descent)
+        assertEquals("bottom matches descent", 16, fm.bottom)
+    }
+
+    @Test
+    fun `FixedLineHeightSpan - no change when height matches target`() {
+        val span = FixedLineHeightSpan(20)
+        val fm = android.graphics.Paint.FontMetricsInt()
+        fm.ascent = -14
+        fm.top = -14
+        fm.descent = 6
+        fm.bottom = 6
+
+        span.chooseHeight("x", 0, 1, 0, 0, fm)
+
+        assertEquals(-14, fm.ascent)
+        assertEquals(-14, fm.top)
+        assertEquals(6, fm.descent)
+        assertEquals(6, fm.bottom)
+    }
+
+    @Test
+    fun `CenteredBulletSpan - restores paint state after draw`() {
+        val bulletRadius = 3f
+        val markerWidth = 24f
+        val bodyFontSize = 16f
+        val markerFontSize = 32f
+        val span = CenteredBulletSpan(
+            Color.BLACK,
+            markerWidth,
+            bulletRadius,
+            bodyFontSize,
+            LayoutConstants.LIST_MARKER_TEXT_GAP
+        )
+
+        val paint = Paint()
+        paint.textSize = markerFontSize
+        paint.color = Color.RED
+        paint.style = Paint.Style.STROKE
+
+        val bitmap = android.graphics.Bitmap.createBitmap(100, 100, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bitmap)
+
+        span.draw(canvas, "•", 0, 1, 0f, 0, 20, 40, paint)
+
+        assertEquals("textSize should be restored", markerFontSize, paint.textSize)
+        assertEquals("color should be restored", Color.RED, paint.color)
+        assertEquals("style should be restored", Paint.Style.STROKE, paint.style)
+    }
+
+    @Test
+    fun `CenteredBulletSpan - larger bullet preserves text side gap`() {
+        val markerWidth = 24f
+        val bodyFontSize = 16f
+        val gapToText = LayoutConstants.LIST_MARKER_TEXT_GAP
+        val normalSpan = CenteredBulletSpan(Color.BLACK, markerWidth, 3f, bodyFontSize, gapToText)
+        val scaledSpan = CenteredBulletSpan(Color.BLACK, markerWidth, 6f, bodyFontSize, gapToText)
+
+        assertEquals(normalSpan.textSideGapPx(0f), scaledSpan.textSideGapPx(0f), 0.01f)
+        assertEquals(gapToText, scaledSpan.textSideGapPx(0f), 0.01f)
+    }
+
+
+}

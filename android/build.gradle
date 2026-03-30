@@ -1,0 +1,39 @@
+plugins {
+    id 'com.android.library'
+    id 'expo-module-gradle-plugin'
+}
+
+group = 'com.apollohg'
+version = '0.1.0'
+
+android {
+    namespace "com.apollohg.editor"
+    testOptions {
+        unitTests.includeAndroidResources = true
+    }
+    defaultConfig {
+        versionCode 1
+        versionName '0.1.0'
+    }
+
+    // Include prebuilt Rust .so files from the package's rust/android/ directory
+    sourceSets {
+        main {
+            jniLibs.srcDirs = [
+                "${project.projectDir}/../rust/android"
+            ]
+            // Include the generated Kotlin UniFFI bindings
+            java.srcDirs += [
+                "${project.projectDir}/../rust/bindings/kotlin"
+            ]
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.appcompat:appcompat:1.7.0"
+    implementation "net.java.dev.jna:jna:5.14.0@aar"
+
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.robolectric:robolectric:4.14.1"
+}

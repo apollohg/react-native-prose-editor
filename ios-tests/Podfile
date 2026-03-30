@@ -1,0 +1,49 @@
+require File.join(__dir__, '..', 'example', 'node_modules', 'expo', 'scripts', 'autolinking')
+require File.join(__dir__, '..', 'example', 'node_modules', 'react-native', 'scripts', 'react_native_pods')
+
+ENV['NODE_PATH'] = [
+  File.join(__dir__, '..', 'example', 'node_modules'),
+  ENV['NODE_PATH'],
+].compact.join(':')
+
+platform :ios, '15.1'
+
+project 'NativeEditorTests.xcodeproj'
+
+install! 'cocoapods', deterministic_uuids: false
+
+prepare_react_native_project!
+
+target 'NativeEditorTestHost' do
+  use_expo_modules!
+  react_native_path = '../example/node_modules/react-native'
+
+  use_react_native!(
+    :path => react_native_path,
+    :hermes_enabled => true,
+    :app_path => "#{Pod::Config.instance.installation_root}/..",
+    :privacy_file_aggregation_enabled => true,
+  )
+
+  pod 'ExpoModulesCore', :path => '../example/node_modules/expo-modules-core'
+
+  target 'NativeEditorTests' do
+    inherit! :complete
+  end
+
+  post_install do |installer|
+    react_native_post_install(
+      installer,
+      react_native_path,
+      :mac_catalyst_enabled => false,
+      :ccache_enabled => false,
+    )
+
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |config|
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
+        config.build_settings['SWIFT_VERSION'] = '5.9'
+      end
+    end
+  end
+end

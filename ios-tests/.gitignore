@@ -1,0 +1,6 @@
+Pods/
+build/
+DerivedData/
+.xcode.env.local
+NativeEditorTests.xcodeproj/project.xcworkspace/xcuserdata/
+NativeEditorTests.xcworkspace/xcuserdata/

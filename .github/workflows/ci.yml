@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  js-and-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            example/package-lock.json
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install example dependencies
+        run: npm --prefix example ci
+
+      - name: Typecheck package
+        run: npm run typecheck
+
+      - name: Typecheck example
+        run: npm --prefix example run typecheck
+
+      - name: Run JavaScript tests
+        run: npm test
+
+      - name: Validate npm package contents
+        run: npm pack --dry-run
+
+      - name: Run Android unit tests
+        run: npm run android:test
+
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            example/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install example dependencies
+        run: npm --prefix example ci
+
+      - name: Install CocoaPods dependencies
+        run: pod install
+        working-directory: ios-tests
+
+      - name: Run iOS unit tests
+        run: >
+          xcodebuild test
+          -workspace ios-tests/NativeEditorTests.xcworkspace
+          -scheme NativeEditorTests
+          -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.3.1'

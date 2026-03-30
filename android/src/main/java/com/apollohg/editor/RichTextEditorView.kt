@@ -1,0 +1,211 @@
+package com.apollohg.editor
+
+import android.content.Context
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.util.AttributeSet
+import android.view.MotionEvent
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import uniffi.editor_core.*
+
+/** Container view that owns the native editor text field. */
+class RichTextEditorView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = 0
+) : LinearLayout(context, attrs, defStyleAttr) {
+
+    private class EditorScrollView(context: Context) : ScrollView(context) {
+        private fun updateParentIntercept(action: Int) {
+            val canScroll = canScrollVertically(-1) || canScrollVertically(1)
+            if (!canScroll) return
+            when (action) {
+                MotionEvent.ACTION_DOWN,
+                MotionEvent.ACTION_MOVE -> parent?.requestDisallowInterceptTouchEvent(true)
+                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_CANCEL -> parent?.requestDisallowInterceptTouchEvent(false)
+            }
+        }
+
+        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+            updateParentIntercept(ev.actionMasked)
+            return super.onInterceptTouchEvent(ev)
+        }
+
+        override fun onTouchEvent(ev: MotionEvent): Boolean {
+            updateParentIntercept(ev.actionMasked)
+            return super.onTouchEvent(ev)
+        }
+    }
+
+    val editorEditText: EditorEditText
+    val editorScrollView: ScrollView
+
+    private var heightBehavior: EditorHeightBehavior = EditorHeightBehavior.FIXED
+    private var theme: EditorTheme? = null
+    private var baseBackgroundColor: Int = Color.WHITE
+    private var viewportBottomInsetPx: Int = 0
+    internal var appliedCornerRadiusPx: Float = 0f
+
+    /** Binds or unbinds the Rust editor instance. */
+    var editorId: Long = 0
+        set(value) {
+            field = value
+            if (value != 0L) {
+                editorEditText.bindEditor(value)
+            } else {
+                editorEditText.unbindEditor()
+            }
+        }
+
+    init {
+        orientation = VERTICAL
+
+        editorEditText = EditorEditText(context)
+        editorScrollView = EditorScrollView(context).apply {
+            clipToPadding = false
+            isFillViewport = false
+        }
+        editorScrollView.addView(editorEditText, createEditorLayoutParams())
+
+        addView(editorScrollView, createContainerLayoutParams())
+        updateScrollContainerAppearance()
+        updateScrollContainerInsets()
+    }
+
+    fun configure(
+        textSizePx: Float = 16f * resources.displayMetrics.density,
+        textColor: Int = Color.BLACK,
+        backgroundColor: Int = Color.WHITE
+    ) {
+        baseBackgroundColor = backgroundColor
+        editorEditText.setBaseStyle(textSizePx, textColor, backgroundColor)
+        updateScrollContainerAppearance()
+    }
+
+    fun applyTheme(theme: EditorTheme?) {
+        this.theme = theme
+        val previousScrollY = editorScrollView.scrollY
+        editorEditText.applyTheme(theme)
+        updateScrollContainerAppearance()
+        updateScrollContainerInsets()
+        if (heightBehavior == EditorHeightBehavior.FIXED) {
+            editorScrollView.post {
+                val childHeight = editorScrollView.getChildAt(0)?.height ?: 0
+                val maxScrollY = maxOf(
+                    0,
+                    childHeight + editorScrollView.paddingTop + editorScrollView.paddingBottom - editorScrollView.height
+                )
+                editorScrollView.scrollTo(0, previousScrollY.coerceIn(0, maxScrollY))
+            }
+        }
+    }
+
+    fun setHeightBehavior(heightBehavior: EditorHeightBehavior) {
+        if (this.heightBehavior == heightBehavior) return
+        this.heightBehavior = heightBehavior
+        editorEditText.setHeightBehavior(heightBehavior)
+        editorEditText.layoutParams = createEditorLayoutParams()
+        editorScrollView.layoutParams = createContainerLayoutParams()
+        editorScrollView.isVerticalScrollBarEnabled = heightBehavior == EditorHeightBehavior.FIXED
+        editorScrollView.overScrollMode = if (heightBehavior == EditorHeightBehavior.FIXED) {
+            OVER_SCROLL_IF_CONTENT_SCROLLS
+        } else {
+            OVER_SCROLL_NEVER
+        }
+        updateScrollContainerInsets()
+        requestLayout()
+    }
+
+    fun setViewportBottomInsetPx(bottomInsetPx: Int) {
+        val clampedInset = bottomInsetPx.coerceAtLeast(0)
+        if (viewportBottomInsetPx == clampedInset) return
+        viewportBottomInsetPx = clampedInset
+        updateScrollContainerInsets()
+        editorEditText.setViewportBottomInsetPx(clampedInset)
+        requestLayout()
+    }
+
+    fun setContent(html: String) {
+        if (editorId == 0L) return
+        val renderJSON = editorSetHtml(editorId.toULong(), html)
+        editorEditText.applyRenderJSON(renderJSON)
+    }
+
+    fun setContent(json: org.json.JSONObject) {
+        if (editorId == 0L) return
+        val renderJSON = editorSetJson(editorId.toULong(), json.toString())
+        editorEditText.applyRenderJSON(renderJSON)
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        if (editorId != 0L) {
+            editorEditText.unbindEditor()
+        }
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        if (heightBehavior != EditorHeightBehavior.AUTO_GROW) {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            return
+        }
+
+        val childWidthSpec = getChildMeasureSpec(
+            widthMeasureSpec,
+            paddingLeft + paddingRight,
+            editorScrollView.layoutParams.width
+        )
+        val childHeightSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+        editorScrollView.measure(childWidthSpec, childHeightSpec)
+
+        val measuredWidth = resolveSize(
+            editorScrollView.measuredWidth + paddingLeft + paddingRight,
+            widthMeasureSpec
+        )
+        val desiredHeight = editorScrollView.measuredHeight + paddingTop + paddingBottom
+        val measuredHeight = when (MeasureSpec.getMode(heightMeasureSpec)) {
+            MeasureSpec.AT_MOST -> desiredHeight.coerceAtMost(MeasureSpec.getSize(heightMeasureSpec))
+            else -> desiredHeight
+        }
+        setMeasuredDimension(measuredWidth, measuredHeight)
+    }
+
+    private fun updateScrollContainerAppearance() {
+        val cornerRadiusPx = (theme?.borderRadius ?: 0f) * resources.displayMetrics.density
+        editorScrollView.background = GradientDrawable().apply {
+            cornerRadius = cornerRadiusPx
+            setColor(theme?.backgroundColor ?: baseBackgroundColor)
+        }
+        editorScrollView.clipToOutline = cornerRadiusPx > 0f
+        appliedCornerRadiusPx = cornerRadiusPx
+    }
+
+    private fun updateScrollContainerInsets() {
+        if (heightBehavior != EditorHeightBehavior.FIXED) {
+            editorScrollView.setPadding(0, 0, 0, 0)
+            return
+        }
+
+        val density = resources.displayMetrics.density
+        val topInset = ((theme?.contentInsets?.top ?: 0f) * density).toInt()
+        val bottomInset = ((theme?.contentInsets?.bottom ?: 0f) * density).toInt()
+        editorScrollView.setPadding(0, topInset, 0, bottomInset + viewportBottomInsetPx)
+    }
+
+    private fun createContainerLayoutParams(): LayoutParams =
+        if (heightBehavior == EditorHeightBehavior.AUTO_GROW) {
+            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
+        } else {
+            LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+
+    private fun createEditorLayoutParams(): FrameLayout.LayoutParams =
+        FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+}

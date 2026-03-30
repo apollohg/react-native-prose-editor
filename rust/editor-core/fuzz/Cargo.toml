@@ -1,0 +1,20 @@
+[package]
+name = "editor-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "position_map"
+path = "fuzz_targets/position_map.rs"
+doc = false
+
+[dependencies]
+libfuzzer-sys = "0.4"
+editor-core = { path = ".." }
+
+# Prevent this from interfering with workspace if present
+[workspace]

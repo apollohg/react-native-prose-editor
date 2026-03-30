@@ -1,0 +1,30 @@
+{
+    "compilerOptions": {
+        "target": "ES2020",
+        "module": "ESNext",
+        "lib": ["ES2020"],
+        "jsx": "react-jsx",
+        "baseUrl": ".",
+        "moduleResolution": "bundler",
+        "allowSyntheticDefaultImports": true,
+        "esModuleInterop": true,
+        "resolveJsonModule": true,
+        "isolatedModules": true,
+        "strict": true,
+        "skipLibCheck": true,
+        "types": ["jest", "react"],
+        "typeRoots": [
+            "./node_modules/@types",
+            "./example/node_modules/@types"
+        ],
+        "paths": {
+            "@expo/vector-icons": ["./example/node_modules/@expo/vector-icons"],
+            "expo-modules-core": ["./example/node_modules/expo-modules-core"],
+            "react-native": ["./example/node_modules/react-native"]
+        },
+        "rootDir": "./src",
+        "outDir": "./dist"
+    },
+    "include": ["src"],
+    "exclude": ["src/__tests__"]
+}

@@ -1,0 +1,61 @@
+namespace editor_core {
+    string editor_core_version();
+
+    // Editor lifecycle
+    u64 editor_create(string config_json);
+    void editor_destroy(u64 id);
+
+    // Content (bootstrap — initial hydration only)
+    string editor_set_html(u64 id, string html);
+    string editor_get_html(u64 id);
+    string editor_set_json(u64 id, string json);
+    string editor_get_json(u64 id);
+
+    // Content (transaction-based — runtime replacement, preserves history)
+    string editor_replace_html(u64 id, string html);
+    string editor_replace_json(u64 id, string json);
+
+    // Editing (doc positions)
+    string editor_insert_text(u64 id, u32 pos, string text);
+    string editor_replace_selection_text(u64 id, string text);
+    string editor_delete_range(u64 id, u32 from, u32 to);
+    string editor_split_block(u64 id, u32 pos);
+    string editor_insert_content_html(u64 id, string html);
+    string editor_insert_content_json(u64 id, string json);
+    string editor_toggle_mark(u64 id, string mark_name);
+    string editor_wrap_in_list(u64 id, string list_type);
+    string editor_unwrap_from_list(u64 id);
+    string editor_indent_list_item(u64 id);
+    string editor_outdent_list_item(u64 id);
+    string editor_insert_node(u64 id, string node_type);
+
+    // Editing (scalar positions — used by native views)
+    string editor_insert_text_scalar(u64 id, u32 scalar_pos, string text);
+    string editor_delete_scalar_range(u64 id, u32 scalar_from, u32 scalar_to);
+    string editor_replace_text_scalar(u64 id, u32 scalar_from, u32 scalar_to, string text);
+    string editor_split_block_scalar(u64 id, u32 scalar_pos);
+    string editor_delete_and_split_scalar(u64 id, u32 scalar_from, u32 scalar_to);
+    void editor_set_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);
+    string editor_toggle_mark_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string mark_name);
+    string editor_wrap_in_list_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string list_type);
+    string editor_unwrap_from_list_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);
+    string editor_indent_list_item_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);
+    string editor_outdent_list_item_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);
+    string editor_insert_node_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string node_type);
+    string editor_insert_content_json_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string json);
+
+    // Position mapping
+    u32 editor_doc_to_scalar(u64 id, u32 doc_pos);
+    u32 editor_scalar_to_doc(u64 id, u32 scalar);
+
+    // Selection and state
+    void editor_set_selection(u64 id, u32 anchor, u32 head);
+    string editor_get_selection(u64 id);
+    string editor_get_current_state(u64 id);
+
+    // History
+    string editor_undo(u64 id);
+    string editor_redo(u64 id);
+    boolean editor_can_undo(u64 id);
+    boolean editor_can_redo(u64 id);
+};

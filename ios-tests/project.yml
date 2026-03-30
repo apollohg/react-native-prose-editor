@@ -1,0 +1,86 @@
+name: NativeEditorTests
+
+options:
+  minimumXcodeGenVersion: 2.38.0
+  deploymentTarget:
+    iOS: "15.1"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: 5.9
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  NativeEditorTestHost:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.1"
+    sources:
+      - path: TestHost
+    settings:
+      base:
+        PRODUCT_NAME: NativeEditorTestHost
+        PRODUCT_BUNDLE_IDENTIFIER: com.apollohg.NativeEditorTestHost
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: NativeEditorTestHost
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: NO
+        INFOPLIST_KEY_UIRequiresFullScreen: YES
+        LD_RUNPATH_SEARCH_PATHS:
+          - $(inherited)
+          - "@executable_path/Frameworks"
+          - "@loader_path/Frameworks"
+
+  NativeEditorTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "15.1"
+    hostApplication: NativeEditorTestHost
+    sources:
+      - path: ../ios
+        excludes:
+          - Tests
+          - ReactNativeProseEditor.podspec
+          - EditorCore.xcframework
+          - editor_coreFFI
+          - editor_coreFFI.h
+          - editor_coreFFI.modulemap
+      - path: ../ios/Tests
+    settings:
+      base:
+        PRODUCT_NAME: NativeEditorTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.apollohg.NativeEditorTests
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: NativeEditorTests
+        HEADER_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../ios/editor_coreFFI
+        LD_RUNPATH_SEARCH_PATHS:
+          - $(inherited)
+          - "@loader_path/Frameworks"
+          - "@executable_path/Frameworks"
+        OTHER_SWIFT_FLAGS:
+          - $(inherited)
+          - -Xcc
+          - -fmodule-map-file=$(SRCROOT)/../ios/editor_coreFFI/module.modulemap
+        SWIFT_INCLUDE_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../ios/editor_coreFFI
+    dependencies:
+      - framework: ../ios/EditorCore.xcframework
+
+schemes:
+  NativeEditorTests:
+    build:
+      targets:
+        NativeEditorTestHost: all
+        NativeEditorTests: all
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - name: NativeEditorTests
