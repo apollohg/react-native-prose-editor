@@ -146,6 +146,12 @@ class NativeEditorExpoView(
         refreshMentionQuery()
     }
 
+    fun setRemoteSelectionsJson(remoteSelectionsJson: String?) {
+        richTextView.setRemoteSelections(
+            RemoteSelectionDecoration.fromJson(context, remoteSelectionsJson)
+        )
+    }
+
     fun setAutoFocus(autoFocus: Boolean) {
         if (!autoFocus || didApplyAutoFocus) {
             return
@@ -306,6 +312,7 @@ class NativeEditorExpoView(
     override fun onSelectionChanged(anchor: Int, head: Int) {
         refreshToolbarStateFromEditorSelection()
         refreshMentionQuery()
+        richTextView.refreshRemoteSelections()
         val event = mapOf<String, Any>("anchor" to anchor, "head" to head)
         onSelectionChange(event)
     }
@@ -316,6 +323,7 @@ class NativeEditorExpoView(
             keyboardToolbarView.applyState(state)
         }
         refreshMentionQuery()
+        richTextView.refreshRemoteSelections()
         if (heightBehavior == EditorHeightBehavior.AUTO_GROW) {
             post {
                 requestLayout()
@@ -566,8 +574,8 @@ class NativeEditorExpoView(
         val toolbarTheme = richTextView.editorEditText.theme?.toolbar
         val density = resources.displayMetrics.density
         params.gravity = Gravity.BOTTOM or Gravity.START
-        val horizontalInsetPx = ((toolbarTheme?.horizontalInset ?: 0f) * density).toInt()
-        val keyboardOffsetPx = ((toolbarTheme?.keyboardOffset ?: 0f) * density).toInt()
+        val horizontalInsetPx = ((toolbarTheme?.resolvedHorizontalInset() ?: 0f) * density).toInt()
+        val keyboardOffsetPx = ((toolbarTheme?.resolvedKeyboardOffset() ?: 0f) * density).toInt()
         params.leftMargin = horizontalInsetPx
         params.rightMargin = horizontalInsetPx
         params.bottomMargin = currentImeBottom + keyboardOffsetPx
@@ -611,7 +619,7 @@ class NativeEditorExpoView(
             .coerceAtLeast(0)
         val toolbarTheme = richTextView.editorEditText.theme?.toolbar
         val density = resources.displayMetrics.density
-        val horizontalInsetPx = ((toolbarTheme?.horizontalInset ?: 0f) * density).toInt()
+        val horizontalInsetPx = ((toolbarTheme?.resolvedHorizontalInset() ?: 0f) * density).toInt()
         if (keyboardToolbarView.measuredHeight == 0) {
             val availableWidth = (hostWidth - horizontalInsetPx * 2).coerceAtLeast(0)
             val widthSpec = MeasureSpec.makeMeasureSpec(availableWidth, MeasureSpec.AT_MOST)
@@ -630,6 +638,7 @@ class NativeEditorExpoView(
     private fun handleToolbarItemPress(item: NativeToolbarItem) {
         when (item.type) {
             ToolbarItemKind.mark -> item.mark?.let { richTextView.editorEditText.performToolbarToggleMark(it) }
+            ToolbarItemKind.blockquote -> richTextView.editorEditText.performToolbarToggleBlockquote()
             ToolbarItemKind.list -> item.listType?.name?.let { handleListToggle(it) }
             ToolbarItemKind.command -> when (item.command) {
                 ToolbarCommand.indentList -> richTextView.editorEditText.performToolbarIndentListItem()

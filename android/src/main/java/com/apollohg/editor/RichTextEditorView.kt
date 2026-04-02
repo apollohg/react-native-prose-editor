@@ -18,6 +18,8 @@ class RichTextEditorView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : LinearLayout(context, attrs, defStyleAttr) {
 
+    val editorViewport: FrameLayout
+
     private class EditorScrollView(context: Context) : ScrollView(context) {
         private fun updateParentIntercept(action: Int) {
             val canScroll = canScrollVertically(-1) || canScrollVertically(1)
@@ -43,6 +45,7 @@ class RichTextEditorView @JvmOverloads constructor(
 
     val editorEditText: EditorEditText
     val editorScrollView: ScrollView
+    private val remoteSelectionOverlayView: RemoteSelectionOverlayView
 
     private var heightBehavior: EditorHeightBehavior = EditorHeightBehavior.FIXED
     private var theme: EditorTheme? = null
@@ -59,6 +62,7 @@ class RichTextEditorView @JvmOverloads constructor(
             } else {
                 editorEditText.unbindEditor()
             }
+            remoteSelectionOverlayView.invalidate()
         }
 
     init {
@@ -69,9 +73,29 @@ class RichTextEditorView @JvmOverloads constructor(
             clipToPadding = false
             isFillViewport = false
         }
+        editorViewport = FrameLayout(context)
+        remoteSelectionOverlayView = RemoteSelectionOverlayView(context)
         editorScrollView.addView(editorEditText, createEditorLayoutParams())
+        editorViewport.addView(
+            editorScrollView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        editorViewport.addView(
+            remoteSelectionOverlayView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        remoteSelectionOverlayView.bind(this)
+        editorScrollView.setOnScrollChangeListener { _, _, _, _, _ ->
+            remoteSelectionOverlayView.invalidate()
+        }
 
-        addView(editorScrollView, createContainerLayoutParams())
+        addView(editorViewport, createContainerLayoutParams())
         updateScrollContainerAppearance()
         updateScrollContainerInsets()
     }
@@ -84,6 +108,7 @@ class RichTextEditorView @JvmOverloads constructor(
         baseBackgroundColor = backgroundColor
         editorEditText.setBaseStyle(textSizePx, textColor, backgroundColor)
         updateScrollContainerAppearance()
+        remoteSelectionOverlayView.invalidate()
     }
 
     fun applyTheme(theme: EditorTheme?) {
@@ -100,8 +125,10 @@ class RichTextEditorView @JvmOverloads constructor(
                     childHeight + editorScrollView.paddingTop + editorScrollView.paddingBottom - editorScrollView.height
                 )
                 editorScrollView.scrollTo(0, previousScrollY.coerceIn(0, maxScrollY))
+                remoteSelectionOverlayView.invalidate()
             }
         }
+        remoteSelectionOverlayView.invalidate()
     }
 
     fun setHeightBehavior(heightBehavior: EditorHeightBehavior) {
@@ -109,7 +136,7 @@ class RichTextEditorView @JvmOverloads constructor(
         this.heightBehavior = heightBehavior
         editorEditText.setHeightBehavior(heightBehavior)
         editorEditText.layoutParams = createEditorLayoutParams()
-        editorScrollView.layoutParams = createContainerLayoutParams()
+        editorViewport.layoutParams = createContainerLayoutParams()
         editorScrollView.isVerticalScrollBarEnabled = heightBehavior == EditorHeightBehavior.FIXED
         editorScrollView.overScrollMode = if (heightBehavior == EditorHeightBehavior.FIXED) {
             OVER_SCROLL_IF_CONTENT_SCROLLS
@@ -117,6 +144,7 @@ class RichTextEditorView @JvmOverloads constructor(
             OVER_SCROLL_NEVER
         }
         updateScrollContainerInsets()
+        remoteSelectionOverlayView.invalidate()
         requestLayout()
     }
 
@@ -126,7 +154,27 @@ class RichTextEditorView @JvmOverloads constructor(
         viewportBottomInsetPx = clampedInset
         updateScrollContainerInsets()
         editorEditText.setViewportBottomInsetPx(clampedInset)
+        remoteSelectionOverlayView.invalidate()
         requestLayout()
+    }
+
+    fun setRemoteSelections(selections: List<RemoteSelectionDecoration>) {
+        remoteSelectionOverlayView.setRemoteSelections(selections)
+    }
+
+    fun refreshRemoteSelections() {
+        remoteSelectionOverlayView.invalidate()
+    }
+
+    fun remoteSelectionDebugSnapshotsForTesting(): List<RemoteSelectionDebugSnapshot> =
+        remoteSelectionOverlayView.debugSnapshotsForTesting()
+
+    fun setRemoteSelectionScalarResolverForTesting(resolver: (Long, Int) -> Int) {
+        remoteSelectionOverlayView.docToScalarResolver = resolver
+    }
+
+    fun setRemoteSelectionEditorIdForTesting(editorId: Long) {
+        remoteSelectionOverlayView.editorIdOverrideForTesting = editorId
     }
 
     fun setContent(html: String) {
@@ -157,16 +205,16 @@ class RichTextEditorView @JvmOverloads constructor(
         val childWidthSpec = getChildMeasureSpec(
             widthMeasureSpec,
             paddingLeft + paddingRight,
-            editorScrollView.layoutParams.width
+            editorViewport.layoutParams.width
         )
         val childHeightSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
-        editorScrollView.measure(childWidthSpec, childHeightSpec)
+        editorViewport.measure(childWidthSpec, childHeightSpec)
 
         val measuredWidth = resolveSize(
-            editorScrollView.measuredWidth + paddingLeft + paddingRight,
+            editorViewport.measuredWidth + paddingLeft + paddingRight,
             widthMeasureSpec
         )
-        val desiredHeight = editorScrollView.measuredHeight + paddingTop + paddingBottom
+        val desiredHeight = editorViewport.measuredHeight + paddingTop + paddingBottom
         val measuredHeight = when (MeasureSpec.getMode(heightMeasureSpec)) {
             MeasureSpec.AT_MOST -> desiredHeight.coerceAtMost(MeasureSpec.getSize(heightMeasureSpec))
             else -> desiredHeight
@@ -176,11 +224,12 @@ class RichTextEditorView @JvmOverloads constructor(
 
     private fun updateScrollContainerAppearance() {
         val cornerRadiusPx = (theme?.borderRadius ?: 0f) * resources.displayMetrics.density
-        editorScrollView.background = GradientDrawable().apply {
+        editorViewport.background = GradientDrawable().apply {
             cornerRadius = cornerRadiusPx
             setColor(theme?.backgroundColor ?: baseBackgroundColor)
         }
-        editorScrollView.clipToOutline = cornerRadiusPx > 0f
+        editorViewport.clipToOutline = cornerRadiusPx > 0f
+        editorScrollView.setBackgroundColor(Color.TRANSPARENT)
         appliedCornerRadiusPx = cornerRadiusPx
     }
 

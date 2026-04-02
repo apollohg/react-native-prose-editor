@@ -3,6 +3,7 @@ package com.apollohg.editor
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.text.Annotation
 import android.text.Layout
 import android.text.Spanned
 import android.text.SpannableStringBuilder
@@ -615,20 +616,26 @@ class RenderBridgeTest {
 
     @Test
     fun `render - link mark`() {
-        // Links are represented as JSON objects in the marks array, not plain strings.
-        // However, the current JSON format uses string marks. This test verifies
-        // that if a link mark object were present, URLSpan would be applied.
-        // For now, we test that the text renders correctly without error.
         val json = """
         [
             {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
-            {"type": "textRun", "text": "click here", "marks": []},
+            {"type": "textRun", "text": "click here", "marks": [{"type":"link","href":"https://example.com"}]},
             {"type": "blockEnd"}
         ]
         """.trimIndent()
 
         val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
         assertEquals("click here", result.toString())
+        val underlineSpans = result.getSpans(0, result.length, UnderlineSpan::class.java)
+        val colorSpans = result.getSpans(0, result.length, ForegroundColorSpan::class.java)
+        val urlSpans = result.getSpans(0, result.length, URLSpan::class.java)
+
+        assertTrue("Link text should be underlined", underlineSpans.isNotEmpty())
+        assertTrue(
+            "Link text should use link color",
+            colorSpans.any { it.foregroundColor == Color.parseColor("#1B73E8") }
+        )
+        assertTrue("Editor render should not expose clickable URL spans", urlSpans.isEmpty())
     }
 
     // ── Depth Indentation ───────────────────────────────────────────────
@@ -658,6 +665,332 @@ class RenderBridgeTest {
         assertEquals(
             "Depth 2 paragraph should have ${expectedIndent}px indent",
             expectedIndent, actualIndent
+        )
+    }
+
+    @Test
+    fun `render - blockquote applies quote span and blockquote text style`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Quoted", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "blockquote": {
+                "indent": 20,
+                "borderColor": "#aa5500",
+                "borderWidth": 4,
+                "markerGap": 10,
+                "text": { "color": "#334455" }
+              }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+
+        val quoteSpans = result.getSpans(0, result.length, BlockquoteSpan::class.java)
+        assertTrue("Quoted paragraph should receive BlockquoteSpan", quoteSpans.isNotEmpty())
+        assertEquals(20, quoteSpans.single().getLeadingMargin(true))
+
+        val colorSpans = result.getSpans(0, result.length, ForegroundColorSpan::class.java)
+        assertTrue(
+            "Blockquote text style should override text color",
+            colorSpans.any { it.foregroundColor == Color.parseColor("#334455") }
+        )
+    }
+
+    @Test
+    fun `render - blockquote does not insert extra leading paragraph break`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Hello", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "World", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+
+        assertEquals("Hello\nWorld", result.toString())
+    }
+
+    @Test
+    fun `render - consecutive blockquote paragraphs share one quote span`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Hello", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "World", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+
+        assertEquals("Hello\nWorld", result.toString())
+        val quoteSpans = result.getSpans(0, result.length, BlockquoteSpan::class.java)
+        assertEquals(1, quoteSpans.size)
+    }
+
+    @Test
+    fun `render - trailing hard break in blockquote preserves quote span into following paragraph`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Hello", "marks": []},
+            {"type": "voidInline", "nodeType": "hardBreak", "docPos": 6},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Tail", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+        assertEquals("Hello\n\u200B\nTail", result.toString())
+        val quoteSpans = result.getSpans(0, result.length, BlockquoteSpan::class.java)
+        assertEquals(1, quoteSpans.size)
+    }
+
+    @Test
+    fun `render - trailing hard break in blockquote appends synthetic placeholder with quote styling`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "A", "marks": []},
+            {"type": "voidInline", "nodeType": "hardBreak", "docPos": 2},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+        assertEquals("A\n\u200B", result.toString())
+
+        val placeholderIndex = result.length - 1
+        val placeholderAnnotations =
+            result.getSpans(placeholderIndex, placeholderIndex + 1, Annotation::class.java)
+        assertTrue(
+            "Trailing hard-break placeholder should be marked as synthetic",
+            placeholderAnnotations.any { it.key == "nativeSyntheticPlaceholder" }
+        )
+        assertTrue(
+            "Trailing hard-break placeholder should keep blockquote styling",
+            placeholderAnnotations.any { it.key == "nativeBlockquote" }
+        )
+    }
+
+    @Test
+    fun `render - blockquote span ends before separator newline to plain paragraph`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Hello", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "World", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+        assertEquals("Hello\nWorld", result.toString())
+
+        val quoteSpans = result.getSpans(0, result.length, BlockquoteSpan::class.java)
+        assertEquals(1, quoteSpans.size)
+        assertEquals(
+            "Blockquote span should end at the separator newline boundary to following plain content",
+            6,
+            result.getSpanEnd(quoteSpans.single())
+        )
+    }
+
+    @Test
+    fun `render - paragraph preceding blockquote does not inherit quote indent`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Intro", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Quote", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+        assertEquals("Intro\nQuote", result.toString())
+
+        val quoteSpans = result.getSpans(0, result.length, BlockquoteSpan::class.java)
+        assertEquals(1, quoteSpans.size)
+        assertEquals(
+            "Blockquote span should start at the quoted paragraph, not the preceding plain paragraph",
+            6,
+            result.getSpanStart(quoteSpans.single())
+        )
+    }
+
+    @Test
+    fun `render - nested list item inside blockquote indents more than parent item`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1, "listContext": {"ordered": false, "index": 1, "total": 2, "start": 1, "isFirst": true, "isLast": false}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Parent", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 2, "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 3},
+            {"type": "textRun", "text": "Child", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+
+        val parentIndex = result.indexOf("Parent")
+        val childIndex = result.indexOf("Child")
+        assertTrue(parentIndex >= 0)
+        assertTrue(childIndex >= 0)
+        val parentMargin = result
+            .getSpans(parentIndex, parentIndex + 1, LeadingMarginSpan::class.java)
+            .sumOf { it.getLeadingMargin(true) }
+        val childMargin = result
+            .getSpans(childIndex, childIndex + 1, LeadingMarginSpan::class.java)
+            .sumOf { it.getLeadingMargin(true) }
+
+        assertTrue(
+            "nested list item inside a blockquote should indent more than its parent item",
+            childMargin > parentMargin
+        )
+    }
+
+    @Test
+    fun `blockquote span trims bottom on final quoted line before plain content`() {
+        val text = SpannableStringBuilder("Quote\nPlain")
+        text.setSpan(
+            Annotation(RenderBridge.NATIVE_BLOCKQUOTE_ANNOTATION, "1"),
+            0,
+            5,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        text.setSpan(
+            Annotation(RenderBridge.NATIVE_BLOCKQUOTE_ANNOTATION, "1"),
+            5,
+            6,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+
+        val paint = TextPaint().apply { textSize = 16f }
+        val layout = StaticLayout.Builder
+            .obtain(text, 0, text.length, paint, 200)
+            .build()
+        val span = BlockquoteSpan(
+            baseIndentPx = 0,
+            totalIndentPx = 18,
+            stripeColor = Color.BLACK,
+            stripeWidthPx = 3,
+            gapWidthPx = 8
+        )
+        val line = 0
+        val bottom = span.resolvedStripeBottom(
+            text = text,
+            start = layout.getLineStart(line),
+            end = layout.getLineEnd(line),
+            baseline = layout.getLineBaseline(line),
+            bottom = layout.getLineBottom(line),
+            layout = layout,
+            paint = paint
+        )
+
+        assertEquals(
+            "Final quoted line before plain content should trim stripe to baseline + font descent",
+            layout.getLineBaseline(line) + paint.fontMetrics.descent,
+            bottom,
+            0.01f
+        )
+    }
+
+    @Test
+    fun `blockquote span ignores paragraph spacer when trimming final quoted line`() {
+        val text = SpannableStringBuilder("Quote\nPlain")
+        text.setSpan(
+            Annotation(RenderBridge.NATIVE_BLOCKQUOTE_ANNOTATION, "1"),
+            0,
+            5,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        text.setSpan(
+            Annotation(RenderBridge.NATIVE_BLOCKQUOTE_ANNOTATION, "1"),
+            5,
+            6,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        text.setSpan(
+            ParagraphSpacerSpan(
+                spacingPx = 40,
+                baseFontSize = 16,
+                textColor = Color.BLACK
+            ),
+            5,
+            6,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+
+        val paint = TextPaint().apply { textSize = 16f }
+        val layout = StaticLayout.Builder
+            .obtain(text, 0, text.length, paint, 200)
+            .build()
+        val span = BlockquoteSpan(
+            baseIndentPx = 0,
+            totalIndentPx = 18,
+            stripeColor = Color.BLACK,
+            stripeWidthPx = 3,
+            gapWidthPx = 8
+        )
+        val line = 0
+        val bottom = span.resolvedStripeBottom(
+            text = text,
+            start = layout.getLineStart(line),
+            end = layout.getLineEnd(line),
+            baseline = layout.getLineBaseline(line),
+            bottom = layout.getLineBottom(line),
+            layout = layout,
+            paint = paint
+        )
+
+        assertTrue("Paragraph spacer should inflate line metrics in this reproduction", layout.getLineDescent(line) > paint.fontMetrics.descent)
+        assertEquals(
+            "Final quoted line should trim to font descent even when paragraph spacing inflates layout descent",
+            layout.getLineBaseline(line) + paint.fontMetrics.descent,
+            bottom,
+            0.01f
         )
     }
 
@@ -863,7 +1196,7 @@ class RenderBridgeTest {
         val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
         val marginSpans = result.getSpans(0, result.length, LeadingMarginSpan.Standard::class.java)
         assertTrue(marginSpans.isNotEmpty())
-        assertEquals(64, marginSpans[0].getLeadingMargin(true))
+        assertEquals(32, marginSpans[0].getLeadingMargin(true))
     }
 
     @Test

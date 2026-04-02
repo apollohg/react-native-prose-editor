@@ -14,6 +14,42 @@ class NativeEditorModule : Module() {
         Function("editorDestroy") { id: Int ->
             editorDestroy(id.toULong())
         }
+        Function("collaborationSessionCreate") { configJson: String ->
+            collaborationSessionCreate(configJson).toLong()
+        }
+        Function("collaborationSessionDestroy") { id: Int ->
+            collaborationSessionDestroy(id.toULong())
+        }
+        Function("collaborationSessionGetDocumentJson") { id: Int ->
+            collaborationSessionGetDocumentJson(id.toULong())
+        }
+        Function("collaborationSessionGetEncodedState") { id: Int ->
+            collaborationSessionGetEncodedState(id.toULong())
+        }
+        Function("collaborationSessionGetPeersJson") { id: Int ->
+            collaborationSessionGetPeersJson(id.toULong())
+        }
+        Function("collaborationSessionStart") { id: Int ->
+            collaborationSessionStart(id.toULong())
+        }
+        Function("collaborationSessionApplyLocalDocumentJson") { id: Int, json: String ->
+            collaborationSessionApplyLocalDocumentJson(id.toULong(), json)
+        }
+        Function("collaborationSessionApplyEncodedState") { id: Int, encodedStateJson: String ->
+            collaborationSessionApplyEncodedState(id.toULong(), encodedStateJson)
+        }
+        Function("collaborationSessionReplaceEncodedState") { id: Int, encodedStateJson: String ->
+            collaborationSessionReplaceEncodedState(id.toULong(), encodedStateJson)
+        }
+        Function("collaborationSessionHandleMessage") { id: Int, messageJson: String ->
+            collaborationSessionHandleMessage(id.toULong(), messageJson)
+        }
+        Function("collaborationSessionSetLocalAwareness") { id: Int, awarenessJson: String ->
+            collaborationSessionSetLocalAwareness(id.toULong(), awarenessJson)
+        }
+        Function("collaborationSessionClearLocalAwareness") { id: Int ->
+            collaborationSessionClearLocalAwareness(id.toULong())
+        }
 
         Function("editorSetHtml") { id: Int, html: String ->
             editorSetHtml(id.toULong(), html)
@@ -104,6 +140,36 @@ class NativeEditorModule : Module() {
             )
         }
         Function(
+            "editorSetMarkAtSelectionScalar"
+        ) { id: Int, scalarAnchor: Int, scalarHead: Int, markName: String, attrsJson: String ->
+            editorSetMarkAtSelectionScalar(
+                id.toULong(),
+                scalarAnchor.toUInt(),
+                scalarHead.toUInt(),
+                markName,
+                attrsJson
+            )
+        }
+        Function(
+            "editorUnsetMarkAtSelectionScalar"
+        ) { id: Int, scalarAnchor: Int, scalarHead: Int, markName: String ->
+            editorUnsetMarkAtSelectionScalar(
+                id.toULong(),
+                scalarAnchor.toUInt(),
+                scalarHead.toUInt(),
+                markName
+            )
+        }
+        Function(
+            "editorToggleBlockquoteAtSelectionScalar"
+        ) { id: Int, scalarAnchor: Int, scalarHead: Int ->
+            editorToggleBlockquoteAtSelectionScalar(
+                id.toULong(),
+                scalarAnchor.toUInt(),
+                scalarHead.toUInt()
+            )
+        }
+        Function(
             "editorWrapInListAtSelectionScalar"
         ) { id: Int, scalarAnchor: Int, scalarHead: Int, listType: String ->
             editorWrapInListAtSelectionScalar(
@@ -153,6 +219,15 @@ class NativeEditorModule : Module() {
 
         Function("editorToggleMark") { id: Int, markName: String ->
             editorToggleMark(id.toULong(), markName)
+        }
+        Function("editorSetMark") { id: Int, markName: String, attrsJson: String ->
+            editorSetMark(id.toULong(), markName, attrsJson)
+        }
+        Function("editorUnsetMark") { id: Int, markName: String ->
+            editorUnsetMark(id.toULong(), markName)
+        }
+        Function("editorToggleBlockquote") { id: Int ->
+            editorToggleBlockquote(id.toULong())
         }
 
         Function("editorSetSelection") { id: Int, anchor: Int, head: Int ->
@@ -205,7 +280,7 @@ class NativeEditorModule : Module() {
                 view.richTextView.editorEditText.isEditable = editable
             }
             Prop("placeholder") { view: NativeEditorExpoView, placeholder: String ->
-                view.richTextView.editorEditText.hint = placeholder
+                view.richTextView.editorEditText.placeholderText = placeholder
             }
             Prop("autoFocus") { view: NativeEditorExpoView, autoFocus: Boolean ->
                 view.setAutoFocus(autoFocus)
@@ -224,6 +299,9 @@ class NativeEditorModule : Module() {
             }
             Prop("addonsJson") { view: NativeEditorExpoView, addonsJson: String? ->
                 view.setAddonsJson(addonsJson)
+            }
+            Prop("remoteSelectionsJson") { view: NativeEditorExpoView, remoteSelectionsJson: String? ->
+                view.setRemoteSelectionsJson(remoteSelectionsJson)
             }
             Prop("toolbarItemsJson") { view: NativeEditorExpoView, toolbarItemsJson: String? ->
                 view.setToolbarItemsJson(toolbarItemsJson)

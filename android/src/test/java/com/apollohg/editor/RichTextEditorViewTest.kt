@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -73,6 +74,39 @@ class RichTextEditorViewTest {
           {"type":"blockEnd"}
         ]
     """.trimIndent()
+
+    private fun emptyParagraphRenderJson(): String = """
+        [
+          {"type":"blockStart","nodeType":"paragraph","depth":0},
+          {"type":"textRun","text":"\u200B","marks":[]},
+          {"type":"blockEnd"}
+        ]
+    """.trimIndent()
+
+    @Test
+    fun `placeholder shows for rendered empty paragraph`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.placeholderText = "Type here"
+        editText.applyRenderJSON(emptyParagraphRenderJson())
+
+        assertTrue(editText.shouldDisplayPlaceholderForTesting())
+    }
+
+    @Test
+    fun `placeholder hides for rendered non-empty paragraph`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.placeholderText = "Type here"
+        editText.setText("Hello")
+
+        assertTrue(!editText.shouldDisplayPlaceholderForTesting())
+    }
+
+    @Test
+    fun `editor disables clickable links`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+
+        assertTrue(!editText.linksClickable)
+    }
 
     @Test
     fun `editor auto grow height resolves from text layout`() {
@@ -455,7 +489,7 @@ class RichTextEditorViewTest {
         richTextEditorView.applyTheme(theme)
 
         assertEquals(18f * density, richTextEditorView.appliedCornerRadiusPx, 0.1f)
-        assertTrue(richTextEditorView.editorScrollView.clipToOutline)
+        assertTrue(richTextEditorView.editorViewport.clipToOutline)
     }
 
     @Test
@@ -503,6 +537,69 @@ class RichTextEditorViewTest {
         assertEquals((12f * density).toInt() + 96, richTextEditorView.editorScrollView.paddingBottom)
         assertEquals(0, richTextEditorView.editorEditText.paddingTop)
         assertEquals(0, richTextEditorView.editorEditText.paddingBottom)
+    }
+
+    @Test
+    fun `remote selections expose focused caret geometry without a badge`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = RichTextEditorView(context)
+        view.setRemoteSelectionEditorIdForTesting(1L)
+        view.editorEditText.setText("Hello world")
+        view.setRemoteSelectionScalarResolverForTesting { _, docPos -> docPos }
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        view.measure(widthSpec, heightSpec)
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+
+        view.setRemoteSelections(
+            listOf(
+                RemoteSelectionDecoration(
+                    clientId = 7,
+                    anchor = 6,
+                    head = 6,
+                    color = Color.parseColor("#ff6b35"),
+                    name = "Alice",
+                    isFocused = true,
+                )
+            )
+        )
+
+        val snapshot = view.remoteSelectionDebugSnapshotsForTesting().single()
+        assertEquals(7, snapshot.clientId)
+        assertNotNull(snapshot.caretRect)
+        assertTrue(snapshot.caretRect!!.height() > 0f)
+    }
+
+    @Test
+    fun `unfocused collapsed remote selection does not expose caret or badge geometry`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = RichTextEditorView(context)
+        view.setRemoteSelectionEditorIdForTesting(1L)
+        view.editorEditText.setText("Hello world")
+        view.setRemoteSelectionScalarResolverForTesting { _, docPos -> docPos }
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        view.measure(widthSpec, heightSpec)
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+
+        view.setRemoteSelections(
+            listOf(
+                RemoteSelectionDecoration(
+                    clientId = 8,
+                    anchor = 6,
+                    head = 6,
+                    color = Color.parseColor("#007aff"),
+                    name = "Alice",
+                    isFocused = false,
+                )
+            )
+        )
+
+        val snapshot = view.remoteSelectionDebugSnapshotsForTesting().single()
+        assertEquals(8, snapshot.clientId)
+        assertTrue(snapshot.caretRect == null)
     }
 
     @Test

@@ -1,10 +1,14 @@
+import groovy.json.JsonSlurper
+
 plugins {
     id 'com.android.library'
     id 'expo-module-gradle-plugin'
 }
 
+def packageJson = new JsonSlurper().parse(file('../package.json'))
+
 group = 'com.apollohg'
-version = '0.1.1'
+version = packageJson.version
 
 android {
     namespace "com.apollohg.editor"
@@ -13,7 +17,7 @@ android {
     }
     defaultConfig {
         versionCode 1
-        versionName '0.1.1'
+        versionName packageJson.version
     }
 
     // Include prebuilt Rust .so files from the package's rust/android/ directory
@@ -32,6 +36,7 @@ android {
 
 dependencies {
     implementation "androidx.appcompat:appcompat:1.7.0"
+    implementation "com.google.android.material:material:1.12.0"
     implementation "net.java.dev.jna:jna:5.14.0@aar"
 
     testImplementation "junit:junit:4.13.2"

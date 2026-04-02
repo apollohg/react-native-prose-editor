@@ -93,6 +93,12 @@ class EditorEditText @JvmOverloads constructor(
     var theme: EditorTheme? = null
         private set
 
+    var placeholderText: String = ""
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     var heightBehavior: EditorHeightBehavior = EditorHeightBehavior.FIXED
         private set
 
@@ -139,6 +145,7 @@ class EditorEditText @JvmOverloads constructor(
         // Strip the default EditText theme drawable which carries implicit padding.
         // Background color is applied in setBaseStyle() / applyTheme().
         background = null
+        linksClickable = false
         updateEffectivePadding()
     }
 
@@ -160,6 +167,28 @@ class EditorEditText @JvmOverloads constructor(
         return super.dispatchKeyEvent(event)
     }
 
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        super.onDraw(canvas)
+
+        if (!shouldDisplayPlaceholder()) return
+
+        val availableWidth = width - compoundPaddingLeft - compoundPaddingRight
+        if (availableWidth <= 0) return
+
+        val previousColor = paint.color
+        val saveCount = canvas.save()
+        paint.color = currentHintTextColor
+        canvas.translate(compoundPaddingLeft.toFloat(), extendedPaddingTop.toFloat())
+        StaticLayout.Builder
+            .obtain(placeholderText, 0, placeholderText.length, paint, availableWidth)
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setIncludePad(includeFontPadding)
+            .build()
+            .draw(canvas)
+        canvas.restoreToCount(saveCount)
+        paint.color = previousColor
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (heightBehavior == EditorHeightBehavior.FIXED) {
             val canScroll = canScrollVertically(-1) || canScrollVertically(1)
@@ -174,6 +203,26 @@ class EditorEditText @JvmOverloads constructor(
         }
         return super.onTouchEvent(event)
     }
+
+    private fun isRenderedContentEmpty(content: CharSequence? = text): Boolean {
+        val renderedContent = content ?: return true
+        if (renderedContent.isEmpty()) return true
+
+        for (index in 0 until renderedContent.length) {
+            when (renderedContent[index]) {
+                EMPTY_BLOCK_PLACEHOLDER, '\n', '\r' -> continue
+                else -> return false
+            }
+        }
+
+        return true
+    }
+
+    private fun shouldDisplayPlaceholder(): Boolean {
+        return placeholderText.isNotEmpty() && isRenderedContentEmpty()
+    }
+
+    fun shouldDisplayPlaceholderForTesting(): Boolean = shouldDisplayPlaceholder()
 
     // ── Editor Binding ──────────────────────────────────────────────────
 
@@ -669,6 +718,17 @@ class EditorEditText @JvmOverloads constructor(
         applyUpdateJSON(updateJSON)
     }
 
+    fun performToolbarToggleBlockquote() {
+        if (!isEditable || isApplyingRustState || editorId == 0L) return
+        val selection = currentScalarSelection() ?: return
+        val updateJSON = editorToggleBlockquoteAtSelectionScalar(
+            editorId.toULong(),
+            selection.first.toUInt(),
+            selection.second.toUInt()
+        )
+        applyUpdateJSON(updateJSON)
+    }
+
     fun performToolbarIndentListItem() {
         if (!isEditable || isApplyingRustState || editorId == 0L) return
         val selection = currentScalarSelection() ?: return
@@ -1052,6 +1112,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     companion object {
+        private const val EMPTY_BLOCK_PLACEHOLDER = '\u200B'
         private const val LOG_TAG = "NativeEditor"
     }
 }

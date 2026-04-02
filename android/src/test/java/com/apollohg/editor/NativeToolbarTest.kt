@@ -1,6 +1,9 @@
 package com.apollohg.editor
 
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.view.View
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -84,6 +87,23 @@ class NativeToolbarTest {
     }
 
     @Test
+    fun `toolbar theme parses native appearance`() {
+        val theme = EditorToolbarTheme.fromJson(
+            org.json.JSONObject(
+                """
+                {
+                  "appearance": "native"
+                }
+                """.trimIndent()
+            )
+        )
+
+        assertEquals(EditorToolbarAppearance.NATIVE, theme?.appearance)
+        assertEquals(8f, theme?.resolvedKeyboardOffset())
+        assertEquals(0f, theme?.resolvedHorizontalInset())
+    }
+
+    @Test
     fun `toolbar switches to mention suggestion mode`() {
         val context = RuntimeEnvironment.getApplication()
         val toolbar = EditorKeyboardToolbarView(context)
@@ -149,6 +169,30 @@ class NativeToolbarTest {
     }
 
     @Test
+    fun `native toolbar applies native appearance to mention suggestions`() {
+        val context = RuntimeEnvironment.getApplication()
+        val toolbar = EditorKeyboardToolbarView(context)
+        toolbar.applyTheme(
+            EditorToolbarTheme(
+                appearance = EditorToolbarAppearance.NATIVE
+            )
+        )
+        toolbar.setMentionSuggestions(
+            listOf(
+                NativeMentionSuggestion(
+                    key = "alice",
+                    title = "Alice Chen",
+                    subtitle = "Design",
+                    label = "@alice",
+                    attrs = org.json.JSONObject().put("id", "user_alice")
+                )
+            )
+        )
+
+        assertTrue(toolbar.mentionChipAtForTesting(0)?.usesNativeAppearanceForTesting() == true)
+    }
+
+    @Test
     fun `toolbar theme dimensions are applied in density scaled pixels without elevation`() {
         val context = RuntimeEnvironment.getApplication()
         val density = context.resources.displayMetrics.density
@@ -166,5 +210,144 @@ class NativeToolbarTest {
         assertEquals(20f * density, toolbar.appliedChromeCornerRadiusPx)
         assertEquals((2f * density).toInt().coerceAtLeast(1), toolbar.appliedChromeStrokeWidthPx)
         assertEquals(14f * density, toolbar.appliedButtonCornerRadiusPx)
+    }
+
+    @Test
+    fun `native toolbar appearance uses docked material chrome defaults`() {
+        val context = RuntimeEnvironment.getApplication()
+        val density = context.resources.displayMetrics.density
+        val toolbar = EditorKeyboardToolbarView(context)
+
+        toolbar.applyTheme(
+            EditorToolbarTheme(
+                appearance = EditorToolbarAppearance.NATIVE
+            )
+        )
+
+        assertEquals(EditorToolbarAppearance.NATIVE, toolbar.appliedAppearance)
+        assertEquals(0, toolbar.appliedChromeStrokeWidthPx)
+        assertEquals(32f * density, toolbar.appliedChromeCornerRadiusPx)
+        assertEquals(20f * density, toolbar.appliedButtonCornerRadiusPx)
+        assertEquals(0f, toolbar.appliedChromeElevationPx)
+    }
+
+    @Test
+    fun `native toolbar separators remain visible`() {
+        val context = RuntimeEnvironment.getApplication()
+        val toolbar = EditorKeyboardToolbarView(context)
+
+        toolbar.applyTheme(
+            EditorToolbarTheme(
+                appearance = EditorToolbarAppearance.NATIVE
+            )
+        )
+
+        val separator = requireNotNull(toolbar.separatorAtForTesting(0))
+        val separatorDrawable = separator.background as? ColorDrawable
+
+        assertEquals(1, separator.layoutParams.width)
+        assertNotNull(separatorDrawable)
+        assertNotEquals(Color.TRANSPARENT, separatorDrawable?.color)
+    }
+
+    @Test
+    fun `native toolbar updates button selected and disabled colors from state`() {
+        val context = RuntimeEnvironment.getApplication()
+        val toolbar = EditorKeyboardToolbarView(context)
+        toolbar.applyTheme(
+            EditorToolbarTheme(
+                appearance = EditorToolbarAppearance.NATIVE
+            )
+        )
+
+        toolbar.applyState(
+            NativeToolbarState(
+                marks = emptyMap(),
+                nodes = emptyMap(),
+                commands = emptyMap(),
+                allowedMarks = setOf("bold"),
+                insertableNodes = emptySet(),
+                canUndo = false,
+                canRedo = false
+            )
+        )
+
+        val boldButton = requireNotNull(toolbar.buttonAtForTesting(0))
+        val inactiveColor = boldButton.currentTextColor
+
+        toolbar.applyState(
+            NativeToolbarState(
+                marks = mapOf("bold" to true),
+                nodes = emptyMap(),
+                commands = emptyMap(),
+                allowedMarks = setOf("bold"),
+                insertableNodes = emptySet(),
+                canUndo = false,
+                canRedo = false
+            )
+        )
+
+        assertTrue(boldButton.isSelected)
+        assertNotEquals(inactiveColor, boldButton.currentTextColor)
+        assertEquals(1f, boldButton.alpha)
+
+        toolbar.applyState(
+            NativeToolbarState(
+                marks = emptyMap(),
+                nodes = emptyMap(),
+                commands = emptyMap(),
+                allowedMarks = emptySet(),
+                insertableNodes = emptySet(),
+                canUndo = false,
+                canRedo = false
+            )
+        )
+
+        assertFalse(boldButton.isEnabled)
+        assertEquals(1f, boldButton.alpha)
+    }
+
+    @Test
+    @Config(sdk = [34], qualifiers = "night")
+    fun `native toolbar resolves non-transparent colors in dark mode`() {
+        val context = RuntimeEnvironment.getApplication()
+        val toolbar = EditorKeyboardToolbarView(context)
+
+        toolbar.applyTheme(
+            EditorToolbarTheme(
+                appearance = EditorToolbarAppearance.NATIVE
+            )
+        )
+        toolbar.applyState(
+            NativeToolbarState(
+                marks = emptyMap(),
+                nodes = emptyMap(),
+                commands = emptyMap(),
+                allowedMarks = setOf("bold"),
+                insertableNodes = emptySet(),
+                canUndo = false,
+                canRedo = false
+            )
+        )
+
+        val boldButton = requireNotNull(toolbar.buttonAtForTesting(0))
+        val inactiveColor = boldButton.currentTextColor
+        assertNotEquals(Color.TRANSPARENT, toolbar.appliedChromeColor)
+        assertNotEquals(Color.TRANSPARENT, inactiveColor)
+
+        toolbar.applyState(
+            NativeToolbarState(
+                marks = mapOf("bold" to true),
+                nodes = emptyMap(),
+                commands = emptyMap(),
+                allowedMarks = setOf("bold"),
+                insertableNodes = emptySet(),
+                canUndo = false,
+                canRedo = false
+            )
+        )
+
+        assertNotEquals(inactiveColor, boldButton.currentTextColor)
+        assertNotEquals(Color.TRANSPARENT, toolbar.buttonBackgroundColorAtForTesting(0))
     }
 }

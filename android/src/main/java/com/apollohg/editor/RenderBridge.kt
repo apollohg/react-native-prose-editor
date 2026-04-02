@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.text.Annotation
+import android.text.Layout
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.AbsoluteSizeSpan
@@ -16,17 +17,10 @@ import android.text.style.ReplacementSpan
 import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
 import android.text.style.TypefaceSpan
-import android.text.style.URLSpan
 import android.text.style.UnderlineSpan
 import org.json.JSONArray
 import org.json.JSONObject
 
-// ── Layout Constants ────────────────────────────────────────────────────
-
-/**
- * Layout constants for paragraph styles and rendering, matching the iOS
- * [LayoutConstants] enum.
- */
 object LayoutConstants {
     /** Base indentation per depth level (pixels at base scale). */
     const val INDENT_PER_DEPTH: Float = 24f
@@ -43,25 +37,34 @@ object LayoutConstants {
     /** Vertical padding above and below the horizontal rule (pixels). */
     const val HORIZONTAL_RULE_VERTICAL_PADDING: Float = 8f
 
+    /** Total leading inset reserved for each blockquote depth. */
+    const val BLOCKQUOTE_INDENT: Float = 18f
+
+    /** Width of the rendered blockquote border bar (pixels at base scale). */
+    const val BLOCKQUOTE_BORDER_WIDTH: Float = 3f
+
+    /** Gap between the blockquote border bar and the text that follows. */
+    const val BLOCKQUOTE_MARKER_GAP: Float = 8f
+
     /** Bullet character for unordered list items. */
     const val UNORDERED_LIST_BULLET: String = "\u2022 "
 
     /** Scale factor applied only to unordered list marker glyphs. */
     const val UNORDERED_LIST_MARKER_FONT_SCALE: Float = 2.0f
 
+    /** Default visual treatment for link text when no explicit theme color exists. */
+    const val DEFAULT_LINK_COLOR: Int = 0xFF1B73E8.toInt()
+
     /** Object replacement character used for void block elements. */
     const val OBJECT_REPLACEMENT_CHARACTER: String = "\uFFFC"
+
+    /** Zero-width placeholder used to preserve trailing hard-break lines. */
+    const val SYNTHETIC_PLACEHOLDER_CHARACTER: String = "\u200B"
 
     /** Background color for inline code spans (light gray). */
     const val CODE_BACKGROUND_COLOR: Int = 0x1A000000  // 10% black
 }
 
-// ── BlockContext ─────────────────────────────────────────────────────────
-
-/**
- * Transient context while rendering block elements. Pushed onto a stack
- * when a `blockStart` element is encountered and popped on `blockEnd`.
- */
 data class BlockContext(
     val nodeType: String,
     val depth: Int,
@@ -72,17 +75,135 @@ data class BlockContext(
 
 private data class PendingLeadingMargin(
     val indentPx: Int,
-    val restIndentPx: Int?
+    val restIndentPx: Int?,
+    val blockquoteIndentPx: Int = 0,
+    val blockquoteStripeColor: Int? = null,
+    val blockquoteStripeWidthPx: Int = 0,
+    val blockquoteGapWidthPx: Int = 0,
+    val blockquoteBaseIndentPx: Int = 0
 )
 
-// ── HorizontalRuleSpan ──────────────────────────────────────────────────
+class BlockquoteSpan(
+    private val baseIndentPx: Int,
+    private val totalIndentPx: Int,
+    private val stripeColor: Int,
+    private val stripeWidthPx: Int,
+    private val gapWidthPx: Int
+    ) : LeadingMarginSpan {
 
-/**
- * A [LeadingMarginSpan] replacement span that draws a horizontal separator line.
- *
- * Used for `horizontalRule` void block elements. Renders as a thin line
- * across the available width with vertical padding.
- */
+    override fun getLeadingMargin(first: Boolean): Int = totalIndentPx
+
+    override fun drawLeadingMargin(
+        canvas: Canvas,
+        paint: Paint,
+        x: Int,
+        dir: Int,
+        top: Int,
+        baseline: Int,
+        bottom: Int,
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        first: Boolean,
+        layout: android.text.Layout?
+    ) {
+        if (!lineContainsQuotedContent(text, start, end)) {
+            return
+        }
+
+        val savedColor = paint.color
+        val savedStyle = paint.style
+
+        paint.color = stripeColor
+        paint.style = Paint.Style.FILL
+
+        val stripeStart = x + (dir * baseIndentPx)
+        val stripeLeft = if (dir > 0) stripeStart.toFloat() else (stripeStart - stripeWidthPx).toFloat()
+        val stripeRight = if (dir > 0) stripeLeft + stripeWidthPx else stripeLeft + stripeWidthPx
+        val stripeBottom = resolvedStripeBottom(
+            text = text,
+            start = start,
+            end = end,
+            baseline = baseline,
+            bottom = bottom,
+            layout = layout,
+            paint = paint
+        )
+        canvas.drawRect(
+            stripeLeft,
+            top.toFloat(),
+            stripeRight,
+            stripeBottom,
+            paint
+        )
+
+        paint.color = savedColor
+        paint.style = savedStyle
+    }
+
+    private fun lineContainsQuotedContent(text: CharSequence, start: Int, end: Int): Boolean {
+        if (start >= end || text !is Spanned) return true
+        for (index in start until end.coerceAtMost(text.length)) {
+            val ch = text[index]
+            if (ch == '\n' || ch == '\r') continue
+            val quoted = text.getSpans(index, index + 1, Annotation::class.java).any {
+                it.key == RenderBridge.NATIVE_BLOCKQUOTE_ANNOTATION
+            }
+            if (quoted) {
+                return true
+            }
+        }
+        return false
+    }
+
+    internal fun resolvedStripeBottom(
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        baseline: Int,
+        bottom: Int,
+        layout: android.text.Layout?,
+        paint: Paint? = null
+    ): Float {
+        if (layout == null || text.isEmpty()) {
+            return bottom.toFloat()
+        }
+        val lineIndex = safeLineForOffset(layout, start, text.length)
+        val nextLine = lineIndex + 1
+        if (nextLine >= layout.lineCount) {
+            return trimmedTextBottom(baseline, layout, lineIndex, paint)
+        }
+
+        val nextLineStart = layout.getLineStart(nextLine)
+        val nextLineEnd = layout.getLineEnd(nextLine)
+        return if (lineContainsQuotedContent(text, nextLineStart, nextLineEnd)) {
+            bottom.toFloat()
+        } else {
+            trimmedTextBottom(baseline, layout, lineIndex, paint)
+        }
+    }
+
+    private fun trimmedTextBottom(
+        baseline: Int,
+        layout: Layout,
+        lineIndex: Int,
+        paint: Paint?
+    ): Float {
+        val fontDescent = paint?.fontMetrics?.descent
+        return if (fontDescent != null) {
+            baseline + fontDescent
+        } else {
+            (baseline + layout.getLineDescent(lineIndex)).toFloat()
+        }
+    }
+
+    private fun safeLineForOffset(layout: Layout, offset: Int, textLength: Int): Int {
+        if (textLength <= 0) return 0
+        val safeStart = offset.coerceIn(0, textLength - 1)
+        return layout.getLineForOffset(safeStart)
+    }
+}
+
 class HorizontalRuleSpan(
     private val lineColor: Int,
     private val lineHeight: Float = LayoutConstants.HORIZONTAL_RULE_HEIGHT,
@@ -255,36 +376,10 @@ class CenteredBulletSpan(
     }
 }
 
-// ── RenderBridge ────────────────────────────────────────────────────────
-
-/**
- * Converts RenderElement JSON (emitted by Rust editor-core via UniFFI) into
- * [SpannableStringBuilder] for display in an Android EditText.
- *
- * The JSON format matches the output of `serialize_render_elements` in lib.rs:
- * ```json
- * [
- *   {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
- *   {"type": "textRun", "text": "Hello ", "marks": []},
- *   {"type": "textRun", "text": "world", "marks": ["bold"]},
- *   {"type": "blockEnd"},
- *   {"type": "voidInline", "nodeType": "hardBreak", "docPos": 12},
- *   {"type": "voidBlock", "nodeType": "horizontalRule", "docPos": 15}
- * ]
- * ```
- */
 object RenderBridge {
+    internal const val NATIVE_BLOCKQUOTE_ANNOTATION = "nativeBlockquote"
+    private const val NATIVE_SYNTHETIC_PLACEHOLDER_ANNOTATION = "nativeSyntheticPlaceholder"
 
-    // ── Public API ──────────────────────────────────────────────────────
-
-    /**
-     * Convert a JSON array of RenderElements into a [SpannableStringBuilder].
-     *
-     * @param json A JSON string representing an array of render elements.
-     * @param baseFontSize The default font size in pixels for unstyled text.
-     * @param textColor The default text color as an ARGB int.
-     * @return The rendered spannable string. Returns an empty builder if the JSON is invalid.
-     */
     fun buildSpannable(
         json: String,
         baseFontSize: Float,
@@ -301,17 +396,6 @@ object RenderBridge {
         return buildSpannableFromArray(elements, baseFontSize, textColor, theme, density)
     }
 
-    /**
-     * Convert a parsed [JSONArray] of RenderElements into a [SpannableStringBuilder].
-     *
-     * This is the main rendering entry point. It processes elements in order,
-     * maintaining a block context stack for proper paragraph styling.
-     *
-     * @param elements Parsed JSON array where each element is a [JSONObject].
-     * @param baseFontSize The default font size in pixels for unstyled text.
-     * @param textColor The default text color as an ARGB int.
-     * @return The rendered spannable string.
-     */
     fun buildSpannableFromArray(
         elements: JSONArray,
         baseFontSize: Float,
@@ -416,6 +500,7 @@ object RenderBridge {
                     val depth = element.optInt("depth", 0)
                     val listContext = element.optJSONObject("listContext")
                     val isListItemContainer = nodeType == "listItem" && listContext != null
+                    val isTransparentContainer = nodeType == "blockquote"
                     val nestedListItemContainer =
                         isListItemContainer && blockStack.any { it.nodeType == "listItem" && it.listContext != null }
                     val blockSpacing = if (isListItemContainer) {
@@ -425,10 +510,25 @@ object RenderBridge {
                             ?: (if (listContext != null) theme?.list?.itemSpacing else null)
                     }
 
-                    if (!isListItemContainer) {
+                    if (!isListItemContainer && !isTransparentContainer) {
                         if (!isFirstBlock) {
                             val spacingPx = ((nextBlockSpacingBefore ?: 0f) * density).toInt()
-                            appendInterBlockNewline(result, baseFontSize, textColor, spacingPx)
+                            val nextBlockStack = blockStack + BlockContext(
+                                nodeType = nodeType,
+                                depth = depth,
+                                listContext = listContext,
+                                markerPending = isListItemContainer,
+                                renderStart = result.length
+                            )
+                            val inBlockquoteSeparator =
+                                blockquoteDepth(nextBlockStack) > 0f && trailingRenderedContentHasBlockquote(result)
+                            appendInterBlockNewline(
+                                result,
+                                baseFontSize,
+                                textColor,
+                                spacingPx,
+                                inBlockquote = inBlockquoteSeparator
+                            )
                         }
                         isFirstBlock = false
                         nextBlockSpacingBefore = blockSpacing
@@ -455,8 +555,16 @@ object RenderBridge {
                         val ordered = markerListContext.optBoolean("ordered", false)
                         val marker = listMarkerString(markerListContext)
                         val markerBaseSize =
-                            resolveTextStyle(nodeType, theme).fontSize?.times(density) ?: baseFontSize
-                        val markerTextStyle = resolveTextStyle(nodeType, theme)
+                            resolveTextStyle(
+                                nodeType,
+                                theme,
+                                blockquoteDepth(blockStack) > 0
+                            ).fontSize?.times(density) ?: baseFontSize
+                        val markerTextStyle = resolveTextStyle(
+                            nodeType,
+                            theme,
+                            blockquoteDepth(blockStack) > 0
+                        )
                         appendStyledText(
                             result,
                             marker,
@@ -502,6 +610,16 @@ object RenderBridge {
                 "blockEnd" -> {
                     if (blockStack.isNotEmpty()) {
                         val endedBlock = blockStack.removeAt(blockStack.lastIndex)
+                        appendTrailingHardBreakPlaceholderIfNeeded(
+                            builder = result,
+                            endedBlock = endedBlock,
+                            remainingBlockStack = blockStack,
+                            baseFontSize = baseFontSize,
+                            textColor = textColor,
+                            theme = theme,
+                            density = density,
+                            pendingLeadingMargins = pendingLeadingMargins
+                        )
                         if (endedBlock.nodeType == "listItem" && endedBlock.listContext != null) {
                             nextBlockSpacingBefore = theme?.list?.itemSpacing
                         }
@@ -513,8 +631,6 @@ object RenderBridge {
         applyPendingLeadingMargins(result, pendingLeadingMargins)
         return result
     }
-
-    // ── Mark Handling ───────────────────────────────────────────────────
 
     /**
      * Apply spans to a text run based on its mark names and append to the builder.
@@ -548,7 +664,13 @@ object RenderBridge {
         if (start == end) return
 
         val currentBlock = effectiveBlockContext(blockStack)
-        val textStyle = currentBlock?.let { resolveTextStyle(it.nodeType, theme) } ?: theme?.effectiveTextStyle("paragraph")
+        val textStyle = currentBlock?.let {
+            resolveTextStyle(
+                it.nodeType,
+                theme,
+                blockquoteDepth(blockStack) > 0
+            )
+        } ?: theme?.effectiveTextStyle("paragraph", inBlockquote = blockquoteDepth(blockStack) > 0)
         val resolvedTextSize = textStyle?.fontSize?.times(density) ?: baseFontSize
         val resolvedTextColor = textStyle?.color ?: textColor
 
@@ -570,8 +692,6 @@ object RenderBridge {
         var hasUnderline = false
         var hasStrike = false
         var hasCode = false
-        var linkHref: String? = null
-
         for (mark in marks) {
             when {
                 mark is String -> when (mark) {
@@ -584,7 +704,13 @@ object RenderBridge {
                 mark is JSONObject -> {
                     val markType = mark.optString("type", "")
                     if (markType == "link") {
-                        linkHref = mark.takeUnless { it.isNull("href") }?.optString("href")
+                        hasUnderline = true
+                        builder.setSpan(
+                            ForegroundColorSpan(LayoutConstants.DEFAULT_LINK_COLOR),
+                            start,
+                            end,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
                     }
                 }
             }
@@ -633,17 +759,11 @@ object RenderBridge {
             )
         }
 
-        if (linkHref != null) {
-            builder.setSpan(URLSpan(linkHref), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        }
-
         // Apply block-level indentation spans if in a block context.
         if (applyBlockSpans) {
             applyBlockStyle(builder, start, end, blockStack, pendingLeadingMargins, theme, density)
         }
     }
-
-    // ── Void Inline Elements ────────────────────────────────────────────
 
     /**
      * Append a void inline element (e.g. hardBreak) to the builder.
@@ -667,6 +787,10 @@ object RenderBridge {
                 builder.append("\n")
                 val end = builder.length
                 builder.setSpan(
+                    Annotation("nativeVoidNodeType", nodeType),
+                    start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+                builder.setSpan(
                     ForegroundColorSpan(resolveInlineTextColor(blockStack, textColor, theme)),
                     start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                 )
@@ -684,8 +808,6 @@ object RenderBridge {
             }
         }
     }
-
-    // ── Void Block Elements ─────────────────────────────────────────────
 
     /**
      * Append a void block element (e.g. horizontalRule) to the builder.
@@ -729,11 +851,6 @@ object RenderBridge {
         }
     }
 
-    // ── Opaque Atoms ────────────────────────────────────────────────────
-
-    /**
-     * Append an opaque inline atom (unknown inline void) as a bracketed label.
-     */
     private fun appendOpaqueInlineAtom(
         builder: SpannableStringBuilder,
         nodeType: String,
@@ -784,9 +901,6 @@ object RenderBridge {
         applyBlockStyle(builder, start, end, blockStack, pendingLeadingMargins, theme, density)
     }
 
-    /**
-     * Append an opaque block atom (unknown block void) as a bracketed label.
-     */
     private fun appendOpaqueBlockAtom(
         builder: SpannableStringBuilder,
         nodeType: String,
@@ -814,12 +928,6 @@ object RenderBridge {
         )
     }
 
-    // ── Block Styling ───────────────────────────────────────────────────
-
-    /**
-     * Apply the current block context's indentation as a [LeadingMarginSpan]
-     * to a span range.
-     */
     private fun applyBlockStyle(
         builder: SpannableStringBuilder,
         start: Int,
@@ -830,24 +938,78 @@ object RenderBridge {
         density: Float
     ) {
         val currentBlock = effectiveBlockContext(blockStack) ?: return
-        val indent = calculateIndent(currentBlock, theme, density)
+        val indent = calculateIndent(currentBlock, blockStack, theme, density)
         val markerWidth = calculateMarkerWidth(density)
-        val paragraphStart = effectiveParagraphStart(blockStack).coerceIn(0, builder.length)
+        val quoteDepth = blockquoteDepth(blockStack)
+        val quoteStripeColor = if (quoteDepth > 0) {
+            theme?.blockquote?.borderColor ?: Color.argb(
+                (Color.alpha(resolveInlineTextColor(blockStack, Color.BLACK, theme)) * 0.3f).toInt(),
+                Color.red(resolveInlineTextColor(blockStack, Color.BLACK, theme)),
+                Color.green(resolveInlineTextColor(blockStack, Color.BLACK, theme)),
+                Color.blue(resolveInlineTextColor(blockStack, Color.BLACK, theme))
+            )
+        } else {
+            null
+        }
+        val quoteStripeWidth = ((theme?.blockquote?.borderWidth
+            ?: LayoutConstants.BLOCKQUOTE_BORDER_WIDTH) * density).toInt()
+        val quoteGapWidth = ((theme?.blockquote?.markerGap
+            ?: LayoutConstants.BLOCKQUOTE_MARKER_GAP) * density).toInt()
+        val quoteIndent = maxOf(
+            theme?.blockquote?.indent ?: LayoutConstants.BLOCKQUOTE_INDENT,
+            (theme?.blockquote?.markerGap ?: LayoutConstants.BLOCKQUOTE_MARKER_GAP) +
+                (theme?.blockquote?.borderWidth ?: LayoutConstants.BLOCKQUOTE_BORDER_WIDTH)
+        ) * density
+        val blockquoteIndentPx = (quoteDepth * quoteIndent).toInt()
+        val quoteBaseIndent = if (quoteDepth > 0) {
+            ((currentBlock.depth * ((theme?.list?.indent ?: LayoutConstants.INDENT_PER_DEPTH) * density))
+                - (quoteDepth * ((theme?.list?.indent ?: LayoutConstants.INDENT_PER_DEPTH) * density))
+                + ((quoteDepth - 1f) * quoteIndent)).toInt()
+        } else {
+            0
+        }
+        val paragraphStart = renderedParagraphStart(
+            builder = builder,
+            candidateStart = effectiveParagraphStart(blockStack)
+        )
         if (paragraphStart < end) {
             if (currentBlock.listContext != null) {
                 pendingLeadingMargins[paragraphStart] = PendingLeadingMargin(
                     indentPx = indent.toInt(),
-                    restIndentPx = (indent + markerWidth).toInt()
+                    restIndentPx = (indent + markerWidth).toInt(),
+                    blockquoteIndentPx = blockquoteIndentPx,
+                    blockquoteStripeColor = quoteStripeColor,
+                    blockquoteStripeWidthPx = quoteStripeWidth,
+                    blockquoteGapWidthPx = quoteGapWidth,
+                    blockquoteBaseIndentPx = quoteBaseIndent
                 )
             } else if (indent > 0) {
                 pendingLeadingMargins[paragraphStart] = PendingLeadingMargin(
                     indentPx = indent.toInt(),
-                    restIndentPx = null
+                    restIndentPx = null,
+                    blockquoteIndentPx = blockquoteIndentPx,
+                    blockquoteStripeColor = quoteStripeColor,
+                    blockquoteStripeWidthPx = quoteStripeWidth,
+                    blockquoteGapWidthPx = quoteGapWidth,
+                    blockquoteBaseIndentPx = quoteBaseIndent
                 )
             }
         }
 
-        val lineHeight = resolveTextStyle(currentBlock.nodeType, theme).lineHeight
+        if (quoteDepth > 0f) {
+            builder.setSpan(
+                Annotation(NATIVE_BLOCKQUOTE_ANNOTATION, "1"),
+                start,
+                end,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+
+        val lineHeight = resolveTextStyle(
+            currentBlock.nodeType,
+            theme,
+            quoteDepth > 0
+        ).lineHeight
         applyLineHeightSpan(builder, start, end, lineHeight, density)
     }
 
@@ -876,35 +1038,110 @@ object RenderBridge {
         if (pendingLeadingMargins.isEmpty()) return
 
         val text = builder.toString()
-        pendingLeadingMargins.toSortedMap().forEach { (paragraphStart, spec) ->
+        val entries = pendingLeadingMargins.toSortedMap().entries.toList()
+        var index = 0
+        while (index < entries.size) {
+            val paragraphStart = entries[index].key
+            val spec = entries[index].value
             if (paragraphStart >= builder.length) {
-                return@forEach
+                index += 1
+                continue
             }
-            val newlineIndex = text.indexOf('\n', paragraphStart)
-            val paragraphEnd = if (newlineIndex >= 0) newlineIndex + 1 else builder.length
-            val span = spec.restIndentPx?.let {
-                LeadingMarginSpan.Standard(spec.indentPx, it)
-            } ?: LeadingMarginSpan.Standard(spec.indentPx)
+            if (spec.blockquoteStripeColor != null) {
+                val paragraphEnd = blockquoteSpanEnd(builder, text, paragraphStart)
+                val quoteEntries = mutableListOf(entries[index])
+                var nextIndex = index + 1
+                while (nextIndex < entries.size && entries[nextIndex].key < paragraphEnd) {
+                    quoteEntries.add(entries[nextIndex])
+                    nextIndex += 1
+                }
+                index = nextIndex
 
-            builder
-                .getSpans(0, builder.length, LeadingMarginSpan.Standard::class.java)
-                .filter { builder.getSpanStart(it) == paragraphStart }
-                .forEach(builder::removeSpan)
+                builder
+                    .getSpans(0, builder.length, LeadingMarginSpan::class.java)
+                    .filter { builder.getSpanStart(it) == paragraphStart }
+                    .forEach(builder::removeSpan)
 
-            builder.setSpan(span, paragraphStart, paragraphEnd, Spanned.SPAN_PARAGRAPH)
+                builder.setSpan(
+                    BlockquoteSpan(
+                        baseIndentPx = spec.blockquoteBaseIndentPx,
+                        totalIndentPx = spec.blockquoteIndentPx,
+                        stripeColor = spec.blockquoteStripeColor,
+                        stripeWidthPx = spec.blockquoteStripeWidthPx,
+                        gapWidthPx = spec.blockquoteGapWidthPx
+                    ),
+                    paragraphStart,
+                    paragraphEnd,
+                    Spanned.SPAN_PARAGRAPH
+                )
+
+                quoteEntries.forEach { (entryStart, entrySpec) ->
+                    applyAdditionalLeadingMargin(
+                        builder = builder,
+                        text = text,
+                        paragraphStart = entryStart,
+                        spec = entrySpec
+                    )
+                }
+            } else {
+                index += 1
+                val paragraphEnd = defaultParagraphEnd(text, builder.length, paragraphStart)
+                val span = spec.restIndentPx?.let {
+                    LeadingMarginSpan.Standard(spec.indentPx, it)
+                } ?: LeadingMarginSpan.Standard(spec.indentPx)
+
+                builder
+                    .getSpans(0, builder.length, LeadingMarginSpan::class.java)
+                    .filter { builder.getSpanStart(it) == paragraphStart }
+                    .forEach(builder::removeSpan)
+
+                builder.setSpan(span, paragraphStart, paragraphEnd, Spanned.SPAN_PARAGRAPH)
+            }
+        }
+    }
+
+    private fun applyAdditionalLeadingMargin(
+        builder: SpannableStringBuilder,
+        text: String,
+        paragraphStart: Int,
+        spec: PendingLeadingMargin
+    ) {
+        val extraFirstIndent = (spec.indentPx - spec.blockquoteIndentPx).coerceAtLeast(0)
+        val extraRestIndent = spec.restIndentPx?.let {
+            (it - spec.blockquoteIndentPx).coerceAtLeast(0)
+        }
+        if (extraRestIndent != null) {
+            builder.setSpan(
+                LeadingMarginSpan.Standard(extraFirstIndent, extraRestIndent),
+                paragraphStart,
+                defaultParagraphEnd(text, builder.length, paragraphStart),
+                Spanned.SPAN_PARAGRAPH
+            )
+        } else if (extraFirstIndent > 0) {
+            builder.setSpan(
+                LeadingMarginSpan.Standard(extraFirstIndent),
+                paragraphStart,
+                defaultParagraphEnd(text, builder.length, paragraphStart),
+                Spanned.SPAN_PARAGRAPH
+            )
         }
     }
 
 
-    /**
-     * Calculate the leading margin indent for a block context.
-     *
-     * List items get the base depth indent. The list marker width is handled
-     * by the marker text itself, matching the iOS hanging indent approach.
-     */
-    private fun calculateIndent(context: BlockContext, theme: EditorTheme?, density: Float): Float {
+    private fun calculateIndent(
+        context: BlockContext,
+        blockStack: List<BlockContext>,
+        theme: EditorTheme?,
+        density: Float
+    ): Float {
         val indentPerDepth = (theme?.list?.indent ?: LayoutConstants.INDENT_PER_DEPTH) * density
-        return context.depth * indentPerDepth
+        val quoteDepth = blockquoteDepth(blockStack)
+        val quoteIndent = maxOf(
+            theme?.blockquote?.indent ?: LayoutConstants.BLOCKQUOTE_INDENT,
+            (theme?.blockquote?.markerGap ?: LayoutConstants.BLOCKQUOTE_MARKER_GAP) +
+                (theme?.blockquote?.borderWidth ?: LayoutConstants.BLOCKQUOTE_BORDER_WIDTH)
+        ) * density
+        return (context.depth * indentPerDepth) - (quoteDepth * indentPerDepth) + (quoteDepth * quoteIndent)
     }
 
     private fun effectiveBlockContext(blockStack: List<BlockContext>): BlockContext? {
@@ -912,12 +1149,16 @@ object RenderBridge {
         if (currentBlock.listContext != null) {
             return currentBlock
         }
-        val inheritedListContext = blockStack
+        val inheritedListBlock = blockStack
             .dropLast(1)
             .asReversed()
             .firstOrNull { it.listContext != null }
-            ?.listContext ?: return currentBlock
-        return currentBlock.copy(listContext = inheritedListContext, markerPending = false)
+            ?: return currentBlock
+        return currentBlock.copy(
+            depth = inheritedListBlock.depth,
+            listContext = inheritedListBlock.listContext,
+            markerPending = false
+        )
     }
 
     private fun effectiveParagraphStart(blockStack: List<BlockContext>): Int {
@@ -931,6 +1172,21 @@ object RenderBridge {
             .firstOrNull { it.listContext != null }
             ?.renderStart
             ?: currentBlock.renderStart
+    }
+
+    private fun renderedParagraphStart(
+        builder: CharSequence,
+        candidateStart: Int
+    ): Int {
+        val boundedStart = candidateStart.coerceIn(0, builder.length)
+        if (boundedStart == 0) return 0
+
+        for (index in boundedStart - 1 downTo 0) {
+            if (builder[index] == '\n') {
+                return index + 1
+            }
+        }
+        return 0
     }
 
     private fun consumePendingListMarker(
@@ -952,8 +1208,16 @@ object RenderBridge {
         return LayoutConstants.LIST_MARKER_WIDTH * density
     }
 
-    private fun resolveTextStyle(nodeType: String, theme: EditorTheme?): EditorTextStyle {
-        return theme?.effectiveTextStyle(nodeType) ?: EditorTextStyle()
+    private fun blockquoteDepth(blockStack: List<BlockContext>): Float {
+        return blockStack.count { it.nodeType == "blockquote" }.toFloat()
+    }
+
+    private fun resolveTextStyle(
+        nodeType: String,
+        theme: EditorTheme?,
+        inBlockquote: Boolean = false
+    ): EditorTextStyle {
+        return theme?.effectiveTextStyle(nodeType, inBlockquote) ?: EditorTextStyle()
     }
 
     private fun resolveInlineTextColor(
@@ -962,17 +1226,9 @@ object RenderBridge {
         theme: EditorTheme?
     ): Int {
         val nodeType = effectiveBlockContext(blockStack)?.nodeType ?: "paragraph"
-        return resolveTextStyle(nodeType, theme).color ?: fallbackColor
+        return resolveTextStyle(nodeType, theme, blockquoteDepth(blockStack) > 0).color ?: fallbackColor
     }
 
-    // ── List Markers ────────────────────────────────────────────────────
-
-    /**
-     * Generate the list marker string (bullet or number) from a list context.
-     *
-     * @param listContext A [JSONObject] with at least `ordered` (bool) and `index` (int).
-     * @return The marker string, e.g. "1. " for ordered or bullet + space for unordered.
-     */
     fun listMarkerString(listContext: JSONObject): String {
         val ordered = listContext.optBoolean("ordered", false)
         return if (ordered) {
@@ -982,8 +1238,6 @@ object RenderBridge {
             LayoutConstants.UNORDERED_LIST_BULLET
         }
     }
-
-    // ── Private Helpers ─────────────────────────────────────────────────
 
     /**
      * Parse a [JSONArray] of marks into a list of mark identifiers.
@@ -996,15 +1250,9 @@ object RenderBridge {
         if (marksArray == null || marksArray.length() == 0) return emptyList()
         val marks = mutableListOf<Any>()
         for (i in 0 until marksArray.length()) {
-            // Try as string first, then as object.
-            val markStr = marksArray.optString(i, null)
-            if (markStr != null && markStr != "null") {
-                marks.add(markStr)
-            } else {
-                val markObj = marksArray.optJSONObject(i)
-                if (markObj != null) {
-                    marks.add(markObj)
-                }
+            when (val mark = marksArray.opt(i)) {
+                is String -> marks.add(mark)
+                is JSONObject -> marks.add(mark)
             }
         }
         return marks
@@ -1020,7 +1268,8 @@ object RenderBridge {
         builder: SpannableStringBuilder,
         baseFontSize: Float,
         textColor: Int,
-        spacingPx: Int = 0
+        spacingPx: Int = 0,
+        inBlockquote: Boolean = false
     ) {
         val start = builder.length
         builder.append("\n")
@@ -1039,6 +1288,106 @@ object RenderBridge {
                 AbsoluteSizeSpan(baseFontSize.toInt(), false),
                 start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
+        }
+        if (inBlockquote) {
+            builder.setSpan(
+                Annotation(NATIVE_BLOCKQUOTE_ANNOTATION, "1"),
+                start,
+                end,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+    }
+
+    private fun appendTrailingHardBreakPlaceholderIfNeeded(
+        builder: SpannableStringBuilder,
+        endedBlock: BlockContext,
+        remainingBlockStack: List<BlockContext>,
+        baseFontSize: Float,
+        textColor: Int,
+        theme: EditorTheme?,
+        density: Float,
+        pendingLeadingMargins: MutableMap<Int, PendingLeadingMargin>
+    ) {
+        if (builder.isEmpty()) return
+        if (endedBlock.nodeType == "listItem") return
+        if (!lastCharacterIsHardBreak(builder)) return
+
+        val start = builder.length
+        builder.append(LayoutConstants.SYNTHETIC_PLACEHOLDER_CHARACTER)
+        val end = builder.length
+        builder.setSpan(
+            Annotation(NATIVE_SYNTHETIC_PLACEHOLDER_ANNOTATION, "1"),
+            start,
+            end,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        builder.setSpan(
+            ForegroundColorSpan(resolveInlineTextColor(remainingBlockStack + endedBlock, textColor, theme)),
+            start,
+            end,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        applyBlockStyle(
+            builder,
+            start,
+            end,
+            remainingBlockStack + endedBlock,
+            pendingLeadingMargins,
+            theme,
+            density
+        )
+    }
+
+    private fun lastCharacterIsHardBreak(builder: SpannableStringBuilder): Boolean {
+        if (builder.isEmpty()) return false
+        val lastIndex = builder.length - 1
+        return builder.getSpans(lastIndex, builder.length, Annotation::class.java).any {
+            it.key == "nativeVoidNodeType" && it.value == "hardBreak"
+        }
+    }
+
+    private fun trailingRenderedContentHasBlockquote(builder: Spanned): Boolean {
+        for (index in builder.length - 1 downTo 0) {
+            val ch = builder[index]
+            if (ch == '\n' || ch == '\r') continue
+            return hasBlockquoteAnnotationAt(builder, index)
+        }
+        return false
+    }
+
+    private fun defaultParagraphEnd(text: String, length: Int, paragraphStart: Int): Int {
+        val newlineIndex = text.indexOf('\n', paragraphStart)
+        return if (newlineIndex >= 0) newlineIndex + 1 else length
+    }
+
+    private fun blockquoteSpanEnd(
+        builder: Spanned,
+        text: String,
+        paragraphStart: Int
+    ): Int {
+        var cursor = paragraphStart
+        while (cursor < builder.length) {
+            val newlineIndex = text.indexOf('\n', cursor)
+            if (newlineIndex < 0) {
+                return builder.length
+            }
+            val newlineQuoted = hasBlockquoteAnnotationAt(builder, newlineIndex)
+            val nextIndex = newlineIndex + 1
+            val nextQuoted = nextIndex < builder.length && hasBlockquoteAnnotationAt(builder, nextIndex)
+
+            if (!newlineQuoted && !nextQuoted) {
+                return nextIndex
+            }
+            cursor = nextIndex
+        }
+        return builder.length
+    }
+
+    private fun hasBlockquoteAnnotationAt(text: Spanned, index: Int): Boolean {
+        if (index < 0 || index >= text.length) return false
+        return text.getSpans(index, index + 1, Annotation::class.java).any {
+            it.key == NATIVE_BLOCKQUOTE_ANNOTATION
         }
     }
 }

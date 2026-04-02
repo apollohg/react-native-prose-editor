@@ -89,6 +89,27 @@ data class EditorHorizontalRuleTheme(
     }
 }
 
+data class EditorBlockquoteTheme(
+    val text: EditorTextStyle? = null,
+    val indent: Float? = null,
+    val borderColor: Int? = null,
+    val borderWidth: Float? = null,
+    val markerGap: Float? = null
+) {
+    companion object {
+        fun fromJson(json: JSONObject?): EditorBlockquoteTheme? {
+            json ?: return null
+            return EditorBlockquoteTheme(
+                text = EditorTextStyle.fromJson(json.optJSONObject("text")),
+                indent = json.optNullableFloat("indent"),
+                borderColor = parseColor(json.optNullableString("borderColor")),
+                borderWidth = json.optNullableFloat("borderWidth"),
+                markerGap = json.optNullableFloat("markerGap")
+            )
+        }
+    }
+}
+
 data class EditorMentionTheme(
     val textColor: Int? = null,
     val backgroundColor: Int? = null,
@@ -130,7 +151,22 @@ data class EditorMentionTheme(
     }
 }
 
+enum class EditorToolbarAppearance {
+    CUSTOM,
+    NATIVE;
+
+    companion object {
+        fun fromRaw(raw: String?): EditorToolbarAppearance? =
+            when (raw?.trim()?.lowercase()) {
+                "custom" -> CUSTOM
+                "native" -> NATIVE
+                else -> null
+            }
+    }
+}
+
 data class EditorToolbarTheme(
+    val appearance: EditorToolbarAppearance? = null,
     val backgroundColor: Int? = null,
     val borderColor: Int? = null,
     val borderWidth: Float? = null,
@@ -144,10 +180,21 @@ data class EditorToolbarTheme(
     val buttonActiveBackgroundColor: Int? = null,
     val buttonBorderRadius: Float? = null
 ) {
+    fun resolvedKeyboardOffset(): Float = keyboardOffset ?: if (appearance == EditorToolbarAppearance.NATIVE) 8f else 0f
+
+    fun resolvedHorizontalInset(): Float = horizontalInset ?: if (appearance == EditorToolbarAppearance.NATIVE) 0f else 0f
+
+    fun resolvedBorderRadius(): Float = if (appearance == EditorToolbarAppearance.NATIVE) 32f else (borderRadius ?: 0f)
+
+    fun resolvedBorderWidth(): Float = borderWidth ?: if (appearance == EditorToolbarAppearance.NATIVE) 0f else 1f
+
+    fun resolvedButtonBorderRadius(): Float = if (appearance == EditorToolbarAppearance.NATIVE) 20f else (buttonBorderRadius ?: 6f)
+
     companion object {
         fun fromJson(json: JSONObject?): EditorToolbarTheme? {
             json ?: return null
             return EditorToolbarTheme(
+                appearance = EditorToolbarAppearance.fromRaw(json.optNullableString("appearance")),
                 backgroundColor = parseColor(json.optNullableString("backgroundColor")),
                 borderColor = parseColor(json.optNullableString("borderColor")),
                 borderWidth = json.optNullableFloat("borderWidth"),
@@ -187,6 +234,7 @@ data class EditorContentInsets(
 data class EditorTheme(
     val text: EditorTextStyle? = null,
     val paragraph: EditorTextStyle? = null,
+    val blockquote: EditorBlockquoteTheme? = null,
     val headings: Map<String, EditorTextStyle> = emptyMap(),
     val list: EditorListTheme? = null,
     val horizontalRule: EditorHorizontalRuleTheme? = null,
@@ -216,6 +264,7 @@ data class EditorTheme(
             return EditorTheme(
                 text = EditorTextStyle.fromJson(root.optJSONObject("text")),
                 paragraph = EditorTextStyle.fromJson(root.optJSONObject("paragraph")),
+                blockquote = EditorBlockquoteTheme.fromJson(root.optJSONObject("blockquote")),
                 headings = headings,
                 list = EditorListTheme.fromJson(root.optJSONObject("list")),
                 horizontalRule = EditorHorizontalRuleTheme.fromJson(root.optJSONObject("horizontalRule")),
@@ -228,8 +277,9 @@ data class EditorTheme(
         }
     }
 
-    fun effectiveTextStyle(nodeType: String): EditorTextStyle {
+    fun effectiveTextStyle(nodeType: String, inBlockquote: Boolean = false): EditorTextStyle {
         var style = text ?: EditorTextStyle()
+        style = style.mergedWith(if (inBlockquote) blockquote?.text else null)
         if (nodeType == "paragraph") {
             style = style.mergedWith(paragraph)
             if (paragraph?.lineHeight == null) {
