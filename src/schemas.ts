@@ -28,6 +28,7 @@ const MARKS: MarkSpec[] = [
     { name: 'italic' },
     { name: 'underline' },
     { name: 'strike' },
+    { name: 'link', attrs: { href: {} } },
 ];
 
 export const tiptapSchema: SchemaDefinition = {
@@ -43,6 +44,13 @@ export const tiptapSchema: SchemaDefinition = {
             group: 'block',
             role: 'textBlock',
             htmlTag: 'p',
+        },
+        {
+            name: 'blockquote',
+            content: 'block+',
+            group: 'block',
+            role: 'block',
+            htmlTag: 'blockquote',
         },
         {
             name: 'bulletList',
@@ -104,6 +112,13 @@ export const prosemirrorSchema: SchemaDefinition = {
             group: 'block',
             role: 'textBlock',
             htmlTag: 'p',
+        },
+        {
+            name: 'blockquote',
+            content: 'block+',
+            group: 'block',
+            role: 'block',
+            htmlTag: 'blockquote',
         },
         {
             name: 'bullet_list',

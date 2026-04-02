@@ -4,6 +4,8 @@ export {
     type NativeRichTextEditorRef,
     type NativeRichTextEditorHeightBehavior,
     type NativeRichTextEditorToolbarPlacement,
+    type RemoteSelectionDecoration,
+    type LinkRequestContext,
 } from './NativeRichTextEditor';
 
 export {
@@ -27,6 +29,7 @@ export type {
     EditorHorizontalRuleTheme,
     EditorMentionTheme,
     EditorToolbarTheme,
+    EditorToolbarAppearance,
     EditorFontStyle,
     EditorFontWeight,
 } from './EditorTheme';
@@ -53,6 +56,18 @@ export {
     type AttrSpec,
 } from './schemas';
 
+export {
+    createYjsCollaborationController,
+    useYjsCollaboration,
+    type YjsCollaborationOptions,
+    type YjsCollaborationState,
+    type YjsTransportStatus,
+    type LocalAwarenessState,
+    type LocalAwarenessUser,
+    type UseYjsCollaborationResult,
+    type YjsCollaborationController,
+} from './YjsCollaboration';
+
 // Read-only types (no mutation methods)
 export type {
     Selection,
@@ -60,4 +75,11 @@ export type {
     HistoryState,
     EditorUpdate,
     DocumentJSON,
+    CollaborationPeer,
+    EncodedCollaborationStateInput,
+} from './NativeEditorBridge';
+
+export {
+    encodeCollaborationStateBase64,
+    decodeCollaborationStateBase64,
 } from './NativeEditorBridge';

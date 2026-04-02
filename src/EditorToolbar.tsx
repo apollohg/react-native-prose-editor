@@ -1,12 +1,6 @@
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useCallback } from 'react';
-import {
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
-} from 'react-native';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import type { ActiveState, HistoryState } from './NativeEditorBridge';
 import type { EditorToolbarTheme } from './EditorTheme';
@@ -28,6 +22,8 @@ export type EditorToolbarDefaultIconId =
     | 'italic'
     | 'underline'
     | 'strike'
+    | 'link'
+    | 'blockquote'
     | 'bulletList'
     | 'orderedList'
     | 'indentList'
@@ -67,6 +63,18 @@ export type EditorToolbarItem =
     | {
           type: 'mark';
           mark: string;
+          label: string;
+          icon: EditorToolbarIcon;
+          key?: string;
+      }
+    | {
+          type: 'link';
+          label: string;
+          icon: EditorToolbarIcon;
+          key?: string;
+      }
+    | {
+          type: 'blockquote';
           label: string;
           icon: EditorToolbarIcon;
           key?: string;
@@ -114,13 +122,34 @@ export const DEFAULT_EDITOR_TOOLBAR_ITEMS: readonly EditorToolbarItem[] = [
     { type: 'mark', mark: 'italic', label: 'Italic', icon: defaultIcon('italic') },
     { type: 'mark', mark: 'underline', label: 'Underline', icon: defaultIcon('underline') },
     { type: 'mark', mark: 'strike', label: 'Strikethrough', icon: defaultIcon('strike') },
+    { type: 'blockquote', label: 'Blockquote', icon: defaultIcon('blockquote') },
     { type: 'separator' },
     { type: 'list', listType: 'bulletList', label: 'Bullet List', icon: defaultIcon('bulletList') },
-    { type: 'list', listType: 'orderedList', label: 'Ordered List', icon: defaultIcon('orderedList') },
-    { type: 'command', command: 'indentList', label: 'Indent List', icon: defaultIcon('indentList') },
-    { type: 'command', command: 'outdentList', label: 'Outdent List', icon: defaultIcon('outdentList') },
+    {
+        type: 'list',
+        listType: 'orderedList',
+        label: 'Ordered List',
+        icon: defaultIcon('orderedList'),
+    },
+    {
+        type: 'command',
+        command: 'indentList',
+        label: 'Indent List',
+        icon: defaultIcon('indentList'),
+    },
+    {
+        type: 'command',
+        command: 'outdentList',
+        label: 'Outdent List',
+        icon: defaultIcon('outdentList'),
+    },
     { type: 'node', nodeType: 'hardBreak', label: 'Line Break', icon: defaultIcon('lineBreak') },
-    { type: 'node', nodeType: 'horizontalRule', label: 'Horizontal Rule', icon: defaultIcon('horizontalRule') },
+    {
+        type: 'node',
+        nodeType: 'horizontalRule',
+        label: 'Horizontal Rule',
+        icon: defaultIcon('horizontalRule'),
+    },
     { type: 'separator' },
     { type: 'command', command: 'undo', label: 'Undo', icon: defaultIcon('undo') },
     { type: 'command', command: 'redo', label: 'Redo', icon: defaultIcon('redo') },
@@ -141,6 +170,8 @@ export interface EditorToolbarProps {
     onToggleStrike: () => void;
     /** Toggle bullet list. */
     onToggleBulletList?: () => void;
+    /** Toggle blockquote wrapping. */
+    onToggleBlockquote?: () => void;
     /** Toggle ordered list. */
     onToggleOrderedList?: () => void;
     /** Indent the current list item. */
@@ -165,6 +196,8 @@ export interface EditorToolbarProps {
     onRunCommand?: (command: EditorToolbarCommand) => void;
     /** Generic action handler for arbitrary JS-defined toolbar buttons. */
     onToolbarAction?: (key: string) => void;
+    /** Link button handler used by first-class link toolbar items. */
+    onRequestLink?: () => void;
     /** Displayed toolbar items, in order. Defaults to the built-in toolbar. */
     toolbarItems?: readonly EditorToolbarItem[];
     /** Optional theme overrides for toolbar chrome and button colors. */
@@ -193,6 +226,8 @@ const DEFAULT_GLYPH_ICONS: Record<EditorToolbarDefaultIconId, string> = {
     italic: 'I',
     underline: 'U',
     strike: 'S',
+    link: '🔗',
+    blockquote: '❝',
     bulletList: '•≡',
     orderedList: '1.',
     indentList: '→',
@@ -208,6 +243,8 @@ const DEFAULT_MATERIAL_ICONS: Record<EditorToolbarDefaultIconId, string> = {
     italic: 'format-italic',
     underline: 'format-underlined',
     strike: 'strikethrough-s',
+    link: 'link',
+    blockquote: 'format-quote',
     bulletList: 'format-list-bulleted',
     orderedList: 'format-list-numbered',
     indentList: 'format-indent-increase',
@@ -226,6 +263,7 @@ export function EditorToolbar({
     onToggleUnderline,
     onToggleStrike,
     onToggleBulletList,
+    onToggleBlockquote,
     onToggleOrderedList,
     onIndentList,
     onOutdentList,
@@ -238,6 +276,7 @@ export function EditorToolbar({
     onInsertNodeType,
     onRunCommand,
     onToolbarAction,
+    onRequestLink,
     toolbarItems = DEFAULT_EDITOR_TOOLBAR_ITEMS,
     theme,
     showTopBorder = true,
@@ -248,10 +287,7 @@ export function EditorToolbar({
     const allowedMarks = activeState.allowedMarks ?? [];
     const insertableNodes = activeState.insertableNodes ?? [];
 
-    const isMarkActive = useCallback(
-        (mark: string) => !!marks[mark],
-        [marks]
-    );
+    const isMarkActive = useCallback((mark: string) => !!marks[mark], [marks]);
 
     const isInList = !!nodes['bulletList'] || !!nodes['orderedList'];
     const canIndentList = isInList && !!commands['indentList'];
@@ -283,8 +319,12 @@ export function EditorToolbar({
                         return () => onToggleListType(item.listType);
                     }
                     return item.listType === 'bulletList'
-                        ? onToggleBulletList ?? null
-                        : onToggleOrderedList ?? null;
+                        ? (onToggleBulletList ?? null)
+                        : (onToggleOrderedList ?? null);
+                case 'link':
+                    return onRequestLink ?? null;
+                case 'blockquote':
+                    return onToggleBlockquote ?? null;
                 case 'node':
                     if (onInsertNodeType) {
                         return () => onInsertNodeType(item.nodeType);
@@ -323,8 +363,10 @@ export function EditorToolbar({
             onOutdentList,
             onRedo,
             onRunCommand,
+            onRequestLink,
             onToolbarAction,
             onToggleBold,
+            onToggleBlockquote,
             onToggleBulletList,
             onToggleItalic,
             onToggleListType,
@@ -337,26 +379,26 @@ export function EditorToolbar({
     );
 
     const makeButtonKey = useCallback(
-        (
-            item: Exclude<EditorToolbarItem, { type: 'separator' }>,
-            index: number
-        ) =>
+        (item: Exclude<EditorToolbarItem, { type: 'separator' }>, index: number) =>
             item.key ??
             (item.type === 'mark'
                 ? `mark:${item.mark}:${index}`
-                : item.type === 'list'
-                ? `list:${item.listType}:${index}`
-                : item.type === 'command'
-                    ? `command:${item.command}:${index}`
-                    : item.type === 'node'
-                    ? `node:${item.nodeType}:${index}`
-                    : `action:${item.key}:${index}`),
+                : item.type === 'link'
+                  ? `link:${index}`
+                  : item.type === 'blockquote'
+                    ? `blockquote:${index}`
+                    : item.type === 'list'
+                      ? `list:${item.listType}:${index}`
+                      : item.type === 'command'
+                        ? `command:${item.command}:${index}`
+                        : item.type === 'node'
+                          ? `node:${item.nodeType}:${index}`
+                          : `action:${item.key}:${index}`),
         []
     );
 
     const renderedItems: Array<
-        | { type: 'separator'; key: string }
-        | { type: 'button'; button: ToolbarButton }
+        { type: 'separator'; key: string } | { type: 'button'; button: ToolbarButton }
     > = [];
 
     for (let index = 0; index < toolbarItems.length; index += 1) {
@@ -381,13 +423,20 @@ export function EditorToolbar({
                 isActive = isMarkActive(item.mark);
                 isDisabled = !allowedMarks.includes(item.mark);
                 break;
+            case 'link':
+                isActive = isMarkActive('link');
+                isDisabled = !allowedMarks.includes('link') || !onRequestLink;
+                break;
+            case 'blockquote':
+                isActive = !!nodes['blockquote'];
+                isDisabled = !commands['toggleBlockquote'];
+                break;
             case 'list':
                 isActive = !!nodes[item.listType];
-                isDisabled = !commands[
-                    item.listType === 'bulletList'
-                        ? 'wrapBulletList'
-                        : 'wrapOrderedList'
-                ];
+                isDisabled =
+                    !commands[
+                        item.listType === 'bulletList' ? 'wrapBulletList' : 'wrapOrderedList'
+                    ];
                 break;
             case 'command':
                 switch (item.command) {
@@ -437,22 +486,11 @@ export function EditorToolbar({
         return previous?.type === 'button' && next?.type === 'button';
     });
 
-    const renderButton = ({
-        key,
-        label,
-        icon,
-        action,
-        isActive,
-        isDisabled,
-    }: ToolbarButton) => {
+    const renderButton = ({ key, label, icon, action, isActive, isDisabled }: ToolbarButton) => {
         const activeColor = theme?.buttonActiveColor ?? ACTIVE_COLOR;
         const defaultColor = theme?.buttonColor ?? DEFAULT_COLOR;
         const disabledColor = theme?.buttonDisabledColor ?? DISABLED_COLOR;
-        const color = isActive
-            ? activeColor
-            : isDisabled
-              ? disabledColor
-              : defaultColor;
+        const color = isActive ? activeColor : isDisabled ? disabledColor : defaultColor;
 
         return (
             <TouchableOpacity
@@ -462,19 +500,16 @@ export function EditorToolbar({
                 style={[
                     styles.button,
                     {
-                        borderRadius:
-                            theme?.buttonBorderRadius ?? BUTTON_RADIUS,
+                        borderRadius: theme?.buttonBorderRadius ?? BUTTON_RADIUS,
                     },
                     isActive && {
-                        backgroundColor:
-                            theme?.buttonActiveBackgroundColor ?? ACTIVE_BG,
+                        backgroundColor: theme?.buttonActiveBackgroundColor ?? ACTIVE_BG,
                     },
                 ]}
                 activeOpacity={0.5}
-                accessibilityRole="button"
+                accessibilityRole='button'
                 accessibilityLabel={label}
-                accessibilityState={{ selected: isActive, disabled: isDisabled }}
-            >
+                accessibilityState={{ selected: isActive, disabled: isDisabled }}>
                 <View>
                     <ToolbarIcon icon={icon} color={color} />
                 </View>
@@ -487,9 +522,7 @@ export function EditorToolbar({
             key={key}
             style={[
                 styles.separator,
-                theme?.separatorColor != null
-                    ? { backgroundColor: theme.separatorColor }
-                    : null,
+                theme?.separatorColor != null ? { backgroundColor: theme.separatorColor } : null,
             ]}
         />
     );
@@ -499,9 +532,7 @@ export function EditorToolbar({
             style={[
                 styles.container,
                 !showTopBorder && styles.containerWithoutTopBorder,
-                theme?.backgroundColor != null
-                    ? { backgroundColor: theme.backgroundColor }
-                    : null,
+                theme?.backgroundColor != null ? { backgroundColor: theme.backgroundColor } : null,
                 theme?.borderColor != null
                     ? showTopBorder
                         ? { borderTopColor: theme.borderColor }
@@ -515,14 +546,12 @@ export function EditorToolbar({
                 {
                     borderRadius: theme?.borderRadius ?? TOOLBAR_RADIUS,
                 },
-            ]}
-        >
+            ]}>
             <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.scrollContent}
-                keyboardShouldPersistTaps="always"
-            >
+                keyboardShouldPersistTaps='always'>
                 {compactItems.map((item) =>
                     item.type === 'separator'
                         ? renderSeparator(item.key)
@@ -533,13 +562,7 @@ export function EditorToolbar({
     );
 }
 
-function ToolbarIcon({
-    icon,
-    color,
-}: {
-    icon: EditorToolbarIcon;
-    color: string;
-}) {
+function ToolbarIcon({ icon, color }: { icon: EditorToolbarIcon; color: string }) {
     const materialIconName = resolveMaterialIconName(icon);
     if (materialIconName) {
         return (

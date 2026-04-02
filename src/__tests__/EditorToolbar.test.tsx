@@ -20,6 +20,7 @@ import type { ActiveState, HistoryState } from '../NativeEditorBridge';
 
 const EMPTY_ACTIVE_STATE: ActiveState = {
     marks: {},
+    markAttrs: {},
     nodes: {},
     commands: {},
     allowedMarks: [],
@@ -27,6 +28,7 @@ const EMPTY_ACTIVE_STATE: ActiveState = {
 };
 const ENABLED_BUTTONS_ACTIVE_STATE: ActiveState = {
     marks: {},
+    markAttrs: {},
     nodes: {},
     commands: {
         wrapBulletList: true,
@@ -37,14 +39,45 @@ const ENABLED_BUTTONS_ACTIVE_STATE: ActiveState = {
 };
 const EMPTY_HISTORY_STATE: HistoryState = { canUndo: false, canRedo: false };
 
-function renderToolbar(overrides: Partial<EditorToolbarProps> = {}) {
+function renderToolbar(
+    overrides: Partial<Omit<EditorToolbarProps, 'activeState' | 'historyState'>> & {
+        activeState?: Partial<ActiveState>;
+        historyState?: Partial<HistoryState>;
+    } = {}
+) {
     const defaultProps: EditorToolbarProps = {
-        activeState: EMPTY_ACTIVE_STATE,
-        historyState: EMPTY_HISTORY_STATE,
+        activeState: {
+            ...EMPTY_ACTIVE_STATE,
+            ...overrides.activeState,
+            marks: {
+                ...EMPTY_ACTIVE_STATE.marks,
+                ...overrides.activeState?.marks,
+            },
+            markAttrs: {
+                ...EMPTY_ACTIVE_STATE.markAttrs,
+                ...overrides.activeState?.markAttrs,
+            },
+            nodes: {
+                ...EMPTY_ACTIVE_STATE.nodes,
+                ...overrides.activeState?.nodes,
+            },
+            commands: {
+                ...EMPTY_ACTIVE_STATE.commands,
+                ...overrides.activeState?.commands,
+            },
+            allowedMarks: overrides.activeState?.allowedMarks ?? EMPTY_ACTIVE_STATE.allowedMarks,
+            insertableNodes:
+                overrides.activeState?.insertableNodes ?? EMPTY_ACTIVE_STATE.insertableNodes,
+        },
+        historyState: {
+            ...EMPTY_HISTORY_STATE,
+            ...overrides.historyState,
+        },
         onToggleBold: jest.fn(),
         onToggleItalic: jest.fn(),
         onToggleUnderline: jest.fn(),
         onToggleStrike: jest.fn(),
+        onToggleBlockquote: jest.fn(),
         onToggleBulletList: jest.fn(),
         onToggleOrderedList: jest.fn(),
         onIndentList: jest.fn(),
@@ -64,13 +97,14 @@ describe('EditorToolbar', () => {
     // ── Rendering ───────────────────────────────────────────────
 
     describe('rendering', () => {
-        it('renders all 12 buttons including list depth controls', () => {
+        it('renders all 13 buttons including blockquote and list depth controls', () => {
             const { getByLabelText } = renderToolbar();
 
             expect(getByLabelText('Bold')).toBeTruthy();
             expect(getByLabelText('Italic')).toBeTruthy();
             expect(getByLabelText('Underline')).toBeTruthy();
             expect(getByLabelText('Strikethrough')).toBeTruthy();
+            expect(getByLabelText('Blockquote')).toBeTruthy();
             expect(getByLabelText('Bullet List')).toBeTruthy();
             expect(getByLabelText('Ordered List')).toBeTruthy();
             expect(getByLabelText('Indent List')).toBeTruthy();
@@ -83,6 +117,7 @@ describe('EditorToolbar', () => {
 
         it('does not render list/depth/HR buttons when those callbacks are omitted', () => {
             const { queryByLabelText } = renderToolbar({
+                onToggleBlockquote: undefined,
                 onToggleBulletList: undefined,
                 onToggleOrderedList: undefined,
                 onIndentList: undefined,
@@ -91,6 +126,7 @@ describe('EditorToolbar', () => {
                 onInsertHorizontalRule: undefined,
             });
 
+            expect(queryByLabelText('Blockquote')).toBeNull();
             expect(queryByLabelText('Bullet List')).toBeNull();
             expect(queryByLabelText('Ordered List')).toBeNull();
             expect(queryByLabelText('Indent List')).toBeNull();
@@ -104,7 +140,12 @@ describe('EditorToolbar', () => {
             const onInsertNodeType = jest.fn();
             const { getAllByRole, queryByLabelText } = renderToolbar({
                 toolbarItems: [
-                    { type: 'mark', mark: 'bold', label: 'Bold', icon: { type: 'default', id: 'bold' } },
+                    {
+                        type: 'mark',
+                        mark: 'bold',
+                        label: 'Bold',
+                        icon: { type: 'default', id: 'bold' },
+                    },
                     {
                         type: 'mark',
                         mark: 'highlight',
@@ -174,6 +215,19 @@ describe('EditorToolbar', () => {
             );
         });
 
+        it('blockquote button gets selected state from active nodes', () => {
+            const { getByLabelText } = renderToolbar({
+                activeState: {
+                    nodes: { blockquote: true },
+                    commands: { toggleBlockquote: true },
+                },
+            });
+
+            expect(getByLabelText('Blockquote').props.accessibilityState).toEqual(
+                expect.objectContaining({ selected: true, disabled: false })
+            );
+        });
+
         it('does not reapply a themed top border when showTopBorder is false', () => {
             const { toJSON } = renderToolbar({
                 showTopBorder: false,
@@ -188,7 +242,6 @@ describe('EditorToolbar', () => {
             expect(tree).not.toBeNull();
             expect(style.borderTopWidth).toBe(0);
         });
-
     });
 
     // ── Active State (Record<string, boolean>) ─────────────────
@@ -196,7 +249,13 @@ describe('EditorToolbar', () => {
     describe('active state visual feedback', () => {
         it('bold button gets selected state when bold mark is active', () => {
             const { getByLabelText } = renderToolbar({
-                activeState: { marks: { bold: true }, nodes: {}, commands: {}, allowedMarks: ['bold', 'italic', 'underline', 'strike'], insertableNodes: ['horizontalRule'] },
+                activeState: {
+                    marks: { bold: true },
+                    nodes: {},
+                    commands: {},
+                    allowedMarks: ['bold', 'italic', 'underline', 'strike'],
+                    insertableNodes: ['horizontalRule'],
+                },
             });
 
             const boldButton = getByLabelText('Bold');
@@ -207,7 +266,13 @@ describe('EditorToolbar', () => {
 
         it('italic button gets selected state when italic mark is active', () => {
             const { getByLabelText } = renderToolbar({
-                activeState: { marks: { italic: true }, nodes: {}, commands: {}, allowedMarks: ['bold', 'italic', 'underline', 'strike'], insertableNodes: ['horizontalRule'] },
+                activeState: {
+                    marks: { italic: true },
+                    nodes: {},
+                    commands: {},
+                    allowedMarks: ['bold', 'italic', 'underline', 'strike'],
+                    insertableNodes: ['horizontalRule'],
+                },
             });
 
             const italicButton = getByLabelText('Italic');
@@ -218,7 +283,13 @@ describe('EditorToolbar', () => {
 
         it('underline button gets selected state when underline mark is active', () => {
             const { getByLabelText } = renderToolbar({
-                activeState: { marks: { underline: true }, nodes: {}, commands: {}, allowedMarks: ['bold', 'italic', 'underline', 'strike'], insertableNodes: ['horizontalRule'] },
+                activeState: {
+                    marks: { underline: true },
+                    nodes: {},
+                    commands: {},
+                    allowedMarks: ['bold', 'italic', 'underline', 'strike'],
+                    insertableNodes: ['horizontalRule'],
+                },
             });
 
             const underlineButton = getByLabelText('Underline');
@@ -229,7 +300,13 @@ describe('EditorToolbar', () => {
 
         it('strikethrough button gets selected state when strike mark is active', () => {
             const { getByLabelText } = renderToolbar({
-                activeState: { marks: { strike: true }, nodes: {}, commands: {}, allowedMarks: ['bold', 'italic', 'underline', 'strike'], insertableNodes: ['horizontalRule'] },
+                activeState: {
+                    marks: { strike: true },
+                    nodes: {},
+                    commands: {},
+                    allowedMarks: ['bold', 'italic', 'underline', 'strike'],
+                    insertableNodes: ['horizontalRule'],
+                },
             });
 
             const strikeButton = getByLabelText('Strikethrough');
@@ -240,7 +317,13 @@ describe('EditorToolbar', () => {
 
         it('bullet list button gets selected state when bulletList node is active', () => {
             const { getByLabelText } = renderToolbar({
-                activeState: { marks: {}, nodes: { bulletList: true }, commands: {}, allowedMarks: ['bold', 'italic', 'underline', 'strike'], insertableNodes: ['horizontalRule'] },
+                activeState: {
+                    marks: {},
+                    nodes: { bulletList: true },
+                    commands: {},
+                    allowedMarks: ['bold', 'italic', 'underline', 'strike'],
+                    insertableNodes: ['horizontalRule'],
+                },
             });
 
             const bulletButton = getByLabelText('Bullet List');
@@ -251,11 +334,40 @@ describe('EditorToolbar', () => {
 
         it('ordered list button gets selected state when orderedList node is active', () => {
             const { getByLabelText } = renderToolbar({
-                activeState: { marks: {}, nodes: { orderedList: true }, commands: {}, allowedMarks: ['bold', 'italic', 'underline', 'strike'], insertableNodes: ['horizontalRule'] },
+                activeState: {
+                    marks: {},
+                    nodes: { orderedList: true },
+                    commands: {},
+                    allowedMarks: ['bold', 'italic', 'underline', 'strike'],
+                    insertableNodes: ['horizontalRule'],
+                },
             });
 
             const orderedButton = getByLabelText('Ordered List');
             expect(orderedButton.props.accessibilityState).toEqual(
+                expect.objectContaining({ selected: true })
+            );
+        });
+
+        it('link button gets selected state when link mark is active', () => {
+            const onRequestLink = jest.fn();
+            const { getByLabelText } = renderToolbar({
+                toolbarItems: [
+                    { type: 'link', label: 'Link', icon: { type: 'default', id: 'link' } },
+                ],
+                activeState: {
+                    marks: { link: true },
+                    markAttrs: { link: { href: 'https://example.com' } },
+                    nodes: {},
+                    commands: {},
+                    allowedMarks: ['link'],
+                    insertableNodes: [],
+                },
+                onRequestLink,
+            });
+
+            const linkButton = getByLabelText('Link');
+            expect(linkButton.props.accessibilityState).toEqual(
                 expect.objectContaining({ selected: true })
             );
         });
@@ -272,7 +384,13 @@ describe('EditorToolbar', () => {
 
         it('multiple marks can be active simultaneously', () => {
             const { getByLabelText } = renderToolbar({
-                activeState: { marks: { bold: true, italic: true }, nodes: {}, commands: {}, allowedMarks: ['bold', 'italic', 'underline', 'strike'], insertableNodes: ['horizontalRule'] },
+                activeState: {
+                    marks: { bold: true, italic: true },
+                    nodes: {},
+                    commands: {},
+                    allowedMarks: ['bold', 'italic', 'underline', 'strike'],
+                    insertableNodes: ['horizontalRule'],
+                },
             });
 
             expect(getByLabelText('Bold').props.accessibilityState).toEqual(
@@ -333,7 +451,13 @@ describe('EditorToolbar', () => {
 
         it('indent and outdent are disabled when selection is not in a list', () => {
             const { getByLabelText } = renderToolbar({
-                activeState: { marks: {}, nodes: { paragraph: true }, commands: {}, allowedMarks: [], insertableNodes: [] },
+                activeState: {
+                    marks: {},
+                    nodes: { paragraph: true },
+                    commands: {},
+                    allowedMarks: [],
+                    insertableNodes: [],
+                },
             });
 
             expect(getByLabelText('Indent List').props.accessibilityState).toEqual(
@@ -428,6 +552,22 @@ describe('EditorToolbar', () => {
             fireEvent.press(getByLabelText('Bullet List'));
 
             expect(props.onToggleBulletList).toHaveBeenCalledTimes(1);
+        });
+
+        it('blockquote button fires onToggleBlockquote', () => {
+            const { getByLabelText, props } = renderToolbar({
+                activeState: {
+                    ...ENABLED_BUTTONS_ACTIVE_STATE,
+                    commands: {
+                        ...ENABLED_BUTTONS_ACTIVE_STATE.commands,
+                        toggleBlockquote: true,
+                    },
+                },
+            });
+
+            fireEvent.press(getByLabelText('Blockquote'));
+
+            expect(props.onToggleBlockquote).toHaveBeenCalledTimes(1);
         });
 
         it('ordered list button fires onToggleOrderedList', () => {

@@ -39,6 +39,8 @@ export interface UseNativeEditorReturn {
     undo: () => void;
     /** Redo the last undone operation. */
     redo: () => void;
+    /** Toggle blockquote wrapping around the current block selection. */
+    toggleBlockquote: () => void;
     /** Insert text at a position. */
     insertText: (pos: number, text: string) => void;
     /** Delete a range [from, to). */
@@ -50,6 +52,7 @@ export interface UseNativeEditorReturn {
 const DEFAULT_SELECTION: Selection = { type: 'text', anchor: 0, head: 0 };
 const DEFAULT_ACTIVE_STATE: ActiveState = {
     marks: {},
+    markAttrs: {},
     nodes: {},
     commands: {},
     allowedMarks: [],
@@ -57,9 +60,7 @@ const DEFAULT_ACTIVE_STATE: ActiveState = {
 };
 const DEFAULT_HISTORY_STATE: HistoryState = { canUndo: false, canRedo: false };
 
-export function useNativeEditor(
-    options: UseNativeEditorOptions = {}
-): UseNativeEditorReturn {
+export function useNativeEditor(options: UseNativeEditorOptions = {}): UseNativeEditorReturn {
     const { maxLength, initialHtml, onChange, onSelectionChange } = options;
 
     const bridgeRef = useRef<NativeEditorBridge | null>(null);
@@ -82,17 +83,20 @@ export function useNativeEditor(
         setHistoryState(update.historyState);
     }, []);
 
-    const applyUpdate = useCallback((update: EditorUpdate | null) => {
-        if (!update) return;
-        syncStateFromUpdate(update);
-        onSelectionChangeRef.current?.(update.selection);
+    const applyUpdate = useCallback(
+        (update: EditorUpdate | null) => {
+            if (!update) return;
+            syncStateFromUpdate(update);
+            onSelectionChangeRef.current?.(update.selection);
 
-        // Fetch current HTML and notify onChange
-        if (onChangeRef.current && bridgeRef.current && !bridgeRef.current.isDestroyed) {
-            const html = bridgeRef.current.getHtml();
-            onChangeRef.current(html);
-        }
-    }, [syncStateFromUpdate]);
+            // Fetch current HTML and notify onChange
+            if (onChangeRef.current && bridgeRef.current && !bridgeRef.current.isDestroyed) {
+                const html = bridgeRef.current.getHtml();
+                onChangeRef.current(html);
+            }
+        },
+        [syncStateFromUpdate]
+    );
 
     useEffect(() => {
         const bridge = NativeEditorBridge.create(maxLength != null ? { maxLength } : undefined);
@@ -133,6 +137,12 @@ export function useNativeEditor(
         applyUpdate(update);
     }, [applyUpdate]);
 
+    const toggleBlockquote = useCallback(() => {
+        if (!bridgeRef.current || bridgeRef.current.isDestroyed) return;
+        const update = bridgeRef.current.toggleBlockquote();
+        applyUpdate(update);
+    }, [applyUpdate]);
+
     const insertText = useCallback(
         (pos: number, text: string) => {
             if (!bridgeRef.current || bridgeRef.current.isDestroyed) return;
@@ -166,6 +176,7 @@ export function useNativeEditor(
         toggleMark,
         undo,
         redo,
+        toggleBlockquote,
         insertText,
         deleteRange,
         getHtml,

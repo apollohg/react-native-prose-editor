@@ -29,6 +29,7 @@ const MOCK_UPDATE_JSON = JSON.stringify({
     selection: { type: 'text', anchor: 11, head: 11 },
     activeState: {
         marks: {},
+        markAttrs: {},
         nodes: { paragraph: true },
         commands: {},
         allowedMarks: [],
@@ -46,6 +47,7 @@ const MOCK_TOGGLE_BOLD_UPDATE_JSON = JSON.stringify({
     selection: { type: 'text', anchor: 0, head: 9 },
     activeState: {
         marks: { bold: true },
+        markAttrs: {},
         nodes: { paragraph: true },
         commands: {},
         allowedMarks: [],
@@ -67,6 +69,7 @@ const MOCK_ORDERED_LIST_UPDATE_JSON = JSON.stringify({
     selection: { type: 'text', anchor: 3, head: 3 },
     activeState: {
         marks: {},
+        markAttrs: {},
         nodes: { orderedList: true, listItem: true, paragraph: true },
         commands: { indentList: true, outdentList: false },
         allowedMarks: [],
@@ -85,6 +88,19 @@ const MOCK_DOCUMENT_JSON = JSON.stringify({
     ],
 });
 
+const MOCK_COLLABORATION_RESULT_JSON = JSON.stringify({
+    messages: [[1, 2, 3]],
+    documentChanged: true,
+    documentJson: {
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'synced' }] }],
+    },
+    peersChanged: true,
+    peers: [{ clientId: 1, isLocal: true, state: { user: { name: 'Alice' } } }],
+});
+
+const MOCK_ENCODED_COLLABORATION_STATE_JSON = JSON.stringify([1, 2, 3, 4]);
+
 // ─── Mock Native Module ─────────────────────────────────────────
 // jest.mock is hoisted above imports. We define mockNativeModule as
 // a mutable object populated in beforeEach so it's always available
@@ -101,6 +117,36 @@ function resetMockNativeModule() {
     mockEditorIdCounter = 0;
     mockNativeModule.editorCreate = jest.fn((_configJson: string) => ++mockEditorIdCounter);
     mockNativeModule.editorDestroy = jest.fn();
+    mockNativeModule.collaborationSessionCreate = jest.fn(
+        (_configJson: string) => ++mockEditorIdCounter
+    );
+    mockNativeModule.collaborationSessionDestroy = jest.fn();
+    mockNativeModule.collaborationSessionGetDocumentJson = jest.fn(() => MOCK_DOCUMENT_JSON);
+    mockNativeModule.collaborationSessionGetEncodedState = jest.fn(
+        () => MOCK_ENCODED_COLLABORATION_STATE_JSON
+    );
+    mockNativeModule.collaborationSessionGetPeersJson = jest.fn(
+        () => '[{"clientId":1,"isLocal":true,"state":{"user":{"name":"Alice"}}}]'
+    );
+    mockNativeModule.collaborationSessionStart = jest.fn(() => MOCK_COLLABORATION_RESULT_JSON);
+    mockNativeModule.collaborationSessionApplyLocalDocumentJson = jest.fn(
+        () => MOCK_COLLABORATION_RESULT_JSON
+    );
+    mockNativeModule.collaborationSessionApplyEncodedState = jest.fn(
+        () => MOCK_COLLABORATION_RESULT_JSON
+    );
+    mockNativeModule.collaborationSessionReplaceEncodedState = jest.fn(
+        () => MOCK_COLLABORATION_RESULT_JSON
+    );
+    mockNativeModule.collaborationSessionHandleMessage = jest.fn(
+        () => MOCK_COLLABORATION_RESULT_JSON
+    );
+    mockNativeModule.collaborationSessionSetLocalAwareness = jest.fn(
+        () => MOCK_COLLABORATION_RESULT_JSON
+    );
+    mockNativeModule.collaborationSessionClearLocalAwareness = jest.fn(
+        () => MOCK_COLLABORATION_RESULT_JSON
+    );
     mockNativeModule.editorSetHtml = jest.fn(() => MOCK_RENDER_ELEMENTS_JSON);
     mockNativeModule.editorGetHtml = jest.fn(() => '<p>hello world</p>');
     mockNativeModule.editorSetJson = jest.fn(() => MOCK_RENDER_ELEMENTS_JSON);
@@ -109,6 +155,9 @@ function resetMockNativeModule() {
     mockNativeModule.editorReplaceSelectionText = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorDeleteRange = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorToggleMark = jest.fn(() => MOCK_TOGGLE_BOLD_UPDATE_JSON);
+    mockNativeModule.editorSetMark = jest.fn(() => MOCK_TOGGLE_BOLD_UPDATE_JSON);
+    mockNativeModule.editorUnsetMark = jest.fn(() => MOCK_UPDATE_JSON);
+    mockNativeModule.editorToggleBlockquote = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorSetSelection = jest.fn();
     mockNativeModule.editorGetSelection = jest.fn(() =>
         JSON.stringify({ type: 'text', anchor: 0, head: 0 })
@@ -127,7 +176,12 @@ function resetMockNativeModule() {
     mockNativeModule.editorSplitBlockScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorDeleteAndSplitScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorSetSelectionScalar = jest.fn();
-    mockNativeModule.editorToggleMarkAtSelectionScalar = jest.fn(() => MOCK_TOGGLE_BOLD_UPDATE_JSON);
+    mockNativeModule.editorToggleMarkAtSelectionScalar = jest.fn(
+        () => MOCK_TOGGLE_BOLD_UPDATE_JSON
+    );
+    mockNativeModule.editorSetMarkAtSelectionScalar = jest.fn(() => MOCK_TOGGLE_BOLD_UPDATE_JSON);
+    mockNativeModule.editorUnsetMarkAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
+    mockNativeModule.editorToggleBlockquoteAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorWrapInListAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorUnwrapFromListAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorIndentListItemAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
@@ -155,7 +209,11 @@ jest.mock('expo-modules-core', () => ({
 
 // ─── Imports ────────────────────────────────────────────────────
 
-import { NativeEditorBridge, _resetNativeModuleCache } from '../NativeEditorBridge';
+import {
+    NativeCollaborationBridge,
+    NativeEditorBridge,
+    _resetNativeModuleCache,
+} from '../NativeEditorBridge';
 
 // ─── Tests ──────────────────────────────────────────────────────
 
@@ -254,6 +312,90 @@ describe('NativeEditorBridge', () => {
             bridge.destroy();
 
             expect(mockNativeModule.editorDestroy).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe('NativeCollaborationBridge', () => {
+        it('creates a collaboration session and starts sync', () => {
+            const bridge = NativeCollaborationBridge.create({
+                clientId: 7,
+                fragmentName: 'prosemirror',
+                initialEncodedState: Uint8Array.from([4, 5, 6]),
+            });
+
+            expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
+                JSON.stringify({ clientId: 7, fragmentName: 'prosemirror' })
+            );
+            expect(mockNativeModule.collaborationSessionReplaceEncodedState).toHaveBeenCalledWith(
+                1,
+                JSON.stringify([4, 5, 6])
+            );
+
+            expect(bridge.getDocumentJson()).toEqual(JSON.parse(MOCK_DOCUMENT_JSON));
+            expect(bridge.getEncodedState()).toEqual(Uint8Array.from([1, 2, 3, 4]));
+            expect(bridge.getEncodedStateBase64()).toBe('AQIDBA==');
+            expect(bridge.getPeers()).toEqual([
+                {
+                    clientId: 1,
+                    isLocal: true,
+                    state: { user: { name: 'Alice' } },
+                },
+            ]);
+            expect(bridge.start()).toEqual(JSON.parse(MOCK_COLLABORATION_RESULT_JSON));
+
+            bridge.destroy();
+            expect(mockNativeModule.collaborationSessionDestroy).toHaveBeenCalledWith(1);
+        });
+
+        it('destroys the session if initial encoded state restoration fails', () => {
+            mockNativeModule.collaborationSessionReplaceEncodedState.mockReturnValueOnce(
+                JSON.stringify({ error: 'invalid encoded state' })
+            );
+
+            expect(() =>
+                NativeCollaborationBridge.create({
+                    initialEncodedState: Uint8Array.from([4, 5, 6]),
+                })
+            ).toThrow('NativeEditorBridge: invalid encoded state');
+            expect(mockNativeModule.collaborationSessionDestroy).toHaveBeenCalledWith(1);
+        });
+
+        it('routes local document and awareness updates through the native module', () => {
+            const bridge = NativeCollaborationBridge.create();
+            const nextDoc = {
+                type: 'doc',
+                content: [{ type: 'paragraph', content: [{ type: 'text', text: 'next' }] }],
+            };
+
+            bridge.applyLocalDocumentJson(nextDoc);
+            bridge.applyEncodedState('BgUE');
+            bridge.replaceEncodedState('AwIB');
+            bridge.handleMessage([9, 8, 7]);
+            bridge.setLocalAwareness({ user: { name: 'Alice' }, focused: true });
+            bridge.clearLocalAwareness();
+
+            expect(
+                mockNativeModule.collaborationSessionApplyLocalDocumentJson
+            ).toHaveBeenCalledWith(1, JSON.stringify(nextDoc));
+            expect(mockNativeModule.collaborationSessionApplyEncodedState).toHaveBeenCalledWith(
+                1,
+                JSON.stringify([6, 5, 4])
+            );
+            expect(mockNativeModule.collaborationSessionReplaceEncodedState).toHaveBeenCalledWith(
+                1,
+                JSON.stringify([3, 2, 1])
+            );
+            expect(mockNativeModule.collaborationSessionHandleMessage).toHaveBeenCalledWith(
+                1,
+                JSON.stringify([9, 8, 7])
+            );
+            expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledWith(
+                1,
+                JSON.stringify({ user: { name: 'Alice' }, focused: true })
+            );
+            expect(mockNativeModule.collaborationSessionClearLocalAwareness).toHaveBeenCalledWith(
+                1
+            );
         });
     });
 
@@ -369,6 +511,7 @@ describe('NativeEditorBridge', () => {
             });
             expect(update!.activeState).toEqual({
                 marks: {},
+                markAttrs: {},
                 nodes: { paragraph: true },
                 commands: {},
                 allowedMarks: [],
@@ -389,11 +532,7 @@ describe('NativeEditorBridge', () => {
 
             const update = bridge.deleteRange(0, 5);
 
-            expect(mockNativeModule.editorDeleteRange).toHaveBeenCalledWith(
-                bridge.editorId,
-                0,
-                5
-            );
+            expect(mockNativeModule.editorDeleteRange).toHaveBeenCalledWith(bridge.editorId, 0, 5);
             expect(update).not.toBeNull();
             expect(update!.renderElements).toHaveLength(3);
 
@@ -455,9 +594,12 @@ describe('NativeEditorBridge', () => {
 
             const update = bridge.insertContentJsonAtSelectionScalar(4, 7, doc);
 
-            expect(
-                mockNativeModule.editorInsertContentJsonAtSelectionScalar
-            ).toHaveBeenCalledWith(bridge.editorId, 4, 7, JSON.stringify(doc));
+            expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).toHaveBeenCalledWith(
+                bridge.editorId,
+                4,
+                7,
+                JSON.stringify(doc)
+            );
             expect(update).not.toBeNull();
             expect(update!.selection).toEqual({
                 type: 'text',
@@ -491,6 +633,39 @@ describe('NativeEditorBridge', () => {
 
             bridge.destroy();
         });
+
+        it('sets an attributed link mark on the current selection', () => {
+            const bridge = NativeEditorBridge.create();
+
+            const update = bridge.setMark('link', { href: 'https://example.com' });
+
+            expect(mockNativeModule.editorSetMarkAtSelectionScalar).toHaveBeenCalledWith(
+                bridge.editorId,
+                0,
+                0,
+                'link',
+                JSON.stringify({ href: 'https://example.com' })
+            );
+            expect(update).not.toBeNull();
+
+            bridge.destroy();
+        });
+
+        it('removes an attributed link mark from the current selection', () => {
+            const bridge = NativeEditorBridge.create();
+
+            const update = bridge.unsetMark('link');
+
+            expect(mockNativeModule.editorUnsetMarkAtSelectionScalar).toHaveBeenCalledWith(
+                bridge.editorId,
+                0,
+                0,
+                'link'
+            );
+            expect(update).not.toBeNull();
+
+            bridge.destroy();
+        });
     });
 
     // ── Selection ───────────────────────────────────────────────
@@ -501,11 +676,7 @@ describe('NativeEditorBridge', () => {
 
             bridge.setSelection(3, 7);
 
-            expect(mockNativeModule.editorSetSelection).toHaveBeenCalledWith(
-                bridge.editorId,
-                3,
-                7
-            );
+            expect(mockNativeModule.editorSetSelection).toHaveBeenCalledWith(bridge.editorId, 3, 7);
 
             bridge.destroy();
         });
@@ -560,6 +731,24 @@ describe('NativeEditorBridge', () => {
             expect(mockNativeModule.editorUnwrapFromListAtSelectionScalar).not.toHaveBeenCalled();
             expect(update).not.toBeNull();
             expect(update!.activeState.nodes.orderedList).toBe(true);
+
+            bridge.destroy();
+        });
+    });
+
+    describe('toggleBlockquote', () => {
+        it('returns parsed EditorUpdate', () => {
+            const bridge = NativeEditorBridge.create();
+
+            const update = bridge.toggleBlockquote();
+
+            expect(mockNativeModule.editorToggleBlockquoteAtSelectionScalar).toHaveBeenCalledWith(
+                bridge.editorId,
+                0,
+                0
+            );
+            expect(update).not.toBeNull();
+            expect(update!.renderElements).toHaveLength(3);
 
             bridge.destroy();
         });
@@ -838,6 +1027,10 @@ describe('NativeEditorBridge', () => {
 
         it('toggleList throws after destroy', () => {
             expect(() => bridge.toggleList('bulletList')).toThrow(ERROR_MSG);
+        });
+
+        it('toggleBlockquote throws after destroy', () => {
+            expect(() => bridge.toggleBlockquote()).toThrow(ERROR_MSG);
         });
 
         it('unwrapFromList throws after destroy', () => {

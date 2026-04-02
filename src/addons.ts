@@ -102,15 +102,12 @@ export function withMentionsSchema(schema: SchemaDefinition): SchemaDefinition {
     };
 }
 
-export function normalizeEditorAddons(
-    addons?: EditorAddons
-): SerializedEditorAddons | undefined {
+export function normalizeEditorAddons(addons?: EditorAddons): SerializedEditorAddons | undefined {
     if (!addons?.mentions) {
         return undefined;
     }
 
-    const trigger =
-        addons.mentions.trigger?.trim() || DEFAULT_MENTION_TRIGGER;
+    const trigger = addons.mentions.trigger?.trim() || DEFAULT_MENTION_TRIGGER;
     const suggestions = (addons.mentions.suggestions ?? []).map((suggestion) => {
         const label = suggestion.label?.trim() || `${trigger}${suggestion.title}`;
         const attrs = {

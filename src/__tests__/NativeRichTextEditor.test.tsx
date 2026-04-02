@@ -17,7 +17,7 @@
 const MOCK_EMPTY_UPDATE_JSON = JSON.stringify({
     renderElements: [],
     selection: { type: 'text', anchor: 0, head: 0 },
-    activeState: { marks: {}, nodes: {}, commands: {} },
+    activeState: { marks: {}, markAttrs: {}, nodes: {}, commands: {} },
     historyState: { canUndo: false, canRedo: false },
 });
 
@@ -26,6 +26,7 @@ const MOCK_BOLD_UPDATE_JSON = JSON.stringify({
     selection: { type: 'text', anchor: 0, head: 5 },
     activeState: {
         marks: { bold: true },
+        markAttrs: {},
         nodes: { paragraph: true },
         commands: {},
         allowedMarks: [],
@@ -39,6 +40,7 @@ const MOCK_COLLAPSED_BOLD_UPDATE_JSON = JSON.stringify({
     selection: { type: 'text', anchor: 3, head: 3 },
     activeState: {
         marks: { bold: true },
+        markAttrs: {},
         nodes: { paragraph: true },
         commands: {},
         allowedMarks: [],
@@ -52,6 +54,7 @@ const MOCK_LIST_UPDATE_JSON = JSON.stringify({
     selection: { type: 'text', anchor: 0, head: 0 },
     activeState: {
         marks: {},
+        markAttrs: {},
         nodes: { bulletList: true },
         commands: { indentList: true, outdentList: false },
         allowedMarks: [],
@@ -65,6 +68,7 @@ const MOCK_ORDERED_LIST_UPDATE_JSON = JSON.stringify({
     selection: { type: 'text', anchor: 0, head: 0 },
     activeState: {
         marks: {},
+        markAttrs: {},
         nodes: { orderedList: true },
         commands: { indentList: true, outdentList: false },
         allowedMarks: [],
@@ -74,11 +78,16 @@ const MOCK_ORDERED_LIST_UPDATE_JSON = JSON.stringify({
 });
 
 const MOCK_NODE_UPDATE_JSON = JSON.stringify({
-    renderElements: [
-        { type: 'voidBlock', nodeType: 'horizontalRule', docPos: 0 },
-    ],
+    renderElements: [{ type: 'voidBlock', nodeType: 'horizontalRule', docPos: 0 }],
     selection: { type: 'text', anchor: 1, head: 1 },
-    activeState: { marks: {}, nodes: {}, commands: {}, allowedMarks: [], insertableNodes: [] },
+    activeState: {
+        marks: {},
+        markAttrs: {},
+        nodes: {},
+        commands: {},
+        allowedMarks: [],
+        insertableNodes: [],
+    },
     historyState: { canUndo: true, canRedo: false },
 });
 
@@ -87,6 +96,7 @@ const MOCK_INSERT_UPDATE_JSON = JSON.stringify({
     selection: { type: 'text', anchor: 5, head: 5 },
     activeState: {
         marks: {},
+        markAttrs: {},
         nodes: { paragraph: true },
         commands: {},
         allowedMarks: [],
@@ -98,14 +108,28 @@ const MOCK_INSERT_UPDATE_JSON = JSON.stringify({
 const MOCK_UNDO_UPDATE_JSON = JSON.stringify({
     renderElements: [],
     selection: { type: 'text', anchor: 0, head: 0 },
-    activeState: { marks: {}, nodes: {}, commands: {}, allowedMarks: [], insertableNodes: [] },
+    activeState: {
+        marks: {},
+        markAttrs: {},
+        nodes: {},
+        commands: {},
+        allowedMarks: [],
+        insertableNodes: [],
+    },
     historyState: { canUndo: false, canRedo: true },
 });
 
 const MOCK_REDO_UPDATE_JSON = JSON.stringify({
     renderElements: [],
     selection: { type: 'text', anchor: 3, head: 3 },
-    activeState: { marks: {}, nodes: {}, commands: {}, allowedMarks: [], insertableNodes: [] },
+    activeState: {
+        marks: {},
+        markAttrs: {},
+        nodes: {},
+        commands: {},
+        allowedMarks: [],
+        insertableNodes: [],
+    },
     historyState: { canUndo: true, canRedo: false },
 });
 
@@ -132,10 +156,10 @@ const mockNativeModule = {
     editorReplaceSelectionText: jest.fn(() => MOCK_INSERT_UPDATE_JSON),
     editorDeleteRange: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorToggleMark: jest.fn(() => MOCK_BOLD_UPDATE_JSON),
+    editorSetMark: jest.fn(() => MOCK_BOLD_UPDATE_JSON),
+    editorUnsetMark: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorSetSelection: jest.fn(),
-    editorGetSelection: jest.fn(() =>
-        JSON.stringify({ type: 'text', anchor: 5, head: 5 })
-    ),
+    editorGetSelection: jest.fn(() => JSON.stringify({ type: 'text', anchor: 5, head: 5 })),
     editorGetCurrentState: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorSplitBlock: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorInsertContentHtml: jest.fn(() => MOCK_INSERT_UPDATE_JSON),
@@ -151,6 +175,9 @@ const mockNativeModule = {
     editorDeleteAndSplitScalar: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorSetSelectionScalar: jest.fn(),
     editorToggleMarkAtSelectionScalar: jest.fn(() => MOCK_BOLD_UPDATE_JSON),
+    editorSetMarkAtSelectionScalar: jest.fn(() => MOCK_BOLD_UPDATE_JSON),
+    editorUnsetMarkAtSelectionScalar: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
+    editorToggleBlockquoteAtSelectionScalar: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorWrapInListAtSelectionScalar: jest.fn(() => MOCK_LIST_UPDATE_JSON),
     editorUnwrapFromListAtSelectionScalar: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorIndentListItemAtSelectionScalar: jest.fn(() => MOCK_LIST_UPDATE_JSON),
@@ -197,10 +224,7 @@ import React, { createRef } from 'react';
 import { render, act } from '@testing-library/react-native';
 import { PixelRatio, Platform } from 'react-native';
 
-import {
-    NativeRichTextEditor,
-    type NativeRichTextEditorRef,
-} from '../NativeRichTextEditor';
+import { NativeRichTextEditor, type NativeRichTextEditorRef } from '../NativeRichTextEditor';
 import { _resetNativeModuleCache } from '../NativeEditorBridge';
 
 // ─── Tests ──────────────────────────────────────────────────────
@@ -220,7 +244,9 @@ describe('NativeRichTextEditor', () => {
         }
 
         // Re-establish default return values
-        mockNativeModule.editorCreate.mockImplementation((_configJson: string) => ++mockEditorIdCounter);
+        mockNativeModule.editorCreate.mockImplementation(
+            (_configJson: string) => ++mockEditorIdCounter
+        );
         mockNativeModule.editorSetHtml.mockReturnValue('[]');
         mockNativeModule.editorGetHtml.mockReturnValue('<p>test content</p>');
         mockNativeModule.editorSetJson.mockReturnValue('[]');
@@ -237,7 +263,9 @@ describe('NativeRichTextEditor', () => {
         mockNativeModule.editorSplitBlock.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
         mockNativeModule.editorInsertContentHtml.mockReturnValue(MOCK_INSERT_UPDATE_JSON);
         mockNativeModule.editorInsertContentJson.mockReturnValue(MOCK_INSERT_UPDATE_JSON);
-        mockNativeModule.editorInsertContentJsonAtSelectionScalar.mockReturnValue(MOCK_INSERT_UPDATE_JSON);
+        mockNativeModule.editorInsertContentJsonAtSelectionScalar.mockReturnValue(
+            MOCK_INSERT_UPDATE_JSON
+        );
         mockNativeModule.editorReplaceHtml.mockReturnValue(MOCK_INSERT_UPDATE_JSON);
         mockNativeModule.editorReplaceJson.mockReturnValue(MOCK_INSERT_UPDATE_JSON);
         mockNativeModule.editorInsertTextScalar.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
@@ -252,9 +280,15 @@ describe('NativeRichTextEditor', () => {
         mockNativeModule.editorOutdentListItem.mockReturnValue(MOCK_LIST_UPDATE_JSON);
         mockNativeModule.editorInsertNode.mockReturnValue(MOCK_NODE_UPDATE_JSON);
         mockNativeModule.editorWrapInListAtSelectionScalar.mockReturnValue(MOCK_LIST_UPDATE_JSON);
-        mockNativeModule.editorUnwrapFromListAtSelectionScalar.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
-        mockNativeModule.editorIndentListItemAtSelectionScalar.mockReturnValue(MOCK_LIST_UPDATE_JSON);
-        mockNativeModule.editorOutdentListItemAtSelectionScalar.mockReturnValue(MOCK_LIST_UPDATE_JSON);
+        mockNativeModule.editorUnwrapFromListAtSelectionScalar.mockReturnValue(
+            MOCK_EMPTY_UPDATE_JSON
+        );
+        mockNativeModule.editorIndentListItemAtSelectionScalar.mockReturnValue(
+            MOCK_LIST_UPDATE_JSON
+        );
+        mockNativeModule.editorOutdentListItemAtSelectionScalar.mockReturnValue(
+            MOCK_LIST_UPDATE_JSON
+        );
         mockNativeModule.editorInsertNodeAtSelectionScalar.mockReturnValue(MOCK_NODE_UPDATE_JSON);
         mockNativeModule.editorUndo.mockReturnValue(MOCK_UNDO_UPDATE_JSON);
         mockNativeModule.editorRedo.mockReturnValue(MOCK_REDO_UPDATE_JSON);
@@ -284,20 +318,14 @@ describe('NativeRichTextEditor', () => {
         });
 
         it('sets initial content via setHtml when initialContent is provided', () => {
-            render(<NativeRichTextEditor initialContent="<p>hello</p>" />);
-            expect(mockNativeModule.editorSetHtml).toHaveBeenCalledWith(
-                1,
-                '<p>hello</p>'
-            );
+            render(<NativeRichTextEditor initialContent='<p>hello</p>' />);
+            expect(mockNativeModule.editorSetHtml).toHaveBeenCalledWith(1, '<p>hello</p>');
         });
 
         it('sets initialJSON via setJson when provided', () => {
             const doc = { type: 'doc', content: [] };
             render(<NativeRichTextEditor initialJSON={doc} />);
-            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(
-                1,
-                JSON.stringify(doc)
-            );
+            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(1, JSON.stringify(doc));
         });
 
         it('does not call setHtml when no initialContent is provided', () => {
@@ -317,19 +345,13 @@ describe('NativeRichTextEditor', () => {
         });
 
         it('passes editable=false to native view', () => {
-            const { getByTestId } = render(
-                <NativeRichTextEditor editable={false} />
-            );
+            const { getByTestId } = render(<NativeRichTextEditor editable={false} />);
             expect(getByTestId('native-editor-view').props.editable).toBe(false);
         });
 
         it('passes placeholder prop to native view', () => {
-            const { getByTestId } = render(
-                <NativeRichTextEditor placeholder="Type here..." />
-            );
-            expect(getByTestId('native-editor-view').props.placeholder).toBe(
-                'Type here...'
-            );
+            const { getByTestId } = render(<NativeRichTextEditor placeholder='Type here...' />);
+            expect(getByTestId('native-editor-view').props.placeholder).toBe('Type here...');
         });
 
         it('passes autoFocus prop to native view (default false)', () => {
@@ -338,36 +360,44 @@ describe('NativeRichTextEditor', () => {
         });
 
         it('passes autoFocus=true to native view', () => {
-            const { getByTestId } = render(
-                <NativeRichTextEditor autoFocus />
-            );
+            const { getByTestId } = render(<NativeRichTextEditor autoFocus />);
             expect(getByTestId('native-editor-view').props.autoFocus).toBe(true);
         });
 
         it('passes toolbarPlacement to native view', () => {
-            const { getByTestId } = render(
-                <NativeRichTextEditor toolbarPlacement="inline" />
-            );
-            expect(getByTestId('native-editor-view').props.toolbarPlacement).toBe(
-                'inline'
-            );
+            const { getByTestId } = render(<NativeRichTextEditor toolbarPlacement='inline' />);
+            expect(getByTestId('native-editor-view').props.toolbarPlacement).toBe('inline');
         });
 
         it('passes heightBehavior to native view', () => {
-            const { getByTestId } = render(
-                <NativeRichTextEditor heightBehavior="autoGrow" />
-            );
-            expect(getByTestId('native-editor-view').props.heightBehavior).toBe(
-                'autoGrow'
-            );
+            const { getByTestId } = render(<NativeRichTextEditor heightBehavior='autoGrow' />);
+            expect(getByTestId('native-editor-view').props.heightBehavior).toBe('autoGrow');
         });
 
         it('passes style to native view', () => {
             const customStyle = { height: 200, borderWidth: 1 };
-            const { getByTestId } = render(
-                <NativeRichTextEditor style={customStyle} />
-            );
+            const { getByTestId } = render(<NativeRichTextEditor style={customStyle} />);
             expect(getByTestId('native-editor-view').props.style).toEqual(customStyle);
+        });
+
+        it('applies containerStyle to the outer wrapper view', () => {
+            const containerStyle = { marginTop: 12, borderRadius: 8 };
+            const { toJSON } = render(<NativeRichTextEditor containerStyle={containerStyle} />);
+            expect(toJSON()).toMatchObject({
+                props: {
+                    style: [expect.any(Object), containerStyle],
+                },
+            });
+        });
+
+        it('mirrors containerStyle minHeight to the native view', () => {
+            const { getByTestId } = render(
+                <NativeRichTextEditor containerStyle={{ minHeight: 240 }} />
+            );
+
+            expect(getByTestId('native-editor-view').props.style).toEqual({
+                minHeight: 240,
+            });
         });
 
         it('serializes theme to native view', () => {
@@ -377,12 +407,8 @@ describe('NativeRichTextEditor', () => {
                 horizontalRule: { color: '#778899', thickness: 2 },
                 contentInsets: { top: 12, right: 16, bottom: 20, left: 16 },
             };
-            const { getByTestId } = render(
-                <NativeRichTextEditor theme={theme} />
-            );
-            expect(getByTestId('native-editor-view').props.themeJson).toBe(
-                JSON.stringify(theme)
-            );
+            const { getByTestId } = render(<NativeRichTextEditor theme={theme} />);
+            expect(getByTestId('native-editor-view').props.themeJson).toBe(JSON.stringify(theme));
         });
 
         it('serializes toolbarItems to native view', () => {
@@ -412,11 +438,28 @@ describe('NativeRichTextEditor', () => {
                     },
                 },
             ] as const;
-            const { getByTestId } = render(
-                <NativeRichTextEditor toolbarItems={toolbarItems} />
-            );
+            const { getByTestId } = render(<NativeRichTextEditor toolbarItems={toolbarItems} />);
             expect(getByTestId('native-editor-view').props.toolbarItemsJson).toBe(
                 JSON.stringify(toolbarItems)
+            );
+        });
+
+        it('serializes remote selections to native view', () => {
+            const remoteSelections = [
+                {
+                    clientId: 2,
+                    anchor: 4,
+                    head: 9,
+                    color: '#00AAFF',
+                    name: 'Bob',
+                    isFocused: true,
+                },
+            ] as const;
+            const { getByTestId } = render(
+                <NativeRichTextEditor remoteSelections={remoteSelections} />
+            );
+            expect(getByTestId('native-editor-view').props.remoteSelectionsJson).toBe(
+                JSON.stringify(remoteSelections)
             );
         });
 
@@ -480,23 +523,15 @@ describe('NativeRichTextEditor', () => {
         });
 
         it('passes onToolbarAction handler to native view', () => {
-            const { getByTestId } = render(
-                <NativeRichTextEditor onToolbarAction={jest.fn()} />
-            );
-            expect(typeof getByTestId('native-editor-view').props.onToolbarAction).toBe(
-                'function'
-            );
+            const { getByTestId } = render(<NativeRichTextEditor onToolbarAction={jest.fn()} />);
+            expect(typeof getByTestId('native-editor-view').props.onToolbarAction).toBe('function');
         });
 
         it('passes onAddonEvent handler to native view', () => {
             const { getByTestId } = render(
-                <NativeRichTextEditor
-                    addons={{ mentions: { suggestions: [] } }}
-                />
+                <NativeRichTextEditor addons={{ mentions: { suggestions: [] } }} />
             );
-            expect(typeof getByTestId('native-editor-view').props.onAddonEvent).toBe(
-                'function'
-            );
+            expect(typeof getByTestId('native-editor-view').props.onAddonEvent).toBe('function');
         });
 
         it('rebinds the native view to a new editor instance when mentions are enabled after mount', () => {
@@ -508,9 +543,7 @@ describe('NativeRichTextEditor', () => {
                 <NativeRichTextEditor
                     addons={{
                         mentions: {
-                            suggestions: [
-                                { key: 'u1', title: 'Alice' },
-                            ],
+                            suggestions: [{ key: 'u1', title: 'Alice' }],
                         },
                     }}
                 />
@@ -601,6 +634,45 @@ describe('NativeRichTextEditor', () => {
             expect(mockApplyEditorUpdate).toHaveBeenCalledWith(MOCK_LIST_UPDATE_JSON);
         });
 
+        it('setLink(href) calls bridge.setMark and applyEditorUpdate', () => {
+            const ref = createRef<NativeRichTextEditorRef>();
+            mockNativeModule.editorGetHtml
+                .mockReturnValueOnce('<p>plain</p>')
+                .mockReturnValueOnce('<p><a href="https://example.com">plain</a></p>');
+            render(<NativeRichTextEditor ref={ref} />);
+
+            act(() => {
+                ref.current!.setLink('https://example.com');
+            });
+
+            expect(mockNativeModule.editorSetMarkAtSelectionScalar).toHaveBeenCalledWith(
+                1,
+                0,
+                0,
+                'link',
+                JSON.stringify({ href: 'https://example.com' })
+            );
+        });
+
+        it('unsetLink() calls bridge.unsetMark and applyEditorUpdate', () => {
+            const ref = createRef<NativeRichTextEditorRef>();
+            mockNativeModule.editorGetHtml
+                .mockReturnValueOnce('<p><a href="https://example.com">plain</a></p>')
+                .mockReturnValueOnce('<p>plain</p>');
+            render(<NativeRichTextEditor ref={ref} />);
+
+            act(() => {
+                ref.current!.unsetLink();
+            });
+
+            expect(mockNativeModule.editorUnsetMarkAtSelectionScalar).toHaveBeenCalledWith(
+                1,
+                0,
+                0,
+                'link'
+            );
+        });
+
         it('toggleList(orderedList) converts from bulletList in one native call', () => {
             const ref = createRef<NativeRichTextEditorRef>();
             mockNativeModule.editorGetCurrentState
@@ -653,6 +725,25 @@ describe('NativeRichTextEditor', () => {
             expect(mockApplyEditorUpdate).toHaveBeenCalledWith(MOCK_NODE_UPDATE_JSON);
         });
 
+        it('toggleBlockquote calls bridge.toggleBlockquote and applyEditorUpdate', () => {
+            const ref = createRef<NativeRichTextEditorRef>();
+            mockNativeModule.editorToggleBlockquoteAtSelectionScalar.mockReturnValueOnce(
+                MOCK_LIST_UPDATE_JSON
+            );
+            render(<NativeRichTextEditor ref={ref} />);
+
+            act(() => {
+                ref.current!.toggleBlockquote();
+            });
+
+            expect(mockNativeModule.editorToggleBlockquoteAtSelectionScalar).toHaveBeenCalledWith(
+                1,
+                0,
+                0
+            );
+            expect(mockApplyEditorUpdate).toHaveBeenCalledWith(MOCK_LIST_UPDATE_JSON);
+        });
+
         it('forwards native toolbar action events to onToolbarAction', () => {
             const onToolbarAction = jest.fn();
             const { getByTestId } = render(
@@ -666,6 +757,34 @@ describe('NativeRichTextEditor', () => {
             });
 
             expect(onToolbarAction).toHaveBeenCalledWith('insertMention');
+        });
+
+        it('routes native link toolbar actions through onRequestLink', () => {
+            const onRequestLink = jest.fn();
+            const { getByTestId } = render(<NativeRichTextEditor onRequestLink={onRequestLink} />);
+
+            mockNativeModule.editorSetSelection.mockClear();
+
+            act(() => {
+                getByTestId('native-editor-view').props.onToolbarAction({
+                    nativeEvent: { key: '__native-editor-link__' },
+                });
+            });
+
+            expect(onRequestLink).toHaveBeenCalledTimes(1);
+            const context = onRequestLink.mock.calls[0][0];
+            expect(context.isActive).toBe(false);
+            act(() => {
+                context.setLink('https://example.com');
+            });
+            expect(mockNativeModule.editorSetSelection).toHaveBeenCalledWith(1, 0, 0);
+            expect(mockNativeModule.editorSetMarkAtSelectionScalar).toHaveBeenCalledWith(
+                1,
+                0,
+                0,
+                'link',
+                JSON.stringify({ href: 'https://example.com' })
+            );
         });
 
         it('indentListItem calls bridge.indentListItem and applyEditorUpdate', () => {
@@ -708,10 +827,7 @@ describe('NativeRichTextEditor', () => {
                 ref.current!.insertText('hello');
             });
 
-            expect(mockNativeModule.editorReplaceSelectionText).toHaveBeenCalledWith(
-                1,
-                'hello'
-            );
+            expect(mockNativeModule.editorReplaceSelectionText).toHaveBeenCalledWith(1, 'hello');
             expect(mockNativeModule.editorGetSelection).not.toHaveBeenCalled();
             expect(mockNativeModule.editorInsertText).not.toHaveBeenCalled();
             expect(mockApplyEditorUpdate).toHaveBeenCalledWith(MOCK_INSERT_UPDATE_JSON);
@@ -766,10 +882,7 @@ describe('NativeRichTextEditor', () => {
                 ref.current!.setContentJson(doc);
             });
 
-            expect(mockNativeModule.editorReplaceJson).toHaveBeenCalledWith(
-                1,
-                JSON.stringify(doc)
-            );
+            expect(mockNativeModule.editorReplaceJson).toHaveBeenCalledWith(1, JSON.stringify(doc));
             expect(mockApplyEditorUpdate).toHaveBeenCalled();
         });
 
@@ -858,36 +971,25 @@ describe('NativeRichTextEditor', () => {
     describe('controlled mode', () => {
         it('uses value prop for initial setHtml instead of initialContent', () => {
             render(
-                <NativeRichTextEditor
-                    initialContent="<p>initial</p>"
-                    value="<p>controlled</p>"
-                />
+                <NativeRichTextEditor initialContent='<p>initial</p>' value='<p>controlled</p>' />
             );
 
             // value takes precedence — setHtml called with controlled value
-            expect(mockNativeModule.editorSetHtml).toHaveBeenCalledWith(
-                1,
-                '<p>controlled</p>'
-            );
+            expect(mockNativeModule.editorSetHtml).toHaveBeenCalledWith(1, '<p>controlled</p>');
         });
 
         it('calls replaceHtml (not setHtml) when value prop changes', () => {
             mockNativeModule.editorGetHtml.mockReturnValueOnce('<p>old</p>');
 
-            const { rerender } = render(
-                <NativeRichTextEditor value="<p>old</p>" />
-            );
+            const { rerender } = render(<NativeRichTextEditor value='<p>old</p>' />);
 
             mockNativeModule.editorReplaceHtml.mockClear();
             mockApplyEditorUpdate.mockClear();
             mockNativeModule.editorGetHtml.mockReturnValueOnce('<p>old</p>');
 
-            rerender(<NativeRichTextEditor value="<p>new</p>" />);
+            rerender(<NativeRichTextEditor value='<p>new</p>' />);
 
-            expect(mockNativeModule.editorReplaceHtml).toHaveBeenCalledWith(
-                1,
-                '<p>new</p>'
-            );
+            expect(mockNativeModule.editorReplaceHtml).toHaveBeenCalledWith(1, '<p>new</p>');
         });
 
         it('suppresses content callbacks for controlled updates', () => {
@@ -895,35 +997,25 @@ describe('NativeRichTextEditor', () => {
             mockNativeModule.editorGetHtml.mockReturnValueOnce('<p>old</p>');
 
             const { rerender } = render(
-                <NativeRichTextEditor
-                    value="<p>old</p>"
-                    onContentChange={onContentChange}
-                />
+                <NativeRichTextEditor value='<p>old</p>' onContentChange={onContentChange} />
             );
 
             onContentChange.mockClear();
             mockNativeModule.editorGetHtml.mockReturnValueOnce('<p>old</p>');
 
-            rerender(
-                <NativeRichTextEditor
-                    value="<p>new</p>"
-                    onContentChange={onContentChange}
-                />
-            );
+            rerender(<NativeRichTextEditor value='<p>new</p>' onContentChange={onContentChange} />);
 
             // Content callbacks should be suppressed for controlled value changes
             expect(onContentChange).not.toHaveBeenCalled();
         });
 
         it('does not call replaceHtml when value is unchanged', () => {
-            const { rerender } = render(
-                <NativeRichTextEditor value="<p>same</p>" />
-            );
+            const { rerender } = render(<NativeRichTextEditor value='<p>same</p>' />);
 
             mockNativeModule.editorReplaceHtml.mockClear();
             mockNativeModule.editorGetHtml.mockReturnValue('<p>same</p>');
 
-            rerender(<NativeRichTextEditor value="<p>same</p>" />);
+            rerender(<NativeRichTextEditor value='<p>same</p>' />);
 
             expect(mockNativeModule.editorReplaceHtml).not.toHaveBeenCalled();
         });
@@ -932,10 +1024,7 @@ describe('NativeRichTextEditor', () => {
             const doc = { type: 'doc', content: [] };
             render(<NativeRichTextEditor valueJSON={doc} />);
 
-            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(
-                1,
-                JSON.stringify(doc)
-            );
+            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(1, JSON.stringify(doc));
         });
 
         it('does not call replaceJson when valueJSON is unchanged', () => {
@@ -943,9 +1032,7 @@ describe('NativeRichTextEditor', () => {
             // Mock getJson to return the same doc
             mockNativeModule.editorGetJson.mockReturnValue(JSON.stringify(doc));
 
-            const { rerender } = render(
-                <NativeRichTextEditor valueJSON={doc} />
-            );
+            const { rerender } = render(<NativeRichTextEditor valueJSON={doc} />);
 
             mockNativeModule.editorReplaceJson.mockClear();
 
@@ -958,6 +1045,93 @@ describe('NativeRichTextEditor', () => {
 
             expect(mockNativeModule.editorReplaceJson).not.toHaveBeenCalled();
         });
+
+        it('preserves the live selection when valueJSON changes externally', () => {
+            const initialDoc = { type: 'doc', content: [{ type: 'paragraph' }] };
+            const nextDoc = {
+                type: 'doc',
+                content: [
+                    {
+                        type: 'paragraph',
+                        content: [{ type: 'text', text: 'remote change' }],
+                    },
+                ],
+            };
+
+            mockNativeModule.editorGetJson
+                .mockReturnValueOnce(JSON.stringify(initialDoc))
+                .mockReturnValueOnce(JSON.stringify(initialDoc))
+                .mockReturnValueOnce(JSON.stringify(nextDoc));
+            mockNativeModule.editorGetCurrentState
+                .mockReturnValueOnce(MOCK_EMPTY_UPDATE_JSON)
+                .mockReturnValueOnce(
+                    JSON.stringify({
+                        renderElements: [],
+                        selection: { type: 'text', anchor: 5, head: 5 },
+                        activeState: {
+                            marks: {},
+                            nodes: { paragraph: true },
+                            commands: {},
+                            allowedMarks: [],
+                            insertableNodes: [],
+                        },
+                        historyState: { canUndo: false, canRedo: false },
+                    })
+                );
+            mockNativeModule.editorReplaceJson.mockReturnValue(
+                JSON.stringify({
+                    renderElements: [],
+                    selection: { type: 'text', anchor: 0, head: 0 },
+                    activeState: {
+                        marks: {},
+                        nodes: { paragraph: true },
+                        commands: {},
+                        allowedMarks: [],
+                        insertableNodes: [],
+                    },
+                    historyState: { canUndo: true, canRedo: false },
+                })
+            );
+
+            const onSelectionChange = jest.fn();
+            const { rerender, getByTestId } = render(
+                <NativeRichTextEditor
+                    valueJSON={initialDoc}
+                    onSelectionChange={onSelectionChange}
+                />
+            );
+
+            act(() => {
+                getByTestId('native-editor-view').props.onSelectionChange({
+                    nativeEvent: { anchor: 5, head: 5 },
+                });
+            });
+
+            onSelectionChange.mockClear();
+            mockApplyEditorUpdate.mockClear();
+            mockNativeModule.editorSetSelection.mockClear();
+
+            rerender(
+                <NativeRichTextEditor valueJSON={nextDoc} onSelectionChange={onSelectionChange} />
+            );
+
+            expect(mockNativeModule.editorReplaceJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify(nextDoc)
+            );
+            expect(mockNativeModule.editorSetSelection).toHaveBeenCalledWith(1, 5, 5);
+            expect(mockApplyEditorUpdate).toHaveBeenCalledTimes(1);
+            expect(JSON.parse(mockApplyEditorUpdate.mock.calls[0][0]).selection).toEqual({
+                type: 'text',
+                anchor: 5,
+                head: 5,
+            });
+            expect(onSelectionChange).toHaveBeenCalledWith({
+                type: 'text',
+                anchor: 5,
+                head: 5,
+            });
+        });
     });
 
     // ── Callbacks ───────────────────────────────────────────────
@@ -966,12 +1140,7 @@ describe('NativeRichTextEditor', () => {
         it('onActiveStateChange fires with ActiveState from update', () => {
             const onActiveStateChange = jest.fn();
             const ref = createRef<NativeRichTextEditorRef>();
-            render(
-                <NativeRichTextEditor
-                    ref={ref}
-                    onActiveStateChange={onActiveStateChange}
-                />
-            );
+            render(<NativeRichTextEditor ref={ref} onActiveStateChange={onActiveStateChange} />);
 
             act(() => {
                 ref.current!.toggleMark('bold');
@@ -979,6 +1148,7 @@ describe('NativeRichTextEditor', () => {
 
             expect(onActiveStateChange).toHaveBeenCalledWith({
                 marks: { bold: true },
+                markAttrs: {},
                 nodes: { paragraph: true },
                 commands: {},
                 allowedMarks: [],
@@ -989,31 +1159,19 @@ describe('NativeRichTextEditor', () => {
         it('onContentChangeJSON fires with JSON from bridge', () => {
             const onContentChangeJSON = jest.fn();
             const ref = createRef<NativeRichTextEditorRef>();
-            render(
-                <NativeRichTextEditor
-                    ref={ref}
-                    onContentChangeJSON={onContentChangeJSON}
-                />
-            );
+            render(<NativeRichTextEditor ref={ref} onContentChangeJSON={onContentChangeJSON} />);
 
             act(() => {
                 ref.current!.toggleMark('bold');
             });
 
-            expect(onContentChangeJSON).toHaveBeenCalledWith(
-                JSON.parse(MOCK_DOCUMENT_JSON_STR)
-            );
+            expect(onContentChangeJSON).toHaveBeenCalledWith(JSON.parse(MOCK_DOCUMENT_JSON_STR));
         });
 
         it('onContentChange fires with HTML from bridge', () => {
             const onContentChange = jest.fn();
             const ref = createRef<NativeRichTextEditorRef>();
-            render(
-                <NativeRichTextEditor
-                    ref={ref}
-                    onContentChange={onContentChange}
-                />
-            );
+            render(<NativeRichTextEditor ref={ref} onContentChange={onContentChange} />);
 
             act(() => {
                 ref.current!.setContent('<p>new</p>');
@@ -1023,17 +1181,13 @@ describe('NativeRichTextEditor', () => {
         });
 
         it('passes onEditorUpdate handler to native view', () => {
-            const { getByTestId } = render(
-                <NativeRichTextEditor onContentChange={jest.fn()} />
-            );
+            const { getByTestId } = render(<NativeRichTextEditor onContentChange={jest.fn()} />);
             const view = getByTestId('native-editor-view');
             expect(typeof view.props.onEditorUpdate).toBe('function');
         });
 
         it('passes onSelectionChange handler to native view', () => {
-            const { getByTestId } = render(
-                <NativeRichTextEditor onSelectionChange={jest.fn()} />
-            );
+            const { getByTestId } = render(<NativeRichTextEditor onSelectionChange={jest.fn()} />);
             const view = getByTestId('native-editor-view');
             expect(typeof view.props.onSelectionChange).toBe('function');
         });
@@ -1087,6 +1241,7 @@ describe('NativeRichTextEditor', () => {
             expect(mockNativeModule.editorGetCurrentState).toHaveBeenCalledTimes(2);
             expect(onActiveStateChange).toHaveBeenCalledWith({
                 marks: {},
+                markAttrs: {},
                 nodes: { bulletList: true, listItem: true },
                 commands: { indentList: false, outdentList: true },
                 allowedMarks: ['bold'],
@@ -1139,26 +1294,39 @@ describe('NativeRichTextEditor', () => {
         });
 
         it('passes onFocusChange handler to native view', () => {
-            const { getByTestId } = render(
-                <NativeRichTextEditor onFocus={jest.fn()} />
-            );
+            const { getByTestId } = render(<NativeRichTextEditor onFocus={jest.fn()} />);
             const view = getByTestId('native-editor-view');
             expect(typeof view.props.onFocusChange).toBe('function');
         });
 
         it('renders the JS toolbar inline when toolbarPlacement is inline', () => {
-            const { getByTestId } = render(
-                <NativeRichTextEditor toolbarPlacement="inline" />
-            );
+            const { getByTestId } = render(<NativeRichTextEditor toolbarPlacement='inline' />);
 
             expect(getByTestId('native-editor-js-toolbar')).toBeTruthy();
         });
 
         it('grows the native view height from native content-height events in autoGrow mode', () => {
             const { getByTestId } = render(
+                <NativeRichTextEditor heightBehavior='autoGrow' style={{ minHeight: 120 }} />
+            );
+
+            act(() => {
+                getByTestId('native-editor-view').props.onContentHeightChange({
+                    nativeEvent: { contentHeight: 240 },
+                });
+            });
+
+            expect(getByTestId('native-editor-view').props.style).toEqual([
+                { minHeight: 120 },
+                { height: 240 },
+            ]);
+        });
+
+        it('mirrors containerStyle minHeight into autoGrow native height styles', () => {
+            const { getByTestId } = render(
                 <NativeRichTextEditor
-                    heightBehavior="autoGrow"
-                    style={{ minHeight: 120 }}
+                    heightBehavior='autoGrow'
+                    containerStyle={{ minHeight: 120 }}
                 />
             );
 
@@ -1180,16 +1348,11 @@ describe('NativeRichTextEditor', () => {
                 configurable: true,
                 value: 'android',
             });
-            const pixelRatioSpy = jest
-                .spyOn(PixelRatio, 'get')
-                .mockReturnValue(2.625);
+            const pixelRatioSpy = jest.spyOn(PixelRatio, 'get').mockReturnValue(2.625);
 
             try {
                 const { getByTestId } = render(
-                    <NativeRichTextEditor
-                        heightBehavior="autoGrow"
-                        style={{ minHeight: 120 }}
-                    />
+                    <NativeRichTextEditor heightBehavior='autoGrow' style={{ minHeight: 120 }} />
                 );
 
                 act(() => {
@@ -1213,10 +1376,7 @@ describe('NativeRichTextEditor', () => {
 
         it('updates autoGrow height across sequential native content-height events', () => {
             const { getByTestId } = render(
-                <NativeRichTextEditor
-                    heightBehavior="autoGrow"
-                    style={{ minHeight: 120 }}
-                />
+                <NativeRichTextEditor heightBehavior='autoGrow' style={{ minHeight: 120 }} />
             );
 
             act(() => {
@@ -1277,6 +1437,7 @@ describe('NativeRichTextEditor', () => {
 
             expect(onActiveStateChange).toHaveBeenCalledWith({
                 marks: { bold: true },
+                markAttrs: {},
                 nodes: { paragraph: true },
                 commands: {},
                 allowedMarks: [],

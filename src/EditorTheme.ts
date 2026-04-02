@@ -63,7 +63,18 @@ export interface EditorHorizontalRuleTheme {
     verticalMargin?: number;
 }
 
+export interface EditorBlockquoteTheme {
+    text?: EditorTextStyle;
+    indent?: number;
+    borderColor?: string;
+    borderWidth?: number;
+    markerGap?: number;
+}
+
+export type EditorToolbarAppearance = 'custom' | 'native';
+
 export interface EditorToolbarTheme {
+    appearance?: EditorToolbarAppearance;
     backgroundColor?: string;
     borderColor?: string;
     borderWidth?: number;
@@ -88,6 +99,7 @@ export interface EditorContentInsets {
 export interface EditorTheme {
     text?: EditorTextStyle;
     paragraph?: EditorTextStyle;
+    blockquote?: EditorBlockquoteTheme;
     headings?: EditorHeadingTheme;
     list?: EditorListTheme;
     horizontalRule?: EditorHorizontalRuleTheme;
@@ -100,9 +112,7 @@ export interface EditorTheme {
 
 function stripUndefined(value: unknown): unknown {
     if (Array.isArray(value)) {
-        return value
-            .map((item) => stripUndefined(item))
-            .filter((item) => item !== undefined);
+        return value.map((item) => stripUndefined(item)).filter((item) => item !== undefined);
     }
 
     if (value != null && typeof value === 'object') {

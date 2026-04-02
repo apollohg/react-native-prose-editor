@@ -2,10 +2,24 @@ import { requireNativeModule } from 'expo-modules-core';
 
 const ERR_DESTROYED = 'NativeEditorBridge: editor has been destroyed';
 const ERR_NATIVE_RESPONSE = 'NativeEditorBridge: invalid JSON response from native module';
+const ERR_INVALID_ENCODED_STATE = 'NativeEditorBridge: invalid encoded collaboration state';
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 export interface NativeEditorModule {
     editorCreate(configJson: string): number;
     editorDestroy(editorId: number): void;
+    collaborationSessionCreate(configJson: string): number;
+    collaborationSessionDestroy(sessionId: number): void;
+    collaborationSessionGetDocumentJson(sessionId: number): string;
+    collaborationSessionGetEncodedState(sessionId: number): string;
+    collaborationSessionGetPeersJson(sessionId: number): string;
+    collaborationSessionStart(sessionId: number): string;
+    collaborationSessionApplyLocalDocumentJson(sessionId: number, json: string): string;
+    collaborationSessionApplyEncodedState(sessionId: number, encodedStateJson: string): string;
+    collaborationSessionReplaceEncodedState(sessionId: number, encodedStateJson: string): string;
+    collaborationSessionHandleMessage(sessionId: number, messageJson: string): string;
+    collaborationSessionSetLocalAwareness(sessionId: number, awarenessJson: string): string;
+    collaborationSessionClearLocalAwareness(sessionId: number): string;
     editorSetHtml(editorId: number, html: string): string;
     editorGetHtml(editorId: number): string;
     editorSetJson(editorId: number, json: string): string;
@@ -25,13 +39,21 @@ export interface NativeEditorModule {
         json: string
     ): string;
     editorToggleMark(editorId: number, markName: string): string;
+    editorSetMark(editorId: number, markName: string, attrsJson: string): string;
+    editorUnsetMark(editorId: number, markName: string): string;
+    editorToggleBlockquote(editorId: number): string;
     editorSetSelection(editorId: number, anchor: number, head: number): void;
     editorGetSelection(editorId: number): string;
     editorGetCurrentState(editorId: number): string;
     // Scalar-position APIs (used by native views internally)
     editorInsertTextScalar(editorId: number, scalarPos: number, text: string): string;
     editorDeleteScalarRange(editorId: number, scalarFrom: number, scalarTo: number): string;
-    editorReplaceTextScalar(editorId: number, scalarFrom: number, scalarTo: number, text: string): string;
+    editorReplaceTextScalar(
+        editorId: number,
+        scalarFrom: number,
+        scalarTo: number,
+        text: string
+    ): string;
     editorSplitBlockScalar(editorId: number, scalarPos: number): string;
     editorDeleteAndSplitScalar(editorId: number, scalarFrom: number, scalarTo: number): string;
     editorSetSelectionScalar(editorId: number, scalarAnchor: number, scalarHead: number): void;
@@ -40,6 +62,24 @@ export interface NativeEditorModule {
         scalarAnchor: number,
         scalarHead: number,
         markName: string
+    ): string;
+    editorSetMarkAtSelectionScalar(
+        editorId: number,
+        scalarAnchor: number,
+        scalarHead: number,
+        markName: string,
+        attrsJson: string
+    ): string;
+    editorUnsetMarkAtSelectionScalar(
+        editorId: number,
+        scalarAnchor: number,
+        scalarHead: number,
+        markName: string
+    ): string;
+    editorToggleBlockquoteAtSelectionScalar(
+        editorId: number,
+        scalarAnchor: number,
+        scalarHead: number
     ): string;
     editorWrapInListAtSelectionScalar(
         editorId: number,
@@ -97,6 +137,13 @@ export interface ListContext {
     isLast: boolean;
 }
 
+export interface RenderMarkWithAttrs {
+    type: string;
+    [key: string]: unknown;
+}
+
+export type RenderMark = string | RenderMarkWithAttrs;
+
 export interface RenderElement {
     type:
         | 'textRun'
@@ -107,7 +154,7 @@ export interface RenderElement {
         | 'opaqueInlineAtom'
         | 'opaqueBlockAtom';
     text?: string;
-    marks?: string[];
+    marks?: RenderMark[];
     nodeType?: string;
     depth?: number;
     docPos?: number;
@@ -117,6 +164,7 @@ export interface RenderElement {
 
 export interface ActiveState {
     marks: Record<string, boolean>;
+    markAttrs: Record<string, Record<string, unknown>>;
     nodes: Record<string, boolean>;
     commands: Record<string, boolean>;
     allowedMarks: string[];
@@ -139,10 +187,27 @@ export interface DocumentJSON {
     [key: string]: unknown;
 }
 
+export interface CollaborationPeer {
+    clientId: number;
+    isLocal: boolean;
+    state: Record<string, unknown> | null;
+}
+
+export interface CollaborationResult {
+    messages: number[][];
+    documentChanged: boolean;
+    documentJson?: DocumentJSON;
+    peersChanged: boolean;
+    peers?: CollaborationPeer[];
+}
+
+export type EncodedCollaborationStateInput = Uint8Array | readonly number[] | string;
+
 export function normalizeActiveState(raw: unknown): ActiveState {
     const obj = (raw as Record<string, unknown>) ?? {};
     return {
         marks: (obj.marks ?? {}) as Record<string, boolean>,
+        markAttrs: (obj.markAttrs ?? {}) as Record<string, Record<string, unknown>>,
         nodes: (obj.nodes ?? {}) as Record<string, boolean>,
         commands: (obj.commands ?? {}) as Record<string, boolean>,
         allowedMarks: (obj.allowedMarks ?? []) as string[],
@@ -207,11 +272,135 @@ function parseDocumentJSON(json: string): DocumentJSON {
             typeof parsed === 'object' &&
             'error' in (parsed as Record<string, unknown>)
         ) {
-            throw new Error(
-                `NativeEditorBridge: ${(parsed as Record<string, unknown>).error}`
-            );
+            throw new Error(`NativeEditorBridge: ${(parsed as Record<string, unknown>).error}`);
         }
         return parsed;
+    } catch (e) {
+        if (e instanceof Error && e.message.startsWith('NativeEditorBridge:')) {
+            throw e;
+        }
+        throw new Error(ERR_NATIVE_RESPONSE);
+    }
+}
+
+function parseCollaborationPeersJson(json: string): CollaborationPeer[] {
+    if (!json || json === '[]') return [];
+    try {
+        const parsed = JSON.parse(json) as CollaborationPeer[];
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        throw new Error(ERR_NATIVE_RESPONSE);
+    }
+}
+
+function parseByteArrayJson(json: string): Uint8Array {
+    if (!json || json === '[]') return new Uint8Array();
+    try {
+        const parsed = JSON.parse(json) as unknown;
+        if (!Array.isArray(parsed)) {
+            throw new Error(ERR_NATIVE_RESPONSE);
+        }
+        return Uint8Array.from(parsed as number[]);
+    } catch (e) {
+        if (e instanceof Error && e.message.startsWith('NativeEditorBridge:')) {
+            throw e;
+        }
+        throw new Error(ERR_NATIVE_RESPONSE);
+    }
+}
+
+function bytesToBase64(bytes: readonly number[]): string {
+    let output = '';
+    for (let index = 0; index < bytes.length; index += 3) {
+        const byte1 = bytes[index] ?? 0;
+        const byte2 = bytes[index + 1] ?? 0;
+        const byte3 = bytes[index + 2] ?? 0;
+        const chunk = (byte1 << 16) | (byte2 << 8) | byte3;
+
+        output += BASE64_ALPHABET[(chunk >> 18) & 0x3f];
+        output += BASE64_ALPHABET[(chunk >> 12) & 0x3f];
+        output += index + 1 < bytes.length ? BASE64_ALPHABET[(chunk >> 6) & 0x3f] : '=';
+        output += index + 2 < bytes.length ? BASE64_ALPHABET[chunk & 0x3f] : '=';
+    }
+    return output;
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+    const normalized = base64.replace(/\s+/g, '');
+    if (normalized.length === 0) return new Uint8Array();
+    if (normalized.length % 4 === 1) {
+        throw new Error(ERR_INVALID_ENCODED_STATE);
+    }
+
+    const bytes: number[] = [];
+    for (let index = 0; index < normalized.length; index += 4) {
+        const chunk = normalized.slice(index, index + 4);
+        const values = chunk.split('').map((char, charIndex) => {
+            if (char === '=') {
+                return charIndex >= 2 ? 0 : -1;
+            }
+            const value = BASE64_ALPHABET.indexOf(char);
+            return value;
+        });
+
+        if (values[0] < 0 || values[1] < 0 || values.some((value) => value < 0)) {
+            throw new Error(ERR_INVALID_ENCODED_STATE);
+        }
+
+        const combined = (values[0] << 18) | (values[1] << 12) | (values[2] << 6) | values[3];
+
+        bytes.push((combined >> 16) & 0xff);
+        if (chunk[2] !== '=') {
+            bytes.push((combined >> 8) & 0xff);
+        }
+        if (chunk[3] !== '=') {
+            bytes.push(combined & 0xff);
+        }
+    }
+
+    return Uint8Array.from(bytes);
+}
+
+function normalizeEncodedStateInput(encodedState: EncodedCollaborationStateInput): number[] {
+    if (typeof encodedState === 'string') {
+        return Array.from(base64ToBytes(encodedState));
+    }
+    return Array.from(encodedState);
+}
+
+export function encodeCollaborationStateBase64(
+    encodedState: EncodedCollaborationStateInput
+): string {
+    return bytesToBase64(normalizeEncodedStateInput(encodedState));
+}
+
+export function decodeCollaborationStateBase64(base64: string): Uint8Array {
+    return base64ToBytes(base64);
+}
+
+export function parseCollaborationResultJson(json: string): CollaborationResult {
+    if (!json || json === '') {
+        return {
+            messages: [],
+            documentChanged: false,
+            peersChanged: false,
+        };
+    }
+    try {
+        const parsed = JSON.parse(json) as Record<string, unknown>;
+        if ('error' in parsed) {
+            throw new Error(`NativeEditorBridge: ${parsed.error}`);
+        }
+        return {
+            messages: Array.isArray(parsed.messages) ? (parsed.messages as number[][]) : [],
+            documentChanged: parsed.documentChanged === true,
+            documentJson:
+                parsed.documentJson && typeof parsed.documentJson === 'object'
+                    ? (parsed.documentJson as DocumentJSON)
+                    : undefined,
+            peersChanged: parsed.peersChanged === true,
+            peers: Array.isArray(parsed.peers) ? (parsed.peers as CollaborationPeer[]) : undefined,
+        };
     } catch (e) {
         if (e instanceof Error && e.message.startsWith('NativeEditorBridge:')) {
             throw e;
@@ -291,10 +480,7 @@ export class NativeEditorBridge {
     /** Set content from ProseMirror JSON. Returns render elements. */
     setJson(doc: DocumentJSON): RenderElement[] {
         this.assertNotDestroyed();
-        const json = getNativeModule().editorSetJson(
-            this._editorId,
-            JSON.stringify(doc)
-        );
+        const json = getNativeModule().editorSetJson(this._editorId, JSON.stringify(doc));
         return parseRenderElements(json);
     }
 
@@ -344,6 +530,58 @@ export class NativeEditorBridge {
                   markType
               )
             : getNativeModule().editorToggleMark(this._editorId, markType);
+        const update = parseEditorUpdateJson(json);
+        if (update) this._lastSelection = update.selection;
+        return update;
+    }
+
+    /** Set a mark with attrs on the current selection. */
+    setMark(markType: string, attrs: Record<string, unknown>): EditorUpdate | null {
+        this.assertNotDestroyed();
+        const attrsJson = JSON.stringify(attrs);
+        const scalarSelection = this.currentScalarSelection();
+        const json = scalarSelection
+            ? getNativeModule().editorSetMarkAtSelectionScalar(
+                  this._editorId,
+                  scalarSelection.anchor,
+                  scalarSelection.head,
+                  markType,
+                  attrsJson
+              )
+            : getNativeModule().editorSetMark(this._editorId, markType, attrsJson);
+        const update = parseEditorUpdateJson(json);
+        if (update) this._lastSelection = update.selection;
+        return update;
+    }
+
+    /** Remove a mark from the current selection. */
+    unsetMark(markType: string): EditorUpdate | null {
+        this.assertNotDestroyed();
+        const scalarSelection = this.currentScalarSelection();
+        const json = scalarSelection
+            ? getNativeModule().editorUnsetMarkAtSelectionScalar(
+                  this._editorId,
+                  scalarSelection.anchor,
+                  scalarSelection.head,
+                  markType
+              )
+            : getNativeModule().editorUnsetMark(this._editorId, markType);
+        const update = parseEditorUpdateJson(json);
+        if (update) this._lastSelection = update.selection;
+        return update;
+    }
+
+    /** Toggle blockquote wrapping for the current block selection. */
+    toggleBlockquote(): EditorUpdate | null {
+        this.assertNotDestroyed();
+        const scalarSelection = this.currentScalarSelection();
+        const json = scalarSelection
+            ? getNativeModule().editorToggleBlockquoteAtSelectionScalar(
+                  this._editorId,
+                  scalarSelection.anchor,
+                  scalarSelection.head
+              )
+            : getNativeModule().editorToggleBlockquote(this._editorId);
         const update = parseEditorUpdateJson(json);
         if (update) this._lastSelection = update.selection;
         return update;
@@ -407,10 +645,7 @@ export class NativeEditorBridge {
     /** Insert JSON content at the current selection. */
     insertContentJson(doc: DocumentJSON): EditorUpdate | null {
         this.assertNotDestroyed();
-        const json = getNativeModule().editorInsertContentJson(
-            this._editorId,
-            JSON.stringify(doc)
-        );
+        const json = getNativeModule().editorInsertContentJson(this._editorId, JSON.stringify(doc));
         const update = parseEditorUpdateJson(json);
         if (update) this._lastSelection = update.selection;
         return update;
@@ -446,10 +681,7 @@ export class NativeEditorBridge {
     /** Replace entire document with JSON via transaction (preserves undo history). */
     replaceJson(doc: DocumentJSON): EditorUpdate | null {
         this.assertNotDestroyed();
-        const json = getNativeModule().editorReplaceJson(
-            this._editorId,
-            JSON.stringify(doc)
-        );
+        const json = getNativeModule().editorReplaceJson(this._editorId, JSON.stringify(doc));
         const update = parseEditorUpdateJson(json);
         if (update) this._lastSelection = update.selection;
         return update;
@@ -603,5 +835,144 @@ export class NativeEditorBridge {
         }
 
         return null;
+    }
+}
+
+export class NativeCollaborationBridge {
+    private _sessionId: number;
+    private _destroyed = false;
+
+    private constructor(sessionId: number) {
+        this._sessionId = sessionId;
+    }
+
+    static create(config?: {
+        clientId?: number;
+        fragmentName?: string;
+        initialDocumentJson?: DocumentJSON;
+        initialEncodedState?: EncodedCollaborationStateInput;
+        localAwareness?: Record<string, unknown>;
+    }): NativeCollaborationBridge {
+        const { initialEncodedState, ...normalizedConfig } = config ?? {};
+        const id = getNativeModule().collaborationSessionCreate(JSON.stringify(normalizedConfig));
+        const bridge = new NativeCollaborationBridge(id);
+        if (initialEncodedState != null) {
+            try {
+                bridge.replaceEncodedState(initialEncodedState);
+            } catch (error) {
+                bridge.destroy();
+                throw error;
+            }
+        }
+        return bridge;
+    }
+
+    get sessionId(): number {
+        return this._sessionId;
+    }
+
+    get isDestroyed(): boolean {
+        return this._destroyed;
+    }
+
+    destroy(): void {
+        if (this._destroyed) return;
+        this._destroyed = true;
+        getNativeModule().collaborationSessionDestroy(this._sessionId);
+    }
+
+    getDocumentJson(): DocumentJSON {
+        this.assertNotDestroyed();
+        return parseDocumentJSON(
+            getNativeModule().collaborationSessionGetDocumentJson(this._sessionId)
+        );
+    }
+
+    getEncodedState(): Uint8Array {
+        this.assertNotDestroyed();
+        return parseByteArrayJson(
+            getNativeModule().collaborationSessionGetEncodedState(this._sessionId)
+        );
+    }
+
+    getEncodedStateBase64(): string {
+        return encodeCollaborationStateBase64(this.getEncodedState());
+    }
+
+    getPeers(): CollaborationPeer[] {
+        this.assertNotDestroyed();
+        return parseCollaborationPeersJson(
+            getNativeModule().collaborationSessionGetPeersJson(this._sessionId)
+        );
+    }
+
+    start(): CollaborationResult {
+        this.assertNotDestroyed();
+        return parseCollaborationResultJson(
+            getNativeModule().collaborationSessionStart(this._sessionId)
+        );
+    }
+
+    applyLocalDocumentJson(doc: DocumentJSON): CollaborationResult {
+        this.assertNotDestroyed();
+        return parseCollaborationResultJson(
+            getNativeModule().collaborationSessionApplyLocalDocumentJson(
+                this._sessionId,
+                JSON.stringify(doc)
+            )
+        );
+    }
+
+    applyEncodedState(encodedState: EncodedCollaborationStateInput): CollaborationResult {
+        this.assertNotDestroyed();
+        return parseCollaborationResultJson(
+            getNativeModule().collaborationSessionApplyEncodedState(
+                this._sessionId,
+                JSON.stringify(normalizeEncodedStateInput(encodedState))
+            )
+        );
+    }
+
+    replaceEncodedState(encodedState: EncodedCollaborationStateInput): CollaborationResult {
+        this.assertNotDestroyed();
+        return parseCollaborationResultJson(
+            getNativeModule().collaborationSessionReplaceEncodedState(
+                this._sessionId,
+                JSON.stringify(normalizeEncodedStateInput(encodedState))
+            )
+        );
+    }
+
+    handleMessage(bytes: readonly number[]): CollaborationResult {
+        this.assertNotDestroyed();
+        return parseCollaborationResultJson(
+            getNativeModule().collaborationSessionHandleMessage(
+                this._sessionId,
+                JSON.stringify(Array.from(bytes))
+            )
+        );
+    }
+
+    setLocalAwareness(state: Record<string, unknown>): CollaborationResult {
+        this.assertNotDestroyed();
+        return parseCollaborationResultJson(
+            getNativeModule().collaborationSessionSetLocalAwareness(
+                this._sessionId,
+                JSON.stringify(state)
+            )
+        );
+    }
+
+    clearLocalAwareness(): CollaborationResult {
+        this.assertNotDestroyed();
+        return parseCollaborationResultJson(
+            getNativeModule().collaborationSessionClearLocalAwareness(this._sessionId)
+        );
+    }
+
+    private assertNotDestroyed(): void {
+        if (this._destroyed) {
+            throw new Error(ERR_DESTROYED);
+        }
     }
 }
