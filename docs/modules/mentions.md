@@ -150,13 +150,24 @@ import {
   tiptapSchema,
   withMentionsSchema,
   mentionNodeSpec,
+  MENTION_NODE_NAME,
 } from '@apollohg/react-native-prose-editor';
 
 // Automatic — adds the default mention node if not already present
 const schema = withMentionsSchema(tiptapSchema);
 
 // Manual — use mentionNodeSpec() to get the default spec and customize it
+const customSpec = { ...mentionNodeSpec(), attrs: { label: { default: null }, id: { default: null } } };
 ```
+
+### Schema Helpers
+
+| Export | Type | Description |
+| --- | --- | --- |
+| `MENTION_NODE_NAME` | `string` | The node name used for mentions (`'mention'`). |
+| `mentionNodeSpec()` | `() => NodeSpec` | Returns the default mention `NodeSpec` (inline, void, with a `label` attribute). |
+| `withMentionsSchema(schema)` | `(schema: SchemaDefinition) => SchemaDefinition` | Returns a new schema with the mention node added. No-op if a node named `mention` already exists. |
+| `buildMentionFragmentJson(attrs)` | `(attrs: Record<string, unknown>) => DocumentJSON` | Builds a `DocumentJSON` fragment containing a single mention node with the given attributes. Useful for programmatic mention insertion via `insertContentJson`. |
 
 ## Full Configuration
 
@@ -181,6 +192,27 @@ interface EditorAddons {
 | `theme` | `EditorMentionTheme` | — | Mention styling. Can also be set via `theme.mentions` on the editor. |
 | `onQueryChange` | `(event) => void` | — | Fires as the user types after the trigger character. |
 | `onSelect` | `(event) => void` | — | Fires when a suggestion is selected. |
+
+## `EditorAddonEvent`
+
+The internal event type used by the native bridge for addon callbacks. You do not typically use this type directly — the addon config callbacks (`onQueryChange`, `onSelect`) are the intended public API. Exported for advanced use cases that need to handle raw bridge events.
+
+```ts
+type EditorAddonEvent =
+  | {
+      type: 'mentionsQueryChange';
+      query: string;
+      trigger: string;
+      range: { anchor: number; head: number };
+      isActive: boolean;
+    }
+  | {
+      type: 'mentionsSelect';
+      trigger: string;
+      suggestionKey: string;
+      attrs: Record<string, unknown>;
+    };
+```
 
 ## Related Docs
 

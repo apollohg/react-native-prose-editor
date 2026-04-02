@@ -108,6 +108,35 @@ const [doc, setDoc] = useState<DocumentJSON>({
 />;
 ```
 
+### Collaboration
+
+In collaboration mode, do not treat `valueJSON` like ordinary app-owned controlled state.
+
+Instead, bind the editor directly to `useYjsCollaboration()`:
+
+```tsx
+const collaboration = useYjsCollaboration({
+  documentId: 'doc-123',
+  createWebSocket: () => new WebSocket('wss://example.com/yjs/doc-123'),
+  localAwareness: {
+    userId: 'u1',
+    name: 'Jayden',
+    color: '#0A84FF',
+  },
+});
+
+<NativeRichTextEditor
+  valueJSON={collaboration.editorBindings.valueJSON}
+  onContentChangeJSON={collaboration.editorBindings.onContentChangeJSON}
+  onSelectionChange={collaboration.editorBindings.onSelectionChange}
+  onFocus={collaboration.editorBindings.onFocus}
+  onBlur={collaboration.editorBindings.onBlur}
+  remoteSelections={collaboration.editorBindings.remoteSelections}
+/>;
+```
+
+Do not keep a second app-level JSON document state and feed that into `valueJSON` at the same time. In collaboration mode, the collaboration controller is the source of truth.
+
 ## Height Behavior
 
 By default, the editor has a fixed height and scrolls internally. To have it grow with content inside a parent `ScrollView`, use `heightBehavior`:
@@ -124,7 +153,8 @@ If that parent screen also avoids the keyboard with `KeyboardAvoidingView`, keep
 ## Where To Go Next
 
 - [Installation Guide](./installation.md) for setup and platform prerequisites
+- [Collaboration Guide](../modules/collaboration.md) for the correct Yjs binding and persistence model
 - [Toolbar Setup](./toolbar-setup.md) for toolbar configuration patterns
-- [Mentions Guide](./mentions.md) for the @-mentions addon
+- [Mentions Guide](../modules/mentions.md) for the @-mentions addon
 - [Styling Guide](./styling.md) for editor, toolbar, and mention styling
 - [NativeRichTextEditor Reference](../reference/native-rich-text-editor.md) for all props and ref methods

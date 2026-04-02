@@ -9,6 +9,7 @@ interface EditorTheme {
   text?: EditorTextStyle;
   paragraph?: EditorTextStyle;
   headings?: EditorHeadingTheme;
+  blockquote?: EditorBlockquoteTheme;
   list?: EditorListTheme;
   horizontalRule?: EditorHorizontalRuleTheme;
   mentions?: EditorMentionTheme;
@@ -24,6 +25,7 @@ interface EditorTheme {
 | `text` | `EditorTextStyle` | Base text styling applied across the editor. |
 | `paragraph` | `EditorTextStyle` | Paragraph-specific overrides layered on top of `text`. |
 | `headings` | `EditorHeadingTheme` | Optional `h1` through `h6` styling. Only applies if your schema includes heading nodes. |
+| `blockquote` | `EditorBlockquoteTheme` | Blockquote indentation, quote bar, and text styling. |
 | `list` | `EditorListTheme` | List indent, spacing, and marker styling. |
 | `horizontalRule` | `EditorHorizontalRuleTheme` | Horizontal rule appearance. |
 | `mentions` | `EditorMentionTheme` | Mention inline chip and native suggestion styling. |
@@ -36,7 +38,7 @@ interface EditorTheme {
 
 All theme fields are optional. When omitted:
 
-- `text`, `paragraph`, `headings`, `list`, `horizontalRule`, and `mentions` use platform-native defaults.
+- `text`, `paragraph`, `headings`, `blockquote`, `list`, `horizontalRule`, and `mentions` use platform-native defaults.
 - `toolbar` uses the built-in fallback values listed below.
 - `backgroundColor`, `borderRadius`, and `contentInsets` are not overridden.
 
@@ -96,6 +98,26 @@ interface EditorHeadingTheme {
 ```
 
 Each slot accepts the same `EditorTextStyle` fields. Heading styles only apply if your schema emits the corresponding heading node type.
+
+## `EditorBlockquoteTheme`
+
+```ts
+interface EditorBlockquoteTheme {
+  text?: EditorTextStyle;
+  indent?: number;
+  borderColor?: string;
+  borderWidth?: number;
+  markerGap?: number;
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `text` | `EditorTextStyle` | Text overrides applied inside blockquotes. |
+| `indent` | `number` | Total horizontal inset reserved for each blockquote depth. |
+| `borderColor` | `string` | Quote bar color. |
+| `borderWidth` | `number` | Quote bar width. |
+| `markerGap` | `number` | Gap between the quote bar and the text. |
 
 ## `EditorListTheme`
 
@@ -174,7 +196,10 @@ interface EditorMentionTheme {
 ## `EditorToolbarTheme`
 
 ```ts
+type EditorToolbarAppearance = 'custom' | 'native';
+
 interface EditorToolbarTheme {
+  appearance?: EditorToolbarAppearance;
   backgroundColor?: string;
   borderColor?: string;
   borderWidth?: number;
@@ -192,6 +217,7 @@ interface EditorToolbarTheme {
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `appearance` | `'custom' \| 'native'` | Toolbar chrome mode. `native` uses platform-native keyboard toolbar styling; visual color and radius tokens are ignored there except for layout tokens like `keyboardOffset` and `horizontalInset`. |
 | `backgroundColor` | `string` | Toolbar background color. |
 | `borderColor` | `string` | Toolbar border color. |
 | `borderWidth` | `number` | Toolbar border width. |
@@ -207,8 +233,11 @@ interface EditorToolbarTheme {
 
 ## Toolbar Fallback Defaults
 
+With `appearance: 'custom'`, omitted toolbar tokens use these defaults:
+
 | Field | Default |
 | --- | --- |
+| `appearance` | `'custom'` |
 | `backgroundColor` | `#FFFFFF` |
 | `borderColor` | `#E5E5EA` |
 | `borderWidth` | `hairlineWidth` |
@@ -221,6 +250,14 @@ interface EditorToolbarTheme {
 | `buttonDisabledColor` | `#C7C7CC` |
 | `buttonActiveBackgroundColor` | `rgba(0, 122, 255, 0.12)` |
 | `buttonBorderRadius` | `6` |
+
+With `appearance: 'native'`, the keyboard-hosted toolbar keeps the platform-native placement defaults of `keyboardOffset: 6` and `horizontalInset: 10`, but the visual treatment comes from each platform's native chrome. On Android that now maps to a Material 3 docked-toolbar style with a 64dp container, surface-container background, borderless icon buttons, and no shadow.
+
+| iOS | Android |
+| --- | --- |
+| ![Native toolbar on iOS](../images/native-toolbar-ios.png) | ![Native toolbar on Android](../images/native-toolbar-android.png) |
+
+On iOS 26+, the native keyboard toolbar uses Liquid Glass APIs. If the host app opts into compatibility mode with `UIDesignRequiresCompatibility`, UIKit will keep the older appearance instead of the new glass styling.
 
 ## Font Tokens
 
@@ -237,4 +274,4 @@ type EditorFontWeight =
 ## Related Docs
 
 - [Styling Guide](../guides/styling.md)
-- [Mentions Guide](../guides/mentions.md)
+- [Mentions Guide](../modules/mentions.md)

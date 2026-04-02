@@ -12,6 +12,7 @@ interface EditorToolbarProps {
   onToggleItalic: () => void;
   onToggleUnderline: () => void;
   onToggleStrike: () => void;
+  onToggleBlockquote?: () => void;
   onToggleBulletList?: () => void;
   onToggleOrderedList?: () => void;
   onIndentList?: () => void;
@@ -20,6 +21,7 @@ interface EditorToolbarProps {
   onInsertLineBreak?: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  onRequestLink?: () => void;
   onToggleMark?: (mark: string) => void;
   onToggleListType?: (listType: EditorToolbarListType) => void;
   onInsertNodeType?: (nodeType: string) => void;
@@ -41,6 +43,7 @@ interface EditorToolbarProps {
 | `onToggleItalic` | `() => void` | required | Built-in italic toggle handler. |
 | `onToggleUnderline` | `() => void` | required | Built-in underline toggle handler. |
 | `onToggleStrike` | `() => void` | required | Built-in strikethrough toggle handler. |
+| `onToggleBlockquote` | `(() => void) \| undefined` | none | Built-in blockquote toggle handler. |
 | `onToggleBulletList` | `(() => void) \| undefined` | none | Built-in bullet list toggle handler. |
 | `onToggleOrderedList` | `(() => void) \| undefined` | none | Built-in ordered list toggle handler. |
 | `onIndentList` | `(() => void) \| undefined` | none | Built-in indent handler. |
@@ -49,6 +52,7 @@ interface EditorToolbarProps {
 | `onInsertLineBreak` | `(() => void) \| undefined` | none | Built-in line break insertion handler. |
 | `onUndo` | `() => void` | required | Undo handler. |
 | `onRedo` | `() => void` | required | Redo handler. |
+| `onRequestLink` | `(() => void) \| undefined` | none | Handler for first-class `link` toolbar items. The host is responsible for collecting or editing the URL. |
 | `onToggleMark` | `((mark: string) => void) \| undefined` | none | Generic mark handler for configurable mark buttons. |
 | `onToggleListType` | `((listType: EditorToolbarListType) => void) \| undefined` | none | Generic list handler for configurable list buttons. |
 | `onInsertNodeType` | `((nodeType: string) => void) \| undefined` | none | Generic node handler for configurable node buttons. |
@@ -63,6 +67,8 @@ interface EditorToolbarProps {
 | Item Type | Preferred Generic Handler | Built-In Fallback |
 | --- | --- | --- |
 | `mark` | `onToggleMark(mark)` | `onToggleBold`, `onToggleItalic`, `onToggleUnderline`, `onToggleStrike` |
+| `link` | none | `onRequestLink()` |
+| `blockquote` | none | `onToggleBlockquote()` |
 | `list` | `onToggleListType(listType)` | `onToggleBulletList`, `onToggleOrderedList` |
 | `node` | `onInsertNodeType(nodeType)` | `onInsertLineBreak`, `onInsertHorizontalRule` |
 | `command` | `onRunCommand(command)` | `onIndentList`, `onOutdentList`, `onUndo`, `onRedo` |
@@ -70,28 +76,33 @@ interface EditorToolbarProps {
 
 ## Default Toolbar Items
 
+The default toolbar does not include a `link` item. Link buttons need host-provided URL handling through `onRequestLink`, so add them explicitly in your own `toolbarItems` array.
+
 | Order | Item Type | Value | Label | Default Icon ID |
 | --- | --- | --- | --- | --- |
 | 1 | `mark` | `bold` | `Bold` | `bold` |
 | 2 | `mark` | `italic` | `Italic` | `italic` |
 | 3 | `mark` | `underline` | `Underline` | `underline` |
 | 4 | `mark` | `strike` | `Strikethrough` | `strike` |
-| 5 | `separator` | none | none | none |
-| 6 | `list` | `bulletList` | `Bullet List` | `bulletList` |
-| 7 | `list` | `orderedList` | `Ordered List` | `orderedList` |
-| 8 | `command` | `indentList` | `Indent List` | `indentList` |
-| 9 | `command` | `outdentList` | `Outdent List` | `outdentList` |
-| 10 | `node` | `hardBreak` | `Line Break` | `lineBreak` |
-| 11 | `node` | `horizontalRule` | `Horizontal Rule` | `horizontalRule` |
-| 12 | `separator` | none | none | none |
-| 13 | `command` | `undo` | `Undo` | `undo` |
-| 14 | `command` | `redo` | `Redo` | `redo` |
+| 5 | `blockquote` | none | `Blockquote` | `blockquote` |
+| 6 | `separator` | none | none | none |
+| 7 | `list` | `bulletList` | `Bullet List` | `bulletList` |
+| 8 | `list` | `orderedList` | `Ordered List` | `orderedList` |
+| 9 | `command` | `indentList` | `Indent List` | `indentList` |
+| 10 | `command` | `outdentList` | `Outdent List` | `outdentList` |
+| 11 | `node` | `hardBreak` | `Line Break` | `lineBreak` |
+| 12 | `node` | `horizontalRule` | `Horizontal Rule` | `horizontalRule` |
+| 13 | `separator` | none | none | none |
+| 14 | `command` | `undo` | `Undo` | `undo` |
+| 15 | `command` | `redo` | `Redo` | `redo` |
 
 ## `EditorToolbarItem`
 
 ```ts
 type EditorToolbarItem =
   | { type: 'mark'; mark: string; label: string; icon: EditorToolbarIcon; key?: string }
+  | { type: 'link'; label: string; icon: EditorToolbarIcon; key?: string }
+  | { type: 'blockquote'; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'list'; listType: 'bulletList' | 'orderedList'; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'command'; command: 'indentList' | 'outdentList' | 'undo' | 'redo'; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'node'; nodeType: string; label: string; icon: EditorToolbarIcon; key?: string }
@@ -102,6 +113,8 @@ type EditorToolbarItem =
 | Variant | Main Fields | Meaning |
 | --- | --- | --- |
 | `mark` | `mark`, `label`, `icon`, `key?` | Toggles a mark by schema mark name. |
+| `link` | `label`, `icon`, `key?` | Requests link editing through `onRequestLink`. Active state is derived from the current `link` mark. |
+| `blockquote` | `label`, `icon`, `key?` | Toggles blockquote wrapping around the current block selection. |
 | `list` | `listType`, `label`, `icon`, `key?` | Toggles a bullet or ordered list. |
 | `command` | `command`, `label`, `icon`, `key?` | Runs one built-in editor command. |
 | `node` | `nodeType`, `label`, `icon`, `key?` | Inserts a node by schema node name. |
@@ -145,6 +158,8 @@ type EditorToolbarIcon =
 | `italic` | `I` | `format-italic` |
 | `underline` | `U` | `format-underlined` |
 | `strike` | `S` | `strikethrough-s` |
+| `link` | `🔗` | `link` |
+| `blockquote` | `❝` | `format-quote` |
 | `bulletList` | `•≡` | `format-list-bulleted` |
 | `orderedList` | `1.` | `format-list-numbered` |
 | `indentList` | `→` | `format-indent-increase` |

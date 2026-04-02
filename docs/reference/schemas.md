@@ -78,7 +78,7 @@ Uses camelCase names.
 
 | Kind | Names |
 | --- | --- |
-| Structural | `doc`, `paragraph`, `text` |
+| Structural | `doc`, `paragraph`, `blockquote`, `text` |
 | Lists | `bulletList`, `orderedList`, `listItem` |
 | Void nodes | `hardBreak`, `horizontalRule` |
 
@@ -86,7 +86,7 @@ Uses camelCase names.
 
 | Marks |
 | --- |
-| `bold`, `italic`, `underline`, `strike` |
+| `bold`, `italic`, `underline`, `strike`, `link` |
 
 ## `prosemirrorSchema`
 
@@ -96,7 +96,7 @@ Uses snake_case names.
 
 | Kind | Names |
 | --- | --- |
-| Structural | `doc`, `paragraph`, `text` |
+| Structural | `doc`, `paragraph`, `blockquote`, `text` |
 | Lists | `bullet_list`, `ordered_list`, `list_item` |
 | Void nodes | `hard_break`, `horizontal_rule` |
 
@@ -104,7 +104,7 @@ Uses snake_case names.
 
 | Marks |
 | --- |
-| `bold`, `italic`, `underline`, `strike` |
+| `bold`, `italic`, `underline`, `strike`, `link` |
 
 ## Related Docs
 

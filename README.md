@@ -1,12 +1,12 @@
-# React Native Prose Editor
+# React Native Prose Editor [![NPM version](https://img.shields.io/npm/v/@apollohg/react-native-prose-editor.svg?style=flat)](https://www.npmjs.com/package/@apollohg/react-native-prose-editor)
 
 `@apollohg/react-native-prose-editor` is a native rich text editor for React Native with a Rust document core, native iOS and Android rendering, configurable schemas, and a React-facing toolbar and theme API.
 
-This project is currently in alpha and the API, behavior, and packaging may still change.
+This project is currently in `alpha` and the API, behavior, and packaging may still change.
 
 <p align="center">
-  <img src="./docs/images/example-1.PNG" alt="Example editor screen" width="45%" />
-  <img src="./docs/images/example-2.PNG" alt="Example editor theme screen" width="45%" />
+  <img src="./docs/images/example-ios.png" alt="Example editor Android" width="45%" align="top" />
+  <img src="./docs/images/example-android.png" alt="Example editor iOS" width="45%" align="top" />
 </p>
 
 This repository contains three main pieces:
@@ -21,7 +21,8 @@ The editor already supports:
 
 - HTML and ProseMirror JSON content input/output
 - configurable schemas
-- marks such as bold, italic, underline, and strike
+- marks such as bold, italic, underline, strike, and links
+- blockquotes
 - bullet and ordered lists with indent/outdent behavior
 - hard breaks and horizontal rules
 - native @-mentions with themed suggestion UI in the toolbar area
@@ -99,13 +100,16 @@ export function EditorScreen() {
 The main extension points today are:
 
 - `schema`: provide a custom schema definition
-- `theme`: style text blocks, lists, horizontal rules, background, and toolbar chrome
+- `theme`: style text blocks, blockquotes, lists, horizontal rules, background, and toolbar chrome, including a native-looking keyboard toolbar mode
 - `toolbarItems`: define the visible toolbar controls and order
 - `onToolbarAction`: handle app-defined toolbar buttons
+- `onRequestLink`: collect or edit hyperlink URLs when a toolbar link item is pressed
 - `addons`: configure optional features like @-mentions
 - `heightBehavior`: switch between internal scrolling and auto-grow
 
 For setup and customization details, start with the [Documentation Index](./docs/README.md).
+
+For realtime collaboration, including the correct `useYjsCollaboration()` wiring, encoded-state persistence, remote cursors, and automatic reconnect behavior, see the [Collaboration Guide](./docs/modules/collaboration.md).
 
 ## Development
 
@@ -132,8 +136,9 @@ npm run android:test                                  # Android Robolectric test
 - [Documentation Index](./docs/README.md): main documentation index
 - [Installation Guide](./docs/guides/installation.md): installation and local setup
 - [Getting Started](./docs/guides/getting-started.md): first setup and first editor
+- [Collaboration Guide](./docs/modules/collaboration.md): Yjs collaboration wiring, source-of-truth rules, and persistence
 - [Toolbar Setup](./docs/guides/toolbar-setup.md): toolbar setup patterns and examples
-- [Mentions Guide](./docs/guides/mentions.md): @-mentions addon setup and configuration
+- [Mentions Guide](./docs/modules/mentions.md): @-mentions addon setup and configuration
 - [Styling Guide](./docs/guides/styling.md): content, toolbar, and mention styling
 - [NativeRichTextEditor Reference](./docs/reference/native-rich-text-editor.md): component props and ref methods
 - [Design Decisions](./docs/explanations/design-decisions.md): rationale for key API and architecture decisions

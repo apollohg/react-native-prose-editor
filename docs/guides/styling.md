@@ -105,6 +105,7 @@ Toolbar styling lives under `theme.toolbar`.
 
 Current toolbar tokens:
 
+- `appearance`
 - `backgroundColor`
 - `borderColor`
 - `borderWidth`
@@ -118,6 +119,8 @@ Current toolbar tokens:
 - `buttonActiveBackgroundColor`
 - `buttonBorderRadius`
 
+Set `theme.toolbar.appearance` to `'native'` to use platform-native keyboard toolbar chrome instead of the fully custom painted toolbar. In that mode, the native iOS and Android keyboard-hosted toolbars ignore the visual color and radius tokens and keep only the layout tokens such as `keyboardOffset` and `horizontalInset`.
+
 ## Editor Container Theme Tokens
 
 These top-level `theme` fields control the native editor surface itself:
@@ -128,10 +131,11 @@ These top-level `theme` fields control the native editor surface itself:
 
 ## Toolbar Fallback Defaults
 
-If a toolbar token is omitted, the built-in toolbar uses these defaults:
+If `theme.toolbar.appearance` is omitted or set to `'custom'`, the built-in toolbar uses these defaults:
 
 | Field | Default |
 | --- | --- |
+| `appearance` | `custom` |
 | `backgroundColor` | `#FFFFFF` |
 | `borderColor` | `#E5E5EA` |
 | `borderRadius` | `0` |
@@ -144,12 +148,14 @@ If a toolbar token is omitted, the built-in toolbar uses these defaults:
 | `buttonActiveBackgroundColor` | `rgba(0, 122, 255, 0.12)` |
 | `buttonBorderRadius` | `6` |
 
+If `appearance` is set to `native`, the keyboard-hosted toolbar keeps the native placement defaults of `keyboardOffset: 6` and `horizontalInset: 10`, while the chrome itself comes from the platform. On Android that uses a Material 3 docked-toolbar treatment; on iOS 26+, that path depends on the host app allowing the current system design, and `UIDesignRequiresCompatibility` falls back to the legacy non-glass appearance.
+
 ## Mention Styling
 
-Mention inline chips and the native mention suggestions are styled through `theme.mentions`. The suggestion UI is rendered in the toolbar area rather than a floating popover. See the [Mentions Guide](./mentions.md) for setup and the [EditorMentionTheme reference](../reference/editor-theme.md#editormentiontheme) for the full token list.
+Mention inline chips and the native mention suggestions are styled through `theme.mentions`. The suggestion UI is rendered in the toolbar area rather than a floating popover. See the [Mentions Guide](../modules/mentions.md) for setup and the [EditorMentionTheme reference](../reference/editor-theme.md#editormentiontheme) for the full token list.
 
 ## Related Docs
 
 - [Toolbar Setup](./toolbar-setup.md)
-- [Mentions Guide](./mentions.md)
+- [Mentions Guide](../modules/mentions.md)
 - [EditorTheme Reference](../reference/editor-theme.md)

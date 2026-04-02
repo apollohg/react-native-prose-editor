@@ -20,6 +20,7 @@ interface NativeRichTextEditorProps {
   toolbarPlacement?: NativeRichTextEditorToolbarPlacement;
   toolbarItems?: readonly EditorToolbarItem[];
   onToolbarAction?: (key: string) => void;
+  onRequestLink?: (context: LinkRequestContext) => void;
   onContentChange?: (html: string) => void;
   onContentChangeJSON?: (json: DocumentJSON) => void;
   onSelectionChange?: (selection: Selection) => void;
@@ -27,8 +28,10 @@ interface NativeRichTextEditorProps {
   onFocus?: () => void;
   onBlur?: () => void;
   style?: StyleProp<ViewStyle>;
+  containerStyle?: StyleProp<ViewStyle>;
   theme?: EditorTheme;
   addons?: EditorAddons;
+  remoteSelections?: readonly RemoteSelectionDecoration[];
 }
 ```
 
@@ -39,26 +42,109 @@ interface NativeRichTextEditorProps {
 | `initialContent` | `string` | — | Initial uncontrolled HTML content. |
 | `initialJSON` | `DocumentJSON` | — | Initial uncontrolled JSON content. |
 | `value` | `string` | — | Controlled HTML content. Highest-priority content source. |
-| `valueJSON` | `DocumentJSON` | — | Controlled JSON content. Ignored if `value` is set. |
+| `valueJSON` | `DocumentJSON` | — | Controlled JSON content. Ignored if `value` is set. In collaboration mode, bind this from `useYjsCollaboration().editorBindings.valueJSON`, not from separate app-owned document state. |
 | `schema` | `SchemaDefinition` | `tiptapSchema` | Schema definition passed to the Rust core. |
 | `placeholder` | `string` | — | Placeholder text shown when the editor is empty. |
 | `editable` | `boolean` | `true` | Enables or disables editing. |
 | `maxLength` | `number` | — | Character limit enforced by the Rust core. |
 | `autoFocus` | `boolean` | `false` | Focuses the editor when the native view first mounts. |
-| `heightBehavior` | `'fixed' \| 'autoGrow'` | `'fixed'` | `fixed` scrolls internally. `autoGrow` expands the view to fit content, suitable for parent-managed scroll containers. |
+| `heightBehavior` | `'fixed' \| 'autoGrow'` | `'autoGrow'` | `fixed` scrolls internally. `autoGrow` expands the view to fit content, suitable for parent-managed scroll containers. |
 | `showToolbar` | `boolean` | `true` | Shows or hides the built-in toolbar. |
 | `toolbarPlacement` | `'keyboard' \| 'inline'` | `'keyboard'` | `keyboard` attaches the toolbar as a native keyboard accessory (iOS) or above-keyboard view (Android). `inline` renders the toolbar in React above the editor. |
-| `toolbarItems` | `readonly EditorToolbarItem[]` | `DEFAULT_EDITOR_TOOLBAR_ITEMS` | Ordered toolbar button configuration. |
+| `toolbarItems` | `readonly EditorToolbarItem[]` | `DEFAULT_EDITOR_TOOLBAR_ITEMS` | Ordered toolbar button configuration. Built-in items now include blockquote by default. Link items are supported, but the package does not show its own URL prompt. |
 | `onToolbarAction` | `(key: string) => void` | — | Callback for `action`-type toolbar items. |
+| `onRequestLink` | `(context: LinkRequestContext) => void` | — | Called when a toolbar `link` item is pressed. Use it to collect, edit, or clear the target URL. |
 | `onContentChange` | `(html: string) => void` | — | Called when the document HTML changes. |
 | `onContentChangeJSON` | `(json: DocumentJSON) => void` | — | Called when the document JSON changes. |
 | `onSelectionChange` | `(selection: Selection) => void` | — | Called when the selection changes. |
 | `onActiveStateChange` | `(state: ActiveState) => void` | — | Called when active marks, nodes, commands, or schema availability change. |
 | `onFocus` | `() => void` | — | Called when the editor gains focus. |
 | `onBlur` | `() => void` | — | Called when the editor loses focus. |
-| `style` | `StyleProp<ViewStyle>` | — | Style applied to the outer native view container. Does not affect internal content styling. |
+| `style` | `StyleProp<ViewStyle>` | — | Style applied to the native editor view itself. Does not affect internal content styling. |
+| `containerStyle` | `StyleProp<ViewStyle>` | — | Style applied to the outer React container that wraps the editor and any inline toolbar. |
 | `theme` | `EditorTheme` | — | Theme object for content, mentions, and toolbar styling. See [EditorTheme Reference](./editor-theme.md). |
-| `addons` | `EditorAddons` | — | Optional addon configuration. Currently supports the mentions addon. See [Mentions Guide](../guides/mentions.md). |
+| `addons` | `EditorAddons` | — | Optional addon configuration. Currently supports the mentions addon. See [Mentions Guide](../modules/mentions.md). |
+| `remoteSelections` | `readonly RemoteSelectionDecoration[]` | — | Remote awareness selections rendered as native overlays. Used by the collaboration module. |
+
+## `RemoteSelectionDecoration`
+
+```ts
+interface RemoteSelectionDecoration {
+  clientId: number;
+  anchor: number;
+  head: number;
+  color: string;
+  name?: string;
+  avatarUrl?: string;
+  isFocused?: boolean;
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `clientId` | `number` | Unique client identifier for this remote peer. |
+| `anchor` | `number` | Anchor position of the remote selection in the document. |
+| `head` | `number` | Head position of the remote selection in the document. |
+| `color` | `string` | Color used to render the remote selection highlight and caret. |
+| `name` | `string \| undefined` | Display name shown alongside the remote caret. |
+| `avatarUrl` | `string \| undefined` | URL of the remote user's avatar image. |
+| `isFocused` | `boolean \| undefined` | Whether the remote user's editor is currently focused. |
+
+## Hyperlinks
+
+- Hyperlink application is host-driven. Add a toolbar item with `{ type: 'link', ... }` and handle URL entry in `onRequestLink`.
+- The editor will report the current link state through `LinkRequestContext`, including the active `href` when the selection is already inside a link.
+- You can also apply or remove links imperatively through the editor ref with `setLink(href)` and `unsetLink()`.
+
+```tsx
+const toolbarItems = [
+  { type: 'mark', mark: 'bold', label: 'Bold', icon: { type: 'default', id: 'bold' } },
+  { type: 'link', label: 'Link', icon: { type: 'default', id: 'link' } },
+] as const;
+
+<NativeRichTextEditor
+  showToolbar
+  toolbarItems={toolbarItems}
+  onRequestLink={({ href, setLink, unsetLink }) => {
+    const nextHref = prompt('Enter URL', href ?? 'https://');
+    if (nextHref == null) return;
+    if (nextHref.trim() === '') {
+      unsetLink();
+      return;
+    }
+    setLink(nextHref);
+  }}
+/>;
+```
+
+## `LinkRequestContext`
+
+```ts
+interface LinkRequestContext {
+  href?: string;
+  isActive: boolean;
+  selection: Selection;
+  setLink: (href: string) => void;
+  unsetLink: () => void;
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `href` | `string \| undefined` | The current link target when the selection is inside an active link. |
+| `isActive` | `boolean` | Whether the current selection is already linked. |
+| `selection` | `Selection` | Current editor selection when the link request is triggered. |
+| `setLink` | `(href: string) => void` | Apply or update the link on the current selection. |
+| `unsetLink` | `() => void` | Remove the link from the current selection. |
+
+## Collaboration Usage
+
+- `NativeRichTextEditor` is still the editor component used in collaboration mode.
+- The intended collaboration wiring is to pass `valueJSON`, `onContentChangeJSON`, selection/focus callbacks, and `remoteSelections` from `useYjsCollaboration().editorBindings`.
+- Do not mix collaboration bindings with a second app-owned controlled `valueJSON` state for the same editor instance.
+- Remote awareness cursors should be rendered through `remoteSelections`. They should not be mapped onto the local user selection manually.
+
+See the [Collaboration Guide](../modules/collaboration.md) for the full pattern.
 
 ## Height Behavior
 
@@ -68,8 +154,8 @@ type NativeRichTextEditorHeightBehavior = 'fixed' | 'autoGrow';
 
 | Value | Behavior |
 | --- | --- |
-| `fixed` | The editor has a fixed height and scrolls internally. This is the default. |
-| `autoGrow` | The editor grows vertically to fit its content. Use this when the editor is inside a parent `ScrollView`. |
+| `fixed` | The editor has a fixed height and scrolls internally. |
+| `autoGrow` | The editor grows vertically to fit its content. Use this when the editor is inside a parent `ScrollView`. This is the default. |
 
 ### Keyboard Avoidance Notes
 
@@ -102,6 +188,9 @@ interface NativeRichTextEditorRef {
   focus(): void;
   blur(): void;
   toggleMark(markType: string): void;
+  setLink(href: string): void;
+  unsetLink(): void;
+  toggleBlockquote(): void;
   toggleList(listType: 'bulletList' | 'orderedList'): void;
   indentListItem(): void;
   outdentListItem(): void;
@@ -126,6 +215,9 @@ interface NativeRichTextEditorRef {
 | `focus()` | — | `void` | Focuses the editor. |
 | `blur()` | — | `void` | Blurs the editor. |
 | `toggleMark(markType)` | `markType: string` | `void` | Toggles a mark by schema name. |
+| `setLink(href)` | `href: string` | `void` | Apply or update a hyperlink on the current selection. |
+| `unsetLink()` | — | `void` | Remove a hyperlink from the current selection. |
+| `toggleBlockquote()` | — | `void` | Wrap or unwrap the current block selection in a blockquote. |
 | `toggleList(listType)` | `listType: 'bulletList' \| 'orderedList'` | `void` | Toggles a bullet or ordered list. |
 | `indentListItem()` | — | `void` | Indents the current list item. |
 | `outdentListItem()` | — | `void` | Outdents the current list item. |
@@ -149,4 +241,5 @@ interface NativeRichTextEditorRef {
 - [EditorTheme Reference](./editor-theme.md)
 - [Editor State Reference](./editor-state.md)
 - [Schema Reference](./schemas.md)
-- [Mentions Guide](../guides/mentions.md)
+- [Collaboration Guide](../modules/collaboration.md)
+- [Mentions Guide](../modules/mentions.md)

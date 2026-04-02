@@ -73,13 +73,28 @@ Use `toolbarItems` to define your own button list while still using the built-in
 const toolbarItems = [
   { type: 'mark', mark: 'bold', label: 'Bold', icon: { type: 'default', id: 'bold' } },
   { type: 'mark', mark: 'italic', label: 'Italic', icon: { type: 'default', id: 'italic' } },
+  { type: 'link', label: 'Link', icon: { type: 'default', id: 'link' } },
   { type: 'separator' },
   { type: 'node', nodeType: 'hardBreak', label: 'Line Break', icon: { type: 'default', id: 'lineBreak' } },
   { type: 'node', nodeType: 'horizontalRule', label: 'Horizontal Rule', icon: { type: 'default', id: 'horizontalRule' } },
 ] as const;
 
-<NativeRichTextEditor showToolbar toolbarItems={toolbarItems} />;
+<NativeRichTextEditor
+  showToolbar
+  toolbarItems={toolbarItems}
+  onRequestLink={({ href, setLink, unsetLink }) => {
+    const nextHref = prompt('Enter URL', href ?? 'https://');
+    if (nextHref == null) return;
+    if (nextHref.trim() === '') {
+      unsetLink();
+      return;
+    }
+    setLink(nextHref);
+  }}
+/>;
 ```
+
+Link buttons are host-driven. The editor does not show a built-in URL prompt. Your app owns the URL entry UI and applies the result through `onRequestLink`.
 
 ## App-Defined Action Buttons
 
@@ -133,6 +148,30 @@ const toolbarItems = [
 ```
 
 This only works if your schema includes the `highlight` mark.
+
+## Hyperlink Controls
+
+Hyperlinks are slightly different from ordinary mark buttons because they need a URL. Use a `link` toolbar item and handle `onRequestLink`:
+
+```tsx
+const toolbarItems = [
+  { type: 'mark', mark: 'bold', label: 'Bold', icon: { type: 'default', id: 'bold' } },
+  { type: 'link', label: 'Link', icon: { type: 'default', id: 'link' } },
+] as const;
+
+<NativeRichTextEditor
+  showToolbar
+  toolbarItems={toolbarItems}
+  onRequestLink={({ href, isActive, setLink, unsetLink }) => {
+    if (isActive && href) {
+      // show your edit/remove UI
+    }
+    setLink('https://example.com');
+  }}
+/>;
+```
+
+If you need an imperative path, the editor ref also exposes `setLink(href)` and `unsetLink()`.
 
 ## Standalone Toolbar
 

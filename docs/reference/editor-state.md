@@ -22,6 +22,7 @@ type Selection =
 ```ts
 interface ActiveState {
   marks: Record<string, boolean>;
+  markAttrs: Record<string, Record<string, unknown>>;
   nodes: Record<string, boolean>;
   commands: Record<string, boolean>;
   allowedMarks: string[];
@@ -32,6 +33,7 @@ interface ActiveState {
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `marks` | `Record<string, boolean>` | Currently active marks at the selection. |
+| `markAttrs` | `Record<string, Record<string, unknown>>` | Attributes of the currently active marks. For example, when the selection is inside a link, `markAttrs.link.href` contains the URL. |
 | `nodes` | `Record<string, boolean>` | Currently active node context. |
 | `commands` | `Record<string, boolean>` | Currently available commands such as list wrapping or indent/outdent. |
 | `allowedMarks` | `string[]` | Marks allowed by the schema at the current selection. |
@@ -72,6 +74,8 @@ interface EditorUpdate {
 ## `RenderElement`
 
 ```ts
+type RenderMark = string | { type: string; [key: string]: unknown };
+
 interface RenderElement {
   type:
     | 'textRun'
@@ -82,7 +86,7 @@ interface RenderElement {
     | 'opaqueInlineAtom'
     | 'opaqueBlockAtom';
   text?: string;
-  marks?: string[];
+  marks?: RenderMark[];
   nodeType?: string;
   depth?: number;
   docPos?: number;
@@ -95,7 +99,7 @@ interface RenderElement {
 | --- | --- | --- |
 | `type` | union | Render element kind. |
 | `text` | `string \| undefined` | Text content for text runs. |
-| `marks` | `string[] \| undefined` | Active marks on a text run. |
+| `marks` | `RenderMark[] \| undefined` | Active marks on a text run. Each entry is either a `string` (mark name without attributes) or an object `{ type: string; [key: string]: unknown }` (mark name with attributes, e.g. a link mark carrying `href`). |
 | `nodeType` | `string \| undefined` | Node type associated with the element. |
 | `depth` | `number \| undefined` | Nesting depth in the render tree. |
 | `docPos` | `number \| undefined` | Associated document position when available. |
