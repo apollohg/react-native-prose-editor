@@ -20,10 +20,7 @@ fn serialize_node(node: &Node, schema: &Schema, buf: &mut String) {
         let text = node.text_str().unwrap_or("");
         // Open mark tags
         for mark in node.marks() {
-            let tag = mark_type_to_tag(mark.mark_type());
-            buf.push('<');
-            buf.push_str(tag);
-            buf.push('>');
+            serialize_mark_open(mark, buf);
         }
         escape_html(text, buf);
         // Close mark tags in reverse order
@@ -94,6 +91,20 @@ fn serialize_node(node: &Node, schema: &Schema, buf: &mut String) {
         buf.push_str(tag);
         buf.push('>');
     }
+}
+
+fn serialize_mark_open(mark: &crate::model::Mark, buf: &mut String) {
+    let tag = mark_type_to_tag(mark.mark_type());
+    buf.push('<');
+    buf.push_str(tag);
+    if mark.mark_type() == "link" {
+        if let Some(href) = mark.attrs().get("href").and_then(|value| value.as_str()) {
+            buf.push_str(" href=\"");
+            escape_html(href, buf);
+            buf.push('"');
+        }
+    }
+    buf.push('>');
 }
 
 fn serialize_mention_node(node: &Node, buf: &mut String) {
@@ -169,6 +180,7 @@ fn mark_type_to_tag(mark_type: &str) -> &str {
         "italic" => "em",
         "underline" => "u",
         "strike" => "s",
+        "link" => "a",
         _ => mark_type,
     }
 }

@@ -65,6 +65,15 @@ fn strike() -> Mark {
     Mark::new("strike".to_string(), HashMap::new())
 }
 
+fn link(href: &str) -> Mark {
+    let mut attrs = HashMap::new();
+    attrs.insert(
+        "href".to_string(),
+        serde_json::Value::String(href.to_string()),
+    );
+    Mark::new("link".to_string(), attrs)
+}
+
 fn text(s: &str) -> Node {
     Node::text(s.to_string(), vec![])
 }
@@ -76,6 +85,14 @@ fn text_with_marks(s: &str, marks: Vec<Mark>) -> Node {
 fn paragraph(children: Vec<Node>) -> Node {
     Node::element(
         "paragraph".to_string(),
+        HashMap::new(),
+        Fragment::from(children),
+    )
+}
+
+fn blockquote(children: Vec<Node>) -> Node {
+    Node::element(
+        "blockquote".to_string(),
         HashMap::new(),
         Fragment::from(children),
     )
@@ -185,6 +202,20 @@ fn test_to_html_strike_text() {
 }
 
 #[test]
+fn test_to_html_link_text() {
+    let d = Document::new(Node::element(
+        "doc".to_string(),
+        HashMap::new(),
+        Fragment::from(vec![paragraph(vec![text_with_marks(
+            "OpenAI",
+            vec![link("https://openai.com")],
+        )])]),
+    ));
+    let html = to_html(&d, &schema());
+    assert_eq!(html, "<p><a href=\"https://openai.com\">OpenAI</a></p>");
+}
+
+#[test]
 fn test_to_html_mixed_marks() {
     // "H" plain, "ell" bold+italic, "o" plain
     let d = doc(vec![paragraph(vec![
@@ -207,6 +238,16 @@ fn test_to_html_bullet_list() {
     ])]);
     let html = to_html(&d, &schema());
     assert_eq!(html, "<ul><li><p>A</p></li><li><p>B</p></li></ul>");
+}
+
+#[test]
+fn test_to_html_blockquote() {
+    let d = doc(vec![blockquote(vec![
+        paragraph(vec![text("Hello")]),
+        paragraph(vec![text("World")]),
+    ])]);
+    let html = to_html(&d, &schema());
+    assert_eq!(html, "<blockquote><p>Hello</p><p>World</p></blockquote>");
 }
 
 #[test]
@@ -233,6 +274,22 @@ fn test_to_html_ordered_list_start_3() {
         html, "<ol start=\"3\"><li><p>A</p></li></ol>",
         "ordered list with start=3 should include start attribute"
     );
+}
+
+#[test]
+fn test_from_html_blockquote() {
+    let document = from_html(
+        "<blockquote><p>Hello</p><p>World</p></blockquote>",
+        &schema(),
+        &default_opts(),
+    )
+    .expect("blockquote html should parse");
+
+    let quote = document.root().child(0).expect("blockquote child");
+    assert_eq!(quote.node_type(), "blockquote");
+    assert_eq!(quote.child_count(), 2);
+    assert_eq!(quote.child(0).expect("first paragraph").text_content(), "Hello");
+    assert_eq!(quote.child(1).expect("second paragraph").text_content(), "World");
 }
 
 #[test]
@@ -372,6 +429,25 @@ fn test_from_html_strike_text() {
     let text_node = p.child(0).unwrap();
     assert_eq!(text_node.marks().len(), 1);
     assert_eq!(text_node.marks()[0].mark_type(), "strike");
+}
+
+#[test]
+fn test_from_html_link_text() {
+    let d = from_html(
+        "<p><a href=\"https://openai.com\">OpenAI</a></p>",
+        &schema(),
+        &default_opts(),
+    )
+    .unwrap();
+    let paragraph = d.root().child(0).expect("paragraph");
+    let text = paragraph.child(0).expect("text");
+    let marks = text.marks();
+    assert_eq!(marks.len(), 1);
+    assert_eq!(marks[0].mark_type(), "link");
+    assert_eq!(
+        marks[0].attrs().get("href"),
+        Some(&serde_json::Value::String("https://openai.com".to_string()))
+    );
 }
 
 #[test]

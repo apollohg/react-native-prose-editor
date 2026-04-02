@@ -494,6 +494,130 @@ fileprivate struct FfiConverterString: FfiConverter {
     }
 }
 /**
+ * Apply a durable Yjs encoded state/update represented as a JSON byte array.
+ */
+public func collaborationSessionApplyEncodedState(id: UInt64, encodedStateJson: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_apply_encoded_state(
+        FfiConverterUInt64.lower(id),
+        FfiConverterString.lower(encodedStateJson),$0
+    )
+})
+}
+/**
+ * Apply a local ProseMirror JSON snapshot to the collaboration session.
+ */
+public func collaborationSessionApplyLocalDocumentJson(id: UInt64, json: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_apply_local_document_json(
+        FfiConverterUInt64.lower(id),
+        FfiConverterString.lower(json),$0
+    )
+})
+}
+/**
+ * Clear the local awareness payload for a collaboration session.
+ */
+public func collaborationSessionClearLocalAwareness(id: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_clear_local_awareness(
+        FfiConverterUInt64.lower(id),$0
+    )
+})
+}
+/**
+ * Create a Yjs collaboration session backed by yrs.
+ */
+public func collaborationSessionCreate(configJson: String) -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_create(
+        FfiConverterString.lower(configJson),$0
+    )
+})
+}
+/**
+ * Destroy a collaboration session and free its resources.
+ */
+public func collaborationSessionDestroy(id: UInt64)  {try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_destroy(
+        FfiConverterUInt64.lower(id),$0
+    )
+}
+}
+/**
+ * Return the current shared ProseMirror JSON document for a collaboration session.
+ */
+public func collaborationSessionGetDocumentJson(id: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_get_document_json(
+        FfiConverterUInt64.lower(id),$0
+    )
+})
+}
+/**
+ * Return the current shared Yjs document state as a JSON byte array.
+ */
+public func collaborationSessionGetEncodedState(id: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_get_encoded_state(
+        FfiConverterUInt64.lower(id),$0
+    )
+})
+}
+/**
+ * Return the current awareness peers for a collaboration session.
+ */
+public func collaborationSessionGetPeersJson(id: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_get_peers_json(
+        FfiConverterUInt64.lower(id),$0
+    )
+})
+}
+/**
+ * Apply an incoming y-sync binary message encoded as a JSON byte array.
+ */
+public func collaborationSessionHandleMessage(id: UInt64, messageJson: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_handle_message(
+        FfiConverterUInt64.lower(id),
+        FfiConverterString.lower(messageJson),$0
+    )
+})
+}
+/**
+ * Replace the collaboration document with a durable Yjs encoded state/update.
+ */
+public func collaborationSessionReplaceEncodedState(id: UInt64, encodedStateJson: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_replace_encoded_state(
+        FfiConverterUInt64.lower(id),
+        FfiConverterString.lower(encodedStateJson),$0
+    )
+})
+}
+/**
+ * Update the local awareness payload for a collaboration session.
+ */
+public func collaborationSessionSetLocalAwareness(id: UInt64, awarenessJson: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_set_local_awareness(
+        FfiConverterUInt64.lower(id),
+        FfiConverterString.lower(awarenessJson),$0
+    )
+})
+}
+/**
+ * Start the sync handshake for a collaboration session.
+ */
+public func collaborationSessionStart(id: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_start(
+        FfiConverterUInt64.lower(id),$0
+    )
+})
+}
+/**
  * Check if redo is available.
  */
 public func editorCanRedo(id: UInt64) -> Bool  {
@@ -855,6 +979,32 @@ public func editorSetJson(id: UInt64, json: String) -> String  {
 })
 }
 /**
+ * Set a mark with attrs on the current selection. Returns an update JSON string.
+ */
+public func editorSetMark(id: UInt64, markName: String, attrsJson: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_set_mark(
+        FfiConverterUInt64.lower(id),
+        FfiConverterString.lower(markName),
+        FfiConverterString.lower(attrsJson),$0
+    )
+})
+}
+/**
+ * Set a mark with attrs at an explicit scalar selection. Returns an update JSON string.
+ */
+public func editorSetMarkAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32, markName: String, attrsJson: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_set_mark_at_selection_scalar(
+        FfiConverterUInt64.lower(id),
+        FfiConverterUInt32.lower(scalarAnchor),
+        FfiConverterUInt32.lower(scalarHead),
+        FfiConverterString.lower(markName),
+        FfiConverterString.lower(attrsJson),$0
+    )
+})
+}
+/**
  * Set the selection. Anchor and head are document positions.
  */
 public func editorSetSelection(id: UInt64, anchor: UInt32, head: UInt32)  {try! rustCall() {
@@ -899,6 +1049,28 @@ public func editorSplitBlockScalar(id: UInt64, scalarPos: UInt32) -> String  {
 })
 }
 /**
+ * Toggle a blockquote around the current block selection. Returns an update JSON string.
+ */
+public func editorToggleBlockquote(id: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_toggle_blockquote(
+        FfiConverterUInt64.lower(id),$0
+    )
+})
+}
+/**
+ * Toggle a blockquote at an explicit scalar selection. Returns an update JSON string.
+ */
+public func editorToggleBlockquoteAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_toggle_blockquote_at_selection_scalar(
+        FfiConverterUInt64.lower(id),
+        FfiConverterUInt32.lower(scalarAnchor),
+        FfiConverterUInt32.lower(scalarHead),$0
+    )
+})
+}
+/**
  * Toggle a mark on the current selection. Returns an update JSON string.
  */
 public func editorToggleMark(id: UInt64, markName: String) -> String  {
@@ -929,6 +1101,30 @@ public func editorUndo(id: UInt64) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_undo(
         FfiConverterUInt64.lower(id),$0
+    )
+})
+}
+/**
+ * Remove a mark from the current selection. Returns an update JSON string.
+ */
+public func editorUnsetMark(id: UInt64, markName: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_unset_mark(
+        FfiConverterUInt64.lower(id),
+        FfiConverterString.lower(markName),$0
+    )
+})
+}
+/**
+ * Remove a mark at an explicit scalar selection. Returns an update JSON string.
+ */
+public func editorUnsetMarkAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32, markName: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_unset_mark_at_selection_scalar(
+        FfiConverterUInt64.lower(id),
+        FfiConverterUInt32.lower(scalarAnchor),
+        FfiConverterUInt32.lower(scalarHead),
+        FfiConverterString.lower(markName),$0
     )
 })
 }
@@ -993,6 +1189,42 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_editor_core_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_apply_encoded_state() != 4684) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_apply_local_document_json() != 396) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_clear_local_awareness() != 48044) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_create() != 60237) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_destroy() != 56261) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_get_document_json() != 44139) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_get_encoded_state() != 16895) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_get_peers_json() != 46461) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_handle_message() != 25528) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_replace_encoded_state() != 53994) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_set_local_awareness() != 63617) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_collaboration_session_start() != 54751) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_can_redo() != 15854) {
         return InitializationResult.apiChecksumMismatch
@@ -1090,6 +1322,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_editor_set_json() != 18497) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_editor_core_checksum_func_editor_set_mark() != 29349) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_set_mark_at_selection_scalar() != 43994) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_editor_core_checksum_func_editor_set_selection() != 28236) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1102,6 +1340,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_editor_split_block_scalar() != 47554) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_editor_core_checksum_func_editor_toggle_blockquote() != 25804) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_toggle_blockquote_at_selection_scalar() != 58523) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_editor_core_checksum_func_editor_toggle_mark() != 30661) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1109,6 +1353,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_undo() != 28689) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_unset_mark() != 47985) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_unset_mark_at_selection_scalar() != 54992) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_unwrap_from_list() != 41875) {

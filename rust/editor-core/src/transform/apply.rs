@@ -921,37 +921,11 @@ fn apply_wrap_in_list(
     let new_root = rebuild_element(doc.root(), new_children);
     let new_doc = Document::new(new_root);
 
-    // StepMap: we inserted tokens for the list structure.
-    // For each wrapped block, we add 2 tokens (li open + li close).
-    // Plus 2 tokens for the list itself (list open + list close).
-    // Total inserted = 2 + 2 * num_blocks.
-    // But from a position mapping perspective, positions before `from` are
-    // unchanged, positions at/after `from` shift by +2 (list open + first li open),
-    // and positions after the range shift by the total added tokens.
-    //
-    // For simplicity we record this as an insert of 2 tokens at `from` (the
-    // open tags before the content) and 2 tokens at the end for each additional
-    // list item boundary plus the close tags. However, the exact mapping
-    // depends on the number of blocks. For a single block:
-    //   +2 at from (ul open + li open), +2 at to (li close + ul close).
-    // For multiple blocks, each inter-block boundary also gets +2 (li close + li open).
-    //
-    // We'll use a simplified approach: record total tokens added. Positions
-    // before `from` are unchanged, positions in [from, to] shift by +2 (the
-    // two opens before the first block), positions after `to` shift by the
-    // total delta.
+    // Wrapping inserts the list open tag plus the first list-item open tag
+    // before the wrapped content, then the remaining close/open boundaries at
+    // the end of the wrapped range.
     let num_blocks = (last_idx - first_idx + 1) as u32;
     let total_added = 2 + 2 * num_blocks; // list open/close + li open/close per block
-                                          // Positions before from: unchanged. Positions at/after from shift by +2
-                                          // (list open + first li open inserted before first block).
-                                          // But we need to handle the fact that positions between blocks shift
-                                          // differently. For simplicity, model as two insertions:
-                                          //   1. Insert 2 tokens at `from` (ul open + li open)
-                                          //   2. Insert (total_added - 2) tokens at `to` (but this is approximate)
-                                          //
-                                          // Actually, to keep step maps simple and consistent with how SplitBlock works,
-                                          // use a single insert that captures the total tokens added at the wrap point.
-                                          // This is a simplification — positions within wrapped content shift by +2.
     let map_start = StepMap::from_insert(from, 2);
     let map_end = StepMap::from_insert(to + 2, total_added - 2);
     let map = map_start.compose(&map_end);

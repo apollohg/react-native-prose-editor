@@ -93,6 +93,137 @@ fn test_undo_remove_bold_restores_bold() {
 }
 
 #[test]
+fn test_set_link_updates_active_mark_attrs_and_html() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<p>Hello world</p>")
+        .expect("set_html should succeed");
+
+    editor.set_selection(Selection::text(1, 6));
+    let mut attrs = HashMap::new();
+    attrs.insert(
+        "href".to_string(),
+        serde_json::Value::String("https://example.com".to_string()),
+    );
+    editor.set_mark("link", attrs).expect("set link should succeed");
+
+    let state = editor.get_current_state();
+    assert_eq!(state.active_state.marks.get("link"), Some(&true));
+    assert_eq!(
+        state.active_state.mark_attrs.get("link"),
+        Some(&serde_json::json!({ "href": "https://example.com" }))
+    );
+    assert_eq!(
+        editor.get_html(),
+        "<p><a href=\"https://example.com\">Hello</a> world</p>"
+    );
+}
+
+#[test]
+fn test_set_link_at_collapsed_cursor_updates_existing_link_range() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<p><a href=\"https://old.example\">Hello</a> world</p>")
+        .expect("set_html should succeed");
+
+    editor.set_selection(Selection::cursor(3));
+    let mut attrs = HashMap::new();
+    attrs.insert(
+        "href".to_string(),
+        serde_json::Value::String("https://new.example".to_string()),
+    );
+    editor
+        .set_mark("link", attrs)
+        .expect("editing link at caret should succeed");
+
+    assert_eq!(
+        editor.get_html(),
+        "<p><a href=\"https://new.example\">Hello</a> world</p>"
+    );
+}
+
+#[test]
+fn test_unset_link_at_collapsed_cursor_removes_existing_link_range() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<p><a href=\"https://example.com\">Hello</a> world</p>")
+        .expect("set_html should succeed");
+
+    editor.set_selection(Selection::cursor(3));
+    editor
+        .unset_mark("link")
+        .expect("removing link at caret should succeed");
+
+    assert_eq!(editor.get_html(), "<p>Hello world</p>");
+}
+
+#[test]
+fn test_toggle_blockquote_wraps_current_paragraph() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<p>Hello</p><p>World</p>")
+        .expect("set_html should succeed");
+
+    editor.set_selection(Selection::cursor(2));
+    editor
+        .toggle_blockquote()
+        .expect("toggle_blockquote should wrap paragraph");
+
+    assert_eq!(
+        editor.get_html(),
+        "<blockquote><p>Hello</p></blockquote><p>World</p>"
+    );
+}
+
+#[test]
+fn test_toggle_blockquote_unwraps_nearest_container() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<blockquote><p>Hello</p><p>World</p></blockquote>")
+        .expect("set_html should succeed");
+
+    editor.set_selection(Selection::cursor(4));
+    editor
+        .toggle_blockquote()
+        .expect("toggle_blockquote should unwrap quote");
+
+    assert_eq!(editor.get_html(), "<p>Hello</p><p>World</p>");
+}
+
+#[test]
+fn test_toggle_blockquote_wraps_multiple_selected_blocks() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<p>Hello</p><p>World</p><p>Tail</p>")
+        .expect("set_html should succeed");
+
+    editor.set_selection(Selection::text(1, 13));
+    editor
+        .toggle_blockquote()
+        .expect("toggle_blockquote should wrap multiple blocks");
+
+    assert_eq!(
+        editor.get_html(),
+        "<blockquote><p>Hello</p><p>World</p></blockquote><p>Tail</p>"
+    );
+}
+
+#[test]
+fn test_split_block_on_empty_blockquote_paragraph_exits_quote() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<blockquote><p>Hello</p><p></p></blockquote>")
+        .expect("set_html should succeed");
+
+    editor.set_selection(Selection::cursor(9));
+    editor
+        .split_block(9)
+        .expect("split_block should exit empty blockquote paragraph");
+
+    assert_eq!(editor.get_html(), "<blockquote><p>Hello</p></blockquote><p></p>");
+}
+
+#[test]
 fn test_undo_remove_mark_via_direct_step() {
     // Test the RemoveMark -> AddMark inversion directly using a transaction.
     // Setup: paragraph with bold in the middle.

@@ -5,6 +5,20 @@ namespace editor_core {
     u64 editor_create(string config_json);
     void editor_destroy(u64 id);
 
+    // Collaboration lifecycle
+    u64 collaboration_session_create(string config_json);
+    void collaboration_session_destroy(u64 id);
+    string collaboration_session_get_document_json(u64 id);
+    string collaboration_session_get_encoded_state(u64 id);
+    string collaboration_session_get_peers_json(u64 id);
+    string collaboration_session_start(u64 id);
+    string collaboration_session_apply_local_document_json(u64 id, string json);
+    string collaboration_session_apply_encoded_state(u64 id, string encoded_state_json);
+    string collaboration_session_replace_encoded_state(u64 id, string encoded_state_json);
+    string collaboration_session_handle_message(u64 id, string message_json);
+    string collaboration_session_set_local_awareness(u64 id, string awareness_json);
+    string collaboration_session_clear_local_awareness(u64 id);
+
     // Content (bootstrap — initial hydration only)
     string editor_set_html(u64 id, string html);
     string editor_get_html(u64 id);
@@ -23,6 +37,9 @@ namespace editor_core {
     string editor_insert_content_html(u64 id, string html);
     string editor_insert_content_json(u64 id, string json);
     string editor_toggle_mark(u64 id, string mark_name);
+    string editor_set_mark(u64 id, string mark_name, string attrs_json);
+    string editor_unset_mark(u64 id, string mark_name);
+    string editor_toggle_blockquote(u64 id);
     string editor_wrap_in_list(u64 id, string list_type);
     string editor_unwrap_from_list(u64 id);
     string editor_indent_list_item(u64 id);
@@ -37,6 +54,9 @@ namespace editor_core {
     string editor_delete_and_split_scalar(u64 id, u32 scalar_from, u32 scalar_to);
     void editor_set_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);
     string editor_toggle_mark_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string mark_name);
+    string editor_set_mark_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string mark_name, string attrs_json);
+    string editor_unset_mark_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string mark_name);
+    string editor_toggle_blockquote_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);
     string editor_wrap_in_list_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string list_type);
     string editor_unwrap_from_list_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);
     string editor_indent_list_item_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);

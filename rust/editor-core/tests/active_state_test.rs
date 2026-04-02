@@ -17,11 +17,12 @@ fn test_allowed_marks_in_text_block_all_returned() {
     let para = schema.node("paragraph").unwrap();
     let active_marks: Vec<&str> = vec![];
     let result = schema.allowed_marks_at(para, &active_marks);
-    assert_eq!(result.len(), 4);
+    assert_eq!(result.len(), 5);
     assert!(result.contains(&"bold".to_string()));
     assert!(result.contains(&"italic".to_string()));
     assert!(result.contains(&"underline".to_string()));
     assert!(result.contains(&"strike".to_string()));
+    assert!(result.contains(&"link".to_string()));
 }
 
 #[test]
@@ -171,8 +172,8 @@ fn test_active_state_allowed_marks_in_paragraph() {
     let allowed = &state.active_state.allowed_marks;
     assert_eq!(
         allowed.len(),
-        4,
-        "paragraph should allow all 4 marks, got: {:?}",
+        5,
+        "paragraph should allow all 5 marks, got: {:?}",
         allowed
     );
     assert!(
@@ -195,6 +196,39 @@ fn test_active_state_allowed_marks_in_paragraph() {
         "allowed_marks should contain strike, got: {:?}",
         allowed
     );
+    assert!(
+        allowed.contains(&"link".to_string()),
+        "allowed_marks should contain link, got: {:?}",
+        allowed
+    );
+}
+
+#[test]
+fn test_active_state_marks_blockquote_as_active_inside_quote() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<blockquote><p>Hello</p></blockquote>")
+        .expect("set_html should succeed");
+    editor.set_selection(Selection::cursor(4));
+
+    let state = editor.get_current_state();
+
+    assert_eq!(state.active_state.nodes.get("blockquote"), Some(&true));
+    assert_eq!(state.active_state.commands.get("toggleBlockquote"), Some(&true));
+}
+
+#[test]
+fn test_active_state_allows_blockquote_toggle_in_plain_paragraph() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<p>Hello</p>")
+        .expect("set_html should succeed");
+    editor.set_selection(Selection::cursor(2));
+
+    let state = editor.get_current_state();
+
+    assert_eq!(state.active_state.nodes.get("blockquote"), None);
+    assert_eq!(state.active_state.commands.get("toggleBlockquote"), Some(&true));
 }
 
 #[test]
@@ -306,6 +340,30 @@ fn test_active_state_wrap_list_commands_already_in_list() {
         commands.get("wrapOrderedList"),
         Some(&true),
         "wrapOrderedList should be true when already in list (toggle/switch), commands: {:?}",
+        commands
+    );
+}
+
+#[test]
+fn test_active_state_wrap_list_commands_enabled_in_blockquote() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<blockquote><p>Hello</p></blockquote>")
+        .expect("set_html should succeed");
+    editor.set_selection(Selection::cursor(2));
+
+    let state = editor.get_current_state();
+    let commands = &state.active_state.commands;
+    assert_eq!(
+        commands.get("wrapBulletList"),
+        Some(&true),
+        "wrapBulletList should be true inside blockquote when the schema accepts block children, commands: {:?}",
+        commands
+    );
+    assert_eq!(
+        commands.get("wrapOrderedList"),
+        Some(&true),
+        "wrapOrderedList should be true inside blockquote when the schema accepts block children, commands: {:?}",
         commands
     );
 }
@@ -565,5 +623,22 @@ fn test_active_state_exposes_hard_break_in_paragraph_and_list_item() {
         !insertable.contains(&"horizontalRule".to_string()),
         "horizontalRule should still be excluded inside list item paragraphs, got: {:?}",
         insertable
+    );
+}
+
+#[test]
+fn test_active_state_marks_range_formatted_mark_as_active() {
+    let mut editor = default_editor();
+    editor.set_html("<p>Hello</p>").unwrap();
+    editor.set_selection(Selection::text(1, 6));
+    editor
+        .toggle_mark_at_selection_scalar(1, 6, "bold")
+        .expect("toggle_mark_at_selection should succeed");
+
+    let state = editor.get_current_state();
+    assert_eq!(
+        state.active_state.marks.get("bold"),
+        Some(&true),
+        "bold should remain active for a fully bold text range"
     );
 }

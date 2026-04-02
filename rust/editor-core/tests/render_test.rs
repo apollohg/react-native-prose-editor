@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use editor_core::model::{Document, Fragment, Mark, Node};
 use editor_core::render::generate::generate;
 use editor_core::render::incremental::incremental;
-use editor_core::render::{ListContext, RenderElement};
+use editor_core::render::{ListContext, RenderElement, RenderMark};
 use editor_core::tiptap_schema;
 
 // ---------------------------------------------------------------------------
@@ -16,6 +16,13 @@ fn bold() -> Mark {
 
 fn italic() -> Mark {
     Mark::new("italic".to_string(), HashMap::new())
+}
+
+fn render_mark(mark_type: &str) -> RenderMark {
+    RenderMark {
+        mark_type: mark_type.to_string(),
+        attrs: HashMap::new(),
+    }
 }
 
 fn text(s: &str) -> Node {
@@ -128,7 +135,7 @@ fn test_formatted_text_partial_bold() {
             },
             RenderElement::TextRun {
                 text: "ell".to_string(),
-                marks: vec!["bold".to_string()],
+                marks: vec![render_mark("bold")],
             },
             RenderElement::TextRun {
                 text: "o".to_string(),
@@ -165,7 +172,7 @@ fn test_multiple_marks_bold_italic() {
             },
             RenderElement::TextRun {
                 text: "text".to_string(),
-                marks: vec!["bold".to_string(), "italic".to_string()],
+                marks: vec![render_mark("bold"), render_mark("italic")],
             },
             RenderElement::BlockEnd,
         ],
@@ -776,9 +783,9 @@ fn test_mark_ordering_preserved() {
             assert_eq!(
                 marks,
                 &vec![
-                    "italic".to_string(),
-                    "bold".to_string(),
-                    "underline".to_string()
+                    render_mark("italic"),
+                    render_mark("bold"),
+                    render_mark("underline")
                 ],
                 "Mark names should preserve the order from the node's marks"
             );

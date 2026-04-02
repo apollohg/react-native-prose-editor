@@ -5,18 +5,18 @@ use crate::schema::{AttrSpec, MarkSpec, NodeRole, NodeSpec, Schema};
 
 /// Build the standard Tiptap schema using camelCase node names.
 ///
-/// Node names: doc, paragraph, bulletList, orderedList, listItem,
+/// Node names: doc, paragraph, blockquote, bulletList, orderedList, listItem,
 ///             hardBreak, horizontalRule, text.
-/// Mark names: bold, italic, underline, strike.
+/// Mark names: bold, italic, underline, strike, link.
 pub fn tiptap_schema() -> Schema {
     build_schema(NamingConvention::CamelCase)
 }
 
 /// Build the standard ProseMirror schema using snake_case node names.
 ///
-/// Node names: doc, paragraph, bullet_list, ordered_list, list_item,
+/// Node names: doc, paragraph, blockquote, bullet_list, ordered_list, list_item,
 ///             hard_break, horizontal_rule, text.
-/// Mark names: bold, italic, underline, strike.
+/// Mark names: bold, italic, underline, strike, link.
 pub fn prosemirror_schema() -> Schema {
     build_schema(NamingConvention::SnakeCase)
 }
@@ -58,6 +58,15 @@ fn build_schema(convention: NamingConvention) -> Schema {
             attrs: HashMap::new(),
             role: NodeRole::TextBlock,
             html_tag: Some("p".to_string()),
+            is_void: false,
+        },
+        NodeSpec {
+            name: "blockquote".to_string(),
+            content: ContentRule::parse("block+").unwrap(),
+            group: Some("block".to_string()),
+            attrs: HashMap::new(),
+            role: NodeRole::Block,
+            html_tag: Some("blockquote".to_string()),
             is_void: false,
         },
         NodeSpec {
@@ -146,6 +155,15 @@ fn build_schema(convention: NamingConvention) -> Schema {
             attrs: HashMap::new(),
             excludes: None,
         },
+        MarkSpec {
+            name: "link".to_string(),
+            attrs: {
+                let mut attrs = HashMap::new();
+                attrs.insert("href".to_string(), AttrSpec { default: None });
+                attrs
+            },
+            excludes: None,
+        },
     ];
 
     Schema::new(nodes, marks)
@@ -161,6 +179,7 @@ mod tests {
         let expected = [
             "doc",
             "paragraph",
+            "blockquote",
             "bulletList",
             "orderedList",
             "listItem",
@@ -182,6 +201,7 @@ mod tests {
         let expected = [
             "doc",
             "paragraph",
+            "blockquote",
             "bullet_list",
             "ordered_list",
             "list_item",
@@ -200,7 +220,7 @@ mod tests {
     #[test]
     fn test_both_schemas_have_all_marks() {
         for schema in &[tiptap_schema(), prosemirror_schema()] {
-            for mark_name in &["bold", "italic", "underline", "strike"] {
+            for mark_name in &["bold", "italic", "underline", "strike", "link"] {
                 assert!(
                     schema.mark(mark_name).is_some(),
                     "schema missing mark '{mark_name}'"
@@ -229,6 +249,7 @@ mod tests {
         let block_nodes = schema.nodes_in_group("block");
         let block_names: Vec<&str> = block_nodes.iter().map(|n| n.name.as_str()).collect();
         assert!(block_names.contains(&"paragraph"));
+        assert!(block_names.contains(&"blockquote"));
         assert!(block_names.contains(&"bulletList"));
         assert!(block_names.contains(&"orderedList"));
         assert!(block_names.contains(&"horizontalRule"));

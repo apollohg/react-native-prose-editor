@@ -56,6 +56,7 @@ fn tag_to_mark_type(tag: &str) -> Option<&'static str> {
         "em" | "i" => Some("italic"),
         "u" => Some("underline"),
         "s" | "del" | "strike" => Some("strike"),
+        "a" => Some("link"),
         _ => None,
     }
 }
@@ -76,6 +77,16 @@ const VOID_HTML_ELEMENTS: &[&str] = &[
 
 fn is_void_html_element(tag: &str) -> bool {
     VOID_HTML_ELEMENTS.contains(&tag)
+}
+
+fn element_attr<'a>(elem: &'a scraper::node::Element, key: &str) -> Option<&'a str> {
+    elem.attrs().find_map(|(attr_key, value)| {
+        if attr_key.to_string() == key {
+            Some(value)
+        } else {
+            None
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +239,16 @@ fn process_element(
         if schema.mark(mark_type).is_some() {
             let mut new_marks = active_marks.to_vec();
             if !new_marks.iter().any(|m| m.mark_type() == mark_type) {
-                new_marks.push(Mark::new(mark_type.to_string(), HashMap::new()));
+                let mut attrs = HashMap::new();
+                if mark_type == "link" {
+                    if let Some(href) = element_attr(elem, "href") {
+                        attrs.insert(
+                            "href".to_string(),
+                            serde_json::Value::String(href.to_string()),
+                        );
+                    }
+                }
+                new_marks.push(Mark::new(mark_type.to_string(), attrs));
             }
             return process_children(node_ref, schema, options, &new_marks, block_acc, inline_acc);
         }
@@ -272,15 +292,14 @@ fn process_element(
 
 fn build_mention_node(
     node_ref: SNodeRef<'_>,
-    elem: &scraper::node::Element,
+    _elem: &scraper::node::Element,
     schema: &Schema,
 ) -> Option<Node> {
     if schema.node("mention").is_none() {
         return None;
     }
 
-    let is_mention = elem
-        .attr("data-native-editor-mention")
+    let is_mention = element_attr(_elem, "data-native-editor-mention")
         .map(|value| value == "true")
         .unwrap_or(false);
     if !is_mention {
@@ -288,7 +307,7 @@ fn build_mention_node(
     }
 
     let mut attrs = HashMap::new();
-    if let Some(raw_attrs) = elem.attr("data-native-editor-mention-attrs") {
+    if let Some(raw_attrs) = element_attr(_elem, "data-native-editor-mention-attrs") {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw_attrs) {
             if let Some(map) = value.as_object() {
                 for (key, value) in map {
@@ -314,7 +333,7 @@ fn build_mention_node(
 /// Process an element that maps to a known schema node spec.
 fn process_schema_node(
     node_ref: SNodeRef<'_>,
-    elem: &scraper::node::Element,
+    _elem: &scraper::node::Element,
     spec: &crate::schema::NodeSpec,
     schema: &Schema,
     options: &FromHtmlOptions,
@@ -343,8 +362,7 @@ fn process_schema_node(
             flush_inline_acc(inline_acc, schema, block_acc);
             let mut attrs = HashMap::new();
             if *ordered {
-                let start_val = elem
-                    .attr("start")
+                let start_val = element_attr(_elem, "start")
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(1);
                 attrs.insert(
@@ -377,7 +395,31 @@ fn process_schema_node(
             block_acc.push(node);
             Ok(())
         }
-        NodeRole::Doc | NodeRole::Text | NodeRole::Inline | NodeRole::Block => {
+        NodeRole::Block => {
+            flush_inline_acc(inline_acc, schema, block_acc);
+            let mut child_blocks = Vec::new();
+            let mut child_inline = Vec::new();
+            process_children(
+                node_ref,
+                schema,
+                options,
+                active_marks,
+                &mut child_blocks,
+                &mut child_inline,
+            )?;
+            flush_inline_acc(&mut child_inline, schema, &mut child_blocks);
+            if child_blocks.is_empty() {
+                child_blocks.push(make_paragraph(schema, vec![]));
+            }
+            let node = Node::element(
+                spec.name.clone(),
+                HashMap::new(),
+                Fragment::from(child_blocks),
+            );
+            block_acc.push(node);
+            Ok(())
+        }
+        NodeRole::Doc | NodeRole::Text | NodeRole::Inline => {
             flush_inline_acc(inline_acc, schema, block_acc);
             process_children(
                 node_ref,
@@ -420,7 +462,16 @@ fn collect_inline_children(
                 if schema.mark(mark_type).is_some() {
                     let mut new_marks = active_marks.to_vec();
                     if !new_marks.iter().any(|m| m.mark_type() == mark_type) {
-                        new_marks.push(Mark::new(mark_type.to_string(), HashMap::new()));
+                        let mut attrs = HashMap::new();
+                        if mark_type == "link" {
+                            if let Some(href) = element_attr(elem, "href") {
+                                attrs.insert(
+                                    "href".to_string(),
+                                    serde_json::Value::String(href.to_string()),
+                                );
+                            }
+                        }
+                        new_marks.push(Mark::new(mark_type.to_string(), attrs));
                     }
                     let children = collect_inline_children(child, schema, options, &new_marks)?;
                     inline_nodes.extend(children);

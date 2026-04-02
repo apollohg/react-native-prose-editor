@@ -1,8 +1,19 @@
 use crate::model::{Document, Node};
 use crate::render::{
     empty_text_block_placeholder_string, inline_atom_label, ListContext, RenderElement,
+    RenderMark,
 };
 use crate::schema::{NodeRole, Schema};
+
+fn render_marks(node: &Node) -> Vec<RenderMark> {
+    node.marks()
+        .iter()
+        .map(|mark| RenderMark {
+            mark_type: mark.mark_type().to_string(),
+            attrs: mark.attrs().clone(),
+        })
+        .collect()
+}
 
 /// Generate a complete flat sequence of `RenderElement` values from a document.
 ///
@@ -41,11 +52,7 @@ fn walk_children(
             Some(NodeRole::Text) => {
                 // Text node: emit TextRun
                 let text = child.text_str().unwrap_or("").to_string();
-                let marks: Vec<String> = child
-                    .marks()
-                    .iter()
-                    .map(|m| m.mark_type().to_string())
-                    .collect();
+                let marks = render_marks(child);
                 elements.push(RenderElement::TextRun { text, marks });
                 *pos += child.node_size();
             }
@@ -190,11 +197,7 @@ fn walk_children(
                 } else if child.is_text() {
                     // Text node not in schema (unusual): emit TextRun anyway
                     let text = child.text_str().unwrap_or("").to_string();
-                    let marks: Vec<String> = child
-                        .marks()
-                        .iter()
-                        .map(|m| m.mark_type().to_string())
-                        .collect();
+                    let marks = render_marks(child);
                     elements.push(RenderElement::TextRun { text, marks });
                     *pos += child.node_size();
                 } else {

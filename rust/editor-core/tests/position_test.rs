@@ -41,6 +41,14 @@ fn list_item(children: Vec<Node>) -> Node {
     )
 }
 
+fn blockquote(children: Vec<Node>) -> Node {
+    Node::element(
+        "blockquote".to_string(),
+        HashMap::new(),
+        Fragment::from(children),
+    )
+}
+
 fn hard_break() -> Node {
     Node::void("hardBreak".to_string(), HashMap::new())
 }
@@ -271,6 +279,24 @@ fn test_two_paragraphs_doc_to_scalar() {
     // doc 8..13 -> scalar 6..11
     assert_eq!(map.doc_to_scalar(8, &document), 6, "doc 8 -> scalar 6");
     assert_eq!(map.doc_to_scalar(13, &document), 11, "doc 13 -> scalar 11");
+}
+
+#[test]
+fn test_blockquote_followed_by_paragraph_scalar_to_doc() {
+    let document = Document::new(doc(vec![
+        blockquote(vec![paragraph(vec![text("Hello")])]),
+        paragraph(vec![text("World")]),
+    ]));
+    let map = PositionMap::build(&document);
+
+    assert_eq!(map.total_scalars(), 11, "'Hello\\nWorld' should render to 11 scalars");
+
+    assert_eq!(map.scalar_to_doc(6, &document), 10, "scalar 6 should map to the second paragraph start");
+    assert_eq!(map.scalar_to_doc(7, &document), 11, "scalar 7 should map inside the second paragraph");
+    assert_eq!(map.scalar_to_doc(8, &document), 12, "scalar 8 should map inside the second paragraph");
+    assert_eq!(map.scalar_to_doc(9, &document), 13, "scalar 9 should land before the fourth character of the second paragraph");
+    assert_eq!(map.scalar_to_doc(10, &document), 14, "scalar 10 should land before the fifth character of the second paragraph");
+    assert_eq!(map.scalar_to_doc(11, &document), 15, "scalar 11 should map to the end of the second paragraph");
 }
 
 #[test]

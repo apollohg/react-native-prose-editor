@@ -12,12 +12,19 @@ pub struct ListContext {
     pub is_last: bool,
 }
 
+/// A renderable inline mark for native text builders.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderMark {
+    pub mark_type: String,
+    pub attrs: std::collections::HashMap<String, serde_json::Value>,
+}
+
 /// A flat render element that native platform views consume to build
 /// attributed strings (NSAttributedString / SpannableStringBuilder).
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderElement {
     /// A run of text with applied mark names.
-    TextRun { text: String, marks: Vec<String> },
+    TextRun { text: String, marks: Vec<RenderMark> },
     /// An inline void node (e.g. hardBreak).
     VoidInline { node_type: String, doc_pos: u32 },
     /// A block-level void node (e.g. horizontalRule).

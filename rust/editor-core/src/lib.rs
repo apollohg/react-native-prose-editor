@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod collaboration;
 pub mod editor;
 pub mod history;
 pub mod intercept;
@@ -65,6 +66,152 @@ pub fn editor_create(config_json: String) -> u64 {
 #[uniffi::export]
 pub fn editor_destroy(id: u64) {
     registry::EditorRegistry::destroy(id);
+}
+
+/// Create a Yjs collaboration session backed by yrs.
+#[uniffi::export]
+pub fn collaboration_session_create(config_json: String) -> u64 {
+    collaboration::CollaborationSessionRegistry::create(&config_json)
+}
+
+/// Destroy a collaboration session and free its resources.
+#[uniffi::export]
+pub fn collaboration_session_destroy(id: u64) {
+    collaboration::CollaborationSessionRegistry::destroy(id);
+}
+
+/// Return the current shared ProseMirror JSON document for a collaboration session.
+#[uniffi::export]
+pub fn collaboration_session_get_document_json(id: u64) -> String {
+    with_collaboration_session(id, |session| {
+        serde_json::to_string(&session.document_json()).unwrap_or_else(|_| "{}".to_string())
+    })
+    .unwrap_or_else(|| "{}".to_string())
+}
+
+/// Return the current shared Yjs document state as a JSON byte array.
+#[uniffi::export]
+pub fn collaboration_session_get_encoded_state(id: u64) -> String {
+    with_collaboration_session(id, |session| {
+        serde_json::to_string(&session.encoded_state()).unwrap_or_else(|_| "[]".to_string())
+    })
+    .unwrap_or_else(|| "[]".to_string())
+}
+
+/// Return the current awareness peers for a collaboration session.
+#[uniffi::export]
+pub fn collaboration_session_get_peers_json(id: u64) -> String {
+    with_collaboration_session(id, |session| {
+        serde_json::to_string(&session.peers()).unwrap_or_else(|_| "[]".to_string())
+    })
+    .unwrap_or_else(|| "[]".to_string())
+}
+
+/// Start the sync handshake for a collaboration session.
+#[uniffi::export]
+pub fn collaboration_session_start(id: u64) -> String {
+    with_collaboration_session(id, |session| {
+        serde_json::to_string(&session.start()).unwrap_or_else(|_| "{}".to_string())
+    })
+    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+}
+
+/// Apply a local ProseMirror JSON snapshot to the collaboration session.
+#[uniffi::export]
+pub fn collaboration_session_apply_local_document_json(id: u64, json: String) -> String {
+    with_collaboration_session(id, |session| {
+        let value: serde_json::Value = match serde_json::from_str(&json) {
+            Ok(value) => value,
+            Err(error) => return format!("{{\"error\":\"invalid json: {}\"}}", error),
+        };
+        serde_json::to_string(&session.apply_local_document(value))
+            .unwrap_or_else(|_| "{}".to_string())
+    })
+    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+}
+
+/// Apply a durable Yjs encoded state/update represented as a JSON byte array.
+#[uniffi::export]
+pub fn collaboration_session_apply_encoded_state(id: u64, encoded_state_json: String) -> String {
+    with_collaboration_session(id, |session| {
+        let encoded_state: Vec<u8> = match serde_json::from_str(&encoded_state_json) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return format!(
+                    "{{\"error\":\"invalid encoded state json: {}\"}}",
+                    error
+                )
+            }
+        };
+        match session.apply_encoded_state(encoded_state) {
+            Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
+            Err(error) => format!("{{\"error\":\"{}\"}}", error),
+        }
+    })
+    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+}
+
+/// Replace the collaboration document with a durable Yjs encoded state/update.
+#[uniffi::export]
+pub fn collaboration_session_replace_encoded_state(id: u64, encoded_state_json: String) -> String {
+    with_collaboration_session(id, |session| {
+        let encoded_state: Vec<u8> = match serde_json::from_str(&encoded_state_json) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return format!(
+                    "{{\"error\":\"invalid encoded state json: {}\"}}",
+                    error
+                )
+            }
+        };
+        match session.replace_encoded_state(encoded_state) {
+            Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
+            Err(error) => format!("{{\"error\":\"{}\"}}", error),
+        }
+    })
+    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+}
+
+/// Apply an incoming y-sync binary message encoded as a JSON byte array.
+#[uniffi::export]
+pub fn collaboration_session_handle_message(id: u64, message_json: String) -> String {
+    with_collaboration_session(id, |session| {
+        let message: Vec<u8> = match serde_json::from_str(&message_json) {
+            Ok(bytes) => bytes,
+            Err(error) => return format!("{{\"error\":\"invalid message json: {}\"}}", error),
+        };
+        match session.handle_message(message) {
+            Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
+            Err(error) => format!("{{\"error\":\"{}\"}}", error),
+        }
+    })
+    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+}
+
+/// Update the local awareness payload for a collaboration session.
+#[uniffi::export]
+pub fn collaboration_session_set_local_awareness(id: u64, awareness_json: String) -> String {
+    with_collaboration_session(id, |session| {
+        let value: serde_json::Value = match serde_json::from_str(&awareness_json) {
+            Ok(value) => value,
+            Err(error) => {
+                return format!("{{\"error\":\"invalid awareness json: {}\"}}", error)
+            }
+        };
+        serde_json::to_string(&session.set_local_awareness(value))
+            .unwrap_or_else(|_| "{}".to_string())
+    })
+    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+}
+
+/// Clear the local awareness payload for a collaboration session.
+#[uniffi::export]
+pub fn collaboration_session_clear_local_awareness(id: u64) -> String {
+    with_collaboration_session(id, |session| {
+        serde_json::to_string(&session.clear_local_awareness())
+            .unwrap_or_else(|_| "{}".to_string())
+    })
+    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
 }
 
 /// Set the editor's content from an HTML string. Returns render elements as JSON.
@@ -161,6 +308,71 @@ pub fn editor_toggle_mark_at_selection_scalar(
 ) -> String {
     with_editor(id, |editor| {
         match editor.toggle_mark_at_selection_scalar(scalar_anchor, scalar_head, &mark_name) {
+            Ok(update) => serialize_editor_update(&update),
+            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        }
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
+/// Set a mark with attrs on the current selection. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_set_mark(id: u64, mark_name: String, attrs_json: String) -> String {
+    with_editor(id, |editor| {
+        let attrs = match parse_mark_attrs_json(&attrs_json) {
+            Ok(attrs) => attrs,
+            Err(error) => return format!("{{\"error\":\"{}\"}}", error),
+        };
+        match editor.set_mark(&mark_name, attrs) {
+            Ok(update) => serialize_editor_update(&update),
+            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        }
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
+/// Remove a mark from the current selection. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_unset_mark(id: u64, mark_name: String) -> String {
+    with_editor(id, |editor| match editor.unset_mark(&mark_name) {
+        Ok(update) => serialize_editor_update(&update),
+        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
+/// Set a mark with attrs at an explicit scalar selection. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_set_mark_at_selection_scalar(
+    id: u64,
+    scalar_anchor: u32,
+    scalar_head: u32,
+    mark_name: String,
+    attrs_json: String,
+) -> String {
+    with_editor(id, |editor| {
+        let attrs = match parse_mark_attrs_json(&attrs_json) {
+            Ok(attrs) => attrs,
+            Err(error) => return format!("{{\"error\":\"{}\"}}", error),
+        };
+        match editor.set_mark_at_selection_scalar(scalar_anchor, scalar_head, &mark_name, attrs) {
+            Ok(update) => serialize_editor_update(&update),
+            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        }
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
+/// Remove a mark at an explicit scalar selection. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_unset_mark_at_selection_scalar(
+    id: u64,
+    scalar_anchor: u32,
+    scalar_head: u32,
+    mark_name: String,
+) -> String {
+    with_editor(id, |editor| {
+        match editor.unset_mark_at_selection_scalar(scalar_anchor, scalar_head, &mark_name) {
             Ok(update) => serialize_editor_update(&update),
             Err(e) => format!("{{\"error\":\"{}\"}}", e),
         }
@@ -302,6 +514,32 @@ pub fn editor_wrap_in_list(id: u64, list_type: String) -> String {
     with_editor(id, |editor| match editor.apply_list_type(&list_type) {
         Ok(update) => serialize_editor_update(&update),
         Err(e) => format!("{{\"error\":\"{}\"}}", e),
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
+/// Toggle a blockquote around the current block selection. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_toggle_blockquote(id: u64) -> String {
+    with_editor(id, |editor| match editor.toggle_blockquote() {
+        Ok(update) => serialize_editor_update(&update),
+        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
+/// Toggle a blockquote at an explicit scalar selection. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_toggle_blockquote_at_selection_scalar(
+    id: u64,
+    scalar_anchor: u32,
+    scalar_head: u32,
+) -> String {
+    with_editor(id, |editor| {
+        match editor.toggle_blockquote_at_selection_scalar(scalar_anchor, scalar_head) {
+            Ok(update) => serialize_editor_update(&update),
+            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -568,6 +806,15 @@ where
     Some(f(&mut editor))
 }
 
+fn with_collaboration_session<F, R>(id: u64, f: F) -> Option<R>
+where
+    F: FnOnce(&mut collaboration::CollaborationSession) -> R,
+{
+    let arc = collaboration::CollaborationSessionRegistry::get(id)?;
+    let mut session = arc.lock().expect("collaboration session lock poisoned");
+    Some(f(&mut session))
+}
+
 /// Serialize render elements to a JSON-compatible structure.
 fn serialize_render_elements(elements: &[render::RenderElement]) -> serde_json::Value {
     let items: Vec<serde_json::Value> = elements
@@ -577,7 +824,7 @@ fn serialize_render_elements(elements: &[render::RenderElement]) -> serde_json::
                 serde_json::json!({
                     "type": "textRun",
                     "text": text,
-                    "marks": marks,
+                    "marks": marks.iter().map(serialize_render_mark).collect::<Vec<_>>(),
                 })
             }
             render::RenderElement::VoidInline { node_type, doc_pos } => {
@@ -648,6 +895,36 @@ fn serialize_render_elements(elements: &[render::RenderElement]) -> serde_json::
     serde_json::Value::Array(items)
 }
 
+fn serialize_render_mark(mark: &render::RenderMark) -> serde_json::Value {
+    if mark.attrs.is_empty() {
+        serde_json::Value::String(mark.mark_type.clone())
+    } else {
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "type".to_string(),
+            serde_json::Value::String(mark.mark_type.clone()),
+        );
+        for (key, value) in &mark.attrs {
+            obj.insert(key.clone(), value.clone());
+        }
+        serde_json::Value::Object(obj)
+    }
+}
+
+fn parse_mark_attrs_json(
+    attrs_json: &str,
+) -> Result<std::collections::HashMap<String, serde_json::Value>, String> {
+    if attrs_json.trim().is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(attrs_json).map_err(|error| format!("invalid mark attrs json: {}", error))?;
+    match value {
+        serde_json::Value::Object(map) => Ok(map.into_iter().collect()),
+        _ => Err("invalid mark attrs json: expected object".to_string()),
+    }
+}
+
 /// Serialize an EditorUpdate to a JSON string.
 fn serialize_editor_update(update: &editor::EditorUpdate) -> String {
     let sel = match &update.selection {
@@ -667,6 +944,7 @@ fn serialize_editor_update(update: &editor::EditorUpdate) -> String {
         "selection": sel,
         "activeState": {
             "marks": update.active_state.marks,
+            "markAttrs": update.active_state.mark_attrs,
             "nodes": update.active_state.nodes,
             "commands": update.active_state.commands,
             "allowedMarks": update.active_state.allowed_marks,
@@ -693,7 +971,8 @@ mod tests {
     fn test_editor_core_version() {
         let version = editor_core_version();
         assert_eq!(
-            version, "0.1.1",
+            version,
+            env!("CARGO_PKG_VERSION"),
             "editor_core_version() should return the crate version from Cargo.toml"
         );
     }

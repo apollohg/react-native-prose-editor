@@ -66,6 +66,7 @@ pub struct EditorUpdate {
 /// Which marks and node types are active at the current selection.
 pub struct ActiveState {
     pub marks: HashMap<String, bool>,
+    pub mark_attrs: HashMap<String, serde_json::Value>,
     pub nodes: HashMap<String, bool>,
     pub commands: HashMap<String, bool>,
     /// Mark names that can be toggled at the current cursor position.
@@ -96,12 +97,14 @@ enum SelectionOffset {
 // SplitAction
 // ---------------------------------------------------------------------------
 
-/// Action to take when split_block is called on an empty list item.
+/// Action to take when split_block is called on an empty structured block.
 enum SplitAction {
     /// Unwrap the list item to a paragraph (top-level list).
-    Unwrap(u32),
+    UnwrapList(u32),
     /// Outdent the list item one level (nested list).
-    Outdent(u32),
+    OutdentList(u32),
+    /// Exit the current empty paragraph out of its surrounding blockquote.
+    ExitBlockquote(u32),
 }
 
 // ---------------------------------------------------------------------------
@@ -242,19 +245,115 @@ impl Editor {
         }
     }
 
+    /// Set a mark with explicit attrs on the current selection.
+    pub fn set_mark(
+        &mut self,
+        mark_name: &str,
+        attrs: HashMap<String, serde_json::Value>,
+    ) -> Result<EditorUpdate, EditorError> {
+        let doc = self.backend.document();
+        let from = self.selection.from(doc);
+        let to = self.selection.to(doc);
+
+        if from == to {
+            if let Some((range_from, range_to)) = self.mark_range_at_pos(from, mark_name) {
+                if range_from < range_to {
+                    let mut tx = Transaction::new(Source::Format);
+                    tx.add_step(Step::RemoveMark {
+                        from: range_from,
+                        to: range_to,
+                        mark_type: mark_name.to_string(),
+                    });
+                    tx.add_step(Step::AddMark {
+                        from: range_from,
+                        to: range_to,
+                        mark: Mark::new(mark_name.to_string(), attrs),
+                    });
+                    return match self.apply_transaction(tx) {
+                        Ok(update) => Ok(update),
+                        Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
+                        Err(e) => Err(e),
+                    };
+                }
+            }
+
+            let mut stored = self
+                .stored_marks
+                .clone()
+                .unwrap_or_else(|| self.marks_at_pos(from));
+            stored.retain(|mark| mark.mark_type() != mark_name);
+            stored.push(Mark::new(mark_name.to_string(), attrs));
+            self.stored_marks = Some(stored);
+            return Ok(self.build_update_from_current());
+        }
+
+        let mut tx = Transaction::new(Source::Format);
+        tx.add_step(Step::RemoveMark {
+            from,
+            to,
+            mark_type: mark_name.to_string(),
+        });
+        tx.add_step(Step::AddMark {
+            from,
+            to,
+            mark: Mark::new(mark_name.to_string(), attrs),
+        });
+        match self.apply_transaction(tx) {
+            Ok(update) => Ok(update),
+            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Remove a mark from the current selection.
+    pub fn unset_mark(&mut self, mark_name: &str) -> Result<EditorUpdate, EditorError> {
+        let doc = self.backend.document();
+        let from = self.selection.from(doc);
+        let to = self.selection.to(doc);
+
+        if from == to {
+            if let Some((range_from, range_to)) = self.mark_range_at_pos(from, mark_name) {
+                if range_from < range_to {
+                    let mut tx = Transaction::new(Source::Format);
+                    tx.add_step(Step::RemoveMark {
+                        from: range_from,
+                        to: range_to,
+                        mark_type: mark_name.to_string(),
+                    });
+                    return match self.apply_transaction(tx) {
+                        Ok(update) => Ok(update),
+                        Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
+                        Err(e) => Err(e),
+                    };
+                }
+            }
+
+            let mut stored = self
+                .stored_marks
+                .clone()
+                .unwrap_or_else(|| self.marks_at_pos(from));
+            stored.retain(|mark| mark.mark_type() != mark_name);
+            self.stored_marks = Some(stored);
+            return Ok(self.build_update_from_current());
+        }
+
+        let mut tx = Transaction::new(Source::Format);
+        tx.add_step(Step::RemoveMark {
+            from,
+            to,
+            mark_type: mark_name.to_string(),
+        });
+        match self.apply_transaction(tx) {
+            Ok(update) => Ok(update),
+            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Split a block at the given position (e.g. pressing Enter).
     pub fn split_block(&mut self, pos: u32) -> Result<EditorUpdate, EditorError> {
-        // Empty list item detection: unwrap or outdent instead of splitting.
-        if let Some(action) = self.empty_list_item_split_action(pos) {
-            return match action {
-                SplitAction::Unwrap(p) => self.unwrap_from_list(p),
-                SplitAction::Outdent(p) => {
-                    let remap = self.selection_remap_for_outdent(p);
-                    let mut tx = Transaction::new(Source::Input);
-                    tx.add_step(Step::OutdentListItem { pos: p });
-                    self.apply_transaction_with_selection_remap(tx, remap)
-                }
-            };
+        if let Some(action) = self.empty_split_action(pos) {
+            return self.apply_empty_split_action(action);
         }
 
         // Normal split: create a new paragraph block.
@@ -336,7 +435,111 @@ impl Editor {
 
         let from = self.selection.from(doc);
         let to = self.selection.to(doc);
+        if let Some(update) = self.wrap_selected_blocks_in_list(from, to, list_type)? {
+            return Ok(update);
+        }
         self.wrap_in_list(from, to, list_type)
+    }
+
+    /// Toggle a blockquote around the current block selection.
+    ///
+    /// If the current selection is inside a blockquote, unwraps the nearest
+    /// containing blockquote. Otherwise wraps the selected sibling block range
+    /// in a new blockquote container.
+    pub fn toggle_blockquote(&mut self) -> Result<EditorUpdate, EditorError> {
+        let doc = self.backend.document();
+        let pos = self.selection.from(doc);
+
+        if self.containing_blockquote_node_at(pos).is_some() {
+            return self.unwrap_from_blockquote(pos);
+        }
+
+        let Some(blockquote_type) = self.blockquote_node_name() else {
+            return Ok(self.build_update_from_current());
+        };
+        let from = self.selection.from(doc);
+        let to = self.selection.to(doc);
+        self.wrap_in_blockquote(from, to, &blockquote_type)
+    }
+
+    /// Toggle a blockquote at an explicit scalar selection supplied by the caller.
+    pub fn toggle_blockquote_at_selection_scalar(
+        &mut self,
+        scalar_anchor: u32,
+        scalar_head: u32,
+    ) -> Result<EditorUpdate, EditorError> {
+        self.set_selection_scalar(scalar_anchor, scalar_head);
+        self.toggle_blockquote()
+    }
+
+    /// Wrap the selected sibling block range in a blockquote container.
+    pub fn wrap_in_blockquote(
+        &mut self,
+        from: u32,
+        to: u32,
+        blockquote_type: &str,
+    ) -> Result<EditorUpdate, EditorError> {
+        let Some(range) = self.selected_block_range(from, to) else {
+            return Ok(self.build_update_from_current());
+        };
+
+        let parent = if range.parent_path.is_empty() {
+            self.backend.document().root()
+        } else {
+            self.backend.document().node_at(&range.parent_path)
+                .unwrap_or_else(|| self.backend.document().root())
+        };
+        let Some(parent_spec) = self.schema.node(parent.node_type()) else {
+            return Ok(self.build_update_from_current());
+        };
+        let insertable = self.schema.insertable_nodes_at(parent_spec, parent.child_count());
+        if !insertable.iter().any(|name| name == blockquote_type) {
+            return Ok(self.build_update_from_current());
+        }
+
+        let quote = Node::element(
+            blockquote_type.to_string(),
+            HashMap::new(),
+            Fragment::from(range.selected_blocks),
+        );
+        let mut tx = Transaction::new(Source::Format);
+        tx.add_step(Step::ReplaceRange {
+            from: range.replace_from,
+            to: range.replace_to,
+            content: Fragment::from(vec![quote]),
+        });
+
+        let selection_after = self.shifted_selection(1);
+        match self.apply_transaction_with_selection_adjustments(tx, None, selection_after) {
+            Ok(update) => Ok(update),
+            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Unwrap the nearest containing blockquote at the given position.
+    pub fn unwrap_from_blockquote(&mut self, pos: u32) -> Result<EditorUpdate, EditorError> {
+        let Some((quote_start, _quote_path, quote_node)) = self.containing_blockquote_node_at(pos)
+        else {
+            return Ok(self.build_update_from_current());
+        };
+        let Some(content) = quote_node.content() else {
+            return Ok(self.build_update_from_current());
+        };
+
+        let mut tx = Transaction::new(Source::Format);
+        tx.add_step(Step::ReplaceRange {
+            from: quote_start,
+            to: quote_start + quote_node.node_size(),
+            content: Fragment::from(content.iter().cloned().collect::<Vec<_>>()),
+        });
+
+        let selection_after = self.shifted_selection(-1);
+        match self.apply_transaction_with_selection_adjustments(tx, None, selection_after) {
+            Ok(update) => Ok(update),
+            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Unwrap a list item at the given position.
@@ -639,6 +842,11 @@ impl Editor {
         {
             return self.unwrap_from_list(list_pos);
         }
+        if let Some(quote_pos) =
+            self.empty_blockquote_exit_pos_for_scalar_delete(scalar_from, scalar_to, doc_from, doc_to)
+        {
+            return self.exit_empty_blockquote(quote_pos);
+        }
         if let Some((replace_from, replace_to, content, selection_after)) = self
             .lift_empty_text_block_out_of_list_for_scalar_delete(
                 scalar_from,
@@ -748,19 +956,11 @@ impl Editor {
             self.apply_transaction(delete_tx)?;
         }
 
-        // After the delete, check if we're now in an empty list item.
+        // After the delete, check if we're now in an empty structured block.
         // doc_from is still valid because DeleteRange remaps positions before
         // the range to themselves.
-        if let Some(action) = self.empty_list_item_split_action(doc_from) {
-            return match action {
-                SplitAction::Unwrap(p) => self.unwrap_from_list(p),
-                SplitAction::Outdent(p) => {
-                    let remap = self.selection_remap_for_outdent(p);
-                    let mut tx = Transaction::new(Source::Input);
-                    tx.add_step(Step::OutdentListItem { pos: p });
-                    self.apply_transaction_with_selection_remap(tx, remap)
-                }
-            };
+        if let Some(action) = self.empty_split_action(doc_from) {
+            return self.apply_empty_split_action(action);
         }
 
         // Normal split.
@@ -788,6 +988,29 @@ impl Editor {
     ) -> Result<EditorUpdate, EditorError> {
         self.set_selection_scalar(scalar_anchor, scalar_head);
         self.toggle_mark(mark_name)
+    }
+
+    /// Set a mark with attrs at an explicit scalar selection supplied by the caller.
+    pub fn set_mark_at_selection_scalar(
+        &mut self,
+        scalar_anchor: u32,
+        scalar_head: u32,
+        mark_name: &str,
+        attrs: HashMap<String, serde_json::Value>,
+    ) -> Result<EditorUpdate, EditorError> {
+        self.set_selection_scalar(scalar_anchor, scalar_head);
+        self.set_mark(mark_name, attrs)
+    }
+
+    /// Remove a mark at an explicit scalar selection supplied by the caller.
+    pub fn unset_mark_at_selection_scalar(
+        &mut self,
+        scalar_anchor: u32,
+        scalar_head: u32,
+        mark_name: &str,
+    ) -> Result<EditorUpdate, EditorError> {
+        self.set_selection_scalar(scalar_anchor, scalar_head);
+        self.unset_mark(mark_name)
     }
 
     /// Apply a list type at an explicit scalar selection supplied by the caller.
@@ -1021,9 +1244,21 @@ impl Editor {
         let nodes_at = self.nodes_at_pos(pos);
 
         let mut marks = HashMap::new();
+        let mut mark_attrs = HashMap::new();
         for mark_spec in self.schema.all_marks() {
-            let is_active = marks_at.iter().any(|m| m.mark_type() == mark_spec.name);
+            let active_mark = marks_at.iter().find(|m| m.mark_type() == mark_spec.name);
+            let is_active = active_mark.is_some();
             marks.insert(mark_spec.name.clone(), is_active);
+            if let Some(mark) = active_mark {
+                if !mark.attrs().is_empty() {
+                    mark_attrs.insert(
+                        mark_spec.name.clone(),
+                        serde_json::Value::Object(
+                            mark.attrs().clone().into_iter().collect()
+                        ),
+                    );
+                }
+            }
         }
 
         let active_list_type = self
@@ -1048,6 +1283,10 @@ impl Editor {
         let mut commands = HashMap::new();
         commands.insert("indentList".to_string(), self.can_indent_list_item(pos));
         commands.insert("outdentList".to_string(), self.can_outdent_list_item(pos));
+        commands.insert(
+            "toggleBlockquote".to_string(),
+            self.can_toggle_blockquote_at(pos),
+        );
 
         // Compute allowed_marks and insertable_nodes based on selection type.
         let (allowed_marks, insertable_nodes) = match &self.selection {
@@ -1095,6 +1334,7 @@ impl Editor {
 
         ActiveState {
             marks,
+            mark_attrs,
             nodes,
             commands,
             allowed_marks,
@@ -1195,14 +1435,21 @@ impl Editor {
         parent: &Node,
         insertable: Vec<String>,
     ) -> Vec<String> {
-        if parent.node_type() != "listItem" && parent.node_type() != "list_item" {
-            return insertable;
+        let mut filtered: Vec<String> = insertable
+            .into_iter()
+            .filter(|node_type| {
+                self.schema
+                    .node(node_type)
+                    .map(|spec| matches!(spec.role, NodeRole::Block) && spec.is_void)
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        if parent.node_type() == "listItem" || parent.node_type() == "list_item" {
+            filtered.retain(|node_type| !Self::is_horizontal_rule_node(node_type));
         }
 
-        insertable
-            .into_iter()
-            .filter(|node_type| !Self::is_horizontal_rule_node(node_type))
-            .collect()
+        filtered
     }
 
     fn can_insert_block_node_at_pos(&self, pos: u32, node_type: &str) -> bool {
@@ -1283,6 +1530,88 @@ impl Editor {
 
     fn empty_paragraph_node() -> Node {
         Node::element("paragraph".to_string(), HashMap::new(), Fragment::empty())
+    }
+
+    fn apply_empty_split_action(
+        &mut self,
+        action: SplitAction,
+    ) -> Result<EditorUpdate, EditorError> {
+        match action {
+            SplitAction::UnwrapList(p) => self.unwrap_from_list(p),
+            SplitAction::OutdentList(p) => {
+                let remap = self.selection_remap_for_outdent(p);
+                let mut tx = Transaction::new(Source::Input);
+                tx.add_step(Step::OutdentListItem { pos: p });
+                self.apply_transaction_with_selection_remap(tx, remap)
+            }
+            SplitAction::ExitBlockquote(p) => self.exit_empty_blockquote(p),
+        }
+    }
+
+    fn empty_split_action(&self, pos: u32) -> Option<SplitAction> {
+        self.empty_list_item_split_action(pos)
+            .or_else(|| self.empty_blockquote_split_action(pos))
+    }
+
+    fn exit_empty_blockquote(&mut self, pos: u32) -> Result<EditorUpdate, EditorError> {
+        let context = self.empty_blockquote_exit_context(pos).ok_or_else(|| {
+            EditorError::Transform(TransformError::InvalidTarget(
+                "cannot exit blockquote outside an empty direct blockquote paragraph".to_string(),
+            ))
+        })?;
+
+        let quote_content = context.quote_node.content().ok_or_else(|| {
+            EditorError::Transform(TransformError::InvalidTarget(
+                "blockquote content missing while exiting blockquote".to_string(),
+            ))
+        })?;
+
+        let before_children = quote_content
+            .iter()
+            .take(context.block_idx)
+            .cloned()
+            .collect::<Vec<_>>();
+        let after_children = quote_content
+            .iter()
+            .skip(context.block_idx + 1)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut replacement = Vec::new();
+        let mut target_cursor_pos = context.replace_from;
+
+        if !before_children.is_empty() {
+            let before_quote = Node::element(
+                context.quote_node.node_type().to_string(),
+                context.quote_node.attrs().clone(),
+                Fragment::from(before_children),
+            );
+            target_cursor_pos += before_quote.node_size();
+            replacement.push(before_quote);
+        }
+
+        replacement.push(Self::empty_paragraph_node());
+
+        if !after_children.is_empty() {
+            replacement.push(Node::element(
+                context.quote_node.node_type().to_string(),
+                context.quote_node.attrs().clone(),
+                Fragment::from(after_children),
+            ));
+        }
+
+        let mut tx = Transaction::new(Source::Input);
+        tx.add_step(Step::ReplaceRange {
+            from: context.replace_from,
+            to: context.replace_to,
+            content: Fragment::from(replacement),
+        });
+
+        self.apply_transaction_with_selection_adjustments(
+            tx,
+            None,
+            Some(Selection::cursor(target_cursor_pos.saturating_add(1))),
+        )
     }
 
     fn empty_text_block_replace_range_at(&self, pos: u32) -> Option<(u32, u32)> {
@@ -1403,6 +1732,110 @@ impl Editor {
         false
     }
 
+    fn can_toggle_blockquote_at(&self, pos: u32) -> bool {
+        let Some(blockquote_type) = self.blockquote_node_name() else {
+            return false;
+        };
+        if self.containing_blockquote_node_at(pos).is_some() {
+            return true;
+        }
+
+        let doc = self.backend.document();
+        let resolved = match doc.resolve(pos) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+
+        let path = &resolved.node_path;
+        let mut nodes_in_path: Vec<&Node> = vec![doc.root()];
+        let mut current = doc.root();
+        for &idx in path.iter() {
+            if let Some(child) = current.child(idx as usize) {
+                nodes_in_path.push(child);
+                current = child;
+            }
+        }
+
+        for i in (0..nodes_in_path.len()).rev() {
+            let node = nodes_in_path[i];
+            let Some(spec) = self.schema.node(node.node_type()) else {
+                continue;
+            };
+            if matches!(spec.role, NodeRole::TextBlock) {
+                continue;
+            }
+            let insertable = self.schema.insertable_nodes_at(spec, node.child_count());
+            return insertable.iter().any(|name| name == &blockquote_type);
+        }
+
+        false
+    }
+
+    fn wrap_selected_blocks_in_list(
+        &mut self,
+        from: u32,
+        to: u32,
+        list_type: &str,
+    ) -> Result<Option<EditorUpdate>, EditorError> {
+        let Some(range) = self.selected_block_range(from, to) else {
+            return Ok(None);
+        };
+        if range.parent_path.is_empty() {
+            return Ok(None);
+        }
+
+        let Some(parent) = self.backend.document().node_at(&range.parent_path) else {
+            return Ok(None);
+        };
+        if parent.node_type() != "blockquote" {
+            return Ok(None);
+        }
+
+        let Some(parent_spec) = self.schema.node(parent.node_type()) else {
+            return Ok(None);
+        };
+        let insertable = self.schema.insertable_nodes_at(parent_spec, parent.child_count());
+        if !insertable.iter().any(|name| name == list_type) {
+            return Ok(Some(self.build_update_from_current()));
+        }
+
+        let item_type = self
+            .schema
+            .all_nodes()
+            .find(|n| matches!(n.role, crate::schema::NodeRole::ListItem))
+            .map(|n| n.name.clone())
+            .unwrap_or_else(|| "listItem".to_string());
+
+        let list_items = range
+            .selected_blocks
+            .into_iter()
+            .map(|block| {
+                Node::element(
+                    item_type.clone(),
+                    HashMap::new(),
+                    Fragment::from(vec![block]),
+                )
+            })
+            .collect::<Vec<_>>();
+        let list_node = Node::element(
+            list_type.to_string(),
+            list_attrs_for_type(list_type, &HashMap::new()),
+            Fragment::from(list_items),
+        );
+
+        let mut tx = Transaction::new(Source::Input);
+        tx.add_step(Step::ReplaceRange {
+            from: range.replace_from,
+            to: range.replace_to,
+            content: Fragment::from(vec![list_node]),
+        });
+        match self.apply_transaction(tx) {
+            Ok(update) => Ok(Some(update)),
+            Err(EditorError::Transform(_)) => Ok(Some(self.build_update_from_current())),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Get marks at a document position.
     fn marks_at_pos(&self, pos: u32) -> Vec<Mark> {
         let doc = self.backend.document();
@@ -1501,6 +1934,110 @@ impl Editor {
         found_text
     }
 
+    /// Get the contiguous range of a mark at a collapsed position within the current parent.
+    fn mark_range_at_pos(&self, pos: u32, mark_name: &str) -> Option<(u32, u32)> {
+        let doc = self.backend.document();
+        let resolved = doc.resolve(pos).ok()?;
+        let parent = resolved.parent(doc);
+        let content = parent.content()?;
+        let parent_offset = resolved.parent_offset;
+        let parent_content_start = self.content_start_for_path(&resolved.node_path)?;
+
+        struct MarkedTextChild {
+            index: usize,
+            start: u32,
+            end: u32,
+            mark: Option<Mark>,
+        }
+
+        let mut children = Vec::new();
+        let mut offset: u32 = 0;
+        for (index, child) in content.iter().enumerate() {
+            let child_size = child.node_size();
+            if child.is_text() {
+                let mark = child
+                    .marks()
+                    .iter()
+                    .find(|m| m.mark_type() == mark_name)
+                    .cloned();
+                children.push(MarkedTextChild {
+                    index,
+                    start: offset,
+                    end: offset + child_size,
+                    mark,
+                });
+            }
+            offset += child_size;
+        }
+
+        let target = children
+            .iter()
+            .find(|child| {
+                child.mark.is_some()
+                    && child.start <= parent_offset
+                    && parent_offset <= child.end
+            })
+            .or_else(|| {
+                if parent_offset == offset {
+                    children.iter().rev().find(|child| child.mark.is_some())
+                } else {
+                    None
+                }
+            })?;
+
+        let target_mark = target.mark.as_ref()?;
+        let mut range_start = target.start;
+        let mut range_end = target.end;
+
+        let mut left_index = target.index;
+        while left_index > 0 {
+            let sibling = content.child(left_index - 1)?;
+            if !sibling.is_text() {
+                break;
+            }
+            let sibling_mark = sibling.marks().iter().find(|m| *m == target_mark);
+            if sibling_mark.is_none() {
+                break;
+            }
+            range_start -= sibling.node_size();
+            left_index -= 1;
+        }
+
+        let mut right_index = target.index;
+        while right_index + 1 < content.child_count() {
+            let sibling = content.child(right_index + 1)?;
+            if !sibling.is_text() {
+                break;
+            }
+            let sibling_mark = sibling.marks().iter().find(|m| *m == target_mark);
+            if sibling_mark.is_none() {
+                break;
+            }
+            range_end += sibling.node_size();
+            right_index += 1;
+        }
+
+        Some((parent_content_start + range_start, parent_content_start + range_end))
+    }
+
+    fn content_start_for_path(&self, path: &[u16]) -> Option<u32> {
+        let doc = self.backend.document();
+        let mut content_start: u32 = 0;
+        let mut node = doc.root();
+
+        for &child_idx in path {
+            if let Some(content) = node.content() {
+                for i in 0..child_idx as usize {
+                    content_start += content.child(i)?.node_size();
+                }
+            }
+            content_start += 1;
+            node = node.child(child_idx as usize)?;
+        }
+
+        Some(content_start)
+    }
+
     fn containing_list_node_at(&self, pos: u32) -> Option<(u32, Node)> {
         let doc = self.backend.document();
         let resolved = doc.resolve(pos).ok()?;
@@ -1530,6 +2067,134 @@ impl Editor {
         }
 
         nearest_list
+    }
+
+    fn blockquote_node_name(&self) -> Option<String> {
+        self.schema
+            .node_by_html_tag("blockquote")
+            .map(|spec| spec.name.clone())
+    }
+
+    fn block_path_for_pos(&self, pos: u32) -> Option<Vec<u16>> {
+        let doc = self.backend.document();
+        let resolved = doc.resolve(pos).ok()?;
+        let mut node = doc.root();
+        let mut path = Vec::new();
+        let mut block_path = None;
+
+        for &idx in &resolved.node_path {
+            let child = node.child(idx as usize)?;
+            path.push(idx);
+            let spec = self.schema.node(child.node_type())?;
+            if matches!(
+                spec.role,
+                NodeRole::TextBlock | NodeRole::Block | NodeRole::List { .. }
+            ) {
+                block_path = Some(path.clone());
+            }
+            node = child;
+        }
+
+        block_path
+    }
+
+    fn selected_block_range(&self, from: u32, to: u32) -> Option<BlockSelectionRange> {
+        let start_block_path = self.block_path_for_pos(from)?;
+        let end_pos = if to > from { to.saturating_sub(1) } else { from };
+        let end_block_path = self.block_path_for_pos(end_pos)?;
+
+        let start_parent = &start_block_path[..start_block_path.len().saturating_sub(1)];
+        let end_parent = &end_block_path[..end_block_path.len().saturating_sub(1)];
+        if start_parent != end_parent {
+            return None;
+        }
+
+        let parent_path = start_parent.to_vec();
+        let doc = self.backend.document();
+        let parent = if parent_path.is_empty() {
+            doc.root()
+        } else {
+            doc.node_at(&parent_path)?
+        };
+
+        let first_idx = *start_block_path.last()? as usize;
+        let last_idx = *end_block_path.last()? as usize;
+        if first_idx > last_idx {
+            return None;
+        }
+
+        let selected_blocks = (first_idx..=last_idx)
+            .map(|idx| parent.child(idx).cloned())
+            .collect::<Option<Vec<_>>>()?;
+        let replace_from = Self::node_delete_start_pos(doc, &start_block_path)?;
+        let replace_to = Self::node_delete_start_pos(doc, &end_block_path)?
+            + parent.child(last_idx)?.node_size();
+
+        Some(BlockSelectionRange {
+            parent_path,
+            replace_from,
+            replace_to,
+            selected_blocks,
+        })
+    }
+
+    fn containing_blockquote_node_at(&self, pos: u32) -> Option<(u32, Vec<u16>, Node)> {
+        let blockquote_type = self.blockquote_node_name()?;
+        let doc = self.backend.document();
+        let resolved = doc.resolve(pos).ok()?;
+        let mut node = doc.root();
+        let mut content_start: u32 = 0;
+        let mut nearest: Option<(u32, Vec<u16>, Node)> = None;
+        let mut path = Vec::new();
+
+        for &idx in &resolved.node_path {
+            let content = node.content()?;
+            let mut child_open = content_start;
+            for i in 0..(idx as usize) {
+                child_open += content.child(i)?.node_size();
+            }
+
+            let child = content.child(idx as usize)?;
+            path.push(idx);
+            if child.node_type() == blockquote_type {
+                nearest = Some((child_open, path.clone(), child.clone()));
+            }
+
+            if !child.is_element() {
+                break;
+            }
+            node = child;
+            content_start = child_open + 1;
+        }
+
+        nearest
+    }
+
+    fn shifted_selection(&self, delta: i32) -> Option<Selection> {
+        match self.selection.clone() {
+            Selection::Text { anchor, head } => {
+                let anchor = if delta >= 0 {
+                    anchor.checked_add(delta as u32)?
+                } else {
+                    anchor.checked_sub(delta.unsigned_abs())?
+                };
+                let head = if delta >= 0 {
+                    head.checked_add(delta as u32)?
+                } else {
+                    head.checked_sub(delta.unsigned_abs())?
+                };
+                Some(Selection::text(anchor, head))
+            }
+            Selection::Node { pos } => {
+                let pos = if delta >= 0 {
+                    pos.checked_add(delta as u32)?
+                } else {
+                    pos.checked_sub(delta.unsigned_abs())?
+                };
+                Some(Selection::Node { pos })
+            }
+            Selection::All => None,
+        }
     }
 
     fn can_indent_list_item(&self, pos: u32) -> bool {
@@ -1674,6 +2339,24 @@ impl Editor {
         }
 
         Some(doc_to)
+    }
+
+    fn empty_blockquote_exit_pos_for_scalar_delete(
+        &self,
+        scalar_from: u32,
+        scalar_to: u32,
+        doc_from: u32,
+        doc_to: u32,
+    ) -> Option<u32> {
+        if scalar_from >= scalar_to || doc_from != doc_to {
+            return None;
+        }
+        if self.doc_to_scalar(doc_to) != scalar_to {
+            return None;
+        }
+
+        self.empty_blockquote_exit_context(doc_to)
+            .map(|context| context.cursor_pos)
     }
 
     fn lift_empty_text_block_out_of_list_for_scalar_delete(
@@ -1841,11 +2524,65 @@ impl Editor {
             }
             let ancestor_spec = self.schema.node(ancestor.node_type())?;
             if matches!(ancestor_spec.role, NodeRole::ListItem) {
-                return Some(SplitAction::Outdent(pos));
+                return Some(SplitAction::OutdentList(pos));
             }
         }
 
-        Some(SplitAction::Unwrap(pos))
+        Some(SplitAction::UnwrapList(pos))
+    }
+
+    fn empty_blockquote_split_action(&self, pos: u32) -> Option<SplitAction> {
+        self.empty_blockquote_exit_context(pos)
+            .map(|context| SplitAction::ExitBlockquote(context.cursor_pos))
+    }
+
+    fn empty_blockquote_exit_context(&self, pos: u32) -> Option<EmptyBlockquoteExitContext> {
+        let blockquote_type = self.blockquote_node_name()?;
+        let doc = self.backend.document();
+        let resolved = doc.resolve(pos).ok()?;
+
+        let parent = resolved.parent(doc);
+        let parent_spec = self.schema.node(parent.node_type())?;
+        if !matches!(parent_spec.role, NodeRole::TextBlock) {
+            return None;
+        }
+        if resolved.parent_offset != 0 || parent.content_size() != 0 {
+            return None;
+        }
+
+        let mut node = doc.root();
+        let mut blockquote_depth: Option<usize> = None;
+        for (depth, &idx) in resolved.node_path.iter().enumerate() {
+            let child = node.child(idx as usize)?;
+            if child.node_type() == blockquote_type {
+                blockquote_depth = Some(depth);
+            }
+            node = child;
+        }
+
+        let blockquote_depth = blockquote_depth?;
+        if resolved.node_path.len() != blockquote_depth + 2 {
+            return None;
+        }
+
+        let quote_path = resolved.node_path[..=blockquote_depth].to_vec();
+        let block_idx = *resolved.node_path.get(blockquote_depth + 1)? as usize;
+        let quote_node = doc.node_at(&quote_path)?.clone();
+        let quote_content = quote_node.content()?;
+        if block_idx >= quote_content.child_count() {
+            return None;
+        }
+
+        let replace_from = Self::node_delete_start_pos(doc, &quote_path)?;
+        let replace_to = replace_from.checked_add(quote_node.node_size())?;
+
+        Some(EmptyBlockquoteExitContext {
+            cursor_pos: pos,
+            quote_node,
+            block_idx,
+            replace_from,
+            replace_to,
+        })
     }
 
     fn horizontal_rule_replacement_for_scalar_delete(
@@ -2011,7 +2748,70 @@ impl Editor {
                 .clone()
                 .unwrap_or_else(|| self.marks_at_pos(pos))
         } else {
-            self.marks_at_pos(pos)
+            self.common_marks_for_text_selection()
+        }
+    }
+
+    fn common_marks_for_text_selection(&self) -> Vec<Mark> {
+        let Selection::Text { anchor, head } = &self.selection else {
+            return Vec::new();
+        };
+
+        let from = (*anchor).min(*head);
+        let to = (*anchor).max(*head);
+        if from == to {
+            return self.marks_at_pos(from);
+        }
+
+        let mut overlapping_marks = Vec::new();
+        Self::collect_text_marks_in_range(self.backend.document().root(), 0, from, to, &mut overlapping_marks);
+
+        let mut iter = overlapping_marks.into_iter();
+        let Some(first_marks) = iter.next() else {
+            return self.marks_at_pos(from);
+        };
+
+        let mut intersection = first_marks;
+        for marks in iter {
+            intersection.retain(|mark| marks.iter().any(|candidate| candidate == mark));
+            if intersection.is_empty() {
+                break;
+            }
+        }
+
+        intersection
+    }
+
+    fn collect_text_marks_in_range(
+        node: &Node,
+        start: u32,
+        from: u32,
+        to: u32,
+        out: &mut Vec<Vec<Mark>>,
+    ) {
+        if from >= to {
+            return;
+        }
+
+        if node.is_text() {
+            let end = start + node.node_size();
+            if start < to && end > from {
+                out.push(node.marks().to_vec());
+            }
+            return;
+        }
+
+        let Some(content) = node.content() else {
+            return;
+        };
+
+        let mut child_start = if node.node_type() == "doc" { start } else { start + 1 };
+        for child in content.iter() {
+            let child_end = child_start + child.node_size();
+            if child_end > from && child_start < to {
+                Self::collect_text_marks_in_range(child, child_start, from, to, out);
+            }
+            child_start = child_end;
         }
     }
 }
@@ -2058,6 +2858,21 @@ struct ListItemContext {
     list_path: Vec<u16>,
     list_item_idx: usize,
     parent_is_list_item: bool,
+}
+
+struct BlockSelectionRange {
+    parent_path: Vec<u16>,
+    replace_from: u32,
+    replace_to: u32,
+    selected_blocks: Vec<Node>,
+}
+
+struct EmptyBlockquoteExitContext {
+    cursor_pos: u32,
+    quote_node: Node,
+    block_idx: usize,
+    replace_from: u32,
+    replace_to: u32,
 }
 
 impl SelectionPathRemap {

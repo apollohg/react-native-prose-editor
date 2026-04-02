@@ -797,6 +797,42 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -812,7 +848,31 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_editor_core_checksum_func_editor_can_redo(
+    fun uniffi_editor_core_checksum_func_collaboration_session_apply_encoded_state(
+): Short
+fun uniffi_editor_core_checksum_func_collaboration_session_apply_local_document_json(
+): Short
+fun uniffi_editor_core_checksum_func_collaboration_session_clear_local_awareness(
+): Short
+fun uniffi_editor_core_checksum_func_collaboration_session_create(
+): Short
+fun uniffi_editor_core_checksum_func_collaboration_session_destroy(
+): Short
+fun uniffi_editor_core_checksum_func_collaboration_session_get_document_json(
+): Short
+fun uniffi_editor_core_checksum_func_collaboration_session_get_encoded_state(
+): Short
+fun uniffi_editor_core_checksum_func_collaboration_session_get_peers_json(
+): Short
+fun uniffi_editor_core_checksum_func_collaboration_session_handle_message(
+): Short
+fun uniffi_editor_core_checksum_func_collaboration_session_replace_encoded_state(
+): Short
+fun uniffi_editor_core_checksum_func_collaboration_session_set_local_awareness(
+): Short
+fun uniffi_editor_core_checksum_func_collaboration_session_start(
+): Short
+fun uniffi_editor_core_checksum_func_editor_can_redo(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_can_undo(
 ): Short
@@ -876,6 +936,10 @@ fun uniffi_editor_core_checksum_func_editor_set_html(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_set_json(
 ): Short
+fun uniffi_editor_core_checksum_func_editor_set_mark(
+): Short
+fun uniffi_editor_core_checksum_func_editor_set_mark_at_selection_scalar(
+): Short
 fun uniffi_editor_core_checksum_func_editor_set_selection(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_set_selection_scalar(
@@ -884,11 +948,19 @@ fun uniffi_editor_core_checksum_func_editor_split_block(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_split_block_scalar(
 ): Short
+fun uniffi_editor_core_checksum_func_editor_toggle_blockquote(
+): Short
+fun uniffi_editor_core_checksum_func_editor_toggle_blockquote_at_selection_scalar(
+): Short
 fun uniffi_editor_core_checksum_func_editor_toggle_mark(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_toggle_mark_at_selection_scalar(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_undo(
+): Short
+fun uniffi_editor_core_checksum_func_editor_unset_mark(
+): Short
+fun uniffi_editor_core_checksum_func_editor_unset_mark_at_selection_scalar(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_unwrap_from_list(
 ): Short
@@ -943,7 +1015,31 @@ internal interface UniffiLib : Library {
     }
 
     // FFI functions
-    fun uniffi_editor_core_fn_func_editor_can_redo(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    fun uniffi_editor_core_fn_func_collaboration_session_apply_encoded_state(`id`: Long,`encodedStateJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_collaboration_session_apply_local_document_json(`id`: Long,`json`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_collaboration_session_clear_local_awareness(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_collaboration_session_create(`configJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+fun uniffi_editor_core_fn_func_collaboration_session_destroy(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_editor_core_fn_func_collaboration_session_get_document_json(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_collaboration_session_get_encoded_state(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_collaboration_session_get_peers_json(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_collaboration_session_handle_message(`id`: Long,`messageJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_collaboration_session_replace_encoded_state(`id`: Long,`encodedStateJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_collaboration_session_set_local_awareness(`id`: Long,`awarenessJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_collaboration_session_start(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_can_redo(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
 fun uniffi_editor_core_fn_func_editor_can_undo(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
@@ -1007,6 +1103,10 @@ fun uniffi_editor_core_fn_func_editor_set_html(`id`: Long,`html`: RustBuffer.ByV
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_set_json(`id`: Long,`json`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_set_mark(`id`: Long,`markName`: RustBuffer.ByValue,`attrsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_set_mark_at_selection_scalar(`id`: Long,`scalarAnchor`: Int,`scalarHead`: Int,`markName`: RustBuffer.ByValue,`attrsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_set_selection(`id`: Long,`anchor`: Int,`head`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_editor_core_fn_func_editor_set_selection_scalar(`id`: Long,`scalarAnchor`: Int,`scalarHead`: Int,uniffi_out_err: UniffiRustCallStatus, 
@@ -1015,11 +1115,19 @@ fun uniffi_editor_core_fn_func_editor_split_block(`id`: Long,`pos`: Int,uniffi_o
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_split_block_scalar(`id`: Long,`scalarPos`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_toggle_blockquote(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_toggle_blockquote_at_selection_scalar(`id`: Long,`scalarAnchor`: Int,`scalarHead`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_toggle_mark(`id`: Long,`markName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_toggle_mark_at_selection_scalar(`id`: Long,`scalarAnchor`: Int,`scalarHead`: Int,`markName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_undo(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_unset_mark(`id`: Long,`markName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_unset_mark_at_selection_scalar(`id`: Long,`scalarAnchor`: Int,`scalarHead`: Int,`markName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_unwrap_from_list(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1155,6 +1263,42 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_apply_encoded_state() != 4684.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_apply_local_document_json() != 396.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_clear_local_awareness() != 48044.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_create() != 60237.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_destroy() != 56261.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_get_document_json() != 44139.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_get_encoded_state() != 16895.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_get_peers_json() != 46461.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_handle_message() != 25528.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_replace_encoded_state() != 53994.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_set_local_awareness() != 63617.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_start() != 54751.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_editor_core_checksum_func_editor_can_redo() != 15854.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1251,6 +1395,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_set_json() != 18497.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_editor_core_checksum_func_editor_set_mark() != 29349.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_set_mark_at_selection_scalar() != 43994.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_editor_core_checksum_func_editor_set_selection() != 28236.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1263,6 +1413,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_split_block_scalar() != 47554.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_editor_core_checksum_func_editor_toggle_blockquote() != 25804.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_toggle_blockquote_at_selection_scalar() != 58523.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_editor_core_checksum_func_editor_toggle_mark() != 30661.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1270,6 +1426,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_undo() != 28689.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_unset_mark() != 47985.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_unset_mark_at_selection_scalar() != 54992.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_unwrap_from_list() != 41875.toShort()) {
@@ -1488,6 +1650,149 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
         buf.put(byteBuf)
     }
 }
+        /**
+         * Apply a durable Yjs encoded state/update represented as a JSON byte array.
+         */ fun `collaborationSessionApplyEncodedState`(`id`: kotlin.ULong, `encodedStateJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_apply_encoded_state(
+        FfiConverterULong.lower(`id`),FfiConverterString.lower(`encodedStateJson`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Apply a local ProseMirror JSON snapshot to the collaboration session.
+         */ fun `collaborationSessionApplyLocalDocumentJson`(`id`: kotlin.ULong, `json`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_apply_local_document_json(
+        FfiConverterULong.lower(`id`),FfiConverterString.lower(`json`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Clear the local awareness payload for a collaboration session.
+         */ fun `collaborationSessionClearLocalAwareness`(`id`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_clear_local_awareness(
+        FfiConverterULong.lower(`id`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Create a Yjs collaboration session backed by yrs.
+         */ fun `collaborationSessionCreate`(`configJson`: kotlin.String): kotlin.ULong {
+            return FfiConverterULong.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_create(
+        FfiConverterString.lower(`configJson`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Destroy a collaboration session and free its resources.
+         */ fun `collaborationSessionDestroy`(`id`: kotlin.ULong)
+        = 
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_destroy(
+        FfiConverterULong.lower(`id`),_status)
+}
+    
+    
+
+        /**
+         * Return the current shared ProseMirror JSON document for a collaboration session.
+         */ fun `collaborationSessionGetDocumentJson`(`id`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_get_document_json(
+        FfiConverterULong.lower(`id`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Return the current shared Yjs document state as a JSON byte array.
+         */ fun `collaborationSessionGetEncodedState`(`id`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_get_encoded_state(
+        FfiConverterULong.lower(`id`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Return the current awareness peers for a collaboration session.
+         */ fun `collaborationSessionGetPeersJson`(`id`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_get_peers_json(
+        FfiConverterULong.lower(`id`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Apply an incoming y-sync binary message encoded as a JSON byte array.
+         */ fun `collaborationSessionHandleMessage`(`id`: kotlin.ULong, `messageJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_handle_message(
+        FfiConverterULong.lower(`id`),FfiConverterString.lower(`messageJson`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Replace the collaboration document with a durable Yjs encoded state/update.
+         */ fun `collaborationSessionReplaceEncodedState`(`id`: kotlin.ULong, `encodedStateJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_replace_encoded_state(
+        FfiConverterULong.lower(`id`),FfiConverterString.lower(`encodedStateJson`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Update the local awareness payload for a collaboration session.
+         */ fun `collaborationSessionSetLocalAwareness`(`id`: kotlin.ULong, `awarenessJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_set_local_awareness(
+        FfiConverterULong.lower(`id`),FfiConverterString.lower(`awarenessJson`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Start the sync handshake for a collaboration session.
+         */ fun `collaborationSessionStart`(`id`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_start(
+        FfiConverterULong.lower(`id`),_status)
+}
+    )
+    }
+    
+
         /**
          * Check if redo is available.
          */ fun `editorCanRedo`(`id`: kotlin.ULong): kotlin.Boolean {
@@ -1882,6 +2187,30 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     
 
         /**
+         * Set a mark with attrs on the current selection. Returns an update JSON string.
+         */ fun `editorSetMark`(`id`: kotlin.ULong, `markName`: kotlin.String, `attrsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_set_mark(
+        FfiConverterULong.lower(`id`),FfiConverterString.lower(`markName`),FfiConverterString.lower(`attrsJson`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Set a mark with attrs at an explicit scalar selection. Returns an update JSON string.
+         */ fun `editorSetMarkAtSelectionScalar`(`id`: kotlin.ULong, `scalarAnchor`: kotlin.UInt, `scalarHead`: kotlin.UInt, `markName`: kotlin.String, `attrsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_set_mark_at_selection_scalar(
+        FfiConverterULong.lower(`id`),FfiConverterUInt.lower(`scalarAnchor`),FfiConverterUInt.lower(`scalarHead`),FfiConverterString.lower(`markName`),FfiConverterString.lower(`attrsJson`),_status)
+}
+    )
+    }
+    
+
+        /**
          * Set the selection. Anchor and head are document positions.
          */ fun `editorSetSelection`(`id`: kotlin.ULong, `anchor`: kotlin.UInt, `head`: kotlin.UInt)
         = 
@@ -1928,6 +2257,30 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     
 
         /**
+         * Toggle a blockquote around the current block selection. Returns an update JSON string.
+         */ fun `editorToggleBlockquote`(`id`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_toggle_blockquote(
+        FfiConverterULong.lower(`id`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Toggle a blockquote at an explicit scalar selection. Returns an update JSON string.
+         */ fun `editorToggleBlockquoteAtSelectionScalar`(`id`: kotlin.ULong, `scalarAnchor`: kotlin.UInt, `scalarHead`: kotlin.UInt): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_toggle_blockquote_at_selection_scalar(
+        FfiConverterULong.lower(`id`),FfiConverterUInt.lower(`scalarAnchor`),FfiConverterUInt.lower(`scalarHead`),_status)
+}
+    )
+    }
+    
+
+        /**
          * Toggle a mark on the current selection. Returns an update JSON string.
          */ fun `editorToggleMark`(`id`: kotlin.ULong, `markName`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
@@ -1958,6 +2311,30 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_undo(
         FfiConverterULong.lower(`id`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Remove a mark from the current selection. Returns an update JSON string.
+         */ fun `editorUnsetMark`(`id`: kotlin.ULong, `markName`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_unset_mark(
+        FfiConverterULong.lower(`id`),FfiConverterString.lower(`markName`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Remove a mark at an explicit scalar selection. Returns an update JSON string.
+         */ fun `editorUnsetMarkAtSelectionScalar`(`id`: kotlin.ULong, `scalarAnchor`: kotlin.UInt, `scalarHead`: kotlin.UInt, `markName`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_unset_mark_at_selection_scalar(
+        FfiConverterULong.lower(`id`),FfiConverterUInt.lower(`scalarAnchor`),FfiConverterUInt.lower(`scalarHead`),FfiConverterString.lower(`markName`),_status)
 }
     )
     }

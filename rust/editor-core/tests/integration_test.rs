@@ -962,6 +962,30 @@ fn test_uniffi_editor_toggle_mark_at_selection_scalar() {
 }
 
 #[test]
+fn test_uniffi_editor_toggle_blockquote_at_selection_scalar() {
+    let id = editor_core::editor_create("{}".to_string());
+    editor_core::editor_set_html(id, "<p>Hello</p><p>World</p>".to_string());
+
+    let scalar_anchor = editor_core::editor_doc_to_scalar(id, 1);
+    let scalar_head = editor_core::editor_doc_to_scalar(id, 1);
+    let result = editor_core::editor_toggle_blockquote_at_selection_scalar(
+        id,
+        scalar_anchor,
+        scalar_head,
+    );
+    assert!(
+        !result.contains("error"),
+        "toggle_blockquote_at_selection_scalar should succeed, got: {}",
+        result
+    );
+
+    let html = editor_core::editor_get_html(id);
+    assert_eq!(html, "<blockquote><p>Hello</p></blockquote><p>World</p>");
+
+    editor_core::editor_destroy(id);
+}
+
+#[test]
 fn test_uniffi_editor_insert_node_at_selection_scalar() {
     let id = editor_core::editor_create("{}".to_string());
     editor_core::editor_set_html(id, "<p>Hello</p>".to_string());
@@ -1289,6 +1313,76 @@ fn test_backspace_again_after_breaking_out_of_list_removes_empty_paragraph() {
 }
 
 #[test]
+fn test_backspace_from_empty_blockquote_paragraph_breaks_out_of_quote() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<blockquote><p>Hello</p><p></p></blockquote>")
+        .expect("set_html");
+    editor.set_selection(Selection::cursor(9));
+
+    let cursor_scalar = editor.doc_to_scalar(9);
+    assert!(
+        cursor_scalar > 0,
+        "empty quoted paragraph cursor should sit after a backspace-able rendered boundary"
+    );
+
+    let update = editor
+        .delete_scalar_range(cursor_scalar - 1, cursor_scalar)
+        .expect("backspace from empty blockquote paragraph should succeed");
+
+    assert_eq!(
+        editor.get_html(),
+        "<blockquote><p>Hello</p></blockquote><p></p>",
+        "backspacing at the start of an empty quoted paragraph should break out of the quote"
+    );
+
+    let insert_pos = update.selection.from(editor.document());
+    editor
+        .insert_text(insert_pos, "B")
+        .expect("typing after blockquote exit should succeed");
+    assert_eq!(editor.get_html(), "<blockquote><p>Hello</p></blockquote><p>B</p>");
+}
+
+#[test]
+fn test_backspace_again_after_breaking_out_of_blockquote_removes_empty_paragraph() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<blockquote><p>Hello</p><p></p></blockquote>")
+        .expect("set_html");
+    editor.set_selection(Selection::cursor(9));
+
+    let update = editor
+        .delete_scalar_range(editor.doc_to_scalar(9) - 1, editor.doc_to_scalar(9))
+        .expect("first backspace should exit the quote");
+
+    assert_eq!(editor.get_html(), "<blockquote><p>Hello</p></blockquote><p></p>");
+
+    let escaped_cursor = update.selection.from(editor.document());
+    assert_eq!(escaped_cursor, 10, "selection should stay in the lifted paragraph");
+
+    let escaped_scalar = editor.doc_to_scalar(escaped_cursor);
+    let second_update = editor
+        .delete_scalar_range(escaped_scalar - 1, escaped_scalar)
+        .expect("second backspace should remove the lifted paragraph");
+
+    assert_eq!(
+        editor.get_html(),
+        "<blockquote><p>Hello</p></blockquote>",
+        "second backspace should delete the lifted empty paragraph"
+    );
+
+    match second_update.selection {
+        Selection::Text { anchor, head } => {
+            assert_eq!(anchor, 7);
+            assert_eq!(head, 7);
+        }
+        other => panic!(
+            "expected collapsed text selection after deleting empty paragraph, got {other:?}"
+        ),
+    }
+}
+
+#[test]
 fn test_backspace_twice_from_nested_empty_list_item_outdents_then_breaks_out() {
     let mut editor = default_editor();
     editor
@@ -1388,6 +1482,25 @@ fn test_apply_list_type_converts_nearest_nested_list_only() {
         editor.get_html(),
         "<ul><li><p>A</p><ol><li><p>B</p></li></ol></li><li><p>C</p></li></ul>",
         "switching list types inside a nested item should only convert the nearest list"
+    );
+}
+
+#[test]
+fn test_apply_list_type_inside_blockquote_wraps_paragraph() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<blockquote><p>Hello</p></blockquote>")
+        .expect("set_html");
+    editor.set_selection(Selection::cursor(2));
+
+    editor
+        .apply_list_type("orderedList")
+        .expect("applying list type inside blockquote should wrap the current paragraph");
+
+    assert_eq!(
+        editor.get_html(),
+        "<blockquote><ol><li><p>Hello</p></li></ol></blockquote>",
+        "lists should be allowed as block children inside blockquotes"
     );
 }
 
@@ -1786,5 +1899,25 @@ fn test_split_block_scalar_empty_nested_list_item_outdents() {
         editor.get_html(),
         "<ul><li><p>A</p></li><li><p></p></li></ul>",
         "split_block_scalar on nested empty should outdent"
+    );
+}
+
+#[test]
+fn test_split_block_scalar_empty_blockquote_paragraph_exits_quote() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<blockquote><p>Hello</p><p></p></blockquote>")
+        .expect("set_html");
+
+    let scalar_pos = editor.doc_to_scalar(9);
+    editor.set_selection(Selection::cursor(9));
+    editor
+        .split_block_scalar(scalar_pos)
+        .expect("split_block_scalar on empty blockquote paragraph");
+
+    assert_eq!(
+        editor.get_html(),
+        "<blockquote><p>Hello</p></blockquote><p></p>",
+        "split_block_scalar on empty quoted paragraph should exit the quote"
     );
 }

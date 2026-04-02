@@ -3,8 +3,19 @@ use std::collections::BTreeSet;
 use crate::model::Document;
 use crate::render::empty_text_block_placeholder_string;
 use crate::render::RenderElement;
+use crate::render::RenderMark;
 use crate::render::inline_atom_label;
 use crate::schema::{NodeRole, Schema};
+
+fn render_marks(node: &crate::model::Node) -> Vec<RenderMark> {
+    node.marks()
+        .iter()
+        .map(|mark| RenderMark {
+            mark_type: mark.mark_type().to_string(),
+            attrs: mark.attrs().clone(),
+        })
+        .collect()
+}
 
 /// Result of an incremental re-render: a block index and its regenerated elements.
 pub type BlockPatch = (usize, Vec<RenderElement>);
@@ -58,11 +69,7 @@ fn generate_block(
     match role {
         Some(NodeRole::Text) => {
             let text = node.text_str().unwrap_or("").to_string();
-            let marks: Vec<String> = node
-                .marks()
-                .iter()
-                .map(|m| m.mark_type().to_string())
-                .collect();
+            let marks = render_marks(node);
             elements.push(RenderElement::TextRun { text, marks });
             *pos += node.node_size();
         }
@@ -206,11 +213,7 @@ fn generate_block(
                 *pos += node.node_size();
             } else if node.is_text() {
                 let text = node.text_str().unwrap_or("").to_string();
-                let marks: Vec<String> = node
-                    .marks()
-                    .iter()
-                    .map(|m| m.mark_type().to_string())
-                    .collect();
+                let marks = render_marks(node);
                 elements.push(RenderElement::TextRun { text, marks });
                 *pos += node.node_size();
             } else {
