@@ -89,14 +89,28 @@ jobs:
 
           simulator_id="$(
             printf '%s\n' "$destinations" \
-              | sed -nE "/platform:iOS Simulator/ { /placeholder/! { /name:iPhone/ s/.*id:([^,]+),.*/\\1/p; } }" \
+              | awk '
+                  /platform:iOS Simulator/ && $0 !~ /placeholder/ && $0 ~ /name:iPhone/ {
+                    if (match($0, /id:[^,]+/)) {
+                      print substr($0, RSTART + 3, RLENGTH - 3)
+                      exit
+                    }
+                  }
+                ' \
               | head -n 1
           )"
 
           if [ -z "$simulator_id" ]; then
             simulator_id="$(
               printf '%s\n' "$destinations" \
-                | sed -nE "/platform:iOS Simulator/ { /placeholder/! s/.*id:([^,]+),.*/\\1/p; }" \
+                | awk '
+                    /platform:iOS Simulator/ && $0 !~ /placeholder/ {
+                      if (match($0, /id:[^,]+/)) {
+                        print substr($0, RSTART + 3, RLENGTH - 3)
+                        exit
+                      }
+                    }
+                  ' \
                 | head -n 1
             )"
           fi
