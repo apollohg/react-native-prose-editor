@@ -86,115 +86,68 @@ jobs:
           set -euo pipefail
 
           xcodebuild -version
-          xcrun simctl list runtimes available
-          xcrun simctl list devicetypes
+          runtimes="$(xcrun simctl list runtimes available)"
+          device_types="$(xcrun simctl list devicetypes)"
+          devices="$(xcrun simctl list devices available)"
+
+          printf '%s\n' "$runtimes"
+          printf '%s\n' "$device_types"
 
           simulator_id="$(
-            python3 <<'PY'
-import json
-import subprocess
-import sys
-
-def run(*args):
-    return subprocess.check_output(args, text=True)
-
-def available(value):
-    return value is True or value == "YES"
-
-def parse_version(runtime):
-    version = runtime.get("version")
-    if isinstance(version, str):
-        parts = []
-        for item in version.split("."):
-            try:
-                parts.append(int(item))
-            except ValueError:
-                parts.append(0)
-        return tuple(parts)
-
-    identifier = runtime.get("identifier", "")
-    suffix = identifier.split("iOS-")[-1]
-    parts = []
-    for item in suffix.split("-"):
-        try:
-            parts.append(int(item))
-        except ValueError:
-            parts.append(0)
-    return tuple(parts)
-
-devices = json.loads(run("xcrun", "simctl", "list", "-j", "devices", "available"))
-runtimes = json.loads(run("xcrun", "simctl", "list", "-j", "runtimes", "available"))
-device_types = json.loads(run("xcrun", "simctl", "list", "-j", "devicetypes"))
-
-existing_devices = []
-for runtime_devices in devices.get("devices", {}).values():
-    for device in runtime_devices:
-        if available(device.get("isAvailable")) and device.get("name", "").startswith("iPhone"):
-            existing_devices.append(device)
-
-if existing_devices:
-    print(existing_devices[0]["udid"])
-    sys.exit(0)
-
-ios_runtimes = [
-    runtime
-    for runtime in runtimes.get("runtimes", [])
-    if available(runtime.get("isAvailable"))
-    and runtime.get("identifier", "").startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
-]
-
-if not ios_runtimes:
-    sys.stderr.write("No available iOS simulator runtimes were found on this runner.\n")
-    sys.exit(1)
-
-ios_runtimes.sort(key=parse_version, reverse=True)
-runtime = ios_runtimes[0]
-
-preferred_device_names = [
-    "iPhone 16",
-    "iPhone 16 Pro",
-    "iPhone 16 Pro Max",
-    "iPhone 16 Plus",
-    "iPhone 16e",
-    "iPhone 15",
-]
-
-device_type_identifier = None
-device_types_by_name = {
-    device_type.get("name"): device_type.get("identifier")
-    for device_type in device_types.get("devicetypes", [])
-}
-
-for name in preferred_device_names:
-    identifier = device_types_by_name.get(name)
-    if identifier:
-        device_type_identifier = identifier
-        break
-
-if device_type_identifier is None:
-    for device_type in device_types.get("devicetypes", []):
-        name = device_type.get("name", "")
-        identifier = device_type.get("identifier")
-        if name.startswith("iPhone") and identifier:
-            device_type_identifier = identifier
-            break
-
-if device_type_identifier is None:
-    sys.stderr.write("No iPhone simulator device type was found on this runner.\n")
-    sys.exit(1)
-
-simulator_name = "NativeEditor CI iPhone"
-udid = run(
-    "xcrun",
-    "simctl",
-    "create",
-    simulator_name,
-    device_type_identifier,
-    runtime["identifier"],
-).strip()
-print(udid)
-PY
+            printf '%s\n' "$devices" \
+              | sed -nE 's/^[[:space:]]+iPhone[^()]* \(([0-9A-F-]+)\) \((Booted|Shutdown|Creating)\)$/\1/p' \
+              | head -n 1
           )"
+
+          if [ -z "$simulator_id" ]; then
+            runtime_identifier="$(
+              printf '%s\n' "$runtimes" \
+                | grep '^iOS ' \
+                | tail -n 1 \
+                | sed -nE 's/^.* - (com\.apple\.CoreSimulator\.SimRuntime\.iOS-[^[:space:]]+)$/\1/p'
+            )"
+
+            if [ -z "$runtime_identifier" ]; then
+              echo "No available iOS simulator runtimes were found on this runner." >&2
+              exit 1
+            fi
+
+            device_type_identifier=""
+            for preferred_name in \
+              "iPhone 16" \
+              "iPhone 16 Pro" \
+              "iPhone 16 Pro Max" \
+              "iPhone 16 Plus" \
+              "iPhone 16e" \
+              "iPhone 15"
+            do
+              device_type_identifier="$(
+                printf '%s\n' "$device_types" \
+                  | sed -nE "s/^${preferred_name} \\((com\\.apple\\.CoreSimulator\\.SimDeviceType\\.[^)]+)\\)$/\\1/p" \
+                  | head -n 1
+              )"
+              if [ -n "$device_type_identifier" ]; then
+                break
+              fi
+            done
+
+            if [ -z "$device_type_identifier" ]; then
+              device_type_identifier="$(
+                printf '%s\n' "$device_types" \
+                  | sed -nE 's/^iPhone[^()]* \((com\.apple\.CoreSimulator\.SimDeviceType\.[^)]+)\)$/\1/p' \
+                  | head -n 1
+              )"
+            fi
+
+            if [ -z "$device_type_identifier" ]; then
+              echo "No iPhone simulator device type was found on this runner." >&2
+              exit 1
+            fi
+
+            simulator_id="$(
+              xcrun simctl create "NativeEditor CI iPhone" "$device_type_identifier" "$runtime_identifier"
+            )"
+          fi
 
           xcrun simctl boot "$simulator_id" || true
           xcrun simctl bootstatus "$simulator_id" -b
