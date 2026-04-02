@@ -79,9 +79,40 @@ jobs:
         run: pod install
         working-directory: ios-tests
 
+      - name: Select iOS simulator
+        id: ios-simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          destinations="$(xcodebuild -workspace ios-tests/NativeEditorTests.xcworkspace -scheme NativeEditorTests -showdestinations)"
+
+          simulator_id="$(
+            printf '%s\n' "$destinations" \
+              | sed -nE "/platform:iOS Simulator/ { /placeholder/! { /name:iPhone/ s/.*id:([^,]+),.*/\\1/p; } }" \
+              | head -n 1
+          )"
+
+          if [ -z "$simulator_id" ]; then
+            simulator_id="$(
+              printf '%s\n' "$destinations" \
+                | sed -nE "/platform:iOS Simulator/ { /placeholder/! s/.*id:([^,]+),.*/\\1/p; }" \
+                | head -n 1
+            )"
+          fi
+
+          if [ -z "$simulator_id" ]; then
+            echo "Unable to find a concrete iOS simulator destination for NativeEditorTests." >&2
+            printf '%s\n' "$destinations"
+            exit 1
+          fi
+
+          echo "Using simulator destination id=$simulator_id"
+          echo "destination=id=$simulator_id" >> "$GITHUB_OUTPUT"
+
       - name: Run iOS unit tests
         run: >
           xcodebuild test
           -workspace ios-tests/NativeEditorTests.xcworkspace
           -scheme NativeEditorTests
-          -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
+          -destination '${{ steps.ios-simulator.outputs.destination }}'
