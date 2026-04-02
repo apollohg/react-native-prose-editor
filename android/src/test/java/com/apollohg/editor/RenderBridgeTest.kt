@@ -892,6 +892,38 @@ class RenderBridgeTest {
     }
 
     @Test
+    fun `render - first level list inside blockquote keeps extra list indent`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1, "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Quoted item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, null, 1f)
+        val quotedIndex = result.indexOf("Quoted item")
+        assertTrue(quotedIndex >= 0)
+
+        val quotedMargins = result.getSpans(
+            quotedIndex,
+            quotedIndex + 1,
+            LeadingMarginSpan::class.java
+        )
+        val totalMargin = quotedMargins.sumOf { it.getLeadingMargin(true) }
+
+        assertEquals(
+            "first-level list text inside a blockquote should keep its extra list indent",
+            42,
+            totalMargin
+        )
+    }
+
+    @Test
     fun `blockquote span trims bottom on final quoted line before plain content`() {
         val text = SpannableStringBuilder("Quote\nPlain")
         text.setSpan(
@@ -1196,7 +1228,7 @@ class RenderBridgeTest {
         val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
         val marginSpans = result.getSpans(0, result.length, LeadingMarginSpan.Standard::class.java)
         assertTrue(marginSpans.isNotEmpty())
-        assertEquals(32, marginSpans[0].getLeadingMargin(true))
+        assertEquals(64, marginSpans[0].getLeadingMargin(true))
     }
 
     @Test

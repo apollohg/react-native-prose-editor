@@ -779,7 +779,7 @@ final class RenderBridge {
         }
         return BlockContext(
             nodeType: currentBlock.nodeType,
-            depth: blockquoteDepth(in: blockStack) > 0 ? inheritedListBlock.depth : currentBlock.depth,
+            depth: currentBlock.depth,
             listContext: inheritedListBlock.listContext,
             listMarkerContext: currentBlock.listMarkerContext,
             markerPending: false

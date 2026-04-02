@@ -1155,7 +1155,7 @@ object RenderBridge {
             .firstOrNull { it.listContext != null }
             ?: return currentBlock
         return currentBlock.copy(
-            depth = inheritedListBlock.depth,
+            depth = currentBlock.depth,
             listContext = inheritedListBlock.listContext,
             markerPending = false
         )

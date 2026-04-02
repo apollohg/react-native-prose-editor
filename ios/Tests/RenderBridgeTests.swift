@@ -913,7 +913,7 @@ final class RenderBridgeTests: XCTestCase {
         )
     }
 
-    func testParagraphStyle_firstLevelListInsideBlockquoteUsesEnclosingListDepth() {
+    func testParagraphStyle_firstLevelListInsideBlockquoteAddsListIndentInsideQuote() {
         let json = """
         [
             {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
@@ -926,36 +926,53 @@ final class RenderBridgeTests: XCTestCase {
             {"type": "blockEnd"}
         ]
         """
-        let quote = BlockContext(nodeType: "blockquote", depth: 0, listContext: nil)
-        let listItem = BlockContext(
-            nodeType: "listItem",
-            depth: 1,
-            listContext: ["ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true]
-        )
-        let expectedStyle = RenderBridge.paragraphStyleForBlock(
-            listItem,
-            blockStack: [quote, listItem],
-            theme: nil,
-            baseFont: baseFont
-        )
         let result = RenderBridge.renderElements(
             fromJSON: json,
             baseFont: baseFont,
             textColor: textColor
         )
         let style = result.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+        let quote = BlockContext(nodeType: "blockquote", depth: 0, listContext: nil)
+        let quotedParagraph = BlockContext(nodeType: "paragraph", depth: 1, listContext: nil)
+        let quotedListParagraph = BlockContext(
+            nodeType: "paragraph",
+            depth: 2,
+            listContext: ["ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true]
+        )
+        let plainQuotedStyle = RenderBridge.paragraphStyleForBlock(
+            quotedParagraph,
+            blockStack: [quote, quotedParagraph],
+            theme: nil,
+            baseFont: baseFont
+        )
+        let expectedStyle = RenderBridge.paragraphStyleForBlock(
+            quotedListParagraph,
+            blockStack: [quote, quotedListParagraph],
+            theme: nil,
+            baseFont: baseFont
+        )
 
         XCTAssertEqual(
             style?.headIndent ?? -1,
             expectedStyle.headIndent,
             accuracy: 0.1,
-            "first-level list paragraphs inside a blockquote should use the enclosing list item depth"
+            "first-level list paragraphs inside a blockquote should keep their extra list indent"
         )
         XCTAssertEqual(
             style?.firstLineHeadIndent ?? -1,
             expectedStyle.firstLineHeadIndent,
             accuracy: 0.1,
-            "first-level quoted list markers should not inherit the inner paragraph depth"
+            "first-level quoted list markers should keep their extra list indent"
+        )
+        XCTAssertGreaterThan(
+            style?.headIndent ?? -1,
+            plainQuotedStyle.headIndent,
+            "quoted list text should indent further than plain quoted text"
+        )
+        XCTAssertGreaterThan(
+            style?.firstLineHeadIndent ?? -1,
+            plainQuotedStyle.firstLineHeadIndent,
+            "quoted list marker gutter should indent further than plain quoted text"
         )
     }
 
