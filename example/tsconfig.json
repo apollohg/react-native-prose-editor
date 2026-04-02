@@ -12,5 +12,13 @@
       "react-native": ["./node_modules/react-native"]
     }
   },
-  "include": ["App.tsx"]
+  "include": [
+    "./**/*.ts",
+    "./**/*.tsx"
+  ],
+  "exclude": [
+    "./node_modules",
+    "./android",
+    "./ios"
+  ]
 }

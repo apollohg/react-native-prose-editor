@@ -1,492 +1,544 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
-  DEFAULT_EDITOR_TOOLBAR_ITEMS,
-  NativeRichTextEditor,
-  type DocumentJSON,
-  type EditorAddons,
-  type EditorToolbarItem,
-  type EditorToolbarTheme,
-  type MentionQueryChangeEvent,
-  type MentionSelectEvent,
-  type NativeRichTextEditorHeightBehavior,
-  type NativeRichTextEditorRef,
-  type NativeRichTextEditorToolbarPlacement,
+    useYjsCollaboration,
+    type DocumentJSON,
+    type EditorAddons,
+    type EditorToolbarItem,
+    type EditorToolbarTheme,
+    type LinkRequestContext,
+    type MentionQueryChangeEvent,
+    type MentionSelectEvent,
+    type NativeRichTextEditorHeightBehavior,
+    type NativeRichTextEditorRef,
+    type NativeRichTextEditorToolbarPlacement,
+    type Selection,
 } from '@apollohg/react-native-prose-editor';
+
 import {
-  buildExampleEditorTheme,
-  DEFAULT_EXAMPLE_THEME_PRESET_ID,
-  EXAMPLE_THEME_PRESETS,
-  getExampleThemePreset,
+    buildExampleEditorTheme,
+    DEFAULT_EXAMPLE_THEME_PRESET_ID,
+    EXAMPLE_THEME_PRESETS,
+    type ExampleEditorThemeOverrides,
+    getExampleThemePreset,
 } from './themePresets';
-import { sharedStyles } from './sharedStyles';
-import { EXAMPLE_MENTION_SUGGESTIONS, INITIAL_CONTENT, type ToolbarColorKey } from './constants';
+
+import {
+    EXAMPLE_DEFAULT_TOOLBAR_ITEMS,
+    EXAMPLE_MENTION_SUGGESTIONS,
+    INITIAL_CONTENT,
+    type ToolbarColorKey,
+} from './constants';
+
 import { ThemePresetPicker } from './components/ThemePresetPicker';
-import { EditorSettingsPanel } from './components/EditorSettingsPanel';
-import { ToolbarSettingsPanel } from './components/ToolbarSettingsPanel';
 import { OutputCard } from './components/OutputCard';
 import { CollapsibleSection } from './components/CollapsibleSection';
+import { ThemeSettingsCard } from './components/ThemeSettingsCard';
+import { CollaborationPanel } from './components/CollaborationPanel';
+import { EditorDemoCard } from './components/EditorDemoCard';
+import { LinkEditorModal } from './components/LinkEditorModal';
 
 const ANDROID_KEYBOARD_TOOLBAR_OFFSET = 60;
+const DEFAULT_COLLABORATION_ENDPOINT = 'ws://localhost:1234/collaboration';
+const DEFAULT_COLLABORATION_ROOM_ID = 'example-room';
+
+function buildCollaborationSocketUrl(endpoint: string, documentId: string): string {
+    const trimmedEndpoint = endpoint.trim();
+    if (!trimmedEndpoint) {
+        return trimmedEndpoint;
+    }
+    const separator = trimmedEndpoint.includes('?') ? '&' : '?';
+    return `${trimmedEndpoint}${separator}documentId=${encodeURIComponent(documentId)}`;
+}
 
 export default function App() {
-  return (
-    <SafeAreaProvider>
-      <AppScreen />
-    </SafeAreaProvider>
-  );
+    return (
+        <SafeAreaProvider>
+            <AppScreen />
+        </SafeAreaProvider>
+    );
 }
 
 function AppScreen() {
-  const insets = useSafeAreaInsets();
-  const editorRef = useRef<NativeRichTextEditorRef>(null);
-  const [settingsTab, setSettingsTab] = useState<'editor' | 'toolbar'>('editor');
-  const [selectedThemePresetId, setSelectedThemePresetId] = useState(
-    DEFAULT_EXAMPLE_THEME_PRESET_ID
-  );
-  const [baseFontSize, setBaseFontSize] = useState(17);
-  const [html, setHtml] = useState(INITIAL_CONTENT);
-  const [contentJson, setContentJson] = useState<DocumentJSON | null>(null);
-  const [heightBehavior, setHeightBehavior] = useState<NativeRichTextEditorHeightBehavior>('autoGrow');
-  const [toolbarPlacement, setToolbarPlacement] =
-    useState<NativeRichTextEditorToolbarPlacement>('keyboard');
+    const insets = useSafeAreaInsets();
+    const editorRef = useRef<NativeRichTextEditorRef>(null);
+    const [settingsTab, setSettingsTab] = useState<'editor' | 'toolbar'>('editor');
+    const [selectedThemePresetId, setSelectedThemePresetId] = useState(
+        DEFAULT_EXAMPLE_THEME_PRESET_ID
+    );
+    const [baseFontSize, setBaseFontSize] = useState(17);
+    const [html, setHtml] = useState(INITIAL_CONTENT);
+    const [contentJson, setContentJson] = useState<DocumentJSON | null>(null);
+    const [heightBehavior, setHeightBehavior] =
+        useState<NativeRichTextEditorHeightBehavior>('autoGrow');
+    const [toolbarPlacement, setToolbarPlacement] =
+        useState<NativeRichTextEditorToolbarPlacement>('keyboard');
+    const shouldUseKeyboardAvoidingView =
+        Platform.OS === 'android' || toolbarPlacement !== 'keyboard';
 
-  const [mentionsEnabled, setMentionsEnabled] = useState(false);
-  const [mentionQueryEvent, setMentionQueryEvent] = useState<MentionQueryChangeEvent | null>(
-    null
-  );
-  const [mentionSelectEvent, setMentionSelectEvent] = useState<MentionSelectEvent | null>(null);
+    const [mentionsEnabled, setMentionsEnabled] = useState(false);
+    const [mentionQueryEvent, setMentionQueryEvent] = useState<MentionQueryChangeEvent | null>(
+        null
+    );
+    const [mentionSelectEvent, setMentionSelectEvent] = useState<MentionSelectEvent | null>(null);
 
-  const [expandedToolbarColor, setExpandedToolbarColor] = useState<ToolbarColorKey | null>(
-    null
-  );
+    const [expandedToolbarColor, setExpandedToolbarColor] = useState<ToolbarColorKey | null>(null);
+    const [collaborationEnabled, setCollaborationEnabled] = useState(false);
+    const [collaborationEndpoint, setCollaborationEndpoint] = useState(
+        DEFAULT_COLLABORATION_ENDPOINT
+    );
+    const [collaborationRoomId, setCollaborationRoomId] = useState(DEFAULT_COLLABORATION_ROOM_ID);
+    const [collaborationDisplayName, setCollaborationDisplayName] = useState(
+        Platform.OS === 'ios' ? 'iOS Demo' : 'Android Demo'
+    );
+    const [collaborationSeedDocument, setCollaborationSeedDocument] = useState<
+        DocumentJSON | undefined
+    >(undefined);
+    const [collaborationRevision, setCollaborationRevision] = useState(0);
 
-  const [toolbarItems, setToolbarItems] = useState<EditorToolbarItem[]>(
-    () => [...DEFAULT_EDITOR_TOOLBAR_ITEMS]
-  );
+    const [toolbarItems, setToolbarItems] = useState<EditorToolbarItem[]>(() => [
+        ...EXAMPLE_DEFAULT_TOOLBAR_ITEMS,
+    ]);
+    const [pendingLinkRequest, setPendingLinkRequest] = useState<LinkRequestContext | null>(null);
+    const [linkDraft, setLinkDraft] = useState('');
 
-  const activeThemePreset = useMemo(
-    () => getExampleThemePreset(selectedThemePresetId),
-    [selectedThemePresetId]
-  );
+    const activeThemePreset = useMemo(
+        () => getExampleThemePreset(selectedThemePresetId),
+        [selectedThemePresetId]
+    );
 
-  const appChrome = activeThemePreset.appChrome;
+    const appChrome = activeThemePreset.appChrome;
 
-  const [toolbarTheme, setToolbarTheme] = useState<Required<EditorToolbarTheme>>(
-    () => activeThemePreset.toolbar
-  );
+    const [toolbarTheme, setToolbarTheme] = useState<Required<EditorToolbarTheme>>(
+        () => activeThemePreset.toolbar
+    );
+    const [editorThemeOverrides, setEditorThemeOverrides] = useState<ExampleEditorThemeOverrides>(
+        () => ({
+            blockquoteBorderColor: activeThemePreset.blockquote.borderColor,
+        })
+    );
+    const [expandedEditorColor, setExpandedEditorColor] = useState<'blockquoteBorderColor' | null>(
+        null
+    );
 
-  useEffect(() => {
-    setToolbarTheme(activeThemePreset.toolbar);
-    setExpandedToolbarColor(null);
-  }, [activeThemePreset]);
+    useEffect(() => {
+        setToolbarTheme(activeThemePreset.toolbar);
+        setEditorThemeOverrides({
+            blockquoteBorderColor: activeThemePreset.blockquote.borderColor,
+        });
+        setExpandedToolbarColor(null);
+        setExpandedEditorColor(null);
+    }, [activeThemePreset]);
 
-  useEffect(() => {
-    if (!mentionsEnabled) {
-      setMentionQueryEvent(null);
-      setMentionSelectEvent(null);
-    }
-  }, [mentionsEnabled]);
-
-  const theme = useMemo(() => {
-    const fontSize = baseFontSize || 17;
-    return buildExampleEditorTheme(activeThemePreset, fontSize, toolbarTheme);
-  }, [activeThemePreset, baseFontSize, toolbarTheme]);
-
-  const addons = useMemo<EditorAddons | undefined>(() => {
-    if (!mentionsEnabled) {
-      return undefined;
-    }
-
-    return {
-      mentions: {
-        trigger: '@',
-        suggestions: EXAMPLE_MENTION_SUGGESTIONS,
-        theme: activeThemePreset.mentions,
-        onQueryChange: setMentionQueryEvent,
-        onSelect: setMentionSelectEvent,
-      },
-    };
-  }, [activeThemePreset.mentions, mentionsEnabled]);
-
-  const jsonSnapshot = useMemo(() => {
-    if (!contentJson) {
-      return 'Edit the document to capture the current ProseMirror JSON.';
-    }
-
-    return JSON.stringify(contentJson, null, 2);
-  }, [contentJson]);
-
-  const mentionQuerySummary = useMemo(() => {
-    if (!mentionsEnabled) {
-      return 'Mentions are disabled.';
-    }
-
-    if (!mentionQueryEvent) {
-      return 'Type @ to show native mention suggestions in the toolbar.';
-    }
-
-    return JSON.stringify(mentionQueryEvent, null, 2);
-  }, [mentionQueryEvent, mentionsEnabled]);
-
-  const mentionSelectionSummary = useMemo(() => {
-    if (!mentionsEnabled) {
-      return 'Enable mentions to see selection callbacks and mention attrs.';
-    }
-
-    if (!mentionSelectEvent) {
-      return 'Pick a suggestion to inspect the inserted attrs payload.';
-    }
-
-    return JSON.stringify(mentionSelectEvent, null, 2);
-  }, [mentionSelectEvent, mentionsEnabled]);
-
-  return (
-    <View
-      style={[
-        styles.safeArea,
-        { backgroundColor: appChrome.screenBackgroundColor },
-      ]}
-    >
-      <StatusBar style={activeThemePreset.statusBarStyle} />
-
-      <KeyboardAvoidingView
-        style={styles.keyboardAvoider}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={
-          Platform.OS === 'android' && toolbarPlacement === 'keyboard'
-            ? ANDROID_KEYBOARD_TOOLBAR_OFFSET
-            : 0
+    useEffect(() => {
+        if (!mentionsEnabled) {
+            setMentionQueryEvent(null);
+            setMentionSelectEvent(null);
         }
-      >
-        <ScrollView
-          style={[
-            styles.screen,
-            { backgroundColor: appChrome.screenBackgroundColor },
-          ]}
-          contentContainerStyle={[
-            styles.content,
-            {
-              paddingTop: 20 + insets.top,
-              paddingBottom: 32 + insets.bottom,
+    }, [mentionsEnabled]);
+
+    const theme = useMemo(() => {
+        const fontSize = baseFontSize || 17;
+        return buildExampleEditorTheme(
+            activeThemePreset,
+            fontSize,
+            toolbarTheme,
+            editorThemeOverrides
+        );
+    }, [activeThemePreset, baseFontSize, editorThemeOverrides, toolbarTheme]);
+
+    const addons = useMemo<EditorAddons | undefined>(() => {
+        if (!mentionsEnabled) {
+            return undefined;
+        }
+
+        return {
+            mentions: {
+                trigger: '@',
+                suggestions: EXAMPLE_MENTION_SUGGESTIONS,
+                theme: activeThemePreset.mentions,
+                onQueryChange: setMentionQueryEvent,
+                onSelect: setMentionSelectEvent,
             },
-          ]}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={styles.header}>
-            <Text style={[styles.eyebrow, { color: appChrome.eyebrowColor }]}>
-              Demo
-            </Text>
+        };
+    }, [activeThemePreset.mentions, mentionsEnabled]);
 
-            <Text style={[styles.title, { color: appChrome.titleColor }]}>
-              React Native Prose Editor
-            </Text>
+    const jsonSnapshot = useMemo(() => {
+        if (!contentJson) {
+            return 'Edit the document to capture the current ProseMirror JSON.';
+        }
 
-            <Text style={[styles.subtitle, { color: appChrome.subtitleColor }]}>
-              Live playground for manual testing of native behavior, focus, keyboard dismissal, and theme changes.
-            </Text>
-          </View>
+        return JSON.stringify(contentJson, null, 2);
+    }, [contentJson]);
 
-            <CollapsibleSection
-              title="Theme Preset"
-              appChrome={appChrome}
-              style={[
-                styles.collapsibleCard,
-                { backgroundColor: appChrome.cardBackgroundColor },
-              ]}
-            >
-              <ThemePresetPicker
-                presets={EXAMPLE_THEME_PRESETS}
-                selectedId={selectedThemePresetId}
-                onSelect={setSelectedThemePresetId}
+    const mentionQuerySummary = useMemo(() => {
+        if (!mentionsEnabled) {
+            return 'Mentions are disabled.';
+        }
+
+        if (!mentionQueryEvent) {
+            return 'Type @ to show native mention suggestions in the toolbar.';
+        }
+
+        return JSON.stringify(mentionQueryEvent, null, 2);
+    }, [mentionQueryEvent, mentionsEnabled]);
+
+    const mentionSelectionSummary = useMemo(() => {
+        if (!mentionsEnabled) {
+            return 'Enable mentions to see selection callbacks and mention attrs.';
+        }
+
+        if (!mentionSelectEvent) {
+            return 'Pick a suggestion to inspect the inserted attrs payload.';
+        }
+
+        return JSON.stringify(mentionSelectEvent, null, 2);
+    }, [mentionSelectEvent, mentionsEnabled]);
+
+    const collaborationColor = useMemo(() => (Platform.OS === 'ios' ? '#0A84FF' : '#34A853'), []);
+
+    const collaborationDocumentId = useMemo(
+        () =>
+            `${collaborationRoomId.trim() || DEFAULT_COLLABORATION_ROOM_ID}|${collaborationEndpoint.trim()}|${collaborationRevision}`,
+        [collaborationEndpoint, collaborationRevision, collaborationRoomId]
+    );
+    const collaborationSocketUrl = useMemo(
+        () =>
+            buildCollaborationSocketUrl(
+                collaborationEndpoint,
+                collaborationRoomId.trim() || DEFAULT_COLLABORATION_ROOM_ID
+            ),
+        [collaborationEndpoint, collaborationRoomId]
+    );
+    const createCollaborationWebSocket = React.useCallback(
+        () => new WebSocket(collaborationSocketUrl),
+        [collaborationSocketUrl]
+    );
+    const collaboration = useYjsCollaboration({
+        documentId: collaborationDocumentId,
+        connect: false,
+        createWebSocket: createCollaborationWebSocket,
+        initialDocumentJson: collaborationSeedDocument ?? contentJson ?? undefined,
+        localAwareness: {
+            userId: `${Platform.OS}-demo-user`,
+            name: collaborationDisplayName,
+            color: collaborationColor,
+        },
+    });
+    const remotePeers = useMemo(
+        () => collaboration.peers.filter((peer) => !peer.isLocal),
+        [collaboration.peers]
+    );
+
+    const handleCollaborationEnabledChange = (nextValue: boolean) => {
+        if (nextValue) {
+            setCollaborationSeedDocument(
+                editorRef.current?.getContentJson() ?? contentJson ?? undefined
+            );
+            setCollaborationRevision((value) => value + 1);
+            setCollaborationEnabled(true);
+            return;
+        }
+
+        collaboration.disconnect();
+        setCollaborationEnabled(false);
+    };
+
+    const handleCollaborationDisplayNameChange = (nextValue: string) => {
+        setCollaborationDisplayName(nextValue);
+        if (collaborationEnabled) {
+            collaboration.updateLocalAwareness({
+                user: {
+                    userId: `${Platform.OS}-demo-user`,
+                    name: nextValue,
+                    color: collaborationColor,
+                },
+            });
+        }
+    };
+
+    const handleContentChangeJSON = (json: DocumentJSON) => {
+        setContentJson(json);
+        if (collaborationEnabled) {
+            collaboration.editorBindings.onContentChangeJSON(json);
+        }
+    };
+
+    const handleSelectionChange = (selection: Selection) => {
+        if (collaborationEnabled) {
+            collaboration.editorBindings.onSelectionChange(selection);
+        }
+    };
+
+    const handleEditorFocus = () => {
+        if (collaborationEnabled) {
+            collaboration.editorBindings.onFocus();
+        }
+    };
+
+    const handleEditorBlur = () => {
+        if (collaborationEnabled) {
+            collaboration.editorBindings.onBlur();
+        }
+    };
+
+    const collaborationStatusText = useMemo(() => {
+        const peerLabel =
+            remotePeers.length === 1 ? '1 remote peer' : `${remotePeers.length} remote peers`;
+        return `${collaboration.state.status} · ${peerLabel}`;
+    }, [collaboration.state.status, remotePeers.length]);
+
+    const openLinkRequest = (context: LinkRequestContext) => {
+        setPendingLinkRequest(context);
+        setLinkDraft(context.href ?? 'https://');
+    };
+
+    const closeLinkRequest = () => {
+        setPendingLinkRequest(null);
+        setLinkDraft('');
+    };
+
+    const refocusEditorSoon = () => {
+        requestAnimationFrame(() => {
+            editorRef.current?.focus();
+        });
+    };
+
+    const applyLinkRequest = () => {
+        if (!pendingLinkRequest) {
+            return;
+        }
+
+        const nextHref = linkDraft.trim();
+        if (nextHref.length === 0) {
+            pendingLinkRequest.unsetLink();
+        } else {
+            pendingLinkRequest.setLink(nextHref);
+        }
+
+        closeLinkRequest();
+        refocusEditorSoon();
+    };
+
+    const removeLink = () => {
+        if (!pendingLinkRequest) {
+            return;
+        }
+
+        pendingLinkRequest.unsetLink();
+        closeLinkRequest();
+        refocusEditorSoon();
+    };
+
+    return (
+        <View style={[styles.safeArea, { backgroundColor: appChrome.screenBackgroundColor }]}>
+            <StatusBar style={activeThemePreset.statusBarStyle} />
+
+            <KeyboardAvoidingView
+                style={styles.keyboardAvoider}
+                enabled={shouldUseKeyboardAvoidingView}
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                keyboardVerticalOffset={
+                    Platform.OS === 'android' && toolbarPlacement === 'keyboard'
+                        ? ANDROID_KEYBOARD_TOOLBAR_OFFSET
+                        : 0
+                }>
+                <ScrollView
+                    style={[styles.screen, { backgroundColor: appChrome.screenBackgroundColor }]}
+                    contentContainerStyle={[
+                        styles.content,
+                        {
+                            paddingTop: 20 + insets.top,
+                            paddingBottom: 32 + insets.bottom,
+                        },
+                    ]}
+                    automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+                    keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+                    keyboardShouldPersistTaps='handled'>
+                    <View style={styles.header}>
+                        <Text style={[styles.eyebrow, { color: appChrome.eyebrowColor }]}>
+                            Demo
+                        </Text>
+
+                        <Text style={[styles.title, { color: appChrome.titleColor }]}>
+                            React Native Prose Editor
+                        </Text>
+
+                        <Text style={[styles.subtitle, { color: appChrome.subtitleColor }]}>
+                            Live playground for manual testing of native behavior, focus, keyboard
+                            dismissal, and theme changes.
+                        </Text>
+                    </View>
+
+                    <CollapsibleSection
+                        title='Theme Preset'
+                        appChrome={appChrome}
+                        style={[
+                            styles.collapsibleCard,
+                            { backgroundColor: appChrome.cardBackgroundColor },
+                        ]}>
+                        <ThemePresetPicker
+                            presets={EXAMPLE_THEME_PRESETS}
+                            selectedId={selectedThemePresetId}
+                            onSelect={setSelectedThemePresetId}
+                            appChrome={appChrome}
+                        />
+                    </CollapsibleSection>
+
+                    <ThemeSettingsCard
+                        settingsTab={settingsTab}
+                        onSettingsTabChange={setSettingsTab}
+                        baseFontSize={baseFontSize}
+                        onBaseFontSizeChange={setBaseFontSize}
+                        heightBehavior={heightBehavior}
+                        onHeightBehaviorChange={setHeightBehavior}
+                        toolbarPlacement={toolbarPlacement}
+                        onToolbarPlacementChange={setToolbarPlacement}
+                        mentionsEnabled={mentionsEnabled}
+                        onMentionsEnabledChange={setMentionsEnabled}
+                        blockquoteBorderColor={
+                            editorThemeOverrides.blockquoteBorderColor ??
+                            activeThemePreset.blockquote.borderColor
+                        }
+                        onBlockquoteBorderColorChange={(value) =>
+                            setEditorThemeOverrides((current) => ({
+                                ...current,
+                                blockquoteBorderColor: value,
+                            }))
+                        }
+                        expandedEditorColor={expandedEditorColor}
+                        onExpandedEditorColorChange={setExpandedEditorColor}
+                        toolbarItems={toolbarItems}
+                        onToolbarItemsChange={setToolbarItems}
+                        toolbarTheme={toolbarTheme}
+                        onToolbarThemeChange={setToolbarTheme}
+                        expandedColor={expandedToolbarColor}
+                        onExpandedColorChange={setExpandedToolbarColor}
+                        sliderTheme={activeThemePreset.slider}
+                        appChrome={appChrome}
+                        onFocusPress={() => editorRef.current?.focus()}
+                        onBlurPress={() => editorRef.current?.blur()}
+                        onResetContentPress={() => editorRef.current?.setContent(INITIAL_CONTENT)}
+                    />
+
+                    <CollaborationPanel
+                        collaborationEnabled={collaborationEnabled}
+                        onCollaborationEnabledChange={handleCollaborationEnabledChange}
+                        collaborationEndpoint={collaborationEndpoint}
+                        onCollaborationEndpointChange={setCollaborationEndpoint}
+                        collaborationRoomId={collaborationRoomId}
+                        onCollaborationRoomIdChange={setCollaborationRoomId}
+                        collaborationDisplayName={collaborationDisplayName}
+                        onCollaborationDisplayNameChange={handleCollaborationDisplayNameChange}
+                        collaborationStatusText={collaborationStatusText}
+                        collaborationLastErrorMessage={collaboration.state.lastError?.message}
+                        collaborationIsConnected={collaboration.state.isConnected}
+                        remotePeers={remotePeers}
+                        onConnect={() => collaboration.connect()}
+                        onDisconnect={() => collaboration.disconnect()}
+                        appChrome={appChrome}
+                    />
+
+                    <EditorDemoCard
+                        editorRef={editorRef}
+                        initialContent={INITIAL_CONTENT}
+                        valueJSON={
+                            collaborationEnabled
+                                ? collaboration.editorBindings.valueJSON
+                                : undefined
+                        }
+                        theme={theme}
+                        addons={addons}
+                        toolbarItems={toolbarItems}
+                        onRequestLink={openLinkRequest}
+                        heightBehavior={heightBehavior}
+                        toolbarPlacement={toolbarPlacement}
+                        onContentChange={setHtml}
+                        onContentChangeJSON={handleContentChangeJSON}
+                        onSelectionChange={handleSelectionChange}
+                        onFocus={handleEditorFocus}
+                        onBlur={handleEditorBlur}
+                        remoteSelections={
+                            collaborationEnabled
+                                ? collaboration.editorBindings.remoteSelections
+                                : undefined
+                        }
+                        appChrome={appChrome}
+                    />
+
+                    <OutputCard
+                        html={html}
+                        jsonSnapshot={jsonSnapshot}
+                        mentionQuerySummary={mentionQuerySummary}
+                        mentionSelectionSummary={mentionSelectionSummary}
+                        appChrome={appChrome}
+                    />
+
+                    <Text style={[styles.copyright, { color: appChrome.subtitleColor }]}>
+                        {'\u00A9'} {new Date().getFullYear()} Apollo Health Group Pty Ltd. All
+                        rights reserved.
+                    </Text>
+                </ScrollView>
+            </KeyboardAvoidingView>
+
+            <LinkEditorModal
+                visible={pendingLinkRequest != null}
+                isActive={pendingLinkRequest?.isActive ?? false}
+                linkDraft={linkDraft}
+                onLinkDraftChange={setLinkDraft}
+                onClose={closeLinkRequest}
+                onRemove={removeLink}
+                onApply={applyLinkRequest}
                 appChrome={appChrome}
-              />
-            </CollapsibleSection>
-
-            <CollapsibleSection
-              title="Theme Settings"
-              appChrome={appChrome}
-              style={[
-                styles.collapsibleCard,
-                { backgroundColor: appChrome.cardBackgroundColor },
-              ]}
-            >
-              <View style={styles.tabRow}>
-                <Pressable
-                  style={[
-                    styles.tabButton,
-                    {
-                      borderColor: appChrome.tabBorderColor,
-                      backgroundColor: appChrome.tabBackgroundColor,
-                    },
-                    settingsTab === 'editor' && {
-                      borderColor: appChrome.tabActiveBorderColor,
-                      backgroundColor: appChrome.tabActiveBackgroundColor,
-                    },
-                  ]}
-                  onPress={() => setSettingsTab('editor')}
-                >
-                  <Text
-                    style={[
-                      styles.tabButtonText,
-                      { color: appChrome.tabTextColor },
-                      settingsTab === 'editor' && {
-                        color: appChrome.tabActiveTextColor,
-                      },
-                    ]}
-                  >
-                    Editor
-                  </Text>
-                </Pressable>
-
-                <Pressable
-                  style={[
-                    styles.tabButton,
-                    {
-                      borderColor: appChrome.tabBorderColor,
-                      backgroundColor: appChrome.tabBackgroundColor,
-                    },
-                    settingsTab === 'toolbar' && {
-                      borderColor: appChrome.tabActiveBorderColor,
-                      backgroundColor: appChrome.tabActiveBackgroundColor,
-                    },
-                  ]}
-                  onPress={() => setSettingsTab('toolbar')}
-                >
-                  <Text
-                    style={[
-                      styles.tabButtonText,
-                      { color: appChrome.tabTextColor },
-                      settingsTab === 'toolbar' && {
-                        color: appChrome.tabActiveTextColor,
-                      },
-                    ]}
-                  >
-                    Toolbar
-                  </Text>
-                </Pressable>
-              </View>
-
-              {settingsTab === 'editor' ? (
-                <EditorSettingsPanel
-                  baseFontSize={baseFontSize}
-                  onBaseFontSizeChange={setBaseFontSize}
-                  autoGrow={heightBehavior === 'autoGrow'}
-                  onAutoGrowChange={(on) => setHeightBehavior(on ? 'autoGrow' : 'fixed')}
-                  toolbarPlacement={toolbarPlacement}
-                  onToolbarPlacementChange={setToolbarPlacement}
-                  mentionsEnabled={mentionsEnabled}
-                  onMentionsEnabledChange={setMentionsEnabled}
-                  sliderTheme={activeThemePreset.slider}
-                  appChrome={appChrome}
-                />
-              ) : (
-                <ToolbarSettingsPanel
-                  toolbarItems={toolbarItems}
-                  onToolbarItemsChange={setToolbarItems}
-                  toolbarTheme={toolbarTheme}
-                  onToolbarThemeChange={setToolbarTheme}
-                  expandedColor={expandedToolbarColor}
-                  onExpandedColorChange={setExpandedToolbarColor}
-                  sliderTheme={activeThemePreset.slider}
-                  appChrome={appChrome}
-                />
-              )}
-
-              <View style={styles.buttonRow}>
-                <Pressable
-                  style={[
-                    styles.actionButton,
-                    { backgroundColor: appChrome.actionButtonBackgroundColor },
-                  ]}
-                  onPress={() => editorRef.current?.focus()}
-                >
-                  <Text
-                    style={[
-                      styles.actionButtonText,
-                      { color: appChrome.actionButtonTextColor },
-                    ]}
-                  >
-                    Focus
-                  </Text>
-                </Pressable>
-
-                <Pressable
-                  style={[
-                    styles.actionButton,
-                    { backgroundColor: appChrome.actionButtonBackgroundColor },
-                  ]}
-                  onPress={() => editorRef.current?.blur()}
-                >
-                  <Text
-                    style={[
-                      styles.actionButtonText,
-                      { color: appChrome.actionButtonTextColor },
-                    ]}
-                  >
-                    Blur
-                  </Text>
-                </Pressable>
-
-                <Pressable
-                  style={[
-                    styles.actionButton,
-                    { backgroundColor: appChrome.actionButtonBackgroundColor },
-                  ]}
-                  onPress={() => editorRef.current?.setContent(INITIAL_CONTENT)}
-                >
-                  <Text
-                    style={[
-                      styles.actionButtonText,
-                      { color: appChrome.actionButtonTextColor },
-                    ]}
-                  >
-                    Reset Content
-                  </Text>
-                </Pressable>
-              </View>
-            </CollapsibleSection>
-
-            <View
-              style={[
-                styles.editorCard,
-                { backgroundColor: appChrome.cardSecondaryBackgroundColor },
-              ]}
-            >
-              <Text style={[sharedStyles.sectionLabel, { color: appChrome.sectionLabelColor }]}>
-                Editor
-              </Text>
-
-              <NativeRichTextEditor
-                ref={editorRef}
-                initialContent={INITIAL_CONTENT}
-                theme={theme}
-                addons={addons}
-                toolbarItems={toolbarItems}
-                autoFocus
-                heightBehavior={heightBehavior}
-                toolbarPlacement={toolbarPlacement}
-                onContentChange={setHtml}
-                onContentChangeJSON={setContentJson}
-                style={[
-                  styles.editor,
-                  heightBehavior === 'fixed' && styles.editorFixed,
-                ]}
-              />
-            </View>
-
-            <OutputCard
-              html={html}
-              jsonSnapshot={jsonSnapshot}
-              mentionQuerySummary={mentionQuerySummary}
-              mentionSelectionSummary={mentionSelectionSummary}
-              appChrome={appChrome}
             />
-
-          <Text style={[styles.copyright, { color: appChrome.subtitleColor }]}>
-            {'\u00A9'} {new Date().getFullYear()} Apollo Health Group Pty Ltd. All rights reserved.
-          </Text>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </View>
-  );
+        </View>
+    );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-  },
-  keyboardAvoider: {
-    flex: 1,
-  },
-  screen: {
-    flex: 1,
-  },
-  content: {
-    flexGrow: 1,
-    paddingHorizontal: 20,
-    gap: 18,
-  },
-  header: {
-    gap: 8,
-  },
-  eyebrow: {
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-    color: '#8d5b3d',
-  },
-  title: {
-    fontSize: 30,
-    lineHeight: 36,
-    fontWeight: '800',
-  },
-  subtitle: {
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  copyright: {
-    fontSize: 12,
-    lineHeight: 18,
-    textAlign: 'center',
-  },
-  collapsibleCard: {
-    padding: 16,
-    borderRadius: 18,
-  },
-  tabRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  tabButton: {
-    flex: 1,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    alignItems: 'center',
-  },
-  tabButtonText: {
-    fontSize: 13,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-  buttonRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  actionButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-  },
-  actionButtonText: {
-    fontWeight: '700',
-  },
-  editorCard: {
-    borderRadius: 24,
-    padding: 14,
-    gap: 10,
-  },
-  editor: {
-    borderRadius: 16,
-  },
-  editorFixed: {
-    minHeight: 200,
-    maxHeight: 300,
-  },
+    safeArea: {
+        flex: 1,
+    },
+    keyboardAvoider: {
+        flex: 1,
+    },
+    screen: {
+        flex: 1,
+    },
+    content: {
+        flexGrow: 1,
+        paddingHorizontal: 20,
+        gap: 18,
+    },
+    header: {
+        gap: 8,
+    },
+    eyebrow: {
+        fontSize: 12,
+        fontWeight: '700',
+        letterSpacing: 1.2,
+        textTransform: 'uppercase',
+        color: '#8d5b3d',
+    },
+    title: {
+        fontSize: 30,
+        lineHeight: 36,
+        fontWeight: '800',
+    },
+    subtitle: {
+        fontSize: 15,
+        lineHeight: 22,
+    },
+    copyright: {
+        fontSize: 12,
+        lineHeight: 18,
+        textAlign: 'center',
+    },
+    collapsibleCard: {
+        padding: 16,
+        borderRadius: 18,
+    },
 });

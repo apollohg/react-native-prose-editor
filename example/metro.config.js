@@ -9,8 +9,8 @@ const config = getDefaultConfig(projectRoot);
 
 config.watchFolders = [packageRoot];
 config.resolver.nodeModulesPaths = [
-  path.resolve(projectRoot, 'node_modules'),
-  path.resolve(packageRoot, 'node_modules'),
+    path.resolve(projectRoot, 'node_modules'),
+    path.resolve(packageRoot, 'node_modules'),
 ];
 
 module.exports = config;
