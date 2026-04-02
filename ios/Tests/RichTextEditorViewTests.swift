@@ -1,6 +1,51 @@
 import XCTest
 
 final class RichTextEditorViewTests: XCTestCase {
+    func testPlaceholderShowsForRenderedEmptyParagraph() {
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        textView.placeholder = "Type here"
+        textView.applyRenderJSON("""
+        [
+          {"type":"blockStart","nodeType":"paragraph","depth":0},
+          {"type":"textRun","text":"\\u200B","marks":[]},
+          {"type":"blockEnd"}
+        ]
+        """)
+
+        XCTAssertTrue(textView.isPlaceholderVisibleForTesting())
+    }
+
+    func testPlaceholderHidesForRenderedNonEmptyParagraph() {
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        textView.placeholder = "Type here"
+        textView.applyRenderJSON("""
+        [
+          {"type":"blockStart","nodeType":"paragraph","depth":0},
+          {"type":"textRun","text":"Hello","marks":[]},
+          {"type":"blockEnd"}
+        ]
+        """)
+
+        XCTAssertFalse(textView.isPlaceholderVisibleForTesting())
+    }
+
+    func testPlaceholderStaysTopAlignedInTallEditor() {
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        textView.placeholder = "Line 1\nLine 2"
+        textView.applyRenderJSON("""
+        [
+          {"type":"blockStart","nodeType":"paragraph","depth":0},
+          {"type":"textRun","text":"\\u200B","marks":[]},
+          {"type":"blockEnd"}
+        ]
+        """)
+        textView.layoutIfNeeded()
+
+        let placeholderFrame = textView.placeholderFrameForTesting()
+        XCTAssertEqual(placeholderFrame.minY, textView.textContainerInset.top, accuracy: 0.1)
+        XCTAssertLessThan(placeholderFrame.height, 200)
+    }
+
     func testEditorThemeContentInsetsApplyToTextView() {
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
         let defaultInset = view.textView.textContainerInset
@@ -46,6 +91,127 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertFalse(view.clipsToBounds)
     }
 
+    func testRemoteSelectionOverlayShowsFocusedCaretWithoutBadge() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
+        view.editorId = editorId
+        view.setContent(html: "<p>Hello world</p>")
+        view.layoutIfNeeded()
+
+        let docPos = editorScalarToDoc(id: editorId, scalar: 6)
+        view.setRemoteSelections([
+            RemoteSelectionDecoration(
+                clientId: 7,
+                anchor: docPos,
+                head: docPos,
+                color: .systemOrange,
+                name: "Alice",
+                isFocused: true
+            ),
+        ])
+        view.layoutIfNeeded()
+
+        let overlaySubviews = view.remoteSelectionOverlaySubviewsForTesting()
+        let labels = overlaySubviews.compactMap { $0 as? UILabel }
+        let nonLabels = overlaySubviews.filter { !($0 is UILabel) }
+        let caretViews = nonLabels.filter { $0.bounds.height > 0 && $0.bounds.width > 0 }
+
+        XCTAssertTrue(labels.isEmpty)
+        XCTAssertEqual(nonLabels.count, 1, "expected one caret view for a collapsed focused remote selection")
+        XCTAssertEqual(caretViews.count, 1, "expected the collapsed remote caret view to have a visible frame")
+    }
+
+    func testRemoteSelectionOverlayShowsFocusedCaretAtEndOfDocument() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
+        view.editorId = editorId
+        view.setContent(html: "<p>Hello world</p>")
+        view.layoutIfNeeded()
+
+        let endDocPos = editorScalarToDoc(id: editorId, scalar: 11)
+        view.setRemoteSelections([
+            RemoteSelectionDecoration(
+                clientId: 9,
+                anchor: endDocPos,
+                head: endDocPos,
+                color: .systemGreen,
+                name: "Bob",
+                isFocused: true
+            ),
+        ])
+        view.layoutIfNeeded()
+
+        let caretViews = view.remoteSelectionOverlaySubviewsForTesting()
+            .filter { !($0 is UILabel) && $0.bounds.height > 0 && $0.bounds.width > 0 }
+        XCTAssertEqual(caretViews.count, 1, "expected a visible caret view at the end of the document")
+    }
+
+    func testRemoteSelectionOverlayUsesCorrectWrappedVisualLine() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 140, height: 220))
+        view.editorId = editorId
+        view.setContent(html: "<p>Hello world from remote carets</p>")
+        view.layoutIfNeeded()
+
+        let targetScalar: UInt32 = 15
+        let expectedCaretRect = view.textView.convert(
+            view.textView.caretRect(
+                for: PositionBridge.scalarToTextView(targetScalar, in: view.textView)
+            ),
+            to: view
+        )
+        XCTAssertGreaterThan(expectedCaretRect.minY, 0, "expected the target caret to be on a wrapped visual line")
+
+        let docPos = editorScalarToDoc(id: editorId, scalar: targetScalar)
+        view.setRemoteSelections([
+            RemoteSelectionDecoration(
+                clientId: 10,
+                anchor: docPos,
+                head: docPos,
+                color: .systemPurple,
+                name: "Wrapped",
+                isFocused: true
+            ),
+        ])
+        view.layoutIfNeeded()
+
+        let caretView = view.remoteSelectionOverlaySubviewsForTesting()
+            .first { !($0 is UILabel) && $0.bounds.height > 0 && $0.bounds.width > 0 }
+        XCTAssertNotNil(caretView)
+        XCTAssertEqual(caretView?.frame.minY ?? 0, round(expectedCaretRect.minY), accuracy: 1)
+    }
+
+    func testRemoteSelectionOverlayHidesCaretAndBadgeForUnfocusedCollapsedSelection() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
+        view.editorId = editorId
+        view.setContent(html: "<p>Hello world</p>")
+        view.layoutIfNeeded()
+
+        let docPos = editorScalarToDoc(id: editorId, scalar: 6)
+        view.setRemoteSelections([
+            RemoteSelectionDecoration(
+                clientId: 8,
+                anchor: docPos,
+                head: docPos,
+                color: .systemBlue,
+                name: "Alice",
+                isFocused: false
+            ),
+        ])
+        view.layoutIfNeeded()
+
+        XCTAssertTrue(view.remoteSelectionOverlaySubviewsForTesting().isEmpty)
+    }
+
     func testAccessoryToolbarSwitchesToMentionSuggestionMode() {
         let toolbar = EditorAccessoryToolbarView(frame: .zero)
         let baseHeight = toolbar.intrinsicContentSize.height
@@ -75,6 +241,124 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertTrue(didChange)
         XCTAssertEqual(toolbar.intrinsicContentSize.height, baseHeight + 2)
         XCTAssertTrue(toolbar.isShowingMentionSuggestions)
+    }
+
+    func testToolbarThemeParsesNativeAppearance() {
+        let theme = EditorTheme(dictionary: [
+            "toolbar": [
+                "appearance": "native",
+            ],
+        ])
+
+        XCTAssertEqual(theme.toolbar?.appearance, .native)
+        XCTAssertEqual(theme.toolbar?.resolvedKeyboardOffset ?? 0, 6, accuracy: 0.1)
+        XCTAssertEqual(theme.toolbar?.resolvedHorizontalInset ?? 0, 10, accuracy: 0.1)
+    }
+
+    func testAccessoryToolbarAppliesNativeAppearanceChrome() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+
+        XCTAssertTrue(toolbar.usesNativeAppearanceForTesting)
+        if #available(iOS 26.0, *) {
+            XCTAssertTrue(toolbar.usesUIGlassEffectForTesting)
+            XCTAssertEqual(toolbar.chromeBorderWidthForTesting, 1 / UIScreen.main.scale, accuracy: 0.1)
+        } else {
+            XCTAssertEqual(toolbar.chromeBorderWidthForTesting, 1 / UIScreen.main.scale, accuracy: 0.1)
+        }
+        XCTAssertEqual(toolbar.intrinsicContentSize.height, 56, accuracy: 0.1)
+    }
+
+    func testAccessoryToolbarAppliesSelectedStateForActiveNativeButton() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+        toolbar.applyBoldStateForTesting(active: true, enabled: true)
+
+        XCTAssertEqual(toolbar.selectedButtonCountForTesting, 1)
+    }
+
+    func testAccessoryToolbarAppliesNativeAppearanceToMentionSuggestions() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+        _ = toolbar.setMentionSuggestions([
+            NativeMentionSuggestion(dictionary: [
+                "key": "alice",
+                "title": "Alice Chen",
+                "subtitle": "Design",
+                "label": "@alice",
+                "attrs": ["label": "@alice"],
+            ])!,
+        ])
+
+        XCTAssertTrue(toolbar.mentionButtonAtForTesting(0)?.usesNativeAppearanceForTesting() == true)
+    }
+
+    func testAccessoryToolbarNativeLayoutFittingPreservesVisibleHeight() {
+        let toolbar = EditorAccessoryToolbarView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
+
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+        toolbar.layoutIfNeeded()
+
+        let fittedSize = toolbar.systemLayoutSizeFitting(
+            CGSize(width: 320, height: UIView.layoutFittingCompressedSize.height)
+        )
+        XCTAssertGreaterThanOrEqual(fittedSize.height, 50, "native accessory toolbar should not collapse")
+    }
+
+    func testAccessoryToolbarNativeLayoutAllowsHorizontalOverflowScrolling() {
+        let toolbar = EditorAccessoryToolbarView(frame: CGRect(x: 0, y: 0, width: 180, height: 56))
+
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+        toolbar.layoutIfNeeded()
+
+        if #available(iOS 26.0, *) {
+            XCTAssertGreaterThan(
+                toolbar.nativeToolbarContentWidthForTesting,
+                toolbar.nativeToolbarVisibleWidthForTesting,
+                "native toolbar should overflow horizontally so all items remain reachable"
+            )
+            XCTAssertEqual(
+                toolbar.nativeToolbarContentOffsetXForTesting,
+                0,
+                accuracy: 0.1,
+                "native toolbar should start left-aligned"
+            )
+        }
+    }
+
+    func testAccessoryToolbarNativeLayoutPreservesScrolledOffsetAcrossRelayout() {
+        let toolbar = EditorAccessoryToolbarView(frame: CGRect(x: 0, y: 0, width: 180, height: 56))
+
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+        toolbar.layoutIfNeeded()
+
+        if #available(iOS 26.0, *) {
+            let targetOffset = min(40, toolbar.nativeToolbarContentWidthForTesting - toolbar.nativeToolbarVisibleWidthForTesting)
+            XCTAssertGreaterThan(targetOffset, 0)
+            toolbar.setNativeToolbarContentOffsetXForTesting(targetOffset)
+            toolbar.layoutIfNeeded()
+            XCTAssertEqual(
+                toolbar.nativeToolbarContentOffsetXForTesting,
+                targetOffset,
+                accuracy: 0.1,
+                "native toolbar should not snap back after relayout"
+            )
+        }
     }
 
     func testMentionSuggestionChipContentViewsAllowTouchPassthrough() {
@@ -200,6 +484,30 @@ final class RichTextEditorViewTests: XCTestCase {
             3,
             "deferred selection sync should not snap the caret to a word boundary"
         )
+    }
+
+    func testManualSelectionAfterBlockquoteSyncsInteriorCaretPositionToRust() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(
+            id: editorId,
+            initialHTML: "<blockquote><p>Hello</p></blockquote><p>World</p>"
+        )
+
+        let secondParagraphOffset = (textView.attributedText.string as NSString).range(of: "World").location
+        XCTAssertNotEqual(secondParagraphOffset, NSNotFound)
+
+        setCollapsedSelection(in: textView, utf16Offset: secondParagraphOffset + 3)
+        flushMainQueue()
+
+        let selection = currentSelection(in: editorId)
+        let expectedDoc = editorScalarToDoc(id: editorId, scalar: UInt32(secondParagraphOffset + 3))
+
+        XCTAssertEqual(selection["type"] as? String, "text")
+        XCTAssertEqual((selection["anchor"] as? NSNumber)?.uint32Value, expectedDoc)
+        XCTAssertEqual((selection["head"] as? NSNumber)?.uint32Value, expectedDoc)
     }
 
     func testUnauthorizedTextMutationReconcilesOnNextRunLoop() {
@@ -440,6 +748,425 @@ final class RichTextEditorViewTests: XCTestCase {
         }
     }
 
+    func testCaretRectAfterBlockquoteMatchesPlainTextViewHorizontalPosition() {
+        let attributed = RenderBridge.renderElements(
+            fromJSON: """
+            [
+                {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+                {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+                {"type": "textRun", "text": "Hello", "marks": []},
+                {"type": "blockEnd"},
+                {"type": "blockEnd"},
+                {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+                {"type": "textRun", "text": "World", "marks": []},
+                {"type": "blockEnd"}
+            ]
+            """,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label,
+            theme: EditorTheme(dictionary: [
+                "blockquote": [
+                    "indent": 20,
+                    "borderWidth": 4,
+                    "markerGap": 10,
+                ],
+            ])
+        )
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
+        let plainTextView = UITextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
+        textView.attributedText = attributed
+        plainTextView.attributedText = attributed
+        textView.layoutIfNeeded()
+        plainTextView.layoutIfNeeded()
+
+        let offset = (attributed.string as NSString).range(of: "World").location + 4
+        guard let position = textView.position(from: textView.beginningOfDocument, offset: offset) else {
+            XCTFail("expected editor caret position after blockquote")
+            return
+        }
+        guard let plainPosition = plainTextView.position(from: plainTextView.beginningOfDocument, offset: offset) else {
+            XCTFail("expected plain caret position after blockquote")
+            return
+        }
+
+        let caretRect = textView.caretRect(for: position)
+        let plainCaretRect = plainTextView.caretRect(for: plainPosition)
+        let expected = expectedCaretRect(
+            in: plainTextView,
+            offset: offset,
+            referenceRect: plainCaretRect,
+            font: UIFont.systemFont(ofSize: 16)
+        )
+
+        XCTAssertEqual(caretRect.minX, expected.minX, accuracy: 1.0)
+        XCTAssertEqual(caretRect.minY, expected.minY, accuracy: 1.0)
+        XCTAssertEqual(caretRect.height, expected.height, accuracy: 1.0)
+    }
+
+    func testCaretRectAfterBlockquoteAlignsToNextCharacterEdge() {
+        let attributed = RenderBridge.renderElements(
+            fromJSON: """
+            [
+                {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+                {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+                {"type": "textRun", "text": "Hello", "marks": []},
+                {"type": "blockEnd"},
+                {"type": "blockEnd"},
+                {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+                {"type": "textRun", "text": "World", "marks": []},
+                {"type": "blockEnd"}
+            ]
+            """,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label,
+            theme: EditorTheme(dictionary: [
+                "blockquote": [
+                    "indent": 20,
+                    "borderWidth": 4,
+                    "markerGap": 10,
+                ],
+            ])
+        )
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
+        textView.attributedText = attributed
+        textView.layoutIfNeeded()
+
+        let offset = (attributed.string as NSString).range(of: "World").location + 4
+        guard let position = textView.position(from: textView.beginningOfDocument, offset: offset),
+              let nextPosition = textView.position(from: position, offset: 1),
+              let range = textView.textRange(from: position, to: nextPosition)
+        else {
+            XCTFail("expected caret and next character positions after blockquote")
+            return
+        }
+
+        let expectedX = textView.selectionRects(for: range)
+            .map(\.rect)
+            .first(where: { !$0.isEmpty && $0.width > 0 })?.minX
+        XCTAssertNotNil(expectedX)
+
+        let caretRect = textView.caretRect(for: position)
+        XCTAssertEqual(caretRect.minX, expectedX ?? caretRect.minX, accuracy: 1.0)
+    }
+
+    func testBoundEditorCaretRectAfterBlockquoteMatchesPlainTextViewHorizontalPosition() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
+        textView.bindEditor(id: editorId, initialHTML: "<blockquote><p>Hello</p></blockquote><p>World</p>")
+
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 10, scalarHead: 10)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.layoutIfNeeded()
+
+        let plainTextView = UITextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
+        plainTextView.attributedText = textView.attributedText
+        plainTextView.layoutIfNeeded()
+
+        let offset = textView.offset(
+            from: textView.beginningOfDocument,
+            to: textView.selectedTextRange?.start ?? textView.endOfDocument
+        )
+
+        guard let position = textView.position(from: textView.beginningOfDocument, offset: offset) else {
+            XCTFail("expected editor caret position after blockquote in bound editor")
+            return
+        }
+        guard let plainPosition = plainTextView.position(from: plainTextView.beginningOfDocument, offset: offset) else {
+            XCTFail("expected plain caret position after blockquote in bound editor")
+            return
+        }
+
+        let caretRect = textView.caretRect(for: position)
+        let plainCaretRect = plainTextView.caretRect(for: plainPosition)
+        let expected = expectedCaretRect(
+            in: plainTextView,
+            offset: offset,
+            referenceRect: plainCaretRect,
+            font: UIFont.systemFont(ofSize: 16)
+        )
+
+        XCTAssertEqual(caretRect.minX, expected.minX, accuracy: 1.0)
+        XCTAssertEqual(caretRect.minY, expected.minY, accuracy: 1.0)
+        XCTAssertEqual(caretRect.height, expected.height, accuracy: 1.0)
+    }
+
+    func testTypingAtParagraphEndAfterBlockquoteKeepsCaretAtRenderedEnd() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
+        textView.bindEditor(id: editorId, initialHTML: "<blockquote><p>Hello</p></blockquote><p>World</p>")
+
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 11, scalarHead: 11)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.layoutIfNeeded()
+
+        textView.insertText("!")
+        textView.layoutIfNeeded()
+
+        let html = editorGetHtml(id: editorId)
+        XCTAssertEqual(html, "<blockquote><p>Hello</p></blockquote><p>World!</p>")
+
+        let caretOffset = textView.offset(
+            from: textView.beginningOfDocument,
+            to: textView.selectedTextRange?.start ?? textView.endOfDocument
+        )
+        XCTAssertEqual(caretOffset, textView.text.count, "logical selection should remain at rendered end")
+
+        let plainTextView = UITextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
+        plainTextView.attributedText = textView.attributedText
+        plainTextView.layoutIfNeeded()
+
+        guard let position = textView.position(from: textView.beginningOfDocument, offset: caretOffset),
+              let plainPosition = plainTextView.position(from: plainTextView.beginningOfDocument, offset: caretOffset)
+        else {
+            XCTFail("expected caret positions after typing at paragraph end")
+            return
+        }
+
+        let caretRect = textView.caretRect(for: position)
+        let plainCaretRect = plainTextView.caretRect(for: plainPosition)
+        let expected = expectedCaretRect(
+            in: plainTextView,
+            offset: caretOffset,
+            referenceRect: plainCaretRect,
+            font: UIFont.systemFont(ofSize: 16)
+        )
+
+        XCTAssertEqual(caretRect.minX, expected.minX, accuracy: 1.0)
+        XCTAssertEqual(caretRect.minY, expected.minY, accuracy: 1.0)
+        XCTAssertEqual(caretRect.height, expected.height, accuracy: 1.0)
+    }
+
+    func testBlockquoteStripeRectStaysStableAcrossReturnDrivenLayoutPasses() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 220))
+        textView.bindEditor(id: editorId, initialHTML: "<blockquote><p>Hello</p></blockquote>")
+        textView.layoutIfNeeded()
+
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 6, scalarHead: 6)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.layoutIfNeeded()
+
+        textView.insertText("\n")
+
+        let firstPassStripeRects = textView.blockquoteStripeRectsForTesting()
+        textView.layoutIfNeeded()
+        let secondPassStripeRects = textView.blockquoteStripeRectsForTesting()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        textView.layoutIfNeeded()
+        let settledStripeRects = textView.blockquoteStripeRectsForTesting()
+
+        XCTAssertFalse(firstPassStripeRects.isEmpty, "expected blockquote stripe after inserting quoted paragraph")
+        XCTAssertEqual(firstPassStripeRects.count, secondPassStripeRects.count)
+        XCTAssertEqual(secondPassStripeRects.count, settledStripeRects.count)
+
+        for (first, second) in zip(firstPassStripeRects, secondPassStripeRects) {
+            XCTAssertEqual(first.minX, second.minX, accuracy: 0.5)
+            XCTAssertEqual(first.minY, second.minY, accuracy: 0.5)
+            XCTAssertEqual(first.height, second.height, accuracy: 0.5)
+        }
+
+        for (first, settled) in zip(firstPassStripeRects, settledStripeRects) {
+            XCTAssertEqual(first.minX, settled.minX, accuracy: 0.5)
+            XCTAssertEqual(first.minY, settled.minY, accuracy: 0.5)
+            XCTAssertEqual(first.height, settled.height, accuracy: 0.5)
+        }
+    }
+
+    func testConsecutiveBlockquoteParagraphsShareOneStripeGroup() {
+        let attributed = RenderBridge.renderElements(
+            fromJSON: """
+            [
+                {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+                {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+                {"type": "textRun", "text": "Hello", "marks": []},
+                {"type": "blockEnd"},
+                {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+                {"type": "textRun", "text": "World", "marks": []},
+                {"type": "blockEnd"},
+                {"type": "blockEnd"}
+            ]
+            """,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label
+        )
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 220))
+        textView.attributedText = attributed
+        textView.layoutIfNeeded()
+
+        let stripeRects = textView.blockquoteStripeRectsForTesting()
+        XCTAssertEqual(stripeRects.count, 1, "consecutive quoted paragraphs should render one continuous stripe group")
+    }
+
+    func testConsecutiveBlockquoteParagraphsAfterPlainParagraphStillShareOneStripeGroup() {
+        let attributed = RenderBridge.renderElements(
+            fromJSON: """
+            [
+                {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+                {"type": "textRun", "text": "Intro", "marks": []},
+                {"type": "blockEnd"},
+                {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+                {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+                {"type": "textRun", "text": "Hello", "marks": []},
+                {"type": "blockEnd"},
+                {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+                {"type": "textRun", "text": "World", "marks": []},
+                {"type": "blockEnd"},
+                {"type": "blockEnd"}
+            ]
+            """,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label
+        )
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 220))
+        textView.attributedText = attributed
+        textView.layoutIfNeeded()
+
+        let stripeRects = textView.blockquoteStripeRectsForTesting()
+        XCTAssertEqual(
+            stripeRects.count,
+            1,
+            "quoted paragraphs should still share one stripe group when the quote follows plain content"
+        )
+        XCTAssertGreaterThan(
+            stripeRects[0].minY,
+            0.5,
+            "quote stripe should not extend into the preceding plain paragraph"
+        )
+        XCTAssertLessThan(
+            stripeRects[0].height,
+            60.0,
+            "quote stripe should not extend through trailing paragraph spacing below the quote"
+        )
+    }
+
+    func testBlockquoteStripeDrawPassStaysStableAfterReturn() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 220))
+        textView.bindEditor(id: editorId, initialHTML: "<blockquote><p>Hello</p></blockquote>")
+        textView.layoutIfNeeded()
+
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 6, scalarHead: 6)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.layoutIfNeeded()
+
+        textView.resetBlockquoteStripeDrawPassesForTesting()
+        textView.insertText("\n")
+        forceDraw(textView)
+        let firstRenderedPasses = textView.blockquoteStripeDrawPassesForTesting()
+
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        textView.layoutIfNeeded()
+        forceDraw(textView)
+        let allRenderedPasses = textView.blockquoteStripeDrawPassesForTesting()
+
+        guard let firstPass = firstRenderedPasses.first,
+              let settledPass = allRenderedPasses.last
+        else {
+            XCTFail("expected recorded blockquote stripe draw passes")
+            return
+        }
+
+        XCTAssertEqual(firstPass.count, settledPass.count)
+        for (first, settled) in zip(firstPass, settledPass) {
+            XCTAssertEqual(first.minX, settled.minX, accuracy: 0.5)
+            XCTAssertEqual(first.minY, settled.minY, accuracy: 0.5)
+            XCTAssertEqual(first.height, settled.height, accuracy: 0.5)
+        }
+    }
+
+    func testReturnInsideBlockquoteAfterPlainParagraphKeepsOneStripeGroup() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 260))
+        textView.bindEditor(id: editorId, initialHTML: "<p>Intro</p><blockquote><p>Hello</p></blockquote>")
+        textView.layoutIfNeeded()
+
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 11, scalarHead: 11)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.layoutIfNeeded()
+
+        textView.insertText("\n")
+        textView.layoutIfNeeded()
+
+        let stripeRects = textView.blockquoteStripeRectsForTesting()
+        XCTAssertEqual(
+            stripeRects.count,
+            1,
+            "pressing Return inside a blockquote should not split the quote stripe when the quote follows plain content"
+        )
+        XCTAssertGreaterThan(
+            stripeRects[0].minY,
+            0.5,
+            "quote stripe should start within the blockquote, not at the preceding paragraph"
+        )
+        XCTAssertLessThan(
+            stripeRects[0].height,
+            60.0,
+            "quote stripe should stop at the quoted content, not the paragraph spacing below it"
+        )
+    }
+
+    func testBlockquoteHardBreakAndFollowingParagraphShareOneStripeGroup() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 260))
+        textView.bindEditor(
+            id: editorId,
+            initialHTML: "<blockquote><p>Hello<br>World</p><p>Tail</p></blockquote>"
+        )
+        textView.layoutIfNeeded()
+
+        let stripeRects = textView.blockquoteStripeRectsForTesting()
+        XCTAssertEqual(
+            stripeRects.count,
+            1,
+            "hard breaks inside a blockquote should not split the quote stripe from later quoted content"
+        )
+        XCTAssertGreaterThan(
+            stripeRects[0].height,
+            60.0,
+            "quote stripe should extend through the hard-break line and following quoted paragraph"
+        )
+    }
+
+    func testTrailingHardBreakInBlockquoteKeepsStripeConnectedToFollowingParagraph() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 260))
+        textView.bindEditor(
+            id: editorId,
+            initialHTML: "<blockquote><p>Hello<br></p><p>Tail</p></blockquote>"
+        )
+        textView.layoutIfNeeded()
+
+        let stripeRects = textView.blockquoteStripeRectsForTesting()
+        XCTAssertEqual(
+            stripeRects.count,
+            1,
+            "a trailing hard break inside a blockquote should not split the quote stripe from the following quoted paragraph"
+        )
+        XCTAssertGreaterThan(
+            stripeRects[0].height,
+            40.0,
+            "quote stripe should extend through the trailing hard-break line and following quoted paragraph"
+        )
+    }
+
     func testCaretRectAtParagraphStartDoesNotDropByOneLineHeight() {
         let theme = EditorTheme(dictionary: [
             "paragraph": [
@@ -551,6 +1278,81 @@ final class RichTextEditorViewTests: XCTestCase {
             "<ul><li><p>A<br><br></p></li></ul>",
             "second hardBreak should append after the first one rather than replacing the text"
         )
+    }
+
+    func testToolbarHardBreakMovesCaretToNextVisualLine() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let theme = EditorTheme(dictionary: [
+            "paragraph": [
+                "lineHeight": 32,
+            ],
+        ])
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
+        textView.applyTheme(theme)
+        textView.bindEditor(id: editorId, initialHTML: "<p>A</p>")
+
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 1, scalarHead: 1)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.layoutIfNeeded()
+
+        guard let beforePosition = textView.selectedTextRange?.start else {
+            XCTFail("expected initial caret position")
+            return
+        }
+        let beforeCaretRect = textView.caretRect(for: beforePosition)
+
+        textView.performToolbarInsertNode("hardBreak")
+        textView.layoutIfNeeded()
+
+        let selectionOffset = textView.offset(
+            from: textView.beginningOfDocument,
+            to: textView.selectedTextRange?.start ?? textView.endOfDocument
+        )
+        XCTAssertEqual(selectionOffset, 2, "caret should land immediately after the inserted hard break")
+
+        guard let afterPosition = textView.selectedTextRange?.start else {
+            XCTFail("expected caret position after hard break")
+            return
+        }
+        let caretRect = textView.caretRect(for: afterPosition)
+        XCTAssertGreaterThan(caretRect.minY, beforeCaretRect.minY, "caret should move to the next visual line")
+        XCTAssertEqual(caretRect.minY - beforeCaretRect.minY, 32, accuracy: 1.0)
+    }
+
+    func testToolbarHardBreakReservesTrailingVisualLineBeforeTyping() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let theme = EditorTheme(dictionary: [
+            "paragraph": [
+                "lineHeight": 32,
+            ],
+        ])
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
+        textView.applyTheme(theme)
+        textView.bindEditor(id: editorId, initialHTML: "<p>A</p>")
+
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 1, scalarHead: 1)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.layoutIfNeeded()
+
+        textView.performToolbarInsertNode("hardBreak")
+        textView.layoutIfNeeded()
+        let heightAfterBreak = ceil(
+            textView.sizeThatFits(CGSize(width: 220, height: CGFloat.greatestFiniteMagnitude)).height
+        )
+
+        textView.insertText("B")
+        textView.layoutIfNeeded()
+        let heightAfterTyping = ceil(
+            textView.sizeThatFits(CGSize(width: 220, height: CGFloat.greatestFiniteMagnitude)).height
+        )
+
+        XCTAssertEqual(heightAfterBreak, heightAfterTyping, accuracy: 1.0)
     }
 
     func testMentionSuggestionTapInsertsMentionNode() {
@@ -804,6 +1606,13 @@ final class RichTextEditorViewTests: XCTestCase {
         let insertableNodes = (activeState?["insertableNodes"] as? [String]) ?? []
         let allowedMarks = (activeState?["allowedMarks"] as? [String]) ?? []
         return (insertableNodes: insertableNodes, allowedMarks: allowedMarks)
+    }
+
+    private func forceDraw(_ textView: EditorTextView) {
+        let renderer = UIGraphicsImageRenderer(bounds: textView.bounds)
+        _ = renderer.image { context in
+            textView.layer.render(in: context.cgContext)
+        }
     }
 
     private func mentionEditorConfigJson() -> String {

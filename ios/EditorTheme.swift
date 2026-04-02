@@ -104,6 +104,24 @@ struct EditorHorizontalRuleTheme {
     }
 }
 
+struct EditorBlockquoteTheme {
+    var text: EditorTextStyle?
+    var indent: CGFloat?
+    var borderColor: UIColor?
+    var borderWidth: CGFloat?
+    var markerGap: CGFloat?
+
+    init(dictionary: [String: Any]) {
+        if let text = dictionary["text"] as? [String: Any] {
+            self.text = EditorTextStyle(dictionary: text)
+        }
+        indent = EditorTheme.cgFloat(dictionary["indent"])
+        borderColor = EditorTheme.color(from: dictionary["borderColor"])
+        borderWidth = EditorTheme.cgFloat(dictionary["borderWidth"])
+        markerGap = EditorTheme.cgFloat(dictionary["markerGap"])
+    }
+}
+
 struct EditorMentionTheme {
     var textColor: UIColor?
     var backgroundColor: UIColor?
@@ -140,7 +158,13 @@ struct EditorMentionTheme {
     }
 }
 
+enum EditorToolbarAppearance: String {
+    case custom
+    case native
+}
+
 struct EditorToolbarTheme {
+    var appearance: EditorToolbarAppearance?
     var backgroundColor: UIColor?
     var borderColor: UIColor?
     var borderWidth: CGFloat?
@@ -155,6 +179,7 @@ struct EditorToolbarTheme {
     var buttonBorderRadius: CGFloat?
 
     init(dictionary: [String: Any]) {
+        appearance = (dictionary["appearance"] as? String).flatMap(EditorToolbarAppearance.init(rawValue:))
         backgroundColor = EditorTheme.color(from: dictionary["backgroundColor"])
         borderColor = EditorTheme.color(from: dictionary["borderColor"])
         borderWidth = EditorTheme.cgFloat(dictionary["borderWidth"])
@@ -167,6 +192,26 @@ struct EditorToolbarTheme {
         buttonDisabledColor = EditorTheme.color(from: dictionary["buttonDisabledColor"])
         buttonActiveBackgroundColor = EditorTheme.color(from: dictionary["buttonActiveBackgroundColor"])
         buttonBorderRadius = EditorTheme.cgFloat(dictionary["buttonBorderRadius"])
+    }
+
+    var resolvedKeyboardOffset: CGFloat {
+        keyboardOffset ?? (appearance == .native ? 6 : 0)
+    }
+
+    var resolvedHorizontalInset: CGFloat {
+        horizontalInset ?? (appearance == .native ? 10 : 0)
+    }
+
+    var resolvedBorderRadius: CGFloat {
+        borderRadius ?? (appearance == .native ? 20 : 0)
+    }
+
+    var resolvedBorderWidth: CGFloat {
+        borderWidth ?? (appearance == .native ? 0 : 0.5)
+    }
+
+    var resolvedButtonBorderRadius: CGFloat {
+        buttonBorderRadius ?? (appearance == .native ? 10 : 8)
     }
 }
 
@@ -187,6 +232,7 @@ struct EditorContentInsets {
 struct EditorTheme {
     var text: EditorTextStyle?
     var paragraph: EditorTextStyle?
+    var blockquote: EditorBlockquoteTheme?
     var headings: [String: EditorTextStyle] = [:]
     var list: EditorListTheme?
     var horizontalRule: EditorHorizontalRuleTheme?
@@ -212,6 +258,9 @@ struct EditorTheme {
         }
         if let paragraph = dictionary["paragraph"] as? [String: Any] {
             self.paragraph = EditorTextStyle(dictionary: paragraph)
+        }
+        if let blockquote = dictionary["blockquote"] as? [String: Any] {
+            self.blockquote = EditorBlockquoteTheme(dictionary: blockquote)
         }
         if let headings = dictionary["headings"] as? [String: Any] {
             for level in ["h1", "h2", "h3", "h4", "h5", "h6"] {
@@ -239,8 +288,9 @@ struct EditorTheme {
         }
     }
 
-    func effectiveTextStyle(for nodeType: String) -> EditorTextStyle {
+    func effectiveTextStyle(for nodeType: String, inBlockquote: Bool = false) -> EditorTextStyle {
         var style = text ?? EditorTextStyle()
+        style = style.merged(with: inBlockquote ? blockquote?.text : nil)
         if nodeType == "paragraph" {
             style = style.merged(with: paragraph)
             if paragraph?.lineHeight == nil {

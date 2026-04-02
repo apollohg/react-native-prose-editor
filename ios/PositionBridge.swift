@@ -62,6 +62,12 @@ final class PositionBridge {
         let clampedOffset = min(max(utf16Offset, 0), nsString.length)
         var scalarOffset = utf16OffsetToScalar(clampedOffset, in: text)
 
+        for placeholderOffset in syntheticPlaceholderOffsets(in: textView) where clampedOffset > placeholderOffset {
+            if scalarOffset > 0 {
+                scalarOffset -= 1
+            }
+        }
+
         for marker in virtualListMarkers(in: textView) where clampedOffset >= marker.paragraphStartUtf16 {
             scalarOffset += marker.scalarLength
         }
@@ -274,5 +280,21 @@ final class PositionBridge {
         }
 
         return markers.sorted { $0.paragraphStartUtf16 < $1.paragraphStartUtf16 }
+    }
+
+    private static func syntheticPlaceholderOffsets(in textView: UITextView) -> [Int] {
+        let textStorage = textView.textStorage
+        guard textStorage.length > 0 else { return [] }
+
+        var offsets: [Int] = []
+        textStorage.enumerateAttribute(
+            RenderBridgeAttributes.syntheticPlaceholder,
+            in: NSRange(location: 0, length: textStorage.length),
+            options: []
+        ) { value, range, _ in
+            guard range.length > 0, (value as? Bool) == true else { return }
+            offsets.append(range.location)
+        }
+        return offsets
     }
 }

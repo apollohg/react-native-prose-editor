@@ -131,12 +131,18 @@ final class MentionSuggestionChipButton: UIButton {
     private let subtitleLabelView = UILabel()
     private let stackView = UIStackView()
     private var theme: EditorMentionTheme?
+    private var toolbarAppearance: EditorToolbarAppearance = .custom
 
     let suggestion: NativeMentionSuggestion
 
-    init(suggestion: NativeMentionSuggestion, theme: EditorMentionTheme?) {
+    init(
+        suggestion: NativeMentionSuggestion,
+        theme: EditorMentionTheme?,
+        toolbarAppearance: EditorToolbarAppearance = .custom
+    ) {
         self.suggestion = suggestion
         self.theme = theme
+        self.toolbarAppearance = toolbarAppearance
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         layer.cornerRadius = 12
@@ -179,7 +185,7 @@ final class MentionSuggestionChipButton: UIButton {
 
         addTarget(self, action: #selector(handleTouchDown), for: [.touchDown, .touchDragEnter])
         addTarget(self, action: #selector(handleTouchUp), for: [.touchCancel, .touchDragExit, .touchUpInside, .touchUpOutside])
-        apply(theme: theme)
+        apply(theme: theme, toolbarAppearance: toolbarAppearance)
         updateAppearance(highlighted: false)
     }
 
@@ -187,8 +193,9 @@ final class MentionSuggestionChipButton: UIButton {
         return nil
     }
 
-    func apply(theme: EditorMentionTheme?) {
+    func apply(theme: EditorMentionTheme?, toolbarAppearance: EditorToolbarAppearance = .custom) {
         self.theme = theme
+        self.toolbarAppearance = toolbarAppearance
         layer.cornerRadius = theme?.borderRadius ?? 12
         layer.borderColor = (theme?.borderColor ?? UIColor.clear).cgColor
         layer.borderWidth = theme?.borderWidth ?? 0
@@ -211,6 +218,18 @@ final class MentionSuggestionChipButton: UIButton {
     }
 
     private func updateAppearance(highlighted: Bool) {
+        if toolbarAppearance == .native {
+            layer.cornerRadius = 18
+            layer.borderColor = UIColor.clear.cgColor
+            layer.borderWidth = 0
+            backgroundColor = highlighted
+                ? UIColor.white.withAlphaComponent(0.18)
+                : .clear
+            titleLabelView.textColor = .label
+            subtitleLabelView.textColor = .secondaryLabel
+            return
+        }
+
         backgroundColor = highlighted
             ? (theme?.optionHighlightedBackgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12))
             : (theme?.backgroundColor ?? UIColor.secondarySystemBackground)
@@ -224,5 +243,9 @@ final class MentionSuggestionChipButton: UIButton {
         !stackView.isUserInteractionEnabled
             && !titleLabelView.isUserInteractionEnabled
             && !subtitleLabelView.isUserInteractionEnabled
+    }
+
+    func usesNativeAppearanceForTesting() -> Bool {
+        toolbarAppearance == .native
     }
 }

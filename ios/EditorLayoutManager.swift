@@ -1,19 +1,79 @@
 import UIKit
 import CoreText
+import os
 
 /// Draws list markers visually in the gutter without inserting them into the
 /// editable text storage. This keeps UIKit paragraph-start behaviors, such as
 /// sentence auto-capitalization, working naturally inside list items.
 final class EditorLayoutManager: NSLayoutManager {
+    private static let blockquoteLog = Logger(
+        subsystem: "com.apollohg.prose-editor",
+        category: "blockquote"
+    )
+
+    private var blockquoteDrawPassCounter: UInt64 = 0
+    private(set) var blockquoteStripeDrawPassesForTesting: [[CGRect]] = []
+
+    func blockquoteStripeRectsForTesting(
+        in textStorage: NSTextStorage,
+        visibleGlyphRange: NSRange? = nil,
+        origin: CGPoint = .zero
+    ) -> [CGRect] {
+        let glyphsToShow = visibleGlyphRange ?? NSRange(location: 0, length: numberOfGlyphs)
+        guard glyphsToShow.length > 0 else { return [] }
+
+        let characterRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        let nsString = textStorage.string as NSString
+        var drawnBlockquoteStarts = Set<Int>()
+        var rects: [CGRect] = []
+
+        textStorage.enumerateAttribute(
+            RenderBridgeAttributes.blockquoteBorderColor,
+            in: characterRange,
+            options: []
+        ) { value, range, _ in
+            guard range.length > 0, let color = value as? UIColor else { return }
+
+            let paragraphRange = nsString.paragraphRange(for: NSRange(location: range.location, length: 0))
+            let paragraphStart = paragraphRange.location
+            let groupRange = Self.blockquoteGroupCharacterRange(
+                containing: paragraphStart,
+                in: textStorage,
+                nsString: nsString
+            )
+            let groupStart = groupRange.location
+            guard drawnBlockquoteStarts.insert(groupStart).inserted else { return }
+            guard let rect = blockquoteStripeRect(
+                characterRange: groupRange,
+                color: color,
+                textStorage: textStorage,
+                origin: origin
+            ) else {
+                return
+            }
+            rects.append(rect)
+        }
+
+        return rects
+    }
+
+    func resetBlockquoteStripeDrawPassesForTesting() {
+        blockquoteStripeDrawPassesForTesting.removeAll()
+    }
 
     override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
 
         guard let textStorage, glyphsToShow.length > 0 else { return }
 
+        blockquoteDrawPassCounter &+= 1
+        let drawPass = blockquoteDrawPassCounter
+
         let characterRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
         let nsString = textStorage.string as NSString
         var drawnParagraphStarts = Set<Int>()
+        var drawnBlockquoteStarts = Set<Int>()
+        var drawnStripeRects: [CGRect] = []
 
         textStorage.enumerateAttribute(
             RenderBridgeAttributes.listMarkerContext,
@@ -35,6 +95,45 @@ final class EditorLayoutManager: NSLayoutManager {
                 origin: origin,
                 textStorage: textStorage
             )
+        }
+
+        textStorage.enumerateAttribute(
+            RenderBridgeAttributes.blockquoteBorderColor,
+            in: characterRange,
+            options: []
+        ) { value, range, _ in
+            guard range.length > 0, let color = value as? UIColor else { return }
+
+            let paragraphRange = nsString.paragraphRange(for: NSRange(location: range.location, length: 0))
+            let paragraphStart = paragraphRange.location
+            let groupRange = Self.blockquoteGroupCharacterRange(
+                containing: paragraphStart,
+                in: textStorage,
+                nsString: nsString
+            )
+            let groupStart = groupRange.location
+            guard drawnBlockquoteStarts.insert(groupStart).inserted else { return }
+
+            guard let stripeRect = self.blockquoteStripeRect(
+                characterRange: groupRange,
+                color: color,
+                textStorage: textStorage,
+                origin: origin
+            ) else {
+                return
+            }
+            self.drawBlockquoteBorder(
+                stripeRect: stripeRect,
+                color: color
+            )
+            Self.blockquoteLog.notice(
+                "[drawGlyphs] pass=\(drawPass, privacy: .public) glyphRange=\(glyphsToShow.location, privacy: .public)..<\(glyphsToShow.location + glyphsToShow.length, privacy: .public) groupRange=\(groupRange.location, privacy: .public)..<\(groupRange.location + groupRange.length, privacy: .public) stripe=(x:\(stripeRect.minX, privacy: .public), y:\(stripeRect.minY, privacy: .public), w:\(stripeRect.width, privacy: .public), h:\(stripeRect.height, privacy: .public))"
+            )
+            drawnStripeRects.append(stripeRect)
+        }
+
+        if !drawnStripeRects.isEmpty {
+            blockquoteStripeDrawPassesForTesting.append(drawnStripeRects)
         }
     }
 
@@ -105,6 +204,159 @@ final class EditorLayoutManager: NSLayoutManager {
         let path = UIBezierPath(ovalIn: bulletRect)
         textColor.setFill()
         path.fill()
+    }
+
+    private func blockquoteStripeRect(
+        characterRange: NSRange,
+        color: UIColor,
+        textStorage: NSTextStorage,
+        origin: CGPoint
+    ) -> CGRect? {
+        guard characterRange.location < textStorage.length, !textContainers.isEmpty else {
+            return nil
+        }
+
+        ensureLayout(forCharacterRange: characterRange)
+        let glyphRange = self.glyphRange(forCharacterRange: characterRange, actualCharacterRange: nil)
+        guard glyphRange.length > 0 else { return nil }
+
+        var topEdge: CGFloat?
+        var bottomEdge: CGFloat?
+        var textLeadingEdge: CGFloat?
+        enumerateLineFragments(forGlyphRange: glyphRange) { lineFragmentRect, usedRect, _, _, _ in
+            let verticalReferenceRect = usedRect.height > 0 ? usedRect : lineFragmentRect
+            if let currentTop = topEdge {
+                topEdge = min(currentTop, lineFragmentRect.minY)
+            } else {
+                topEdge = lineFragmentRect.minY
+            }
+            if let currentBottom = bottomEdge {
+                bottomEdge = max(currentBottom, verticalReferenceRect.maxY)
+            } else {
+                bottomEdge = verticalReferenceRect.maxY
+            }
+            let referenceMinX = usedRect.width > 0 ? usedRect.minX : lineFragmentRect.minX
+            if let current = textLeadingEdge {
+                textLeadingEdge = min(current, referenceMinX)
+            } else {
+                textLeadingEdge = referenceMinX
+            }
+        }
+        guard let topEdge, let bottomEdge, bottomEdge > topEdge, let textLeadingEdge else { return nil }
+
+        let attrs = textStorage.attributes(at: characterRange.location, effectiveRange: nil)
+        let borderWidth = (attrs[RenderBridgeAttributes.blockquoteBorderWidth] as? NSNumber)
+            .map { CGFloat(truncating: $0) }
+            ?? LayoutConstants.blockquoteBorderWidth
+        let gap = (attrs[RenderBridgeAttributes.blockquoteMarkerGap] as? NSNumber)
+            .map { CGFloat(truncating: $0) }
+            ?? LayoutConstants.blockquoteMarkerGap
+
+        let stripeX = origin.x + textLeadingEdge - gap - borderWidth
+        let stripeRect = CGRect(
+            x: stripeX,
+            y: origin.y + topEdge,
+            width: borderWidth,
+            height: bottomEdge - topEdge
+        )
+        Self.blockquoteLog.notice(
+            "[stripeRect] chars=\(characterRange.location, privacy: .public)..<\(characterRange.location + characterRange.length, privacy: .public) textLeading=\(textLeadingEdge, privacy: .public) verticalEdges=(top:\(topEdge, privacy: .public), bottom:\(bottomEdge, privacy: .public)) stripe=(x:\(stripeRect.minX, privacy: .public), y:\(stripeRect.minY, privacy: .public), w:\(stripeRect.width, privacy: .public), h:\(stripeRect.height, privacy: .public)) borderWidth=\(borderWidth, privacy: .public) gap=\(gap, privacy: .public)"
+        )
+        return stripeRect
+    }
+
+    private func drawBlockquoteBorder(
+        stripeRect: CGRect,
+        color: UIColor
+    ) {
+        color.setFill()
+        UIBezierPath(rect: stripeRect).fill()
+    }
+
+    private static func blockquoteGroupCharacterRange(
+        containing paragraphStart: Int,
+        in textStorage: NSTextStorage,
+        nsString: NSString
+    ) -> NSRange {
+        let initialParagraphRange = nsString.paragraphRange(
+            for: NSRange(location: paragraphStart, length: 0)
+        )
+        var groupStart = initialParagraphRange.location
+        var groupEnd = NSMaxRange(initialParagraphRange)
+
+        var probeStart = groupStart
+        while probeStart > 0 {
+            let previousParagraphRange = nsString.paragraphRange(
+                for: NSRange(location: probeStart - 1, length: 0)
+            )
+            let previousStart = previousParagraphRange.location
+            guard paragraphHasBlockquoteBorder(
+                      previousParagraphRange,
+                      in: textStorage
+                  )
+            else {
+                break
+            }
+
+            groupStart = previousStart
+            probeStart = previousStart
+        }
+
+        var nextParagraphLocation = groupEnd
+        while nextParagraphLocation < textStorage.length {
+            let nextParagraphRange = nsString.paragraphRange(
+                for: NSRange(location: nextParagraphLocation, length: 0)
+            )
+            guard paragraphHasBlockquoteBorder(
+                      nextParagraphRange,
+                      in: textStorage
+                  )
+            else {
+                break
+            }
+
+            groupEnd = NSMaxRange(nextParagraphRange)
+            nextParagraphLocation = groupEnd
+        }
+
+        return NSRange(location: groupStart, length: groupEnd - groupStart)
+    }
+
+    private static func paragraphHasBlockquoteBorder(
+        _ paragraphRange: NSRange,
+        in textStorage: NSTextStorage
+    ) -> Bool {
+        guard paragraphRange.length > 0 else { return false }
+        let nsString = textStorage.string as NSString
+        var sawQuotedContent = false
+        var sawAnyQuotedCharacter = false
+
+        for offset in 0..<paragraphRange.length {
+            let index = paragraphRange.location + offset
+            guard index < textStorage.length else { break }
+
+            let hasBorder = textStorage.attribute(
+                RenderBridgeAttributes.blockquoteBorderColor,
+                at: index,
+                effectiveRange: nil
+            ) != nil
+            guard hasBorder else { continue }
+            sawAnyQuotedCharacter = true
+
+            let scalar = nsString.character(at: index)
+            if scalar != 0x000A, scalar != 0x000D {
+                sawQuotedContent = true
+                break
+            }
+        }
+
+        if sawQuotedContent {
+            return true
+        }
+
+        let trimmed = nsString.substring(with: paragraphRange)
+            .trimmingCharacters(in: .newlines)
+        return trimmed.isEmpty && sawAnyQuotedCharacter
     }
 
     static func markerParagraphStyle(from attrs: [NSAttributedString.Key: Any]) -> NSMutableParagraphStyle {

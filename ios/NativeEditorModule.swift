@@ -10,6 +10,42 @@ public class NativeEditorModule: Module {
         Function("editorDestroy") { (id: Int) in
             editorDestroy(id: UInt64(id))
         }
+        Function("collaborationSessionCreate") { (configJson: String) -> Int in
+            Int(collaborationSessionCreate(configJson: configJson))
+        }
+        Function("collaborationSessionDestroy") { (id: Int) in
+            collaborationSessionDestroy(id: UInt64(id))
+        }
+        Function("collaborationSessionGetDocumentJson") { (id: Int) -> String in
+            collaborationSessionGetDocumentJson(id: UInt64(id))
+        }
+        Function("collaborationSessionGetEncodedState") { (id: Int) -> String in
+            collaborationSessionGetEncodedState(id: UInt64(id))
+        }
+        Function("collaborationSessionGetPeersJson") { (id: Int) -> String in
+            collaborationSessionGetPeersJson(id: UInt64(id))
+        }
+        Function("collaborationSessionStart") { (id: Int) -> String in
+            collaborationSessionStart(id: UInt64(id))
+        }
+        Function("collaborationSessionApplyLocalDocumentJson") { (id: Int, json: String) -> String in
+            collaborationSessionApplyLocalDocumentJson(id: UInt64(id), json: json)
+        }
+        Function("collaborationSessionApplyEncodedState") { (id: Int, encodedStateJson: String) -> String in
+            collaborationSessionApplyEncodedState(id: UInt64(id), encodedStateJson: encodedStateJson)
+        }
+        Function("collaborationSessionReplaceEncodedState") { (id: Int, encodedStateJson: String) -> String in
+            collaborationSessionReplaceEncodedState(id: UInt64(id), encodedStateJson: encodedStateJson)
+        }
+        Function("collaborationSessionHandleMessage") { (id: Int, messageJson: String) -> String in
+            collaborationSessionHandleMessage(id: UInt64(id), messageJson: messageJson)
+        }
+        Function("collaborationSessionSetLocalAwareness") { (id: Int, awarenessJson: String) -> String in
+            collaborationSessionSetLocalAwareness(id: UInt64(id), awarenessJson: awarenessJson)
+        }
+        Function("collaborationSessionClearLocalAwareness") { (id: Int) -> String in
+            collaborationSessionClearLocalAwareness(id: UInt64(id))
+        }
         Function("editorSetHtml") { (id: Int, html: String) -> String in
             editorSetHtml(id: UInt64(id), html: html)
         }
@@ -70,6 +106,15 @@ public class NativeEditorModule: Module {
         Function("editorToggleMark") { (id: Int, markName: String) -> String in
             editorToggleMark(id: UInt64(id), markName: markName)
         }
+        Function("editorSetMark") { (id: Int, markName: String, attrsJson: String) -> String in
+            editorSetMark(id: UInt64(id), markName: markName, attrsJson: attrsJson)
+        }
+        Function("editorUnsetMark") { (id: Int, markName: String) -> String in
+            editorUnsetMark(id: UInt64(id), markName: markName)
+        }
+        Function("editorToggleBlockquote") { (id: Int) -> String in
+            editorToggleBlockquote(id: UInt64(id))
+        }
         Function("editorSetSelection") { (id: Int, anchor: Int, head: Int) in
             editorSetSelection(id: UInt64(id), anchor: UInt32(anchor), head: UInt32(head))
         }
@@ -88,6 +133,36 @@ public class NativeEditorModule: Module {
                 scalarAnchor: UInt32(scalarAnchor),
                 scalarHead: UInt32(scalarHead),
                 markName: markName
+            )
+        }
+        Function(
+            "editorSetMarkAtSelectionScalar"
+        ) { (id: Int, scalarAnchor: Int, scalarHead: Int, markName: String, attrsJson: String) -> String in
+            editorSetMarkAtSelectionScalar(
+                id: UInt64(id),
+                scalarAnchor: UInt32(scalarAnchor),
+                scalarHead: UInt32(scalarHead),
+                markName: markName,
+                attrsJson: attrsJson
+            )
+        }
+        Function(
+            "editorUnsetMarkAtSelectionScalar"
+        ) { (id: Int, scalarAnchor: Int, scalarHead: Int, markName: String) -> String in
+            editorUnsetMarkAtSelectionScalar(
+                id: UInt64(id),
+                scalarAnchor: UInt32(scalarAnchor),
+                scalarHead: UInt32(scalarHead),
+                markName: markName
+            )
+        }
+        Function(
+            "editorToggleBlockquoteAtSelectionScalar"
+        ) { (id: Int, scalarAnchor: Int, scalarHead: Int) -> String in
+            editorToggleBlockquoteAtSelectionScalar(
+                id: UInt64(id),
+                scalarAnchor: UInt32(scalarAnchor),
+                scalarHead: UInt32(scalarHead)
             )
         }
         Function(
@@ -232,6 +307,9 @@ public class NativeEditorModule: Module {
             }
             Prop("addonsJson") { (view: NativeEditorExpoView, addonsJson: String?) in
                 view.setAddonsJson(addonsJson)
+            }
+            Prop("remoteSelectionsJson") { (view: NativeEditorExpoView, remoteSelectionsJson: String?) in
+                view.setRemoteSelectionsJson(remoteSelectionsJson)
             }
             Prop("toolbarItemsJson") { (view: NativeEditorExpoView, toolbarItemsJson: String?) in
                 view.setToolbarButtonsJson(toolbarItemsJson)

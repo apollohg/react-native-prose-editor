@@ -25,6 +25,234 @@ enum EditorHeightBehavior: String {
     case autoGrow
 }
 
+struct RemoteSelectionDecoration {
+    let clientId: Int
+    let anchor: UInt32
+    let head: UInt32
+    let color: UIColor
+    let name: String?
+    let isFocused: Bool
+
+    static func from(json: String?) -> [RemoteSelectionDecoration] {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else {
+            return []
+        }
+
+        return raw.compactMap { item in
+            guard let clientId = item["clientId"] as? NSNumber,
+                  let anchor = item["anchor"] as? NSNumber,
+                  let head = item["head"] as? NSNumber,
+                  let colorRaw = item["color"] as? String,
+                  let color = colorFromString(colorRaw)
+            else {
+                return nil
+            }
+
+            return RemoteSelectionDecoration(
+                clientId: clientId.intValue,
+                anchor: anchor.uint32Value,
+                head: head.uint32Value,
+                color: color,
+                name: item["name"] as? String,
+                isFocused: (item["isFocused"] as? Bool) ?? false
+            )
+        }
+    }
+
+    private static func colorFromString(_ raw: String) -> UIColor? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.hasPrefix("#") else { return nil }
+        let hex = String(value.dropFirst())
+
+        switch hex.count {
+        case 3:
+            let chars = Array(hex)
+            return UIColor(
+                red: component(String(repeating: String(chars[0]), count: 2)),
+                green: component(String(repeating: String(chars[1]), count: 2)),
+                blue: component(String(repeating: String(chars[2]), count: 2)),
+                alpha: 1
+            )
+        case 4:
+            let chars = Array(hex)
+            return UIColor(
+                red: component(String(repeating: String(chars[0]), count: 2)),
+                green: component(String(repeating: String(chars[1]), count: 2)),
+                blue: component(String(repeating: String(chars[2]), count: 2)),
+                alpha: component(String(repeating: String(chars[3]), count: 2))
+            )
+        case 6:
+            return UIColor(
+                red: component(String(hex.prefix(2))),
+                green: component(String(hex.dropFirst(2).prefix(2))),
+                blue: component(String(hex.dropFirst(4).prefix(2))),
+                alpha: 1
+            )
+        case 8:
+            return UIColor(
+                red: component(String(hex.prefix(2))),
+                green: component(String(hex.dropFirst(2).prefix(2))),
+                blue: component(String(hex.dropFirst(4).prefix(2))),
+                alpha: component(String(hex.dropFirst(6).prefix(2)))
+            )
+        default:
+            return nil
+        }
+    }
+
+    private static func component(_ hex: String) -> CGFloat {
+        CGFloat(Int(hex, radix: 16) ?? 0) / 255
+    }
+}
+
+private final class RemoteSelectionBadgeLabel: UILabel {
+    override func drawText(in rect: CGRect) {
+        super.drawText(in: rect.inset(by: UIEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)))
+    }
+
+    override var intrinsicContentSize: CGSize {
+        let size = super.intrinsicContentSize
+        return CGSize(width: size.width + 16, height: max(size.height + 8, 22))
+    }
+}
+
+private final class RemoteSelectionOverlayView: UIView {
+    weak var textView: EditorTextView?
+    private var editorId: UInt64 = 0
+    private var selections: [RemoteSelectionDecoration] = []
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+        clipsToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    func bind(textView: EditorTextView) {
+        self.textView = textView
+    }
+
+    func update(selections: [RemoteSelectionDecoration], editorId: UInt64) {
+        self.selections = selections
+        self.editorId = editorId
+        refresh()
+    }
+
+    func refresh() {
+        subviews.forEach { $0.removeFromSuperview() }
+        guard editorId != 0,
+              let textView
+        else {
+            return
+        }
+
+        for selection in selections {
+            let geometry = geometry(for: selection, in: textView)
+            for rect in geometry.selectionRects {
+                let selectionView = UIView(frame: rect.integral)
+                selectionView.backgroundColor = selection.color.withAlphaComponent(0.18)
+                selectionView.layer.cornerRadius = 3
+                addSubview(selectionView)
+            }
+
+            guard selection.isFocused,
+                  let caretRect = geometry.caretRect
+            else {
+                continue
+            }
+
+            let caretView = UIView(frame: CGRect(
+                x: round(caretRect.minX),
+                y: round(caretRect.minY),
+                width: max(2, round(caretRect.width)),
+                height: round(caretRect.height)
+            ))
+            caretView.backgroundColor = selection.color
+            caretView.layer.cornerRadius = caretView.bounds.width / 2
+            addSubview(caretView)
+        }
+    }
+
+    private func geometry(
+        for selection: RemoteSelectionDecoration,
+        in textView: EditorTextView
+    ) -> (selectionRects: [CGRect], caretRect: CGRect?) {
+        let startScalar = editorDocToScalar(
+            id: editorId,
+            docPos: min(selection.anchor, selection.head)
+        )
+        let endScalar = editorDocToScalar(
+            id: editorId,
+            docPos: max(selection.anchor, selection.head)
+        )
+
+        let startPosition = PositionBridge.scalarToTextView(startScalar, in: textView)
+        let endPosition = PositionBridge.scalarToTextView(endScalar, in: textView)
+        let caretRect = resolvedCaretRect(
+            for: endPosition,
+            in: textView
+        )
+
+        if startScalar == endScalar {
+            return ([], caretRect)
+        }
+
+        guard let range = textView.textRange(from: startPosition, to: endPosition) else {
+            return ([], caretRect)
+        }
+
+        let selectionRects = textView.selectionRects(for: range)
+            .map(\.rect)
+            .filter { !$0.isEmpty && $0.width > 0 && $0.height > 0 }
+            .map { textView.convert($0, to: self) }
+
+        return (selectionRects, caretRect)
+    }
+
+    private func resolvedCaretRect(
+        for position: UITextPosition,
+        in textView: EditorTextView
+    ) -> CGRect? {
+        let directRect = textView.convert(textView.caretRect(for: position), to: self)
+        if directRect.height > 0, directRect.width >= 0 {
+            return directRect
+        }
+
+        if let previousPosition = textView.position(from: position, offset: -1),
+           let previousRange = textView.textRange(from: previousPosition, to: position),
+           let previousRect = textView.selectionRects(for: previousRange)
+               .map(\.rect)
+               .last(where: { !$0.isEmpty && $0.height > 0 })
+        {
+            let rect = textView.convert(previousRect, to: self)
+            return CGRect(x: rect.maxX, y: rect.minY, width: 2, height: rect.height)
+        }
+
+        if let nextPosition = textView.position(from: position, offset: 1),
+           let nextRange = textView.textRange(from: position, to: nextPosition),
+           let nextRect = textView.selectionRects(for: nextRange)
+               .map(\.rect)
+               .first(where: { !$0.isEmpty && $0.height > 0 })
+        {
+            let rect = textView.convert(nextRect, to: self)
+            return CGRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height)
+        }
+
+        if directRect.isEmpty {
+            return nil
+        }
+
+        return directRect
+    }
+}
+
 // MARK: - EditorTextView
 
 /// UITextView subclass that intercepts all text input and routes it through
@@ -53,6 +281,7 @@ enum EditorHeightBehavior: String {
 /// fast enough for main-thread use. If profiling shows otherwise, we can
 /// dispatch to a serial queue and batch updates.
 final class EditorTextView: UITextView, UITextViewDelegate {
+    private static let emptyBlockPlaceholderScalar = UnicodeScalar(0x200B)
 
     // MARK: - Properties
 
@@ -89,6 +318,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
             } else {
                 textContainerInset = baseTextContainerInset
             }
+            setNeedsLayout()
         }
     }
 
@@ -102,6 +332,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
     }
 
     var onHeightMayChange: (() -> Void)?
+    var onViewportMayChange: (() -> Void)?
     private var lastAutoGrowMeasuredHeight: CGFloat = 0
 
     /// Delegate for editor events.
@@ -164,7 +395,11 @@ final class EditorTextView: UITextView, UITextViewDelegate {
     }()
 
     var placeholder: String = "" {
-        didSet { placeholderLabel.text = placeholder }
+        didSet {
+            placeholderLabel.text = placeholder
+            refreshPlaceholderVisibility()
+            setNeedsLayout()
+        }
     }
 
     // MARK: - Initialization
@@ -215,25 +450,86 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         delegate = self
 
         addSubview(placeholderLabel)
+        refreshPlaceholderVisibility()
     }
 
     // MARK: - Layout
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        let placeholderX = textContainerInset.left + textContainer.lineFragmentPadding
+        let placeholderY = textContainerInset.top
+        let placeholderWidth = max(
+            0,
+            bounds.width - textContainerInset.left - textContainerInset.right - 2 * textContainer.lineFragmentPadding
+        )
+        let maxPlaceholderHeight = max(
+            0,
+            bounds.height - textContainerInset.top - textContainerInset.bottom
+        )
+        let fittedHeight = placeholderLabel.sizeThatFits(
+            CGSize(width: placeholderWidth, height: CGFloat.greatestFiniteMagnitude)
+        ).height
         placeholderLabel.frame = CGRect(
-            x: textContainerInset.left + textContainer.lineFragmentPadding,
-            y: textContainerInset.top,
-            width: bounds.width - textContainerInset.left - textContainerInset.right - 2 * textContainer.lineFragmentPadding,
-            height: bounds.height - textContainerInset.top - textContainerInset.bottom
+            x: placeholderX,
+            y: placeholderY,
+            width: placeholderWidth,
+            height: min(maxPlaceholderHeight, ceil(fittedHeight))
         )
         if heightBehavior == .autoGrow {
             notifyHeightChangeIfNeeded()
         }
+        onViewportMayChange?()
+    }
+
+    override var contentOffset: CGPoint {
+        didSet {
+            onViewportMayChange?()
+        }
+    }
+
+    private func isRenderedContentEmpty() -> Bool {
+        let renderedText = textStorage.string
+        guard !renderedText.isEmpty else { return true }
+
+        for scalar in renderedText.unicodeScalars {
+            switch scalar {
+            case Self.emptyBlockPlaceholderScalar, "\n", "\r":
+                continue
+            default:
+                return false
+            }
+        }
+
+        return true
+    }
+
+    private func refreshPlaceholderVisibility() {
+        placeholderLabel.isHidden = placeholder.isEmpty || !isRenderedContentEmpty()
+    }
+
+    func isPlaceholderVisibleForTesting() -> Bool {
+        !placeholderLabel.isHidden
+    }
+
+    func placeholderFrameForTesting() -> CGRect {
+        placeholderLabel.frame
+    }
+
+    func blockquoteStripeRectsForTesting() -> [CGRect] {
+        editorLayoutManager.blockquoteStripeRectsForTesting(in: textStorage)
+    }
+
+    func resetBlockquoteStripeDrawPassesForTesting() {
+        editorLayoutManager.resetBlockquoteStripeDrawPassesForTesting()
+    }
+
+    func blockquoteStripeDrawPassesForTesting() -> [[CGRect]] {
+        editorLayoutManager.blockquoteStripeDrawPassesForTesting
     }
 
     override func caretRect(for position: UITextPosition) -> CGRect {
-        let rect = super.caretRect(for: position)
+        let rect = resolvedCaretReferenceRect(for: position)
         guard rect.height > 0 else { return rect }
 
         let caretFont = resolvedCaretFont(for: position)
@@ -255,6 +551,45 @@ final class EditorTextView: UITextView, UITextViewDelegate {
             font: caretFont,
             screenScale: screenScale
         )
+    }
+
+    private func resolvedCaretReferenceRect(for position: UITextPosition) -> CGRect {
+        let directRect = super.caretRect(for: position)
+        guard directRect.height <= 0 || directRect.isEmpty else {
+            return directRect
+        }
+
+        let caretWidth = max(directRect.width, 2)
+
+        if let nextPosition = self.position(from: position, offset: 1),
+           let nextRange = textRange(from: position, to: nextPosition),
+           let nextRect = selectionRects(for: nextRange)
+               .map(\.rect)
+               .first(where: { !$0.isEmpty && $0.width > 0 && $0.height > 0 })
+        {
+            return CGRect(
+                x: nextRect.minX,
+                y: nextRect.minY,
+                width: caretWidth,
+                height: max(directRect.height, nextRect.height)
+            )
+        }
+
+        if let previousPosition = self.position(from: position, offset: -1),
+           let previousRange = textRange(from: previousPosition, to: position),
+           let previousRect = selectionRects(for: previousRange)
+               .map(\.rect)
+               .last(where: { !$0.isEmpty && $0.width > 0 && $0.height > 0 })
+        {
+            return CGRect(
+                x: previousRect.maxX,
+                y: previousRect.minY,
+                width: caretWidth,
+                height: max(directRect.height, previousRect.height)
+            )
+        }
+
+        return directRect
     }
 
     // MARK: - Editor Binding
@@ -687,6 +1022,24 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         scheduleSelectionSync()
     }
 
+    func textView(
+        _ textView: UITextView,
+        shouldInteractWith URL: URL,
+        in characterRange: NSRange,
+        interaction: UITextItemInteraction
+    ) -> Bool {
+        return false
+    }
+
+    func textView(
+        _ textView: UITextView,
+        shouldInteractWith textAttachment: NSTextAttachment,
+        in characterRange: NSRange,
+        interaction: UITextItemInteraction
+    ) -> Bool {
+        return false
+    }
+
     // MARK: - Private: Rust Integration
 
     private var isInterceptingInput: Bool {
@@ -933,6 +1286,11 @@ final class EditorTextView: UITextView, UITextViewDelegate {
 
         let rawOffset = offset(from: beginningOfDocument, to: position)
         let clampedOffset = min(max(rawOffset, 0), textStorage.length)
+
+        if let hardBreakBaselineY = hardBreakBaselineY(after: clampedOffset) {
+            return hardBreakBaselineY
+        }
+
         var candidateCharacters = Set<Int>()
 
         if clampedOffset < textStorage.length {
@@ -972,6 +1330,41 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         }
 
         return bestMatch?.baselineY
+    }
+
+    private func hardBreakBaselineY(after utf16Offset: Int) -> CGFloat? {
+        guard utf16Offset > 0, utf16Offset <= textStorage.length else { return nil }
+        let previousVoidType = textStorage.attribute(
+            RenderBridgeAttributes.voidNodeType,
+            at: utf16Offset - 1,
+            effectiveRange: nil
+        ) as? String
+        guard previousVoidType == "hardBreak" else { return nil }
+
+        let previousGlyphIndex = layoutManager.glyphIndexForCharacter(at: utf16Offset - 1)
+        guard previousGlyphIndex < layoutManager.numberOfGlyphs else { return nil }
+
+        let lineFragmentRect = layoutManager.lineFragmentRect(
+            forGlyphAt: previousGlyphIndex,
+            effectiveRange: nil
+        )
+        let glyphLocation = layoutManager.location(forGlyphAt: previousGlyphIndex)
+        let previousBaselineY = textContainerInset.top + lineFragmentRect.minY + glyphLocation.y
+
+        let paragraphStyle = textStorage.attribute(
+            .paragraphStyle,
+            at: utf16Offset - 1,
+            effectiveRange: nil
+        ) as? NSParagraphStyle
+        let configuredLineHeight = max(
+            paragraphStyle?.minimumLineHeight ?? 0,
+            paragraphStyle?.maximumLineHeight ?? 0
+        )
+        let lineAdvance = configuredLineHeight > 0
+            ? configuredLineHeight
+            : lineFragmentRect.height
+
+        return previousBaselineY + lineAdvance
     }
 
     private func resolvedCaretFont(for position: UITextPosition) -> UIFont {
@@ -1023,6 +1416,20 @@ final class EditorTextView: UITextView, UITextViewDelegate {
                     scalarHead: selection.head,
                     listType: listType
                 )
+            applyUpdateJSON(updateJSON)
+        }
+    }
+
+    func performToolbarToggleBlockquote() {
+        guard editorId != 0 else { return }
+        guard isEditable else { return }
+        guard let selection = currentScalarSelection() else { return }
+        performInterceptedInput {
+            let updateJSON = editorToggleBlockquoteAtSelectionScalar(
+                id: editorId,
+                scalarAnchor: selection.anchor,
+                scalarHead: selection.head
+            )
             applyUpdateJSON(updateJSON)
         }
     }
@@ -1224,7 +1631,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         lastAuthorizedText = textStorage.string
         isApplyingRustState = false
 
-        placeholderLabel.isHidden = !textStorage.string.isEmpty
+        refreshPlaceholderVisibility()
         Self.updateLog.debug(
             "[applyUpdateJSON.rendered] after=\(self.textSnapshotSummary(), privacy: .public)"
         )
@@ -1270,7 +1677,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         lastAuthorizedText = textStorage.string
         isApplyingRustState = false
 
-        placeholderLabel.isHidden = !textStorage.string.isEmpty
+        refreshPlaceholderVisibility()
         refreshTypingAttributesForSelection()
         if heightBehavior == .autoGrow {
             notifyHeightChangeIfNeeded(force: true)
@@ -1334,6 +1741,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
             break
         }
     }
+
 }
 
 // MARK: - EditorTextView + NSTextStorageDelegate (Reconciliation Fallback)
@@ -1423,8 +1831,10 @@ final class RichTextEditorView: UIView {
 
     /// The editor text view that handles input interception.
     let textView: EditorTextView
+    private let remoteSelectionOverlayView = RemoteSelectionOverlayView()
     var onHeightMayChange: (() -> Void)?
     private var lastAutoGrowWidth: CGFloat = 0
+    private var remoteSelections: [RemoteSelectionDecoration] = []
 
     var heightBehavior: EditorHeightBehavior = .fixed {
         didSet {
@@ -1433,6 +1843,7 @@ final class RichTextEditorView: UIView {
             invalidateIntrinsicContentSize()
             setNeedsLayout()
             onHeightMayChange?()
+            remoteSelectionOverlayView.refresh()
         }
     }
 
@@ -1444,6 +1855,10 @@ final class RichTextEditorView: UIView {
             } else {
                 textView.unbindEditor()
             }
+            remoteSelectionOverlayView.update(
+                selections: remoteSelections,
+                editorId: editorId
+            )
         }
     }
 
@@ -1464,19 +1879,29 @@ final class RichTextEditorView: UIView {
     private func setupView() {
         // Add the text view as a subview.
         textView.translatesAutoresizingMaskIntoConstraints = false
+        remoteSelectionOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        remoteSelectionOverlayView.bind(textView: textView)
         textView.onHeightMayChange = { [weak self] in
             guard let self, self.heightBehavior == .autoGrow else { return }
             self.invalidateIntrinsicContentSize()
             self.superview?.setNeedsLayout()
             self.onHeightMayChange?()
         }
+        textView.onViewportMayChange = { [weak self] in
+            self?.remoteSelectionOverlayView.refresh()
+        }
         addSubview(textView)
+        addSubview(remoteSelectionOverlayView)
 
         NSLayoutConstraint.activate([
             textView.topAnchor.constraint(equalTo: topAnchor),
             textView.leadingAnchor.constraint(equalTo: leadingAnchor),
             textView.trailingAnchor.constraint(equalTo: trailingAnchor),
             textView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            remoteSelectionOverlayView.topAnchor.constraint(equalTo: topAnchor),
+            remoteSelectionOverlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            remoteSelectionOverlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            remoteSelectionOverlayView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
@@ -1494,6 +1919,7 @@ final class RichTextEditorView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        remoteSelectionOverlayView.refresh()
         guard heightBehavior == .autoGrow else { return }
         let currentWidth = bounds.width.rounded(.towardZero)
         guard currentWidth != lastAutoGrowWidth else { return }
@@ -1527,6 +1953,23 @@ final class RichTextEditorView: UIView {
         let cornerRadius = theme?.borderRadius ?? 0
         layer.cornerRadius = cornerRadius
         clipsToBounds = cornerRadius > 0
+        remoteSelectionOverlayView.refresh()
+    }
+
+    func setRemoteSelections(_ selections: [RemoteSelectionDecoration]) {
+        remoteSelections = selections
+        remoteSelectionOverlayView.update(
+            selections: selections,
+            editorId: editorId
+        )
+    }
+
+    func refreshRemoteSelections() {
+        remoteSelectionOverlayView.refresh()
+    }
+
+    func remoteSelectionOverlaySubviewsForTesting() -> [UIView] {
+        remoteSelectionOverlayView.subviews
     }
 
     /// Set initial content from HTML.

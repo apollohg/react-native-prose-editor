@@ -34,6 +34,18 @@ enum RenderBridgeAttributes {
 
     /// Stores the reserved list marker gutter width.
     static let listMarkerWidth = NSAttributedString.Key("com.apollohg.editor.listMarkerWidth")
+
+    /// Stores the rendered blockquote border color.
+    static let blockquoteBorderColor = NSAttributedString.Key("com.apollohg.editor.blockquoteBorderColor")
+
+    /// Stores the rendered blockquote border width.
+    static let blockquoteBorderWidth = NSAttributedString.Key("com.apollohg.editor.blockquoteBorderWidth")
+
+    /// Stores the rendered blockquote gap between border and text.
+    static let blockquoteMarkerGap = NSAttributedString.Key("com.apollohg.editor.blockquoteMarkerGap")
+
+    /// Marks synthetic zero-width placeholders used only for UIKit layout.
+    static let syntheticPlaceholder = NSAttributedString.Key("com.apollohg.editor.syntheticPlaceholder")
 }
 
 /// Layout constants for paragraph styles.
@@ -55,6 +67,15 @@ enum LayoutConstants {
 
     /// Vertical padding above and below the horizontal rule (points).
     static let horizontalRuleVerticalPadding: CGFloat = 8.0
+
+    /// Total leading inset reserved for each blockquote depth.
+    static let blockquoteIndent: CGFloat = 18.0
+
+    /// Width of the rendered blockquote border bar.
+    static let blockquoteBorderWidth: CGFloat = 3.0
+
+    /// Gap between the blockquote border bar and the text that follows.
+    static let blockquoteMarkerGap: CGFloat = 8.0
 
     /// Bullet character for unordered list items.
     static let unorderedListBullet = "\u{2022} "
@@ -141,7 +162,7 @@ final class RenderBridge {
             switch type {
             case "textRun":
                 let text = element["text"] as? String ?? ""
-                let marks = element["marks"] as? [String] ?? []
+                let marks = element["marks"] as? [Any] ?? []
                 let blockFont = resolvedFont(
                     for: blockStack,
                     baseFont: baseFont,
@@ -167,6 +188,9 @@ final class RenderBridge {
             case "voidInline":
                 let nodeType = element["nodeType"] as? String ?? ""
                 let docPos = jsonUInt32(element["docPos"])
+                if nodeType == "hardBreak" {
+                    overrideTrailingParagraphSpacing(in: result, paragraphSpacing: 0)
+                }
                 let attrStr = attributedStringForVoidInline(
                     nodeType: nodeType,
                     docPos: docPos,
@@ -187,7 +211,14 @@ final class RenderBridge {
                         in: result,
                         pendingParagraphSpacing: &pendingTrailingParagraphSpacing
                     )
-                    result.append(interBlockNewline(baseFont: baseFont, textColor: textColor))
+                    result.append(
+                        interBlockNewline(
+                            baseFont: baseFont,
+                            textColor: textColor,
+                            blockStack: [],
+                            theme: theme
+                        )
+                    )
                 }
                 isFirstBlock = false
 
@@ -225,7 +256,14 @@ final class RenderBridge {
                         in: result,
                         pendingParagraphSpacing: &pendingTrailingParagraphSpacing
                     )
-                    result.append(interBlockNewline(baseFont: baseFont, textColor: textColor))
+                    result.append(
+                        interBlockNewline(
+                            baseFont: baseFont,
+                            textColor: textColor,
+                            blockStack: [],
+                            theme: theme
+                        )
+                    )
                 }
                 isFirstBlock = false
 
@@ -244,18 +282,40 @@ final class RenderBridge {
                 let depth = jsonUInt8(element["depth"])
                 let listContext = element["listContext"] as? [String: Any]
                 let isListItemContainer = nodeType == "listItem" && listContext != nil
+                let isTransparentContainer = nodeType == "blockquote"
+                let ctx = BlockContext(
+                    nodeType: nodeType,
+                    depth: depth,
+                    listContext: listContext,
+                    markerPending: isListItemContainer
+                )
                 let nestedListItemContainer =
                     isListItemContainer && (theme?.list?.itemSpacing != nil)
                     && blockStack.contains(where: { $0.nodeType == "listItem" && $0.listContext != nil })
 
-                if !isListItemContainer {
+                if !isListItemContainer && !isTransparentContainer {
                     // Add inter-block newline before non-first rendered blocks.
                     if !isFirstBlock {
                         applyPendingTrailingParagraphSpacing(
                             in: result,
                             pendingParagraphSpacing: &pendingTrailingParagraphSpacing
                         )
-                        result.append(interBlockNewline(baseFont: baseFont, textColor: textColor))
+                        let newlineBlockStack: [BlockContext]
+                        if blockquoteDepth(in: blockStack + [ctx]) > 0,
+                           !trailingRenderedContentHasBlockquote(in: result)
+                        {
+                            newlineBlockStack = []
+                        } else {
+                            newlineBlockStack = blockStack + [ctx]
+                        }
+                        result.append(
+                            interBlockNewline(
+                                baseFont: baseFont,
+                                textColor: textColor,
+                                blockStack: newlineBlockStack,
+                                theme: theme
+                            )
+                        )
                     }
                     isFirstBlock = false
                 } else if applyPendingTrailingParagraphSpacing(
@@ -271,12 +331,6 @@ final class RenderBridge {
                 }
 
                 // Push block context for inline children to reference.
-                let ctx = BlockContext(
-                    nodeType: nodeType,
-                    depth: depth,
-                    listContext: listContext,
-                    markerPending: isListItemContainer
-                )
                 blockStack.append(ctx)
 
                 var markerListContext: [String: Any]? = nil
@@ -291,7 +345,7 @@ final class RenderBridge {
                 if markerListContext != nil {
                     if var currentBlock = blockStack.popLast() {
                         currentBlock.listMarkerContext = markerListContext
-                        if currentBlock.listContext == nil {
+                        if currentBlock.listContext != nil {
                             currentBlock.listContext = markerListContext
                         }
                         blockStack.append(currentBlock)
@@ -301,8 +355,18 @@ final class RenderBridge {
                 }
 
             case "blockEnd":
-                if let endedBlock = blockStack.popLast(), endedBlock.listContext != nil {
-                    pendingTrailingParagraphSpacing = theme?.list?.itemSpacing
+                if let endedBlock = blockStack.popLast() {
+                    appendTrailingHardBreakPlaceholderIfNeeded(
+                        in: result,
+                        endedBlock: endedBlock,
+                        remainingBlockStack: blockStack,
+                        baseFont: baseFont,
+                        textColor: textColor,
+                        theme: theme
+                    )
+                    if endedBlock.listContext != nil {
+                        pendingTrailingParagraphSpacing = theme?.list?.itemSpacing
+                    }
                 }
 
             default:
@@ -315,7 +379,7 @@ final class RenderBridge {
 
     // MARK: - Mark Handling
 
-    /// Build NSAttributedString attributes for a set of mark names.
+    /// Build NSAttributedString attributes for a set of render marks.
     ///
     /// Supported marks:
     /// - `bold` -> adds `.traitBold` to the font descriptor
@@ -326,7 +390,7 @@ final class RenderBridge {
     ///
     /// Multiple marks are combined: "bold italic" produces a bold-italic font.
     static func attributesForMarks(
-        _ marks: [String],
+        _ marks: [Any],
         baseFont: UIFont,
         textColor: UIColor
     ) -> [NSAttributedString.Key: Any] {
@@ -338,9 +402,18 @@ final class RenderBridge {
 
         var traits: UIFontDescriptor.SymbolicTraits = []
         var useMonospace = false
-
         for mark in marks {
-            switch mark {
+            let markType: String
+            if let markName = mark as? String {
+                markType = markName
+            } else if let markObject = mark as? [String: Any],
+                      let resolvedType = markObject["type"] as? String {
+                markType = resolvedType
+            } else {
+                continue
+            }
+
+            switch markType {
             case "bold", "strong":
                 traits.insert(.traitBold)
             case "italic", "em":
@@ -351,6 +424,9 @@ final class RenderBridge {
                 attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             case "code":
                 useMonospace = true
+            case "link":
+                attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                attrs[.foregroundColor] = UIColor.systemBlue
             default:
                 break
             }
@@ -409,7 +485,14 @@ final class RenderBridge {
 
         switch nodeType {
         case "hardBreak":
-            return NSAttributedString(string: "\n", attributes: styledAttrs)
+            var hardBreakAttrs = styledAttrs
+            if let paragraphStyle = (hardBreakAttrs[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy()
+                as? NSMutableParagraphStyle
+            {
+                paragraphStyle.paragraphSpacing = 0
+                hardBreakAttrs[.paragraphStyle] = paragraphStyle
+            }
+            return NSAttributedString(string: "\n", attributes: hardBreakAttrs)
         default:
             // Unknown void inline: render as object replacement character.
             return NSAttributedString(
@@ -539,11 +622,15 @@ final class RenderBridge {
     /// a hanging indent so the bullet/number sits in the margin.
     static func paragraphStyleForBlock(
         _ context: BlockContext,
+        blockStack: [BlockContext],
         theme: EditorTheme? = nil,
         baseFont: UIFont = .systemFont(ofSize: 16)
     ) -> NSMutableParagraphStyle {
         let style = NSMutableParagraphStyle()
-        let blockStyle = theme?.effectiveTextStyle(for: context.nodeType)
+        let blockStyle = theme?.effectiveTextStyle(
+            for: context.nodeType,
+            inBlockquote: blockquoteDepth(in: blockStack) > 0
+        )
         let spacing = blockStyle?.spacingAfter
             ?? (context.listContext != nil ? theme?.list?.itemSpacing : nil)
             ?? LayoutConstants.paragraphSpacing
@@ -551,7 +638,15 @@ final class RenderBridge {
 
         let indentPerDepth = theme?.list?.indent ?? LayoutConstants.indentPerDepth
         let markerWidth = listMarkerWidth(for: context, theme: theme, baseFont: baseFont)
-        let baseIndent = CGFloat(context.depth) * indentPerDepth
+        let quoteDepth = CGFloat(blockquoteDepth(in: blockStack))
+        let quoteIndent = max(
+            theme?.blockquote?.indent ?? LayoutConstants.blockquoteIndent,
+            (theme?.blockquote?.markerGap ?? LayoutConstants.blockquoteMarkerGap)
+                + (theme?.blockquote?.borderWidth ?? LayoutConstants.blockquoteBorderWidth)
+        )
+        let baseIndent = (CGFloat(context.depth) * indentPerDepth)
+            - (quoteDepth * indentPerDepth)
+            + (quoteDepth * quoteIndent)
 
         if context.listContext != nil {
             // List item: reserve a fixed gutter and align all wrapped lines to
@@ -587,11 +682,7 @@ final class RenderBridge {
 
     // MARK: - Private Helpers
 
-    /// Safely extract a UInt32 from a JSON dictionary value.
-    ///
-    /// `JSONSerialization` produces `NSNumber` for numeric values. Direct `as? UInt32`
-    /// cast may fail depending on the stored numeric type. This helper handles all
-    /// numeric types that `JSONSerialization` can produce.
+    /// Extract a `UInt32` from a JSON value produced by `JSONSerialization`.
     static func jsonUInt32(_ value: Any?) -> UInt32 {
         if let number = value as? NSNumber {
             return number.uint32Value
@@ -599,7 +690,7 @@ final class RenderBridge {
         return 0
     }
 
-    /// Safely extract a UInt8 from a JSON dictionary value.
+    /// Extract a `UInt8` from a JSON value produced by `JSONSerialization`.
     static func jsonUInt8(_ value: Any?) -> UInt8 {
         if let number = value as? NSNumber {
             return number.uint8Value
@@ -607,7 +698,6 @@ final class RenderBridge {
         return 0
     }
 
-    /// Default attributed string attributes (font + color, no special styling).
     private static func defaultAttributes(
         baseFont: UIFont,
         textColor: UIColor
@@ -618,9 +708,6 @@ final class RenderBridge {
         ]
     }
 
-    /// Apply the current block context's paragraph style to a mutable attributes dictionary.
-    ///
-    /// This is a no-op if no block context is active.
     @discardableResult
     private static func applyBlockStyle(
         to attrs: [NSAttributedString.Key: Any],
@@ -632,6 +719,7 @@ final class RenderBridge {
         let blockFont = mutableAttrs[.font] as? UIFont ?? .systemFont(ofSize: 16)
         mutableAttrs[.paragraphStyle] = paragraphStyleForBlock(
             currentBlock,
+            blockStack: blockStack,
             theme: theme,
             baseFont: blockFont
         )
@@ -650,6 +738,16 @@ final class RenderBridge {
                 baseFont: blockFont
             )
         }
+        if blockquoteDepth(in: blockStack) > 0 {
+            let foreground = mutableAttrs[.foregroundColor] as? UIColor ?? .separator
+            mutableAttrs[RenderBridgeAttributes.blockquoteBorderColor] =
+                theme?.blockquote?.borderColor
+                ?? foreground.withAlphaComponent(0.3)
+            mutableAttrs[RenderBridgeAttributes.blockquoteBorderWidth] =
+                theme?.blockquote?.borderWidth ?? LayoutConstants.blockquoteBorderWidth
+            mutableAttrs[RenderBridgeAttributes.blockquoteMarkerGap] =
+                theme?.blockquote?.markerGap ?? LayoutConstants.blockquoteMarkerGap
+        }
         return mutableAttrs
     }
 
@@ -659,9 +757,15 @@ final class RenderBridge {
     /// It carries minimal styling (base font, no special attributes).
     private static func interBlockNewline(
         baseFont: UIFont,
-        textColor: UIColor
+        textColor: UIColor,
+        blockStack: [BlockContext],
+        theme: EditorTheme?
     ) -> NSAttributedString {
-        let attrs = defaultAttributes(baseFont: baseFont, textColor: textColor)
+        let attrs = applyBlockStyle(
+            to: defaultAttributes(baseFont: baseFont, textColor: textColor),
+            blockStack: blockStack,
+            theme: theme
+        )
         return NSAttributedString(string: "\n", attributes: attrs)
     }
 
@@ -670,22 +774,44 @@ final class RenderBridge {
         if currentBlock.listContext != nil {
             return currentBlock
         }
-        guard let inheritedListContext = nearestListContext(in: Array(blockStack.dropLast())) else {
+        guard let inheritedListBlock = nearestListBlock(in: Array(blockStack.dropLast())) else {
             return currentBlock
         }
         return BlockContext(
             nodeType: currentBlock.nodeType,
-            depth: currentBlock.depth,
-            listContext: inheritedListContext,
+            depth: blockquoteDepth(in: blockStack) > 0 ? inheritedListBlock.depth : currentBlock.depth,
+            listContext: inheritedListBlock.listContext,
+            listMarkerContext: currentBlock.listMarkerContext,
             markerPending: false
         )
     }
 
-    private static func nearestListContext(in contexts: [BlockContext]) -> [String: Any]? {
+    private static func nearestListBlock(in contexts: [BlockContext]) -> BlockContext? {
         for context in contexts.reversed() where context.listContext != nil {
-            return context.listContext
+            return context
         }
         return nil
+    }
+
+    private static func trailingRenderedContentHasBlockquote(
+        in result: NSAttributedString
+    ) -> Bool {
+        guard result.length > 0 else { return false }
+        let nsString = result.string as NSString
+
+        for index in stride(from: result.length - 1, through: 0, by: -1) {
+            let scalar = nsString.character(at: index)
+            if scalar == 0x000A || scalar == 0x000D {
+                continue
+            }
+            return result.attribute(
+                RenderBridgeAttributes.blockquoteBorderColor,
+                at: index,
+                effectiveRange: nil
+            ) != nil
+        }
+
+        return false
     }
 
     private static func consumePendingListMarker(from blockStack: inout [BlockContext]) -> [String: Any]? {
@@ -725,6 +851,51 @@ final class RenderBridge {
         return true
     }
 
+    private static func appendTrailingHardBreakPlaceholderIfNeeded(
+        in result: NSMutableAttributedString,
+        endedBlock: BlockContext,
+        remainingBlockStack: [BlockContext],
+        baseFont: UIFont,
+        textColor: UIColor,
+        theme: EditorTheme?
+    ) {
+        guard result.length > 0 else { return }
+        guard endedBlock.nodeType != "listItem" else { return }
+        guard result.attribute(
+            RenderBridgeAttributes.voidNodeType,
+            at: result.length - 1,
+            effectiveRange: nil
+        ) as? String == "hardBreak" else {
+            return
+        }
+
+        let placeholderBlockStack = remainingBlockStack + [endedBlock]
+        let blockFont = resolvedFont(
+            for: placeholderBlockStack,
+            baseFont: baseFont,
+            theme: theme
+        )
+        let blockColor = resolvedTextColor(
+            for: placeholderBlockStack,
+            textColor: textColor,
+            theme: theme
+        )
+        var attrs = defaultAttributes(baseFont: blockFont, textColor: blockColor)
+        attrs[RenderBridgeAttributes.syntheticPlaceholder] = true
+        var styledAttrs = applyBlockStyle(
+            to: attrs,
+            blockStack: placeholderBlockStack,
+            theme: theme
+        )
+        if let paragraphStyle = (styledAttrs[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy()
+            as? NSMutableParagraphStyle
+        {
+            paragraphStyle.paragraphSpacing = 0
+            styledAttrs[.paragraphStyle] = paragraphStyle
+        }
+        result.append(NSAttributedString(string: "\u{200B}", attributes: styledAttrs))
+    }
+
     private static func listMarkerWidth(
         for context: BlockContext,
         theme: EditorTheme?,
@@ -741,10 +912,19 @@ final class RenderBridge {
         for blockStack: [BlockContext],
         theme: EditorTheme?
     ) -> EditorTextStyle? {
+        let inBlockquote = blockquoteDepth(in: blockStack) > 0
         guard let currentBlock = effectiveBlockContext(blockStack) else {
-            return theme?.effectiveTextStyle(for: "paragraph")
+            return theme?.effectiveTextStyle(for: "paragraph", inBlockquote: inBlockquote)
         }
-        return theme?.effectiveTextStyle(for: currentBlock.nodeType)
+        return theme?.effectiveTextStyle(for: currentBlock.nodeType, inBlockquote: inBlockquote)
+    }
+
+    private static func blockquoteDepth(in blockStack: [BlockContext]) -> Int {
+        blockStack.reduce(into: 0) { count, context in
+            if context.nodeType == "blockquote" {
+                count += 1
+            }
+        }
     }
 
     private static func resolvedFont(

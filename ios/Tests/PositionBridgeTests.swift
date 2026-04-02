@@ -144,6 +144,31 @@ final class PositionBridgeTests: XCTestCase {
         )
     }
 
+    func testUtf16ToScalar_trailingHardBreakPlaceholderDoesNotCountAsScalar() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "A", "marks": []},
+            {"type": "voidInline", "nodeType": "hardBreak", "docPos": 2},
+            {"type": "blockEnd"}
+        ]
+        """
+        let attributed = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label
+        )
+        let textView = makeTextView(with: attributed)
+
+        XCTAssertEqual(textView.text, "A\n\u{200B}")
+        XCTAssertEqual(PositionBridge.utf16OffsetToScalar(2, in: textView), 2)
+        XCTAssertEqual(
+            PositionBridge.utf16OffsetToScalar(3, in: textView),
+            2,
+            "The synthetic trailing hardBreak placeholder should not count as content"
+        )
+    }
+
     // MARK: - UTF-16 -> Scalar: BMP Emoji (1 scalar, 1 UTF-16)
 
     /// Simple emoji in the BMP (e.g. U+263A, white smiley face) are 1 UTF-16 code unit.

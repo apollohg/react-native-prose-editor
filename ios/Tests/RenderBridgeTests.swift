@@ -178,6 +178,29 @@ final class RenderBridgeTests: XCTestCase {
         )
     }
 
+    func testRender_linkMarkObjectAppliesVisualLinkStylingWithoutInteractiveAttribute() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "OpenAI", "marks": [{"type": "link", "href": "https://openai.com"}]},
+            {"type": "blockEnd"}
+        ]
+        """
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor
+        )
+
+        let attrs = result.attributes(at: 0, effectiveRange: nil)
+        XCTAssertEqual(
+            attrs[.underlineStyle] as? Int,
+            NSUnderlineStyle.single.rawValue
+        )
+        XCTAssertEqual(attrs[.foregroundColor] as? UIColor, UIColor.systemBlue)
+        XCTAssertNil(attrs[.link])
+    }
+
     // MARK: - Code Mark (Monospace)
 
     func testRender_codeInline() {
@@ -239,6 +262,88 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(
             docPos, 7,
             "Newline should have docPos=7. Got: \(String(describing: docPos))"
+        )
+    }
+
+    func testRender_hardBreakDoesNotKeepParagraphSpacingBetweenVisualLines() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Line 1", "marks": []},
+            {"type": "voidInline", "nodeType": "hardBreak", "docPos": 7},
+            {"type": "textRun", "text": "Line 2", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+        let theme = EditorTheme(dictionary: [
+            "paragraph": [
+                "spacingAfter": 14,
+            ],
+        ])
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: theme
+        )
+
+        let leadingStyle = result.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+        let newlineStyle = result.attribute(.paragraphStyle, at: 6, effectiveRange: nil) as? NSParagraphStyle
+
+        XCTAssertEqual(leadingStyle?.paragraphSpacing ?? -1, 0, accuracy: 0.1)
+        XCTAssertEqual(newlineStyle?.paragraphSpacing ?? -1, 0, accuracy: 0.1)
+    }
+
+    func testRender_trailingHardBreakAppendsSyntheticPlaceholder() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "A", "marks": []},
+            {"type": "voidInline", "nodeType": "hardBreak", "docPos": 2},
+            {"type": "blockEnd"}
+        ]
+        """
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor
+        )
+
+        XCTAssertEqual(result.string, "A\n\u{200B}")
+        let placeholderIndex = (result.string as NSString).length - 1
+        XCTAssertEqual(
+            result.attribute(RenderBridgeAttributes.syntheticPlaceholder, at: placeholderIndex, effectiveRange: nil) as? Bool,
+            true
+        )
+    }
+
+    func testRender_trailingHardBreakPlaceholderKeepsBlockquoteBorderAttributes() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "A", "marks": []},
+            {"type": "voidInline", "nodeType": "hardBreak", "docPos": 2},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor
+        )
+
+        XCTAssertEqual(result.string, "A\n\u{200B}")
+
+        let placeholderIndex = (result.string as NSString).length - 1
+        XCTAssertEqual(
+            result.attribute(RenderBridgeAttributes.syntheticPlaceholder, at: placeholderIndex, effectiveRange: nil) as? Bool,
+            true
+        )
+        XCTAssertNotNil(
+            result.attribute(RenderBridgeAttributes.blockquoteBorderColor, at: placeholderIndex, effectiveRange: nil),
+            "trailing hard-break placeholder inside a blockquote should keep blockquote styling"
         )
     }
 
@@ -657,7 +762,7 @@ final class RenderBridgeTests: XCTestCase {
 
     func testParagraphStyle_depth0() {
         let ctx = BlockContext(nodeType: "paragraph", depth: 0, listContext: nil)
-        let style = RenderBridge.paragraphStyleForBlock(ctx)
+        let style = RenderBridge.paragraphStyleForBlock(ctx, blockStack: [ctx])
         XCTAssertEqual(
             style.firstLineHeadIndent, 0,
             "Depth 0 paragraph should have 0 indentation"
@@ -670,7 +775,7 @@ final class RenderBridgeTests: XCTestCase {
 
     func testParagraphStyle_depth2() {
         let ctx = BlockContext(nodeType: "paragraph", depth: 2, listContext: nil)
-        let style = RenderBridge.paragraphStyleForBlock(ctx)
+        let style = RenderBridge.paragraphStyleForBlock(ctx, blockStack: [ctx])
         let expectedIndent: CGFloat = 2 * 24.0  // 2 * indentPerDepth
         XCTAssertEqual(
             style.firstLineHeadIndent, expectedIndent,
@@ -688,7 +793,7 @@ final class RenderBridgeTests: XCTestCase {
             "isLast": false,
         ]
         let ctx = BlockContext(nodeType: "listItem", depth: 1, listContext: listCtx)
-        let style = RenderBridge.paragraphStyleForBlock(ctx)
+        let style = RenderBridge.paragraphStyleForBlock(ctx, blockStack: [ctx])
 
         let baseIndent: CGFloat = 1 * 24.0  // depth * indentPerDepth
         XCTAssertEqual(
@@ -730,17 +835,213 @@ final class RenderBridgeTests: XCTestCase {
         let largeBaseFont = UIFont.systemFont(ofSize: 40)
         let baseStyle = RenderBridge.paragraphStyleForBlock(
             baseContext,
+            blockStack: [baseContext],
             theme: baseTheme,
             baseFont: largeBaseFont
         )
         let scaledStyle = RenderBridge.paragraphStyleForBlock(
             baseContext,
+            blockStack: [baseContext],
             theme: scaledTheme,
             baseFont: largeBaseFont
         )
 
         XCTAssertEqual(baseStyle.headIndent, scaledStyle.headIndent, accuracy: 0.1)
         XCTAssertEqual(baseStyle.firstLineHeadIndent, scaledStyle.firstLineHeadIndent, accuracy: 0.1)
+    }
+
+    func testParagraphStyle_blockquoteUsesQuoteIndent() {
+        let quote = BlockContext(nodeType: "blockquote", depth: 0, listContext: nil)
+        let paragraph = BlockContext(nodeType: "paragraph", depth: 1, listContext: nil)
+        let theme = EditorTheme(dictionary: [
+            "blockquote": [
+                "indent": 20,
+                "borderColor": "#aa5500",
+                "borderWidth": 4,
+                "markerGap": 10,
+            ],
+        ])
+
+        let style = RenderBridge.paragraphStyleForBlock(
+            paragraph,
+            blockStack: [quote, paragraph],
+            theme: theme,
+            baseFont: baseFont
+        )
+
+        XCTAssertEqual(style.firstLineHeadIndent, 20, accuracy: 0.1)
+        XCTAssertEqual(style.headIndent, 20, accuracy: 0.1)
+    }
+
+    func testParagraphStyle_nestedListItemInsideBlockquoteAddsListIndent() {
+        let quote = BlockContext(nodeType: "blockquote", depth: 0, listContext: nil)
+        let parentListItem = BlockContext(
+            nodeType: "listItem",
+            depth: 1,
+            listContext: ["ordered": false, "index": 1, "total": 2, "start": 1, "isFirst": true, "isLast": false]
+        )
+        let parentParagraph = BlockContext(nodeType: "paragraph", depth: 2, listContext: nil)
+        let nestedListItem = BlockContext(
+            nodeType: "listItem",
+            depth: 2,
+            listContext: ["ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true]
+        )
+        let nestedParagraph = BlockContext(nodeType: "paragraph", depth: 3, listContext: nil)
+
+        let parentStyle = RenderBridge.paragraphStyleForBlock(
+            parentParagraph,
+            blockStack: [quote, parentListItem, parentParagraph],
+            theme: nil,
+            baseFont: baseFont
+        )
+        let nestedStyle = RenderBridge.paragraphStyleForBlock(
+            nestedParagraph,
+            blockStack: [quote, parentListItem, nestedListItem, nestedParagraph],
+            theme: nil,
+            baseFont: baseFont
+        )
+
+        XCTAssertGreaterThan(
+            nestedStyle.headIndent,
+            parentStyle.headIndent,
+            "nested list item inside a blockquote should indent more than its parent item"
+        )
+        XCTAssertGreaterThan(
+            nestedStyle.firstLineHeadIndent,
+            parentStyle.firstLineHeadIndent,
+            "nested list marker should also move inward inside a blockquote"
+        )
+    }
+
+    func testParagraphStyle_firstLevelListInsideBlockquoteUsesEnclosingListDepth() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Quoted item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """
+        let quote = BlockContext(nodeType: "blockquote", depth: 0, listContext: nil)
+        let listItem = BlockContext(
+            nodeType: "listItem",
+            depth: 1,
+            listContext: ["ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true]
+        )
+        let expectedStyle = RenderBridge.paragraphStyleForBlock(
+            listItem,
+            blockStack: [quote, listItem],
+            theme: nil,
+            baseFont: baseFont
+        )
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor
+        )
+        let style = result.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+
+        XCTAssertEqual(
+            style?.headIndent ?? -1,
+            expectedStyle.headIndent,
+            accuracy: 0.1,
+            "first-level list paragraphs inside a blockquote should use the enclosing list item depth"
+        )
+        XCTAssertEqual(
+            style?.firstLineHeadIndent ?? -1,
+            expectedStyle.firstLineHeadIndent,
+            accuracy: 0.1,
+            "first-level quoted list markers should not inherit the inner paragraph depth"
+        )
+    }
+
+    func testRender_blockquoteAppliesBorderAttributesAndTextTheme() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Quoted", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: EditorTheme(dictionary: [
+                "blockquote": [
+                    "indent": 20,
+                    "borderColor": "#aa5500",
+                    "borderWidth": 4,
+                    "markerGap": 10,
+                    "text": [
+                        "color": "#334455",
+                    ],
+                ],
+            ])
+        )
+        let expectedTextColor = UIColor(
+            red: 51.0 / 255.0,
+            green: 68.0 / 255.0,
+            blue: 85.0 / 255.0,
+            alpha: 1
+        )
+        let expectedBorderColor = UIColor(
+            red: 170.0 / 255.0,
+            green: 85.0 / 255.0,
+            blue: 0.0,
+            alpha: 1
+        )
+        var foundStyledRun = false
+        result.enumerateAttributes(
+            in: NSRange(location: 0, length: result.length),
+            options: []
+        ) { attrs, _, stop in
+            guard attrs[RenderBridgeAttributes.blockquoteBorderColor] != nil else { return }
+            XCTAssertEqual(attrs[.foregroundColor] as? UIColor, expectedTextColor)
+            XCTAssertEqual(attrs[RenderBridgeAttributes.blockquoteBorderColor] as? UIColor, expectedBorderColor)
+            XCTAssertEqual(
+                (attrs[RenderBridgeAttributes.blockquoteBorderWidth] as? NSNumber)?.doubleValue ?? 0,
+                4,
+                accuracy: 0.1
+            )
+            XCTAssertEqual(
+                (attrs[RenderBridgeAttributes.blockquoteMarkerGap] as? NSNumber)?.doubleValue ?? 0,
+                10,
+                accuracy: 0.1
+            )
+            foundStyledRun = true
+            stop.pointee = true
+        }
+
+        XCTAssertTrue(foundStyledRun, "Expected a rendered run carrying blockquote border attributes")
+    }
+
+    func testRender_blockquoteDoesNotInsertExtraLeadingParagraphBreak() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "blockquote", "depth": 0},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Hello", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "World", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor
+        )
+
+        XCTAssertEqual(result.string, "Hello\nWorld")
     }
 
     // MARK: - List Marker Generation
