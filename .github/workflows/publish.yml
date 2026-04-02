@@ -36,6 +36,9 @@ jobs:
       - name: Typecheck package
         run: npm run typecheck
 
+      - name: Build package
+        run: npm run build
+
       - name: Typecheck example
         run: npm --prefix example run typecheck
 
