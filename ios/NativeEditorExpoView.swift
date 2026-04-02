@@ -484,9 +484,11 @@ final class EditorAccessoryToolbarView: UIInputView {
         resolvedAppearance == .native
     }
     var usesUIGlassEffectForTesting: Bool {
+#if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             return blurView.effect is UIGlassEffect
         }
+#endif
         return false
     }
     var chromeBorderWidthForTesting: CGFloat {
@@ -508,11 +510,13 @@ final class EditorAccessoryToolbarView: UIInputView {
         activeNativeToolbarScrollViewForTesting.contentOffset.x = offsetX
     }
     var selectedButtonCountForTesting: Int {
+#if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             if usesNativeBarToolbar {
                 return barButtonBindings.filter { $0.button.style == .prominent }.count
             }
         }
+#endif
         return buttonBindings.filter(\.button.isSelected).count
     }
     func mentionButtonAtForTesting(_ index: Int) -> MentionSuggestionChipButton? {
@@ -602,6 +606,7 @@ final class EditorAccessoryToolbarView: UIInputView {
         if #available(iOS 13.0, *) {
             chromeView.layer.cornerCurve = .continuous
         }
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             let cornerConfig: UICornerConfiguration = usesNativeAppearance
                 ? .capsule(maximumRadius: 24)
@@ -610,6 +615,7 @@ final class EditorAccessoryToolbarView: UIInputView {
             blurView.cornerConfiguration = cornerConfig
             glassTintView.cornerConfiguration = cornerConfig
         }
+        #endif
         chromeView.clipsToBounds = (usesNativeAppearance && !hasFloatingGlassButtons && !usesBarToolbar) || resolvedBorderRadius > 0
         chromeView.layer.shadowOpacity = usesNativeAppearance && !hasFloatingGlassButtons && !usesBarToolbar ? 0.08 : 0
         chromeView.layer.shadowRadius = usesNativeAppearance && !hasFloatingGlassButtons && !usesBarToolbar ? 10 : 0
@@ -682,6 +688,7 @@ final class EditorAccessoryToolbarView: UIInputView {
             updateButtonAppearance(binding.button, item: binding.item, enabled: buttonState.enabled, active: buttonState.active)
         }
 
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *), usesNativeBarToolbar {
             for binding in barButtonBindings {
                 let state = buttonState(for: binding.item, state: currentState)
@@ -690,6 +697,7 @@ final class EditorAccessoryToolbarView: UIInputView {
                 binding.button.style = state.active ? .prominent : .plain
             }
         }
+        #endif
     }
 
     func applyBoldStateForTesting(active: Bool, enabled: Bool) {
@@ -869,11 +877,15 @@ final class EditorAccessoryToolbarView: UIInputView {
             stackView.addArrangedSubview(button)
         }
 
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             nativeToolbarView.setItems(makeNativeToolbarItems(from: compactItems), animated: false)
         } else {
             nativeToolbarView.setItems([], animated: false)
         }
+        #else
+        nativeToolbarView.setItems([], animated: false)
+        #endif
 
         updateNativeToolbarMetricsIfNeeded()
         apply(theme: theme)
@@ -881,6 +893,7 @@ final class EditorAccessoryToolbarView: UIInputView {
     }
 
     private func updateNativeToolbarMetricsIfNeeded() {
+#if compiler(>=6.2)
         guard #available(iOS 26.0, *), usesNativeBarToolbar else {
             nativeToolbarWidthConstraint?.constant = Self.baseHeight
             nativeToolbarDidInitializeScrollPosition = false
@@ -932,8 +945,13 @@ final class EditorAccessoryToolbarView: UIInputView {
                 animated: false
             )
         }
+#else
+        nativeToolbarWidthConstraint?.constant = Self.baseHeight
+        nativeToolbarDidInitializeScrollPosition = false
+#endif
     }
 
+#if compiler(>=6.2)
     @available(iOS 26.0, *)
     private func makeNativeToolbarItems(from compactItems: [NativeToolbarItem]) -> [UIBarButtonItem] {
         var toolbarItems: [UIBarButtonItem] = []
@@ -980,6 +998,7 @@ final class EditorAccessoryToolbarView: UIInputView {
         barButtonItem.hidesSharedBackground = active
         return barButtonItem
     }
+#endif
 
     private func makeButton(item: NativeToolbarItem) -> UIButton {
         let button = UIButton(type: .system)
@@ -1106,6 +1125,7 @@ final class EditorAccessoryToolbarView: UIInputView {
         enabled: Bool,
         active: Bool
     ) {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *), usesFloatingGlassButtons {
             var configuration = active
                 ? UIButton.Configuration.prominentGlass()
@@ -1135,6 +1155,7 @@ final class EditorAccessoryToolbarView: UIInputView {
             button.alpha = enabled ? 1 : 0.45
             return
         }
+        #endif
 
         if resolvedAppearance == .native {
             button.tintColor = nil
@@ -1200,12 +1221,14 @@ final class EditorAccessoryToolbarView: UIInputView {
     }
 
     private func resolvedBlurEffect() -> UIVisualEffect {
+#if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             let effect = UIGlassEffect(style: .regular)
             effect.isInteractive = true
             effect.tintColor = resolvedGlassEffectTintColor
             return effect
         }
+#endif
         if #available(iOS 13.0, *) {
             return UIBlurEffect(style: .systemUltraThinMaterial)
         }
