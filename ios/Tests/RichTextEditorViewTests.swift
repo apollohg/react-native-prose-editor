@@ -264,7 +264,11 @@ final class RichTextEditorViewTests: XCTestCase {
 
         XCTAssertTrue(toolbar.usesNativeAppearanceForTesting)
         if #available(iOS 26.0, *) {
+#if compiler(>=6.2)
             XCTAssertTrue(toolbar.usesUIGlassEffectForTesting)
+#else
+            XCTAssertFalse(toolbar.usesUIGlassEffectForTesting)
+#endif
             XCTAssertEqual(toolbar.chromeBorderWidthForTesting, 1 / UIScreen.main.scale, accuracy: 0.1)
         } else {
             XCTAssertEqual(toolbar.chromeBorderWidthForTesting, 1 / UIScreen.main.scale, accuracy: 0.1)
