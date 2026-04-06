@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0] - 2026-04-06
+
+### Added
+
+- Block image node with native resize handles on iOS and Android.
+- `onRequestImage`, `insertImage(src, attrs?)`, `ImageRequestContext`, `allowBase64Images`, `allowImageResizing`.
+- `imageNodeSpec`, `withImagesSchema`, `buildImageFragmentJson` schema helpers.
+- `onHistoryStateChange` callback for standalone toolbar undo/redo state.
+- `attrs` field on `RenderElement`.
+
+### Fixed
+
+- iOS native toolbar disabled buttons invisible on dark blur backgrounds.
+
+### Changed
+
+- Default toolbar icon set now includes `image`.
+
 ## [0.2.0] - 2026-04-02
 
 ### Added
@@ -46,6 +64,7 @@
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[0.3.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.1.0...0.2.0
 [0.1.1]: https://github.com/apollohg/react-native-prose-editor/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/apollohg/react-native-prose-editor/releases/tag/0.1.0
