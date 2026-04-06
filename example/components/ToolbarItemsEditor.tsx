@@ -17,6 +17,8 @@ function getItemId(item: EditorToolbarItem): string {
             return `mark:${item.mark}`;
         case 'link':
             return 'link';
+        case 'image':
+            return 'image';
         case 'blockquote':
             return 'blockquote';
         case 'list':

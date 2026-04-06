@@ -57,6 +57,7 @@ pub fn apply_step(
 
         Step::OutdentListItem { pos } => apply_outdent_list_item(doc, *pos, schema),
         Step::InsertNode { pos, node } => apply_insert_node(doc, *pos, node, schema),
+        Step::UpdateNodeAttrs { pos, attrs } => apply_update_node_attrs(doc, *pos, attrs),
         Step::ReplaceRange { from, to, content } => {
             apply_replace_range(doc, *from, *to, content, schema)
         }
@@ -1224,6 +1225,73 @@ fn apply_insert_node(
     let map = StepMap::from_insert(pos, node.node_size());
 
     Ok((new_doc, map))
+}
+
+fn apply_update_node_attrs(
+    doc: &Document,
+    pos: u32,
+    attrs: &HashMap<String, serde_json::Value>,
+) -> Result<(Document, StepMap), TransformError> {
+    let resolved = doc
+        .resolve(pos)
+        .map_err(|e| TransformError::OutOfBounds(e))?;
+    let parent = resolved.parent(doc);
+    let content = parent
+        .content()
+        .ok_or_else(|| TransformError::InvalidTarget("parent node has no content".to_string()))?;
+
+    let mut offset = 0;
+    let mut target_index = None;
+    for (index, child) in content.iter().enumerate() {
+        let child_size = child.node_size();
+        let matches = if child.is_text() {
+            false
+        } else if child.is_void() {
+            resolved.parent_offset == offset
+        } else {
+            resolved.parent_offset == offset
+        };
+        if matches {
+            target_index = Some(index);
+            break;
+        }
+        offset += child_size;
+    }
+
+    let target_index = target_index.ok_or_else(|| {
+        TransformError::InvalidTarget(format!("position {pos} does not resolve to a node"))
+    })?;
+    let target_child = content.child(target_index).ok_or_else(|| {
+        TransformError::OutOfBounds(format!("node at index {target_index} not found"))
+    })?;
+    if target_child.is_text() {
+        return Err(TransformError::InvalidTarget(
+            "cannot update attrs on a text node".to_string(),
+        ));
+    }
+
+    let replacement = if target_child.is_void() {
+        Node::void(target_child.node_type().to_string(), attrs.clone())
+    } else {
+        Node::element(
+            target_child.node_type().to_string(),
+            attrs.clone(),
+            target_child.content().cloned().unwrap_or_else(Fragment::empty),
+        )
+    };
+
+    let mut new_children = Vec::with_capacity(content.child_count());
+    for (index, child) in content.iter().enumerate() {
+        if index == target_index {
+            new_children.push(replacement.clone());
+        } else {
+            new_children.push(child.clone());
+        }
+    }
+
+    let new_parent = rebuild_element(parent, new_children);
+    let new_root = replace_node_at_path(doc.root(), &resolved.node_path, &new_parent);
+    Ok((Document::new(new_root), StepMap::empty()))
 }
 
 fn apply_indent_list_item(

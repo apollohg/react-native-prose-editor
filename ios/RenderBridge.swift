@@ -1,5 +1,16 @@
 import UIKit
 
+extension Notification.Name {
+    static let editorImageAttachmentDidLoad = Notification.Name(
+        "com.apollohg.editor.imageAttachmentDidLoad"
+    )
+}
+
+private enum RenderImageCache {
+    static let cache = NSCache<NSString, UIImage>()
+    static let queue = DispatchQueue(label: "com.apollohg.editor.image-loader", qos: .userInitiated)
+}
+
 // MARK: - Constants
 
 /// Custom NSAttributedString attribute keys for editor metadata.
@@ -188,12 +199,14 @@ final class RenderBridge {
             case "voidInline":
                 let nodeType = element["nodeType"] as? String ?? ""
                 let docPos = jsonUInt32(element["docPos"])
+                let attrs = element["attrs"] as? [String: Any] ?? [:]
                 if nodeType == "hardBreak" {
                     overrideTrailingParagraphSpacing(in: result, paragraphSpacing: 0)
                 }
                 let attrStr = attributedStringForVoidInline(
                     nodeType: nodeType,
                     docPos: docPos,
+                    attrs: attrs,
                     baseFont: baseFont,
                     textColor: textColor,
                     blockStack: blockStack,
@@ -204,6 +217,7 @@ final class RenderBridge {
             case "voidBlock":
                 let nodeType = element["nodeType"] as? String ?? ""
                 let docPos = jsonUInt32(element["docPos"])
+                let attrs = element["attrs"] as? [String: Any] ?? [:]
 
                 // Add inter-block newline if not the first block.
                 if !isFirstBlock {
@@ -225,6 +239,7 @@ final class RenderBridge {
                 let attrStr = attributedStringForVoidBlock(
                     nodeType: nodeType,
                     docPos: docPos,
+                    elementAttrs: attrs,
                     baseFont: baseFont,
                     textColor: textColor,
                     theme: theme
@@ -467,6 +482,7 @@ final class RenderBridge {
     private static func attributedStringForVoidInline(
         nodeType: String,
         docPos: UInt32,
+        attrs _: [String: Any],
         baseFont: UIFont,
         textColor: UIColor,
         blockStack: [BlockContext],
@@ -511,6 +527,7 @@ final class RenderBridge {
     private static func attributedStringForVoidBlock(
         nodeType: String,
         docPos: UInt32,
+        elementAttrs: [String: Any],
         baseFont: UIFont,
         textColor: UIColor,
         theme: EditorTheme?
@@ -529,6 +546,25 @@ final class RenderBridge {
                 attachment: attachment
             )
             // Apply our custom attributes to the attachment character.
+            let range = NSRange(location: 0, length: attrStr.length)
+            attrStr.addAttributes(attrs, range: range)
+            return attrStr
+        case "image":
+            guard let source = (elementAttrs["src"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !source.isEmpty
+            else {
+                return NSAttributedString(
+                    string: LayoutConstants.objectReplacementCharacter,
+                    attributes: attrs
+                )
+            }
+            let attachment = BlockImageAttachment(
+                source: source,
+                placeholderTint: textColor,
+                preferredWidth: jsonCGFloat(elementAttrs["width"]),
+                preferredHeight: jsonCGFloat(elementAttrs["height"])
+            )
+            let attrStr = NSMutableAttributedString(attachment: attachment)
             let range = NSRange(location: 0, length: attrStr.length)
             attrStr.addAttributes(attrs, range: range)
             return attrStr
@@ -696,6 +732,21 @@ final class RenderBridge {
             return number.uint8Value
         }
         return 0
+    }
+
+    /// Extract a positive `CGFloat` from a JSON value produced by `JSONSerialization`.
+    static func jsonCGFloat(_ value: Any?) -> CGFloat? {
+        if let number = value as? NSNumber {
+            let resolved = CGFloat(truncating: number)
+            return resolved > 0 ? resolved : nil
+        }
+        if let string = value as? String,
+           let resolved = Double(string.trimmingCharacters(in: .whitespacesAndNewlines)),
+           resolved > 0
+        {
+            return CGFloat(resolved)
+        }
+        return nil
     }
 
     private static func defaultAttributes(
@@ -1001,5 +1052,162 @@ final class HorizontalRuleAttachment: NSTextAttachment {
             )
             context.fill(lineRect)
         }
+    }
+}
+
+final class BlockImageAttachment: NSTextAttachment {
+    private let source: String
+    private let placeholderTint: UIColor
+    private var preferredWidth: CGFloat?
+    private var preferredHeight: CGFloat?
+    private var loadedImage: UIImage?
+
+    init(
+        source: String,
+        placeholderTint: UIColor,
+        preferredWidth: CGFloat?,
+        preferredHeight: CGFloat?
+    ) {
+        self.source = source
+        self.placeholderTint = placeholderTint
+        self.preferredWidth = preferredWidth
+        self.preferredHeight = preferredHeight
+        super.init(data: nil, ofType: nil)
+        loadImageIfNeeded()
+    }
+
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    func setPreferredSize(width: CGFloat, height: CGFloat) {
+        preferredWidth = width
+        preferredHeight = height
+    }
+
+    func previewImage() -> UIImage? {
+        loadedImage ?? image
+    }
+
+    override func attachmentBounds(
+        for textContainer: NSTextContainer?,
+        proposedLineFragment lineFrag: CGRect,
+        glyphPosition position: CGPoint,
+        characterIndex charIndex: Int
+    ) -> CGRect {
+        let lineFragmentWidth = lineFrag.width.isFinite ? lineFrag.width : 0
+        let containerWidth = textContainer.map {
+            max(0, $0.size.width - ($0.lineFragmentPadding * 2))
+        } ?? 0
+        let widthCandidates = [lineFragmentWidth, containerWidth].filter { $0.isFinite && $0 > 0 }
+        let maxWidth = max(160, widthCandidates.min() ?? 160)
+        let fallbackAspectRatio = loadedImage.flatMap { image -> CGFloat? in
+            let imageSize = image.size
+            guard imageSize.width > 0, imageSize.height > 0 else { return nil }
+            return imageSize.height / imageSize.width
+        } ?? 0.56
+
+        var resolvedWidth = preferredWidth
+        var resolvedHeight = preferredHeight
+
+        if resolvedWidth == nil, resolvedHeight == nil, let loadedImage {
+            let imageSize = loadedImage.size
+            if imageSize.width > 0, imageSize.height > 0 {
+                resolvedWidth = imageSize.width
+                resolvedHeight = imageSize.height
+            }
+        } else if resolvedWidth == nil, let resolvedHeight {
+            resolvedWidth = resolvedHeight / fallbackAspectRatio
+        } else if resolvedHeight == nil, let resolvedWidth {
+            resolvedHeight = resolvedWidth * fallbackAspectRatio
+        }
+
+        let width = max(1, resolvedWidth ?? maxWidth)
+        let height = max(1, resolvedHeight ?? min(180, maxWidth * fallbackAspectRatio))
+        let scale = min(1, maxWidth / width)
+        return CGRect(x: 0, y: 0, width: width * scale, height: height * scale)
+    }
+
+    override func image(
+        forBounds imageBounds: CGRect,
+        textContainer: NSTextContainer?,
+        characterIndex charIndex: Int
+    ) -> UIImage? {
+        if let loadedImage {
+            return loadedImage
+        }
+
+        let renderer = UIGraphicsImageRenderer(bounds: imageBounds)
+        return renderer.image { _ in
+            let path = UIBezierPath(roundedRect: imageBounds, cornerRadius: 12)
+            UIColor.secondarySystemFill.setFill()
+            path.fill()
+
+            let iconSize = min(imageBounds.width, imageBounds.height) * 0.28
+            let iconOrigin = CGPoint(
+                x: imageBounds.midX - (iconSize / 2),
+                y: imageBounds.midY - (iconSize / 2)
+            )
+            let iconRect = CGRect(origin: iconOrigin, size: CGSize(width: iconSize, height: iconSize))
+
+            if #available(iOS 13.0, *) {
+                let config = UIImage.SymbolConfiguration(pointSize: iconSize, weight: .medium)
+                let icon = UIImage(systemName: "photo", withConfiguration: config)?
+                    .withTintColor(placeholderTint.withAlphaComponent(0.7), renderingMode: .alwaysOriginal)
+                icon?.draw(in: iconRect)
+            }
+        }
+    }
+
+    private func loadImageIfNeeded() {
+        if let cached = RenderImageCache.cache.object(forKey: source as NSString) {
+            loadedImage = cached
+            image = cached
+            return
+        }
+
+        if let inlineData = Self.decodeDataURL(source),
+           let image = UIImage(data: inlineData)
+        {
+            RenderImageCache.cache.setObject(image, forKey: source as NSString)
+            loadedImage = image
+            self.image = image
+            return
+        }
+
+        guard let url = URL(string: source) else { return }
+        RenderImageCache.queue.async { [weak self] in
+            guard let self else { return }
+            let data: Data?
+            if url.isFileURL {
+                data = try? Data(contentsOf: url)
+            } else {
+                data = try? Data(contentsOf: url)
+            }
+            guard let data,
+                  let image = UIImage(data: data)
+            else {
+                return
+            }
+            RenderImageCache.cache.setObject(image, forKey: self.source as NSString)
+            DispatchQueue.main.async {
+                self.loadedImage = image
+                self.image = image
+                NotificationCenter.default.post(name: .editorImageAttachmentDidLoad, object: self)
+            }
+        }
+    }
+
+    private static func decodeDataURL(_ source: String) -> Data? {
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.lowercased().hasPrefix("data:image/"),
+              let commaIndex = trimmed.firstIndex(of: ",")
+        else {
+            return nil
+        }
+        let metadata = String(trimmed[..<commaIndex]).lowercased()
+        let payload = String(trimmed[trimmed.index(after: commaIndex)...])
+        guard metadata.contains(";base64") else { return nil }
+        return Data(base64Encoded: payload, options: [.ignoreUnknownCharacters])
     }
 }

@@ -17,7 +17,7 @@ use editor_core::selection::Selection;
 
 /// Create an editor with the default tiptap schema and no interceptors.
 fn default_editor() -> Editor {
-    Editor::new(tiptap_schema(), InterceptorPipeline::new())
+    Editor::new(tiptap_schema(), InterceptorPipeline::new(), false)
 }
 
 fn mention_schema() -> Schema {
@@ -47,14 +47,14 @@ fn mention_schema() -> Schema {
 }
 
 fn mention_editor() -> Editor {
-    Editor::new(mention_schema(), InterceptorPipeline::new())
+    Editor::new(mention_schema(), InterceptorPipeline::new(), false)
 }
 
 /// Create an editor with a max-length interceptor.
 fn editor_with_max_length(max: u32) -> Editor {
     let mut pipeline = InterceptorPipeline::new();
     pipeline.add(Box::new(MaxLength::new(max)));
-    Editor::new(tiptap_schema(), pipeline)
+    Editor::new(tiptap_schema(), pipeline, false)
 }
 
 // ===========================================================================
@@ -291,6 +291,57 @@ fn test_backspace_below_horizontal_rule_replaces_rule_with_paragraph() {
 }
 
 #[test]
+fn test_backspace_below_image_replaces_image_with_paragraph() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<p>Hello</p>")
+        .expect("set_html should succeed");
+    editor.set_selection(Selection::cursor(3));
+
+    let image_doc = serde_json::json!({
+        "type": "doc",
+        "content": [
+            {
+                "type": "image",
+                "attrs": {
+                    "src": "https://example.com/cat.png",
+                    "alt": "Cat"
+                }
+            }
+        ]
+    });
+
+    let insert_update = editor
+        .insert_content_json(&image_doc)
+        .expect("image insertion should succeed");
+    let first_cursor = insert_update.selection.from(editor.document());
+    let first_scalar = editor.doc_to_scalar(first_cursor);
+    assert!(
+        first_scalar > 0,
+        "cursor after image insert should support backspace"
+    );
+
+    let update = editor
+        .delete_scalar_range(first_scalar - 1, first_scalar)
+        .expect("first backspace after image insert should not panic");
+    assert_eq!(
+        editor.get_html(),
+        "<p>Hello</p><p></p>",
+        "backspace from the empty paragraph immediately below an image should replace it with an empty paragraph"
+    );
+
+    let insert_pos = update.selection.from(editor.document());
+    editor
+        .insert_text(insert_pos, "B")
+        .expect("typing after image removal should stay on the replacement line");
+    assert_eq!(
+        editor.get_html(),
+        "<p>Hello</p><p>B</p>",
+        "typing after image removal should target the replacement paragraph, not the preceding block"
+    );
+}
+
+#[test]
 fn test_insert_horizontal_rule_in_empty_paragraph_replaces_blank_line() {
     let mut editor = default_editor();
     editor
@@ -508,8 +559,8 @@ fn test_active_nodes_in_list() {
 
 #[test]
 fn test_multiple_editors_independent_state() {
-    let id1 = EditorRegistry::create(tiptap_schema(), InterceptorPipeline::new());
-    let id2 = EditorRegistry::create(tiptap_schema(), InterceptorPipeline::new());
+    let id1 = EditorRegistry::create(tiptap_schema(), InterceptorPipeline::new(), false);
+    let id2 = EditorRegistry::create(tiptap_schema(), InterceptorPipeline::new(), false);
 
     assert_ne!(id1, id2, "Two editors should have different IDs");
     assert_ne!(id1, INVALID_EDITOR_ID, "ID should not be INVALID_EDITOR_ID");
@@ -1641,6 +1692,110 @@ fn test_insert_content_json_at_selection_scalar_inserts_mention_and_preserves_at
         update.selection,
         Selection::cursor(8),
         "caret should land immediately after the inserted inline mention"
+    );
+}
+
+#[test]
+fn test_insert_content_json_block_image_resolves_to_block_level() {
+    let mut editor = default_editor();
+    editor.set_html("<p>Hello</p>").expect("set_html");
+    editor.set_selection(Selection::cursor(3));
+
+    let image_doc = serde_json::json!({
+        "type": "doc",
+        "content": [
+            {
+                "type": "image",
+                "attrs": {
+                    "src": "https://example.com/cat.png",
+                    "alt": "Cat"
+                }
+            }
+        ]
+    });
+
+    let update = editor
+        .insert_content_json(&image_doc)
+        .expect("insert image JSON at cursor");
+
+    let html = editor.get_html();
+    assert!(
+        html.starts_with("<p>Hello</p><img "),
+        "image JSON insertion should resolve to the block level after the paragraph, got: {html}"
+    );
+    assert!(
+        html.contains("src=\"https://example.com/cat.png\""),
+        "image JSON insertion should preserve attrs, got: {html}"
+    );
+    assert!(
+        html.ends_with("<p></p>"),
+        "image JSON insertion should leave a trailing paragraph for continued typing, got: {html}"
+    );
+
+    let json = editor.get_json();
+    assert_eq!(json["content"][1]["type"], "image");
+    assert_eq!(json["content"][1]["attrs"]["alt"], "Cat");
+    assert_eq!(json["content"][2]["type"], "paragraph");
+    assert!(
+        update.selection.from(editor.document()) > 7,
+        "selection should land below the inserted image"
+    );
+}
+
+#[test]
+fn test_insert_content_html_block_image_resolves_to_block_level() {
+    let mut editor = default_editor();
+    editor.set_html("<p>Hello</p>").expect("set_html");
+    editor.set_selection(Selection::cursor(3));
+
+    let update = editor
+        .insert_content_html("<img src=\"https://example.com/cat.png\" alt=\"Cat\">")
+        .expect("insert image HTML at cursor");
+
+    let html = editor.get_html();
+    assert!(
+        html.starts_with("<p>Hello</p><img "),
+        "image HTML insertion should resolve to the block level after the paragraph, got: {html}"
+    );
+    assert!(
+        html.contains("src=\"https://example.com/cat.png\""),
+        "image HTML insertion should preserve attrs, got: {html}"
+    );
+    assert!(
+        html.ends_with("<p></p>"),
+        "image HTML insertion should leave a trailing paragraph for continued typing, got: {html}"
+    );
+    assert!(
+        update.selection.from(editor.document()) > 7,
+        "selection should land below the inserted image"
+    );
+}
+
+#[test]
+fn test_resize_image_at_doc_pos_updates_attrs_and_selects_image_node() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<p>Hello</p><img src=\"https://example.com/cat.png\" alt=\"Cat\"><p></p>")
+        .expect("set_html");
+    editor.set_selection(Selection::cursor(9));
+
+    let update = editor
+        .resize_image_at_doc_pos(7, 240, 135)
+        .expect("resize image");
+
+    let html = editor.get_html();
+    assert!(html.contains("src=\"https://example.com/cat.png\""));
+    assert!(html.contains("width=\"240\""));
+    assert!(html.contains("height=\"135\""));
+
+    let json = editor.get_json();
+    assert_eq!(json["content"][1]["type"], "image");
+    assert_eq!(json["content"][1]["attrs"]["width"], 240);
+    assert_eq!(json["content"][1]["attrs"]["height"], 135);
+    assert_eq!(
+        update.selection,
+        Selection::node(7),
+        "resize should keep the image node selected for continued dragging"
     );
 }
 

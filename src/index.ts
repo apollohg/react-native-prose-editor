@@ -6,6 +6,7 @@ export {
     type NativeRichTextEditorToolbarPlacement,
     type RemoteSelectionDecoration,
     type LinkRequestContext,
+    type ImageRequestContext,
 } from './NativeRichTextEditor';
 
 export {
@@ -50,10 +51,15 @@ export {
 export {
     tiptapSchema,
     prosemirrorSchema,
+    IMAGE_NODE_NAME,
+    imageNodeSpec,
+    withImagesSchema,
+    buildImageFragmentJson,
     type SchemaDefinition,
     type NodeSpec,
     type MarkSpec,
     type AttrSpec,
+    type ImageNodeAttributes,
 } from './schemas';
 
 export {

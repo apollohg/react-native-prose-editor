@@ -61,6 +61,7 @@ fn walk_children(
                 elements.push(RenderElement::VoidInline {
                     node_type: child.node_type().to_string(),
                     doc_pos: *pos,
+                    attrs: child.attrs().clone(),
                 });
                 *pos += child.node_size(); // 1 for void
             }
@@ -138,6 +139,7 @@ fn walk_children(
                 elements.push(RenderElement::VoidBlock {
                     node_type: child.node_type().to_string(),
                     doc_pos: *pos,
+                    attrs: child.attrs().clone(),
                 });
                 *pos += child.node_size(); // 1 for void
             }

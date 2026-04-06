@@ -21,10 +21,14 @@ interface NativeRichTextEditorProps {
   toolbarItems?: readonly EditorToolbarItem[];
   onToolbarAction?: (key: string) => void;
   onRequestLink?: (context: LinkRequestContext) => void;
+  onRequestImage?: (context: ImageRequestContext) => void;
+  allowBase64Images?: boolean;
+  allowImageResizing?: boolean;
   onContentChange?: (html: string) => void;
   onContentChangeJSON?: (json: DocumentJSON) => void;
   onSelectionChange?: (selection: Selection) => void;
   onActiveStateChange?: (state: ActiveState) => void;
+  onHistoryStateChange?: (state: HistoryState) => void;
   onFocus?: () => void;
   onBlur?: () => void;
   style?: StyleProp<ViewStyle>;
@@ -51,13 +55,17 @@ interface NativeRichTextEditorProps {
 | `heightBehavior` | `'fixed' \| 'autoGrow'` | `'autoGrow'` | `fixed` scrolls internally. `autoGrow` expands the view to fit content, suitable for parent-managed scroll containers. |
 | `showToolbar` | `boolean` | `true` | Shows or hides the built-in toolbar. |
 | `toolbarPlacement` | `'keyboard' \| 'inline'` | `'keyboard'` | `keyboard` attaches the toolbar as a native keyboard accessory (iOS) or above-keyboard view (Android). `inline` renders the toolbar in React above the editor. |
-| `toolbarItems` | `readonly EditorToolbarItem[]` | `DEFAULT_EDITOR_TOOLBAR_ITEMS` | Ordered toolbar button configuration. Built-in items now include blockquote by default. Link items are supported, but the package does not show its own URL prompt. |
+| `toolbarItems` | `readonly EditorToolbarItem[]` | `DEFAULT_EDITOR_TOOLBAR_ITEMS` | Ordered toolbar button configuration. Built-in items now include blockquote by default. Link and image items are supported, but the package does not show its own URL prompt or file picker. |
 | `onToolbarAction` | `(key: string) => void` | — | Callback for `action`-type toolbar items. |
 | `onRequestLink` | `(context: LinkRequestContext) => void` | — | Called when a toolbar `link` item is pressed. Use it to collect, edit, or clear the target URL. |
+| `onRequestImage` | `(context: ImageRequestContext) => void` | — | Called when a toolbar `image` item is pressed. Use it to launch your own picker or upload flow, then call `insertImage(...)` with the chosen URL or base64 data URI. |
+| `allowBase64Images` | `boolean` | `false` | Opt-in support for `data:image/...` sources when inserting images imperatively or parsing HTML. Mirrors Tiptap's `allowBase64` behavior. |
+| `allowImageResizing` | `boolean` | `true` | Controls whether selected images expose native drag handles for resizing on iOS and Android. When `false`, images still render and insert normally, but the native resize interaction is disabled. |
 | `onContentChange` | `(html: string) => void` | — | Called when the document HTML changes. |
 | `onContentChangeJSON` | `(json: DocumentJSON) => void` | — | Called when the document JSON changes. |
 | `onSelectionChange` | `(selection: Selection) => void` | — | Called when the selection changes. |
 | `onActiveStateChange` | `(state: ActiveState) => void` | — | Called when active marks, nodes, commands, or schema availability change. |
+| `onHistoryStateChange` | `(state: HistoryState) => void` | — | Called when undo or redo availability changes. Useful when driving a standalone `EditorToolbar`. |
 | `onFocus` | `() => void` | — | Called when the editor gains focus. |
 | `onBlur` | `() => void` | — | Called when the editor loses focus. |
 | `style` | `StyleProp<ViewStyle>` | — | Style applied to the native editor view itself. Does not affect internal content styling. |
@@ -137,6 +145,57 @@ interface LinkRequestContext {
 | `setLink` | `(href: string) => void` | Apply or update the link on the current selection. |
 | `unsetLink` | `() => void` | Remove the link from the current selection. |
 
+## Images
+
+- Add a toolbar item with `{ type: 'image', ... }` and handle picking or uploading in `onRequestImage`.
+- Finish the host flow by calling `insertImage(src, attrs?)`.
+- `src` can be a remote URL, local file URL, or a `data:image/...` URI when `allowBase64Images` is enabled.
+- The built-in schemas already include a block `image` node with `src`, `alt`, `title`, `width`, and `height` attrs.
+- On iOS and Android, users can resize selected images with native drag handles. The updated size is written back to `width` and `height`.
+- Set `allowImageResizing={false}` if images should stay fixed after insertion.
+- You can also insert images imperatively through the editor ref with `insertImage(src, attrs?)`.
+
+```tsx
+const toolbarItems = [
+  { type: 'mark', mark: 'bold', label: 'Bold', icon: { type: 'default', id: 'bold' } },
+  { type: 'image', label: 'Image', icon: { type: 'default', id: 'image' } },
+] as const;
+
+<NativeRichTextEditor
+  showToolbar
+  toolbarItems={toolbarItems}
+  allowBase64Images={false}
+  onRequestImage={({ insertImage }) => {
+    const uploadedUrl = 'https://cdn.example.com/cat.png';
+    insertImage(uploadedUrl, { alt: 'Cat', title: 'Hero image' });
+  }}
+/>;
+```
+
+## `ImageRequestContext`
+
+```ts
+interface ImageRequestContext {
+  selection: Selection;
+  allowBase64: boolean;
+  insertImage: (
+    src: string,
+    attrs?: {
+      alt?: string | null;
+      title?: string | null;
+      width?: number | null;
+      height?: number | null;
+    }
+  ) => void;
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `selection` | `Selection` | Current editor selection when the image request is triggered. |
+| `allowBase64` | `boolean` | Whether this editor instance accepts `data:image/...` sources. |
+| `insertImage` | `(src: string, attrs?: { alt?: string \| null; title?: string \| null; width?: number \| null; height?: number \| null }) => void` | Inserts a block image node at the captured selection. `width` and `height` seed the initial rendered size and are updated when users resize the image natively. |
+
 ## Collaboration Usage
 
 - `NativeRichTextEditor` is still the editor component used in collaboration mode.
@@ -195,6 +254,15 @@ interface NativeRichTextEditorRef {
   indentListItem(): void;
   outdentListItem(): void;
   insertNode(nodeType: string): void;
+  insertImage(
+    src: string,
+    attrs?: {
+      alt?: string | null;
+      title?: string | null;
+      width?: number | null;
+      height?: number | null;
+    }
+  ): void;
   insertText(text: string): void;
   insertContentHtml(html: string): void;
   insertContentJson(doc: DocumentJSON): void;
@@ -222,6 +290,7 @@ interface NativeRichTextEditorRef {
 | `indentListItem()` | — | `void` | Indents the current list item. |
 | `outdentListItem()` | — | `void` | Outdents the current list item. |
 | `insertNode(nodeType)` | `nodeType: string` | `void` | Inserts a node by schema name. |
+| `insertImage(src, attrs?)` | `src: string`, `attrs?: { alt?: string \| null; title?: string \| null; width?: number \| null; height?: number \| null }` | `void` | Inserts a block image node. Base64 data URIs require `allowBase64Images={true}`. `width` and `height` let hosts seed a preferred size. |
 | `insertText(text)` | `text: string` | `void` | Inserts plain text at the current selection. |
 | `insertContentHtml(html)` | `html: string` | `void` | Inserts parsed HTML at the current selection. |
 | `insertContentJson(doc)` | `doc: DocumentJSON` | `void` | Inserts JSON content at the current selection. |

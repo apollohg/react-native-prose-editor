@@ -91,6 +91,7 @@ interface RenderElement {
   depth?: number;
   docPos?: number;
   label?: string;
+  attrs?: Record<string, unknown>;
   listContext?: ListContext;
 }
 ```
@@ -104,6 +105,7 @@ interface RenderElement {
 | `depth` | `number \| undefined` | Nesting depth in the render tree. |
 | `docPos` | `number \| undefined` | Associated document position when available. |
 | `label` | `string \| undefined` | Optional display label for opaque atoms. |
+| `attrs` | `Record<string, unknown> \| undefined` | Schema attributes for opaque atom nodes (e.g. `src`, `alt` on images, or `id` on mentions). |
 | `listContext` | `ListContext \| undefined` | List metadata for native marker rendering. |
 
 ## `ListContext`

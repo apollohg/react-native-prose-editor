@@ -75,6 +75,7 @@ export const EXAMPLE_DEFAULT_TOOLBAR_ITEMS: readonly EditorToolbarItem[] = [
         icon: { type: 'default', id: 'strike' },
     },
     { type: 'link', label: 'Link', icon: { type: 'default', id: 'link' } },
+    { type: 'image', label: 'Image', icon: { type: 'default', id: 'image' } },
     { type: 'blockquote', label: 'Blockquote', icon: { type: 'default', id: 'blockquote' } },
     { type: 'separator' },
     {

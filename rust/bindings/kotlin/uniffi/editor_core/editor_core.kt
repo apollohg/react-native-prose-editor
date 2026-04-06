@@ -833,6 +833,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -929,6 +931,8 @@ fun uniffi_editor_core_checksum_func_editor_replace_json(
 fun uniffi_editor_core_checksum_func_editor_replace_selection_text(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_replace_text_scalar(
+): Short
+fun uniffi_editor_core_checksum_func_editor_resize_image_at_doc_pos(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_scalar_to_doc(
 ): Short
@@ -1096,6 +1100,8 @@ fun uniffi_editor_core_fn_func_editor_replace_json(`id`: Long,`json`: RustBuffer
 fun uniffi_editor_core_fn_func_editor_replace_selection_text(`id`: Long,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_replace_text_scalar(`id`: Long,`scalarFrom`: Int,`scalarTo`: Int,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_resize_image_at_doc_pos(`id`: Long,`docPos`: Int,`width`: Int,`height`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_scalar_to_doc(`id`: Long,`scalar`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): Int
@@ -1308,7 +1314,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_core_version() != 41638.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_editor_core_checksum_func_editor_create() != 23908.toShort()) {
+    if (lib.uniffi_editor_core_checksum_func_editor_create() != 19812.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_delete_and_split_scalar() != 13764.toShort()) {
@@ -1384,6 +1390,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_replace_text_scalar() != 45475.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_resize_image_at_doc_pos() != 36353.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_scalar_to_doc() != 40126.toShort()) {
@@ -1832,12 +1841,14 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
         /**
          * Create a new editor from a JSON config object.
          *
-         * Config fields (all optional — empty object `{}` creates a default editor):
+         * Config fields (all optional):
          * - `"schema"`: custom schema definition (see `Schema::from_json`)
          * - `"maxLength"`: maximum document length in characters
          * - `"readOnly"`: if `true`, rejects non-API mutations
          * - `"inputFilter"`: regex pattern; only matching characters are inserted
+         * - `"allowBase64Images"`: if `true`, parses `<img src="data:image/...">` as image nodes
          *
+         * An empty object creates a default editor.
          * Falls back to the default Tiptap schema when `"schema"` is absent or invalid.
          */ fun `editorCreate`(`configJson`: kotlin.String): kotlin.ULong {
             return FfiConverterULong.lift(
@@ -2145,6 +2156,18 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_replace_text_scalar(
         FfiConverterULong.lower(`id`),FfiConverterUInt.lower(`scalarFrom`),FfiConverterUInt.lower(`scalarTo`),FfiConverterString.lower(`text`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Resize an image node at a document position. Returns an update JSON string.
+         */ fun `editorResizeImageAtDocPos`(`id`: kotlin.ULong, `docPos`: kotlin.UInt, `width`: kotlin.UInt, `height`: kotlin.UInt): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_resize_image_at_doc_pos(
+        FfiConverterULong.lower(`id`),FfiConverterUInt.lower(`docPos`),FfiConverterUInt.lower(`width`),FfiConverterUInt.lower(`height`),_status)
 }
     )
     }

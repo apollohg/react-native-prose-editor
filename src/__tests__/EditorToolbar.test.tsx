@@ -135,6 +135,24 @@ describe('EditorToolbar', () => {
             expect(queryByLabelText('Horizontal Rule')).toBeNull();
         });
 
+        it('renders an image item when configured', () => {
+            const { getByLabelText } = renderToolbar({
+                toolbarItems: [
+                    {
+                        type: 'image',
+                        label: 'Image',
+                        icon: { type: 'default', id: 'image' },
+                    },
+                ],
+                activeState: {
+                    insertableNodes: ['image'],
+                },
+                onRequestImage: jest.fn(),
+            });
+
+            expect(getByLabelText('Image')).toBeTruthy();
+        });
+
         it('renders only the configured toolbar items and preserves order', () => {
             const onToggleMark = jest.fn();
             const onInsertNodeType = jest.fn();
@@ -212,6 +230,23 @@ describe('EditorToolbar', () => {
 
             expect(getByLabelText('Mention').props.accessibilityState).toEqual(
                 expect.objectContaining({ selected: true, disabled: true })
+            );
+        });
+
+        it('disables an image item when the schema does not allow image insertion', () => {
+            const { getByLabelText } = renderToolbar({
+                toolbarItems: [
+                    {
+                        type: 'image',
+                        label: 'Image',
+                        icon: { type: 'default', id: 'image' },
+                    },
+                ],
+                onRequestImage: jest.fn(),
+            });
+
+            expect(getByLabelText('Image').props.accessibilityState).toEqual(
+                expect.objectContaining({ disabled: true })
             );
         });
 
@@ -604,6 +639,27 @@ describe('EditorToolbar', () => {
             fireEvent.press(getByLabelText('Line Break'));
 
             expect(props.onInsertLineBreak).toHaveBeenCalledTimes(1);
+        });
+
+        it('image button fires onRequestImage when image insertion is allowed', () => {
+            const onRequestImage = jest.fn();
+            const { getByLabelText } = renderToolbar({
+                toolbarItems: [
+                    {
+                        type: 'image',
+                        label: 'Image',
+                        icon: { type: 'default', id: 'image' },
+                    },
+                ],
+                activeState: {
+                    insertableNodes: ['image'],
+                },
+                onRequestImage,
+            });
+
+            fireEvent.press(getByLabelText('Image'));
+
+            expect(onRequestImage).toHaveBeenCalledTimes(1);
         });
 
         it('custom mark and node buttons use the generic handlers', () => {

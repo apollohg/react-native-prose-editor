@@ -5,6 +5,7 @@ import {
     type DocumentJSON,
     type EditorAddons,
     type EditorToolbarItem,
+    type ImageRequestContext,
     type LinkRequestContext,
     type NativeRichTextEditorHeightBehavior,
     type NativeRichTextEditorRef,
@@ -22,6 +23,7 @@ type EditorDemoCardProps = {
     addons?: EditorAddons;
     toolbarItems: readonly EditorToolbarItem[];
     onRequestLink: (context: LinkRequestContext) => void;
+    onRequestImage: (context: ImageRequestContext) => void;
     heightBehavior: NativeRichTextEditorHeightBehavior;
     toolbarPlacement: NativeRichTextEditorToolbarPlacement;
     onContentChange: (html: string) => void;
@@ -41,6 +43,7 @@ export function EditorDemoCard({
     addons,
     toolbarItems,
     onRequestLink,
+    onRequestImage,
     heightBehavior,
     toolbarPlacement,
     onContentChange,
@@ -65,6 +68,8 @@ export function EditorDemoCard({
                 addons={addons}
                 toolbarItems={toolbarItems}
                 onRequestLink={onRequestLink}
+                onRequestImage={onRequestImage}
+                allowBase64Images
                 autoFocus
                 heightBehavior={heightBehavior}
                 toolbarPlacement={toolbarPlacement}

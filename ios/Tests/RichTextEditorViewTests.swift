@@ -92,7 +92,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRemoteSelectionOverlayShowsFocusedCaretWithoutBadge() {
-        let editorId = editorCreate(configJson: "{}")
+        let editorId = editorCreate(configJson: #"{"allowBase64Images":true}"#)
         defer { editorDestroy(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
@@ -285,6 +285,42 @@ final class RichTextEditorViewTests: XCTestCase {
         toolbar.applyBoldStateForTesting(active: true, enabled: true)
 
         XCTAssertEqual(toolbar.selectedButtonCountForTesting, 1)
+    }
+
+    func testAccessoryToolbarNativeDisabledButtonUsesSystemGrayTintAtFullAlpha() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+        toolbar.applyBoldStateForTesting(active: false, enabled: false)
+
+        XCTAssertEqual(
+            toolbar.firstButtonAlphaForTesting, 1.0, accuracy: 0.01,
+            "Disabled native button must stay at full alpha — low alpha is invisible on dark blur backgrounds"
+        )
+        XCTAssertEqual(
+            toolbar.firstButtonTintColorForTesting, .systemGray,
+            "Disabled native button must use .systemGray tint for contrast against dark blur backgrounds"
+        )
+    }
+
+    func testAccessoryToolbarNativeEnabledButtonInheritsSystemTintAtFullAlpha() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+        toolbar.applyBoldStateForTesting(active: false, enabled: true)
+
+        XCTAssertEqual(
+            toolbar.firstButtonAlphaForTesting, 1.0, accuracy: 0.01,
+            "Enabled native button must be at full alpha"
+        )
+        XCTAssertNotEqual(
+            toolbar.firstButtonTintColorForTesting, .systemGray,
+            "Enabled native button must not use the disabled .systemGray tint"
+        )
     }
 
     func testAccessoryToolbarAppliesNativeAppearanceToMentionSuggestions() {
@@ -1507,6 +1543,610 @@ final class RichTextEditorViewTests: XCTestCase {
         )
     }
 
+    func testTypingAndBackspacingAroundImageUsesTrailingParagraphCaret() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
+        textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p>")
+
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+
+        let imageFragmentJson = """
+        {"type":"doc","content":[{"type":"image","attrs":{"src":"https://example.com/cat.png","alt":"Cat"}}]}
+        """
+        let updateJSON = editorInsertContentJsonAtSelectionScalar(
+            id: editorId,
+            scalarAnchor: 3,
+            scalarHead: 3,
+            json: imageFragmentJson
+        )
+        textView.applyUpdateJSON(updateJSON, notifyDelegate: false)
+
+        let selectionOffset = textView.offset(
+            from: textView.beginningOfDocument,
+            to: textView.selectedTextRange?.start ?? textView.endOfDocument
+        )
+        XCTAssertEqual(
+            selectionOffset,
+            textView.text.count,
+            "image insertion should place the caret in the trailing paragraph"
+        )
+
+        textView.insertText("B")
+        let htmlAfterTyping = editorGetHtml(id: editorId)
+        XCTAssertTrue(htmlAfterTyping.starts(with: "<p>Hello</p><img "))
+        XCTAssertTrue(htmlAfterTyping.contains("src=\"https://example.com/cat.png\""))
+        XCTAssertTrue(htmlAfterTyping.contains("alt=\"Cat\""))
+        XCTAssertTrue(
+            htmlAfterTyping.hasSuffix("<p>B</p>"),
+            "typing after image insert should land in the trailing paragraph"
+        )
+
+        textView.deleteBackward()
+        let htmlAfterFirstBackspace = editorGetHtml(id: editorId)
+        XCTAssertTrue(htmlAfterFirstBackspace.starts(with: "<p>Hello</p><img "))
+        XCTAssertTrue(htmlAfterFirstBackspace.contains("src=\"https://example.com/cat.png\""))
+        XCTAssertTrue(htmlAfterFirstBackspace.contains("alt=\"Cat\""))
+        XCTAssertTrue(
+            htmlAfterFirstBackspace.hasSuffix("<p></p>"),
+            "first backspace should delete the trailing paragraph text"
+        )
+
+        textView.deleteBackward()
+        XCTAssertEqual(
+            editorGetHtml(id: editorId),
+            "<p>Hello</p><p></p>",
+            "second backspace from the empty trailing paragraph should replace the image with a paragraph"
+        )
+    }
+
+    func testSelectingImageShowsResizeOverlayAndPersistsResizedDimensions() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p></p>
+        """)
+        view.layoutIfNeeded()
+
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            XCTFail("expected an image attachment in the rendered text")
+            return
+        }
+
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        setSelection(in: view.textView, utf16Range: imageRange)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let initialRect = view.imageResizeOverlayRectForTesting()
+        XCTAssertNotNil(initialRect, "selecting an image should show the resize overlay")
+        XCTAssertEqual(initialRect?.width ?? 0, 140, accuracy: 1.0)
+        XCTAssertEqual(initialRect?.height ?? 0, 80, accuracy: 1.0)
+
+        view.resizeSelectedImageForTesting(width: 200, height: 100)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let html = editorGetHtml(id: editorId)
+        XCTAssertTrue(html.contains("width=\"200\""), "expected resized width in HTML, got: \(html)")
+        XCTAssertTrue(html.contains("height=\"100\""), "expected resized height in HTML, got: \(html)")
+
+        let resizedRect = view.imageResizeOverlayRectForTesting()
+        XCTAssertNotNil(resizedRect)
+        XCTAssertEqual(resizedRect?.width ?? 0, 200, accuracy: 1.0)
+        XCTAssertEqual(resizedRect?.height ?? 0, 100, accuracy: 1.0)
+        XCTAssertGreaterThan(resizedRect?.width ?? 0, initialRect?.width ?? 0)
+        XCTAssertGreaterThan(resizedRect?.height ?? 0, initialRect?.height ?? 0)
+    }
+
+    func testSelectedImageOverlayAllowsTouchesOutsideResizeHandles() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p></p>
+        """)
+        view.layoutIfNeeded()
+
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            XCTFail("expected an image attachment in the rendered text")
+            return
+        }
+
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        setSelection(in: view.textView, utf16Range: imageRange)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        guard let overlayRect = view.imageResizeOverlayRectForTesting() else {
+            XCTFail("expected a visible image resize overlay")
+            return
+        }
+
+        XCTAssertTrue(
+            view.imageResizeOverlayInterceptsPointForTesting(CGPoint(x: overlayRect.maxX, y: overlayRect.maxY)),
+            "resize handles should remain interactive"
+        )
+        XCTAssertFalse(
+            view.imageResizeOverlayInterceptsPointForTesting(CGPoint(x: overlayRect.midX, y: overlayRect.maxY + 24)),
+            "touches below the selected image should pass through so the user can place the caret and deselect the image"
+        )
+    }
+
+    func testSelectingImageHidesNativeSelectionChromeUntilCaretMovesAway() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p></p>
+        """)
+        view.layoutIfNeeded()
+
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            XCTFail("expected an image attachment in the rendered text")
+            return
+        }
+
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        setSelection(in: view.textView, utf16Range: imageRange)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        XCTAssertEqual(view.textView.tintColor.cgColor.alpha, 0, accuracy: 0.001)
+        XCTAssertEqual(view.textView.caretRect(for: view.textView.selectedTextRange?.start ?? view.textView.beginningOfDocument), .zero)
+
+        setSelection(in: view.textView, utf16Range: NSRange(location: imageRange.location + 1, length: 0))
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        XCTAssertGreaterThan(view.textView.tintColor.cgColor.alpha, 0.1)
+    }
+
+    func testUnfocusedImageTapSelectsImageOnFirstTap() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        let viewController = UIViewController()
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p></p>
+        """)
+        viewController.view.addSubview(view)
+        view.layoutIfNeeded()
+
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            XCTFail("expected an image attachment in the rendered text")
+            return
+        }
+
+        let imageRect = renderedRect(in: view.textView, utf16Range: imageRange)
+        XCTAssertNil(view.imageResizeOverlayRectForTesting())
+        XCTAssertTrue(
+            view.imageTapOverlayInterceptsPointForTesting(
+                CGPoint(x: imageRect.midX, y: imageRect.midY)
+            )
+        )
+
+        XCTAssertTrue(
+            view.tapImageOverlayForTesting(
+                at: CGPoint(x: imageRect.midX, y: imageRect.midY)
+            ),
+            "the first unfocused tap on an image should select it immediately"
+        )
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let selectedRange = view.textView.selectedTextRange
+        let startOffset = view.textView.offset(
+            from: view.textView.beginningOfDocument,
+            to: selectedRange?.start ?? view.textView.endOfDocument
+        )
+        let endOffset = view.textView.offset(
+            from: view.textView.beginningOfDocument,
+            to: selectedRange?.end ?? view.textView.endOfDocument
+        )
+
+        XCTAssertEqual(startOffset, imageRange.location)
+        XCTAssertEqual(endOffset, imageRange.location + imageRange.length)
+        XCTAssertNotNil(view.imageResizeOverlayRectForTesting())
+    }
+
+    func testFocusedImageTapSelectsImageOnFirstTap() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        let viewController = UIViewController()
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p></p>
+        """)
+        viewController.view.addSubview(view)
+        view.layoutIfNeeded()
+
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            XCTFail("expected an image attachment in the rendered text")
+            return
+        }
+
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        setCollapsedSelection(in: view.textView, utf16Offset: 0)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let imageRect = renderedRect(in: view.textView, utf16Range: imageRange)
+        XCTAssertTrue(
+            view.tapImageOverlayForTesting(
+                at: CGPoint(x: imageRect.midX, y: imageRect.midY)
+            ),
+            "a focused image tap should select the image immediately"
+        )
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let selectedRange = view.textView.selectedTextRange
+        let startOffset = view.textView.offset(
+            from: view.textView.beginningOfDocument,
+            to: selectedRange?.start ?? view.textView.endOfDocument
+        )
+        let endOffset = view.textView.offset(
+            from: view.textView.beginningOfDocument,
+            to: selectedRange?.end ?? view.textView.endOfDocument
+        )
+
+        XCTAssertEqual(startOffset, imageRange.location)
+        XCTAssertEqual(endOffset, imageRange.location + imageRange.length)
+        XCTAssertNotNil(view.imageResizeOverlayRectForTesting())
+    }
+
+    func testDisablingImageResizingRemovesImageSelectionOverlayBehavior() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.allowImageResizing = false
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p></p>
+        """)
+        view.layoutIfNeeded()
+
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            XCTFail("expected an image attachment in the rendered text")
+            return
+        }
+
+        let imageRect = renderedRect(in: view.textView, utf16Range: imageRange)
+        XCTAssertFalse(
+            view.imageTapOverlayInterceptsPointForTesting(
+                CGPoint(x: imageRect.midX, y: imageRect.midY)
+            )
+        )
+
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        setSelection(in: view.textView, utf16Range: imageRange)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        XCTAssertNil(view.imageResizeOverlayRectForTesting())
+        XCTAssertGreaterThan(view.textView.tintColor.cgColor.alpha, 0.1)
+    }
+
+    func testSelectedImageOverlayHidesWhenEditorLosesFocus() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        let viewController = UIViewController()
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p></p>
+        """)
+        viewController.view.addSubview(view)
+        view.layoutIfNeeded()
+
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            XCTFail("expected an image attachment in the rendered text")
+            return
+        }
+
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        setSelection(in: view.textView, utf16Range: imageRange)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        XCTAssertNotNil(view.imageResizeOverlayRectForTesting())
+
+        XCTAssertTrue(view.textView.resignFirstResponder())
+        view.refreshSelectionVisualStateForTesting()
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        XCTAssertNil(view.imageResizeOverlayRectForTesting())
+    }
+
+    func testDeferredImageTapSelectionWinsAfterUIKitCaretPlacement() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        let viewController = UIViewController()
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p></p>
+        """)
+        viewController.view.addSubview(view)
+        view.layoutIfNeeded()
+
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            XCTFail("expected an image attachment in the rendered text")
+            return
+        }
+
+        let imageRect = renderedRect(in: view.textView, utf16Range: imageRange)
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        setCollapsedSelection(in: view.textView, utf16Offset: 0)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        XCTAssertTrue(
+            view.tapImageOverlayForTesting(
+                at: CGPoint(x: imageRect.midX, y: imageRect.midY)
+            )
+        )
+
+        // Mirror UIKit collapsing the image selection back to a caret.
+        setCollapsedSelection(in: view.textView, utf16Offset: imageRange.location + 1)
+        view.textView.textViewDidChangeSelection(view.textView)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let selectedRange = view.textView.selectedTextRange
+        let startOffset = view.textView.offset(
+            from: view.textView.beginningOfDocument,
+            to: selectedRange?.start ?? view.textView.endOfDocument
+        )
+        let endOffset = view.textView.offset(
+            from: view.textView.beginningOfDocument,
+            to: selectedRange?.end ?? view.textView.endOfDocument
+        )
+
+        XCTAssertEqual(startOffset, imageRange.location)
+        XCTAssertEqual(endOffset, imageRange.location + imageRange.length)
+        XCTAssertNotNil(view.imageResizeOverlayRectForTesting())
+    }
+
+    func testImageTapOverlayInterceptsImagePointsOnly() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p></p>
+        """)
+        view.layoutIfNeeded()
+
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            XCTFail("expected an image attachment in the rendered text")
+            return
+        }
+
+        let imageRect = renderedRect(in: view.textView, utf16Range: imageRange)
+        let imageTapPoint = CGPoint(x: imageRect.midX, y: imageRect.midY)
+
+        XCTAssertTrue(view.imageTapOverlayInterceptsPointForTesting(imageTapPoint))
+        XCTAssertFalse(
+            view.imageTapOverlayInterceptsPointForTesting(
+                CGPoint(x: imageRect.midX, y: imageRect.maxY + 24)
+            )
+        )
+    }
+
+    func testOversizedImageResizeClampsToContentWidthAndKeepsAutoGrowHeightBounded() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.heightBehavior = .autoGrow
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Hello</p><img src="https://example.com/cat.png" width="140" height="80"><p></p>
+        """)
+        view.layoutIfNeeded()
+
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            XCTFail("expected an image attachment in the rendered text")
+            return
+        }
+
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        setSelection(in: view.textView, utf16Range: imageRange)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let maximumWidth = view.maximumImageWidthForTesting()
+        let expectedHeight = max(48, maximumWidth / 2)
+
+        view.resizeSelectedImageForTesting(width: 4_000, height: 2_000)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let html = editorGetHtml(id: editorId)
+        XCTAssertTrue(
+            html.contains("width=\"\(Int(maximumWidth.rounded()))\""),
+            "oversized image width should clamp to the editor content width, got: \(html)"
+        )
+        XCTAssertTrue(
+            html.contains("height=\"\(Int(expectedHeight.rounded()))\""),
+            "oversized image height should preserve aspect ratio after clamping, got: \(html)"
+        )
+
+        let overlayRect = view.imageResizeOverlayRectForTesting()
+        XCTAssertEqual(overlayRect?.width ?? 0, maximumWidth, accuracy: 1.0)
+        XCTAssertEqual(overlayRect?.height ?? 0, expectedHeight, accuracy: 1.0)
+        XCTAssertLessThan(view.intrinsicContentSize.height, 400)
+    }
+
+    func testImageResizePreviewUsesOverlayImageAndDefersDocumentMutationUntilCommit() {
+        let editorId = editorCreate(configJson: #"{"allowBase64Images":true}"#)
+        defer { editorDestroy(id: editorId) }
+
+        let dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg=="
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.heightBehavior = .autoGrow
+        view.editorId = editorId
+        view.setContent(json: """
+        {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hello"
+                }
+              ]
+            },
+            {
+              "type": "image",
+              "attrs": {
+                "src": "\(dataUri)",
+                "width": 140,
+                "height": 80
+              }
+            },
+            {
+              "type": "paragraph"
+            }
+          ]
+        }
+        """)
+        view.layoutIfNeeded()
+
+        guard let imageRange = firstImageRange(in: view.textView) else {
+            XCTFail("expected an image attachment in the rendered text")
+            return
+        }
+
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        setSelection(in: view.textView, utf16Range: imageRange)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let initialHtml = editorGetHtml(id: editorId)
+        let initialHeight = view.intrinsicContentSize.height
+        let maximumWidth = view.maximumImageWidthForTesting()
+
+        view.previewResizeSelectedImageForTesting(width: 4_000, height: 2_000)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        XCTAssertTrue(
+            view.imageResizePreviewHasImageForTesting(),
+            "the live resize preview should render an image overlay instead of blanking while the drag is active"
+        )
+        XCTAssertEqual(
+            editorGetHtml(id: editorId),
+            initialHtml,
+            "preview resizing should not mutate the document before the gesture commits"
+        )
+        XCTAssertEqual(
+            view.intrinsicContentSize.height,
+            initialHeight,
+            accuracy: 1.0,
+            "preview resizing should not change auto-grow measurement before commit"
+        )
+        XCTAssertEqual(view.imageResizeOverlayRectForTesting()?.width ?? 0, maximumWidth, accuracy: 1.0)
+
+        view.commitPreviewResizeForTesting()
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let committedHtml = editorGetHtml(id: editorId)
+        XCTAssertTrue(committedHtml.contains("width=\"\(Int(maximumWidth.rounded()))\""))
+        XCTAssertNotEqual(committedHtml, initialHtml)
+        XCTAssertFalse(view.imageResizePreviewHasImageForTesting())
+    }
+
     private func expectedCaretRect(
         in textView: UITextView,
         offset: Int,
@@ -1584,6 +2224,53 @@ final class RichTextEditorViewTests: XCTestCase {
         }
 
         textView.selectedTextRange = range
+    }
+
+    private func setSelection(in textView: UITextView, utf16Range: NSRange) {
+        guard
+            let start = textView.position(from: textView.beginningOfDocument, offset: utf16Range.location),
+            let end = textView.position(from: start, offset: utf16Range.length),
+            let range = textView.textRange(from: start, to: end)
+        else {
+            XCTFail("expected selection range \(utf16Range)")
+            return
+        }
+
+        textView.selectedTextRange = range
+    }
+
+    private func firstImageRange(in textView: UITextView) -> NSRange? {
+        guard textView.textStorage.length > 0 else { return nil }
+
+        for index in 0..<textView.textStorage.length {
+            let attrs = textView.textStorage.attributes(at: index, effectiveRange: nil)
+            if (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "image" {
+                return NSRange(location: index, length: 1)
+            }
+        }
+
+        return nil
+    }
+
+    private func renderedRect(in textView: UITextView, utf16Range: NSRange) -> CGRect {
+        let glyphRange = textView.layoutManager.glyphRange(
+            forCharacterRange: utf16Range,
+            actualCharacterRange: nil
+        )
+        var rect = textView.layoutManager.boundingRect(forGlyphRange: glyphRange, in: textView.textContainer)
+        rect.origin.x += textView.textContainerInset.left - textView.contentOffset.x
+        rect.origin.y += textView.textContainerInset.top - textView.contentOffset.y
+        return rect
+    }
+
+    private func hostEditorView(_ view: RichTextEditorView) -> UIWindow {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        let viewController = UIViewController()
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        viewController.view.addSubview(view)
+        view.layoutIfNeeded()
+        return window
     }
 
     private func flushMainQueue() {

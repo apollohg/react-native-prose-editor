@@ -1,9 +1,15 @@
 package com.apollohg.editor
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
+import android.util.Base64
+import android.util.Log
+import android.util.LruCache
 import android.text.Annotation
 import android.text.Layout
 import android.text.SpannableStringBuilder
@@ -18,8 +24,12 @@ import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
 import android.text.style.TypefaceSpan
 import android.text.style.UnderlineSpan
+import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
+import java.lang.ref.WeakReference
+import java.net.URL
+import java.util.concurrent.Executors
 
 object LayoutConstants {
     /** Base indentation per depth level (pixels at base scale). */
@@ -247,6 +257,293 @@ class HorizontalRuleSpan(
     }
 }
 
+internal object RenderImageDecoder {
+    private const val MAX_DECODE_DIMENSION_PX = 2048
+    internal const val LOG_TAG = "NativeEditorImage"
+
+    fun decodeSource(source: String): Bitmap? {
+        decodeDataUrlBytes(source)?.let { bytes ->
+            val decoded = decodeBitmap(bytes)
+            if (decoded == null) {
+                Log.w(LOG_TAG, "decodeSource: failed to decode data URL bytes (${sourceSummary(source)})")
+            } else {
+                Log.d(
+                    LOG_TAG,
+                    "decodeSource: decoded data URL ${sourceSummary(source)} -> ${decoded.width}x${decoded.height}"
+                )
+            }
+            return decoded
+        }
+        val remoteBytes = runCatching {
+            URL(source).openStream().use { input ->
+                input.readBytes()
+            }
+        }.getOrNull() ?: run {
+            Log.w(LOG_TAG, "decodeSource: failed to load remote image (${sourceSummary(source)})")
+            return null
+        }
+        val decoded = decodeBitmap(remoteBytes)
+        if (decoded == null) {
+            Log.w(LOG_TAG, "decodeSource: failed to decode remote bytes (${sourceSummary(source)})")
+        }
+        return decoded
+    }
+
+    fun decodeDataUrlBytes(source: String): ByteArray? {
+        val trimmed = source.trim()
+        if (!trimmed.startsWith("data:image/", ignoreCase = true)) return null
+        val commaIndex = trimmed.indexOf(',')
+        if (commaIndex <= 0) return null
+        val metadata = trimmed.substring(0, commaIndex).lowercase()
+        if (!metadata.contains(";base64")) return null
+        val payload = trimmed.substring(commaIndex + 1)
+            .filterNot(Char::isWhitespace)
+
+        val decodeFlags = intArrayOf(
+            Base64.DEFAULT,
+            Base64.NO_WRAP,
+            Base64.URL_SAFE or Base64.NO_WRAP,
+            Base64.URL_SAFE
+        )
+        for (flags in decodeFlags) {
+            val bytes = runCatching { Base64.decode(payload, flags) }.getOrNull()
+            if (bytes != null) {
+                return bytes
+            }
+        }
+        Log.w(LOG_TAG, "decodeDataUrlBytes: unsupported base64 payload (${sourceSummary(source)})")
+        return null
+    }
+
+    fun calculateInSampleSize(
+        width: Int,
+        height: Int,
+        maxWidth: Int = MAX_DECODE_DIMENSION_PX,
+        maxHeight: Int = MAX_DECODE_DIMENSION_PX
+    ): Int {
+        if (width <= 0 || height <= 0) return 1
+
+        var sampleSize = 1
+        var sampledWidth = width
+        var sampledHeight = height
+        while (sampledWidth > maxWidth || sampledHeight > maxHeight) {
+            sampleSize *= 2
+            sampledWidth = width / sampleSize
+            sampledHeight = height / sampleSize
+        }
+        return sampleSize.coerceAtLeast(1)
+    }
+
+    private fun decodeBitmap(bytes: ByteArray): Bitmap? {
+        val bounds = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            Log.w(LOG_TAG, "decodeBitmap: invalid image bounds for ${bytes.size} bytes")
+            return null
+        }
+
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight)
+        }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+    }
+
+    private fun sourceSummary(source: String): String {
+        val trimmed = source.trim()
+        if (!trimmed.startsWith("data:image/", ignoreCase = true)) {
+            return "urlLength=${trimmed.length}"
+        }
+        val commaIndex = trimmed.indexOf(',')
+        if (commaIndex <= 0) {
+            return "dataUrlLength=${trimmed.length}"
+        }
+        val metadata = trimmed.substring(0, commaIndex)
+        val payloadLength = trimmed.length - commaIndex - 1
+        return "$metadata payloadLength=$payloadLength"
+    }
+}
+
+private object RenderImageLoader {
+    private val cache = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
+    private val executor = Executors.newCachedThreadPool()
+
+    fun cached(source: String): Bitmap? = synchronized(cache) { cache.get(source) }
+
+    fun load(source: String, onLoaded: (Bitmap?) -> Unit) {
+        cached(source)?.let {
+            onLoaded(it)
+            return
+        }
+
+        if (source.trim().startsWith("data:image/", ignoreCase = true)) {
+            val bitmap = RenderImageDecoder.decodeSource(source)
+            if (bitmap != null) {
+                synchronized(cache) {
+                    cache.put(source, bitmap)
+                }
+            }
+            onLoaded(bitmap)
+            return
+        }
+
+        executor.execute {
+            val bitmap = RenderImageDecoder.decodeSource(source)
+            if (bitmap != null) {
+                synchronized(cache) {
+                    cache.put(source, bitmap)
+                }
+            }
+            onLoaded(bitmap)
+        }
+    }
+}
+
+internal class BlockImageSpan(
+    private val source: String,
+    hostView: TextView?,
+    private val density: Float,
+    private val preferredWidthDp: Float?,
+    private val preferredHeightDp: Float?
+) : ReplacementSpan() {
+    private val hostRef = WeakReference(hostView)
+
+    @Volatile
+    private var bitmap: Bitmap? = RenderImageLoader.cached(source)
+    @Volatile
+    private var lastDrawRect: RectF? = null
+
+    init {
+        if (bitmap == null) {
+            RenderImageLoader.load(source) { loaded ->
+                if (loaded == null) {
+                    Log.w(
+                        RenderImageDecoder.LOG_TAG,
+                        "BlockImageSpan: loader returned null for image source"
+                    )
+                    return@load
+                }
+                bitmap = loaded
+                hostRef.get()?.post {
+                    hostRef.get()?.requestLayout()
+                    hostRef.get()?.invalidate()
+                    (hostRef.get() as? EditorEditText)?.onSelectionOrContentMayChange?.invoke()
+                }
+            }
+        }
+    }
+
+    override fun getSize(
+        paint: Paint,
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        fm: Paint.FontMetricsInt?
+    ): Int {
+        val (widthPx, heightPx) = currentSizePx()
+        if (fm != null) {
+            fm.ascent = -heightPx
+            fm.descent = 0
+            fm.top = fm.ascent
+            fm.bottom = 0
+        }
+        return widthPx
+    }
+
+    override fun draw(
+        canvas: Canvas,
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        x: Float,
+        top: Int,
+        y: Int,
+        bottom: Int,
+        paint: Paint
+    ) {
+        val (widthPx, heightPx) = currentSizePx()
+        val rect = RectF(
+            x,
+            (bottom - heightPx).toFloat(),
+            x + widthPx,
+            bottom.toFloat()
+        )
+        val host = hostRef.get()
+        lastDrawRect = RectF(rect).apply {
+            if (host != null) {
+                offset(host.compoundPaddingLeft.toFloat(), host.extendedPaddingTop.toFloat())
+            }
+        }
+        val loadedBitmap = bitmap
+        if (loadedBitmap != null) {
+            canvas.drawBitmap(loadedBitmap, null, rect, null)
+            return
+        }
+
+        val previousColor = paint.color
+        val previousStyle = paint.style
+        paint.color = Color.argb(24, 0, 0, 0)
+        paint.style = Paint.Style.FILL
+        canvas.drawRoundRect(rect, 16f * density, 16f * density, paint)
+        paint.color = Color.argb(120, 0, 0, 0)
+        val iconRadius = minOf(rect.width(), rect.height()) * 0.12f
+        canvas.drawCircle(rect.centerX(), rect.centerY(), iconRadius, paint)
+        paint.color = previousColor
+        paint.style = previousStyle
+    }
+
+    internal fun currentSizePx(): Pair<Int, Int> {
+        val maxWidth = resolvedMaxWidth()
+        val loadedBitmap = bitmap
+        val fallbackAspectRatio = if (loadedBitmap != null && loadedBitmap.width > 0 && loadedBitmap.height > 0) {
+            loadedBitmap.height.toFloat() / loadedBitmap.width.toFloat()
+        } else {
+            0.56f
+        }
+
+        var widthPx = preferredWidthDp?.takeIf { it > 0f }?.times(density)
+        var heightPx = preferredHeightDp?.takeIf { it > 0f }?.times(density)
+
+        if (widthPx == null && heightPx == null && loadedBitmap != null && loadedBitmap.width > 0 && loadedBitmap.height > 0) {
+            widthPx = loadedBitmap.width.toFloat()
+            heightPx = loadedBitmap.height.toFloat()
+        } else if (widthPx == null && heightPx != null) {
+            widthPx = heightPx / fallbackAspectRatio
+        } else if (heightPx == null && widthPx != null) {
+            heightPx = widthPx * fallbackAspectRatio
+        }
+
+        if (widthPx == null || heightPx == null) {
+            val placeholderWidth = maxWidth.coerceAtLeast(160f * density)
+            val placeholderHeight = minOf(
+                180f * density,
+                placeholderWidth * fallbackAspectRatio
+            ).coerceAtLeast(96f * density)
+            widthPx = placeholderWidth
+            heightPx = placeholderHeight
+        }
+
+        val scale = minOf(1f, maxWidth / widthPx.coerceAtLeast(1f))
+        return Pair(
+            (widthPx * scale).toInt().coerceAtLeast(1),
+            (heightPx * scale).toInt().coerceAtLeast(1)
+        )
+    }
+
+    internal fun currentDrawRect(): RectF? = lastDrawRect?.let(::RectF)
+
+    private fun resolvedMaxWidth(): Float {
+        val host = hostRef.get()
+        val hostWidth = host?.let {
+            maxOf(it.width, it.measuredWidth) - it.totalPaddingLeft - it.totalPaddingRight
+        } ?: 0
+        return if (hostWidth > 0) hostWidth.toFloat() else 240f * density
+    }
+}
+
 class FixedLineHeightSpan(
     private val lineHeightPx: Int
 ) : LineHeightSpan {
@@ -385,7 +682,8 @@ object RenderBridge {
         baseFontSize: Float,
         textColor: Int,
         theme: EditorTheme? = null,
-        density: Float = 1f
+        density: Float = 1f,
+        hostView: TextView? = null
     ): SpannableStringBuilder {
         val elements = try {
             JSONArray(json)
@@ -393,7 +691,7 @@ object RenderBridge {
             return SpannableStringBuilder()
         }
 
-        return buildSpannableFromArray(elements, baseFontSize, textColor, theme, density)
+        return buildSpannableFromArray(elements, baseFontSize, textColor, theme, density, hostView)
     }
 
     fun buildSpannableFromArray(
@@ -401,7 +699,8 @@ object RenderBridge {
         baseFontSize: Float,
         textColor: Int,
         theme: EditorTheme? = null,
-        density: Float = 1f
+        density: Float = 1f,
+        hostView: TextView? = null
     ): SpannableStringBuilder {
         val result = SpannableStringBuilder()
         val blockStack = mutableListOf<BlockContext>()
@@ -447,22 +746,25 @@ object RenderBridge {
 
                 "voidBlock" -> {
                     val nodeType = element.optString("nodeType", "")
-                        if (!isFirstBlock) {
-                            val spacingPx = ((nextBlockSpacingBefore ?: 0f) * density).toInt()
-                            appendInterBlockNewline(result, baseFontSize, textColor, spacingPx)
-                        }
-                        isFirstBlock = false
+                    val attrs = element.optJSONObject("attrs")
+                    if (!isFirstBlock) {
+                        val spacingPx = ((nextBlockSpacingBefore ?: 0f) * density).toInt()
+                        appendInterBlockNewline(result, baseFontSize, textColor, spacingPx)
+                    }
+                    isFirstBlock = false
                     val spacingBefore = theme?.effectiveTextStyle(nodeType)?.spacingAfter
                         ?: theme?.list?.itemSpacing
                     nextBlockSpacingBefore = spacingBefore
                     appendVoidBlock(
                         result,
                         nodeType,
+                        attrs,
                         baseFontSize,
                         textColor,
                         theme,
                         density,
-                        spacingBefore
+                        spacingBefore,
+                        hostView
                     )
                 }
 
@@ -818,11 +1120,13 @@ object RenderBridge {
     private fun appendVoidBlock(
         builder: SpannableStringBuilder,
         nodeType: String,
+        attrs: JSONObject?,
         baseFontSize: Float,
         textColor: Int,
         theme: EditorTheme?,
         density: Float,
-        spacingBefore: Float?
+        spacingBefore: Float?,
+        hostView: TextView?
     ) {
         when (nodeType) {
             "horizontalRule" -> {
@@ -841,6 +1145,32 @@ object RenderBridge {
                         lineColor = ruleColor,
                         lineHeight = (theme?.horizontalRule?.thickness ?: LayoutConstants.HORIZONTAL_RULE_HEIGHT) * density,
                         verticalPadding = (theme?.horizontalRule?.verticalMargin ?: LayoutConstants.HORIZONTAL_RULE_VERTICAL_PADDING) * density
+                    ),
+                    start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+            "image" -> {
+                val source = if (attrs != null && attrs.has("src") && !attrs.isNull("src")) {
+                    attrs.optString("src", "").trim()
+                } else {
+                    ""
+                }
+                val preferredWidthDp = attrs?.optPositiveFloat("width")
+                val preferredHeightDp = attrs?.optPositiveFloat("height")
+                if (source.isEmpty()) {
+                    builder.append(LayoutConstants.OBJECT_REPLACEMENT_CHARACTER)
+                    return
+                }
+                val start = builder.length
+                builder.append(LayoutConstants.OBJECT_REPLACEMENT_CHARACTER)
+                val end = builder.length
+                builder.setSpan(
+                    BlockImageSpan(
+                        source = source,
+                        hostView = hostView,
+                        density = density,
+                        preferredWidthDp = preferredWidthDp,
+                        preferredHeightDp = preferredHeightDp
                     ),
                     start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                 )
@@ -1390,4 +1720,11 @@ object RenderBridge {
             it.key == NATIVE_BLOCKQUOTE_ANNOTATION
         }
     }
+}
+
+private fun JSONObject.optPositiveFloat(key: String): Float? {
+    if (!has(key) || isNull(key)) return null
+    val value = optDouble(key, Double.NaN)
+    if (value.isNaN() || value <= 0.0) return null
+    return value.toFloat()
 }

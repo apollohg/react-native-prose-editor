@@ -9,6 +9,10 @@ import android.text.Spanned
 import android.text.SpannableStringBuilder
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.util.Base64
+import android.view.View
+import android.widget.TextView
+import kotlin.math.abs
 import android.text.style.AbsoluteSizeSpan
 import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
@@ -281,6 +285,136 @@ class RenderBridgeTest {
             "Should have a HorizontalRuleSpan",
             hrSpans.isNotEmpty()
         )
+    }
+
+    @Test
+    fun `render - image span honors preferred dimensions`() {
+        val json = """
+        [
+            {"type": "voidBlock", "nodeType": "image", "docPos": 1, "attrs": {
+                "src": "https://example.com/cat.png",
+                "width": 140,
+                "height": 80
+            }}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, density = 1f)
+
+        assertTrue(
+            "Image should contain object replacement character. Got: '$result'",
+            result.toString().contains("\uFFFC")
+        )
+
+        val imageSpans = result.getSpans(0, result.length, BlockImageSpan::class.java)
+        assertEquals("Should have one BlockImageSpan", 1, imageSpans.size)
+
+        val (widthPx, heightPx) = imageSpans.single().currentSizePx()
+        assertEquals(140, widthPx)
+        assertEquals(80, heightPx)
+    }
+
+    @Test
+    fun `render - oversized preferred image dimensions scale to host width`() {
+        val hostView = TextView(org.robolectric.RuntimeEnvironment.getApplication()).apply {
+            measure(
+                View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            )
+            layout(0, 0, measuredWidth, measuredHeight)
+        }
+        val json = """
+        [
+            {"type": "voidBlock", "nodeType": "image", "docPos": 1, "attrs": {
+                "src": "https://example.com/cat.png",
+                "width": 4000,
+                "height": 2000
+            }}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(
+            json,
+            baseFontSize,
+            textColor,
+            density = 1f,
+            hostView = hostView
+        )
+
+        val imageSpan = result.getSpans(0, result.length, BlockImageSpan::class.java).single()
+        val (widthPx, heightPx) = imageSpan.currentSizePx()
+        assertTrue(widthPx <= hostView.width)
+        assertTrue(abs(heightPx - (widthPx / 2)) <= 1)
+    }
+
+    @Test
+    fun `render - data url decoder handles expo style payloads`() {
+        val dataUrl =
+            "data:image/gif;base64,R0lGODdhAQABAIAAAP///////ywAAAAAAQABAAACAkQBADs="
+
+        val bitmap = RenderImageDecoder.decodeSource(dataUrl)
+
+        assertNotNull("Standard base64 image data URLs should decode", bitmap)
+        assertEquals(1, bitmap?.width)
+        assertEquals(1, bitmap?.height)
+    }
+
+    @Test
+    fun `render - data url decoder accepts url safe base64`() {
+        val standardDataUrl =
+            "data:image/gif;base64,R0lGODdhAQABAIAAAP///////ywAAAAAAQABAAACAkQBADs="
+        val bytes = RenderImageDecoder.decodeDataUrlBytes(standardDataUrl)
+        assertNotNull(bytes)
+
+        val urlSafePayload = Base64.encodeToString(
+            bytes,
+            Base64.URL_SAFE or Base64.NO_WRAP
+        )
+        val bitmap = RenderImageDecoder.decodeSource("data:image/gif;base64,$urlSafePayload")
+
+        assertNotNull("URL-safe base64 image data URLs should decode", bitmap)
+        assertEquals(1, bitmap?.width)
+        assertEquals(1, bitmap?.height)
+    }
+
+    @Test
+    fun `render - data url image span is ready on first render`() {
+        val dataUrl =
+            "data:image/gif;base64,R0lGODdhAQABAIAAAP///////ywAAAAAAQABAAACAkQBADs="
+        val hostView = TextView(org.robolectric.RuntimeEnvironment.getApplication()).apply {
+            measure(
+                View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            )
+            layout(0, 0, measuredWidth, measuredHeight)
+        }
+        val json = """
+        [
+            {"type": "voidBlock", "nodeType": "image", "docPos": 1, "attrs": {
+                "src": "$dataUrl"
+            }}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(
+            json,
+            baseFontSize,
+            textColor,
+            density = 1f,
+            hostView = hostView
+        )
+
+        val imageSpan = result.getSpans(0, result.length, BlockImageSpan::class.java).single()
+        val (widthPx, heightPx) = imageSpan.currentSizePx()
+        assertEquals(1, widthPx)
+        assertEquals(1, heightPx)
+    }
+
+    @Test
+    fun `render - large images are downsampled for decode`() {
+        assertEquals(1, RenderImageDecoder.calculateInSampleSize(width = 1024, height = 768))
+        assertEquals(2, RenderImageDecoder.calculateInSampleSize(width = 4096, height = 2048))
+        assertEquals(4, RenderImageDecoder.calculateInSampleSize(width = 8192, height = 4096))
     }
 
     // ── Multiple Paragraphs ─────────────────────────────────────────────

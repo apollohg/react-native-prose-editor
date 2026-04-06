@@ -44,6 +44,11 @@ import {
     withMentionsSchema,
 } from './addons';
 import { tiptapSchema, type SchemaDefinition } from './schemas';
+import {
+    IMAGE_NODE_NAME,
+    buildImageFragmentJson,
+    type ImageNodeAttributes,
+} from './schemas';
 
 interface NativeEditorViewHandle {
     focus?: () => void;
@@ -60,6 +65,7 @@ interface NativeEditorViewProps {
     showToolbar: boolean;
     toolbarPlacement: NativeRichTextEditorToolbarPlacement;
     heightBehavior: NativeRichTextEditorHeightBehavior;
+    allowImageResizing: boolean;
     themeJson?: string;
     addonsJson?: string;
     toolbarItemsJson?: string;
@@ -83,6 +89,11 @@ const DEV_NATIVE_VIEW_KEY = __DEV__
     ? `native-editor-dev:${Math.random().toString(36).slice(2)}`
     : 'native-editor';
 const LINK_TOOLBAR_ACTION_KEY = '__native-editor-link__';
+const IMAGE_TOOLBAR_ACTION_KEY = '__native-editor-image__';
+
+function isImageDataUrl(value: string): boolean {
+    return /^data:image\//i.test(value.trim());
+}
 
 function isPromiseLike(value: unknown): value is Promise<unknown> {
     return (
@@ -179,6 +190,12 @@ export interface LinkRequestContext {
     unsetLink: () => void;
 }
 
+export interface ImageRequestContext {
+    selection: Selection;
+    allowBase64: boolean;
+    insertImage: (src: string, attrs?: Omit<ImageNodeAttributes, 'src'>) => void;
+}
+
 export interface NativeRichTextEditorProps {
     /** Initial content as HTML (uncontrolled mode). */
     initialContent?: string;
@@ -210,6 +227,12 @@ export interface NativeRichTextEditorProps {
     onToolbarAction?: (key: string) => void;
     /** Called when a toolbar link item is pressed so the host can collect/edit a URL. */
     onRequestLink?: (context: LinkRequestContext) => void;
+    /** Called when a toolbar image item is pressed so the host can choose an image source. */
+    onRequestImage?: (context: ImageRequestContext) => void;
+    /** Whether `data:image/...` sources are accepted for image insertion and HTML parsing. */
+    allowBase64Images?: boolean;
+    /** Whether selected images show native resize handles. */
+    allowImageResizing?: boolean;
     /** Called when content changes with the current HTML. */
     onContentChange?: (html: string) => void;
     /** Called when content changes with the current ProseMirror JSON. */
@@ -218,6 +241,8 @@ export interface NativeRichTextEditorProps {
     onSelectionChange?: (selection: Selection) => void;
     /** Called when active formatting state changes. */
     onActiveStateChange?: (state: ActiveState) => void;
+    /** Called when undo/redo availability changes. */
+    onHistoryStateChange?: (state: HistoryState) => void;
     /** Called when the editor gains focus. */
     onFocus?: () => void;
     /** Called when the editor loses focus. */
@@ -255,6 +280,8 @@ export interface NativeRichTextEditorRef {
     outdentListItem(): void;
     /** Insert a void node (e.g. 'horizontalRule'). */
     insertNode(nodeType: string): void;
+    /** Insert a block image node with the given source and optional metadata. */
+    insertImage(src: string, attrs?: Omit<ImageNodeAttributes, 'src'>): void;
     /** Insert text at the current cursor position. */
     insertText(text: string): void;
     /** Insert HTML content at the current selection. */
@@ -308,10 +335,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             toolbarItems = DEFAULT_EDITOR_TOOLBAR_ITEMS,
             onToolbarAction,
             onRequestLink,
+            onRequestImage,
             onContentChange,
             onContentChangeJSON,
             onSelectionChange,
             onActiveStateChange,
+            onHistoryStateChange,
             onFocus,
             onBlur,
             style,
@@ -319,6 +348,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             theme,
             addons,
             remoteSelections,
+            allowBase64Images = false,
+            allowImageResizing = true,
         },
         ref
     ) {
@@ -365,6 +396,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         onSelectionChangeRef.current = onSelectionChange;
         const onActiveStateChangeRef = useRef(onActiveStateChange);
         onActiveStateChangeRef.current = onActiveStateChange;
+        const onHistoryStateChangeRef = useRef(onHistoryStateChange);
+        onHistoryStateChangeRef.current = onHistoryStateChange;
         const onFocusRef = useRef(onFocus);
         onFocusRef.current = onFocus;
         const onBlurRef = useRef(onBlur);
@@ -460,6 +493,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 syncStateFromUpdate(update);
 
                 onActiveStateChangeRef.current?.(update.activeState);
+                onHistoryStateChangeRef.current?.(update.historyState);
 
                 if (!options?.suppressContentCallbacks) {
                     if (onContentChangeRef.current && bridgeRef.current) {
@@ -483,9 +517,11 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     ? withMentionsSchema(schema ?? tiptapSchema)
                     : schema;
             const schemaJson = effectiveSchema ? JSON.stringify(effectiveSchema) : undefined;
-            const bridge = NativeEditorBridge.create(
-                maxLength != null || schemaJson ? { maxLength, schemaJson } : undefined
-            );
+            const bridgeConfig =
+                maxLength != null || schemaJson || allowBase64Images
+                    ? { maxLength, schemaJson, allowBase64Images }
+                    : undefined;
+            const bridge = NativeEditorBridge.create(bridgeConfig);
             bridgeRef.current = bridge;
             setEditorInstanceId(bridge.editorId);
 
@@ -511,7 +547,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 setIsReady(false);
             };
             // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [schema, maxLength, syncStateFromUpdate, Boolean(addons?.mentions)]);
+        }, [schema, maxLength, syncStateFromUpdate, Boolean(addons?.mentions), allowBase64Images]);
 
         useEffect(() => {
             if (value == null) return;
@@ -586,6 +622,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     syncStateFromUpdate(update);
 
                     onActiveStateChangeRef.current?.(update.activeState);
+                    onHistoryStateChangeRef.current?.(update.historyState);
 
                     if (onContentChangeRef.current) {
                         onContentChangeRef.current(bridgeRef.current.getHtml());
@@ -627,6 +664,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 selectionRef.current = nextSelection;
                 if (currentState) {
                     onActiveStateChangeRef.current?.(currentState.activeState);
+                    onHistoryStateChangeRef.current?.(currentState.historyState);
                 }
                 onSelectionChangeRef.current?.(nextSelection);
             },
@@ -654,26 +692,55 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             [autoGrowHeight, heightBehavior]
         );
 
-        const openLinkRequest = useCallback(() => {
-            const requestSelection = selectionRef.current;
-            const restoreCapturedSelection = () => {
-                if (requestSelection.type === 'text') {
-                    const { anchor, head } = requestSelection;
-                    if (anchor == null || head == null) {
-                        return;
-                    }
-                    bridgeRef.current?.setSelection(anchor, head);
+        const restoreSelection = useCallback((selection: Selection) => {
+            if (selection.type === 'text') {
+                const { anchor, head } = selection;
+                if (anchor == null || head == null) {
                     return;
                 }
+                bridgeRef.current?.setSelection(anchor, head);
+                return;
+            }
 
-                if (requestSelection.type === 'node') {
-                    const { pos } = requestSelection;
-                    if (pos == null) {
-                        return;
-                    }
-                    bridgeRef.current?.setSelection(pos, pos);
+            if (selection.type === 'node') {
+                const { pos } = selection;
+                if (pos == null) {
+                    return;
                 }
-            };
+                bridgeRef.current?.setSelection(pos, pos);
+            }
+        }, []);
+
+        const insertImage = useCallback(
+            (
+                src: string,
+                attrs?: Omit<ImageNodeAttributes, 'src'>,
+                selection?: Selection
+            ) => {
+                const trimmedSrc = src.trim();
+                if (!trimmedSrc) return;
+                if (!allowBase64Images && isImageDataUrl(trimmedSrc)) {
+                    return;
+                }
+                runAndApply(() => {
+                    if (selection) {
+                        restoreSelection(selection);
+                    }
+                    return (
+                        bridgeRef.current?.insertContentJson(
+                            buildImageFragmentJson({
+                                src: trimmedSrc,
+                                ...(attrs ?? {}),
+                            })
+                        ) ?? null
+                    );
+                });
+            },
+            [allowBase64Images, restoreSelection, runAndApply]
+        );
+
+        const openLinkRequest = useCallback(() => {
+            const requestSelection = selectionRef.current;
 
             onRequestLink?.({
                 href: currentLinkHref,
@@ -684,7 +751,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     if (!trimmedHref) return;
                     runAndApply(
                         () => {
-                            restoreCapturedSelection();
+                            restoreSelection(requestSelection);
                             return (
                                 bridgeRef.current?.setMark('link', {
                                     href: trimmedHref,
@@ -697,14 +764,25 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 unsetLink: () => {
                     runAndApply(
                         () => {
-                            restoreCapturedSelection();
+                            restoreSelection(requestSelection);
                             return bridgeRef.current?.unsetMark('link') ?? null;
                         },
                         { skipNativeApplyIfContentUnchanged: true }
                     );
                 },
             });
-        }, [activeState.marks.link, currentLinkHref, onRequestLink, runAndApply]);
+        }, [activeState.marks.link, currentLinkHref, onRequestLink, restoreSelection, runAndApply]);
+
+        const openImageRequest = useCallback(() => {
+            const requestSelection = selectionRef.current;
+
+            onRequestImage?.({
+                selection: requestSelection,
+                allowBase64: allowBase64Images,
+                insertImage: (src: string, attrs?: Omit<ImageNodeAttributes, 'src'>) =>
+                    insertImage(src, attrs, requestSelection),
+            });
+        }, [allowBase64Images, insertImage, onRequestImage]);
 
         const handleToolbarAction = useCallback(
             (event: NativeSyntheticEvent<NativeToolbarActionEvent>) => {
@@ -712,9 +790,13 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     openLinkRequest();
                     return;
                 }
+                if (event.nativeEvent.key === IMAGE_TOOLBAR_ACTION_KEY) {
+                    openImageRequest();
+                    return;
+                }
                 onToolbarAction?.(event.nativeEvent.key);
             },
-            [onToolbarAction, openLinkRequest]
+            [onToolbarAction, openImageRequest, openLinkRequest]
         );
 
         const handleAddonEvent = useCallback((event: NativeSyntheticEvent<NativeAddonEvent>) => {
@@ -789,6 +871,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 insertNode(nodeType: string) {
                     runAndApply(() => bridgeRef.current?.insertNode(nodeType) ?? null);
                 },
+                insertImage(src: string, attrs?: Omit<ImageNodeAttributes, 'src'>) {
+                    insertImage(src, attrs);
+                },
                 insertText(text: string) {
                     runAndApply(() => bridgeRef.current?.replaceSelectionText(text) ?? null);
                 },
@@ -831,24 +916,37 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     return bridgeRef.current.canRedo();
                 },
             }),
-            [runAndApply]
+            [insertImage, runAndApply]
         );
 
         if (!isReady) return null;
 
         const toolbarItemsForNative = toolbarItems.map((item) => {
-            if (item.type !== 'link') {
-                return item;
+            if (item.type === 'link') {
+                return {
+                    type: 'action' as const,
+                    key: LINK_TOOLBAR_ACTION_KEY,
+                    label: item.label,
+                    icon: item.icon as EditorToolbarIcon,
+                    isActive: activeState.marks.link === true,
+                    isDisabled:
+                        !editable || !onRequestLink || !activeState.allowedMarks.includes('link'),
+                };
             }
-            return {
-                type: 'action' as const,
-                key: LINK_TOOLBAR_ACTION_KEY,
-                label: item.label,
-                icon: item.icon as EditorToolbarIcon,
-                isActive: activeState.marks.link === true,
-                isDisabled:
-                    !editable || !onRequestLink || !activeState.allowedMarks.includes('link'),
-            };
+            if (item.type === 'image') {
+                return {
+                    type: 'action' as const,
+                    key: IMAGE_TOOLBAR_ACTION_KEY,
+                    label: item.label,
+                    icon: item.icon as EditorToolbarIcon,
+                    isActive: false,
+                    isDisabled:
+                        !editable
+                        || !onRequestImage
+                        || !activeState.insertableNodes.includes(IMAGE_NODE_NAME),
+                };
+            }
+            return item;
         });
         const themeJson = serializeEditorTheme(theme);
         const addonsJson = serializeEditorAddons(addons);
@@ -933,6 +1031,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                         }
                     }}
                     onRequestLink={openLinkRequest}
+                    onRequestImage={openImageRequest}
                     onToolbarAction={onToolbarAction}
                     onToggleBold={() =>
                         runAndApply(() => bridgeRef.current?.toggleMark('bold') ?? null, {
@@ -991,6 +1090,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     showToolbar={showToolbar}
                     toolbarPlacement={toolbarPlacement}
                     heightBehavior={heightBehavior}
+                    allowImageResizing={allowImageResizing}
                     themeJson={themeJson}
                     addonsJson={addonsJson}
                     toolbarItemsJson={toolbarItemsJson}

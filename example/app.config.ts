@@ -5,6 +5,16 @@ export default {
     name: 'Native Editor Example',
     slug: 'native-editor-example',
     version: rootPackage.version,
+    plugins: [
+      [
+        'expo-image-picker',
+        {
+          photosPermission: 'Allow Native Editor Example to choose images from your library.',
+          cameraPermission: false,
+          microphonePermission: false,
+        },
+      ],
+    ],
     orientation: 'portrait',
     ios: {
       supportsTablet: true,

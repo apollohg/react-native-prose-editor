@@ -272,6 +272,17 @@ describe('NativeEditorBridge', () => {
             bridge.destroy();
         });
 
+        it('creates a bridge with allowBase64Images in config', () => {
+            const bridge = NativeEditorBridge.create({ allowBase64Images: true });
+
+            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith(
+                JSON.stringify({ allowBase64Images: true })
+            );
+            expect(bridge.editorId).toBe(1);
+
+            bridge.destroy();
+        });
+
         it('falls back to default when schemaJson is invalid JSON', () => {
             const bridge = NativeEditorBridge.create({ schemaJson: 'not valid json' });
 
@@ -434,6 +445,33 @@ describe('NativeEditorBridge', () => {
             const elements = bridge.setHtml('');
 
             expect(elements).toEqual([]);
+            bridge.destroy();
+        });
+
+        it('preserves attrs on void render elements returned by native', () => {
+            mockNativeModule.editorSetHtml.mockReturnValueOnce(
+                JSON.stringify([
+                    {
+                        type: 'voidBlock',
+                        nodeType: 'image',
+                        docPos: 0,
+                        attrs: { src: 'https://example.com/cat.png', alt: 'Cat' },
+                    },
+                ])
+            );
+
+            const bridge = NativeEditorBridge.create();
+            const elements = bridge.setHtml('<img src="https://example.com/cat.png" alt="Cat">');
+
+            expect(elements).toEqual([
+                {
+                    type: 'voidBlock',
+                    nodeType: 'image',
+                    docPos: 0,
+                    attrs: { src: 'https://example.com/cat.png', alt: 'Cat' },
+                },
+            ]);
+
             bridge.destroy();
         });
     });

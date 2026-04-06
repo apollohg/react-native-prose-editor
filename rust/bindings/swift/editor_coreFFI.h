@@ -457,6 +457,11 @@ RustBuffer uniffi_editor_core_fn_func_editor_replace_selection_text(uint64_t id,
 RustBuffer uniffi_editor_core_fn_func_editor_replace_text_scalar(uint64_t id, uint32_t scalar_from, uint32_t scalar_to, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_RESIZE_IMAGE_AT_DOC_POS
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_RESIZE_IMAGE_AT_DOC_POS
+RustBuffer uniffi_editor_core_fn_func_editor_resize_image_at_doc_pos(uint64_t id, uint32_t doc_pos, uint32_t width, uint32_t height, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_SCALAR_TO_DOC
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_SCALAR_TO_DOC
 uint32_t uniffi_editor_core_fn_func_editor_scalar_to_doc(uint64_t id, uint32_t scalar, RustCallStatus *_Nonnull out_status
@@ -1080,6 +1085,12 @@ uint16_t uniffi_editor_core_checksum_func_editor_replace_selection_text(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REPLACE_TEXT_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REPLACE_TEXT_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_replace_text_scalar(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_RESIZE_IMAGE_AT_DOC_POS
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_RESIZE_IMAGE_AT_DOC_POS
+uint16_t uniffi_editor_core_checksum_func_editor_resize_image_at_doc_pos(void
     
 );
 #endif

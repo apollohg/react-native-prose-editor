@@ -118,13 +118,14 @@ pub struct Editor {
     selection: Selection,
     stored_marks: Option<Vec<Mark>>,
     interceptors: InterceptorPipeline,
+    allow_base64_images: bool,
 }
 
 impl Editor {
     /// Create a new editor with the given schema and interceptor pipeline.
     ///
     /// Starts with an empty document (single empty paragraph).
-    pub fn new(schema: Schema, interceptors: InterceptorPipeline) -> Self {
+    pub fn new(schema: Schema, interceptors: InterceptorPipeline, allow_base64_images: bool) -> Self {
         let doc = make_empty_doc(&schema);
         let backend = StandaloneBackend::new(doc);
         Self {
@@ -133,6 +134,7 @@ impl Editor {
             selection: Selection::cursor(1), // inside the empty paragraph
             stored_marks: None,
             interceptors,
+            allow_base64_images,
         }
     }
 
@@ -142,8 +144,15 @@ impl Editor {
 
     /// Replace the document content from an HTML string.
     pub fn set_html(&mut self, html: &str) -> Result<Vec<RenderElement>, EditorError> {
-        let doc = serialize::from_html(html, &self.schema, &serialize::FromHtmlOptions::default())
-            .map_err(|e| EditorError::Parse(e.to_string()))?;
+        let doc = serialize::from_html(
+            html,
+            &self.schema,
+            &serialize::FromHtmlOptions {
+                strict: false,
+                allow_base64_images: self.allow_base64_images,
+            },
+        )
+        .map_err(|e| EditorError::Parse(e.to_string()))?;
         self.backend = StandaloneBackend::new(doc);
         self.selection = Selection::cursor(1);
         self.stored_marks = None;
@@ -631,10 +640,52 @@ impl Editor {
         self.insert_node(from, node_type)
     }
 
+    pub fn resize_image_at_doc_pos(
+        &mut self,
+        doc_pos: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<EditorUpdate, EditorError> {
+        if width == 0 || height == 0 {
+            return Ok(self.build_update_from_current());
+        }
+
+        let Some((image_pos, mut attrs)) = self.image_node_at_doc_pos(doc_pos) else {
+            return Ok(self.build_update_from_current());
+        };
+
+        let width_value = serde_json::Value::Number(serde_json::Number::from(width));
+        let height_value = serde_json::Value::Number(serde_json::Number::from(height));
+        if attrs.get("width") == Some(&width_value) && attrs.get("height") == Some(&height_value) {
+            return Ok(self.build_update_from_current());
+        }
+
+        attrs.insert("width".to_string(), width_value);
+        attrs.insert("height".to_string(), height_value);
+
+        let mut tx = Transaction::new(Source::Input);
+        tx.add_step(Step::UpdateNodeAttrs {
+            pos: image_pos,
+            attrs,
+        });
+        self.apply_transaction_with_selection_adjustments(
+            tx,
+            None,
+            Some(Selection::node(image_pos)),
+        )
+    }
+
     /// Insert HTML content at the current selection position.
     pub fn insert_content_html(&mut self, html: &str) -> Result<EditorUpdate, EditorError> {
         let parsed_doc =
-            serialize::from_html(html, &self.schema, &serialize::FromHtmlOptions::default())
+            serialize::from_html(
+                html,
+                &self.schema,
+                &serialize::FromHtmlOptions {
+                    strict: false,
+                    allow_base64_images: self.allow_base64_images,
+                },
+            )
                 .map_err(|e| EditorError::Parse(e.to_string()))?;
 
         let content = match parsed_doc.root().content() {
@@ -644,6 +695,11 @@ impl Editor {
 
         let doc = self.backend.document();
         let from = self.selection.from(doc);
+
+        if self.is_block_void_fragment(&content) {
+            return self.insert_block_void_fragment_at_selection(from, &content, Source::Paste);
+        }
+
         let to = self.selection.to(doc);
 
         let mut tx = Transaction::new(Source::Paste);
@@ -670,6 +726,11 @@ impl Editor {
 
         let doc = self.backend.document();
         let from = self.selection.from(doc);
+
+        if self.is_block_void_fragment(&content) {
+            return self.insert_block_void_fragment_at_selection(from, &content, Source::Api);
+        }
+
         let to = self.selection.to(doc);
 
         let mut tx = Transaction::new(Source::Api);
@@ -684,7 +745,14 @@ impl Editor {
     /// preserves the selection where possible.
     pub fn replace_html(&mut self, html: &str) -> Result<EditorUpdate, EditorError> {
         let parsed_doc =
-            serialize::from_html(html, &self.schema, &serialize::FromHtmlOptions::default())
+            serialize::from_html(
+                html,
+                &self.schema,
+                &serialize::FromHtmlOptions {
+                    strict: false,
+                    allow_base64_images: self.allow_base64_images,
+                },
+            )
                 .map_err(|e| EditorError::Parse(e.to_string()))?;
 
         let content = match parsed_doc.root().content() {
@@ -868,7 +936,7 @@ impl Editor {
             );
         }
         if let Some((replace_from, replace_to, selection_after)) = self
-            .horizontal_rule_replacement_for_scalar_delete(
+            .block_void_replacement_for_scalar_delete(
                 scalar_from,
                 scalar_to,
                 doc_from,
@@ -1456,6 +1524,74 @@ impl Editor {
         self.insertable_nodes_at_pos(pos)
             .iter()
             .any(|insertable| insertable == node_type)
+    }
+
+    fn is_block_void_fragment(&self, content: &Fragment) -> bool {
+        content.size() > 0
+            && content.iter().all(|node| {
+                self.schema
+                    .node(node.node_type())
+                    .map(|spec| matches!(spec.role, NodeRole::Block) && spec.is_void)
+                    .unwrap_or(false)
+            })
+    }
+
+    fn image_node_at_doc_pos(
+        &self,
+        doc_pos: u32,
+    ) -> Option<(u32, HashMap<String, serde_json::Value>)> {
+        let block_index = self.position_map().find_block_for_doc_pos(doc_pos)?;
+        let block = self.position_map().block(block_index)?;
+        if !block.is_void_block {
+            return None;
+        }
+
+        let node = self.document().node_at(&block.node_path)?;
+        if node.node_type() != "image" {
+            return None;
+        }
+
+        Some((block.doc_start, node.attrs().clone()))
+    }
+
+    fn insert_block_void_fragment_at_selection(
+        &mut self,
+        pos: u32,
+        content: &Fragment,
+        source: Source,
+    ) -> Result<EditorUpdate, EditorError> {
+        if !content
+            .iter()
+            .all(|node| self.can_insert_block_node_at_pos(pos, node.node_type()))
+        {
+            return Ok(self.build_update_from_current());
+        }
+
+        let insert_pos = self.resolve_block_insert_pos(pos);
+        let replace_range = self.empty_text_block_replace_range_at(pos);
+        let replace_from = replace_range.map(|(from, _)| from).unwrap_or(insert_pos);
+        let replace_to = replace_range.map(|(_, to)| to).unwrap_or(insert_pos);
+        let inserted_size = content.size();
+
+        let mut replacement_nodes: Vec<Node> = content.iter().cloned().collect();
+        replacement_nodes.push(Self::empty_paragraph_node());
+
+        let mut tx = Transaction::new(source);
+        tx.add_step(Step::ReplaceRange {
+            from: replace_from,
+            to: replace_to,
+            content: Fragment::from(replacement_nodes),
+        });
+
+        self.apply_transaction_with_selection_adjustments(
+            tx,
+            None,
+            Some(Selection::cursor(
+                replace_from
+                    .saturating_add(inserted_size)
+                    .saturating_add(1),
+            )),
+        )
     }
 
     fn is_inline_insertable_node(&self, node_type: &str) -> bool {
@@ -2585,7 +2721,7 @@ impl Editor {
         })
     }
 
-    fn horizontal_rule_replacement_for_scalar_delete(
+    fn block_void_replacement_for_scalar_delete(
         &self,
         scalar_from: u32,
         scalar_to: u32,
@@ -2648,8 +2784,7 @@ impl Editor {
         let parent_path = &block_path[..block_path.len() - 1];
         let parent = doc.node_at(parent_path)?;
         let previous_sibling = parent.child(block_index as usize - 1)?;
-        if !previous_sibling.is_void() || !Self::is_horizontal_rule_node(previous_sibling.node_type())
-        {
+        if !self.is_block_void_node(previous_sibling) {
             return None;
         }
 
@@ -2734,6 +2869,15 @@ impl Editor {
             return None;
         }
         Some((block_open, block_open + block.node_size()))
+    }
+
+    fn is_block_void_node(&self, node: &Node) -> bool {
+        node.is_void()
+            && self
+                .schema
+                .node(node.node_type())
+                .map(|spec| matches!(spec.role, NodeRole::Block))
+                .unwrap_or(false)
     }
 
     fn effective_marks_for_insert(&self, pos: u32) -> Vec<Mark> {

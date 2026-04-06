@@ -8,7 +8,7 @@ use editor_core::selection::Selection;
 use std::collections::HashMap;
 
 fn default_editor() -> Editor {
-    Editor::new(tiptap_schema(), InterceptorPipeline::new())
+    Editor::new(tiptap_schema(), InterceptorPipeline::new(), false)
 }
 
 #[test]

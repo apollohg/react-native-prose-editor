@@ -229,6 +229,7 @@ class NativeToolbarTest {
         assertEquals(32f * density, toolbar.appliedChromeCornerRadiusPx)
         assertEquals(20f * density, toolbar.appliedButtonCornerRadiusPx)
         assertEquals(0f, toolbar.appliedChromeElevationPx)
+        assertTrue(toolbar.clipToOutline)
     }
 
     @Test

@@ -19,13 +19,13 @@ namespace editor_core {
     string collaboration_session_set_local_awareness(u64 id, string awareness_json);
     string collaboration_session_clear_local_awareness(u64 id);
 
-    // Content (bootstrap — initial hydration only)
+    // Initial content
     string editor_set_html(u64 id, string html);
     string editor_get_html(u64 id);
     string editor_set_json(u64 id, string json);
     string editor_get_json(u64 id);
 
-    // Content (transaction-based — runtime replacement, preserves history)
+    // Content replacement
     string editor_replace_html(u64 id, string html);
     string editor_replace_json(u64 id, string json);
 
@@ -46,7 +46,7 @@ namespace editor_core {
     string editor_outdent_list_item(u64 id);
     string editor_insert_node(u64 id, string node_type);
 
-    // Editing (scalar positions — used by native views)
+    // Scalar editing
     string editor_insert_text_scalar(u64 id, u32 scalar_pos, string text);
     string editor_delete_scalar_range(u64 id, u32 scalar_from, u32 scalar_to);
     string editor_replace_text_scalar(u64 id, u32 scalar_from, u32 scalar_to, string text);
@@ -63,6 +63,7 @@ namespace editor_core {
     string editor_outdent_list_item_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);
     string editor_insert_node_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string node_type);
     string editor_insert_content_json_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string json);
+    string editor_resize_image_at_doc_pos(u64 id, u32 doc_pos, u32 width, u32 height);
 
     // Position mapping
     u32 editor_doc_to_scalar(u64 id, u32 doc_pos);

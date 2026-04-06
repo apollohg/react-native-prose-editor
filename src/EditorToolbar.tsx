@@ -23,6 +23,7 @@ export type EditorToolbarDefaultIconId =
     | 'underline'
     | 'strike'
     | 'link'
+    | 'image'
     | 'blockquote'
     | 'bulletList'
     | 'orderedList'
@@ -69,6 +70,12 @@ export type EditorToolbarItem =
       }
     | {
           type: 'link';
+          label: string;
+          icon: EditorToolbarIcon;
+          key?: string;
+      }
+    | {
+          type: 'image';
           label: string;
           icon: EditorToolbarIcon;
           key?: string;
@@ -198,6 +205,8 @@ export interface EditorToolbarProps {
     onToolbarAction?: (key: string) => void;
     /** Link button handler used by first-class link toolbar items. */
     onRequestLink?: () => void;
+    /** Image button handler used by first-class image toolbar items. */
+    onRequestImage?: () => void;
     /** Displayed toolbar items, in order. Defaults to the built-in toolbar. */
     toolbarItems?: readonly EditorToolbarItem[];
     /** Optional theme overrides for toolbar chrome and button colors. */
@@ -227,6 +236,7 @@ const DEFAULT_GLYPH_ICONS: Record<EditorToolbarDefaultIconId, string> = {
     underline: 'U',
     strike: 'S',
     link: '🔗',
+    image: '🖼',
     blockquote: '❝',
     bulletList: '•≡',
     orderedList: '1.',
@@ -244,6 +254,7 @@ const DEFAULT_MATERIAL_ICONS: Record<EditorToolbarDefaultIconId, string> = {
     underline: 'format-underlined',
     strike: 'strikethrough-s',
     link: 'link',
+    image: 'image',
     blockquote: 'format-quote',
     bulletList: 'format-list-bulleted',
     orderedList: 'format-list-numbered',
@@ -277,6 +288,7 @@ export function EditorToolbar({
     onRunCommand,
     onToolbarAction,
     onRequestLink,
+    onRequestImage,
     toolbarItems = DEFAULT_EDITOR_TOOLBAR_ITEMS,
     theme,
     showTopBorder = true,
@@ -323,6 +335,8 @@ export function EditorToolbar({
                         : (onToggleOrderedList ?? null);
                 case 'link':
                     return onRequestLink ?? null;
+                case 'image':
+                    return onRequestImage ?? null;
                 case 'blockquote':
                     return onToggleBlockquote ?? null;
                 case 'node':
@@ -364,6 +378,7 @@ export function EditorToolbar({
             onRedo,
             onRunCommand,
             onRequestLink,
+            onRequestImage,
             onToolbarAction,
             onToggleBold,
             onToggleBlockquote,
@@ -385,6 +400,8 @@ export function EditorToolbar({
                 ? `mark:${item.mark}:${index}`
                 : item.type === 'link'
                   ? `link:${index}`
+                  : item.type === 'image'
+                    ? `image:${index}`
                   : item.type === 'blockquote'
                     ? `blockquote:${index}`
                     : item.type === 'list'
@@ -426,6 +443,9 @@ export function EditorToolbar({
             case 'link':
                 isActive = isMarkActive('link');
                 isDisabled = !allowedMarks.includes('link') || !onRequestLink;
+                break;
+            case 'image':
+                isDisabled = !insertableNodes.includes('image') || !onRequestImage;
                 break;
             case 'blockquote':
                 isActive = !!nodes['blockquote'];

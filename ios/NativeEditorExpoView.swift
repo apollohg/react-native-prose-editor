@@ -1,6 +1,5 @@
 import ExpoModulesCore
 import UIKit
-import os
 
 private struct NativeToolbarState {
     let marks: [String: Bool]
@@ -92,6 +91,7 @@ private enum ToolbarDefaultIconId: String {
     case underline
     case strike
     case link
+    case image
     case blockquote
     case bulletList
     case orderedList
@@ -125,6 +125,7 @@ private struct NativeToolbarIcon {
         .underline: "underline",
         .strike: "strikethrough",
         .link: "link",
+        .image: "photo",
         .blockquote: "text.quote",
         .bulletList: "list.bullet",
         .orderedList: "list.number",
@@ -142,6 +143,7 @@ private struct NativeToolbarIcon {
         .underline: "U",
         .strike: "S",
         .link: "🔗",
+        .image: "🖼",
         .blockquote: "❝",
         .bulletList: "•≡",
         .orderedList: "1.",
@@ -700,6 +702,16 @@ final class EditorAccessoryToolbarView: UIInputView {
         #endif
     }
 
+    var firstButtonAlphaForTesting: CGFloat {
+        buttonBindings.first?.button.alpha ?? 0
+    }
+    var firstButtonTintColorForTesting: UIColor? {
+        buttonBindings.first?.button.tintColor
+    }
+    var firstButtonTintAdjustmentModeForTesting: UIView.TintAdjustmentMode {
+        buttonBindings.first?.button.tintAdjustmentMode ?? .automatic
+    }
+
     func applyBoldStateForTesting(active: Bool, enabled: Bool) {
         apply(
             state: NativeToolbarState(
@@ -995,6 +1007,8 @@ final class EditorAccessoryToolbarView: UIInputView {
         barButtonItem.isEnabled = enabled
         barButtonItem.isSelected = active
         barButtonItem.style = active ? .prominent : .plain
+
+        barButtonItem.sharesBackground = true
         barButtonItem.hidesSharedBackground = active
         return barButtonItem
     }
@@ -1158,9 +1172,9 @@ final class EditorAccessoryToolbarView: UIInputView {
         #endif
 
         if resolvedAppearance == .native {
-            button.tintColor = nil
-            button.alpha = enabled ? 1 : 0.45
-            button.tintAdjustmentMode = enabled ? .automatic : .dimmed
+            button.tintColor = enabled ? nil : .systemGray
+            button.tintAdjustmentMode = enabled ? .automatic : .normal
+            button.alpha = 1
             button.backgroundColor = active
                 ? UIColor.white.withAlphaComponent(0.18)
                 : .clear
@@ -1290,11 +1304,6 @@ final class EditorAccessoryToolbarView: UIInputView {
 }
 
 class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognizerDelegate {
-
-    private static let updateLog = Logger(
-        subsystem: "com.apollohg.prose-editor",
-        category: "view-command"
-    )
 
     // MARK: - Subviews
 
@@ -1484,6 +1493,10 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         }
     }
 
+    func setAllowImageResizing(_ allowImageResizing: Bool) {
+        richTextView.allowImageResizing = allowImageResizing
+    }
+
     private func emitContentHeightIfNeeded(force: Bool = false) {
         guard heightBehavior == .autoGrow else { return }
         let contentHeight = ceil(richTextView.intrinsicContentSize.height)
@@ -1536,13 +1549,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     /// Apply an editor update from JS. Sets the echo-suppression flag so the
     /// resulting delegate callback is NOT re-dispatched back to JS.
     func applyEditorUpdate(_ updateJson: String) {
-        Self.updateLog.debug("[applyEditorUpdate.begin] bytes=\(updateJson.utf8.count)")
         isApplyingJSUpdate = true
         richTextView.textView.applyUpdateJSON(updateJson)
         isApplyingJSUpdate = false
-        Self.updateLog.debug(
-            "[applyEditorUpdate.end] textState=\(self.richTextView.textView.textStorage.string.count)"
-        )
     }
 
     // MARK: - Focus Commands
@@ -1559,12 +1568,14 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     @objc private func textViewDidBeginEditing(_ notification: Notification) {
         installOutsideTapRecognizerIfNeeded()
+        richTextView.textView.refreshSelectionVisualState()
         refreshMentionQuery()
         onFocusChange(["isFocused": true])
     }
 
     @objc private func textViewDidEndEditing(_ notification: Notification) {
         uninstallOutsideTapRecognizer()
+        richTextView.textView.refreshSelectionVisualState()
         clearMentionQueryStateAndHidePopover()
         onFocusChange(["isFocused": false])
     }
@@ -1600,10 +1611,12 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         guard gestureRecognizer === outsideTapGestureRecognizer else { return true }
         guard let tapWindow = gestureWindow ?? window else { return true }
-        return shouldHandleOutsideTap(
-            locationInWindow: touch.location(in: tapWindow),
+        let locationInWindow = touch.location(in: tapWindow)
+        let result = shouldHandleOutsideTap(
+            locationInWindow: locationInWindow,
             touchedView: touch.view
         )
+        return result
     }
 
     private func shouldHandleOutsideTap(
@@ -1647,7 +1660,6 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         refreshMentionQuery()
         richTextView.refreshRemoteSelections()
         guard !isApplyingJSUpdate else { return }
-        Self.updateLog.debug("[didReceiveUpdate] bytes=\(updateJSON.utf8.count)")
         onEditorUpdate(["updateJson": updateJSON])
     }
 

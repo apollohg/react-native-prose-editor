@@ -22,6 +22,7 @@ interface EditorToolbarProps {
   onUndo: () => void;
   onRedo: () => void;
   onRequestLink?: () => void;
+  onRequestImage?: () => void;
   onToggleMark?: (mark: string) => void;
   onToggleListType?: (listType: EditorToolbarListType) => void;
   onInsertNodeType?: (nodeType: string) => void;
@@ -53,6 +54,7 @@ interface EditorToolbarProps {
 | `onUndo` | `() => void` | required | Undo handler. |
 | `onRedo` | `() => void` | required | Redo handler. |
 | `onRequestLink` | `(() => void) \| undefined` | none | Handler for first-class `link` toolbar items. The host is responsible for collecting or editing the URL. |
+| `onRequestImage` | `(() => void) \| undefined` | none | Handler for first-class `image` toolbar items. The host is responsible for choosing or uploading the image source. |
 | `onToggleMark` | `((mark: string) => void) \| undefined` | none | Generic mark handler for configurable mark buttons. |
 | `onToggleListType` | `((listType: EditorToolbarListType) => void) \| undefined` | none | Generic list handler for configurable list buttons. |
 | `onInsertNodeType` | `((nodeType: string) => void) \| undefined` | none | Generic node handler for configurable node buttons. |
@@ -68,6 +70,7 @@ interface EditorToolbarProps {
 | --- | --- | --- |
 | `mark` | `onToggleMark(mark)` | `onToggleBold`, `onToggleItalic`, `onToggleUnderline`, `onToggleStrike` |
 | `link` | none | `onRequestLink()` |
+| `image` | none | `onRequestImage()` |
 | `blockquote` | none | `onToggleBlockquote()` |
 | `list` | `onToggleListType(listType)` | `onToggleBulletList`, `onToggleOrderedList` |
 | `node` | `onInsertNodeType(nodeType)` | `onInsertLineBreak`, `onInsertHorizontalRule` |
@@ -76,7 +79,7 @@ interface EditorToolbarProps {
 
 ## Default Toolbar Items
 
-The default toolbar does not include a `link` item. Link buttons need host-provided URL handling through `onRequestLink`, so add them explicitly in your own `toolbarItems` array.
+The default toolbar does not include `link` or `image` items. Both require host-driven UI, so add them explicitly in your own `toolbarItems` array.
 
 | Order | Item Type | Value | Label | Default Icon ID |
 | --- | --- | --- | --- | --- |
@@ -102,6 +105,7 @@ The default toolbar does not include a `link` item. Link buttons need host-provi
 type EditorToolbarItem =
   | { type: 'mark'; mark: string; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'link'; label: string; icon: EditorToolbarIcon; key?: string }
+  | { type: 'image'; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'blockquote'; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'list'; listType: 'bulletList' | 'orderedList'; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'command'; command: 'indentList' | 'outdentList' | 'undo' | 'redo'; label: string; icon: EditorToolbarIcon; key?: string }
@@ -114,6 +118,7 @@ type EditorToolbarItem =
 | --- | --- | --- |
 | `mark` | `mark`, `label`, `icon`, `key?` | Toggles a mark by schema mark name. |
 | `link` | `label`, `icon`, `key?` | Requests link editing through `onRequestLink`. Active state is derived from the current `link` mark. |
+| `image` | `label`, `icon`, `key?` | Requests image insertion through `onRequestImage`. Disabled unless the schema reports that `image` is insertable. |
 | `blockquote` | `label`, `icon`, `key?` | Toggles blockquote wrapping around the current block selection. |
 | `list` | `listType`, `label`, `icon`, `key?` | Toggles a bullet or ordered list. |
 | `command` | `command`, `label`, `icon`, `key?` | Runs one built-in editor command. |
@@ -159,6 +164,7 @@ type EditorToolbarIcon =
 | `underline` | `U` | `format-underlined` |
 | `strike` | `S` | `strikethrough-s` |
 | `link` | `🔗` | `link` |
+| `image` | `🖼` | `image` |
 | `blockquote` | `❝` | `format-quote` |
 | `bulletList` | `•≡` | `format-list-bulleted` |
 | `orderedList` | `1.` | `format-list-numbered` |

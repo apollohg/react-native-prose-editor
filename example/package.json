@@ -1,6 +1,6 @@
 {
   "name": "native-editor-example",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "main": "expo/AppEntry",
   "scripts": {
@@ -15,6 +15,8 @@
     "@expo/vector-icons": "^15.0.3",
     "@react-native-community/slider": "5.1.0",
     "expo": "~54.0.0",
+    "expo-image-manipulator": "~14.0.8",
+    "expo-image-picker": "~17.0.10",
     "expo-modules-core": "~3.0.29",
     "expo-status-bar": "~3.0.9",
     "expo-symbols": "^55.0.5",

@@ -6,7 +6,7 @@ use crate::schema::{AttrSpec, MarkSpec, NodeRole, NodeSpec, Schema};
 /// Build the standard Tiptap schema using camelCase node names.
 ///
 /// Node names: doc, paragraph, blockquote, bulletList, orderedList, listItem,
-///             hardBreak, horizontalRule, text.
+///             hardBreak, horizontalRule, image, text.
 /// Mark names: bold, italic, underline, strike, link.
 pub fn tiptap_schema() -> Schema {
     build_schema(NamingConvention::CamelCase)
@@ -15,7 +15,7 @@ pub fn tiptap_schema() -> Schema {
 /// Build the standard ProseMirror schema using snake_case node names.
 ///
 /// Node names: doc, paragraph, blockquote, bullet_list, ordered_list, list_item,
-///             hard_break, horizontal_rule, text.
+///             hard_break, horizontal_rule, image, text.
 /// Mark names: bold, italic, underline, strike, link.
 pub fn prosemirror_schema() -> Schema {
     build_schema(NamingConvention::SnakeCase)
@@ -124,6 +124,23 @@ fn build_schema(convention: NamingConvention) -> Schema {
             is_void: true,
         },
         NodeSpec {
+            name: "image".to_string(),
+            content: ContentRule::parse("").unwrap(),
+            group: Some("block".to_string()),
+            attrs: {
+                let mut attrs = HashMap::new();
+                attrs.insert("src".to_string(), AttrSpec { default: None });
+                attrs.insert("alt".to_string(), AttrSpec { default: None });
+                attrs.insert("title".to_string(), AttrSpec { default: None });
+                attrs.insert("width".to_string(), AttrSpec { default: None });
+                attrs.insert("height".to_string(), AttrSpec { default: None });
+                attrs
+            },
+            role: NodeRole::Block,
+            html_tag: Some("img".to_string()),
+            is_void: true,
+        },
+        NodeSpec {
             name: "text".to_string(),
             content: ContentRule::parse("").unwrap(),
             group: Some("inline".to_string()),
@@ -185,6 +202,7 @@ mod tests {
             "listItem",
             "hardBreak",
             "horizontalRule",
+            "image",
             "text",
         ];
         for name in &expected {
@@ -207,6 +225,7 @@ mod tests {
             "list_item",
             "hard_break",
             "horizontal_rule",
+            "image",
             "text",
         ];
         for name in &expected {

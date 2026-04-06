@@ -2,6 +2,24 @@
 
 # Schema Reference
 
+The built-in schemas now include a block `image` node by default. The package also exports helpers for image support:
+
+```ts
+interface ImageNodeAttributes {
+  src: string;
+  alt?: string | null;
+  title?: string | null;
+  width?: number | null;
+  height?: number | null;
+}
+
+const IMAGE_NODE_NAME = 'image';
+
+function imageNodeSpec(name?: string): NodeSpec;
+function withImagesSchema(schema: SchemaDefinition): SchemaDefinition;
+function buildImageFragmentJson(attrs: ImageNodeAttributes): DocumentJSON;
+```
+
 ## `SchemaDefinition`
 
 ```ts
@@ -80,7 +98,7 @@ Uses camelCase names.
 | --- | --- |
 | Structural | `doc`, `paragraph`, `blockquote`, `text` |
 | Lists | `bulletList`, `orderedList`, `listItem` |
-| Void nodes | `hardBreak`, `horizontalRule` |
+| Void nodes | `hardBreak`, `horizontalRule`, `image` |
 
 ### Default Mark Names
 
@@ -98,7 +116,7 @@ Uses snake_case names.
 | --- | --- |
 | Structural | `doc`, `paragraph`, `blockquote`, `text` |
 | Lists | `bullet_list`, `ordered_list`, `list_item` |
-| Void nodes | `hard_break`, `horizontal_rule` |
+| Void nodes | `hard_break`, `horizontal_rule`, `image` |
 
 ### Default Mark Names
 

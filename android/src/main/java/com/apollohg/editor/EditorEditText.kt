@@ -4,8 +4,10 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Typeface
 import android.graphics.Rect
+import android.graphics.RectF
 import android.text.Editable
 import android.text.Layout
+import android.text.Spanned
 import android.text.StaticLayout
 import android.text.TextWatcher
 import android.util.AttributeSet
@@ -16,6 +18,7 @@ import android.view.MotionEvent
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import androidx.appcompat.widget.AppCompatEditText
+import kotlin.math.roundToInt
 import uniffi.editor_core.*  // UniFFI-generated bindings
 
 /**
@@ -48,6 +51,16 @@ class EditorEditText @JvmOverloads constructor(
     attrs: AttributeSet? = null,
     defStyleAttr: Int = android.R.attr.editTextStyle
 ) : AppCompatEditText(context, attrs, defStyleAttr) {
+    data class SelectedImageGeometry(
+        val docPos: Int,
+        val rect: RectF
+    )
+
+    private data class ImageSelectionRange(
+        val start: Int,
+        val end: Int
+    )
+
     /**
      * Listener interface for editor events, parallel to iOS's EditorTextViewDelegate.
      */
@@ -79,6 +92,7 @@ class EditorEditText @JvmOverloads constructor(
 
     /** Listener for editor events. */
     var editorListener: EditorListener? = null
+    var onSelectionOrContentMayChange: (() -> Unit)? = null
 
     /** The base font size in pixels used for unstyled text. */
     private var baseFontSize: Float = textSize
@@ -101,6 +115,7 @@ class EditorEditText @JvmOverloads constructor(
 
     var heightBehavior: EditorHeightBehavior = EditorHeightBehavior.FIXED
         private set
+    private var imageResizingEnabled = true
 
     private var contentInsets: EditorContentInsets? = null
     private var viewportBottomInsetPx: Int = 0
@@ -120,6 +135,7 @@ class EditorEditText @JvmOverloads constructor(
 
     private var lastHandledHardwareKeyCode: Int? = null
     private var lastHandledHardwareKeyDownTime: Long? = null
+    private var explicitSelectedImageRange: ImageSelectionRange? = null
 
     init {
         // Configure for rich text editing.
@@ -190,6 +206,12 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN && imageSpanHitAt(event.x, event.y) == null) {
+            clearExplicitSelectedImageRange()
+        }
+        if (handleImageTap(event)) {
+            return true
+        }
         if (heightBehavior == EditorHeightBehavior.FIXED) {
             val canScroll = canScrollVertically(-1) || canScrollVertically(1)
             if (canScroll) {
@@ -202,6 +224,10 @@ class EditorEditText @JvmOverloads constructor(
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    override fun performClick(): Boolean {
+        return super.performClick()
     }
 
     private fun isRenderedContentEmpty(content: CharSequence? = text): Boolean {
@@ -318,6 +344,16 @@ class EditorEditText @JvmOverloads constructor(
         } else {
             setPadding(left, top, right, bottom)
             setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, null, null)
+        }
+    }
+
+    fun setImageResizingEnabled(enabled: Boolean) {
+        if (imageResizingEnabled == enabled) return
+        imageResizingEnabled = enabled
+        if (!enabled) {
+            clearExplicitSelectedImageRange()
+        } else {
+            onSelectionOrContentMayChange?.invoke()
         }
     }
 
@@ -840,7 +876,12 @@ class EditorEditText @JvmOverloads constructor(
      */
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
         super.onSelectionChanged(selStart, selEnd)
+        val spannable = text as? Spanned
+        if (spannable != null && isExactImageSpanRange(spannable, selStart, selEnd)) {
+            explicitSelectedImageRange = ImageSelectionRange(selStart, selEnd)
+        }
         ensureSelectionVisible()
+        onSelectionOrContentMayChange?.invoke()
 
         if (isApplyingRustState || editorId == 0L) return
 
@@ -900,6 +941,49 @@ class EditorEditText @JvmOverloads constructor(
         )
     }
 
+    fun selectedImageGeometry(): SelectedImageGeometry? {
+        if (!imageResizingEnabled) return null
+        val spannable = text as? Spanned ?: return null
+        val selection = resolvedSelectedImageRange(spannable) ?: return null
+        val start = selection.start
+        val end = selection.end
+        val imageSpan = spannable
+            .getSpans(start, end, BlockImageSpan::class.java)
+            .firstOrNull() ?: return null
+        val spanStart = spannable.getSpanStart(imageSpan)
+        val spanEnd = spannable.getSpanEnd(imageSpan)
+        if (spanStart != start || spanEnd != end) return null
+
+        val textLayout = layout ?: return null
+        val currentText = text?.toString() ?: return null
+        val scalarPos = PositionBridge.utf16ToScalar(spanStart, currentText)
+        val docPos = if (editorId != 0L) {
+            editorScalarToDoc(editorId.toULong(), scalarPos.toUInt()).toInt()
+        } else {
+            0
+        }
+        val line = textLayout.getLineForOffset(spanStart.coerceAtMost(maxOf(spannable.length - 1, 0)))
+        val rect = resolvedImageRect(textLayout, imageSpan, spanStart, spanEnd)
+        return SelectedImageGeometry(
+            docPos = docPos,
+            rect = rect
+        )
+    }
+
+    fun resizeImageAtDocPos(docPos: Int, widthPx: Float, heightPx: Float) {
+        if (editorId == 0L) return
+        val density = resources.displayMetrics.density
+        val widthDp = maxOf(48, (widthPx / density).roundToInt())
+        val heightDp = maxOf(48, (heightPx / density).roundToInt())
+        val updateJSON = editorResizeImageAtDocPos(
+            editorId.toULong(),
+            docPos.toUInt(),
+            widthDp.toUInt(),
+            heightDp.toUInt()
+        )
+        applyUpdateJSON(updateJSON)
+    }
+
     private fun isSelectionInsideList(): Boolean {
         if (editorId == 0L) return false
 
@@ -954,12 +1038,14 @@ class EditorEditText @JvmOverloads constructor(
             baseFontSize,
             baseTextColor,
             theme,
-            resources.displayMetrics.density
+            resources.displayMetrics.density,
+            this
         )
 
         val previousScrollX = scrollX
         val previousScrollY = scrollY
 
+        explicitSelectedImageRange = null
         isApplyingRustState = true
         setText(spannable)
         lastAuthorizedText = spannable.toString()
@@ -974,6 +1060,7 @@ class EditorEditText @JvmOverloads constructor(
         if (notifyListener) {
             editorListener?.onEditorUpdate(updateJSON)
         }
+        onSelectionOrContentMayChange?.invoke()
         if (heightBehavior == EditorHeightBehavior.AUTO_GROW) {
             requestLayout()
         } else {
@@ -995,21 +1082,160 @@ class EditorEditText @JvmOverloads constructor(
             baseFontSize,
             baseTextColor,
             theme,
-            resources.displayMetrics.density
+            resources.displayMetrics.density,
+            this
         )
 
         val previousScrollX = scrollX
         val previousScrollY = scrollY
 
+        explicitSelectedImageRange = null
         isApplyingRustState = true
         setText(spannable)
         lastAuthorizedText = spannable.toString()
         isApplyingRustState = false
+        onSelectionOrContentMayChange?.invoke()
         if (heightBehavior == EditorHeightBehavior.AUTO_GROW) {
             requestLayout()
         } else {
             preserveScrollPosition(previousScrollX, previousScrollY)
         }
+    }
+
+    private fun handleImageTap(event: MotionEvent): Boolean {
+        if (!imageResizingEnabled) {
+            return false
+        }
+        if (event.actionMasked != MotionEvent.ACTION_DOWN && event.actionMasked != MotionEvent.ACTION_UP) {
+            return false
+        }
+        val hit = imageSpanHitAt(event.x, event.y) ?: return false
+        requestFocus()
+        selectExplicitImageRange(hit.first, hit.second)
+        if (event.actionMasked == MotionEvent.ACTION_UP) {
+            performClick()
+        }
+        return true
+    }
+
+    private fun imageSpanHitAt(x: Float, y: Float): Pair<Int, Int>? {
+        val spannable = text as? Spanned ?: return null
+        imageSpanRangeNearTouchOffset(spannable, x, y)?.let { return it }
+        val textLayout = layout ?: return null
+        return imageSpanRectHit(spannable, textLayout, x, y)
+    }
+
+    private fun imageSpanRectHit(
+        spannable: Spanned,
+        textLayout: Layout,
+        x: Float,
+        y: Float
+    ): Pair<Int, Int>? {
+        val candidateSpans = spannable.getSpans(0, spannable.length, BlockImageSpan::class.java)
+        for (span in candidateSpans) {
+            val spanStart = spannable.getSpanStart(span)
+            val spanEnd = spannable.getSpanEnd(span)
+            if (spanStart < 0 || spanEnd <= spanStart) continue
+            val rect = resolvedImageRect(textLayout, span, spanStart, spanEnd)
+            if (rect.contains(x, y)) {
+                return spanStart to spanEnd
+            }
+        }
+        return null
+    }
+
+    override fun onFocusChanged(focused: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
+        super.onFocusChanged(focused, direction, previouslyFocusedRect)
+        if (!focused) {
+            clearExplicitSelectedImageRange()
+        }
+    }
+
+    private fun selectExplicitImageRange(start: Int, end: Int) {
+        explicitSelectedImageRange = ImageSelectionRange(start, end)
+        if (selectionStart == start && selectionEnd == end) {
+            onSelectionOrContentMayChange?.invoke()
+            return
+        }
+        setSelection(start, end)
+    }
+
+    private fun clearExplicitSelectedImageRange() {
+        if (explicitSelectedImageRange == null) return
+        explicitSelectedImageRange = null
+        onSelectionOrContentMayChange?.invoke()
+    }
+
+    private fun resolvedSelectedImageRange(spannable: Spanned): ImageSelectionRange? {
+        explicitSelectedImageRange?.let { explicit ->
+            if (isExactImageSpanRange(spannable, explicit.start, explicit.end)) {
+                return explicit
+            }
+            explicitSelectedImageRange = null
+        }
+
+        val start = selectionStart
+        val end = selectionEnd
+        if (!isExactImageSpanRange(spannable, start, end)) return null
+        return ImageSelectionRange(start, end)
+    }
+
+    private fun isExactImageSpanRange(spannable: Spanned, start: Int, end: Int): Boolean {
+        if (start < 0 || end != start + 1) return false
+        val imageSpan = spannable
+            .getSpans(start, end, BlockImageSpan::class.java)
+            .firstOrNull() ?: return false
+        return spannable.getSpanStart(imageSpan) == start && spannable.getSpanEnd(imageSpan) == end
+    }
+
+    private fun imageSpanRangeNearTouchOffset(
+        spannable: Spanned,
+        x: Float,
+        y: Float
+    ): Pair<Int, Int>? {
+        val safeOffset = runCatching { getOffsetForPosition(x, y) }.getOrNull() ?: return null
+        val nearbyOffsets = linkedSetOf(
+            safeOffset,
+            (safeOffset - 1).coerceAtLeast(0),
+            (safeOffset + 1).coerceAtMost(spannable.length)
+        )
+        for (offset in nearbyOffsets) {
+            val searchStart = (offset - 1).coerceAtLeast(0)
+            val searchEnd = (offset + 1).coerceAtMost(spannable.length)
+            val imageSpan = spannable
+                .getSpans(searchStart, searchEnd, BlockImageSpan::class.java)
+                .firstOrNull() ?: continue
+            val spanStart = spannable.getSpanStart(imageSpan)
+            val spanEnd = spannable.getSpanEnd(imageSpan)
+            if (spanStart >= 0 && spanEnd > spanStart) {
+                return spanStart to spanEnd
+            }
+        }
+        return null
+    }
+
+    private fun resolvedImageRect(
+        textLayout: Layout,
+        imageSpan: BlockImageSpan,
+        spanStart: Int,
+        spanEnd: Int
+    ): RectF {
+        imageSpan.currentDrawRect()?.let { drawnRect ->
+            return drawnRect
+        }
+
+        val safeOffset = spanStart.coerceAtMost(maxOf((text?.length ?: 0) - 1, 0))
+        val line = textLayout.getLineForOffset(safeOffset)
+        val startHorizontal = textLayout.getPrimaryHorizontal(spanStart)
+        val endHorizontal = textLayout.getPrimaryHorizontal(spanEnd)
+        val (widthPx, heightPx) = imageSpan.currentSizePx()
+        val left = compoundPaddingLeft + minOf(startHorizontal, endHorizontal)
+        val right = compoundPaddingLeft + maxOf(
+            maxOf(startHorizontal, endHorizontal),
+            minOf(startHorizontal, endHorizontal) + widthPx
+        )
+        val top = extendedPaddingTop + textLayout.getLineBottom(line) - heightPx
+        return RectF(left, top.toFloat(), right, top + heightPx.toFloat())
     }
 
     /**

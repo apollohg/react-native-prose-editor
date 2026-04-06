@@ -28,12 +28,14 @@ pub fn editor_core_version() -> String {
 
 /// Create a new editor from a JSON config object.
 ///
-/// Config fields (all optional — empty object `{}` creates a default editor):
+/// Config fields (all optional):
 /// - `"schema"`: custom schema definition (see `Schema::from_json`)
 /// - `"maxLength"`: maximum document length in characters
 /// - `"readOnly"`: if `true`, rejects non-API mutations
 /// - `"inputFilter"`: regex pattern; only matching characters are inserted
+/// - `"allowBase64Images"`: if `true`, parses `<img src="data:image/...">` as image nodes
 ///
+/// An empty object creates a default editor.
 /// Falls back to the default Tiptap schema when `"schema"` is absent or invalid.
 #[uniffi::export]
 pub fn editor_create(config_json: String) -> u64 {
@@ -59,7 +61,12 @@ pub fn editor_create(config_json: String) -> u64 {
         }
     }
 
-    registry::EditorRegistry::create(schema, interceptors)
+    let allow_base64_images = config
+        .get("allowBase64Images")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    registry::EditorRegistry::create(schema, interceptors, allow_base64_images)
 }
 
 /// Destroy an editor instance, freeing its resources.
@@ -672,6 +679,21 @@ pub fn editor_insert_node_at_selection_scalar(
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
 
+/// Resize an image node at a document position. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_resize_image_at_doc_pos(
+    id: u64,
+    doc_pos: u32,
+    width: u32,
+    height: u32,
+) -> String {
+    with_editor(id, |editor| match editor.resize_image_at_doc_pos(doc_pos, width, height) {
+        Ok(update) => serialize_editor_update(&update),
+        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
 /// Get the current editor state (render elements, selection, active state,
 /// history state) without performing any edits. Used by native views to pull
 /// initial state when binding to an already-loaded editor.
@@ -827,19 +849,39 @@ fn serialize_render_elements(elements: &[render::RenderElement]) -> serde_json::
                     "marks": marks.iter().map(serialize_render_mark).collect::<Vec<_>>(),
                 })
             }
-            render::RenderElement::VoidInline { node_type, doc_pos } => {
-                serde_json::json!({
+            render::RenderElement::VoidInline {
+                node_type,
+                doc_pos,
+                attrs,
+            } => {
+                let mut obj = serde_json::json!({
                     "type": "voidInline",
                     "nodeType": node_type,
                     "docPos": doc_pos,
-                })
+                });
+                if !attrs.is_empty() {
+                    obj["attrs"] = serde_json::Value::Object(
+                        attrs.clone().into_iter().collect()
+                    );
+                }
+                obj
             }
-            render::RenderElement::VoidBlock { node_type, doc_pos } => {
-                serde_json::json!({
+            render::RenderElement::VoidBlock {
+                node_type,
+                doc_pos,
+                attrs,
+            } => {
+                let mut obj = serde_json::json!({
                     "type": "voidBlock",
                     "nodeType": node_type,
                     "docPos": doc_pos,
-                })
+                });
+                if !attrs.is_empty() {
+                    obj["attrs"] = serde_json::Value::Object(
+                        attrs.clone().into_iter().collect()
+                    );
+                }
+                obj
             }
             render::RenderElement::OpaqueInlineAtom {
                 node_type,

@@ -46,7 +46,10 @@ fn default_opts() -> FromHtmlOptions {
 }
 
 fn strict_opts() -> FromHtmlOptions {
-    FromHtmlOptions { strict: true }
+    FromHtmlOptions {
+        strict: true,
+        allow_base64_images: false,
+    }
 }
 
 fn bold() -> Mark {
@@ -126,6 +129,46 @@ fn hard_break() -> Node {
 
 fn horizontal_rule() -> Node {
     Node::void("horizontalRule".to_string(), HashMap::new())
+}
+
+fn image(src: &str, alt: Option<&str>, title: Option<&str>) -> Node {
+    image_with_dimensions(src, alt, title, None, None)
+}
+
+fn image_with_dimensions(
+    src: &str,
+    alt: Option<&str>,
+    title: Option<&str>,
+    width: Option<u64>,
+    height: Option<u64>,
+) -> Node {
+    let mut attrs = HashMap::new();
+    attrs.insert("src".to_string(), serde_json::Value::String(src.to_string()));
+    attrs.insert(
+        "alt".to_string(),
+        alt.map_or(serde_json::Value::Null, |value| {
+            serde_json::Value::String(value.to_string())
+        }),
+    );
+    attrs.insert(
+        "title".to_string(),
+        title.map_or(serde_json::Value::Null, |value| {
+            serde_json::Value::String(value.to_string())
+        }),
+    );
+    attrs.insert(
+        "width".to_string(),
+        width.map_or(serde_json::Value::Null, |value| {
+            serde_json::Value::Number(value.into())
+        }),
+    );
+    attrs.insert(
+        "height".to_string(),
+        height.map_or(serde_json::Value::Null, |value| {
+            serde_json::Value::Number(value.into())
+        }),
+    );
+    Node::void("image".to_string(), attrs)
 }
 
 fn mention(attrs: &[(&str, serde_json::Value)]) -> Node {
@@ -213,6 +256,37 @@ fn test_to_html_link_text() {
     ));
     let html = to_html(&d, &schema());
     assert_eq!(html, "<p><a href=\"https://openai.com\">OpenAI</a></p>");
+}
+
+#[test]
+fn test_to_html_image_node() {
+    let d = doc(vec![image(
+        "https://example.com/cat.png",
+        Some("Cat"),
+        Some("Preview"),
+    )]);
+    let html = to_html(&d, &schema());
+    assert!(html.starts_with("<img "));
+    assert!(html.contains("src=\"https://example.com/cat.png\""));
+    assert!(html.contains("alt=\"Cat\""));
+    assert!(html.contains("title=\"Preview\""));
+    assert!(html.ends_with('>'));
+}
+
+#[test]
+fn test_to_html_image_node_with_dimensions() {
+    let d = doc(vec![image_with_dimensions(
+        "https://example.com/cat.png",
+        Some("Cat"),
+        Some("Preview"),
+        Some(320),
+        Some(180),
+    )]);
+    let html = to_html(&d, &schema());
+    assert!(html.starts_with("<img "));
+    assert!(html.contains("src=\"https://example.com/cat.png\""));
+    assert!(html.contains("width=\"320\""));
+    assert!(html.contains("height=\"180\""));
 }
 
 #[test]
@@ -592,6 +666,92 @@ fn test_from_html_horizontal_rule() {
     assert_eq!(root.child(1).unwrap().node_type(), "horizontalRule");
     assert!(root.child(1).unwrap().is_void());
     assert_eq!(root.child(2).unwrap().node_type(), "paragraph");
+}
+
+#[test]
+fn test_from_html_image_node() {
+    let d = from_html(
+        "<img src=\"https://example.com/cat.png\" alt=\"Cat\" title=\"Preview\">",
+        &schema(),
+        &default_opts(),
+    )
+    .unwrap();
+    let root = d.root();
+    assert_eq!(root.child_count(), 1, "doc should have one image node");
+    let image_node = root.child(0).unwrap();
+    assert_eq!(image_node.node_type(), "image");
+    assert!(image_node.is_void());
+    assert_eq!(
+        image_node.attrs().get("src"),
+        Some(&serde_json::Value::String(
+            "https://example.com/cat.png".to_string()
+        ))
+    );
+    assert_eq!(
+        image_node.attrs().get("alt"),
+        Some(&serde_json::Value::String("Cat".to_string()))
+    );
+    assert_eq!(
+        image_node.attrs().get("title"),
+        Some(&serde_json::Value::String("Preview".to_string()))
+    );
+    assert_eq!(image_node.attrs().get("width"), None);
+    assert_eq!(image_node.attrs().get("height"), None);
+}
+
+#[test]
+fn test_from_html_image_node_with_dimensions() {
+    let d = from_html(
+        "<img src=\"https://example.com/cat.png\" alt=\"Cat\" width=\"320\" height=\"180\">",
+        &schema(),
+        &default_opts(),
+    )
+    .unwrap();
+    let image_node = d.root().child(0).unwrap();
+    assert_eq!(image_node.node_type(), "image");
+    assert_eq!(
+        image_node.attrs().get("width"),
+        Some(&serde_json::Value::Number(320u64.into()))
+    );
+    assert_eq!(
+        image_node.attrs().get("height"),
+        Some(&serde_json::Value::Number(180u64.into()))
+    );
+}
+
+#[test]
+fn test_from_html_base64_image_requires_opt_in() {
+    let html = "<img src=\"data:image/png;base64,AAAA\" alt=\"Inline\">";
+
+    let parsed_without_opt_in = from_html(html, &schema(), &default_opts()).unwrap();
+    assert_eq!(
+        parsed_without_opt_in.root().child(0).unwrap().node_type(),
+        "__opaque"
+    );
+
+    let parsed_with_opt_in = from_html(
+        html,
+        &schema(),
+        &FromHtmlOptions {
+            strict: false,
+            allow_base64_images: true,
+        },
+    )
+    .unwrap();
+    let image_node = parsed_with_opt_in.root().child(0).unwrap();
+    assert_eq!(image_node.node_type(), "image");
+    assert!(image_node.is_void());
+    assert_eq!(
+        image_node.attrs().get("src"),
+        Some(&serde_json::Value::String(
+            "data:image/png;base64,AAAA".to_string()
+        ))
+    );
+    assert_eq!(
+        image_node.attrs().get("alt"),
+        Some(&serde_json::Value::String("Inline".to_string()))
+    );
+    assert_eq!(image_node.attrs().get("title"), None);
 }
 
 #[test]

@@ -313,7 +313,14 @@ describe('NativeRichTextEditor', () => {
         it('creates bridge with maxLength config when provided', () => {
             render(<NativeRichTextEditor maxLength={200} />);
             expect(mockNativeModule.editorCreate).toHaveBeenCalledWith(
-                JSON.stringify({ maxLength: 200 })
+                JSON.stringify({ maxLength: 200, allowBase64Images: false })
+            );
+        });
+
+        it('creates bridge with allowBase64Images config when provided', () => {
+            render(<NativeRichTextEditor allowBase64Images />);
+            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith(
+                JSON.stringify({ allowBase64Images: true })
             );
         });
 
@@ -372,6 +379,11 @@ describe('NativeRichTextEditor', () => {
         it('passes heightBehavior to native view', () => {
             const { getByTestId } = render(<NativeRichTextEditor heightBehavior='autoGrow' />);
             expect(getByTestId('native-editor-view').props.heightBehavior).toBe('autoGrow');
+        });
+
+        it('passes allowImageResizing to native view', () => {
+            const { getByTestId } = render(<NativeRichTextEditor allowImageResizing={false} />);
+            expect(getByTestId('native-editor-view').props.allowImageResizing).toBe(false);
         });
 
         it('passes style to native view', () => {
@@ -787,6 +799,44 @@ describe('NativeRichTextEditor', () => {
             );
         });
 
+        it('routes native image toolbar actions through onRequestImage', () => {
+            const onRequestImage = jest.fn();
+            const { getByTestId } = render(
+                <NativeRichTextEditor onRequestImage={onRequestImage} />
+            );
+
+            mockNativeModule.editorSetSelection.mockClear();
+
+            act(() => {
+                getByTestId('native-editor-view').props.onToolbarAction({
+                    nativeEvent: { key: '__native-editor-image__' },
+                });
+            });
+
+            expect(onRequestImage).toHaveBeenCalledTimes(1);
+            const context = onRequestImage.mock.calls[0][0];
+            expect(context.allowBase64).toBe(false);
+            act(() => {
+                context.insertImage('https://example.com/cat.png', { alt: 'Cat' });
+            });
+            expect(mockNativeModule.editorSetSelection).toHaveBeenCalledWith(1, 0, 0);
+            expect(mockNativeModule.editorInsertContentJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify({
+                    type: 'doc',
+                    content: [
+                        {
+                            type: 'image',
+                            attrs: {
+                                src: 'https://example.com/cat.png',
+                                alt: 'Cat',
+                            },
+                        },
+                    ],
+                })
+            );
+        });
+
         it('indentListItem calls bridge.indentListItem and applyEditorUpdate', () => {
             const ref = createRef<NativeRichTextEditorRef>();
             render(<NativeRichTextEditor ref={ref} />);
@@ -859,6 +909,73 @@ describe('NativeRichTextEditor', () => {
                 JSON.stringify(doc)
             );
             expect(mockApplyEditorUpdate).toHaveBeenCalled();
+        });
+
+        it('insertImage inserts an image fragment JSON', () => {
+            const ref = createRef<NativeRichTextEditorRef>();
+            render(<NativeRichTextEditor ref={ref} />);
+
+            act(() => {
+                ref.current!.insertImage('https://example.com/cat.png', {
+                    title: 'Cat',
+                    width: 320,
+                    height: 180,
+                });
+            });
+
+            expect(mockNativeModule.editorInsertContentJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify({
+                    type: 'doc',
+                    content: [
+                        {
+                            type: 'image',
+                            attrs: {
+                                src: 'https://example.com/cat.png',
+                                title: 'Cat',
+                                width: 320,
+                                height: 180,
+                            },
+                        },
+                    ],
+                })
+            );
+            expect(mockApplyEditorUpdate).toHaveBeenCalledWith(MOCK_INSERT_UPDATE_JSON);
+        });
+
+        it('insertImage blocks base64 image sources unless allowBase64Images is enabled', () => {
+            const ref = createRef<NativeRichTextEditorRef>();
+            render(<NativeRichTextEditor ref={ref} />);
+
+            act(() => {
+                ref.current!.insertImage('data:image/png;base64,AAAA');
+            });
+
+            expect(mockNativeModule.editorInsertContentJson).not.toHaveBeenCalled();
+        });
+
+        it('insertImage allows base64 image sources when enabled', () => {
+            const ref = createRef<NativeRichTextEditorRef>();
+            render(<NativeRichTextEditor ref={ref} allowBase64Images />);
+
+            act(() => {
+                ref.current!.insertImage('data:image/png;base64,AAAA');
+            });
+
+            expect(mockNativeModule.editorInsertContentJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify({
+                    type: 'doc',
+                    content: [
+                        {
+                            type: 'image',
+                            attrs: {
+                                src: 'data:image/png;base64,AAAA',
+                            },
+                        },
+                    ],
+                })
+            );
         });
 
         it('setContent calls bridge.replaceHtml', () => {
@@ -1156,6 +1273,23 @@ describe('NativeRichTextEditor', () => {
             });
         });
 
+        it('onHistoryStateChange fires with HistoryState from update', () => {
+            const onHistoryStateChange = jest.fn();
+            const ref = createRef<NativeRichTextEditorRef>();
+            render(
+                <NativeRichTextEditor ref={ref} onHistoryStateChange={onHistoryStateChange} />
+            );
+
+            act(() => {
+                ref.current!.toggleMark('bold');
+            });
+
+            expect(onHistoryStateChange).toHaveBeenCalledWith({
+                canUndo: true,
+                canRedo: false,
+            });
+        });
+
         it('onContentChangeJSON fires with JSON from bridge', () => {
             const onContentChangeJSON = jest.fn();
             const ref = createRef<NativeRichTextEditorRef>();
@@ -1194,6 +1328,7 @@ describe('NativeRichTextEditor', () => {
 
         it('refreshes activeState on native selection changes', () => {
             const onActiveStateChange = jest.fn();
+            const onHistoryStateChange = jest.fn();
             const onSelectionChange = jest.fn();
             mockNativeModule.editorGetCurrentState
                 .mockReturnValueOnce(
@@ -1228,6 +1363,7 @@ describe('NativeRichTextEditor', () => {
             const { getByTestId } = render(
                 <NativeRichTextEditor
                     onActiveStateChange={onActiveStateChange}
+                    onHistoryStateChange={onHistoryStateChange}
                     onSelectionChange={onSelectionChange}
                 />
             );
@@ -1246,6 +1382,10 @@ describe('NativeRichTextEditor', () => {
                 commands: { indentList: false, outdentList: true },
                 allowedMarks: ['bold'],
                 insertableNodes: [],
+            });
+            expect(onHistoryStateChange).toHaveBeenCalledWith({
+                canUndo: false,
+                canRedo: false,
             });
             expect(onSelectionChange).toHaveBeenCalledWith({
                 type: 'text',
@@ -1415,8 +1555,12 @@ describe('NativeRichTextEditor', () => {
 
         it('normalizes native update payloads before firing callbacks', () => {
             const onActiveStateChange = jest.fn();
+            const onHistoryStateChange = jest.fn();
             const { getByTestId } = render(
-                <NativeRichTextEditor onActiveStateChange={onActiveStateChange} />
+                <NativeRichTextEditor
+                    onActiveStateChange={onActiveStateChange}
+                    onHistoryStateChange={onHistoryStateChange}
+                />
             );
 
             act(() => {
@@ -1442,6 +1586,10 @@ describe('NativeRichTextEditor', () => {
                 commands: {},
                 allowedMarks: [],
                 insertableNodes: [],
+            });
+            expect(onHistoryStateChange).toHaveBeenCalledWith({
+                canUndo: true,
+                canRedo: false,
             });
         });
 

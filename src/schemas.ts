@@ -1,3 +1,5 @@
+import type { DocumentJSON } from './NativeEditorBridge';
+
 export interface AttrSpec {
     default?: unknown;
 }
@@ -21,6 +23,58 @@ export interface MarkSpec {
 export interface SchemaDefinition {
     nodes: NodeSpec[];
     marks: MarkSpec[];
+}
+
+export interface ImageNodeAttributes {
+    src: string;
+    alt?: string | null;
+    title?: string | null;
+    width?: number | null;
+    height?: number | null;
+}
+
+export const IMAGE_NODE_NAME = 'image';
+
+export function imageNodeSpec(name: string = IMAGE_NODE_NAME): NodeSpec {
+    return {
+        name,
+        content: '',
+        group: 'block',
+        attrs: {
+            src: {},
+            alt: { default: null },
+            title: { default: null },
+            width: { default: null },
+            height: { default: null },
+        },
+        role: 'block',
+        htmlTag: 'img',
+        isVoid: true,
+    };
+}
+
+export function withImagesSchema(schema: SchemaDefinition): SchemaDefinition {
+    const hasImageNode = schema.nodes.some((node) => node.name === IMAGE_NODE_NAME);
+    if (hasImageNode) {
+        return schema;
+    }
+
+    return {
+        ...schema,
+        nodes: [...schema.nodes, imageNodeSpec()],
+    };
+}
+
+export function buildImageFragmentJson(attrs: ImageNodeAttributes): DocumentJSON {
+    return {
+        type: 'doc',
+        content: [
+            {
+                type: IMAGE_NODE_NAME,
+                attrs,
+            },
+        ],
+    };
 }
 
 const MARKS: MarkSpec[] = [
@@ -89,6 +143,7 @@ export const tiptapSchema: SchemaDefinition = {
             htmlTag: 'hr',
             isVoid: true,
         },
+        imageNodeSpec(),
         {
             name: 'text',
             content: '',
@@ -157,6 +212,7 @@ export const prosemirrorSchema: SchemaDefinition = {
             htmlTag: 'hr',
             isVoid: true,
         },
+        imageNodeSpec('image'),
         {
             name: 'text',
             content: '',

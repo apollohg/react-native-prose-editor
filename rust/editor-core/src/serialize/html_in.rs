@@ -43,6 +43,8 @@ pub struct FromHtmlOptions {
     /// If `true`, unknown HTML tags produce an error instead of being preserved
     /// as opaque nodes.
     pub strict: bool,
+    /// If `true`, `<img src="data:image/...">` is parsed as a real image node.
+    pub allow_base64_images: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +89,38 @@ fn element_attr<'a>(elem: &'a scraper::node::Element, key: &str) -> Option<&'a s
             None
         }
     })
+}
+
+fn is_base64_image_source(src: &str) -> bool {
+    src.trim().to_ascii_lowercase().starts_with("data:image/")
+}
+
+fn extract_node_attrs(
+    elem: &scraper::node::Element,
+    spec: &crate::schema::NodeSpec,
+) -> HashMap<String, serde_json::Value> {
+    let mut attrs = HashMap::new();
+
+    for (key, attr_spec) in &spec.attrs {
+        if let Some(value) = element_attr(elem, key) {
+            attrs.insert(key.clone(), parse_attr_value(key, value));
+        } else if let Some(default) = &attr_spec.default {
+            attrs.insert(key.clone(), default.clone());
+        }
+    }
+
+    attrs.retain(|_, value| !value.is_null());
+    attrs
+}
+
+fn parse_attr_value(key: &str, raw: &str) -> serde_json::Value {
+    if matches!(key, "width" | "height") {
+        let trimmed = raw.trim();
+        if let Ok(value) = trimmed.parse::<u64>() {
+            return serde_json::Value::Number(value.into());
+        }
+    }
+    serde_json::Value::String(raw.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +296,19 @@ fn process_element(
 
     // 2) Check if this matches a known schema node by html_tag
     if let Some(spec) = schema.node_by_html_tag(tag) {
+        if tag == "img"
+            && spec.name == "image"
+            && !options.allow_base64_images
+            && element_attr(elem, "src").is_some_and(is_base64_image_source)
+        {
+            if options.strict {
+                return Err(ParseError::UnknownTag(tag.to_string()));
+            }
+            let opaque = build_opaque_node(node_ref, tag, elem)?;
+            flush_inline_acc(inline_acc, schema, block_acc);
+            block_acc.push(opaque);
+            return Ok(());
+        }
         return process_schema_node(
             node_ref,
             elem,
@@ -343,12 +390,12 @@ fn process_schema_node(
 ) -> Result<(), ParseError> {
     match &spec.role {
         NodeRole::HardBreak => {
-            inline_acc.push(Node::void(spec.name.clone(), HashMap::new()));
+            inline_acc.push(Node::void(spec.name.clone(), extract_node_attrs(_elem, spec)));
             Ok(())
         }
         NodeRole::Block if spec.is_void => {
             flush_inline_acc(inline_acc, schema, block_acc);
-            block_acc.push(Node::void(spec.name.clone(), HashMap::new()));
+            block_acc.push(Node::void(spec.name.clone(), extract_node_attrs(_elem, spec)));
             Ok(())
         }
         NodeRole::TextBlock => {
@@ -482,7 +529,7 @@ fn collect_inline_children(
             // Known void inline node (hardBreak)
             if let Some(spec) = schema.node_by_html_tag(tag) {
                 if spec.is_void && matches!(spec.role, NodeRole::HardBreak | NodeRole::Inline) {
-                    inline_nodes.push(Node::void(spec.name.clone(), HashMap::new()));
+                    inline_nodes.push(Node::void(spec.name.clone(), extract_node_attrs(elem, spec)));
                     continue;
                 }
             }

@@ -228,6 +228,13 @@ impl StandaloneBackend {
                     to: pos + node_size,
                 }
             }
+            Step::UpdateNodeAttrs { pos, .. } => {
+                let original_attrs = resolve_node_attrs_at(doc, *pos);
+                Step::UpdateNodeAttrs {
+                    pos: *pos,
+                    attrs: original_attrs,
+                }
+            }
             Step::ReplaceRange { from, to, content } => {
                 // Inverse: replace the inserted content with the original content.
                 let original_content = extract_fragment_in_range(doc, *from, *to);
@@ -239,6 +246,32 @@ impl StandaloneBackend {
             }
         }
     }
+}
+
+fn resolve_node_attrs_at(
+    doc: &Document,
+    pos: u32,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    let resolved = match doc.resolve(pos) {
+        Ok(resolved) => resolved,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let parent = resolved.parent(doc);
+    let content = match parent.content() {
+        Some(content) => content,
+        None => return std::collections::HashMap::new(),
+    };
+
+    let mut offset = 0;
+    for child in content.iter() {
+        let child_size = child.node_size();
+        if !child.is_text() && resolved.parent_offset == offset {
+            return child.attrs().clone();
+        }
+        offset += child_size;
+    }
+
+    std::collections::HashMap::new()
 }
 
 impl DocumentBackend for StandaloneBackend {

@@ -649,12 +649,14 @@ public func editorCoreVersion() -> String  {
 /**
  * Create a new editor from a JSON config object.
  *
- * Config fields (all optional — empty object `{}` creates a default editor):
+ * Config fields (all optional):
  * - `"schema"`: custom schema definition (see `Schema::from_json`)
  * - `"maxLength"`: maximum document length in characters
  * - `"readOnly"`: if `true`, rejects non-API mutations
  * - `"inputFilter"`: regex pattern; only matching characters are inserted
+ * - `"allowBase64Images"`: if `true`, parses `<img src="data:image/...">` as image nodes
  *
+ * An empty object creates a default editor.
  * Falls back to the default Tiptap schema when `"schema"` is absent or invalid.
  */
 public func editorCreate(configJson: String) -> UInt64  {
@@ -942,6 +944,19 @@ public func editorReplaceTextScalar(id: UInt64, scalarFrom: UInt32, scalarTo: UI
         FfiConverterUInt32.lower(scalarFrom),
         FfiConverterUInt32.lower(scalarTo),
         FfiConverterString.lower(text),$0
+    )
+})
+}
+/**
+ * Resize an image node at a document position. Returns an update JSON string.
+ */
+public func editorResizeImageAtDocPos(id: UInt64, docPos: UInt32, width: UInt32, height: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_resize_image_at_doc_pos(
+        FfiConverterUInt64.lower(id),
+        FfiConverterUInt32.lower(docPos),
+        FfiConverterUInt32.lower(width),
+        FfiConverterUInt32.lower(height),$0
     )
 })
 }
@@ -1235,7 +1250,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_editor_core_version() != 41638) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_create() != 23908) {
+    if (uniffi_editor_core_checksum_func_editor_create() != 19812) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_delete_and_split_scalar() != 13764) {
@@ -1311,6 +1326,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_replace_text_scalar() != 45475) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_resize_image_at_doc_pos() != 36353) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_scalar_to_doc() != 40126) {

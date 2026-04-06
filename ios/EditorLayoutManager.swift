@@ -1,17 +1,10 @@
 import UIKit
 import CoreText
-import os
 
 /// Draws list markers visually in the gutter without inserting them into the
 /// editable text storage. This keeps UIKit paragraph-start behaviors, such as
 /// sentence auto-capitalization, working naturally inside list items.
 final class EditorLayoutManager: NSLayoutManager {
-    private static let blockquoteLog = Logger(
-        subsystem: "com.apollohg.prose-editor",
-        category: "blockquote"
-    )
-
-    private var blockquoteDrawPassCounter: UInt64 = 0
     private(set) var blockquoteStripeDrawPassesForTesting: [[CGRect]] = []
 
     func blockquoteStripeRectsForTesting(
@@ -65,9 +58,6 @@ final class EditorLayoutManager: NSLayoutManager {
         super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
 
         guard let textStorage, glyphsToShow.length > 0 else { return }
-
-        blockquoteDrawPassCounter &+= 1
-        let drawPass = blockquoteDrawPassCounter
 
         let characterRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
         let nsString = textStorage.string as NSString
@@ -125,9 +115,6 @@ final class EditorLayoutManager: NSLayoutManager {
             self.drawBlockquoteBorder(
                 stripeRect: stripeRect,
                 color: color
-            )
-            Self.blockquoteLog.notice(
-                "[drawGlyphs] pass=\(drawPass, privacy: .public) glyphRange=\(glyphsToShow.location, privacy: .public)..<\(glyphsToShow.location + glyphsToShow.length, privacy: .public) groupRange=\(groupRange.location, privacy: .public)..<\(groupRange.location + groupRange.length, privacy: .public) stripe=(x:\(stripeRect.minX, privacy: .public), y:\(stripeRect.minY, privacy: .public), w:\(stripeRect.width, privacy: .public), h:\(stripeRect.height, privacy: .public))"
             )
             drawnStripeRects.append(stripeRect)
         }
@@ -258,9 +245,6 @@ final class EditorLayoutManager: NSLayoutManager {
             y: origin.y + topEdge,
             width: borderWidth,
             height: bottomEdge - topEdge
-        )
-        Self.blockquoteLog.notice(
-            "[stripeRect] chars=\(characterRange.location, privacy: .public)..<\(characterRange.location + characterRange.length, privacy: .public) textLeading=\(textLeadingEdge, privacy: .public) verticalEdges=(top:\(topEdge, privacy: .public), bottom:\(bottomEdge, privacy: .public)) stripe=(x:\(stripeRect.minX, privacy: .public), y:\(stripeRect.minY, privacy: .public), w:\(stripeRect.width, privacy: .public), h:\(stripeRect.height, privacy: .public)) borderWidth=\(borderWidth, privacy: .public) gap=\(gap, privacy: .public)"
         )
         return stripeRect
     }

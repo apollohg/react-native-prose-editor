@@ -21,6 +21,7 @@ fn is_structural_step(step: &Step) -> bool {
             | Step::WrapInList { .. }
             | Step::UnwrapFromList { .. }
             | Step::InsertNode { .. }
+            | Step::UpdateNodeAttrs { .. }
             | Step::ReplaceRange { .. }
     )
 }

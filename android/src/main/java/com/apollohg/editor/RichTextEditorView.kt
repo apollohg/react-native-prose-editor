@@ -2,6 +2,7 @@ package com.apollohg.editor
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.util.AttributeSet
 import android.view.MotionEvent
@@ -17,7 +18,6 @@ class RichTextEditorView @JvmOverloads constructor(
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : LinearLayout(context, attrs, defStyleAttr) {
-
     val editorViewport: FrameLayout
 
     private class EditorScrollView(context: Context) : ScrollView(context) {
@@ -46,8 +46,10 @@ class RichTextEditorView @JvmOverloads constructor(
     val editorEditText: EditorEditText
     val editorScrollView: ScrollView
     private val remoteSelectionOverlayView: RemoteSelectionOverlayView
+    private val imageResizeOverlayView: ImageResizeOverlayView
 
     private var heightBehavior: EditorHeightBehavior = EditorHeightBehavior.FIXED
+    private var imageResizingEnabled = true
     private var theme: EditorTheme? = null
     private var baseBackgroundColor: Int = Color.WHITE
     private var viewportBottomInsetPx: Int = 0
@@ -62,7 +64,7 @@ class RichTextEditorView @JvmOverloads constructor(
             } else {
                 editorEditText.unbindEditor()
             }
-            remoteSelectionOverlayView.invalidate()
+            refreshOverlays()
         }
 
     init {
@@ -75,6 +77,7 @@ class RichTextEditorView @JvmOverloads constructor(
         }
         editorViewport = FrameLayout(context)
         remoteSelectionOverlayView = RemoteSelectionOverlayView(context)
+        imageResizeOverlayView = ImageResizeOverlayView(context)
         editorScrollView.addView(editorEditText, createEditorLayoutParams())
         editorViewport.addView(
             editorScrollView,
@@ -90,10 +93,19 @@ class RichTextEditorView @JvmOverloads constructor(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
+        editorViewport.addView(
+            imageResizeOverlayView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
         remoteSelectionOverlayView.bind(this)
+        imageResizeOverlayView.bind(this)
         editorScrollView.setOnScrollChangeListener { _, _, _, _, _ ->
-            remoteSelectionOverlayView.invalidate()
+            refreshOverlays()
         }
+        editorEditText.onSelectionOrContentMayChange = { refreshOverlays() }
 
         addView(editorViewport, createContainerLayoutParams())
         updateScrollContainerAppearance()
@@ -108,7 +120,7 @@ class RichTextEditorView @JvmOverloads constructor(
         baseBackgroundColor = backgroundColor
         editorEditText.setBaseStyle(textSizePx, textColor, backgroundColor)
         updateScrollContainerAppearance()
-        remoteSelectionOverlayView.invalidate()
+        refreshOverlays()
     }
 
     fun applyTheme(theme: EditorTheme?) {
@@ -125,10 +137,10 @@ class RichTextEditorView @JvmOverloads constructor(
                     childHeight + editorScrollView.paddingTop + editorScrollView.paddingBottom - editorScrollView.height
                 )
                 editorScrollView.scrollTo(0, previousScrollY.coerceIn(0, maxScrollY))
-                remoteSelectionOverlayView.invalidate()
+                refreshOverlays()
             }
         }
-        remoteSelectionOverlayView.invalidate()
+        refreshOverlays()
     }
 
     fun setHeightBehavior(heightBehavior: EditorHeightBehavior) {
@@ -144,8 +156,15 @@ class RichTextEditorView @JvmOverloads constructor(
             OVER_SCROLL_NEVER
         }
         updateScrollContainerInsets()
-        remoteSelectionOverlayView.invalidate()
+        refreshOverlays()
         requestLayout()
+    }
+
+    fun setImageResizingEnabled(enabled: Boolean) {
+        if (imageResizingEnabled == enabled) return
+        imageResizingEnabled = enabled
+        editorEditText.setImageResizingEnabled(enabled)
+        refreshOverlays()
     }
 
     fun setViewportBottomInsetPx(bottomInsetPx: Int) {
@@ -154,7 +173,7 @@ class RichTextEditorView @JvmOverloads constructor(
         viewportBottomInsetPx = clampedInset
         updateScrollContainerInsets()
         editorEditText.setViewportBottomInsetPx(clampedInset)
-        remoteSelectionOverlayView.invalidate()
+        refreshOverlays()
         requestLayout()
     }
 
@@ -164,6 +183,13 @@ class RichTextEditorView @JvmOverloads constructor(
 
     fun refreshRemoteSelections() {
         remoteSelectionOverlayView.invalidate()
+    }
+
+    fun imageResizeOverlayRectForTesting(): android.graphics.RectF? =
+        imageResizeOverlayView.visibleRectForTesting()
+
+    fun resizeSelectedImageForTesting(widthPx: Float, heightPx: Float) {
+        imageResizeOverlayView.simulateResizeForTesting(widthPx, heightPx)
     }
 
     fun remoteSelectionDebugSnapshotsForTesting(): List<RemoteSelectionDebugSnapshot> =
@@ -257,4 +283,46 @@ class RichTextEditorView @JvmOverloads constructor(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         )
+
+    internal fun selectedImageGeometry(): EditorEditText.SelectedImageGeometry? {
+        val geometry = editorEditText.selectedImageGeometry() ?: return null
+        return EditorEditText.SelectedImageGeometry(
+            docPos = geometry.docPos,
+            rect = RectF(
+                editorViewport.left + editorScrollView.left + editorEditText.left + geometry.rect.left,
+                editorViewport.top + editorScrollView.top + editorEditText.top + geometry.rect.top - editorScrollView.scrollY,
+                editorViewport.left + editorScrollView.left + editorEditText.left + geometry.rect.right,
+                editorViewport.top + editorScrollView.top + editorEditText.top + geometry.rect.bottom - editorScrollView.scrollY
+            )
+        )
+    }
+
+    internal fun maximumImageWidthPx(): Float {
+        val availableWidth =
+            maxOf(editorEditText.width, editorEditText.measuredWidth) -
+                editorEditText.compoundPaddingLeft -
+                editorEditText.compoundPaddingRight
+        return availableWidth.coerceAtLeast(48).toFloat()
+    }
+
+    internal fun clampImageSize(
+        widthPx: Float,
+        heightPx: Float,
+        maximumWidthPx: Float = maximumImageWidthPx()
+    ): Pair<Float, Float> {
+        val aspectRatio = maxOf(widthPx / maxOf(heightPx, 1f), 0.1f)
+        val clampedWidth = minOf(maxOf(48f, maximumWidthPx), maxOf(48f, widthPx))
+        val clampedHeight = maxOf(48f, clampedWidth / aspectRatio)
+        return clampedWidth to clampedHeight
+    }
+
+    internal fun resizeImage(docPos: Int, widthPx: Float, heightPx: Float) {
+        val (clampedWidth, clampedHeight) = clampImageSize(widthPx, heightPx)
+        editorEditText.resizeImageAtDocPos(docPos, clampedWidth, clampedHeight)
+    }
+
+    private fun refreshOverlays() {
+        remoteSelectionOverlayView.invalidate()
+        imageResizeOverlayView.refresh()
+    }
 }

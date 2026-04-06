@@ -1,6 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+    Alert,
+    KeyboardAvoidingView,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    View,
+} from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as ImagePicker from 'expo-image-picker';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
@@ -9,6 +19,7 @@ import {
     type EditorAddons,
     type EditorToolbarItem,
     type EditorToolbarTheme,
+    type ImageRequestContext,
     type LinkRequestContext,
     type MentionQueryChangeEvent,
     type MentionSelectEvent,
@@ -44,6 +55,9 @@ import { LinkEditorModal } from './components/LinkEditorModal';
 const ANDROID_KEYBOARD_TOOLBAR_OFFSET = 60;
 const DEFAULT_COLLABORATION_ENDPOINT = 'ws://localhost:1234/collaboration';
 const DEFAULT_COLLABORATION_ROOM_ID = 'example-room';
+const MAX_INSERT_IMAGE_DIMENSION = 1024;
+const MAX_INSERT_IMAGE_BASE64_LENGTH = 350_000;
+const INSERT_IMAGE_COMPRESSION_STEPS = [0.72, 0.58, 0.45] as const;
 
 function buildCollaborationSocketUrl(endpoint: string, documentId: string): string {
     const trimmedEndpoint = endpoint.trim();
@@ -52,6 +66,41 @@ function buildCollaborationSocketUrl(endpoint: string, documentId: string): stri
     }
     const separator = trimmedEndpoint.includes('?') ? '&' : '?';
     return `${trimmedEndpoint}${separator}documentId=${encodeURIComponent(documentId)}`;
+}
+
+async function normalizePickedImageForInsertion(uri: string, width?: number, height?: number) {
+    const resizeAction =
+        width != null && height != null
+            ? width >= height
+                ? width > MAX_INSERT_IMAGE_DIMENSION
+                    ? [{ resize: { width: MAX_INSERT_IMAGE_DIMENSION } }]
+                    : []
+                : height > MAX_INSERT_IMAGE_DIMENSION
+                    ? [{ resize: { height: MAX_INSERT_IMAGE_DIMENSION } }]
+                    : []
+            : [];
+
+    let workingUri = uri;
+    let lastResult:
+        | Awaited<ReturnType<typeof manipulateAsync>>
+        | null = null;
+
+    for (const compress of INSERT_IMAGE_COMPRESSION_STEPS) {
+        const result = await manipulateAsync(workingUri, lastResult == null ? resizeAction : [], {
+            compress,
+            format: SaveFormat.JPEG,
+            base64: true,
+        });
+        lastResult = result;
+
+        if (result.base64 && result.base64.length <= MAX_INSERT_IMAGE_BASE64_LENGTH) {
+            return result;
+        }
+
+        workingUri = result.uri;
+    }
+
+    return lastResult;
 }
 
 export default function App() {
@@ -104,6 +153,7 @@ function AppScreen() {
     ]);
     const [pendingLinkRequest, setPendingLinkRequest] = useState<LinkRequestContext | null>(null);
     const [linkDraft, setLinkDraft] = useState('');
+    const [isPickingImage, setIsPickingImage] = useState(false);
 
     const activeThemePreset = useMemo(
         () => getExampleThemePreset(selectedThemePresetId),
@@ -301,11 +351,94 @@ function AppScreen() {
         setLinkDraft('');
     };
 
-    const refocusEditorSoon = () => {
+    const refocusEditorSoon = React.useCallback(() => {
         requestAnimationFrame(() => {
             editorRef.current?.focus();
         });
-    };
+    }, []);
+
+    const openImageRequest = React.useCallback(
+        async (context: ImageRequestContext) => {
+            if (isPickingImage) {
+                return;
+            }
+
+            if (!context.allowBase64) {
+                Alert.alert(
+                    'Base64 images disabled',
+                    'This editor instance does not currently allow base64 image insertion.'
+                );
+                refocusEditorSoon();
+                return;
+            }
+
+            setIsPickingImage(true);
+            try {
+                const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+                if (!permission.granted) {
+                    Alert.alert(
+                        'Permission required',
+                        'Photo library access is required to choose an image from your device.'
+                    );
+                    return;
+                }
+
+                const result = await ImagePicker.launchImageLibraryAsync({
+                    mediaTypes: ['images'],
+                    allowsEditing: false,
+                    base64: true,
+                    quality: 0.8,
+                });
+
+                if (result.canceled) {
+                    refocusEditorSoon();
+                    return;
+                }
+
+                const asset = result.assets?.[0];
+                if (!asset?.uri) {
+                    Alert.alert(
+                        'Image unavailable',
+                        'The selected image could not be loaded for insertion.'
+                    );
+                    refocusEditorSoon();
+                    return;
+                }
+
+                const normalizedImage = await normalizePickedImageForInsertion(
+                    asset.uri,
+                    asset.width,
+                    asset.height
+                );
+
+                if (!normalizedImage?.base64) {
+                    Alert.alert(
+                        'Image unavailable',
+                        'The selected image could not be converted into base64 for insertion.'
+                    );
+                    refocusEditorSoon();
+                    return;
+                }
+
+                context.insertImage(`data:image/jpeg;base64,${normalizedImage.base64}`, {
+                    alt: asset.fileName ?? null,
+                    title: asset.fileName ?? null,
+                    width: normalizedImage.width,
+                    height: normalizedImage.height,
+                });
+                refocusEditorSoon();
+            } catch {
+                Alert.alert(
+                    'Image unavailable',
+                    'The selected image could not be prepared for insertion.'
+                );
+                refocusEditorSoon();
+            } finally {
+                setIsPickingImage(false);
+            }
+        },
+        [isPickingImage, refocusEditorSoon]
+    );
 
     const applyLinkRequest = () => {
         if (!pendingLinkRequest) {
@@ -357,7 +490,7 @@ function AppScreen() {
                     ]}
                     automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
                     keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-                    keyboardShouldPersistTaps='handled'>
+                    keyboardShouldPersistTaps='always'>
                     <View style={styles.header}>
                         <Text style={[styles.eyebrow, { color: appChrome.eyebrowColor }]}>
                             Demo
@@ -454,6 +587,7 @@ function AppScreen() {
                         addons={addons}
                         toolbarItems={toolbarItems}
                         onRequestLink={openLinkRequest}
+                        onRequestImage={openImageRequest}
                         heightBehavior={heightBehavior}
                         toolbarPlacement={toolbarPlacement}
                         onContentChange={setHtml}

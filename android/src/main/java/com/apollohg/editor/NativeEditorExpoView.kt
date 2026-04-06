@@ -170,6 +170,10 @@ class NativeEditorExpoView(
         updateKeyboardToolbarVisibility()
     }
 
+    fun setAllowImageResizing(allowImageResizing: Boolean) {
+        richTextView.setImageResizingEnabled(allowImageResizing)
+    }
+
     fun setToolbarItemsJson(toolbarItemsJson: String?) {
         keyboardToolbarView.setItems(NativeToolbarItem.fromJson(toolbarItemsJson))
     }

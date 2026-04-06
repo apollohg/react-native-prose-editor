@@ -132,6 +132,12 @@ pub enum Step {
     /// Insert a complete node at a position.
     InsertNode { pos: u32, node: Node },
 
+    /// Replace the attrs of a node without changing its content.
+    UpdateNodeAttrs {
+        pos: u32,
+        attrs: HashMap<String, serde_json::Value>,
+    },
+
     /// Replace a range with arbitrary content.
     ReplaceRange {
         from: u32,

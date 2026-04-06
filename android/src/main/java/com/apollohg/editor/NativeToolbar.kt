@@ -8,6 +8,7 @@ import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import androidx.appcompat.widget.AppCompatButton
@@ -98,6 +99,7 @@ internal enum class ToolbarDefaultIconId {
     underline,
     strike,
     link,
+    image,
     blockquote,
     bulletList,
     orderedList,
@@ -132,6 +134,7 @@ internal data class NativeToolbarIcon(
             ToolbarDefaultIconId.underline to "U",
             ToolbarDefaultIconId.strike to "S",
             ToolbarDefaultIconId.link to "🔗",
+            ToolbarDefaultIconId.image to "🖼",
             ToolbarDefaultIconId.blockquote to "❝",
             ToolbarDefaultIconId.bulletList to "•≡",
             ToolbarDefaultIconId.orderedList to "1.",
@@ -148,6 +151,7 @@ internal data class NativeToolbarIcon(
             ToolbarDefaultIconId.underline to "format-underlined",
             ToolbarDefaultIconId.strike to "strikethrough-s",
             ToolbarDefaultIconId.link to "link",
+            ToolbarDefaultIconId.image to "image",
             ToolbarDefaultIconId.blockquote to "format-quote",
             ToolbarDefaultIconId.bulletList to "format-list-bulleted",
             ToolbarDefaultIconId.orderedList to "format-list-numbered",
@@ -638,6 +642,8 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
             )
         }
         background = drawable
+        outlineProvider = ViewOutlineProvider.BACKGROUND
+        clipToOutline = cornerRadiusPx > 0f
         elevation = appliedChromeElevationPx
         updateContainerLayout(appearance)
         separators.forEach(::configureSeparator)

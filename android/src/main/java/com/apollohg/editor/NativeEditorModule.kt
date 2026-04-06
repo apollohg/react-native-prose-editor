@@ -294,6 +294,9 @@ class NativeEditorModule : Module() {
             Prop("heightBehavior") { view: NativeEditorExpoView, heightBehavior: String ->
                 view.setHeightBehavior(heightBehavior)
             }
+            Prop("allowImageResizing") { view: NativeEditorExpoView, allowImageResizing: Boolean ->
+                view.setAllowImageResizing(allowImageResizing)
+            }
             Prop("themeJson") { view: NativeEditorExpoView, themeJson: String? ->
                 view.setThemeJson(themeJson)
             }

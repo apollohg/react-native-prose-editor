@@ -253,6 +253,365 @@ private final class RemoteSelectionOverlayView: UIView {
     }
 }
 
+private final class ImageTapOverlayView: UIView {
+    private weak var editorView: RichTextEditorView?
+    private lazy var tapRecognizer: UITapGestureRecognizer = {
+        let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        recognizer.cancelsTouchesInView = true
+        return recognizer
+    }()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        addGestureRecognizer(tapRecognizer)
+    }
+
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    func bind(editorView: RichTextEditorView) {
+        self.editorView = editorView
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard let editorView else { return false }
+        let pointInTextView = convert(point, to: editorView.textView)
+        return editorView.textView.hasImageAttachment(at: pointInTextView)
+    }
+
+    @objc
+    private func handleTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended, let editorView else { return }
+        let pointInTextView = convert(recognizer.location(in: self), to: editorView.textView)
+        _ = editorView.textView.selectImageAttachment(at: pointInTextView)
+    }
+
+    func interceptsPointForTesting(_ point: CGPoint) -> Bool {
+        self.point(inside: point, with: nil)
+    }
+
+    @discardableResult
+    func handleTapForTesting(_ point: CGPoint) -> Bool {
+        guard let editorView else { return false }
+        let pointInTextView = convert(point, to: editorView.textView)
+        return editorView.textView.selectImageAttachment(at: pointInTextView)
+    }
+}
+
+private final class ImageResizeHandleView: UIView {
+    let corner: ImageResizeOverlayView.Corner
+
+    init(corner: ImageResizeOverlayView.Corner) {
+        self.corner = corner
+        super.init(frame: .zero)
+        isUserInteractionEnabled = true
+        backgroundColor = .systemBackground
+        layer.borderColor = UIColor.systemBlue.cgColor
+        layer.borderWidth = 2
+        layer.cornerRadius = 10
+    }
+
+    required init?(coder: NSCoder) {
+        return nil
+    }
+}
+
+private final class ImageResizeOverlayView: UIView {
+    enum Corner: CaseIterable {
+        case topLeft
+        case topRight
+        case bottomLeft
+        case bottomRight
+    }
+
+    private struct DragState {
+        let corner: Corner
+        let originalRect: CGRect
+        let docPos: UInt32
+        let maximumWidth: CGFloat
+    }
+
+    private weak var editorView: RichTextEditorView?
+    private let selectionLayer = CAShapeLayer()
+    private let previewBackdropView = UIView()
+    private let previewImageView = UIImageView()
+    private var handleViews: [Corner: ImageResizeHandleView] = [:]
+    private var currentRect: CGRect?
+    private var currentDocPos: UInt32?
+    private var dragState: DragState?
+    private let handleSize: CGFloat = 20
+    private let minimumImageSize: CGFloat = 48
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        clipsToBounds = true
+
+        previewBackdropView.isUserInteractionEnabled = false
+        previewBackdropView.isHidden = true
+        previewBackdropView.layer.zPosition = 1
+        addSubview(previewBackdropView)
+
+        previewImageView.isUserInteractionEnabled = false
+        previewImageView.isHidden = true
+        previewImageView.contentMode = .scaleToFill
+        previewImageView.layer.zPosition = 2
+        addSubview(previewImageView)
+
+        selectionLayer.strokeColor = UIColor.systemBlue.cgColor
+        selectionLayer.fillColor = UIColor.clear.cgColor
+        selectionLayer.lineWidth = 2
+        selectionLayer.zPosition = 10
+        layer.addSublayer(selectionLayer)
+
+        for corner in Corner.allCases {
+            let handleView = ImageResizeHandleView(corner: corner)
+            let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+            handleView.addGestureRecognizer(panGesture)
+            handleView.layer.zPosition = 20
+            addSubview(handleView)
+            handleViews[corner] = handleView
+        }
+
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    func bind(editorView: RichTextEditorView) {
+        self.editorView = editorView
+    }
+
+    func refresh() {
+        if dragState != nil {
+            return
+        }
+
+        guard let editorView,
+              let geometry = editorView.selectedImageGeometry()
+        else {
+            hideOverlay()
+            return
+        }
+
+        hidePreviewLayers()
+        applyGeometry(rect: geometry.rect, docPos: geometry.docPos)
+    }
+
+    func simulateResizeForTesting(width: CGFloat, height: CGFloat) {
+        guard let docPos = currentDocPos else { return }
+        editorView?.resizeImage(docPos: docPos, size: CGSize(width: width, height: height))
+    }
+
+    func simulatePreviewResizeForTesting(width: CGFloat, height: CGFloat) {
+        guard beginPreviewResize(from: .bottomRight) else { return }
+        let nextRect = CGRect(
+            origin: dragState?.originalRect.origin ?? .zero,
+            size: editorView?.clampedImageSize(
+                CGSize(width: width, height: height),
+                maximumWidth: dragState?.maximumWidth
+            ) ?? CGSize(width: width, height: height)
+        )
+        updatePreviewRect(nextRect)
+    }
+
+    func commitPreviewResizeForTesting() {
+        finishPreviewResize(commit: true)
+    }
+
+    var visibleRectForTesting: CGRect? {
+        isHidden ? nil : currentRect
+    }
+
+    var previewHasImageForTesting: Bool {
+        !previewImageView.isHidden && previewImageView.image != nil
+    }
+
+    func interceptsPointForTesting(_ location: CGPoint) -> Bool {
+        self.point(inside: location, with: nil)
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard !isHidden else { return false }
+        for handleView in handleViews.values where !handleView.isHidden {
+            if handleView.frame.insetBy(dx: -12, dy: -12).contains(point) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func hideOverlay() {
+        hidePreviewLayers()
+        dragState = nil
+        currentRect = nil
+        currentDocPos = nil
+        selectionLayer.path = nil
+        isHidden = true
+    }
+
+    private func applyGeometry(rect: CGRect, docPos: UInt32) {
+        let integralRect = rect.integral
+        currentRect = integralRect
+        currentDocPos = docPos
+        selectionLayer.path = UIBezierPath(roundedRect: integralRect, cornerRadius: 8).cgPath
+        isHidden = false
+        layoutHandleViews(for: integralRect)
+    }
+
+    private func hidePreviewLayers() {
+        previewBackdropView.isHidden = true
+        previewImageView.isHidden = true
+        previewImageView.image = nil
+    }
+
+    private func showPreview(docPos: UInt32, originalRect: CGRect) {
+        previewBackdropView.backgroundColor = editorView?.imageResizePreviewBackgroundColor() ?? .systemBackground
+        previewBackdropView.frame = originalRect
+        previewBackdropView.isHidden = false
+
+        previewImageView.image = editorView?.imagePreviewForResize(docPos: docPos)
+        previewImageView.frame = originalRect
+        previewImageView.isHidden = previewImageView.image == nil
+    }
+
+    @discardableResult
+    private func beginPreviewResize(from corner: Corner) -> Bool {
+        guard let currentRect, let currentDocPos else { return false }
+        editorView?.setImageResizePreviewActive(true)
+        let maximumWidth = editorView?.maximumImageWidthForResizeGesture() ?? currentRect.width
+        dragState = DragState(
+            corner: corner,
+            originalRect: currentRect,
+            docPos: currentDocPos,
+            maximumWidth: maximumWidth
+        )
+        showPreview(docPos: currentDocPos, originalRect: currentRect)
+        return true
+    }
+
+    private func updatePreviewRect(_ rect: CGRect) {
+        guard let currentDocPos else { return }
+        applyGeometry(rect: rect, docPos: currentDocPos)
+        previewImageView.frame = currentRect ?? rect.integral
+    }
+
+    private func finishPreviewResize(commit: Bool) {
+        guard let dragState else { return }
+        let finalSize = currentRect?.size ?? dragState.originalRect.size
+        self.dragState = nil
+        editorView?.setImageResizePreviewActive(false)
+        if commit {
+            editorView?.resizeImage(docPos: dragState.docPos, size: finalSize)
+        } else {
+            hidePreviewLayers()
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.refresh()
+        }
+    }
+
+    private func layoutHandleViews(for rect: CGRect) {
+        for (corner, handleView) in handleViews {
+            let center = handleCenter(for: corner, in: rect)
+            handleView.frame = CGRect(
+                x: center.x - (handleSize / 2),
+                y: center.y - (handleSize / 2),
+                width: handleSize,
+                height: handleSize
+            )
+        }
+    }
+
+    private func handleCenter(for corner: Corner, in rect: CGRect) -> CGPoint {
+        switch corner {
+        case .topLeft:
+            return CGPoint(x: rect.minX, y: rect.minY)
+        case .topRight:
+            return CGPoint(x: rect.maxX, y: rect.minY)
+        case .bottomLeft:
+            return CGPoint(x: rect.minX, y: rect.maxY)
+        case .bottomRight:
+            return CGPoint(x: rect.maxX, y: rect.maxY)
+        }
+    }
+
+    private func anchorPoint(for corner: Corner, in rect: CGRect) -> CGPoint {
+        switch corner {
+        case .topLeft:
+            return CGPoint(x: rect.maxX, y: rect.maxY)
+        case .topRight:
+            return CGPoint(x: rect.minX, y: rect.maxY)
+        case .bottomLeft:
+            return CGPoint(x: rect.maxX, y: rect.minY)
+        case .bottomRight:
+            return CGPoint(x: rect.minX, y: rect.minY)
+        }
+    }
+
+    private func resizedRect(
+        from originalRect: CGRect,
+        corner: Corner,
+        translation: CGPoint,
+        maximumWidth: CGFloat?
+    ) -> CGRect {
+        let aspectRatio = max(originalRect.width / max(originalRect.height, 1), 0.1)
+        let signedDx = (corner == .topRight || corner == .bottomRight) ? translation.x : -translation.x
+        let signedDy = (corner == .bottomLeft || corner == .bottomRight) ? translation.y : -translation.y
+        let widthScale = (originalRect.width + signedDx) / max(originalRect.width, 1)
+        let heightScale = (originalRect.height + signedDy) / max(originalRect.height, 1)
+        let scale = max(minimumImageSize / max(originalRect.width, 1), widthScale, heightScale)
+        let unclampedSize = CGSize(
+            width: max(minimumImageSize, originalRect.width * scale),
+            height: max(minimumImageSize / aspectRatio, (max(minimumImageSize, originalRect.width * scale) / aspectRatio))
+        )
+        let clampedSize = editorView?.clampedImageSize(unclampedSize, maximumWidth: maximumWidth) ?? unclampedSize
+        let width = clampedSize.width
+        let height = clampedSize.height
+        let anchor = anchorPoint(for: corner, in: originalRect)
+
+        switch corner {
+        case .topLeft:
+            return CGRect(x: anchor.x - width, y: anchor.y - height, width: width, height: height)
+        case .topRight:
+            return CGRect(x: anchor.x, y: anchor.y - height, width: width, height: height)
+        case .bottomLeft:
+            return CGRect(x: anchor.x - width, y: anchor.y, width: width, height: height)
+        case .bottomRight:
+            return CGRect(x: anchor.x, y: anchor.y, width: width, height: height)
+        }
+    }
+
+    @objc
+    private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        guard let handleView = gesture.view as? ImageResizeHandleView else { return }
+
+        switch gesture.state {
+        case .began:
+            _ = beginPreviewResize(from: handleView.corner)
+        case .changed:
+            guard let dragState else { return }
+            let nextRect = resizedRect(
+                from: dragState.originalRect,
+                corner: dragState.corner,
+                translation: gesture.translation(in: self),
+                maximumWidth: dragState.maximumWidth
+            )
+            updatePreviewRect(nextRect)
+        case .ended:
+            finishPreviewResize(commit: true)
+        case .cancelled, .failed:
+            finishPreviewResize(commit: false)
+        default:
+            finishPreviewResize(commit: false)
+        }
+    }
+}
+
 // MARK: - EditorTextView
 
 /// UITextView subclass that intercepts all text input and routes it through
@@ -280,7 +639,7 @@ private final class RemoteSelectionOverlayView: UIView {
 /// (`editor_insert_text`, `editor_delete_range`, etc.) are synchronous and
 /// fast enough for main-thread use. If profiling shows otherwise, we can
 /// dispatch to a serial queue and batch updates.
-final class EditorTextView: UITextView, UITextViewDelegate {
+final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerDelegate {
     private static let emptyBlockPlaceholderScalar = UnicodeScalar(0x200B)
 
     // MARK: - Properties
@@ -292,6 +651,10 @@ final class EditorTextView: UITextView, UITextViewDelegate {
     /// Guard flag to prevent re-entrant input interception while we're
     /// applying state from Rust (calling replaceCharacters on the text storage).
     var isApplyingRustState = false
+    private var visibleSelectionTintColor: UIColor = .systemBlue
+    private var hidesNativeSelectionChrome = false
+    private var isPreviewingImageResize = false
+    var allowImageResizing = true
 
     /// The base font used for unstyled text. Configurable from React props.
     var baseFont: UIFont = .systemFont(ofSize: 16)
@@ -333,6 +696,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
 
     var onHeightMayChange: (() -> Void)?
     var onViewportMayChange: (() -> Void)?
+    var onSelectionOrContentMayChange: (() -> Void)?
     private var lastAutoGrowMeasuredHeight: CGFloat = 0
 
     /// Delegate for editor events.
@@ -366,6 +730,14 @@ final class EditorTextView: UITextView, UITextViewDelegate {
 
     /// Tracks whether we're in a composition session (CJK / IME input).
     private var isComposing = false
+    private lazy var imageSelectionTapRecognizer: UITapGestureRecognizer = {
+        let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleImageSelectionTap(_:)))
+        recognizer.cancelsTouchesInView = true
+        recognizer.delaysTouchesBegan = false
+        recognizer.delaysTouchesEnded = false
+        recognizer.delegate = self
+        return recognizer
+    }()
 
     /// Guards against reconciliation firing while we're already intercepting
     /// and replaying a user input operation through Rust, including the
@@ -376,6 +748,8 @@ final class EditorTextView: UITextView, UITextViewDelegate {
     /// Coalesces selection sync until UIKit has finished resolving the
     /// current tap/drag gesture's final caret position.
     private var pendingSelectionSyncGeneration: UInt64 = 0
+    private var pendingDeferredImageSelectionRange: NSRange?
+    private var pendingDeferredImageSelectionGeneration: UInt64 = 0
 
     /// Stores the text that was composed during a marked text session,
     /// captured when `unmarkText` is called.
@@ -422,6 +796,12 @@ final class EditorTextView: UITextView, UITextViewDelegate {
     private func commonInit() {
         textContainer.widthTracksTextView = true
         editorLayoutManager.allowsNonContiguousLayout = false
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleImageAttachmentDidLoad(_:)),
+            name: .editorImageAttachmentDidLoad,
+            object: nil
+        )
 
         // Configure the text view as a Rust-controlled editor surface.
         // UIKit smart-edit features mutate text storage outside our transaction
@@ -443,20 +823,64 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         textColor = baseTextColor
         backgroundColor = baseBackgroundColor
         baseTextContainerInset = textContainerInset
+        visibleSelectionTintColor = tintColor
 
         // Register as the text storage delegate so we can detect unauthorized
         // mutations (reconciliation fallback).
         textStorage.delegate = self
         delegate = self
+        addGestureRecognizer(imageSelectionTapRecognizer)
+        installImageSelectionTapDependencies()
 
         addSubview(placeholderLabel)
         refreshPlaceholderVisibility()
+        refreshNativeSelectionChromeVisibility()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        installImageSelectionTapDependencies()
+    }
+
+    override func didAddSubview(_ subview: UIView) {
+        super.didAddSubview(subview)
+        installImageSelectionTapDependencies()
+    }
+
+    @objc
+    private func handleImageAttachmentDidLoad(_ notification: Notification) {
+        guard notification.object is NSTextAttachment else { return }
+        guard textStorage.length > 0 else { return }
+
+        textStorage.beginEditing()
+        textStorage.edited(.editedAttributes, range: NSRange(location: 0, length: textStorage.length), changeInLength: 0)
+        textStorage.endEditing()
+        setNeedsLayout()
+        invalidateIntrinsicContentSize()
+        onSelectionOrContentMayChange?()
+    }
+
+    override func tintColorDidChange() {
+        super.tintColorDidChange()
+        if !hidesNativeSelectionChrome, tintColor.cgColor.alpha > 0 {
+            visibleSelectionTintColor = tintColor
+        }
+    }
+
+    @objc
+    private func handleImageSelectionTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended, gesture.numberOfTouches == 1 else { return }
+        let location = gesture.location(in: self)
+        guard let range = imageAttachmentRange(at: location) else { return }
+        scheduleDeferredImageSelection(for: range)
+        _ = selectImageAttachment(range: range)
     }
 
     // MARK: - Layout
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        installImageSelectionTapDependencies()
         let placeholderX = textContainerInset.left + textContainer.lineFragmentPadding
         let placeholderY = textContainerInset.top
         let placeholderWidth = max(
@@ -476,15 +900,23 @@ final class EditorTextView: UITextView, UITextViewDelegate {
             width: placeholderWidth,
             height: min(maxPlaceholderHeight, ceil(fittedHeight))
         )
-        if heightBehavior == .autoGrow {
+        if heightBehavior == .autoGrow, !isPreviewingImageResize {
             notifyHeightChangeIfNeeded()
         }
-        onViewportMayChange?()
+        if !isPreviewingImageResize {
+            onViewportMayChange?()
+        }
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     override var contentOffset: CGPoint {
         didSet {
-            onViewportMayChange?()
+            if !isPreviewingImageResize {
+                onViewportMayChange?()
+            }
         }
     }
 
@@ -508,6 +940,122 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         placeholderLabel.isHidden = placeholder.isEmpty || !isRenderedContentEmpty()
     }
 
+    @discardableResult
+    private func selectImageAttachmentIfNeeded(at location: CGPoint) -> Bool {
+        guard let range = imageAttachmentRange(at: location) else { return false }
+        scheduleDeferredImageSelection(for: range)
+        return selectImageAttachment(range: range)
+    }
+
+    @discardableResult
+    func selectImageAttachment(at location: CGPoint) -> Bool {
+        selectImageAttachmentIfNeeded(at: location)
+    }
+
+    func hasImageAttachment(at location: CGPoint) -> Bool {
+        imageAttachmentRange(at: location) != nil
+    }
+
+    @discardableResult
+    private func selectImageAttachment(range: NSRange) -> Bool {
+        guard isSelectable,
+              let start = position(from: beginningOfDocument, offset: range.location),
+              let end = position(from: start, offset: range.length),
+              let textRange = textRange(from: start, to: end)
+        else {
+            return false
+        }
+
+        _ = becomeFirstResponder()
+        selectedTextRange = textRange
+        refreshNativeSelectionChromeVisibility()
+        onSelectionOrContentMayChange?()
+        scheduleSelectionSync()
+        return true
+    }
+
+    private func selectedUtf16Range() -> NSRange? {
+        guard let range = selectedTextRange else { return nil }
+        let location = offset(from: beginningOfDocument, to: range.start)
+        let length = offset(from: range.start, to: range.end)
+        guard location >= 0, length >= 0 else { return nil }
+        return NSRange(location: location, length: length)
+    }
+
+    private func scheduleDeferredImageSelection(for range: NSRange) {
+        pendingDeferredImageSelectionRange = range
+        pendingDeferredImageSelectionGeneration &+= 1
+        let generation = pendingDeferredImageSelectionGeneration
+        DispatchQueue.main.async { [weak self] in
+            self?.applyDeferredImageSelectionIfNeeded(generation: generation)
+        }
+    }
+
+    private func applyDeferredImageSelectionIfNeeded(generation: UInt64) {
+        guard pendingDeferredImageSelectionGeneration == generation,
+              let pendingRange = pendingDeferredImageSelectionRange
+        else {
+            return
+        }
+        pendingDeferredImageSelectionRange = nil
+        guard selectedUtf16Range() != pendingRange else { return }
+        _ = selectImageAttachment(range: pendingRange)
+    }
+
+    private func installImageSelectionTapDependencies() {
+        for view in gestureDependencyViews(startingAt: self) {
+            guard let recognizers = view.gestureRecognizers else { continue }
+            for recognizer in recognizers {
+                guard recognizer !== imageSelectionTapRecognizer,
+                      let tapRecognizer = recognizer as? UITapGestureRecognizer
+                else {
+                    continue
+                }
+                tapRecognizer.require(toFail: imageSelectionTapRecognizer)
+            }
+        }
+    }
+
+    private func gestureDependencyViews(startingAt rootView: UIView) -> [UIView] {
+        var views: [UIView] = [rootView]
+        for subview in rootView.subviews {
+            views.append(contentsOf: gestureDependencyViews(startingAt: subview))
+        }
+        return views
+    }
+
+    private func imageAttachmentRange(at location: CGPoint) -> NSRange? {
+        guard allowImageResizing else { return nil }
+        guard textStorage.length > 0 else { return nil }
+
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        var resolvedRange: NSRange?
+
+        textStorage.enumerateAttribute(.attachment, in: fullRange) { value, range, stop in
+            guard value is NSTextAttachment, range.length > 0 else { return }
+
+            let attrs = textStorage.attributes(at: range.location, effectiveRange: nil)
+            guard (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "image" else { return }
+
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: range,
+                actualCharacterRange: nil
+            )
+            guard glyphRange.length > 0 else { return }
+
+            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            rect.origin.x += textContainerInset.left - contentOffset.x
+            rect.origin.y += textContainerInset.top - contentOffset.y
+
+            if rect.insetBy(dx: -8, dy: -8).contains(location) {
+                resolvedRange = range
+                stop.pointee = true
+            }
+        }
+
+        return resolvedRange
+    }
+
     func isPlaceholderVisibleForTesting() -> Bool {
         !placeholderLabel.isHidden
     }
@@ -528,7 +1076,64 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         editorLayoutManager.blockquoteStripeDrawPassesForTesting
     }
 
+    @discardableResult
+    func selectImageAttachmentForTesting(at location: CGPoint) -> Bool {
+        selectImageAttachmentIfNeeded(at: location)
+    }
+
+    func imageSelectionTapWouldHandleForTesting(at location: CGPoint) -> Bool {
+        imageAttachmentRange(at: location) != nil
+    }
+
+    func imageSelectionTapCancelsTouchesForTesting() -> Bool {
+        imageSelectionTapRecognizer.cancelsTouchesInView
+    }
+
+    func imageSelectionTapYieldsToDefaultTapForTesting() -> Bool {
+        gestureRecognizer(
+            imageSelectionTapRecognizer,
+            shouldBeRequiredToFailBy: UITapGestureRecognizer()
+        ) || gestureRecognizer(
+            imageSelectionTapRecognizer,
+            shouldRequireFailureOf: UITapGestureRecognizer()
+        )
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === imageSelectionTapRecognizer,
+              touch.tapCount == 1
+        else {
+            return true
+        }
+
+        return imageAttachmentRange(at: touch.location(in: self)) != nil
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        false
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        false
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        false
+    }
+
     override func caretRect(for position: UITextPosition) -> CGRect {
+        if hidesNativeSelectionChrome {
+            return .zero
+        }
         let rect = resolvedCaretReferenceRect(for: position)
         guard rect.height > 0 else { return rect }
 
@@ -746,7 +1351,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
                 return
             }
 
-            if let deleteRange = trailingHorizontalRuleDeleteRangeForBackwardDelete(
+            if let deleteRange = trailingVoidBlockDeleteRangeForBackwardDelete(
                 cursorUtf16Offset: cursorUtf16Offset
             ) {
                 performInterceptedInput {
@@ -797,7 +1402,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         return (from: cursorScalar, to: cursorScalar + 1)
     }
 
-    private func trailingHorizontalRuleDeleteRangeForBackwardDelete(
+    private func trailingVoidBlockDeleteRangeForBackwardDelete(
         cursorUtf16Offset: Int
     ) -> (from: UInt32, to: UInt32)? {
         let text = textStorage.string as NSString
@@ -818,19 +1423,34 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         guard text.character(at: paragraphRange.location - 1) == 0x000A else { return nil }
 
         let attachmentIndex = paragraphRange.location - 2
-        let attrs = textStorage.attributes(at: attachmentIndex, effectiveRange: nil)
-        guard attrs[.attachment] is NSTextAttachment,
-              attrs[RenderBridgeAttributes.voidNodeType] as? String == "horizontalRule"
+        guard
+            let deleteRange = scalarDeleteRangeForVoidAttachment(at: attachmentIndex)
         else {
             return nil
         }
 
-        let placeholderEndScalar = PositionBridge.utf16OffsetToScalar(
-            placeholderRange.location + placeholderRange.length,
+        return deleteRange
+    }
+
+    private func scalarDeleteRangeForVoidAttachment(
+        at utf16Offset: Int
+    ) -> (from: UInt32, to: UInt32)? {
+        guard utf16Offset >= 0, utf16Offset < textStorage.length else {
+            return nil
+        }
+        let attrs = textStorage.attributes(at: utf16Offset, effectiveRange: nil)
+        guard attrs[.attachment] is NSTextAttachment,
+              attrs[RenderBridgeAttributes.voidNodeType] as? String != nil
+        else {
+            return nil
+        }
+
+        let attachmentEndScalar = PositionBridge.utf16OffsetToScalar(
+            utf16Offset + 1,
             in: self
         )
-        guard placeholderEndScalar > 0 else { return nil }
-        return (from: placeholderEndScalar - 1, to: placeholderEndScalar)
+        guard attachmentEndScalar > 0 else { return nil }
+        return (from: attachmentEndScalar - 1, to: attachmentEndScalar)
     }
 
     private func handleListDepthKeyCommand(outdent: Bool) {
@@ -1019,6 +1639,8 @@ final class EditorTextView: UITextView, UITextViewDelegate {
     /// internally during tap handling and word-boundary resolution.
     func textViewDidChangeSelection(_ textView: UITextView) {
         guard textView === self else { return }
+        refreshNativeSelectionChromeVisibility()
+        onSelectionOrContentMayChange?()
         scheduleSelectionSync()
     }
 
@@ -1037,6 +1659,25 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         in characterRange: NSRange,
         interaction: UITextItemInteraction
     ) -> Bool {
+        guard textView === self,
+              characterRange.location >= 0,
+              characterRange.location < textStorage.length
+        else {
+            return false
+        }
+
+        let attrs = textStorage.attributes(at: characterRange.location, effectiveRange: nil)
+        guard (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "image",
+              let start = position(from: beginningOfDocument, offset: characterRange.location),
+              let end = position(from: start, offset: characterRange.length)
+        else {
+            return false
+        }
+
+        selectedTextRange = textRange(from: start, to: end)
+        refreshNativeSelectionChromeVisibility()
+        onSelectionOrContentMayChange?()
+        scheduleSelectionSync()
         return false
     }
 
@@ -1126,6 +1767,25 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         attrs[.font] = attrs[.font] ?? resolvedDefaultFont()
         attrs[.foregroundColor] = attrs[.foregroundColor] ?? resolvedDefaultTextColor()
         typingAttributes = attrs
+    }
+
+    private func setNativeSelectionChromeHidden(_ hidden: Bool) {
+        guard hidesNativeSelectionChrome != hidden else { return }
+        hidesNativeSelectionChrome = hidden
+        super.tintColor = hidden ? .clear : visibleSelectionTintColor
+    }
+
+    private func refreshNativeSelectionChromeVisibility() {
+        let hidden = selectedImageGeometry() != nil
+        if !hidden, tintColor.cgColor.alpha > 0 {
+            visibleSelectionTintColor = tintColor
+        }
+        setNativeSelectionChromeHidden(hidden)
+    }
+
+    func refreshSelectionVisualState() {
+        refreshNativeSelectionChromeVisibility()
+        onSelectionOrContentMayChange?()
     }
 
     private func scheduleSelectionSync() {
@@ -1537,6 +2197,104 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         return (anchor: scalarRange.from, head: scalarRange.to)
     }
 
+    func selectedImageGeometry() -> (docPos: UInt32, rect: CGRect)? {
+        guard allowImageResizing else { return nil }
+        guard isFirstResponder else { return nil }
+        guard let selectedRange = selectedTextRange else { return nil }
+
+        let startOffset = offset(from: beginningOfDocument, to: selectedRange.start)
+        let endOffset = offset(from: beginningOfDocument, to: selectedRange.end)
+        guard endOffset == startOffset + 1, startOffset >= 0, startOffset < textStorage.length else {
+            return nil
+        }
+
+        let attrs = textStorage.attributes(at: startOffset, effectiveRange: nil)
+        guard (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "image",
+              attrs[.attachment] is NSTextAttachment
+        else {
+            return nil
+        }
+
+        let docPos: UInt32
+        if let number = attrs[RenderBridgeAttributes.docPos] as? NSNumber {
+            docPos = number.uint32Value
+        } else if let value = attrs[RenderBridgeAttributes.docPos] as? UInt32 {
+            docPos = value
+        } else {
+            return nil
+        }
+
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: NSRange(location: startOffset, length: 1),
+            actualCharacterRange: nil
+        )
+        guard glyphRange.length > 0 else { return nil }
+
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        rect.origin.x += textContainerInset.left
+        rect.origin.y += textContainerInset.top
+        guard rect.width > 0, rect.height > 0 else { return nil }
+        return (docPos, rect)
+    }
+
+    private func blockImageAttachment(docPos: UInt32) -> (range: NSRange, attachment: BlockImageAttachment)? {
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        var resolved: (range: NSRange, attachment: BlockImageAttachment)?
+        textStorage.enumerateAttribute(.attachment, in: fullRange) { value, range, stop in
+            guard let attachment = value as? BlockImageAttachment, range.length > 0 else { return }
+            let attrs = textStorage.attributes(at: range.location, effectiveRange: nil)
+            guard (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "image" else { return }
+            let attributeDocPos = (attrs[RenderBridgeAttributes.docPos] as? NSNumber)?.uint32Value
+                ?? (attrs[RenderBridgeAttributes.docPos] as? UInt32)
+            guard attributeDocPos == docPos else { return }
+            resolved = (range, attachment)
+            stop.pointee = true
+        }
+        return resolved
+    }
+
+    func imagePreviewForDocPos(_ docPos: UInt32) -> UIImage? {
+        blockImageAttachment(docPos: docPos)?.attachment.previewImage()
+    }
+
+    func maximumRenderableImageWidth() -> CGFloat {
+        let containerWidth: CGFloat
+        if bounds.width > 0 {
+            containerWidth = bounds.width - textContainerInset.left - textContainerInset.right
+        } else {
+            containerWidth = textContainer.size.width
+        }
+        let linePadding = textContainer.lineFragmentPadding * 2
+        return max(48, containerWidth - linePadding)
+    }
+
+    func resizeImageAtDocPos(_ docPos: UInt32, width: UInt32, height: UInt32) {
+        guard editorId != 0 else { return }
+        performInterceptedInput {
+            let updateJSON = editorResizeImageAtDocPos(
+                id: editorId,
+                docPos: docPos,
+                width: width,
+                height: height
+            )
+            applyUpdateJSON(updateJSON)
+        }
+    }
+
+    func previewResizeImageAtDocPos(_ docPos: UInt32, width: CGFloat, height: CGFloat) {
+        guard let attachmentState = blockImageAttachment(docPos: docPos) else { return }
+        attachmentState.attachment.setPreferredSize(width: width, height: height)
+        layoutManager.invalidateLayout(forCharacterRange: attachmentState.range, actualCharacterRange: nil)
+        layoutManager.invalidateDisplay(forCharacterRange: attachmentState.range)
+        textStorage.beginEditing()
+        textStorage.edited(.editedAttributes, range: attachmentState.range, changeInLength: 0)
+        textStorage.endEditing()
+    }
+
+    func setImageResizePreviewActive(_ active: Bool) {
+        isPreviewingImageResize = active
+    }
+
     /// Handle return key press as a block split operation.
     private func handleReturnKey() {
         // If there's a range selection, atomically delete and split.
@@ -1644,6 +2402,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         if heightBehavior == .autoGrow {
             notifyHeightChangeIfNeeded(force: true)
         }
+        onSelectionOrContentMayChange?()
 
         Self.updateLog.debug(
             "[applyUpdateJSON.end] finalSelection=\(self.selectionSummary(), privacy: .public) textState=\(self.textSnapshotSummary(), privacy: .public)"
@@ -1682,6 +2441,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
         if heightBehavior == .autoGrow {
             notifyHeightChangeIfNeeded(force: true)
         }
+        onSelectionOrContentMayChange?()
         Self.updateLog.debug(
             "[applyRenderJSON.end] after=\(self.textSnapshotSummary(), privacy: .public)"
         )
@@ -1713,6 +2473,7 @@ final class EditorTextView: UITextView, UITextViewDelegate {
             let startPos = PositionBridge.scalarToTextView(min(anchorScalar, headScalar), in: self)
             let endPos = PositionBridge.scalarToTextView(max(anchorScalar, headScalar), in: self)
             selectedTextRange = textRange(from: startPos, to: endPos)
+            refreshNativeSelectionChromeVisibility()
             Self.selectionLog.debug(
                 "[applySelectionFromJSON.text] doc=\(anchorNum.uint32Value)-\(headNum.uint32Value) scalar=\(anchorScalar)-\(headScalar) final=\(self.selectionSummary(), privacy: .public)"
             )
@@ -1727,12 +2488,14 @@ final class EditorTextView: UITextView, UITextViewDelegate {
             if let endPos = position(from: startPos, offset: 1) {
                 selectedTextRange = textRange(from: startPos, to: endPos)
             }
+            refreshNativeSelectionChromeVisibility()
             Self.selectionLog.debug(
                 "[applySelectionFromJSON.node] doc=\(posNum.uint32Value) scalar=\(posScalar) final=\(self.selectionSummary(), privacy: .public)"
             )
 
         case "all":
             selectedTextRange = textRange(from: beginningOfDocument, to: endOfDocument)
+            refreshNativeSelectionChromeVisibility()
             Self.selectionLog.debug(
                 "[applySelectionFromJSON.all] final=\(self.selectionSummary(), privacy: .public)"
             )
@@ -1832,9 +2595,20 @@ final class RichTextEditorView: UIView {
     /// The editor text view that handles input interception.
     let textView: EditorTextView
     private let remoteSelectionOverlayView = RemoteSelectionOverlayView()
+    private let imageTapOverlayView = ImageTapOverlayView()
+    private let imageResizeOverlayView = ImageResizeOverlayView()
     var onHeightMayChange: (() -> Void)?
     private var lastAutoGrowWidth: CGFloat = 0
     private var remoteSelections: [RemoteSelectionDecoration] = []
+    var allowImageResizing = true {
+        didSet {
+            guard oldValue != allowImageResizing else { return }
+            textView.allowImageResizing = allowImageResizing
+            textView.refreshSelectionVisualState()
+            imageTapOverlayView.isHidden = editorId == 0 || !allowImageResizing
+            imageResizeOverlayView.refresh()
+        }
+    }
 
     var heightBehavior: EditorHeightBehavior = .fixed {
         didSet {
@@ -1844,6 +2618,7 @@ final class RichTextEditorView: UIView {
             setNeedsLayout()
             onHeightMayChange?()
             remoteSelectionOverlayView.refresh()
+            imageResizeOverlayView.refresh()
         }
     }
 
@@ -1859,6 +2634,8 @@ final class RichTextEditorView: UIView {
                 selections: remoteSelections,
                 editorId: editorId
             )
+            imageTapOverlayView.isHidden = editorId == 0 || !allowImageResizing
+            imageResizeOverlayView.refresh()
         }
     }
 
@@ -1880,7 +2657,13 @@ final class RichTextEditorView: UIView {
         // Add the text view as a subview.
         textView.translatesAutoresizingMaskIntoConstraints = false
         remoteSelectionOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        imageTapOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        imageResizeOverlayView.translatesAutoresizingMaskIntoConstraints = false
         remoteSelectionOverlayView.bind(textView: textView)
+        imageTapOverlayView.bind(editorView: self)
+        imageResizeOverlayView.bind(editorView: self)
+        textView.allowImageResizing = allowImageResizing
+        imageTapOverlayView.isHidden = editorId == 0 || !allowImageResizing
         textView.onHeightMayChange = { [weak self] in
             guard let self, self.heightBehavior == .autoGrow else { return }
             self.invalidateIntrinsicContentSize()
@@ -1888,10 +2671,15 @@ final class RichTextEditorView: UIView {
             self.onHeightMayChange?()
         }
         textView.onViewportMayChange = { [weak self] in
-            self?.remoteSelectionOverlayView.refresh()
+            self?.refreshOverlays()
+        }
+        textView.onSelectionOrContentMayChange = { [weak self] in
+            self?.refreshOverlays()
         }
         addSubview(textView)
         addSubview(remoteSelectionOverlayView)
+        addSubview(imageTapOverlayView)
+        addSubview(imageResizeOverlayView)
 
         NSLayoutConstraint.activate([
             textView.topAnchor.constraint(equalTo: topAnchor),
@@ -1902,6 +2690,14 @@ final class RichTextEditorView: UIView {
             remoteSelectionOverlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
             remoteSelectionOverlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
             remoteSelectionOverlayView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            imageTapOverlayView.topAnchor.constraint(equalTo: topAnchor),
+            imageTapOverlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            imageTapOverlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            imageTapOverlayView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            imageResizeOverlayView.topAnchor.constraint(equalTo: topAnchor),
+            imageResizeOverlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            imageResizeOverlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            imageResizeOverlayView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
@@ -1919,7 +2715,7 @@ final class RichTextEditorView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        remoteSelectionOverlayView.refresh()
+        refreshOverlays()
         guard heightBehavior == .autoGrow else { return }
         let currentWidth = bounds.width.rounded(.towardZero)
         guard currentWidth != lastAutoGrowWidth else { return }
@@ -1953,7 +2749,7 @@ final class RichTextEditorView: UIView {
         let cornerRadius = theme?.borderRadius ?? 0
         layer.cornerRadius = cornerRadius
         clipsToBounds = cornerRadius > 0
-        remoteSelectionOverlayView.refresh()
+        refreshOverlays()
     }
 
     func setRemoteSelections(_ selections: [RemoteSelectionDecoration]) {
@@ -1970,6 +2766,47 @@ final class RichTextEditorView: UIView {
 
     func remoteSelectionOverlaySubviewsForTesting() -> [UIView] {
         remoteSelectionOverlayView.subviews
+    }
+
+    func imageResizeOverlayRectForTesting() -> CGRect? {
+        imageResizeOverlayView.visibleRectForTesting
+    }
+
+    func imageTapOverlayInterceptsPointForTesting(_ point: CGPoint) -> Bool {
+        imageTapOverlayView.interceptsPointForTesting(convert(point, to: imageTapOverlayView))
+    }
+
+    @discardableResult
+    func tapImageOverlayForTesting(at point: CGPoint) -> Bool {
+        imageTapOverlayView.handleTapForTesting(convert(point, to: imageTapOverlayView))
+    }
+
+    func imageResizePreviewHasImageForTesting() -> Bool {
+        imageResizeOverlayView.previewHasImageForTesting
+    }
+
+    func refreshSelectionVisualStateForTesting() {
+        textView.refreshSelectionVisualState()
+    }
+
+    func imageResizeOverlayInterceptsPointForTesting(_ point: CGPoint) -> Bool {
+        imageResizeOverlayView.interceptsPointForTesting(convert(point, to: imageResizeOverlayView))
+    }
+
+    func maximumImageWidthForTesting() -> CGFloat {
+        textView.maximumRenderableImageWidth()
+    }
+
+    func resizeSelectedImageForTesting(width: CGFloat, height: CGFloat) {
+        imageResizeOverlayView.simulateResizeForTesting(width: width, height: height)
+    }
+
+    func previewResizeSelectedImageForTesting(width: CGFloat, height: CGFloat) {
+        imageResizeOverlayView.simulatePreviewResizeForTesting(width: width, height: height)
+    }
+
+    func commitPreviewResizeForTesting() {
+        imageResizeOverlayView.commitPreviewResizeForTesting()
     }
 
     /// Set initial content from HTML.
@@ -2008,6 +2845,50 @@ final class RichTextEditorView: UIView {
             return superview?.bounds.width ?? 0
         }
         return UIScreen.main.bounds.width
+    }
+
+    fileprivate func selectedImageGeometry() -> (docPos: UInt32, rect: CGRect)? {
+        guard let geometry = textView.selectedImageGeometry() else { return nil }
+        return (
+            docPos: geometry.docPos,
+            rect: textView.convert(geometry.rect, to: imageResizeOverlayView)
+        )
+    }
+
+    fileprivate func setImageResizePreviewActive(_ active: Bool) {
+        textView.setImageResizePreviewActive(active)
+    }
+
+    fileprivate func imagePreviewForResize(docPos: UInt32) -> UIImage? {
+        textView.imagePreviewForDocPos(docPos)
+    }
+
+    fileprivate func imageResizePreviewBackgroundColor() -> UIColor {
+        textView.backgroundColor ?? .systemBackground
+    }
+
+    fileprivate func maximumImageWidthForResizeGesture() -> CGFloat {
+        textView.maximumRenderableImageWidth()
+    }
+
+    fileprivate func clampedImageSize(_ size: CGSize, maximumWidth: CGFloat? = nil) -> CGSize {
+        let aspectRatio = max(size.width / max(size.height, 1), 0.1)
+        let maxWidth = max(48, maximumWidth ?? textView.maximumRenderableImageWidth())
+        let clampedWidth = min(maxWidth, max(48, size.width))
+        let clampedHeight = max(48, clampedWidth / aspectRatio)
+        return CGSize(width: clampedWidth, height: clampedHeight)
+    }
+
+    fileprivate func resizeImage(docPos: UInt32, size: CGSize) {
+        let clampedSize = clampedImageSize(size)
+        let width = max(48, Int(clampedSize.width.rounded()))
+        let height = max(48, Int(clampedSize.height.rounded()))
+        textView.resizeImageAtDocPos(docPos, width: UInt32(width), height: UInt32(height))
+    }
+
+    private func refreshOverlays() {
+        remoteSelectionOverlayView.refresh()
+        imageResizeOverlayView.refresh()
     }
 
     // MARK: - Cleanup

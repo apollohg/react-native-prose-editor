@@ -96,6 +96,8 @@ const toolbarItems = [
 
 Link buttons are host-driven. The editor does not show a built-in URL prompt. Your app owns the URL entry UI and applies the result through `onRequestLink`.
 
+Image buttons are host-driven too. Handle your picker or upload flow in `onRequestImage`, then call `insertImage(...)`.
+
 ## App-Defined Action Buttons
 
 Use an `action` item plus `onToolbarAction` to add buttons with custom behavior:
@@ -173,6 +175,32 @@ const toolbarItems = [
 
 If you need an imperative path, the editor ref also exposes `setLink(href)` and `unsetLink()`.
 
+## Image Controls
+
+Image toolbar items call back into your app. Choose the image however you want, then finish by calling `insertImage(...)`:
+
+```tsx
+const toolbarItems = [
+  { type: 'mark', mark: 'bold', label: 'Bold', icon: { type: 'default', id: 'bold' } },
+  { type: 'image', label: 'Image', icon: { type: 'default', id: 'image' } },
+] as const;
+
+<NativeRichTextEditor
+  showToolbar
+  toolbarItems={toolbarItems}
+  onRequestImage={({ allowBase64, insertImage }) => {
+    const source = allowBase64
+      ? 'data:image/png;base64,AAAA'
+      : 'https://cdn.example.com/cat.png';
+    insertImage(source, { alt: 'Cat', width: 320, height: 180 });
+  }}
+/>;
+```
+
+If you need imperative insertion, the editor ref also exposes `insertImage(src, attrs?)`. Base64 data URIs require `allowBase64Images={true}`. Optional `width` and `height` attrs seed the initial size and are updated when the user resizes the image natively.
+
+Set `allowImageResizing={false}` if inserted images should stay fixed.
+
 ## Standalone Toolbar
 
 Use `EditorToolbar` directly when you need full layout control. This requires wiring up the editor ref and state callbacks manually.
@@ -181,6 +209,7 @@ Use `EditorToolbar` directly when you need full layout control. This requires wi
 const editorRef = useRef<NativeRichTextEditorRef>(null);
 const [activeState, setActiveState] = useState<ActiveState>({
   marks: {},
+  markAttrs: {},
   nodes: {},
   commands: {},
   allowedMarks: [],
@@ -196,6 +225,7 @@ const [historyState, setHistoryState] = useState<HistoryState>({
     ref={editorRef}
     showToolbar={false}
     onActiveStateChange={setActiveState}
+    onHistoryStateChange={setHistoryState}
   />
   <EditorToolbar
     activeState={activeState}
@@ -203,11 +233,10 @@ const [historyState, setHistoryState] = useState<HistoryState>({
     onToggleMark={(mark) => editorRef.current?.toggleMark(mark)}
     onToggleListType={(listType) => editorRef.current?.toggleList(listType)}
     onInsertNodeType={(nodeType) => editorRef.current?.insertNode(nodeType)}
+    onRequestImage={() => editorRef.current?.insertImage('https://cdn.example.com/cat.png')}
     onRunCommand={(command) => {
       if (command === 'indentList') editorRef.current?.indentListItem();
       if (command === 'outdentList') editorRef.current?.outdentListItem();
-      if (command === 'undo') editorRef.current?.undo();
-      if (command === 'redo') editorRef.current?.redo();
     }}
     onUndo={() => editorRef.current?.undo()}
     onRedo={() => editorRef.current?.redo()}

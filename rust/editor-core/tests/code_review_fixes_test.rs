@@ -40,13 +40,13 @@ fn doc_node(children: Vec<Node>) -> Node {
 }
 
 fn default_editor() -> Editor {
-    Editor::new(tiptap_schema(), InterceptorPipeline::new())
+    Editor::new(tiptap_schema(), InterceptorPipeline::new(), false)
 }
 
 fn _editor_with_max_length(max: u32) -> Editor {
     let mut pipeline = InterceptorPipeline::new();
     pipeline.add(Box::new(MaxLength::new(max)));
-    Editor::new(tiptap_schema(), pipeline)
+    Editor::new(tiptap_schema(), pipeline, false)
 }
 
 // ===========================================================================

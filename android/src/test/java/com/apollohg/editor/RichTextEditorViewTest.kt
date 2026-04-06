@@ -1,6 +1,9 @@
 package com.apollohg.editor
 
 import android.graphics.Color
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.text.Spanned
 import android.widget.LinearLayout
 import android.view.MotionEvent
 import android.view.View
@@ -8,6 +11,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -79,6 +83,17 @@ class RichTextEditorViewTest {
         [
           {"type":"blockStart","nodeType":"paragraph","depth":0},
           {"type":"textRun","text":"\u200B","marks":[]},
+          {"type":"blockEnd"}
+        ]
+    """.trimIndent()
+
+    private fun imageRenderJson(): String = """
+        [
+          {"type":"blockStart","nodeType":"paragraph","depth":0},
+          {"type":"textRun","text":"Hello","marks":[]},
+          {"type":"blockEnd"},
+          {"type":"voidBlock","nodeType":"image","docPos":7,"attrs":{"src":"https://example.com/cat.png","width":140,"height":80}},
+          {"type":"blockStart","nodeType":"paragraph","depth":0},
           {"type":"blockEnd"}
         ]
     """.trimIndent()
@@ -448,6 +463,125 @@ class RichTextEditorViewTest {
             "Fixed-height editor should release parent intercept after the gesture ends",
             !parent.disallowInterceptRequested
         )
+    }
+
+    @Test
+    fun `selected image shows resize overlay at rendered image bounds`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = RichTextEditorView(context)
+        view.editorEditText.applyRenderJSON(imageRenderJson())
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        view.measure(widthSpec, heightSpec)
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+
+        val text = view.editorEditText.text as? Spanned
+        assertNotNull("Expected rendered text with spans", text)
+        text ?: return
+
+        val imageSpan = text.getSpans(0, text.length, BlockImageSpan::class.java).firstOrNull()
+        assertNotNull("Expected a rendered image span", imageSpan)
+        imageSpan ?: return
+
+        val spanStart = text.getSpanStart(imageSpan)
+        val spanEnd = text.getSpanEnd(imageSpan)
+        view.editorEditText.setSelection(spanStart, spanEnd)
+        view.editorEditText.onSelectionOrContentMayChange?.invoke()
+
+        val overlayRect = view.imageResizeOverlayRectForTesting()
+        assertNotNull("Selecting an image should show the resize overlay", overlayRect)
+        overlayRect ?: return
+        assertEquals(140f, overlayRect.width(), 1f)
+        assertEquals(80f, overlayRect.height(), 1f)
+    }
+
+    @Test
+    fun `tapping rendered image selects it for resize overlay`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = RichTextEditorView(context)
+        view.editorEditText.applyRenderJSON(imageRenderJson())
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        view.measure(widthSpec, heightSpec)
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+
+        val text = view.editorEditText.text as? Spanned
+        assertNotNull("Expected rendered text with spans", text)
+        text ?: return
+
+        val imageSpan = text.getSpans(0, text.length, BlockImageSpan::class.java).firstOrNull()
+        assertNotNull("Expected a rendered image span", imageSpan)
+        imageSpan ?: return
+
+        val spanStart = text.getSpanStart(imageSpan)
+        val spanEnd = text.getSpanEnd(imageSpan)
+        val canvasBitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        view.editorEditText.draw(Canvas(canvasBitmap))
+
+        val drawnRect = imageSpan.currentDrawRect()
+        assertNotNull("Expected drawn image bounds", drawnRect)
+        drawnRect ?: return
+        val tapX = drawnRect.centerX()
+        val tapY = drawnRect.centerY()
+
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, tapX, tapY, 0)
+        view.editorEditText.onTouchEvent(down)
+        down.recycle()
+
+        val up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, tapX, tapY, 0)
+        view.editorEditText.onTouchEvent(up)
+        up.recycle()
+
+        assertEquals(spanStart, view.editorEditText.selectionStart)
+        assertEquals(spanEnd, view.editorEditText.selectionEnd)
+
+        val overlayRect = view.imageResizeOverlayRectForTesting()
+        assertNotNull("Tapping an image should show the resize overlay", overlayRect)
+        overlayRect ?: return
+        assertEquals(140f, overlayRect.width(), 1f)
+        assertEquals(80f, overlayRect.height(), 1f)
+    }
+
+    @Test
+    fun `disabling image resizing keeps image taps from showing resize overlay`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = RichTextEditorView(context)
+        view.editorEditText.applyRenderJSON(imageRenderJson())
+        view.setImageResizingEnabled(false)
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        view.measure(widthSpec, heightSpec)
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+
+        val text = view.editorEditText.text as? Spanned
+        assertNotNull("Expected rendered text with spans", text)
+        text ?: return
+
+        val imageSpan = text.getSpans(0, text.length, BlockImageSpan::class.java).firstOrNull()
+        assertNotNull("Expected a rendered image span", imageSpan)
+        imageSpan ?: return
+
+        val canvasBitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        view.editorEditText.draw(Canvas(canvasBitmap))
+
+        val drawnRect = imageSpan.currentDrawRect()
+        assertNotNull("Expected drawn image bounds", drawnRect)
+        drawnRect ?: return
+        val tapX = drawnRect.centerX()
+        val tapY = drawnRect.centerY()
+
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, tapX, tapY, 0)
+        view.editorEditText.onTouchEvent(down)
+        down.recycle()
+
+        val up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, tapX, tapY, 0)
+        view.editorEditText.onTouchEvent(up)
+        up.recycle()
+
+        assertNull("Tapping an image should not show the resize overlay when disabled", view.imageResizeOverlayRectForTesting())
     }
 
     @Test

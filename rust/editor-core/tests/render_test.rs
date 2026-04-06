@@ -389,6 +389,7 @@ fn test_hard_break_in_paragraph() {
             RenderElement::VoidInline {
                 node_type: "hardBreak".to_string(),
                 doc_pos: 3, // after paragraph open (1) + "He" (2)
+                attrs: HashMap::new(),
             },
             RenderElement::TextRun {
                 text: "llo".to_string(),
@@ -431,6 +432,7 @@ fn test_horizontal_rule_between_paragraphs() {
             RenderElement::VoidBlock {
                 node_type: "horizontalRule".to_string(),
                 doc_pos: 7, // after paragraph (1+5+1 = 7 tokens)
+                attrs: HashMap::new(),
             },
             RenderElement::BlockStart {
                 node_type: "paragraph".to_string(),
@@ -651,6 +653,7 @@ fn test_void_block_doc_pos_accuracy() {
         RenderElement::VoidBlock {
             node_type: "horizontalRule".to_string(),
             doc_pos: 8,
+            attrs: HashMap::new(),
         },
         "HorizontalRule should be at doc_pos 8 (after two 4-token paragraphs)"
     );
@@ -680,6 +683,7 @@ fn test_void_inline_doc_pos_accuracy() {
         RenderElement::VoidInline {
             node_type: "hardBreak".to_string(),
             doc_pos: 4,
+            attrs: HashMap::new(),
         },
         "HardBreak should be at doc_pos 4 (paragraph open=1 + 'ABC'=3)"
     );

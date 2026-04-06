@@ -77,6 +77,7 @@ fn generate_block(
             elements.push(RenderElement::VoidInline {
                 node_type: node.node_type().to_string(),
                 doc_pos: *pos,
+                attrs: node.attrs().clone(),
             });
             *pos += node.node_size();
         }
@@ -155,6 +156,7 @@ fn generate_block(
             elements.push(RenderElement::VoidBlock {
                 node_type: node.node_type().to_string(),
                 doc_pos: *pos,
+                attrs: node.attrs().clone(),
             });
             *pos += node.node_size();
         }

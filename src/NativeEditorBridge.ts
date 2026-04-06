@@ -159,6 +159,7 @@ export interface RenderElement {
     depth?: number;
     docPos?: number;
     label?: string;
+    attrs?: Record<string, unknown>;
     listContext?: ListContext;
 }
 
@@ -433,9 +434,16 @@ export class NativeEditorBridge {
     }
 
     /** Create a new editor instance backed by the Rust engine. */
-    static create(config?: { maxLength?: number; schemaJson?: string }): NativeEditorBridge {
+    static create(config?: {
+        maxLength?: number;
+        schemaJson?: string;
+        allowBase64Images?: boolean;
+    }): NativeEditorBridge {
         const configObj: Record<string, unknown> = {};
         if (config?.maxLength != null) configObj.maxLength = config.maxLength;
+        if (config?.allowBase64Images != null) {
+            configObj.allowBase64Images = config.allowBase64Images;
+        }
         if (config?.schemaJson != null) {
             try {
                 configObj.schema = JSON.parse(config.schemaJson);

@@ -33,9 +33,13 @@ pub struct EditorRegistry;
 
 impl EditorRegistry {
     /// Create a new editor and return its ID.
-    pub fn create(schema: Schema, interceptors: InterceptorPipeline) -> EditorId {
+    pub fn create(
+        schema: Schema,
+        interceptors: InterceptorPipeline,
+        allow_base64_images: bool,
+    ) -> EditorId {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let editor = Editor::new(schema, interceptors);
+        let editor = Editor::new(schema, interceptors, allow_base64_images);
         let arc = Arc::new(Mutex::new(editor));
 
         let mut map = global_registry().lock().expect("registry lock poisoned");

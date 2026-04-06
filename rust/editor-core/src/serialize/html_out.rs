@@ -51,6 +51,9 @@ fn serialize_node(node: &Node, schema: &Schema, buf: &mut String) {
         if let Some(tag) = html_tag {
             buf.push('<');
             buf.push_str(tag);
+            if let Some(spec) = spec {
+                serialize_node_attrs(node, spec, buf);
+            }
             buf.push('>');
         }
         return;
@@ -61,19 +64,8 @@ fn serialize_node(node: &Node, schema: &Schema, buf: &mut String) {
         buf.push('<');
         buf.push_str(tag);
 
-        // Emit attributes for ordered lists (start != 1)
-        if let Some(s) = spec {
-            if matches!(s.role, NodeRole::List { ordered: true }) {
-                if let Some(start_val) = node.attrs().get("start") {
-                    if let Some(start_num) = start_val.as_u64() {
-                        if start_num != 1 {
-                            buf.push_str(" start=\"");
-                            buf.push_str(&start_num.to_string());
-                            buf.push('"');
-                        }
-                    }
-                }
-            }
+        if let Some(spec) = spec {
+            serialize_node_attrs(node, spec, buf);
         }
 
         buf.push('>');
@@ -90,6 +82,43 @@ fn serialize_node(node: &Node, schema: &Schema, buf: &mut String) {
         buf.push_str("</");
         buf.push_str(tag);
         buf.push('>');
+    }
+}
+
+fn serialize_node_attrs(node: &Node, spec: &crate::schema::NodeSpec, buf: &mut String) {
+    for key in spec.attrs.keys() {
+        let Some(value) = node.attrs().get(key) else {
+            continue;
+        };
+        if value.is_null() {
+            continue;
+        }
+        if key == "start"
+            && matches!(spec.role, NodeRole::List { ordered: true })
+            && value.as_u64() == Some(1)
+        {
+            continue;
+        }
+
+        let rendered = if let Some(string_value) = value.as_str() {
+            string_value.to_string()
+        } else if let Some(bool_value) = value.as_bool() {
+            bool_value.to_string()
+        } else if let Some(number_value) = value.as_i64() {
+            number_value.to_string()
+        } else if let Some(number_value) = value.as_u64() {
+            number_value.to_string()
+        } else if let Some(number_value) = value.as_f64() {
+            number_value.to_string()
+        } else {
+            continue;
+        };
+
+        buf.push(' ');
+        buf.push_str(key);
+        buf.push_str("=\"");
+        escape_html(&rendered, buf);
+        buf.push('"');
     }
 }
 

@@ -1696,4 +1696,37 @@ final class RenderBridgeTests: XCTestCase {
         )
         XCTAssertNotNil(image, "HorizontalRuleAttachment should produce a non-nil image")
     }
+
+    func testRender_imageAttachmentHonorsPreferredDimensions() {
+        let json = """
+        [
+            {"type": "voidBlock", "nodeType": "image", "docPos": 1, "attrs": {
+                "src": "https://example.com/cat.png",
+                "width": 140,
+                "height": 80
+            }}
+        ]
+        """
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor
+        )
+
+        XCTAssertEqual(result.string, LayoutConstants.objectReplacementCharacter)
+
+        let attrs = result.attributes(at: 0, effectiveRange: nil)
+        let attachment = attrs[.attachment] as? NSTextAttachment
+        XCTAssertNotNil(attachment, "Image render should produce an attachment")
+
+        let bounds = attachment?.attachmentBounds(
+            for: nil,
+            proposedLineFragment: CGRect(x: 0, y: 0, width: 320, height: 24),
+            glyphPosition: .zero,
+            characterIndex: 0
+        )
+
+        XCTAssertEqual(bounds?.width ?? 0, 140, accuracy: 0.1)
+        XCTAssertEqual(bounds?.height ?? 0, 80, accuracy: 0.1)
+    }
 }

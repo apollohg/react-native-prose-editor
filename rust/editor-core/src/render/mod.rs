@@ -26,9 +26,17 @@ pub enum RenderElement {
     /// A run of text with applied mark names.
     TextRun { text: String, marks: Vec<RenderMark> },
     /// An inline void node (e.g. hardBreak).
-    VoidInline { node_type: String, doc_pos: u32 },
+    VoidInline {
+        node_type: String,
+        doc_pos: u32,
+        attrs: std::collections::HashMap<String, serde_json::Value>,
+    },
     /// A block-level void node (e.g. horizontalRule).
-    VoidBlock { node_type: String, doc_pos: u32 },
+    VoidBlock {
+        node_type: String,
+        doc_pos: u32,
+        attrs: std::collections::HashMap<String, serde_json::Value>,
+    },
     /// An opaque inline atom (unrecognised inline void).
     OpaqueInlineAtom {
         node_type: String,
@@ -111,7 +119,7 @@ pub fn block_node_visible_scalar_len(
     label: Option<&str>,
     is_known_rule: bool,
 ) -> u32 {
-    if is_known_rule || matches!(node_type, "horizontalRule" | "horizontal_rule") {
+    if is_known_rule || matches!(node_type, "horizontalRule" | "horizontal_rule" | "image") {
         1
     } else {
         opaque_atom_visible_string(node_type, label.unwrap_or(node_type))
