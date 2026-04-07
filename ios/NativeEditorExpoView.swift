@@ -92,6 +92,12 @@ private enum ToolbarDefaultIconId: String {
     case strike
     case link
     case image
+    case h1
+    case h2
+    case h3
+    case h4
+    case h5
+    case h6
     case blockquote
     case bulletList
     case orderedList
@@ -105,12 +111,19 @@ private enum ToolbarDefaultIconId: String {
 
 private enum ToolbarItemKind: String {
     case mark
+    case heading
     case blockquote
     case list
     case command
     case node
     case action
+    case group
     case separator
+}
+
+private enum ToolbarGroupPresentation: String {
+    case expand
+    case menu
 }
 
 private struct NativeToolbarIcon {
@@ -133,6 +146,12 @@ private struct NativeToolbarIcon {
         .outdentList: "decrease.indent",
         .lineBreak: "return.left",
         .horizontalRule: "minus",
+        .h1: "paragraphsign",
+        .h2: "paragraphsign",
+        .h3: "paragraphsign",
+        .h4: "paragraphsign",
+        .h5: "paragraphsign",
+        .h6: "paragraphsign",
         .undo: "arrow.uturn.backward",
         .redo: "arrow.uturn.forward",
     ]
@@ -144,6 +163,12 @@ private struct NativeToolbarIcon {
         .strike: "S",
         .link: "🔗",
         .image: "🖼",
+        .h1: "H1",
+        .h2: "H2",
+        .h3: "H3",
+        .h4: "H4",
+        .h5: "H5",
+        .h6: "H6",
         .blockquote: "❝",
         .bulletList: "•≡",
         .orderedList: "1.",
@@ -238,29 +263,262 @@ private struct NativeToolbarItem {
     let label: String?
     let icon: NativeToolbarIcon?
     let mark: String?
+    let headingLevel: Int?
     let listType: ToolbarListType?
     let command: ToolbarCommand?
     let nodeType: String?
     let isActive: Bool
     let isDisabled: Bool
+    let presentation: ToolbarGroupPresentation?
+    let items: [NativeToolbarItem]
+    let parentGroupKey: String?
 
     static let defaults: [NativeToolbarItem] = [
-        NativeToolbarItem(type: .mark, key: nil, label: "Bold", icon: .defaultIcon(.bold), mark: "bold", listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .mark, key: nil, label: "Italic", icon: .defaultIcon(.italic), mark: "italic", listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .mark, key: nil, label: "Underline", icon: .defaultIcon(.underline), mark: "underline", listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .mark, key: nil, label: "Strikethrough", icon: .defaultIcon(.strike), mark: "strike", listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .blockquote, key: nil, label: "Blockquote", icon: .defaultIcon(.blockquote), mark: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .separator, key: nil, label: nil, icon: nil, mark: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .list, key: nil, label: "Bullet List", icon: .defaultIcon(.bulletList), mark: nil, listType: .bulletList, command: nil, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .list, key: nil, label: "Ordered List", icon: .defaultIcon(.orderedList), mark: nil, listType: .orderedList, command: nil, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .command, key: nil, label: "Indent List", icon: .defaultIcon(.indentList), mark: nil, listType: nil, command: .indentList, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .command, key: nil, label: "Outdent List", icon: .defaultIcon(.outdentList), mark: nil, listType: nil, command: .outdentList, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .node, key: nil, label: "Line Break", icon: .defaultIcon(.lineBreak), mark: nil, listType: nil, command: nil, nodeType: "hardBreak", isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .node, key: nil, label: "Horizontal Rule", icon: .defaultIcon(.horizontalRule), mark: nil, listType: nil, command: nil, nodeType: "horizontalRule", isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .separator, key: nil, label: nil, icon: nil, mark: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .command, key: nil, label: "Undo", icon: .defaultIcon(.undo), mark: nil, listType: nil, command: .undo, nodeType: nil, isActive: false, isDisabled: false),
-        NativeToolbarItem(type: .command, key: nil, label: "Redo", icon: .defaultIcon(.redo), mark: nil, listType: nil, command: .redo, nodeType: nil, isActive: false, isDisabled: false),
+        NativeToolbarItem(type: .mark, key: nil, label: "Bold", icon: .defaultIcon(.bold), mark: "bold", headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .mark, key: nil, label: "Italic", icon: .defaultIcon(.italic), mark: "italic", headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .mark, key: nil, label: "Underline", icon: .defaultIcon(.underline), mark: "underline", headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .mark, key: nil, label: "Strikethrough", icon: .defaultIcon(.strike), mark: "strike", headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .blockquote, key: nil, label: "Blockquote", icon: .defaultIcon(.blockquote), mark: nil, headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .separator, key: nil, label: nil, icon: nil, mark: nil, headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .list, key: nil, label: "Bullet List", icon: .defaultIcon(.bulletList), mark: nil, headingLevel: nil, listType: .bulletList, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .list, key: nil, label: "Ordered List", icon: .defaultIcon(.orderedList), mark: nil, headingLevel: nil, listType: .orderedList, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .command, key: nil, label: "Indent List", icon: .defaultIcon(.indentList), mark: nil, headingLevel: nil, listType: nil, command: .indentList, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .command, key: nil, label: "Outdent List", icon: .defaultIcon(.outdentList), mark: nil, headingLevel: nil, listType: nil, command: .outdentList, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .node, key: nil, label: "Line Break", icon: .defaultIcon(.lineBreak), mark: nil, headingLevel: nil, listType: nil, command: nil, nodeType: "hardBreak", isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .node, key: nil, label: "Horizontal Rule", icon: .defaultIcon(.horizontalRule), mark: nil, headingLevel: nil, listType: nil, command: nil, nodeType: "horizontalRule", isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .separator, key: nil, label: nil, icon: nil, mark: nil, headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .command, key: nil, label: "Undo", icon: .defaultIcon(.undo), mark: nil, headingLevel: nil, listType: nil, command: .undo, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .command, key: nil, label: "Redo", icon: .defaultIcon(.redo), mark: nil, headingLevel: nil, listType: nil, command: .redo, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
     ]
+
+    private static func parse(
+        rawItem: [String: Any],
+        allowGroup: Bool = true,
+        allowSeparator: Bool = true
+    ) -> NativeToolbarItem? {
+        guard let rawType = rawItem["type"] as? String,
+              let type = ToolbarItemKind(rawValue: rawType)
+        else {
+            return nil
+        }
+
+        let key = rawItem["key"] as? String
+        switch type {
+        case .separator:
+            guard allowSeparator else { return nil }
+            return NativeToolbarItem(
+                type: .separator,
+                key: key,
+                label: nil,
+                icon: nil,
+                mark: nil,
+                headingLevel: nil,
+                listType: nil,
+                command: nil,
+                nodeType: nil,
+                isActive: false,
+                isDisabled: false,
+                presentation: nil,
+                items: [],
+                parentGroupKey: nil
+            )
+        case .mark:
+            guard let mark = rawItem["mark"] as? String,
+                  let label = rawItem["label"] as? String,
+                  let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
+            else {
+                return nil
+            }
+            return NativeToolbarItem(
+                type: .mark,
+                key: key,
+                label: label,
+                icon: icon,
+                mark: mark,
+                headingLevel: nil,
+                listType: nil,
+                command: nil,
+                nodeType: nil,
+                isActive: false,
+                isDisabled: false,
+                presentation: nil,
+                items: [],
+                parentGroupKey: nil
+            )
+        case .heading:
+            guard let level = (rawItem["level"] as? NSNumber)?.intValue,
+                  (1...6).contains(level),
+                  let label = rawItem["label"] as? String,
+                  let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
+            else {
+                return nil
+            }
+            return NativeToolbarItem(
+                type: .heading,
+                key: key,
+                label: label,
+                icon: icon,
+                mark: nil,
+                headingLevel: level,
+                listType: nil,
+                command: nil,
+                nodeType: nil,
+                isActive: false,
+                isDisabled: false,
+                presentation: nil,
+                items: [],
+                parentGroupKey: nil
+            )
+        case .blockquote:
+            guard let label = rawItem["label"] as? String,
+                  let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
+            else {
+                return nil
+            }
+            return NativeToolbarItem(
+                type: .blockquote,
+                key: key,
+                label: label,
+                icon: icon,
+                mark: nil,
+                headingLevel: nil,
+                listType: nil,
+                command: nil,
+                nodeType: nil,
+                isActive: false,
+                isDisabled: false,
+                presentation: nil,
+                items: [],
+                parentGroupKey: nil
+            )
+        case .list:
+            guard let listTypeRaw = rawItem["listType"] as? String,
+                  let listType = ToolbarListType(rawValue: listTypeRaw),
+                  let label = rawItem["label"] as? String,
+                  let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
+            else {
+                return nil
+            }
+            return NativeToolbarItem(
+                type: .list,
+                key: key,
+                label: label,
+                icon: icon,
+                mark: nil,
+                headingLevel: nil,
+                listType: listType,
+                command: nil,
+                nodeType: nil,
+                isActive: false,
+                isDisabled: false,
+                presentation: nil,
+                items: [],
+                parentGroupKey: nil
+            )
+        case .command:
+            guard let commandRaw = rawItem["command"] as? String,
+                  let command = ToolbarCommand(rawValue: commandRaw),
+                  let label = rawItem["label"] as? String,
+                  let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
+            else {
+                return nil
+            }
+            return NativeToolbarItem(
+                type: .command,
+                key: key,
+                label: label,
+                icon: icon,
+                mark: nil,
+                headingLevel: nil,
+                listType: nil,
+                command: command,
+                nodeType: nil,
+                isActive: false,
+                isDisabled: false,
+                presentation: nil,
+                items: [],
+                parentGroupKey: nil
+            )
+        case .node:
+            guard let nodeType = rawItem["nodeType"] as? String,
+                  let label = rawItem["label"] as? String,
+                  let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
+            else {
+                return nil
+            }
+            return NativeToolbarItem(
+                type: .node,
+                key: key,
+                label: label,
+                icon: icon,
+                mark: nil,
+                headingLevel: nil,
+                listType: nil,
+                command: nil,
+                nodeType: nodeType,
+                isActive: false,
+                isDisabled: false,
+                presentation: nil,
+                items: [],
+                parentGroupKey: nil
+            )
+        case .action:
+            guard let key,
+                  let label = rawItem["label"] as? String,
+                  let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
+            else {
+                return nil
+            }
+            return NativeToolbarItem(
+                type: .action,
+                key: key,
+                label: label,
+                icon: icon,
+                mark: nil,
+                headingLevel: nil,
+                listType: nil,
+                command: nil,
+                nodeType: nil,
+                isActive: (rawItem["isActive"] as? Bool) ?? false,
+                isDisabled: (rawItem["isDisabled"] as? Bool) ?? false,
+                presentation: nil,
+                items: [],
+                parentGroupKey: nil
+            )
+        case .group:
+            guard allowGroup,
+                  let key,
+                  let label = rawItem["label"] as? String,
+                  let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"]),
+                  let rawChildren = rawItem["items"] as? [[String: Any]]
+            else {
+                return nil
+            }
+            let presentation = (rawItem["presentation"] as? String)
+                .flatMap(ToolbarGroupPresentation.init(rawValue:))
+                ?? .expand
+            let children = rawChildren.compactMap {
+                parse(rawItem: $0, allowGroup: false, allowSeparator: false)
+            }
+            guard !children.isEmpty else { return nil }
+            return NativeToolbarItem(
+                type: .group,
+                key: key,
+                label: label,
+                icon: icon,
+                mark: nil,
+                headingLevel: nil,
+                listType: nil,
+                command: nil,
+                nodeType: nil,
+                isActive: false,
+                isDisabled: false,
+                presentation: presentation,
+                items: children,
+                parentGroupKey: nil
+            )
+        }
+    }
 
     static func from(json: String?) -> [NativeToolbarItem] {
         guard let json,
@@ -270,146 +528,7 @@ private struct NativeToolbarItem {
             return defaults
         }
 
-        let parsed = rawItems.compactMap { rawItem -> NativeToolbarItem? in
-            guard let rawType = rawItem["type"] as? String,
-                  let type = ToolbarItemKind(rawValue: rawType)
-            else {
-                return nil
-            }
-
-            let key = rawItem["key"] as? String
-            switch type {
-            case .separator:
-                return NativeToolbarItem(
-                    type: .separator,
-                    key: key,
-                    label: nil,
-                    icon: nil,
-                    mark: nil,
-                    listType: nil,
-                    command: nil,
-                    nodeType: nil,
-                    isActive: false,
-                    isDisabled: false
-                )
-            case .mark:
-                guard let mark = rawItem["mark"] as? String,
-                      let label = rawItem["label"] as? String,
-                      let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
-                else {
-                    return nil
-                }
-                return NativeToolbarItem(
-                    type: .mark,
-                    key: key,
-                    label: label,
-                    icon: icon,
-                    mark: mark,
-                    listType: nil,
-                    command: nil,
-                    nodeType: nil,
-                    isActive: false,
-                    isDisabled: false
-                )
-            case .blockquote:
-                guard let label = rawItem["label"] as? String,
-                      let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
-                else {
-                    return nil
-                }
-                return NativeToolbarItem(
-                    type: .blockquote,
-                    key: key,
-                    label: label,
-                    icon: icon,
-                    mark: nil,
-                    listType: nil,
-                    command: nil,
-                    nodeType: nil,
-                    isActive: false,
-                    isDisabled: false
-                )
-            case .list:
-                guard let listTypeRaw = rawItem["listType"] as? String,
-                      let listType = ToolbarListType(rawValue: listTypeRaw),
-                      let label = rawItem["label"] as? String,
-                      let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
-                else {
-                    return nil
-                }
-                return NativeToolbarItem(
-                    type: .list,
-                    key: key,
-                    label: label,
-                    icon: icon,
-                    mark: nil,
-                    listType: listType,
-                    command: nil,
-                    nodeType: nil,
-                    isActive: false,
-                    isDisabled: false
-                )
-            case .command:
-                guard let commandRaw = rawItem["command"] as? String,
-                      let command = ToolbarCommand(rawValue: commandRaw),
-                      let label = rawItem["label"] as? String,
-                      let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
-                else {
-                    return nil
-                }
-                return NativeToolbarItem(
-                    type: .command,
-                    key: key,
-                    label: label,
-                    icon: icon,
-                    mark: nil,
-                    listType: nil,
-                    command: command,
-                    nodeType: nil,
-                    isActive: false,
-                    isDisabled: false
-                )
-            case .node:
-                guard let nodeType = rawItem["nodeType"] as? String,
-                      let label = rawItem["label"] as? String,
-                      let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
-                else {
-                    return nil
-                }
-                return NativeToolbarItem(
-                    type: .node,
-                    key: key,
-                    label: label,
-                    icon: icon,
-                    mark: nil,
-                    listType: nil,
-                    command: nil,
-                    nodeType: nodeType,
-                    isActive: false,
-                    isDisabled: false
-                )
-            case .action:
-                guard let key,
-                      let label = rawItem["label"] as? String,
-                      let icon = NativeToolbarIcon.from(jsonValue: rawItem["icon"])
-                else {
-                    return nil
-                }
-                return NativeToolbarItem(
-                    type: .action,
-                    key: key,
-                    label: label,
-                    icon: icon,
-                    mark: nil,
-                    listType: nil,
-                    command: nil,
-                    nodeType: nil,
-                    isActive: (rawItem["isActive"] as? Bool) ?? false,
-                    isDisabled: (rawItem["isDisabled"] as? Bool) ?? false
-                )
-            }
-        }
-
+        let parsed = rawItems.compactMap { parse(rawItem: $0) }
         return parsed.isEmpty ? defaults : parsed
     }
 
@@ -420,6 +539,8 @@ private struct NativeToolbarItem {
         switch type {
         case .mark:
             return "mark:\(mark ?? ""):\(index)"
+        case .heading:
+            return "heading:\(headingLevel ?? 0):\(index)"
         case .blockquote:
             return "blockquote:\(index)"
         case .list:
@@ -430,9 +551,30 @@ private struct NativeToolbarItem {
             return "node:\(nodeType ?? ""):\(index)"
         case .action:
             return "action:\(key ?? ""):\(index)"
+        case .group:
+            return "group:\(key ?? ""):\(index)"
         case .separator:
             return "separator:\(index)"
         }
+    }
+
+    func with(parentGroupKey: String?) -> NativeToolbarItem {
+        NativeToolbarItem(
+            type: type,
+            key: key,
+            label: label,
+            icon: icon,
+            mark: mark,
+            headingLevel: headingLevel,
+            listType: listType,
+            command: command,
+            nodeType: nodeType,
+            isActive: isActive,
+            isDisabled: isDisabled,
+            presentation: presentation,
+            items: items,
+            parentGroupKey: parentGroupKey
+        )
     }
 }
 
@@ -474,6 +616,7 @@ final class EditorAccessoryToolbarView: UIInputView {
     private var separators: [UIView] = []
     private var mentionButtons: [MentionSuggestionChipButton] = []
     private var items: [NativeToolbarItem] = NativeToolbarItem.defaults
+    private var expandedGroupKey: String?
     private var currentState = NativeToolbarState.empty
     private var theme: EditorToolbarTheme?
     private var mentionTheme: EditorMentionTheme?
@@ -524,6 +667,16 @@ final class EditorAccessoryToolbarView: UIInputView {
     func mentionButtonAtForTesting(_ index: Int) -> MentionSuggestionChipButton? {
         mentionButtons.indices.contains(index) ? mentionButtons[index] : nil
     }
+    func buttonCountForTesting() -> Int {
+        buttonBindings.count
+    }
+    func buttonLabelForTesting(_ index: Int) -> String? {
+        buttonBindings.indices.contains(index) ? buttonBindings[index].button.accessibilityLabel : nil
+    }
+    func triggerButtonTapForTesting(_ index: Int) {
+        guard buttonBindings.indices.contains(index) else { return }
+        buttonBindings[index].button.sendActions(for: .touchUpInside)
+    }
 
     override var intrinsicContentSize: CGSize {
         let contentHeight = mentionButtons.isEmpty ? Self.baseHeight : Self.mentionRowHeight
@@ -569,7 +722,21 @@ final class EditorAccessoryToolbarView: UIInputView {
 
     fileprivate func setItems(_ items: [NativeToolbarItem]) {
         self.items = items
+        if let expandedGroupKey,
+           !items.contains(where: {
+               $0.type == .group && $0.key == expandedGroupKey && ($0.presentation ?? .expand) == .expand
+           })
+        {
+            self.expandedGroupKey = nil
+        }
         rebuildButtons()
+    }
+    func setItemsJSONForTesting(_ json: String) {
+        setItems(NativeToolbarItem.from(json: json))
+    }
+    func applyStateJSONForTesting(_ json: String) {
+        guard let state = NativeToolbarState(updateJSON: json) else { return }
+        apply(state: state)
     }
 
     func apply(mentionTheme: EditorMentionTheme?) {
@@ -687,6 +854,9 @@ final class EditorAccessoryToolbarView: UIInputView {
             binding.button.isEnabled = buttonState.enabled
             binding.button.isSelected = buttonState.active
             binding.button.accessibilityTraits = buttonState.active ? [.button, .selected] : .button
+            if binding.item.type == .group, (binding.item.presentation ?? .expand) == .menu {
+                binding.button.menu = makeGroupMenu(item: binding.item)
+            }
             updateButtonAppearance(binding.button, item: binding.item, enabled: buttonState.enabled, active: buttonState.active)
         }
 
@@ -697,6 +867,9 @@ final class EditorAccessoryToolbarView: UIInputView {
                 binding.button.isEnabled = state.enabled
                 binding.button.isSelected = state.active
                 binding.button.style = state.active ? .prominent : .plain
+                if binding.item.type == .group, (binding.item.presentation ?? .expand) == .menu {
+                    binding.button.menu = makeGroupMenu(item: binding.item)
+                }
             }
         }
         #endif
@@ -872,13 +1045,9 @@ final class EditorAccessoryToolbarView: UIInputView {
             arrangedSubview.removeFromSuperview()
         }
 
-        let compactItems = items.enumerated().filter { index, item in
-            guard item.type == .separator else { return true }
-            guard index > 0, index < items.count - 1 else { return false }
-            return items[index - 1].type != .separator && items[index + 1].type != .separator
-        }.map(\.element)
+        let visibleItems = visibleToolbarItems()
 
-        for item in compactItems {
+        for item in visibleItems {
             if item.type == .separator {
                 stackView.addArrangedSubview(makeSeparator())
                 continue
@@ -891,7 +1060,7 @@ final class EditorAccessoryToolbarView: UIInputView {
 
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
-            nativeToolbarView.setItems(makeNativeToolbarItems(from: compactItems), animated: false)
+            nativeToolbarView.setItems(makeNativeToolbarItems(from: visibleItems), animated: false)
         } else {
             nativeToolbarView.setItems([], animated: false)
         }
@@ -902,6 +1071,75 @@ final class EditorAccessoryToolbarView: UIInputView {
         updateNativeToolbarMetricsIfNeeded()
         apply(theme: theme)
         apply(state: currentState)
+    }
+
+    private func compactToolbarItems(_ items: [NativeToolbarItem]) -> [NativeToolbarItem] {
+        items.enumerated().filter { index, item in
+            guard item.type == .separator else { return true }
+            guard index > 0, index < items.count - 1 else { return false }
+            return items[index - 1].type != .separator && items[index + 1].type != .separator
+        }.map(\.element)
+    }
+
+    private func visibleToolbarItems() -> [NativeToolbarItem] {
+        var visible: [NativeToolbarItem] = []
+        for item in compactToolbarItems(items) {
+            visible.append(item)
+            if item.type == .group,
+               (item.presentation ?? .expand) == .expand,
+               expandedGroupKey == item.key
+            {
+                visible.append(contentsOf: item.items.map { $0.with(parentGroupKey: item.key) })
+            }
+        }
+        return compactToolbarItems(visible)
+    }
+
+    private func handleToolbarButtonPress(_ item: NativeToolbarItem) {
+        switch item.type {
+        case .group:
+            handleGroupPress(item)
+        default:
+            onPressItem?(item.with(parentGroupKey: nil))
+            if let parentGroupKey = item.parentGroupKey,
+               expandedGroupKey == parentGroupKey
+            {
+                expandedGroupKey = nil
+                rebuildButtons()
+            }
+        }
+    }
+
+    private func handleGroupPress(_ item: NativeToolbarItem) {
+        guard item.type == .group, !item.items.isEmpty else { return }
+        switch item.presentation ?? .expand {
+        case .expand:
+            expandedGroupKey = expandedGroupKey == item.key ? nil : item.key
+            rebuildButtons()
+        case .menu:
+            break
+        }
+    }
+
+    private func makeGroupMenu(item: NativeToolbarItem) -> UIMenu? {
+        guard item.type == .group else { return nil }
+        let actions = item.items.compactMap { child -> UIAction? in
+            let state = buttonState(for: child, state: currentState)
+            let image = child.icon?.resolvedSFSymbolName().flatMap { UIImage(systemName: $0) }
+            let title = child.label ?? child.icon?.resolvedGlyphText() ?? "Item"
+            return UIAction(
+                title: title,
+                image: image,
+                identifier: nil,
+                discoverabilityTitle: child.label,
+                attributes: state.enabled ? [] : [.disabled],
+                state: state.active ? .on : .off
+            ) { [weak self] _ in
+                self?.handleToolbarButtonPress(child)
+            }
+        }
+        guard !actions.isEmpty else { return nil }
+        return UIMenu(title: item.label ?? "", children: actions)
     }
 
     private func updateNativeToolbarMetricsIfNeeded() {
@@ -998,10 +1236,20 @@ final class EditorAccessoryToolbarView: UIInputView {
     ) -> UIBarButtonItem {
         let image = item.icon?.resolvedSFSymbolName().flatMap { UIImage(systemName: $0) }
         let title = image == nil ? item.icon?.resolvedGlyphText() : nil
-        let action = UIAction { [weak self] _ in
-            self?.onPressItem?(item)
+        let barButtonItem: UIBarButtonItem
+        if item.type == .group, (item.presentation ?? .expand) == .menu {
+            barButtonItem = UIBarButtonItem(
+                title: title,
+                image: image,
+                primaryAction: nil,
+                menu: makeGroupMenu(item: item)
+            )
+        } else {
+            let action = UIAction { [weak self] _ in
+                self?.handleToolbarButtonPress(item)
+            }
+            barButtonItem = UIBarButtonItem(title: title, image: image, primaryAction: action, menu: nil)
         }
-        let barButtonItem = UIBarButtonItem(title: title, image: image, primaryAction: action, menu: nil)
 
         barButtonItem.accessibilityLabel = item.label
         barButtonItem.isEnabled = enabled
@@ -1048,9 +1296,17 @@ final class EditorAccessoryToolbarView: UIInputView {
         }
         button.widthAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
         button.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        button.addAction(UIAction { [weak self] _ in
-            self?.onPressItem?(item)
-        }, for: .touchUpInside)
+        if item.type == .group,
+           (item.presentation ?? .expand) == .menu,
+           #available(iOS 14.0, *)
+        {
+            button.menu = makeGroupMenu(item: item)
+            button.showsMenuAsPrimaryAction = true
+        } else {
+            button.addAction(UIAction { [weak self] _ in
+                self?.handleToolbarButtonPress(item)
+            }, for: .touchUpInside)
+        }
         updateButtonAppearance(button, item: item, enabled: true, active: false)
         return button
     }
@@ -1077,6 +1333,13 @@ final class EditorAccessoryToolbarView: UIInputView {
             return (
                 enabled: state.allowedMarks.contains(mark),
                 active: state.marks[mark] == true
+            )
+        case .heading:
+            let level = item.headingLevel ?? 0
+            let headingType = "h\(level)"
+            return (
+                enabled: state.commands["toggleHeading\(level)"] == true,
+                active: state.nodes[headingType] == true
             )
         case .blockquote:
             return (
@@ -1127,6 +1390,16 @@ final class EditorAccessoryToolbarView: UIInputView {
             return (
                 enabled: !item.isDisabled,
                 active: item.isActive
+            )
+        case .group:
+            let childStates = item.items.map { buttonState(for: $0, state: state) }
+            return (
+                enabled: childStates.contains { $0.enabled },
+                active: childStates.contains { $0.active } ||
+                    (
+                        (item.presentation ?? .expand) == .expand &&
+                            expandedGroupKey == item.key
+                    )
             )
         case .separator:
             return (enabled: false, active: false)
@@ -1953,6 +2226,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         case .mark:
             guard let mark = item.mark else { return }
             richTextView.textView.performToolbarToggleMark(mark)
+        case .heading:
+            guard let level = item.headingLevel else { return }
+            richTextView.textView.performToolbarToggleHeading(level)
         case .blockquote:
             richTextView.textView.performToolbarToggleBlockquote()
         case .list:
@@ -1977,6 +2253,8 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         case .action:
             guard let key = item.key else { return }
             onToolbarAction(["key": key])
+        case .group:
+            break
         case .separator:
             break
         }

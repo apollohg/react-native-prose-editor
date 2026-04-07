@@ -170,6 +170,19 @@ class NativeEditorModule : Module() {
             )
         }
         Function(
+            "editorToggleHeadingAtSelectionScalar"
+        ) { id: Int, scalarAnchor: Int, scalarHead: Int, level: Int ->
+            if (level !in 1..6) {
+                return@Function "{\"error\":\"invalid heading level\"}"
+            }
+            editorToggleHeadingAtSelectionScalar(
+                id.toULong(),
+                scalarAnchor.toUInt(),
+                scalarHead.toUInt(),
+                level.toUByte()
+            )
+        }
+        Function(
             "editorWrapInListAtSelectionScalar"
         ) { id: Int, scalarAnchor: Int, scalarHead: Int, listType: String ->
             editorWrapInListAtSelectionScalar(
@@ -228,6 +241,12 @@ class NativeEditorModule : Module() {
         }
         Function("editorToggleBlockquote") { id: Int ->
             editorToggleBlockquote(id.toULong())
+        }
+        Function("editorToggleHeading") { id: Int, level: Int ->
+            if (level !in 1..6) {
+                return@Function "{\"error\":\"invalid heading level\"}"
+            }
+            editorToggleHeading(id.toULong(), level.toUByte())
         }
 
         Function("editorSetSelection") { id: Int, anchor: Int, head: Int ->

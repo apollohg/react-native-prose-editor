@@ -55,7 +55,7 @@ interface NativeRichTextEditorProps {
 | `heightBehavior` | `'fixed' \| 'autoGrow'` | `'autoGrow'` | `fixed` scrolls internally. `autoGrow` expands the view to fit content, suitable for parent-managed scroll containers. |
 | `showToolbar` | `boolean` | `true` | Shows or hides the built-in toolbar. |
 | `toolbarPlacement` | `'keyboard' \| 'inline'` | `'keyboard'` | `keyboard` attaches the toolbar as a native keyboard accessory (iOS) or above-keyboard view (Android). `inline` renders the toolbar in React above the editor. |
-| `toolbarItems` | `readonly EditorToolbarItem[]` | `DEFAULT_EDITOR_TOOLBAR_ITEMS` | Ordered toolbar button configuration. Built-in items now include blockquote by default. Link and image items are supported, but the package does not show its own URL prompt or file picker. |
+| `toolbarItems` | `readonly EditorToolbarItem[]` | `DEFAULT_EDITOR_TOOLBAR_ITEMS` | Ordered toolbar button configuration. Built-in items now include blockquote by default. Link and image items are supported, but the package does not show its own URL prompt or file picker. Use `group` items to collapse multiple actions behind one toolbar button. |
 | `onToolbarAction` | `(key: string) => void` | — | Callback for `action`-type toolbar items. |
 | `onRequestLink` | `(context: LinkRequestContext) => void` | — | Called when a toolbar `link` item is pressed. Use it to collect, edit, or clear the target URL. |
 | `onRequestImage` | `(context: ImageRequestContext) => void` | — | Called when a toolbar `image` item is pressed. Use it to launch your own picker or upload flow, then call `insertImage(...)` with the chosen URL or base64 data URI. |
@@ -250,6 +250,7 @@ interface NativeRichTextEditorRef {
   setLink(href: string): void;
   unsetLink(): void;
   toggleBlockquote(): void;
+  toggleHeading(level: 1 | 2 | 3 | 4 | 5 | 6): void;
   toggleList(listType: 'bulletList' | 'orderedList'): void;
   indentListItem(): void;
   outdentListItem(): void;
@@ -286,6 +287,7 @@ interface NativeRichTextEditorRef {
 | `setLink(href)` | `href: string` | `void` | Apply or update a hyperlink on the current selection. |
 | `unsetLink()` | — | `void` | Remove a hyperlink from the current selection. |
 | `toggleBlockquote()` | — | `void` | Wrap or unwrap the current block selection in a blockquote. |
+| `toggleHeading(level)` | `level: 1 \| 2 \| 3 \| 4 \| 5 \| 6` | `void` | Toggles the current text block selection between the requested heading and `paragraph`. |
 | `toggleList(listType)` | `listType: 'bulletList' \| 'orderedList'` | `void` | Toggles a bullet or ordered list. |
 | `indentListItem()` | — | `void` | Indents the current list item. |
 | `outdentListItem()` | — | `void` | Outdents the current list item. |

@@ -1190,6 +1190,40 @@ class RenderBridgeTest {
     }
 
     @Test
+    fun `render - theme overrides specific heading level typography`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "h2", "depth": 0},
+            {"type": "textRun", "text": "Styled heading", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "text": { "fontSize": 16, "color": "#112233" },
+              "headings": {
+                "h2": { "fontSize": 28, "fontWeight": "700", "color": "#445566", "lineHeight": 34, "spacingAfter": 12 },
+                "h4": { "fontSize": 18, "color": "#AA5500" }
+              }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+
+        val colorSpans = result.getSpans(0, result.length, ForegroundColorSpan::class.java)
+        val sizeSpans = result.getSpans(0, result.length, AbsoluteSizeSpan::class.java)
+        val lineHeightSpans = result.getSpans(0, result.length, FixedLineHeightSpan::class.java)
+        val styleSpans = result.getSpans(0, result.length, StyleSpan::class.java)
+
+        assertTrue(colorSpans.any { it.foregroundColor == Color.parseColor("#445566") })
+        assertTrue(sizeSpans.any { it.size == 28 })
+        assertTrue(lineHeightSpans.isNotEmpty())
+        assertTrue(styleSpans.any { it.style == Typeface.BOLD })
+    }
+
+    @Test
     fun `render - paragraph does not inherit text line height when paragraph line height is unset`() {
         val json = """
         [

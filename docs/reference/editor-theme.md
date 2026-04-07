@@ -99,6 +99,22 @@ interface EditorHeadingTheme {
 
 Each slot accepts the same `EditorTextStyle` fields. Heading styles only apply if your schema emits the corresponding heading node type.
 
+Heading styles layer on top of `text`, not `paragraph`, so you can keep body copy and headings independent:
+
+```ts
+const theme: EditorTheme = {
+  text: { color: '#22303c', fontSize: 16 },
+  headings: {
+    h1: { fontSize: 32, fontWeight: '700', spacingAfter: 14 },
+    h2: { fontSize: 28, fontWeight: '700', spacingAfter: 12 },
+    h3: { fontSize: 24, fontWeight: '600' },
+    h4: { fontSize: 20, fontWeight: '600' },
+    h5: { fontSize: 18, fontWeight: '600' },
+    h6: { fontSize: 16, fontWeight: '600', color: '#4a5b6c' },
+  },
+};
+```
+
 ## `EditorBlockquoteTheme`
 
 ```ts

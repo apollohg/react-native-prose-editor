@@ -41,6 +41,8 @@ export interface UseNativeEditorReturn {
     redo: () => void;
     /** Toggle blockquote wrapping around the current block selection. */
     toggleBlockquote: () => void;
+    /** Toggle a heading level on the current block selection. */
+    toggleHeading: (level: 1 | 2 | 3 | 4 | 5 | 6) => void;
     /** Insert text at a position. */
     insertText: (pos: number, text: string) => void;
     /** Delete a range [from, to). */
@@ -143,6 +145,15 @@ export function useNativeEditor(options: UseNativeEditorOptions = {}): UseNative
         applyUpdate(update);
     }, [applyUpdate]);
 
+    const toggleHeading = useCallback(
+        (level: 1 | 2 | 3 | 4 | 5 | 6) => {
+            if (!bridgeRef.current || bridgeRef.current.isDestroyed) return;
+            const update = bridgeRef.current.toggleHeading(level);
+            applyUpdate(update);
+        },
+        [applyUpdate]
+    );
+
     const insertText = useCallback(
         (pos: number, text: string) => {
             if (!bridgeRef.current || bridgeRef.current.isDestroyed) return;
@@ -177,6 +188,7 @@ export function useNativeEditor(options: UseNativeEditorOptions = {}): UseNative
         undo,
         redo,
         toggleBlockquote,
+        toggleHeading,
         insertText,
         deleteRange,
         getHtml,

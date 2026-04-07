@@ -713,9 +713,15 @@ fn flush_inline_acc(inline_acc: &mut Vec<Node>, schema: &Schema, block_acc: &mut
 /// Create a paragraph node using the schema's paragraph type name.
 fn make_paragraph(schema: &Schema, children: Vec<Node>) -> Node {
     let para_name = schema
-        .all_nodes()
-        .find(|n| matches!(n.role, NodeRole::TextBlock))
+        .node_by_html_tag("p")
+        .or_else(|| schema.node("paragraph"))
         .map(|n| n.name.as_str())
+        .or_else(|| {
+            schema
+                .all_nodes()
+                .find(|n| matches!(n.role, NodeRole::TextBlock))
+                .map(|n| n.name.as_str())
+        })
         .unwrap_or("paragraph");
     Node::element(
         para_name.to_string(),

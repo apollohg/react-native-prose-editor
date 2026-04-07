@@ -12,6 +12,7 @@ import android.view.ViewOutlineProvider
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import androidx.appcompat.widget.AppCompatButton
+import androidx.appcompat.widget.PopupMenu
 import androidx.appcompat.widget.AppCompatTextView
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.view.setPadding
@@ -100,6 +101,12 @@ internal enum class ToolbarDefaultIconId {
     strike,
     link,
     image,
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6,
     blockquote,
     bulletList,
     orderedList,
@@ -113,12 +120,19 @@ internal enum class ToolbarDefaultIconId {
 
 internal enum class ToolbarItemKind {
     mark,
+    heading,
     blockquote,
     list,
     command,
     node,
     action,
+    group,
     separator,
+}
+
+internal enum class ToolbarGroupPresentation {
+    expand,
+    menu,
 }
 
 internal data class NativeToolbarIcon(
@@ -135,6 +149,12 @@ internal data class NativeToolbarIcon(
             ToolbarDefaultIconId.strike to "S",
             ToolbarDefaultIconId.link to "🔗",
             ToolbarDefaultIconId.image to "🖼",
+            ToolbarDefaultIconId.h1 to "H1",
+            ToolbarDefaultIconId.h2 to "H2",
+            ToolbarDefaultIconId.h3 to "H3",
+            ToolbarDefaultIconId.h4 to "H4",
+            ToolbarDefaultIconId.h5 to "H5",
+            ToolbarDefaultIconId.h6 to "H6",
             ToolbarDefaultIconId.blockquote to "❝",
             ToolbarDefaultIconId.bulletList to "•≡",
             ToolbarDefaultIconId.orderedList to "1.",
@@ -159,6 +179,12 @@ internal data class NativeToolbarIcon(
             ToolbarDefaultIconId.outdentList to "format-indent-decrease",
             ToolbarDefaultIconId.lineBreak to "keyboard-return",
             ToolbarDefaultIconId.horizontalRule to "horizontal-rule",
+            ToolbarDefaultIconId.h1 to "title",
+            ToolbarDefaultIconId.h2 to "title",
+            ToolbarDefaultIconId.h3 to "title",
+            ToolbarDefaultIconId.h4 to "title",
+            ToolbarDefaultIconId.h5 to "title",
+            ToolbarDefaultIconId.h6 to "title",
             ToolbarDefaultIconId.undo to "undo",
             ToolbarDefaultIconId.redo to "redo"
         )
@@ -284,11 +310,15 @@ internal data class NativeToolbarItem(
     val label: String? = null,
     val icon: NativeToolbarIcon? = null,
     val mark: String? = null,
+    val headingLevel: Int? = null,
     val listType: ToolbarListType? = null,
     val command: ToolbarCommand? = null,
     val nodeType: String? = null,
     val isActive: Boolean = false,
-    val isDisabled: Boolean = false
+    val isDisabled: Boolean = false,
+    val presentation: ToolbarGroupPresentation? = null,
+    val items: List<NativeToolbarItem> = emptyList(),
+    val parentGroupKey: String? = null
 ) {
     companion object {
         val defaults = listOf(
@@ -309,6 +339,105 @@ internal data class NativeToolbarItem(
             NativeToolbarItem(ToolbarItemKind.command, label = "Redo", icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.redo), command = ToolbarCommand.redo)
         )
 
+        private fun parseItem(
+            rawItem: JSONObject,
+            allowGroup: Boolean = true,
+            allowSeparator: Boolean = true
+        ): NativeToolbarItem? {
+            val type = runCatching {
+                ToolbarItemKind.valueOf(rawItem.getString("type"))
+            }.getOrNull() ?: return null
+            val key = rawItem.optNullableString("key")
+            return when (type) {
+                ToolbarItemKind.separator -> {
+                    if (!allowSeparator) {
+                        null
+                    } else {
+                        NativeToolbarItem(type = type, key = key)
+                    }
+                }
+                ToolbarItemKind.mark -> {
+                    val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: return null
+                    val mark = rawItem.optNullableString("mark") ?: return null
+                    val label = rawItem.optNullableString("label") ?: return null
+                    NativeToolbarItem(type, key, label, icon, mark = mark)
+                }
+                ToolbarItemKind.heading -> {
+                    val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: return null
+                    val level = rawItem.optInt("level", -1)
+                    if (level !in 1..6) return null
+                    val label = rawItem.optNullableString("label") ?: return null
+                    NativeToolbarItem(type, key, label, icon, headingLevel = level)
+                }
+                ToolbarItemKind.blockquote -> {
+                    val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: return null
+                    val label = rawItem.optNullableString("label") ?: return null
+                    NativeToolbarItem(type, key, label, icon)
+                }
+                ToolbarItemKind.list -> {
+                    val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: return null
+                    val listType = runCatching {
+                        ToolbarListType.valueOf(rawItem.getString("listType"))
+                    }.getOrNull() ?: return null
+                    val label = rawItem.optNullableString("label") ?: return null
+                    NativeToolbarItem(type, key, label, icon, listType = listType)
+                }
+                ToolbarItemKind.command -> {
+                    val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: return null
+                    val command = runCatching {
+                        ToolbarCommand.valueOf(rawItem.getString("command"))
+                    }.getOrNull() ?: return null
+                    val label = rawItem.optNullableString("label") ?: return null
+                    NativeToolbarItem(type, key, label, icon, command = command)
+                }
+                ToolbarItemKind.node -> {
+                    val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: return null
+                    val nodeType = rawItem.optNullableString("nodeType") ?: return null
+                    val label = rawItem.optNullableString("label") ?: return null
+                    NativeToolbarItem(type, key, label, icon, nodeType = nodeType)
+                }
+                ToolbarItemKind.action -> {
+                    val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: return null
+                    val keyValue = rawItem.optNullableString("key") ?: return null
+                    val label = rawItem.optNullableString("label") ?: return null
+                    NativeToolbarItem(
+                        type = type,
+                        key = keyValue,
+                        label = label,
+                        icon = icon,
+                        isActive = rawItem.optBoolean("isActive", false),
+                        isDisabled = rawItem.optBoolean("isDisabled", false)
+                    )
+                }
+                ToolbarItemKind.group -> {
+                    if (!allowGroup) return null
+                    val keyValue = rawItem.optNullableString("key") ?: return null
+                    val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: return null
+                    val label = rawItem.optNullableString("label") ?: return null
+                    val presentation = rawItem.optNullableString("presentation")?.let {
+                        runCatching { ToolbarGroupPresentation.valueOf(it) }.getOrNull()
+                    } ?: ToolbarGroupPresentation.expand
+                    val rawChildren = rawItem.optJSONArray("items") ?: return null
+                    val children = mutableListOf<NativeToolbarItem>()
+                    for (childIndex in 0 until rawChildren.length()) {
+                        val rawChild = rawChildren.optJSONObject(childIndex) ?: continue
+                        parseItem(rawChild, allowGroup = false, allowSeparator = false)?.let {
+                            children += it
+                        }
+                    }
+                    if (children.isEmpty()) return null
+                    NativeToolbarItem(
+                        type = type,
+                        key = keyValue,
+                        label = label,
+                        icon = icon,
+                        presentation = presentation,
+                        items = children
+                    )
+                }
+            }
+        }
+
         fun fromJson(json: String?): List<NativeToolbarItem> {
             if (json.isNullOrBlank()) return defaults
             val rawArray = try {
@@ -319,61 +448,7 @@ internal data class NativeToolbarItem(
             val parsed = mutableListOf<NativeToolbarItem>()
             for (index in 0 until rawArray.length()) {
                 val rawItem = rawArray.optJSONObject(index) ?: continue
-                val type = runCatching {
-                    ToolbarItemKind.valueOf(rawItem.getString("type"))
-                }.getOrNull() ?: continue
-                val key = rawItem.optNullableString("key")
-                when (type) {
-                    ToolbarItemKind.separator -> parsed.add(NativeToolbarItem(type = type, key = key))
-                    ToolbarItemKind.mark -> {
-                        val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: continue
-                        val mark = rawItem.optNullableString("mark") ?: continue
-                        val label = rawItem.optNullableString("label") ?: continue
-                        parsed.add(NativeToolbarItem(type, key, label, icon, mark = mark))
-                    }
-                    ToolbarItemKind.blockquote -> {
-                        val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: continue
-                        val label = rawItem.optNullableString("label") ?: continue
-                        parsed.add(NativeToolbarItem(type, key, label, icon))
-                    }
-                    ToolbarItemKind.list -> {
-                        val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: continue
-                        val listType = runCatching {
-                            ToolbarListType.valueOf(rawItem.getString("listType"))
-                        }.getOrNull() ?: continue
-                        val label = rawItem.optNullableString("label") ?: continue
-                        parsed.add(NativeToolbarItem(type, key, label, icon, listType = listType))
-                    }
-                    ToolbarItemKind.command -> {
-                        val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: continue
-                        val command = runCatching {
-                            ToolbarCommand.valueOf(rawItem.getString("command"))
-                        }.getOrNull() ?: continue
-                        val label = rawItem.optNullableString("label") ?: continue
-                        parsed.add(NativeToolbarItem(type, key, label, icon, command = command))
-                    }
-                    ToolbarItemKind.node -> {
-                        val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: continue
-                        val nodeType = rawItem.optNullableString("nodeType") ?: continue
-                        val label = rawItem.optNullableString("label") ?: continue
-                        parsed.add(NativeToolbarItem(type, key, label, icon, nodeType = nodeType))
-                    }
-                    ToolbarItemKind.action -> {
-                        val icon = NativeToolbarIcon.fromJson(rawItem.optJSONObject("icon")) ?: continue
-                        val keyValue = rawItem.optNullableString("key") ?: continue
-                        val label = rawItem.optNullableString("label") ?: continue
-                        parsed.add(
-                            NativeToolbarItem(
-                                type = type,
-                                key = keyValue,
-                                label = label,
-                                icon = icon,
-                                isActive = rawItem.optBoolean("isActive", false),
-                                isDisabled = rawItem.optBoolean("isDisabled", false)
-                            )
-                        )
-                    }
-                }
+                parseItem(rawItem)?.let { parsed += it }
             }
             return parsed.ifEmpty { defaults }
         }
@@ -406,6 +481,8 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     private var state: NativeToolbarState = NativeToolbarState.empty
     private var items: List<NativeToolbarItem> = NativeToolbarItem.defaults
     private var mentionSuggestions: List<NativeMentionSuggestion> = emptyList()
+    private var expandedGroupKey: String? = null
+    private var rebuildGeneration: Int = 0
     private val bindings = mutableListOf<ButtonBinding>()
     private val separators = mutableListOf<View>()
     private val mentionChips = mutableListOf<MentionSuggestionChipView>()
@@ -443,11 +520,14 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
             contentRow,
             LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
         )
-        rebuildContent()
+        rebuildContent(preserveScrollPosition = false)
     }
 
     fun setItems(items: List<NativeToolbarItem>) {
         this.items = compactItems(items)
+        if (expandedGroupKey != null && !containsExpandableGroup(this.items, expandedGroupKey)) {
+            expandedGroupKey = null
+        }
         if (!isShowingMentionSuggestions) {
             rebuildContent()
         }
@@ -491,7 +571,7 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     fun setMentionSuggestions(suggestions: List<NativeMentionSuggestion>): Boolean {
         val hadSuggestions = isShowingMentionSuggestions
         mentionSuggestions = suggestions.take(8)
-        rebuildContent()
+        rebuildContent(preserveScrollPosition = hadSuggestions == isShowingMentionSuggestions)
         return hadSuggestions != isShowingMentionSuggestions
     }
 
@@ -502,6 +582,8 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     internal fun buttonAtForTesting(index: Int): AppCompatButton? =
         bindings.getOrNull(index)?.button
 
+    internal fun buttonCountForTesting(): Int = bindings.size
+
     internal fun buttonBackgroundColorAtForTesting(index: Int): Int? =
         bindings.getOrNull(index)?.button?.let { buttonBackgroundColors[it] }
 
@@ -511,7 +593,9 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     internal fun separatorAtForTesting(index: Int): View? =
         separators.getOrNull(index)
 
-    private fun rebuildContent() {
+    private fun rebuildContent(preserveScrollPosition: Boolean = true) {
+        val targetScrollX = if (preserveScrollPosition) scrollX else 0
+        val generation = ++rebuildGeneration
         bindings.clear()
         separators.clear()
         mentionChips.clear()
@@ -525,11 +609,17 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
 
         updateChrome()
         applyState(state)
-        scrollTo(0, 0)
+        post {
+            if (generation != rebuildGeneration) return@post
+            val contentWidth = getChildAt(0)?.width ?: 0
+            val viewportWidth = (width - paddingLeft - paddingRight).coerceAtLeast(0)
+            val maxScrollX = (contentWidth - viewportWidth).coerceAtLeast(0)
+            scrollTo(targetScrollX.coerceIn(0, maxScrollX), 0)
+        }
     }
 
     private fun rebuildButtons() {
-        for (item in compactItems(items)) {
+        for (item in visibleItems()) {
             if (item.type == ToolbarItemKind.separator) {
                 val separator = View(context)
                 configureSeparator(separator)
@@ -548,7 +638,18 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
                 isAllCaps = false
                 includeFontPadding = false
                 contentDescription = item.label
-                setOnClickListener { onPressItem?.invoke(item) }
+                setOnClickListener {
+                    when (item.type) {
+                        ToolbarItemKind.group -> handleGroupButtonPress(this, item)
+                        else -> {
+                            onPressItem?.invoke(item.copy(parentGroupKey = null))
+                            if (item.parentGroupKey != null && expandedGroupKey == item.parentGroupKey) {
+                                expandedGroupKey = null
+                                rebuildContent()
+                            }
+                        }
+                    }
+                }
                 elevation = 0f
                 translationZ = 0f
                 stateListAnimator = null
@@ -592,6 +693,59 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
                 items[index - 1].type != ToolbarItemKind.separator &&
                 items[index + 1].type != ToolbarItemKind.separator
         }
+    }
+
+    private fun visibleItems(): List<NativeToolbarItem> {
+        val visible = mutableListOf<NativeToolbarItem>()
+        for (item in compactItems(items)) {
+            visible += item
+            if (
+                item.type == ToolbarItemKind.group &&
+                    (item.presentation ?: ToolbarGroupPresentation.expand) == ToolbarGroupPresentation.expand &&
+                    expandedGroupKey == item.key
+            ) {
+                visible += item.items.map { child -> child.copy(parentGroupKey = item.key) }
+            }
+        }
+        return compactItems(visible)
+    }
+
+    private fun containsExpandableGroup(items: List<NativeToolbarItem>, key: String?): Boolean {
+        key ?: return false
+        return items.any {
+            it.type == ToolbarItemKind.group &&
+                it.key == key &&
+                (it.presentation ?: ToolbarGroupPresentation.expand) == ToolbarGroupPresentation.expand
+        }
+    }
+
+    private fun handleGroupButtonPress(anchor: View, item: NativeToolbarItem) {
+        if (item.items.isEmpty()) return
+        when (item.presentation ?: ToolbarGroupPresentation.expand) {
+            ToolbarGroupPresentation.expand -> {
+                val key = item.key ?: return
+                expandedGroupKey = if (expandedGroupKey == key) null else key
+                rebuildContent()
+            }
+            ToolbarGroupPresentation.menu -> showGroupMenu(anchor, item)
+        }
+    }
+
+    private fun showGroupMenu(anchor: View, item: NativeToolbarItem) {
+        val popupMenu = PopupMenu(themedContext, anchor)
+        item.items.forEachIndexed { index, child ->
+            val (enabled, active) = buttonState(child, state)
+            val menuItem = popupMenu.menu.add(0, index, index, child.label ?: child.key ?: "Item")
+            menuItem.isEnabled = enabled
+            menuItem.isCheckable = true
+            menuItem.isChecked = active
+        }
+        popupMenu.setOnMenuItemClickListener { menuItem ->
+            val child = item.items.getOrNull(menuItem.itemId) ?: return@setOnMenuItemClickListener false
+            onPressItem?.invoke(child)
+            true
+        }
+        popupMenu.show()
     }
 
     private fun updateChrome() {
@@ -736,6 +890,13 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
                 val mark = item.mark.orEmpty()
                 Pair(state.allowedMarks.contains(mark), state.marks[mark] == true)
             }
+            ToolbarItemKind.heading -> {
+                val level = item.headingLevel ?: return Pair(false, false)
+                Pair(
+                    state.commands["toggleHeading$level"] == true,
+                    state.nodes["h$level"] == true
+                )
+            }
             ToolbarItemKind.blockquote -> Pair(
                 state.commands["toggleBlockquote"] == true,
                 state.nodes["blockquote"] == true
@@ -763,6 +924,15 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
                 Pair(state.insertableNodes.contains(nodeType), state.nodes[nodeType] == true)
             }
             ToolbarItemKind.action -> Pair(!item.isDisabled, item.isActive)
+            ToolbarItemKind.group -> Pair(
+                item.items.any { child -> buttonState(child, state).first },
+                item.items.any { child -> buttonState(child, state).second } ||
+                    (
+                        (item.presentation ?: ToolbarGroupPresentation.expand) ==
+                            ToolbarGroupPresentation.expand &&
+                            expandedGroupKey == item.key
+                        )
+            )
             ToolbarItemKind.separator -> Pair(false, false)
         }
     }

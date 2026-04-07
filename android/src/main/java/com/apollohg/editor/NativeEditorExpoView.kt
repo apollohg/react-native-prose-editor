@@ -642,6 +642,7 @@ class NativeEditorExpoView(
     private fun handleToolbarItemPress(item: NativeToolbarItem) {
         when (item.type) {
             ToolbarItemKind.mark -> item.mark?.let { richTextView.editorEditText.performToolbarToggleMark(it) }
+            ToolbarItemKind.heading -> item.headingLevel?.let { richTextView.editorEditText.performToolbarToggleHeading(it) }
             ToolbarItemKind.blockquote -> richTextView.editorEditText.performToolbarToggleBlockquote()
             ToolbarItemKind.list -> item.listType?.name?.let { handleListToggle(it) }
             ToolbarItemKind.command -> when (item.command) {
@@ -653,6 +654,7 @@ class NativeEditorExpoView(
             }
             ToolbarItemKind.node -> item.nodeType?.let { richTextView.editorEditText.performToolbarInsertNode(it) }
             ToolbarItemKind.action -> item.key?.let { onToolbarAction(mapOf("key" to it)) }
+            ToolbarItemKind.group -> Unit
             ToolbarItemKind.separator -> Unit
         }
     }

@@ -158,6 +158,7 @@ function resetMockNativeModule() {
     mockNativeModule.editorSetMark = jest.fn(() => MOCK_TOGGLE_BOLD_UPDATE_JSON);
     mockNativeModule.editorUnsetMark = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorToggleBlockquote = jest.fn(() => MOCK_UPDATE_JSON);
+    mockNativeModule.editorToggleHeading = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorSetSelection = jest.fn();
     mockNativeModule.editorGetSelection = jest.fn(() =>
         JSON.stringify({ type: 'text', anchor: 0, head: 0 })
@@ -182,6 +183,7 @@ function resetMockNativeModule() {
     mockNativeModule.editorSetMarkAtSelectionScalar = jest.fn(() => MOCK_TOGGLE_BOLD_UPDATE_JSON);
     mockNativeModule.editorUnsetMarkAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorToggleBlockquoteAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
+    mockNativeModule.editorToggleHeadingAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorWrapInListAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorUnwrapFromListAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorIndentListItemAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
@@ -787,6 +789,24 @@ describe('NativeEditorBridge', () => {
             );
             expect(update).not.toBeNull();
             expect(update!.renderElements).toHaveLength(3);
+
+            bridge.destroy();
+        });
+    });
+
+    describe('toggleHeading', () => {
+        it('returns parsed EditorUpdate', () => {
+            const bridge = NativeEditorBridge.create();
+
+            const update = bridge.toggleHeading(3);
+
+            expect(mockNativeModule.editorToggleHeadingAtSelectionScalar).toHaveBeenCalledWith(
+                bridge.editorId,
+                0,
+                0,
+                3
+            );
+            expect(update).not.toBeNull();
 
             bridge.destroy();
         });

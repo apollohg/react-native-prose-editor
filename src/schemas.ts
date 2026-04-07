@@ -34,6 +34,7 @@ export interface ImageNodeAttributes {
 }
 
 export const IMAGE_NODE_NAME = 'image';
+const HEADING_LEVELS = [1, 2, 3, 4, 5, 6] as const;
 
 export function imageNodeSpec(name: string = IMAGE_NODE_NAME): NodeSpec {
     return {
@@ -50,6 +51,16 @@ export function imageNodeSpec(name: string = IMAGE_NODE_NAME): NodeSpec {
         role: 'block',
         htmlTag: 'img',
         isVoid: true,
+    };
+}
+
+function headingNodeSpec(level: (typeof HEADING_LEVELS)[number]): NodeSpec {
+    return {
+        name: `h${level}`,
+        content: 'inline*',
+        group: 'block',
+        role: 'textBlock',
+        htmlTag: `h${level}`,
     };
 }
 
@@ -99,6 +110,7 @@ export const tiptapSchema: SchemaDefinition = {
             role: 'textBlock',
             htmlTag: 'p',
         },
+        ...HEADING_LEVELS.map((level) => headingNodeSpec(level)),
         {
             name: 'blockquote',
             content: 'block+',
@@ -168,6 +180,7 @@ export const prosemirrorSchema: SchemaDefinition = {
             role: 'textBlock',
             htmlTag: 'p',
         },
+        ...HEADING_LEVELS.map((level) => headingNodeSpec(level)),
         {
             name: 'blockquote',
             content: 'block+',

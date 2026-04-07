@@ -31,6 +31,8 @@ import {
     DEFAULT_EDITOR_TOOLBAR_ITEMS,
     EditorToolbar,
     type EditorToolbarCommand,
+    type EditorToolbarGroupChildItem,
+    type EditorToolbarHeadingLevel,
     type EditorToolbarIcon,
     type EditorToolbarItem,
     type EditorToolbarListType,
@@ -90,6 +92,66 @@ const DEV_NATIVE_VIEW_KEY = __DEV__
     : 'native-editor';
 const LINK_TOOLBAR_ACTION_KEY = '__native-editor-link__';
 const IMAGE_TOOLBAR_ACTION_KEY = '__native-editor-image__';
+
+function mapToolbarChildForNative(
+    item: EditorToolbarGroupChildItem,
+    activeState: ActiveState,
+    editable: boolean,
+    onRequestLink?: NativeRichTextEditorProps['onRequestLink'],
+    onRequestImage?: NativeRichTextEditorProps['onRequestImage']
+): EditorToolbarGroupChildItem {
+    if (item.type === 'link') {
+        return {
+            type: 'action',
+            key: LINK_TOOLBAR_ACTION_KEY,
+            label: item.label,
+            icon: item.icon as EditorToolbarIcon,
+            isActive: activeState.marks.link === true,
+            isDisabled: !editable || !onRequestLink || !activeState.allowedMarks.includes('link'),
+        };
+    }
+    if (item.type === 'image') {
+        return {
+            type: 'action',
+            key: IMAGE_TOOLBAR_ACTION_KEY,
+            label: item.label,
+            icon: item.icon as EditorToolbarIcon,
+            isActive: false,
+            isDisabled:
+                !editable || !onRequestImage || !activeState.insertableNodes.includes(IMAGE_NODE_NAME),
+        };
+    }
+    return item;
+}
+
+function mapToolbarItemsForNative(
+    items: readonly EditorToolbarItem[],
+    activeState: ActiveState,
+    editable: boolean,
+    onRequestLink?: NativeRichTextEditorProps['onRequestLink'],
+    onRequestImage?: NativeRichTextEditorProps['onRequestImage']
+): EditorToolbarItem[] {
+    return items.map((item) => {
+        if (item.type === 'group') {
+            return {
+                ...item,
+                items: item.items.map((child) =>
+                    mapToolbarChildForNative(
+                        child,
+                        activeState,
+                        editable,
+                        onRequestLink,
+                        onRequestImage
+                    )
+                ),
+            };
+        }
+        if (item.type === 'separator') {
+            return item;
+        }
+        return mapToolbarChildForNative(item, activeState, editable, onRequestLink, onRequestImage);
+    });
+}
 
 function isImageDataUrl(value: string): boolean {
     return /^data:image\//i.test(value.trim());
@@ -272,6 +334,8 @@ export interface NativeRichTextEditorRef {
     unsetLink(): void;
     /** Toggle blockquote wrapping around the current block selection. */
     toggleBlockquote(): void;
+    /** Toggle a heading level on the current block selection. */
+    toggleHeading(level: EditorToolbarHeadingLevel): void;
     /** Toggle a list type (bulletList or orderedList). */
     toggleList(listType: 'bulletList' | 'orderedList'): void;
     /** Indent the current list item. */
@@ -859,6 +923,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 toggleBlockquote() {
                     runAndApply(() => bridgeRef.current?.toggleBlockquote() ?? null);
                 },
+                toggleHeading(level: EditorToolbarHeadingLevel) {
+                    runAndApply(() => bridgeRef.current?.toggleHeading(level) ?? null);
+                },
                 toggleList(listType: 'bulletList' | 'orderedList') {
                     runAndApply(() => bridgeRef.current?.toggleList(listType) ?? null);
                 },
@@ -921,33 +988,13 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
 
         if (!isReady) return null;
 
-        const toolbarItemsForNative = toolbarItems.map((item) => {
-            if (item.type === 'link') {
-                return {
-                    type: 'action' as const,
-                    key: LINK_TOOLBAR_ACTION_KEY,
-                    label: item.label,
-                    icon: item.icon as EditorToolbarIcon,
-                    isActive: activeState.marks.link === true,
-                    isDisabled:
-                        !editable || !onRequestLink || !activeState.allowedMarks.includes('link'),
-                };
-            }
-            if (item.type === 'image') {
-                return {
-                    type: 'action' as const,
-                    key: IMAGE_TOOLBAR_ACTION_KEY,
-                    label: item.label,
-                    icon: item.icon as EditorToolbarIcon,
-                    isActive: false,
-                    isDisabled:
-                        !editable
-                        || !onRequestImage
-                        || !activeState.insertableNodes.includes(IMAGE_NODE_NAME),
-                };
-            }
-            return item;
-        });
+        const toolbarItemsForNative = mapToolbarItemsForNative(
+            toolbarItems,
+            activeState,
+            editable,
+            onRequestLink,
+            onRequestImage
+        );
         const themeJson = serializeEditorTheme(theme);
         const addonsJson = serializeEditorAddons(addons);
         const toolbarItemsJson = JSON.stringify(toolbarItemsForNative);
@@ -1007,6 +1054,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     }
                     onToggleListType={(listType: EditorToolbarListType) =>
                         runAndApply(() => bridgeRef.current?.toggleList(listType) ?? null)
+                    }
+                    onToggleHeading={(level: EditorToolbarHeadingLevel) =>
+                        runAndApply(() => bridgeRef.current?.toggleHeading(level) ?? null)
                     }
                     onToggleBlockquote={() =>
                         runAndApply(() => bridgeRef.current?.toggleBlockquote() ?? null)

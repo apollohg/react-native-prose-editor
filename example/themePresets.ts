@@ -1,4 +1,5 @@
 import type {
+    EditorHeadingTheme,
     EditorTheme,
     EditorMentionTheme,
     EditorToolbarTheme,
@@ -46,6 +47,7 @@ export interface ExampleThemePreset {
         outputTextColor: string;
     };
     paragraphSpacingAfter: number;
+    headings: EditorHeadingTheme;
     blockquote: {
         indent: number;
         borderColor: string;
@@ -106,6 +108,17 @@ const DEFAULT_EDITOR_CONTENT_INSETS = {
 
 const DEFAULT_EDITOR_BORDER_RADIUS = 16;
 
+function buildHeadingTheme(color: string): EditorHeadingTheme {
+    return {
+        h1: { color, fontSize: 32, fontWeight: '700', spacingAfter: 14 },
+        h2: { color, fontSize: 28, fontWeight: '700', spacingAfter: 12 },
+        h3: { color, fontSize: 24, fontWeight: '700', spacingAfter: 10 },
+        h4: { color, fontSize: 20, fontWeight: '600', spacingAfter: 10 },
+        h5: { color, fontSize: 18, fontWeight: '600', spacingAfter: 8 },
+        h6: { color, fontSize: 16, fontWeight: '600', spacingAfter: 8 },
+    };
+}
+
 const WARM_APP_CHROME = {
     screenBackgroundColor: '#ebe4da',
     cardBackgroundColor: '#fffaf4',
@@ -151,6 +164,7 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
         textColor: '#2a2118',
         appChrome: WARM_APP_CHROME,
         paragraphSpacingAfter: DEFAULT_PARAGRAPH_SPACING_AFTER,
+        headings: buildHeadingTheme(WARM_APP_CHROME.titleColor),
         blockquote: {
             ...DEFAULT_BLOCKQUOTE_THEME,
             borderColor: '#c38d68',
@@ -243,6 +257,7 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
             outputTextColor: '#e6edf3',
         },
         paragraphSpacingAfter: DEFAULT_PARAGRAPH_SPACING_AFTER,
+        headings: buildHeadingTheme('#1c2128'),
         blockquote: {
             ...DEFAULT_BLOCKQUOTE_THEME,
             borderColor: '#89b9ad',
@@ -335,6 +350,7 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
             outputTextColor: '#c0cadc',
         },
         paragraphSpacingAfter: DEFAULT_PARAGRAPH_SPACING_AFTER,
+        headings: buildHeadingTheme('#e8edf6'),
         blockquote: {
             ...DEFAULT_BLOCKQUOTE_THEME,
             borderColor: '#cc8f59',
@@ -427,6 +443,7 @@ export const EXAMPLE_THEME_PRESETS: readonly ExampleThemePreset[] = [
             outputTextColor: '#c8baa8',
         },
         paragraphSpacingAfter: DEFAULT_PARAGRAPH_SPACING_AFTER,
+        headings: buildHeadingTheme('#ede5d8'),
         blockquote: {
             ...DEFAULT_BLOCKQUOTE_THEME,
             borderColor: '#a48fa7',
@@ -500,6 +517,7 @@ export function buildExampleEditorTheme(
         paragraph: {
             spacingAfter: preset.paragraphSpacingAfter,
         },
+        headings: preset.headings,
         blockquote: {
             ...preset.blockquote,
             borderColor: overrides.blockquoteBorderColor ?? preset.blockquote.borderColor,

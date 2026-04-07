@@ -835,6 +835,10 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -955,6 +959,10 @@ fun uniffi_editor_core_checksum_func_editor_split_block_scalar(
 fun uniffi_editor_core_checksum_func_editor_toggle_blockquote(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_toggle_blockquote_at_selection_scalar(
+): Short
+fun uniffi_editor_core_checksum_func_editor_toggle_heading(
+): Short
+fun uniffi_editor_core_checksum_func_editor_toggle_heading_at_selection_scalar(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_toggle_mark(
 ): Short
@@ -1124,6 +1132,10 @@ fun uniffi_editor_core_fn_func_editor_split_block_scalar(`id`: Long,`scalarPos`:
 fun uniffi_editor_core_fn_func_editor_toggle_blockquote(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_toggle_blockquote_at_selection_scalar(`id`: Long,`scalarAnchor`: Int,`scalarHead`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_toggle_heading(`id`: Long,`level`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_toggle_heading_at_selection_scalar(`id`: Long,`scalarAnchor`: Int,`scalarHead`: Int,`level`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_toggle_mark(`id`: Long,`markName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1428,6 +1440,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_toggle_blockquote_at_selection_scalar() != 58523.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_editor_core_checksum_func_editor_toggle_heading() != 7099.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_toggle_heading_at_selection_scalar() != 54315.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_editor_core_checksum_func_editor_toggle_mark() != 30661.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1533,6 +1551,29 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
  * @suppress
  * */
 object NoPointer
+
+/**
+ * @suppress
+ */
+public object FfiConverterUByte: FfiConverter<UByte, Byte> {
+    override fun lift(value: Byte): UByte {
+        return value.toUByte()
+    }
+
+    override fun read(buf: ByteBuffer): UByte {
+        return lift(buf.get())
+    }
+
+    override fun lower(value: UByte): Byte {
+        return value.toByte()
+    }
+
+    override fun allocationSize(value: UByte) = 1UL
+
+    override fun write(value: UByte, buf: ByteBuffer) {
+        buf.put(value.toByte())
+    }
+}
 
 /**
  * @suppress
@@ -2298,6 +2339,30 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_toggle_blockquote_at_selection_scalar(
         FfiConverterULong.lower(`id`),FfiConverterUInt.lower(`scalarAnchor`),FfiConverterUInt.lower(`scalarHead`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Toggle a heading level on the current text-block selection. Returns an update JSON string.
+         */ fun `editorToggleHeading`(`id`: kotlin.ULong, `level`: kotlin.UByte): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_toggle_heading(
+        FfiConverterULong.lower(`id`),FfiConverterUByte.lower(`level`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Toggle a heading level at an explicit scalar selection. Returns an update JSON string.
+         */ fun `editorToggleHeadingAtSelectionScalar`(`id`: kotlin.ULong, `scalarAnchor`: kotlin.UInt, `scalarHead`: kotlin.UInt, `level`: kotlin.UByte): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_toggle_heading_at_selection_scalar(
+        FfiConverterULong.lower(`id`),FfiConverterUInt.lower(`scalarAnchor`),FfiConverterUInt.lower(`scalarHead`),FfiConverterUByte.lower(`level`),_status)
 }
     )
     }

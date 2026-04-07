@@ -2094,6 +2094,22 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         }
     }
 
+    func performToolbarToggleHeading(_ level: Int) {
+        guard editorId != 0 else { return }
+        guard isEditable else { return }
+        guard let selection = currentScalarSelection() else { return }
+        guard let level = UInt8(exactly: level), (1...6).contains(level) else { return }
+        performInterceptedInput {
+            let updateJSON = editorToggleHeadingAtSelectionScalar(
+                id: editorId,
+                scalarAnchor: selection.anchor,
+                scalarHead: selection.head,
+                level: level
+            )
+            applyUpdateJSON(updateJSON)
+        }
+    }
+
     func performToolbarIndentListItem() {
         guard editorId != 0 else { return }
         guard isEditable else { return }

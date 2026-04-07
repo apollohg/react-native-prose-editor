@@ -42,6 +42,7 @@ export interface NativeEditorModule {
     editorSetMark(editorId: number, markName: string, attrsJson: string): string;
     editorUnsetMark(editorId: number, markName: string): string;
     editorToggleBlockquote(editorId: number): string;
+    editorToggleHeading(editorId: number, level: number): string;
     editorSetSelection(editorId: number, anchor: number, head: number): void;
     editorGetSelection(editorId: number): string;
     editorGetCurrentState(editorId: number): string;
@@ -80,6 +81,12 @@ export interface NativeEditorModule {
         editorId: number,
         scalarAnchor: number,
         scalarHead: number
+    ): string;
+    editorToggleHeadingAtSelectionScalar(
+        editorId: number,
+        scalarAnchor: number,
+        scalarHead: number,
+        level: number
     ): string;
     editorWrapInListAtSelectionScalar(
         editorId: number,
@@ -590,6 +597,26 @@ export class NativeEditorBridge {
                   scalarSelection.head
               )
             : getNativeModule().editorToggleBlockquote(this._editorId);
+        const update = parseEditorUpdateJson(json);
+        if (update) this._lastSelection = update.selection;
+        return update;
+    }
+
+    /** Toggle a heading level on the current block selection. */
+    toggleHeading(level: number): EditorUpdate | null {
+        this.assertNotDestroyed();
+        if (!Number.isInteger(level) || level < 1 || level > 6) {
+            throw new Error('NativeEditorBridge: invalid heading level');
+        }
+        const scalarSelection = this.currentScalarSelection();
+        const json = scalarSelection
+            ? getNativeModule().editorToggleHeadingAtSelectionScalar(
+                  this._editorId,
+                  scalarSelection.anchor,
+                  scalarSelection.head,
+                  level
+              )
+            : getNativeModule().editorToggleHeading(this._editorId, level);
         const update = parseEditorUpdateJson(json);
         if (update) this._lastSelection = update.selection;
         return update;

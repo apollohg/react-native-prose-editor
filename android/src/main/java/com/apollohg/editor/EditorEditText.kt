@@ -765,6 +765,19 @@ class EditorEditText @JvmOverloads constructor(
         applyUpdateJSON(updateJSON)
     }
 
+    fun performToolbarToggleHeading(level: Int) {
+        if (!isEditable || isApplyingRustState || editorId == 0L) return
+        if (level !in 1..6) return
+        val selection = currentScalarSelection() ?: return
+        val updateJSON = editorToggleHeadingAtSelectionScalar(
+            editorId.toULong(),
+            selection.first.toUInt(),
+            selection.second.toUInt(),
+            level.toUByte()
+        )
+        applyUpdateJSON(updateJSON)
+    }
+
     fun performToolbarIndentListItem() {
         if (!isEditable || isApplyingRustState || editorId == 0L) return
         val selection = currentScalarSelection() ?: return

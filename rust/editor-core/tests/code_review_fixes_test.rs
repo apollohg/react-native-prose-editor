@@ -209,6 +209,36 @@ fn test_toggle_blockquote_wraps_multiple_selected_blocks() {
 }
 
 #[test]
+fn test_toggle_heading_applies_requested_level() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<p>Hello</p><p>World</p>")
+        .expect("set_html should succeed");
+
+    editor.set_selection(Selection::text(1, 13));
+    editor
+        .toggle_heading(2)
+        .expect("toggle_heading should convert selected paragraphs");
+
+    assert_eq!(editor.get_html(), "<h2>Hello</h2><h2>World</h2>");
+}
+
+#[test]
+fn test_toggle_heading_reverts_matching_heading_to_paragraph() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<h3>Hello</h3><p>World</p>")
+        .expect("set_html should succeed");
+
+    editor.set_selection(Selection::cursor(2));
+    editor
+        .toggle_heading(3)
+        .expect("toggle_heading should revert matching heading to paragraph");
+
+    assert_eq!(editor.get_html(), "<p>Hello</p><p>World</p>");
+}
+
+#[test]
 fn test_split_block_on_empty_blockquote_paragraph_exits_quote() {
     let mut editor = default_editor();
     editor

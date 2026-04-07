@@ -151,6 +151,54 @@ const toolbarItems = [
 
 This only works if your schema includes the `highlight` mark.
 
+## Heading Buttons
+
+Heading toolbar items target schema node names indirectly by level, so the built-in schemas can toggle between `paragraph` and `h1` through `h6`:
+
+```tsx
+const toolbarItems = [
+  { type: 'heading', level: 1, label: 'Heading 1', icon: { type: 'default', id: 'h1' } },
+  { type: 'heading', level: 2, label: 'Heading 2', icon: { type: 'default', id: 'h2' } },
+] as const;
+
+<NativeRichTextEditor
+  showToolbar
+  toolbarItems={toolbarItems}
+/>;
+```
+
+If you need an imperative path, the editor ref also exposes `toggleHeading(level)`.
+
+## Grouped Buttons
+
+Use a `group` item when several buttons should collapse into one slot. This is useful for heading levels, insert menus, or app-specific button clusters.
+
+```tsx
+const toolbarItems = [
+  {
+    type: 'group',
+    key: 'headings',
+    label: 'Headings',
+    icon: { type: 'glyph', text: 'H' },
+    presentation: 'menu',
+    items: [
+      { type: 'heading', level: 1, label: 'Heading 1', icon: { type: 'default', id: 'h1' } },
+      { type: 'heading', level: 2, label: 'Heading 2', icon: { type: 'default', id: 'h2' } },
+      { type: 'heading', level: 3, label: 'Heading 3', icon: { type: 'default', id: 'h3' } },
+    ],
+  },
+] as const;
+
+<NativeRichTextEditor
+  showToolbar
+  toolbarItems={toolbarItems}
+/>;
+```
+
+Set `presentation: 'expand'` when you want the child buttons inserted inline after tapping the group button instead of opening a menu.
+
+Groups can only contain actionable items. They do not support nested groups or separators.
+
 ## Hyperlink Controls
 
 Hyperlinks are slightly different from ordinary mark buttons because they need a URL. Use a `link` toolbar item and handle `onRequestLink`:
@@ -231,6 +279,7 @@ const [historyState, setHistoryState] = useState<HistoryState>({
     activeState={activeState}
     historyState={historyState}
     onToggleMark={(mark) => editorRef.current?.toggleMark(mark)}
+    onToggleHeading={(level) => editorRef.current?.toggleHeading(level)}
     onToggleListType={(listType) => editorRef.current?.toggleList(listType)}
     onInsertNodeType={(nodeType) => editorRef.current?.insertNode(nodeType)}
     onRequestImage={() => editorRef.current?.insertImage('https://cdn.example.com/cat.png')}

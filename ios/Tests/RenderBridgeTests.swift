@@ -1222,6 +1222,56 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(paragraphStyle?.paragraphSpacing ?? 0, 14, accuracy: 0.1)
     }
 
+    func testRender_themeOverridesSpecificHeadingLevelTypography() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "h2", "depth": 0},
+            {"type": "textRun", "text": "Section title", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+        let theme = EditorTheme(dictionary: [
+            "text": [
+                "fontSize": 16,
+                "color": "#112233",
+            ],
+            "headings": [
+                "h2": [
+                    "fontSize": 28,
+                    "fontWeight": "700",
+                    "color": "#445566",
+                    "lineHeight": 34,
+                    "spacingAfter": 12,
+                ],
+                "h4": [
+                    "fontSize": 18,
+                    "color": "#AA5500",
+                ],
+            ],
+        ])
+
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: theme
+        )
+
+        let attrs = result.attributes(at: 0, effectiveRange: nil)
+        let font = attrs[.font] as? UIFont
+        let color = attrs[.foregroundColor] as? UIColor
+        let paragraphStyle = attrs[.paragraphStyle] as? NSParagraphStyle
+
+        XCTAssertEqual(font?.pointSize ?? 0, 28, accuracy: 0.1)
+        XCTAssertTrue(
+            font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false,
+            "Configured h2 heading should resolve to a bold font"
+        )
+        XCTAssertEqual(color, EditorTheme.color(from: "#445566"))
+        XCTAssertEqual(paragraphStyle?.minimumLineHeight ?? 0, 34, accuracy: 0.1)
+        XCTAssertEqual(paragraphStyle?.paragraphSpacing ?? 0, 12, accuracy: 0.1)
+    }
+
     func testRender_listItemUsesListItemSpacingWhenParagraphSpacingUnset() {
         let json = """
         [

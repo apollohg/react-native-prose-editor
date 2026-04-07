@@ -13,8 +13,12 @@ type ToolbarItemsEditorProps = {
 
 function getItemId(item: EditorToolbarItem): string {
     switch (item.type) {
+        case 'group':
+            return `group:${item.key}`;
         case 'mark':
             return `mark:${item.mark}`;
+        case 'heading':
+            return `heading:${item.level}`;
         case 'link':
             return 'link';
         case 'image':
@@ -38,6 +42,8 @@ function getItemLabel(item: EditorToolbarItem): string {
     switch (item.type) {
         case 'separator':
             return 'Separator';
+        case 'group':
+            return `${item.label} (${item.presentation ?? 'expand'})`;
         default:
             return item.label;
     }

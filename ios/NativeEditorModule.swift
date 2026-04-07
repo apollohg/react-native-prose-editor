@@ -115,6 +115,12 @@ public class NativeEditorModule: Module {
         Function("editorToggleBlockquote") { (id: Int) -> String in
             editorToggleBlockquote(id: UInt64(id))
         }
+        Function("editorToggleHeading") { (id: Int, level: Int) -> String in
+            guard (1...6).contains(level) else {
+                return "{\"error\":\"invalid heading level\"}"
+            }
+            return editorToggleHeading(id: UInt64(id), level: UInt8(level))
+        }
         Function("editorSetSelection") { (id: Int, anchor: Int, head: Int) in
             editorSetSelection(id: UInt64(id), anchor: UInt32(anchor), head: UInt32(head))
         }
@@ -163,6 +169,19 @@ public class NativeEditorModule: Module {
                 id: UInt64(id),
                 scalarAnchor: UInt32(scalarAnchor),
                 scalarHead: UInt32(scalarHead)
+            )
+        }
+        Function(
+            "editorToggleHeadingAtSelectionScalar"
+        ) { (id: Int, scalarAnchor: Int, scalarHead: Int, level: Int) -> String in
+            guard (1...6).contains(level) else {
+                return "{\"error\":\"invalid heading level\"}"
+            }
+            return editorToggleHeadingAtSelectionScalar(
+                id: UInt64(id),
+                scalarAnchor: UInt32(scalarAnchor),
+                scalarHead: UInt32(scalarHead),
+                level: UInt8(level)
             )
         }
         Function(

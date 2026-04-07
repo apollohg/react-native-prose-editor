@@ -12,6 +12,7 @@ interface EditorToolbarProps {
   onToggleItalic: () => void;
   onToggleUnderline: () => void;
   onToggleStrike: () => void;
+  onToggleHeading?: (level: EditorToolbarHeadingLevel) => void;
   onToggleBlockquote?: () => void;
   onToggleBulletList?: () => void;
   onToggleOrderedList?: () => void;
@@ -44,6 +45,7 @@ interface EditorToolbarProps {
 | `onToggleItalic` | `() => void` | required | Built-in italic toggle handler. |
 | `onToggleUnderline` | `() => void` | required | Built-in underline toggle handler. |
 | `onToggleStrike` | `() => void` | required | Built-in strikethrough toggle handler. |
+| `onToggleHeading` | `((level: EditorToolbarHeadingLevel) => void) \| undefined` | none | Generic heading handler for configurable heading buttons. |
 | `onToggleBlockquote` | `(() => void) \| undefined` | none | Built-in blockquote toggle handler. |
 | `onToggleBulletList` | `(() => void) \| undefined` | none | Built-in bullet list toggle handler. |
 | `onToggleOrderedList` | `(() => void) \| undefined` | none | Built-in ordered list toggle handler. |
@@ -71,15 +73,17 @@ interface EditorToolbarProps {
 | `mark` | `onToggleMark(mark)` | `onToggleBold`, `onToggleItalic`, `onToggleUnderline`, `onToggleStrike` |
 | `link` | none | `onRequestLink()` |
 | `image` | none | `onRequestImage()` |
+| `heading` | `onToggleHeading(level)` | none |
 | `blockquote` | none | `onToggleBlockquote()` |
 | `list` | `onToggleListType(listType)` | `onToggleBulletList`, `onToggleOrderedList` |
 | `node` | `onInsertNodeType(nodeType)` | `onInsertLineBreak`, `onInsertHorizontalRule` |
 | `command` | `onRunCommand(command)` | `onIndentList`, `onOutdentList`, `onUndo`, `onRedo` |
 | `action` | `onToolbarAction(key)` | none |
+| `group` | none | none |
 
 ## Default Toolbar Items
 
-The default toolbar does not include `link` or `image` items. Both require host-driven UI, so add them explicitly in your own `toolbarItems` array.
+The default toolbar does not include `link`, `image`, `heading`, or `group` items. Link and image buttons need host-driven UI, heading buttons are opt-in so you can choose which levels make sense for your editor, and groups are only useful once you decide which buttons should be collapsed together.
 
 | Order | Item Type | Value | Label | Default Icon ID |
 | --- | --- | --- | --- | --- |
@@ -106,12 +110,23 @@ type EditorToolbarItem =
   | { type: 'mark'; mark: string; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'link'; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'image'; label: string; icon: EditorToolbarIcon; key?: string }
+  | { type: 'heading'; level: 1 | 2 | 3 | 4 | 5 | 6; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'blockquote'; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'list'; listType: 'bulletList' | 'orderedList'; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'command'; command: 'indentList' | 'outdentList' | 'undo' | 'redo'; label: string; icon: EditorToolbarIcon; key?: string }
   | { type: 'node'; nodeType: string; label: string; icon: EditorToolbarIcon; key?: string }
+  | {
+      type: 'group';
+      key: string;
+      label: string;
+      icon: EditorToolbarIcon;
+      presentation?: 'expand' | 'menu';
+      items: readonly EditorToolbarGroupChildItem[];
+    }
   | { type: 'separator'; key?: string }
   | { type: 'action'; key: string; label: string; icon: EditorToolbarIcon; isActive?: boolean; isDisabled?: boolean };
+
+type EditorToolbarGroupChildItem = Exclude<EditorToolbarItem, { type: 'separator' | 'group' }>;
 ```
 
 | Variant | Main Fields | Meaning |
@@ -119,12 +134,26 @@ type EditorToolbarItem =
 | `mark` | `mark`, `label`, `icon`, `key?` | Toggles a mark by schema mark name. |
 | `link` | `label`, `icon`, `key?` | Requests link editing through `onRequestLink`. Active state is derived from the current `link` mark. |
 | `image` | `label`, `icon`, `key?` | Requests image insertion through `onRequestImage`. Disabled unless the schema reports that `image` is insertable. |
+| `heading` | `level`, `label`, `icon`, `key?` | Toggles the selected text block(s) between `h1`-`h6` and `paragraph`. Disabled unless the schema and current parent allow that heading level. |
 | `blockquote` | `label`, `icon`, `key?` | Toggles blockquote wrapping around the current block selection. |
 | `list` | `listType`, `label`, `icon`, `key?` | Toggles a bullet or ordered list. |
 | `command` | `command`, `label`, `icon`, `key?` | Runs one built-in editor command. |
 | `node` | `nodeType`, `label`, `icon`, `key?` | Inserts a node by schema node name. |
+| `group` | `key`, `label`, `icon`, `presentation?`, `items` | Collapses multiple actionable items behind one toolbar button. `presentation: 'expand'` inserts the child buttons inline after the group button. `presentation: 'menu'` opens a menu instead. |
 | `separator` | `key?` | Visual separator only. |
 | `action` | `key`, `label`, `icon`, `isActive?`, `isDisabled?` | App-defined toolbar button routed to `onToolbarAction`. |
+
+## Grouped Items
+
+Group children can be any actionable toolbar item: `mark`, `link`, `image`, `heading`, `blockquote`, `list`, `command`, `node`, or `action`.
+
+Groups do not allow nested `group` items or `separator` items.
+
+Grouped buttons derive their own state from the children:
+
+- `selected` is true when any child is active
+- `disabled` is true only when every child is disabled
+- `presentation` defaults to `'expand'`
 
 ## Built-In Command Values
 
@@ -165,6 +194,12 @@ type EditorToolbarIcon =
 | `strike` | `S` | `strikethrough-s` |
 | `link` | `🔗` | `link` |
 | `image` | `🖼` | `image` |
+| `h1` | `H1` | `title` |
+| `h2` | `H2` | `title` |
+| `h3` | `H3` | `title` |
+| `h4` | `H4` | `title` |
+| `h5` | `H5` | `title` |
+| `h6` | `H6` | `title` |
 | `blockquote` | `❝` | `format-quote` |
 | `bulletList` | `•≡` | `format-list-bulleted` |
 | `orderedList` | `1.` | `format-list-numbered` |

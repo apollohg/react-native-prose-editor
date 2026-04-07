@@ -400,6 +400,22 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
+    typealias FfiType = UInt8
+    typealias SwiftType = UInt8
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt8 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: UInt8, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -1086,6 +1102,30 @@ public func editorToggleBlockquoteAtSelectionScalar(id: UInt64, scalarAnchor: UI
 })
 }
 /**
+ * Toggle a heading level on the current text-block selection. Returns an update JSON string.
+ */
+public func editorToggleHeading(id: UInt64, level: UInt8) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_toggle_heading(
+        FfiConverterUInt64.lower(id),
+        FfiConverterUInt8.lower(level),$0
+    )
+})
+}
+/**
+ * Toggle a heading level at an explicit scalar selection. Returns an update JSON string.
+ */
+public func editorToggleHeadingAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32, level: UInt8) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_toggle_heading_at_selection_scalar(
+        FfiConverterUInt64.lower(id),
+        FfiConverterUInt32.lower(scalarAnchor),
+        FfiConverterUInt32.lower(scalarHead),
+        FfiConverterUInt8.lower(level),$0
+    )
+})
+}
+/**
  * Toggle a mark on the current selection. Returns an update JSON string.
  */
 public func editorToggleMark(id: UInt64, markName: String) -> String  {
@@ -1362,6 +1402,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_toggle_blockquote_at_selection_scalar() != 58523) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_toggle_heading() != 7099) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_toggle_heading_at_selection_scalar() != 54315) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_toggle_mark() != 30661) {

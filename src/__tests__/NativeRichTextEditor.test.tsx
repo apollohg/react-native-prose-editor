@@ -17,7 +17,14 @@
 const MOCK_EMPTY_UPDATE_JSON = JSON.stringify({
     renderElements: [],
     selection: { type: 'text', anchor: 0, head: 0 },
-    activeState: { marks: {}, markAttrs: {}, nodes: {}, commands: {} },
+    activeState: {
+        marks: {},
+        markAttrs: {},
+        nodes: {},
+        commands: {},
+        allowedMarks: [],
+        insertableNodes: [],
+    },
     historyState: { canUndo: false, canRedo: false },
 });
 
@@ -158,6 +165,7 @@ const mockNativeModule = {
     editorToggleMark: jest.fn(() => MOCK_BOLD_UPDATE_JSON),
     editorSetMark: jest.fn(() => MOCK_BOLD_UPDATE_JSON),
     editorUnsetMark: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
+    editorToggleHeading: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorSetSelection: jest.fn(),
     editorGetSelection: jest.fn(() => JSON.stringify({ type: 'text', anchor: 5, head: 5 })),
     editorGetCurrentState: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
@@ -178,6 +186,7 @@ const mockNativeModule = {
     editorSetMarkAtSelectionScalar: jest.fn(() => MOCK_BOLD_UPDATE_JSON),
     editorUnsetMarkAtSelectionScalar: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorToggleBlockquoteAtSelectionScalar: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
+    editorToggleHeadingAtSelectionScalar: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorWrapInListAtSelectionScalar: jest.fn(() => MOCK_LIST_UPDATE_JSON),
     editorUnwrapFromListAtSelectionScalar: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorIndentListItemAtSelectionScalar: jest.fn(() => MOCK_LIST_UPDATE_JSON),
@@ -274,6 +283,12 @@ describe('NativeRichTextEditor', () => {
         mockNativeModule.editorSplitBlockScalar.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
         mockNativeModule.editorDeleteAndSplitScalar.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
         mockNativeModule.editorDocToScalar.mockImplementation((_: number, pos: number) => pos);
+        mockNativeModule.editorToggleBlockquoteAtSelectionScalar.mockReturnValue(
+            MOCK_EMPTY_UPDATE_JSON
+        );
+        mockNativeModule.editorToggleHeadingAtSelectionScalar.mockReturnValue(
+            MOCK_EMPTY_UPDATE_JSON
+        );
         mockNativeModule.editorWrapInList.mockReturnValue(MOCK_LIST_UPDATE_JSON);
         mockNativeModule.editorUnwrapFromList.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
         mockNativeModule.editorIndentListItem.mockReturnValue(MOCK_LIST_UPDATE_JSON);
@@ -453,6 +468,67 @@ describe('NativeRichTextEditor', () => {
             const { getByTestId } = render(<NativeRichTextEditor toolbarItems={toolbarItems} />);
             expect(getByTestId('native-editor-view').props.toolbarItemsJson).toBe(
                 JSON.stringify(toolbarItems)
+            );
+        });
+
+        it('serializes grouped native toolbar items with recursive link and image actions', () => {
+            const toolbarItems = [
+                {
+                    type: 'group',
+                    key: 'insert',
+                    label: 'Insert',
+                    icon: { type: 'glyph', text: '+' },
+                    presentation: 'menu',
+                    items: [
+                        {
+                            type: 'link',
+                            label: 'Link',
+                            icon: { type: 'default', id: 'link' },
+                        },
+                        {
+                            type: 'image',
+                            label: 'Image',
+                            icon: { type: 'default', id: 'image' },
+                        },
+                    ],
+                },
+            ] as const;
+            const { getByTestId } = render(
+                <NativeRichTextEditor
+                    toolbarItems={toolbarItems}
+                    onRequestLink={jest.fn()}
+                    onRequestImage={jest.fn()}
+                />
+            );
+
+            expect(getByTestId('native-editor-view').props.toolbarItemsJson).toBe(
+                JSON.stringify([
+                    {
+                        type: 'group',
+                        key: 'insert',
+                        label: 'Insert',
+                        icon: { type: 'glyph', text: '+' },
+                        presentation: 'menu',
+                        items: [
+                            {
+                                type: 'action',
+                                key: '__native-editor-link__',
+                                label: 'Link',
+                                icon: { type: 'default', id: 'link' },
+                                isActive: false,
+                                isDisabled: true,
+                            },
+                            {
+                                type: 'action',
+                                key: '__native-editor-image__',
+                                label: 'Image',
+                                icon: { type: 'default', id: 'image' },
+                                isActive: false,
+                                isDisabled: true,
+                            },
+                        ],
+                    },
+                ])
             );
         });
 
@@ -754,6 +830,23 @@ describe('NativeRichTextEditor', () => {
                 0
             );
             expect(mockApplyEditorUpdate).toHaveBeenCalledWith(MOCK_LIST_UPDATE_JSON);
+        });
+
+        it('toggleHeading calls bridge.toggleHeading and applyEditorUpdate', () => {
+            const ref = createRef<NativeRichTextEditorRef>();
+            render(<NativeRichTextEditor ref={ref} />);
+
+            act(() => {
+                ref.current!.toggleHeading(2);
+            });
+
+            expect(mockNativeModule.editorToggleHeadingAtSelectionScalar).toHaveBeenCalledWith(
+                1,
+                0,
+                0,
+                2
+            );
+            expect(mockApplyEditorUpdate).toHaveBeenCalledWith(MOCK_EMPTY_UPDATE_JSON);
         });
 
         it('forwards native toolbar action events to onToolbarAction', () => {

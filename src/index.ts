@@ -14,11 +14,16 @@ export {
     DEFAULT_EDITOR_TOOLBAR_ITEMS,
     type EditorToolbarProps,
     type EditorToolbarItem,
+    type EditorToolbarLeafItem,
+    type EditorToolbarGroupChildItem,
+    type EditorToolbarGroupItem,
+    type EditorToolbarGroupPresentation,
     type EditorToolbarIcon,
     type EditorToolbarDefaultIconId,
     type EditorToolbarSFSymbolIcon,
     type EditorToolbarMaterialIcon,
     type EditorToolbarCommand,
+    type EditorToolbarHeadingLevel,
     type EditorToolbarListType,
 } from './EditorToolbar';
 export type {

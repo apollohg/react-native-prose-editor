@@ -287,6 +287,176 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(toolbar.selectedButtonCountForTesting, 1)
     }
 
+    func testAccessoryToolbarExpandsGroupedButtonsInline() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        toolbar.setItemsJSONForTesting("""
+        [
+          {
+            "type": "group",
+            "key": "headings",
+            "label": "Headings",
+            "icon": { "type": "glyph", "text": "H" },
+            "presentation": "expand",
+            "items": [
+              {
+                "type": "heading",
+                "level": 1,
+                "label": "Heading 1",
+                "icon": { "type": "default", "id": "h1" }
+              },
+              {
+                "type": "heading",
+                "level": 2,
+                "label": "Heading 2",
+                "icon": { "type": "default", "id": "h2" }
+              }
+            ]
+          }
+        ]
+        """)
+        toolbar.applyStateJSONForTesting("""
+        {
+          "activeState": {
+            "marks": {},
+            "nodes": {},
+            "commands": {
+              "toggleHeading1": true,
+              "toggleHeading2": true
+            },
+            "allowedMarks": [],
+            "insertableNodes": []
+          },
+          "historyState": {
+            "canUndo": false,
+            "canRedo": false
+          }
+        }
+        """)
+
+        XCTAssertEqual(toolbar.buttonCountForTesting(), 1)
+
+        toolbar.triggerButtonTapForTesting(0)
+
+        XCTAssertEqual(toolbar.buttonCountForTesting(), 3)
+        XCTAssertEqual(toolbar.buttonLabelForTesting(1), "Heading 1")
+        XCTAssertEqual(toolbar.buttonLabelForTesting(2), "Heading 2")
+    }
+
+    func testAccessoryToolbarGroupReflectsActiveChildState() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        toolbar.setItemsJSONForTesting("""
+        [
+          {
+            "type": "group",
+            "key": "headings",
+            "label": "Headings",
+            "icon": { "type": "glyph", "text": "H" },
+            "items": [
+              {
+                "type": "heading",
+                "level": 2,
+                "label": "Heading 2",
+                "icon": { "type": "default", "id": "h2" }
+              }
+            ]
+          }
+        ]
+        """)
+        toolbar.applyStateJSONForTesting("""
+        {
+          "activeState": {
+            "marks": {},
+            "nodes": {
+              "h2": true
+            },
+            "commands": {
+              "toggleHeading2": true
+            },
+            "allowedMarks": [],
+            "insertableNodes": []
+          },
+          "historyState": {
+            "canUndo": false,
+            "canRedo": false
+          }
+        }
+        """)
+
+        XCTAssertEqual(toolbar.selectedButtonCountForTesting, 1)
+    }
+
+    func testAccessoryToolbarPreservesScrolledOffsetWhenExpandingGroupedButtons() {
+        let toolbar = EditorAccessoryToolbarView(frame: CGRect(x: 0, y: 0, width: 180, height: 56))
+        toolbar.setItemsJSONForTesting("""
+        [
+          {
+            "type": "action",
+            "key": "bold",
+            "label": "Bold",
+            "icon": { "type": "default", "id": "bold" }
+          },
+          {
+            "type": "action",
+            "key": "italic",
+            "label": "Italic",
+            "icon": { "type": "default", "id": "italic" }
+          },
+          {
+            "type": "action",
+            "key": "underline",
+            "label": "Underline",
+            "icon": { "type": "default", "id": "underline" }
+          },
+          {
+            "type": "group",
+            "key": "headings",
+            "label": "Headings",
+            "icon": { "type": "glyph", "text": "H" },
+            "presentation": "expand",
+            "items": [
+              {
+                "type": "action",
+                "key": "h1",
+                "label": "Heading 1",
+                "icon": { "type": "default", "id": "h1" }
+              },
+              {
+                "type": "action",
+                "key": "h2",
+                "label": "Heading 2",
+                "icon": { "type": "default", "id": "h2" }
+              }
+            ]
+          },
+          {
+            "type": "action",
+            "key": "undo",
+            "label": "Undo",
+            "icon": { "type": "default", "id": "undo" }
+          },
+          {
+            "type": "action",
+            "key": "redo",
+            "label": "Redo",
+            "icon": { "type": "default", "id": "redo" }
+          }
+        ]
+        """)
+        toolbar.layoutIfNeeded()
+
+        let targetOffset = min(
+            40,
+            toolbar.nativeToolbarContentWidthForTesting - toolbar.nativeToolbarVisibleWidthForTesting
+        )
+        XCTAssertGreaterThan(targetOffset, 0)
+
+        toolbar.setNativeToolbarContentOffsetXForTesting(targetOffset)
+        toolbar.triggerButtonTapForTesting(3)
+        toolbar.layoutIfNeeded()
+
+        XCTAssertEqual(toolbar.nativeToolbarContentOffsetXForTesting, targetOffset, accuracy: 0.1)
+    }
+
     func testAccessoryToolbarNativeDisabledButtonUsesSystemGrayTintAtFullAlpha() {
         let toolbar = EditorAccessoryToolbarView(frame: .zero)
 

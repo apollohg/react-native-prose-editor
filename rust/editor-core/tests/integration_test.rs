@@ -1037,6 +1037,31 @@ fn test_uniffi_editor_toggle_blockquote_at_selection_scalar() {
 }
 
 #[test]
+fn test_uniffi_editor_toggle_heading_at_selection_scalar() {
+    let id = editor_core::editor_create("{}".to_string());
+    editor_core::editor_set_html(id, "<p>Hello</p><p>World</p>".to_string());
+
+    let scalar_anchor = editor_core::editor_doc_to_scalar(id, 1);
+    let scalar_head = editor_core::editor_doc_to_scalar(id, 13);
+    let result = editor_core::editor_toggle_heading_at_selection_scalar(
+        id,
+        scalar_anchor,
+        scalar_head,
+        4,
+    );
+    assert!(
+        !result.contains("error"),
+        "toggle_heading_at_selection_scalar should succeed, got: {}",
+        result
+    );
+
+    let html = editor_core::editor_get_html(id);
+    assert_eq!(html, "<h4>Hello</h4><h4>World</h4>");
+
+    editor_core::editor_destroy(id);
+}
+
+#[test]
 fn test_uniffi_editor_insert_node_at_selection_scalar() {
     let id = editor_core::editor_create("{}".to_string());
     editor_core::editor_set_html(id, "<p>Hello</p>".to_string());

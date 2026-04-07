@@ -96,7 +96,7 @@ Uses camelCase names.
 
 | Kind | Names |
 | --- | --- |
-| Structural | `doc`, `paragraph`, `blockquote`, `text` |
+| Structural | `doc`, `paragraph`, `h1`, `h2`, `h3`, `h4`, `h5`, `h6`, `blockquote`, `text` |
 | Lists | `bulletList`, `orderedList`, `listItem` |
 | Void nodes | `hardBreak`, `horizontalRule`, `image` |
 
@@ -114,7 +114,7 @@ Uses snake_case names.
 
 | Kind | Names |
 | --- | --- |
-| Structural | `doc`, `paragraph`, `blockquote`, `text` |
+| Structural | `doc`, `paragraph`, `h1`, `h2`, `h3`, `h4`, `h5`, `h6`, `blockquote`, `text` |
 | Lists | `bullet_list`, `ordered_list`, `list_item` |
 | Void nodes | `hard_break`, `horizontal_rule`, `image` |
 

@@ -551,6 +551,33 @@ pub fn editor_toggle_blockquote_at_selection_scalar(
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
 
+/// Toggle a heading level on the current text-block selection. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_toggle_heading(id: u64, level: u8) -> String {
+    with_editor(id, |editor| match editor.toggle_heading(level) {
+        Ok(update) => serialize_editor_update(&update),
+        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
+/// Toggle a heading level at an explicit scalar selection. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_toggle_heading_at_selection_scalar(
+    id: u64,
+    scalar_anchor: u32,
+    scalar_head: u32,
+    level: u8,
+) -> String {
+    with_editor(id, |editor| {
+        match editor.toggle_heading_at_selection_scalar(scalar_anchor, scalar_head, level) {
+            Ok(update) => serialize_editor_update(&update),
+            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        }
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
 /// Wrap or convert a list at an explicit scalar selection. Returns an update JSON string.
 #[uniffi::export]
 pub fn editor_wrap_in_list_at_selection_scalar(

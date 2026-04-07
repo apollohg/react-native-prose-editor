@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0] - 2026-04-07
+
+### Added
+
+- Heading support with `h1` through `h6` schema nodes in both `tiptapSchema` and `prosemirrorSchema` presets.
+- `group` toolbar item type for collapsing multiple buttons behind one slot, with `'expand'` and `'menu'` presentation modes.
+
 ## [0.3.0] - 2026-04-06
 
 ### Added
@@ -64,6 +71,7 @@
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[0.4.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.1.0...0.2.0
 [0.1.1]: https://github.com/apollohg/react-native-prose-editor/compare/0.1.0...0.1.1

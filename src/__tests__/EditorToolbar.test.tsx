@@ -79,6 +79,7 @@ function renderToolbar(
         onToggleStrike: jest.fn(),
         onToggleBlockquote: jest.fn(),
         onToggleBulletList: jest.fn(),
+        onToggleHeading: jest.fn(),
         onToggleOrderedList: jest.fn(),
         onIndentList: jest.fn(),
         onOutdentList: jest.fn(),
@@ -151,6 +152,126 @@ describe('EditorToolbar', () => {
             });
 
             expect(getByLabelText('Image')).toBeTruthy();
+        });
+
+        it('renders a heading item when configured', () => {
+            const { getByLabelText } = renderToolbar({
+                toolbarItems: [
+                    {
+                        type: 'heading',
+                        level: 2,
+                        label: 'Heading 2',
+                        icon: { type: 'default', id: 'h2' },
+                    },
+                ],
+                activeState: {
+                    commands: { toggleHeading2: true },
+                },
+            });
+
+            expect(getByLabelText('Heading 2')).toBeTruthy();
+        });
+
+        it('renders grouped toolbar items as a single button until expanded', () => {
+            const { getByLabelText, queryByLabelText } = renderToolbar({
+                toolbarItems: [
+                    {
+                        type: 'group',
+                        key: 'headings',
+                        label: 'Headings',
+                        icon: { type: 'glyph', text: 'H' },
+                        items: [
+                            {
+                                type: 'heading',
+                                level: 1,
+                                label: 'Heading 1',
+                                icon: { type: 'default', id: 'h1' },
+                            },
+                            {
+                                type: 'heading',
+                                level: 2,
+                                label: 'Heading 2',
+                                icon: { type: 'default', id: 'h2' },
+                            },
+                        ],
+                    },
+                ],
+                activeState: {
+                    commands: { toggleHeading1: true, toggleHeading2: true },
+                },
+            });
+
+            expect(getByLabelText('Headings')).toBeTruthy();
+            expect(queryByLabelText('Heading 1')).toBeNull();
+
+            fireEvent.press(getByLabelText('Headings'));
+
+            expect(getByLabelText('Heading 1')).toBeTruthy();
+            expect(getByLabelText('Heading 2')).toBeTruthy();
+        });
+
+        it('marks a grouped button active when one of its children is active', () => {
+            const { getByLabelText } = renderToolbar({
+                toolbarItems: [
+                    {
+                        type: 'group',
+                        key: 'headings',
+                        label: 'Headings',
+                        icon: { type: 'glyph', text: 'H' },
+                        items: [
+                            {
+                                type: 'heading',
+                                level: 2,
+                                label: 'Heading 2',
+                                icon: { type: 'default', id: 'h2' },
+                            },
+                        ],
+                    },
+                ],
+                activeState: {
+                    nodes: { h2: true },
+                    commands: { toggleHeading2: true },
+                },
+            });
+
+            expect(getByLabelText('Headings').props.accessibilityState).toEqual(
+                expect.objectContaining({ selected: true, expanded: false })
+            );
+        });
+
+        it('reports a grouped button as expanded only while its inline children are visible', () => {
+            const { getByLabelText } = renderToolbar({
+                toolbarItems: [
+                    {
+                        type: 'group',
+                        key: 'headings',
+                        label: 'Headings',
+                        icon: { type: 'glyph', text: 'H' },
+                        items: [
+                            {
+                                type: 'heading',
+                                level: 1,
+                                label: 'Heading 1',
+                                icon: { type: 'default', id: 'h1' },
+                            },
+                        ],
+                    },
+                ],
+                activeState: {
+                    commands: { toggleHeading1: true },
+                },
+            });
+
+            const groupButton = getByLabelText('Headings');
+            expect(groupButton.props.accessibilityState).toEqual(
+                expect.objectContaining({ expanded: false })
+            );
+
+            fireEvent.press(groupButton);
+
+            expect(getByLabelText('Headings').props.accessibilityState).toEqual(
+                expect.objectContaining({ expanded: true })
+            );
         });
 
         it('renders only the configured toolbar items and preserves order', () => {
@@ -259,6 +380,27 @@ describe('EditorToolbar', () => {
             });
 
             expect(getByLabelText('Blockquote').props.accessibilityState).toEqual(
+                expect.objectContaining({ selected: true, disabled: false })
+            );
+        });
+
+        it('heading button gets selected state from active nodes', () => {
+            const { getByLabelText } = renderToolbar({
+                toolbarItems: [
+                    {
+                        type: 'heading',
+                        level: 3,
+                        label: 'Heading 3',
+                        icon: { type: 'default', id: 'h3' },
+                    },
+                ],
+                activeState: {
+                    nodes: { h3: true },
+                    commands: { toggleHeading3: true },
+                },
+            });
+
+            expect(getByLabelText('Heading 3').props.accessibilityState).toEqual(
                 expect.objectContaining({ selected: true, disabled: false })
             );
         });
@@ -603,6 +745,26 @@ describe('EditorToolbar', () => {
             fireEvent.press(getByLabelText('Blockquote'));
 
             expect(props.onToggleBlockquote).toHaveBeenCalledTimes(1);
+        });
+
+        it('heading button fires onToggleHeading', () => {
+            const { getByLabelText, props } = renderToolbar({
+                toolbarItems: [
+                    {
+                        type: 'heading',
+                        level: 4,
+                        label: 'Heading 4',
+                        icon: { type: 'default', id: 'h4' },
+                    },
+                ],
+                activeState: {
+                    commands: { toggleHeading4: true },
+                },
+            });
+
+            fireEvent.press(getByLabelText('Heading 4'));
+
+            expect(props.onToggleHeading).toHaveBeenCalledWith(4);
         });
 
         it('ordered list button fires onToggleOrderedList', () => {

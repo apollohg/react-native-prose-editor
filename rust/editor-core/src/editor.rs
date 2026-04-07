@@ -481,6 +481,50 @@ impl Editor {
         self.toggle_blockquote()
     }
 
+    /// Toggle a heading level on the current text-block selection.
+    ///
+    /// If every selected text block already has the target heading type, the
+    /// selection is converted back to paragraphs. Otherwise, the selected text
+    /// blocks are converted to the requested heading level.
+    pub fn toggle_heading(&mut self, level: u8) -> Result<EditorUpdate, EditorError> {
+        let Some(target_type) = self.heading_node_name(level) else {
+            return Ok(self.build_update_from_current());
+        };
+        let Some(paragraph_type) = self.paragraph_node_name() else {
+            return Ok(self.build_update_from_current());
+        };
+
+        let doc = self.backend.document();
+        let from = self.selection.from(doc);
+        let to = self.selection.to(doc);
+        let Some(range) = self.selected_text_block_range(from, to) else {
+            return Ok(self.build_update_from_current());
+        };
+
+        let replacement_type = if range
+            .selected_blocks
+            .iter()
+            .all(|block| block.node_type() == target_type)
+        {
+            paragraph_type
+        } else {
+            target_type
+        };
+
+        self.replace_selected_text_blocks(range, &replacement_type)
+    }
+
+    /// Toggle a heading at an explicit scalar selection supplied by the caller.
+    pub fn toggle_heading_at_selection_scalar(
+        &mut self,
+        scalar_anchor: u32,
+        scalar_head: u32,
+        level: u8,
+    ) -> Result<EditorUpdate, EditorError> {
+        self.set_selection_scalar(scalar_anchor, scalar_head);
+        self.toggle_heading(level)
+    }
+
     /// Wrap the selected sibling block range in a blockquote container.
     pub fn wrap_in_blockquote(
         &mut self,
@@ -1355,6 +1399,12 @@ impl Editor {
             "toggleBlockquote".to_string(),
             self.can_toggle_blockquote_at(pos),
         );
+        for level in 1..=6 {
+            commands.insert(
+                format!("toggleHeading{level}"),
+                self.can_toggle_heading(level),
+            );
+        }
 
         // Compute allowed_marks and insertable_nodes based on selection type.
         let (allowed_marks, insertable_nodes) = match &self.selection {
@@ -1907,6 +1957,32 @@ impl Editor {
         false
     }
 
+    fn can_toggle_heading(&self, level: u8) -> bool {
+        let Some(target_type) = self.heading_node_name(level) else {
+            return false;
+        };
+        let Some(paragraph_type) = self.paragraph_node_name() else {
+            return false;
+        };
+        let doc = self.backend.document();
+        let from = self.selection.from(doc);
+        let to = self.selection.to(doc);
+        let Some(range) = self.selected_text_block_range(from, to) else {
+            return false;
+        };
+        let replacement_type = if range
+            .selected_blocks
+            .iter()
+            .all(|block| block.node_type() == target_type)
+        {
+            paragraph_type
+        } else {
+            target_type
+        };
+
+        self.can_replace_selected_text_blocks(&range, &replacement_type)
+    }
+
     fn wrap_selected_blocks_in_list(
         &mut self,
         from: u32,
@@ -2209,6 +2285,111 @@ impl Editor {
         self.schema
             .node_by_html_tag("blockquote")
             .map(|spec| spec.name.clone())
+    }
+
+    fn paragraph_node_name(&self) -> Option<String> {
+        self.schema
+            .node_by_html_tag("p")
+            .map(|spec| spec.name.clone())
+            .or_else(|| self.schema.node("paragraph").map(|spec| spec.name.clone()))
+    }
+
+    fn heading_node_name(&self, level: u8) -> Option<String> {
+        if !(1..=6).contains(&level) {
+            return None;
+        }
+        self.schema
+            .node_by_html_tag(&format!("h{level}"))
+            .map(|spec| spec.name.clone())
+    }
+
+    fn is_text_block_node(&self, node: &Node) -> bool {
+        self.schema
+            .node(node.node_type())
+            .map(|spec| matches!(spec.role, NodeRole::TextBlock))
+            .unwrap_or(false)
+    }
+
+    fn selected_text_block_range(&self, from: u32, to: u32) -> Option<BlockSelectionRange> {
+        let range = self.selected_block_range(from, to)?;
+        if range.selected_blocks.is_empty()
+            || !range
+                .selected_blocks
+                .iter()
+                .all(|block| self.is_text_block_node(block))
+        {
+            return None;
+        }
+        Some(range)
+    }
+
+    fn replacement_text_blocks(
+        &self,
+        blocks: &[Node],
+        target_type: &str,
+    ) -> Option<Vec<Node>> {
+        let target_spec = self.schema.node(target_type)?;
+        if !matches!(target_spec.role, NodeRole::TextBlock) {
+            return None;
+        }
+
+        blocks
+            .iter()
+            .map(|block| {
+                if !self.is_text_block_node(block) {
+                    return None;
+                }
+                Some(Node::element(
+                    target_type.to_string(),
+                    HashMap::new(),
+                    block.content().cloned().unwrap_or_else(Fragment::empty),
+                ))
+            })
+            .collect()
+    }
+
+    fn can_replace_selected_text_blocks(
+        &self,
+        range: &BlockSelectionRange,
+        target_type: &str,
+    ) -> bool {
+        let Some(replacement) = self.replacement_text_blocks(&range.selected_blocks, target_type)
+        else {
+            return false;
+        };
+
+        let mut tx = Transaction::new(Source::Format);
+        tx.add_step(Step::ReplaceRange {
+            from: range.replace_from,
+            to: range.replace_to,
+            content: Fragment::from(replacement),
+        });
+
+        tx.apply(self.backend.document(), &self.schema).is_ok()
+    }
+
+    fn replace_selected_text_blocks(
+        &mut self,
+        range: BlockSelectionRange,
+        target_type: &str,
+    ) -> Result<EditorUpdate, EditorError> {
+        let Some(replacement) = self.replacement_text_blocks(&range.selected_blocks, target_type)
+        else {
+            return Ok(self.build_update_from_current());
+        };
+
+        let mut tx = Transaction::new(Source::Format);
+        tx.add_step(Step::ReplaceRange {
+            from: range.replace_from,
+            to: range.replace_to,
+            content: Fragment::from(replacement),
+        });
+
+        match self.apply_transaction(tx) {
+            Ok(update) => Ok(update),
+            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
+            Err(e) => Err(e),
+        }
     }
 
     fn block_path_for_pos(&self, pos: u32) -> Option<Vec<u16>> {
@@ -2966,12 +3147,16 @@ impl Editor {
 
 /// Create an empty document with a single empty paragraph.
 fn make_empty_doc(schema: &Schema) -> Document {
-    use crate::schema::NodeRole;
-
     let para_name = schema
-        .all_nodes()
-        .find(|n| matches!(n.role, NodeRole::TextBlock))
+        .node_by_html_tag("p")
+        .or_else(|| schema.node("paragraph"))
         .map(|n| n.name.as_str())
+        .or_else(|| {
+            schema
+                .all_nodes()
+                .find(|n| matches!(n.role, crate::schema::NodeRole::TextBlock))
+                .map(|n| n.name.as_str())
+        })
         .unwrap_or("paragraph");
 
     let para = Node::element(para_name.to_string(), HashMap::new(), Fragment::empty());

@@ -40,8 +40,7 @@ fn name(convention: &NamingConvention, camel: &str, snake: &str) -> String {
 
 fn build_schema(convention: NamingConvention) -> Schema {
     let list_item_name = name(&convention, "listItem", "list_item");
-
-    let nodes = vec![
+    let mut nodes = vec![
         NodeSpec {
             name: "doc".to_string(),
             content: ContentRule::parse("block+").unwrap(),
@@ -60,6 +59,21 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_tag: Some("p".to_string()),
             is_void: false,
         },
+    ];
+
+    for level in 1..=6 {
+        nodes.push(NodeSpec {
+            name: format!("h{level}"),
+            content: ContentRule::parse("inline*").unwrap(),
+            group: Some("block".to_string()),
+            attrs: HashMap::new(),
+            role: NodeRole::TextBlock,
+            html_tag: Some(format!("h{level}")),
+            is_void: false,
+        });
+    }
+
+    nodes.extend([
         NodeSpec {
             name: "blockquote".to_string(),
             content: ContentRule::parse("block+").unwrap(),
@@ -149,7 +163,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             html_tag: None,
             is_void: false,
         },
-    ];
+    ]);
 
     let marks = vec![
         MarkSpec {
@@ -196,6 +210,12 @@ mod tests {
         let expected = [
             "doc",
             "paragraph",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
             "blockquote",
             "bulletList",
             "orderedList",
@@ -219,6 +239,12 @@ mod tests {
         let expected = [
             "doc",
             "paragraph",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
             "blockquote",
             "bullet_list",
             "ordered_list",

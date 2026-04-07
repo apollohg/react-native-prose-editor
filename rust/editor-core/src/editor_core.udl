@@ -40,6 +40,7 @@ namespace editor_core {
     string editor_set_mark(u64 id, string mark_name, string attrs_json);
     string editor_unset_mark(u64 id, string mark_name);
     string editor_toggle_blockquote(u64 id);
+    string editor_toggle_heading(u64 id, u8 level);
     string editor_wrap_in_list(u64 id, string list_type);
     string editor_unwrap_from_list(u64 id);
     string editor_indent_list_item(u64 id);
@@ -57,6 +58,7 @@ namespace editor_core {
     string editor_set_mark_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string mark_name, string attrs_json);
     string editor_unset_mark_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string mark_name);
     string editor_toggle_blockquote_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);
+    string editor_toggle_heading_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, u8 level);
     string editor_wrap_in_list_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head, string list_type);
     string editor_unwrap_from_list_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);
     string editor_indent_list_item_at_selection_scalar(u64 id, u32 scalar_anchor, u32 scalar_head);
