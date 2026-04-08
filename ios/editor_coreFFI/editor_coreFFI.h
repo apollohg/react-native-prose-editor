@@ -337,6 +337,11 @@ uint64_t uniffi_editor_core_fn_func_editor_create(RustBuffer config_json, RustCa
 RustBuffer uniffi_editor_core_fn_func_editor_delete_and_split_scalar(uint64_t id, uint32_t scalar_from, uint32_t scalar_to, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_DELETE_BACKWARD_AT_SELECTION_SCALAR
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_DELETE_BACKWARD_AT_SELECTION_SCALAR
+RustBuffer uniffi_editor_core_fn_func_editor_delete_backward_at_selection_scalar(uint64_t id, uint32_t scalar_anchor, uint32_t scalar_head, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_DELETE_RANGE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_DELETE_RANGE
 RustBuffer uniffi_editor_core_fn_func_editor_delete_range(uint64_t id, uint32_t from, uint32_t to, RustCallStatus *_Nonnull out_status
@@ -951,6 +956,12 @@ uint16_t uniffi_editor_core_checksum_func_editor_create(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_AND_SPLIT_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_AND_SPLIT_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_delete_and_split_scalar(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_BACKWARD_AT_SELECTION_SCALAR
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_BACKWARD_AT_SELECTION_SCALAR
+uint16_t uniffi_editor_core_checksum_func_editor_delete_backward_at_selection_scalar(void
     
 );
 #endif

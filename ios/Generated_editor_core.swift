@@ -695,6 +695,18 @@ public func editorDeleteAndSplitScalar(id: UInt64, scalarFrom: UInt32, scalarTo:
 })
 }
 /**
+ * Delete backward relative to an explicit scalar selection. Returns an update JSON string.
+ */
+public func editorDeleteBackwardAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_delete_backward_at_selection_scalar(
+        FfiConverterUInt64.lower(id),
+        FfiConverterUInt32.lower(scalarAnchor),
+        FfiConverterUInt32.lower(scalarHead),$0
+    )
+})
+}
+/**
  * Delete a range. Returns an update JSON string.
  */
 public func editorDeleteRange(id: UInt64, from: UInt32, to: UInt32) -> String  {
@@ -1294,6 +1306,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_delete_and_split_scalar() != 13764) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_delete_backward_at_selection_scalar() != 7697) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_delete_range() != 6109) {

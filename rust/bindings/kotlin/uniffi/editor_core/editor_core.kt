@@ -839,6 +839,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -887,6 +889,8 @@ fun uniffi_editor_core_checksum_func_editor_core_version(
 fun uniffi_editor_core_checksum_func_editor_create(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_delete_and_split_scalar(
+): Short
+fun uniffi_editor_core_checksum_func_editor_delete_backward_at_selection_scalar(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_delete_range(
 ): Short
@@ -1060,6 +1064,8 @@ fun uniffi_editor_core_fn_func_editor_core_version(uniffi_out_err: UniffiRustCal
 fun uniffi_editor_core_fn_func_editor_create(`configJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 fun uniffi_editor_core_fn_func_editor_delete_and_split_scalar(`id`: Long,`scalarFrom`: Int,`scalarTo`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_delete_backward_at_selection_scalar(`id`: Long,`scalarAnchor`: Int,`scalarHead`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_delete_range(`id`: Long,`from`: Int,`to`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1330,6 +1336,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_delete_and_split_scalar() != 13764.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_delete_backward_at_selection_scalar() != 7697.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_delete_range() != 6109.toShort()) {
@@ -1908,6 +1917,18 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_delete_and_split_scalar(
         FfiConverterULong.lower(`id`),FfiConverterUInt.lower(`scalarFrom`),FfiConverterUInt.lower(`scalarTo`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Delete backward relative to an explicit scalar selection. Returns an update JSON string.
+         */ fun `editorDeleteBackwardAtSelectionScalar`(`id`: kotlin.ULong, `scalarAnchor`: kotlin.UInt, `scalarHead`: kotlin.UInt): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_delete_backward_at_selection_scalar(
+        FfiConverterULong.lower(`id`),FfiConverterUInt.lower(`scalarAnchor`),FfiConverterUInt.lower(`scalarHead`),_status)
 }
     )
     }
