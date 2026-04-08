@@ -1,4 +1,5 @@
 import { requireNativeModule } from 'expo-modules-core';
+import type { SchemaDefinition } from './schemas';
 
 const ERR_DESTROYED = 'NativeEditorBridge: editor has been destroyed';
 const ERR_NATIVE_RESPONSE = 'NativeEditorBridge: invalid JSON response from native module';
@@ -884,6 +885,7 @@ export class NativeCollaborationBridge {
     static create(config?: {
         clientId?: number;
         fragmentName?: string;
+        schema?: SchemaDefinition;
         initialDocumentJson?: DocumentJSON;
         initialEncodedState?: EncodedCollaborationStateInput;
         localAwareness?: Record<string, unknown>;

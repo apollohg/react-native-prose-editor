@@ -13,6 +13,42 @@ const LOCAL_DOC = {
     content: [{ type: 'paragraph', content: [{ type: 'text', text: 'local' }] }],
 };
 
+const ALT_INITIAL_DOC = {
+    type: 'doc',
+    content: [{ type: 'paragraph', content: [{ type: 'text', text: 'alt' }] }],
+};
+
+const CUSTOM_COLLABORATION_SCHEMA = {
+    nodes: [
+        { name: 'doc', content: 'block+', role: 'doc' },
+        { name: 'paragraph', content: 'inline*', group: 'block', role: 'textBlock' },
+        {
+            name: 'calloutDivider',
+            content: '',
+            group: 'block',
+            role: 'block',
+            isVoid: true,
+        },
+        { name: 'text', content: '', group: 'inline', role: 'text' },
+    ],
+    marks: [],
+};
+
+const TITLE_FIRST_SCHEMA = {
+    nodes: [
+        { name: 'doc', content: 'title block*', role: 'doc' },
+        { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
+        { name: 'paragraph', content: 'inline*', group: 'block', role: 'textBlock' },
+        { name: 'text', content: '', group: 'inline', role: 'text' },
+    ],
+    marks: [],
+};
+
+const TITLE_EMPTY_DOC = {
+    type: 'doc',
+    content: [{ type: 'title' }],
+};
+
 const REMOTE_PEERS = [
     {
         clientId: 2,
@@ -97,6 +133,7 @@ jest.mock('expo-modules-core', () => ({
 import React from 'react';
 import { render, act } from '@testing-library/react-native';
 import { createYjsCollaborationController, useYjsCollaboration } from '../YjsCollaboration';
+import type { DocumentJSON } from '../NativeEditorBridge';
 import { _resetNativeModuleCache } from '../NativeEditorBridge';
 
 class MockWebSocket {
@@ -680,18 +717,16 @@ describe('YjsCollaboration', () => {
         controller.destroy();
     });
 
-    it('uses a schema-valid empty paragraph document when no initial doc is provided', () => {
+    it('uses the native schema-valid empty document when no initial doc is provided', () => {
         mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValue(
-            JSON.stringify({
-                type: 'doc',
-                content: [{ type: 'paragraph' }],
-            })
+            JSON.stringify(TITLE_EMPTY_DOC)
         );
 
         const controller = createYjsCollaborationController({
             documentId: 'doc-6',
             connect: false,
             createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            schema: TITLE_FIRST_SCHEMA,
             localAwareness: {
                 userId: '1',
                 name: 'Alice',
@@ -702,6 +737,7 @@ describe('YjsCollaboration', () => {
         expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
             JSON.stringify({
                 fragmentName: 'default',
+                schema: TITLE_FIRST_SCHEMA,
                 localAwareness: {
                     user: {
                         userId: '1',
@@ -712,12 +748,38 @@ describe('YjsCollaboration', () => {
                 },
             })
         );
-        expect(controller.state.documentJson).toEqual({
-            type: 'doc',
-            content: [{ type: 'paragraph' }],
-        });
+        expect(controller.state.documentJson).toEqual(TITLE_EMPTY_DOC);
 
         controller.destroy();
+    });
+
+    it('uses a schema-aware empty document on the first hook render before native initialization completes', () => {
+        const renderedDocs: DocumentJSON[] = [];
+        let latest: ReturnType<typeof useYjsCollaboration> | null = null;
+        mockNativeModule.collaborationSessionCreate.mockImplementation(() => {
+            throw new Error('native init failed');
+        });
+
+        function Harness() {
+            latest = useYjsCollaboration({
+                documentId: 'doc-title-first',
+                connect: false,
+                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+                schema: TITLE_FIRST_SCHEMA,
+                localAwareness: {
+                    userId: '1',
+                    name: 'Alice',
+                    color: '#f00',
+                },
+            });
+            renderedDocs.push(latest.state.documentJson);
+            return null;
+        }
+
+        render(React.createElement(Harness));
+
+        expect(renderedDocs[0]).toEqual(TITLE_EMPTY_DOC);
+        expect(latest?.state.documentJson).toEqual(TITLE_EMPTY_DOC);
     });
 
     it('passes initial encoded state into the native collaboration session', () => {
@@ -768,6 +830,35 @@ describe('YjsCollaboration', () => {
         expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
             JSON.stringify({
                 fragmentName: 'prosemirror',
+                localAwareness: {
+                    user: {
+                        userId: '1',
+                        name: 'Alice',
+                        color: '#f00',
+                    },
+                    focused: false,
+                },
+            })
+        );
+    });
+
+    it('passes schema metadata through to the native collaboration session', () => {
+        createYjsCollaborationController({
+            documentId: 'doc-schema',
+            connect: false,
+            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            schema: CUSTOM_COLLABORATION_SCHEMA,
+            localAwareness: {
+                userId: '1',
+                name: 'Alice',
+                color: '#f00',
+            },
+        });
+
+        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
+            JSON.stringify({
+                fragmentName: 'default',
+                schema: CUSTOM_COLLABORATION_SCHEMA,
                 localAwareness: {
                     user: {
                         userId: '1',
@@ -992,6 +1083,35 @@ describe('YjsCollaboration', () => {
                 focused: false,
             })
         );
+        expect(latest?.state.documentJson).toEqual(INITIAL_DOC);
+    });
+
+    it('does not recreate the collaboration session when initialDocumentJson changes', () => {
+        let latest: ReturnType<typeof useYjsCollaboration> | null = null;
+
+        function Harness({ doc }: { doc: typeof INITIAL_DOC }) {
+            latest = useYjsCollaboration({
+                documentId: 'doc-seed-stable',
+                connect: false,
+                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+                initialDocumentJson: doc,
+                localAwareness: {
+                    userId: '1',
+                    name: 'Alice',
+                    color: '#f00',
+                },
+            });
+            return null;
+        }
+
+        const view = render(React.createElement(Harness, { doc: INITIAL_DOC }));
+        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledTimes(1);
+        expect(latest?.state.documentJson).toEqual(INITIAL_DOC);
+
+        view.rerender(React.createElement(Harness, { doc: ALT_INITIAL_DOC }));
+
+        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledTimes(1);
+        expect(mockNativeModule.collaborationSessionDestroy).not.toHaveBeenCalled();
         expect(latest?.state.documentJson).toEqual(INITIAL_DOC);
     });
 });

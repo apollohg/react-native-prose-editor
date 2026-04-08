@@ -10,6 +10,7 @@ import {
     encodeCollaborationStateBase64,
 } from './NativeEditorBridge';
 import type { RemoteSelectionDecoration } from './NativeRichTextEditor';
+import type { SchemaDefinition } from './schemas';
 
 export type YjsTransportStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -55,6 +56,7 @@ export interface YjsCollaborationOptions {
     connect?: boolean;
     retryIntervalMs?: YjsRetryInterval | false;
     fragmentName?: string;
+    schema?: SchemaDefinition;
     initialDocumentJson?: DocumentJSON;
     initialEncodedState?: EncodedCollaborationStateInput;
     localAwareness: LocalAwarenessUser;
@@ -120,8 +122,84 @@ const EMPTY_DOCUMENT: DocumentJSON = {
 };
 const SELECTION_AWARENESS_DEBOUNCE_MS = 40;
 
-function cloneDocument(doc: DocumentJSON | undefined): DocumentJSON {
-    return JSON.parse(JSON.stringify(doc ?? EMPTY_DOCUMENT)) as DocumentJSON;
+function cloneDocument(doc: DocumentJSON): DocumentJSON {
+    return JSON.parse(JSON.stringify(doc)) as DocumentJSON;
+}
+
+function acceptingGroupsForContent(content: string, existingChildCount: number): string[] {
+    const tokens = content
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((token) => {
+            const quantifier = token[token.length - 1];
+            if (quantifier === '+' || quantifier === '*' || quantifier === '?') {
+                return {
+                    group: token.slice(0, -1),
+                    min: quantifier === '+' ? 1 : 0,
+                    max: quantifier === '?' ? 1 : null,
+                };
+            }
+            return {
+                group: token,
+                min: 1,
+                max: 1,
+            };
+        });
+
+    let remaining = existingChildCount;
+    const acceptingGroups: string[] = [];
+    for (const token of tokens) {
+        if (remaining >= token.min) {
+            const consumed = token.max == null ? remaining : Math.min(remaining, token.max);
+            remaining = Math.max(0, remaining - consumed);
+            const atMax = token.max != null && consumed >= token.max;
+            if (!atMax) {
+                acceptingGroups.push(token.group);
+            }
+            continue;
+        }
+
+        acceptingGroups.push(token.group);
+        break;
+    }
+
+    return acceptingGroups;
+}
+
+function defaultEmptyDocument(schema?: SchemaDefinition): DocumentJSON {
+    if (!schema) {
+        return cloneDocument(EMPTY_DOCUMENT);
+    }
+
+    const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
+    const acceptingGroups =
+        docNode == null ? [] : acceptingGroupsForContent(docNode.content ?? '', 0);
+    const matchingTextBlocks = schema.nodes.filter(
+        (node) =>
+            node.role === 'textBlock' &&
+            acceptingGroups.some((group) => node.name === group || node.group === group)
+    );
+    const preferredTextBlock =
+        matchingTextBlocks.find((node) => node.htmlTag === 'p' || node.name === 'paragraph') ??
+        matchingTextBlocks[0] ??
+        schema.nodes.find((node) => node.htmlTag === 'p' || node.name === 'paragraph') ??
+        schema.nodes.find((node) => node.role === 'textBlock');
+
+    if (!preferredTextBlock) {
+        return cloneDocument(EMPTY_DOCUMENT);
+    }
+
+    return {
+        type: 'doc',
+        content: [{ type: preferredTextBlock.name }],
+    };
+}
+
+function initialFallbackDocument(options: YjsCollaborationOptions): DocumentJSON {
+    return options.initialDocumentJson
+        ? cloneDocument(options.initialDocumentJson)
+        : defaultEmptyDocument(options.schema);
 }
 
 function awarenessToRecord(awareness: LocalAwarenessState): Record<string, unknown> {
@@ -227,11 +305,6 @@ function encodeInitialStateKey(encodedState: EncodedCollaborationStateInput | un
     return encodeCollaborationStateBase64(encodedState);
 }
 
-function encodeDocumentKey(doc: DocumentJSON | undefined): string {
-    if (doc == null) return '';
-    return JSON.stringify(doc);
-}
-
 class YjsCollaborationControllerImpl implements YjsCollaborationController {
     private readonly bridge: NativeCollaborationBridge;
     private readonly callbacks: MutableCallbacks;
@@ -258,6 +331,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         };
         this.bridge = NativeCollaborationBridge.create({
             fragmentName: options.fragmentName ?? DEFAULT_YJS_FRAGMENT_NAME,
+            schema: options.schema,
             initialEncodedState: options.initialEncodedState,
             localAwareness: awarenessToRecord(this.localAwarenessState),
         });
@@ -265,7 +339,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             documentId: options.documentId,
             status: 'idle',
             isConnected: false,
-            documentJson: hasInitialEncodedState
+            documentJson: hasInitialEncodedState || options.initialDocumentJson == null
                 ? this.bridge.getDocumentJson()
                 : cloneDocument(options.initialDocumentJson),
         };
@@ -644,14 +718,14 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
     createWebSocketRef.current = options.createWebSocket;
 
     const controllerRef = useRef<YjsCollaborationControllerImpl | null>(null);
-    const initialDocumentKey = encodeDocumentKey(options.initialDocumentJson);
     const initialEncodedStateKey = encodeInitialStateKey(options.initialEncodedState);
     const localAwarenessKey = JSON.stringify(options.localAwareness);
+    const schemaKey = JSON.stringify(options.schema ?? null);
     const [state, setState] = useState<YjsCollaborationState>({
         documentId: options.documentId,
         status: 'idle',
         isConnected: false,
-        documentJson: cloneDocument(options.initialDocumentJson),
+        documentJson: initialFallbackDocument(options),
     });
     const [peers, setPeers] = useState<CollaborationPeer[]>([]);
 
@@ -688,7 +762,7 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
                 documentId: options.documentId,
                 status: 'error',
                 isConnected: false,
-                documentJson: cloneDocument(options.initialDocumentJson),
+                documentJson: initialFallbackDocument(options),
                 lastError: nextError,
             };
             controllerRef.current = null;
@@ -703,7 +777,12 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
             controllerRef.current = null;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [options.documentId, options.fragmentName, initialDocumentKey, initialEncodedStateKey]);
+    }, [
+        options.documentId,
+        options.fragmentName,
+        schemaKey,
+        initialEncodedStateKey,
+    ]);
 
     useEffect(() => {
         controllerRef.current?.updateLocalAwareness({

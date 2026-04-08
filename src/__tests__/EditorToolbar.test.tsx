@@ -966,6 +966,25 @@ describe('EditorToolbar', () => {
             );
         });
 
+        it('link button stays enabled inside headings when link is allowed', () => {
+            const onRequestLink = jest.fn();
+            const { getByLabelText } = renderToolbar({
+                toolbarItems: [
+                    { type: 'link', label: 'Link', icon: { type: 'default', id: 'link' } },
+                ],
+                activeState: {
+                    marks: {},
+                    nodes: { h2: true },
+                    commands: {},
+                    allowedMarks: ['link'],
+                    insertableNodes: [],
+                },
+                onRequestLink,
+            });
+
+            expect(getByLabelText('Link').props.accessibilityState.disabled).toBeFalsy();
+        });
+
         it('horizontal rule is disabled when not in insertableNodes', () => {
             const { getByLabelText } = renderToolbar({
                 activeState: {

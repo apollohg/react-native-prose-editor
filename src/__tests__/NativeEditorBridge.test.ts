@@ -100,6 +100,21 @@ const MOCK_COLLABORATION_RESULT_JSON = JSON.stringify({
 });
 
 const MOCK_ENCODED_COLLABORATION_STATE_JSON = JSON.stringify([1, 2, 3, 4]);
+const MOCK_COLLABORATION_SCHEMA = {
+    nodes: [
+        { name: 'doc', content: 'block+', role: 'doc' },
+        { name: 'paragraph', content: 'inline*', group: 'block', role: 'textBlock' },
+        {
+            name: 'calloutDivider',
+            content: '',
+            group: 'block',
+            role: 'block',
+            isVoid: true,
+        },
+        { name: 'text', content: '', group: 'inline', role: 'text' },
+    ],
+    marks: [],
+};
 
 // ─── Mock Native Module ─────────────────────────────────────────
 // jest.mock is hoisted above imports. We define mockNativeModule as
@@ -358,6 +373,22 @@ describe('NativeEditorBridge', () => {
 
             bridge.destroy();
             expect(mockNativeModule.collaborationSessionDestroy).toHaveBeenCalledWith(1);
+        });
+
+        it('forwards schema metadata when creating a collaboration session', () => {
+            const bridge = NativeCollaborationBridge.create({
+                fragmentName: 'default',
+                schema: MOCK_COLLABORATION_SCHEMA,
+            });
+
+            expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
+                JSON.stringify({
+                    fragmentName: 'default',
+                    schema: MOCK_COLLABORATION_SCHEMA,
+                })
+            );
+
+            bridge.destroy();
         });
 
         it('destroys the session if initial encoded state restoration fails', () => {
