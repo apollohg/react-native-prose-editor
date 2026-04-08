@@ -1,13 +1,13 @@
 {
   "name": "native-editor-example",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "main": "expo/AppEntry",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios --device",
-    "prebuild": "yes | expo prebuild --clean",
+    "prebuild": "expo prebuild --clean",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

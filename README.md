@@ -117,6 +117,7 @@ Common commands:
 
 ```sh
 npm run typecheck
+npm run publish:prepare
 npm run example:start
 npm run example:ios
 npm run example:android

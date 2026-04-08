@@ -39,6 +39,15 @@ npm run build:rust:ios
 npm run build:rust:android
 ```
 
+## Prepare for Publish
+
+To sync versioned files, rebuild the packaged native artifacts, rebuild `dist`,
+and dry-run the npm tarball:
+
+```sh
+npm run publish:prepare
+```
+
 ## Tests
 
 ### TypeScript Unit Tests
@@ -68,14 +77,24 @@ npm run android:compile
 ### iOS XCTest
 
 ```sh
-xcodebuild test \
-  -workspace ios-tests/NativeEditorTests.xcworkspace \
-  -scheme NativeEditorTests \
-  -configuration Debug \
-  -destination 'platform=iOS Simulator,name=iPhone 16'
+npm run ios:test
 ```
 
-Adjust the simulator destination to match an installed device on your machine.
+This wrapper always runs the workspace, not the raw `.xcodeproj`, so CocoaPods
+targets like `ExpoModulesCore` stay in the build graph.
+
+Pass through any extra `xcodebuild` flags after `--`:
+
+```sh
+npm run ios:test -- -only-testing:NativeEditorTests/RenderBridgeTests
+```
+
+Override the auto-selected simulator if needed:
+
+```sh
+IOS_SIMULATOR_NAME="iPhone 17" npm run ios:test
+IOS_DESTINATION="platform=iOS Simulator,id=<simulator-id>" npm run ios:test
+```
 
 If you change [ios-tests/project.yml](../../ios-tests/project.yml), regenerate the Xcode project before running CocoaPods or tests:
 

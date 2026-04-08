@@ -14,7 +14,9 @@ import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
+    tiptapSchema,
     useYjsCollaboration,
+    withMentionsSchema,
     type DocumentJSON,
     type EditorAddons,
     type EditorToolbarItem,
@@ -52,7 +54,6 @@ import { CollaborationPanel } from './components/CollaborationPanel';
 import { EditorDemoCard } from './components/EditorDemoCard';
 import { LinkEditorModal } from './components/LinkEditorModal';
 
-const ANDROID_KEYBOARD_TOOLBAR_OFFSET = 60;
 const DEFAULT_COLLABORATION_ENDPOINT = 'ws://localhost:1234/collaboration';
 const DEFAULT_COLLABORATION_ROOM_ID = 'example-room';
 const MAX_INSERT_IMAGE_DIMENSION = 1024;
@@ -126,7 +127,7 @@ function AppScreen() {
     const [toolbarPlacement, setToolbarPlacement] =
         useState<NativeRichTextEditorToolbarPlacement>('keyboard');
     const shouldUseKeyboardAvoidingView =
-        Platform.OS === 'android' || toolbarPlacement !== 'keyboard';
+        Platform.OS === 'ios' && toolbarPlacement !== 'keyboard';
 
     const [mentionsEnabled, setMentionsEnabled] = useState(false);
     const [mentionQueryEvent, setMentionQueryEvent] = useState<MentionQueryChangeEvent | null>(
@@ -216,6 +217,11 @@ function AppScreen() {
         };
     }, [activeThemePreset.mentions, mentionsEnabled]);
 
+    const collaborationSchema = useMemo(
+        () => (mentionsEnabled ? withMentionsSchema(tiptapSchema) : tiptapSchema),
+        [mentionsEnabled]
+    );
+
     const jsonSnapshot = useMemo(() => {
         if (!contentJson) {
             return 'Edit the document to capture the current ProseMirror JSON.';
@@ -271,7 +277,8 @@ function AppScreen() {
         documentId: collaborationDocumentId,
         connect: false,
         createWebSocket: createCollaborationWebSocket,
-        initialDocumentJson: collaborationSeedDocument ?? contentJson ?? undefined,
+        schema: collaborationSchema,
+        initialDocumentJson: collaborationSeedDocument,
         localAwareness: {
             userId: `${Platform.OS}-demo-user`,
             name: collaborationDisplayName,
@@ -474,11 +481,7 @@ function AppScreen() {
                 style={styles.keyboardAvoider}
                 enabled={shouldUseKeyboardAvoidingView}
                 behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-                keyboardVerticalOffset={
-                    Platform.OS === 'android' && toolbarPlacement === 'keyboard'
-                        ? ANDROID_KEYBOARD_TOOLBAR_OFFSET
-                        : 0
-                }>
+                keyboardVerticalOffset={0}>
                 <ScrollView
                     style={[styles.screen, { backgroundColor: appChrome.screenBackgroundColor }]}
                     contentContainerStyle={[

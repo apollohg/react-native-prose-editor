@@ -53,6 +53,6 @@ npm run android
 - The example app depends on the local package via `file:..`.
 - If you change native code or Rust bindings, rebuild the app after updating the package binaries.
 - If the native build fails after pulling new changes, try running prebuild again.
-- The example screen intentionally uses app-level keyboard avoidance around the outer `ScrollView`. That is the expected integration for a screen-level form or playground.
-- On Android, the example also adds `keyboardVerticalOffset={60}` so `KeyboardAvoidingView` accounts for the built-in native keyboard toolbar, not just the IME.
+- The example screen uses app-level keyboard avoidance on iOS around the outer `ScrollView`. That matches a screen-level form or playground.
+- On Android, the example relies on the activity's `adjustResize` behavior instead of stacking `KeyboardAvoidingView` on top of the native editor insets.
 - The editor still manages its own internal caret visibility and fixed-height scrolling. Screen-level keyboard avoidance and native editor viewport handling are complementary, not interchangeable.
