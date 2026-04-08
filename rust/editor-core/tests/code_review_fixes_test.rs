@@ -105,7 +105,9 @@ fn test_set_link_updates_active_mark_attrs_and_html() {
         "href".to_string(),
         serde_json::Value::String("https://example.com".to_string()),
     );
-    editor.set_mark("link", attrs).expect("set link should succeed");
+    editor
+        .set_mark("link", attrs)
+        .expect("set link should succeed");
 
     let state = editor.get_current_state();
     assert_eq!(state.active_state.marks.get("link"), Some(&true));
@@ -250,7 +252,10 @@ fn test_split_block_on_empty_blockquote_paragraph_exits_quote() {
         .split_block(9)
         .expect("split_block should exit empty blockquote paragraph");
 
-    assert_eq!(editor.get_html(), "<blockquote><p>Hello</p></blockquote><p></p>");
+    assert_eq!(
+        editor.get_html(),
+        "<blockquote><p>Hello</p></blockquote><p></p>"
+    );
 }
 
 #[test]

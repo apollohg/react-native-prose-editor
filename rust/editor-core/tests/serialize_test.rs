@@ -143,7 +143,10 @@ fn image_with_dimensions(
     height: Option<u64>,
 ) -> Node {
     let mut attrs = HashMap::new();
-    attrs.insert("src".to_string(), serde_json::Value::String(src.to_string()));
+    attrs.insert(
+        "src".to_string(),
+        serde_json::Value::String(src.to_string()),
+    );
     attrs.insert(
         "alt".to_string(),
         alt.map_or(serde_json::Value::Null, |value| {
@@ -362,8 +365,14 @@ fn test_from_html_blockquote() {
     let quote = document.root().child(0).expect("blockquote child");
     assert_eq!(quote.node_type(), "blockquote");
     assert_eq!(quote.child_count(), 2);
-    assert_eq!(quote.child(0).expect("first paragraph").text_content(), "Hello");
-    assert_eq!(quote.child(1).expect("second paragraph").text_content(), "World");
+    assert_eq!(
+        quote.child(0).expect("first paragraph").text_content(),
+        "Hello"
+    );
+    assert_eq!(
+        quote.child(1).expect("second paragraph").text_content(),
+        "World"
+    );
 }
 
 #[test]
@@ -629,9 +638,16 @@ fn test_from_html_native_mention_roundtrip_preserves_custom_attrs() {
     .unwrap();
 
     let p = d.root().child(0).unwrap();
-    assert_eq!(p.child_count(), 3, "paragraph should have text, mention, text");
+    assert_eq!(
+        p.child_count(),
+        3,
+        "paragraph should have text, mention, text"
+    );
     let mention = p.child(1).unwrap();
-    assert!(mention.is_void(), "mention should be parsed as a void inline node");
+    assert!(
+        mention.is_void(),
+        "mention should be parsed as a void inline node"
+    );
     assert_eq!(mention.node_type(), "mention");
     assert_eq!(
         mention.attrs().get("id"),
@@ -1526,6 +1542,40 @@ fn test_from_json_multiple_marks() {
     assert_eq!(t.marks().len(), 3);
     let mark_types: Vec<&str> = t.marks().iter().map(|m| m.mark_type()).collect();
     assert_eq!(mark_types, vec!["bold", "italic", "underline"]);
+}
+
+#[test]
+fn test_from_json_standard_heading_alias_with_marks() {
+    let json = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "heading",
+            "attrs": { "level": 2 },
+            "content": [{
+                "type": "text",
+                "text": "Heading",
+                "marks": [
+                    { "type": "bold" },
+                    { "type": "link", "attrs": { "href": "https://example.com" } }
+                ]
+            }]
+        }]
+    });
+    let d = from_prosemirror_json(&json, &schema(), UnknownTypeMode::Error).unwrap();
+    let heading = d.root().child(0).unwrap();
+    assert_eq!(heading.node_type(), "h2");
+    let text = heading.child(0).unwrap();
+    let mark_types: Vec<&str> = text.marks().iter().map(|m| m.mark_type()).collect();
+    assert!(mark_types.contains(&"bold"));
+    assert!(mark_types.contains(&"link"));
+    assert_eq!(
+        text.marks()
+            .iter()
+            .find(|mark| mark.mark_type() == "link")
+            .and_then(|mark| mark.attrs().get("href"))
+            .and_then(serde_json::Value::as_str),
+        Some("https://example.com")
+    );
 }
 
 #[test]

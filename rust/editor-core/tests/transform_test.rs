@@ -1793,7 +1793,9 @@ fn test_indent_first_list_item_is_noop() {
     let mut tx = Transaction::new(Source::Input);
     tx.add_step(Step::IndentListItem { pos: 3 });
 
-    let (new_doc, _map) = tx.apply(&d, &schema).expect("first-item indent should be a no-op");
+    let (new_doc, _map) = tx
+        .apply(&d, &schema)
+        .expect("first-item indent should be a no-op");
     assert_eq!(new_doc.root().text_content(), d.root().text_content());
     assert_eq!(new_doc.root().child_count(), d.root().child_count());
     assert_eq!(new_doc.root().child(0).unwrap().child_count(), 2);
@@ -1847,7 +1849,9 @@ fn test_outdent_top_level_list_item_is_noop() {
     let mut tx = Transaction::new(Source::Input);
     tx.add_step(Step::OutdentListItem { pos: 8 });
 
-    let (new_doc, _map) = tx.apply(&d, &schema).expect("top-level outdent should be a no-op");
+    let (new_doc, _map) = tx
+        .apply(&d, &schema)
+        .expect("top-level outdent should be a no-op");
     assert_eq!(new_doc.root().text_content(), d.root().text_content());
     assert_eq!(new_doc.root().child_count(), d.root().child_count());
     assert_eq!(new_doc.root().child(0).unwrap().child_count(), 2);

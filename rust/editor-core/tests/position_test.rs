@@ -289,14 +289,42 @@ fn test_blockquote_followed_by_paragraph_scalar_to_doc() {
     ]));
     let map = PositionMap::build(&document);
 
-    assert_eq!(map.total_scalars(), 11, "'Hello\\nWorld' should render to 11 scalars");
+    assert_eq!(
+        map.total_scalars(),
+        11,
+        "'Hello\\nWorld' should render to 11 scalars"
+    );
 
-    assert_eq!(map.scalar_to_doc(6, &document), 10, "scalar 6 should map to the second paragraph start");
-    assert_eq!(map.scalar_to_doc(7, &document), 11, "scalar 7 should map inside the second paragraph");
-    assert_eq!(map.scalar_to_doc(8, &document), 12, "scalar 8 should map inside the second paragraph");
-    assert_eq!(map.scalar_to_doc(9, &document), 13, "scalar 9 should land before the fourth character of the second paragraph");
-    assert_eq!(map.scalar_to_doc(10, &document), 14, "scalar 10 should land before the fifth character of the second paragraph");
-    assert_eq!(map.scalar_to_doc(11, &document), 15, "scalar 11 should map to the end of the second paragraph");
+    assert_eq!(
+        map.scalar_to_doc(6, &document),
+        10,
+        "scalar 6 should map to the second paragraph start"
+    );
+    assert_eq!(
+        map.scalar_to_doc(7, &document),
+        11,
+        "scalar 7 should map inside the second paragraph"
+    );
+    assert_eq!(
+        map.scalar_to_doc(8, &document),
+        12,
+        "scalar 8 should map inside the second paragraph"
+    );
+    assert_eq!(
+        map.scalar_to_doc(9, &document),
+        13,
+        "scalar 9 should land before the fourth character of the second paragraph"
+    );
+    assert_eq!(
+        map.scalar_to_doc(10, &document),
+        14,
+        "scalar 10 should land before the fifth character of the second paragraph"
+    );
+    assert_eq!(
+        map.scalar_to_doc(11, &document),
+        15,
+        "scalar 11 should map to the end of the second paragraph"
+    );
 }
 
 #[test]
@@ -786,7 +814,11 @@ fn test_empty_paragraph_build() {
     let map = PositionMap::build(&document);
 
     assert_eq!(map.block_count(), 1, "empty paragraph = 1 block");
-    assert_eq!(map.total_scalars(), 1, "empty paragraph = 1 placeholder scalar");
+    assert_eq!(
+        map.total_scalars(),
+        1,
+        "empty paragraph = 1 placeholder scalar"
+    );
 
     let b = map.block(0).unwrap();
     assert_eq!(b.doc_start, 1);

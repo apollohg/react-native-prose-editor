@@ -214,7 +214,10 @@ fn test_active_state_marks_blockquote_as_active_inside_quote() {
     let state = editor.get_current_state();
 
     assert_eq!(state.active_state.nodes.get("blockquote"), Some(&true));
-    assert_eq!(state.active_state.commands.get("toggleBlockquote"), Some(&true));
+    assert_eq!(
+        state.active_state.commands.get("toggleBlockquote"),
+        Some(&true)
+    );
 }
 
 #[test]
@@ -228,20 +231,48 @@ fn test_active_state_allows_blockquote_toggle_in_plain_paragraph() {
     let state = editor.get_current_state();
 
     assert_eq!(state.active_state.nodes.get("blockquote"), None);
-    assert_eq!(state.active_state.commands.get("toggleBlockquote"), Some(&true));
+    assert_eq!(
+        state.active_state.commands.get("toggleBlockquote"),
+        Some(&true)
+    );
 }
 
 #[test]
 fn test_active_state_marks_heading_as_active_and_exposes_heading_commands() {
     let mut editor = default_editor();
-    editor.set_html("<h2>Hello</h2>").expect("set_html should succeed");
+    editor
+        .set_html("<h2>Hello</h2>")
+        .expect("set_html should succeed");
     editor.set_selection(Selection::cursor(2));
 
     let state = editor.get_current_state();
 
     assert_eq!(state.active_state.nodes.get("h2"), Some(&true));
-    assert_eq!(state.active_state.commands.get("toggleHeading2"), Some(&true));
-    assert_eq!(state.active_state.commands.get("toggleHeading1"), Some(&true));
+    assert_eq!(
+        state.active_state.commands.get("toggleHeading2"),
+        Some(&true)
+    );
+    assert_eq!(
+        state.active_state.commands.get("toggleHeading1"),
+        Some(&true)
+    );
+}
+
+#[test]
+fn test_active_state_allows_link_mark_in_heading() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<h2>Hello</h2>")
+        .expect("set_html should succeed");
+    editor.set_selection(Selection::cursor(2));
+
+    let state = editor.get_current_state();
+
+    assert!(
+        state.active_state.allowed_marks.contains(&"link".to_string()),
+        "heading should allow link mark, got: {:?}",
+        state.active_state.allowed_marks
+    );
 }
 
 #[test]
@@ -254,8 +285,14 @@ fn test_active_state_disables_heading_toggle_inside_list_items() {
 
     let state = editor.get_current_state();
 
-    assert_eq!(state.active_state.commands.get("toggleHeading1"), Some(&false));
-    assert_eq!(state.active_state.commands.get("toggleHeading6"), Some(&false));
+    assert_eq!(
+        state.active_state.commands.get("toggleHeading1"),
+        Some(&false)
+    );
+    assert_eq!(
+        state.active_state.commands.get("toggleHeading6"),
+        Some(&false)
+    );
 }
 
 #[test]

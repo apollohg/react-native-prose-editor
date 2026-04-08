@@ -50,6 +50,33 @@ fn mention_editor() -> Editor {
     Editor::new(mention_schema(), InterceptorPipeline::new(), false)
 }
 
+fn title_first_schema() -> Schema {
+    let base = tiptap_schema();
+    let mut nodes: Vec<NodeSpec> = base.all_nodes().cloned().collect();
+    if let Some(doc) = nodes.iter_mut().find(|node| node.name == "doc") {
+        doc.content = editor_core::schema::content_rule::ContentRule::parse("title block*")
+            .expect("title-first doc content rule should parse");
+    }
+    if !nodes.iter().any(|node| node.name == "title") {
+        nodes.push(NodeSpec {
+            name: "title".to_string(),
+            content: editor_core::schema::content_rule::ContentRule::parse("inline*")
+                .expect("title content rule should parse"),
+            group: Some("block".to_string()),
+            attrs: std::collections::HashMap::new(),
+            role: NodeRole::TextBlock,
+            html_tag: None,
+            is_void: false,
+        });
+    }
+    let marks = base.all_marks().cloned().collect();
+    Schema::new(nodes, marks)
+}
+
+fn title_first_editor() -> Editor {
+    Editor::new(title_first_schema(), InterceptorPipeline::new(), false)
+}
+
 /// Create an editor with a max-length interceptor.
 fn editor_with_max_length(max: u32) -> Editor {
     let mut pipeline = InterceptorPipeline::new();
@@ -60,6 +87,21 @@ fn editor_with_max_length(max: u32) -> Editor {
 // ===========================================================================
 // Full lifecycle test
 // ===========================================================================
+
+#[test]
+fn test_editor_initializes_custom_empty_doc_with_required_title_block() {
+    let editor = title_first_editor();
+
+    assert_eq!(
+        editor.get_json(),
+        serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "title"
+            }]
+        })
+    );
+}
 
 #[test]
 fn test_full_lifecycle_set_html_insert_toggle_undo_redo() {
@@ -1019,11 +1061,8 @@ fn test_uniffi_editor_toggle_blockquote_at_selection_scalar() {
 
     let scalar_anchor = editor_core::editor_doc_to_scalar(id, 1);
     let scalar_head = editor_core::editor_doc_to_scalar(id, 1);
-    let result = editor_core::editor_toggle_blockquote_at_selection_scalar(
-        id,
-        scalar_anchor,
-        scalar_head,
-    );
+    let result =
+        editor_core::editor_toggle_blockquote_at_selection_scalar(id, scalar_anchor, scalar_head);
     assert!(
         !result.contains("error"),
         "toggle_blockquote_at_selection_scalar should succeed, got: {}",
@@ -1043,12 +1082,8 @@ fn test_uniffi_editor_toggle_heading_at_selection_scalar() {
 
     let scalar_anchor = editor_core::editor_doc_to_scalar(id, 1);
     let scalar_head = editor_core::editor_doc_to_scalar(id, 13);
-    let result = editor_core::editor_toggle_heading_at_selection_scalar(
-        id,
-        scalar_anchor,
-        scalar_head,
-        4,
-    );
+    let result =
+        editor_core::editor_toggle_heading_at_selection_scalar(id, scalar_anchor, scalar_head, 4);
     assert!(
         !result.contains("error"),
         "toggle_heading_at_selection_scalar should succeed, got: {}",
@@ -1416,7 +1451,10 @@ fn test_backspace_from_empty_blockquote_paragraph_breaks_out_of_quote() {
     editor
         .insert_text(insert_pos, "B")
         .expect("typing after blockquote exit should succeed");
-    assert_eq!(editor.get_html(), "<blockquote><p>Hello</p></blockquote><p>B</p>");
+    assert_eq!(
+        editor.get_html(),
+        "<blockquote><p>Hello</p></blockquote><p>B</p>"
+    );
 }
 
 #[test]
@@ -1431,10 +1469,16 @@ fn test_backspace_again_after_breaking_out_of_blockquote_removes_empty_paragraph
         .delete_scalar_range(editor.doc_to_scalar(9) - 1, editor.doc_to_scalar(9))
         .expect("first backspace should exit the quote");
 
-    assert_eq!(editor.get_html(), "<blockquote><p>Hello</p></blockquote><p></p>");
+    assert_eq!(
+        editor.get_html(),
+        "<blockquote><p>Hello</p></blockquote><p></p>"
+    );
 
     let escaped_cursor = update.selection.from(editor.document());
-    assert_eq!(escaped_cursor, 10, "selection should stay in the lifted paragraph");
+    assert_eq!(
+        escaped_cursor, 10,
+        "selection should stay in the lifted paragraph"
+    );
 
     let escaped_scalar = editor.doc_to_scalar(escaped_cursor);
     let second_update = editor
@@ -1454,6 +1498,163 @@ fn test_backspace_again_after_breaking_out_of_blockquote_removes_empty_paragraph
         }
         other => panic!(
             "expected collapsed text selection after deleting empty paragraph, got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn test_backspace_from_blank_document_preserves_paragraph() {
+    let mut editor = default_editor();
+
+    let update = editor
+        .delete_backward_at_selection_scalar(0, 0)
+        .expect("backspace from blank document should succeed");
+
+    assert_eq!(
+        editor.get_html(),
+        "<p></p>",
+        "backspacing a blank default document should keep the empty paragraph"
+    );
+
+    match update.selection {
+        Selection::Text { anchor, head } => {
+            assert_eq!(anchor, 1);
+            assert_eq!(head, 1);
+        }
+        other => panic!(
+            "expected collapsed text selection after backspacing blank document, got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn test_backspace_from_empty_first_heading_reverts_to_paragraph() {
+    let mut editor = default_editor();
+    editor.set_html("<h2>A</h2>").expect("set_html");
+    editor.set_selection(Selection::cursor(2));
+
+    let text_end = editor.doc_to_scalar(2);
+    editor
+        .delete_scalar_range(text_end - 1, text_end)
+        .expect("delete heading text");
+
+    assert_eq!(editor.get_html(), "<h2></h2>");
+
+    let empty_heading_cursor = editor.selection().from(editor.document());
+    let empty_heading_scalar = editor.doc_to_scalar(empty_heading_cursor);
+    assert_eq!(
+        empty_heading_scalar, 1,
+        "editor-core should still track the empty heading placeholder at scalar 1"
+    );
+
+    let update = editor
+        .delete_backward_at_selection_scalar(0, 0)
+        .expect("backspace from empty first heading should succeed");
+
+    assert_eq!(
+        editor.get_html(),
+        "<p></p>",
+        "backspacing an empty first heading should revert it to a paragraph"
+    );
+
+    match update.selection {
+        Selection::Text { anchor, head } => {
+            assert_eq!(anchor, 1);
+            assert_eq!(head, 1);
+        }
+        other => panic!(
+            "expected collapsed text selection after reverting empty heading, got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn test_backspace_from_empty_first_required_title_stays_schema_valid() {
+    let mut editor = title_first_editor();
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "title",
+                "content": [{ "type": "text", "text": "A" }]
+            }]
+        }))
+        .expect("set_json");
+    editor.set_selection(Selection::cursor(2));
+
+    let text_end = editor.doc_to_scalar(2);
+    editor
+        .delete_scalar_range(text_end - 1, text_end)
+        .expect("delete title text");
+
+    assert_eq!(
+        editor.get_json(),
+        serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "title"
+            }]
+        })
+    );
+
+    let update = editor
+        .delete_backward_at_selection_scalar(0, 0)
+        .expect("backspace from empty first title should not error");
+
+    assert_eq!(
+        editor.get_json(),
+        serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "title"
+            }]
+        }),
+        "backspacing an empty required title should remain schema-valid"
+    );
+
+    match update.selection {
+        Selection::Text { anchor, head } => {
+            assert_eq!(anchor, 1);
+            assert_eq!(head, 1);
+        }
+        other => panic!(
+            "expected collapsed text selection after preserving empty title, got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn test_backspace_from_empty_trailing_heading_reverts_to_paragraph() {
+    let mut editor = default_editor();
+    editor.set_html("<p>Intro</p><h2>A</h2>").expect("set_html");
+    editor.set_selection(Selection::cursor(9));
+
+    let text_end = editor.doc_to_scalar(9);
+    editor
+        .delete_scalar_range(text_end - 1, text_end)
+        .expect("delete trailing heading text");
+
+    assert_eq!(editor.get_html(), "<p>Intro</p><h2></h2>");
+
+    let empty_heading_cursor = editor.selection().from(editor.document());
+    let empty_heading_scalar = editor.doc_to_scalar(empty_heading_cursor);
+    let update = editor
+        .delete_backward_at_selection_scalar(empty_heading_scalar, empty_heading_scalar)
+        .expect("backspace from empty trailing heading should succeed");
+
+    assert_eq!(
+        editor.get_html(),
+        "<p>Intro</p><p></p>",
+        "backspacing an empty trailing heading should revert it to a paragraph"
+    );
+
+    match update.selection {
+        Selection::Text { anchor, head } => {
+            assert_eq!(anchor, 8);
+            assert_eq!(head, 8);
+        }
+        other => panic!(
+            "expected collapsed text selection after reverting empty trailing heading, got {other:?}"
         ),
     }
 }
@@ -1695,8 +1896,7 @@ fn test_insert_content_json_at_selection_scalar_inserts_mention_and_preserves_at
     let json = editor.get_json();
     let paragraph = &json["content"][0];
     assert_eq!(
-        paragraph["content"][0]["text"],
-        "Hello ",
+        paragraph["content"][0]["text"], "Hello ",
         "mention insertion should keep the prefix text"
     );
     assert_eq!(paragraph["content"][1]["type"], "mention");
