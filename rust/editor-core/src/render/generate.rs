@@ -1,7 +1,6 @@
 use crate::model::{Document, Node};
 use crate::render::{
-    empty_text_block_placeholder_string, inline_atom_label, ListContext, RenderElement,
-    RenderMark,
+    empty_text_block_placeholder_string, inline_atom_label, ListContext, RenderElement, RenderMark,
 };
 use crate::schema::{NodeRole, Schema};
 

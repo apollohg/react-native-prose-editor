@@ -390,12 +390,18 @@ fn process_schema_node(
 ) -> Result<(), ParseError> {
     match &spec.role {
         NodeRole::HardBreak => {
-            inline_acc.push(Node::void(spec.name.clone(), extract_node_attrs(_elem, spec)));
+            inline_acc.push(Node::void(
+                spec.name.clone(),
+                extract_node_attrs(_elem, spec),
+            ));
             Ok(())
         }
         NodeRole::Block if spec.is_void => {
             flush_inline_acc(inline_acc, schema, block_acc);
-            block_acc.push(Node::void(spec.name.clone(), extract_node_attrs(_elem, spec)));
+            block_acc.push(Node::void(
+                spec.name.clone(),
+                extract_node_attrs(_elem, spec),
+            ));
             Ok(())
         }
         NodeRole::TextBlock => {
@@ -529,7 +535,10 @@ fn collect_inline_children(
             // Known void inline node (hardBreak)
             if let Some(spec) = schema.node_by_html_tag(tag) {
                 if spec.is_void && matches!(spec.role, NodeRole::HardBreak | NodeRole::Inline) {
-                    inline_nodes.push(Node::void(spec.name.clone(), extract_node_attrs(elem, spec)));
+                    inline_nodes.push(Node::void(
+                        spec.name.clone(),
+                        extract_node_attrs(elem, spec),
+                    ));
                     continue;
                 }
             }

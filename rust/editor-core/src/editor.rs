@@ -11,7 +11,7 @@ use crate::model::resolved_pos::ResolvedPos;
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::position::PositionMap;
 use crate::render::RenderElement;
-use crate::schema::{NodeRole, Schema};
+use crate::schema::{NodeRole, NodeSpec, Schema};
 use crate::selection::Selection;
 use crate::serialize;
 use crate::transform::steps::rebuild_element;
@@ -124,14 +124,18 @@ pub struct Editor {
 impl Editor {
     /// Create a new editor with the given schema and interceptor pipeline.
     ///
-    /// Starts with an empty document (single empty paragraph).
-    pub fn new(schema: Schema, interceptors: InterceptorPipeline, allow_base64_images: bool) -> Self {
+    /// Starts with an empty document containing the schema's preferred text block.
+    pub fn new(
+        schema: Schema,
+        interceptors: InterceptorPipeline,
+        allow_base64_images: bool,
+    ) -> Self {
         let doc = make_empty_doc(&schema);
         let backend = StandaloneBackend::new(doc);
         Self {
             schema,
             backend,
-            selection: Selection::cursor(1), // inside the empty paragraph
+            selection: Selection::cursor(1), // inside the initial empty text block
             stored_marks: None,
             interceptors,
             allow_base64_images,
@@ -539,13 +543,17 @@ impl Editor {
         let parent = if range.parent_path.is_empty() {
             self.backend.document().root()
         } else {
-            self.backend.document().node_at(&range.parent_path)
+            self.backend
+                .document()
+                .node_at(&range.parent_path)
                 .unwrap_or_else(|| self.backend.document().root())
         };
         let Some(parent_spec) = self.schema.node(parent.node_type()) else {
             return Ok(self.build_update_from_current());
         };
-        let insertable = self.schema.insertable_nodes_at(parent_spec, parent.child_count());
+        let insertable = self
+            .schema
+            .insertable_nodes_at(parent_spec, parent.child_count());
         if !insertable.iter().any(|name| name == blockquote_type) {
             return Ok(self.build_update_from_current());
         }
@@ -721,16 +729,15 @@ impl Editor {
 
     /// Insert HTML content at the current selection position.
     pub fn insert_content_html(&mut self, html: &str) -> Result<EditorUpdate, EditorError> {
-        let parsed_doc =
-            serialize::from_html(
-                html,
-                &self.schema,
-                &serialize::FromHtmlOptions {
-                    strict: false,
-                    allow_base64_images: self.allow_base64_images,
-                },
-            )
-                .map_err(|e| EditorError::Parse(e.to_string()))?;
+        let parsed_doc = serialize::from_html(
+            html,
+            &self.schema,
+            &serialize::FromHtmlOptions {
+                strict: false,
+                allow_base64_images: self.allow_base64_images,
+            },
+        )
+        .map_err(|e| EditorError::Parse(e.to_string()))?;
 
         let content = match parsed_doc.root().content() {
             Some(c) => c.clone(),
@@ -788,16 +795,15 @@ impl Editor {
     /// this goes through the transaction pipeline so it can be undone and
     /// preserves the selection where possible.
     pub fn replace_html(&mut self, html: &str) -> Result<EditorUpdate, EditorError> {
-        let parsed_doc =
-            serialize::from_html(
-                html,
-                &self.schema,
-                &serialize::FromHtmlOptions {
-                    strict: false,
-                    allow_base64_images: self.allow_base64_images,
-                },
-            )
-                .map_err(|e| EditorError::Parse(e.to_string()))?;
+        let parsed_doc = serialize::from_html(
+            html,
+            &self.schema,
+            &serialize::FromHtmlOptions {
+                strict: false,
+                allow_base64_images: self.allow_base64_images,
+            },
+        )
+        .map_err(|e| EditorError::Parse(e.to_string()))?;
 
         let content = match parsed_doc.root().content() {
             Some(c) => c.clone(),
@@ -954,9 +960,12 @@ impl Editor {
         {
             return self.unwrap_from_list(list_pos);
         }
-        if let Some(quote_pos) =
-            self.empty_blockquote_exit_pos_for_scalar_delete(scalar_from, scalar_to, doc_from, doc_to)
-        {
+        if let Some(quote_pos) = self.empty_blockquote_exit_pos_for_scalar_delete(
+            scalar_from,
+            scalar_to,
+            doc_from,
+            doc_to,
+        ) {
             return self.exit_empty_blockquote(quote_pos);
         }
         if let Some((replace_from, replace_to, content, selection_after)) = self
@@ -979,13 +988,8 @@ impl Editor {
                 Some(selection_after),
             );
         }
-        if let Some((replace_from, replace_to, selection_after)) = self
-            .block_void_replacement_for_scalar_delete(
-                scalar_from,
-                scalar_to,
-                doc_from,
-                doc_to,
-            )
+        if let Some((replace_from, replace_to, selection_after)) =
+            self.block_void_replacement_for_scalar_delete(scalar_from, scalar_to, doc_from, doc_to)
         {
             let mut tx = Transaction::new(Source::Input);
             tx.add_step(Step::ReplaceRange {
@@ -1008,6 +1012,43 @@ impl Editor {
             return self.delete_range(block_from, block_to);
         }
         self.delete_range(doc_from, doc_to)
+    }
+
+    /// Delete backward relative to an explicit scalar selection.
+    ///
+    /// This is primarily used by native text views when a visual backspace
+    /// action does not produce a non-empty scalar range, such as an empty
+    /// first heading rendered with a synthetic placeholder. In that case we
+    /// still want structural backspace behavior (for example, reverting the
+    /// heading to the schema's default text block).
+    pub fn delete_backward_at_selection_scalar(
+        &mut self,
+        scalar_anchor: u32,
+        scalar_head: u32,
+    ) -> Result<EditorUpdate, EditorError> {
+        self.set_selection_scalar(scalar_anchor, scalar_head);
+
+        let from = scalar_anchor.min(scalar_head);
+        let to = scalar_anchor.max(scalar_head);
+        if from < to {
+            return self.delete_scalar_range(from, to);
+        }
+
+        let doc = self.backend.document();
+        let cursor_pos = self.selection.from(doc);
+        if let Some(action) = self.empty_split_action(cursor_pos) {
+            return self.apply_empty_split_action(action);
+        }
+        if let Some(update) =
+            self.replace_empty_non_paragraph_text_block_with_default_text_block(cursor_pos)?
+        {
+            return Ok(update);
+        }
+        if to > 0 {
+            return self.delete_scalar_range(to - 1, to);
+        }
+
+        Ok(self.build_update_from_current())
     }
 
     /// Replace a scalar range with text in a single transaction.
@@ -1365,9 +1406,7 @@ impl Editor {
                 if !mark.attrs().is_empty() {
                     mark_attrs.insert(
                         mark_spec.name.clone(),
-                        serde_json::Value::Object(
-                            mark.attrs().clone().into_iter().collect()
-                        ),
+                        serde_json::Value::Object(mark.attrs().clone().into_iter().collect()),
                     );
                 }
             }
@@ -1637,9 +1676,7 @@ impl Editor {
             tx,
             None,
             Some(Selection::cursor(
-                replace_from
-                    .saturating_add(inserted_size)
-                    .saturating_add(1),
+                replace_from.saturating_add(inserted_size).saturating_add(1),
             )),
         )
     }
@@ -2006,7 +2043,9 @@ impl Editor {
         let Some(parent_spec) = self.schema.node(parent.node_type()) else {
             return Ok(None);
         };
-        let insertable = self.schema.insertable_nodes_at(parent_spec, parent.child_count());
+        let insertable = self
+            .schema
+            .insertable_nodes_at(parent_spec, parent.child_count());
         if !insertable.iter().any(|name| name == list_type) {
             return Ok(Some(self.build_update_from_current()));
         }
@@ -2185,9 +2224,7 @@ impl Editor {
         let target = children
             .iter()
             .find(|child| {
-                child.mark.is_some()
-                    && child.start <= parent_offset
-                    && parent_offset <= child.end
+                child.mark.is_some() && child.start <= parent_offset && parent_offset <= child.end
             })
             .or_else(|| {
                 if parent_offset == offset {
@@ -2229,7 +2266,10 @@ impl Editor {
             right_index += 1;
         }
 
-        Some((parent_content_start + range_start, parent_content_start + range_end))
+        Some((
+            parent_content_start + range_start,
+            parent_content_start + range_end,
+        ))
     }
 
     fn content_start_for_path(&self, path: &[u16]) -> Option<u32> {
@@ -2323,11 +2363,7 @@ impl Editor {
         Some(range)
     }
 
-    fn replacement_text_blocks(
-        &self,
-        blocks: &[Node],
-        target_type: &str,
-    ) -> Option<Vec<Node>> {
+    fn replacement_text_blocks(&self, blocks: &[Node], target_type: &str) -> Option<Vec<Node>> {
         let target_spec = self.schema.node(target_type)?;
         if !matches!(target_spec.role, NodeRole::TextBlock) {
             return None;
@@ -2417,7 +2453,11 @@ impl Editor {
 
     fn selected_block_range(&self, from: u32, to: u32) -> Option<BlockSelectionRange> {
         let start_block_path = self.block_path_for_pos(from)?;
-        let end_pos = if to > from { to.saturating_sub(1) } else { from };
+        let end_pos = if to > from {
+            to.saturating_sub(1)
+        } else {
+            from
+        };
         let end_block_path = self.block_path_for_pos(end_pos)?;
 
         let start_parent = &start_block_path[..start_block_path.len().saturating_sub(1)];
@@ -2992,47 +3032,8 @@ impl Editor {
         }
 
         let doc = self.backend.document();
-        let (resolved, block_open) = if doc_to < doc.content_size() {
-            let candidate = doc.resolve(doc_to + 1).ok()?;
-            let block = candidate.parent(doc);
-            let block_spec = self.schema.node(block.node_type())?;
-            if matches!(block_spec.role, NodeRole::TextBlock)
-                && candidate.parent_offset == 0
-                && block.content_size() == 0
-                && self.doc_to_scalar(doc_to) == scalar_to
-            {
-                (candidate, doc_to)
-            } else {
-                let fallback = doc.resolve(doc_to).ok()?;
-                let fallback_block = fallback.parent(doc);
-                let fallback_spec = self.schema.node(fallback_block.node_type())?;
-                if !matches!(fallback_spec.role, NodeRole::TextBlock) {
-                    return None;
-                }
-                if fallback.parent_offset != 0 || fallback_block.content_size() != 0 {
-                    return None;
-                }
-                if self.doc_to_scalar(doc_to) != scalar_to {
-                    return None;
-                }
-                (fallback, doc_to.checked_sub(1)?)
-            }
-        } else {
-            let fallback = doc.resolve(doc_to).ok()?;
-            let fallback_block = fallback.parent(doc);
-            let fallback_spec = self.schema.node(fallback_block.node_type())?;
-            if !matches!(fallback_spec.role, NodeRole::TextBlock) {
-                return None;
-            }
-            if fallback.parent_offset != 0 || fallback_block.content_size() != 0 {
-                return None;
-            }
-            if self.doc_to_scalar(doc_to) != scalar_to {
-                return None;
-            }
-            (fallback, doc_to.checked_sub(1)?)
-        };
-
+        let (resolved, block_open) =
+            self.empty_text_block_context_for_scalar_delete(scalar_to, doc_to)?;
         let block = resolved.parent(doc);
         let block_path = &resolved.node_path;
         let &block_index = block_path.last()?;
@@ -3050,6 +3051,150 @@ impl Editor {
             return None;
         }
         Some((block_open, block_open + block.node_size()))
+    }
+
+    fn empty_text_block_context_for_scalar_delete(
+        &self,
+        scalar_to: u32,
+        doc_to: u32,
+    ) -> Option<(ResolvedPos, u32)> {
+        let doc = self.backend.document();
+        if doc_to < doc.content_size() {
+            let candidate = doc.resolve(doc_to + 1).ok()?;
+            let block = candidate.parent(doc);
+            let block_spec = self.schema.node(block.node_type())?;
+            if matches!(block_spec.role, NodeRole::TextBlock)
+                && candidate.parent_offset == 0
+                && block.content_size() == 0
+                && self.doc_to_scalar(doc_to) == scalar_to
+            {
+                Some((candidate, doc_to))
+            } else {
+                let fallback = doc.resolve(doc_to).ok()?;
+                let fallback_block = fallback.parent(doc);
+                let fallback_spec = self.schema.node(fallback_block.node_type())?;
+                if !matches!(fallback_spec.role, NodeRole::TextBlock) {
+                    return None;
+                }
+                if fallback.parent_offset != 0 || fallback_block.content_size() != 0 {
+                    return None;
+                }
+                if self.doc_to_scalar(doc_to) != scalar_to {
+                    return None;
+                }
+                Some((fallback, doc_to.checked_sub(1)?))
+            }
+        } else {
+            let fallback = doc.resolve(doc_to).ok()?;
+            let fallback_block = fallback.parent(doc);
+            let fallback_spec = self.schema.node(fallback_block.node_type())?;
+            if !matches!(fallback_spec.role, NodeRole::TextBlock) {
+                return None;
+            }
+            if fallback.parent_offset != 0 || fallback_block.content_size() != 0 {
+                return None;
+            }
+            if self.doc_to_scalar(doc_to) != scalar_to {
+                return None;
+            }
+            Some((fallback, doc_to.checked_sub(1)?))
+        }
+    }
+
+    fn replace_empty_non_paragraph_text_block_with_default_text_block(
+        &mut self,
+        pos: u32,
+    ) -> Result<Option<EditorUpdate>, EditorError> {
+        let replacement_type = {
+            let doc = self.backend.document();
+            let resolved = match doc.resolve(pos) {
+                Ok(resolved) => resolved,
+                Err(_) => return Ok(None),
+            };
+            let block = resolved.parent(doc);
+            let Some(block_spec) = self.schema.node(block.node_type()) else {
+                return Ok(None);
+            };
+            if !matches!(block_spec.role, NodeRole::TextBlock) {
+                return Ok(None);
+            }
+            if resolved.parent_offset != 0 || block.content_size() != 0 {
+                return Ok(None);
+            }
+
+            let block_path = &resolved.node_path;
+            let &block_index = match block_path.last() {
+                Some(index) => index,
+                None => return Ok(None),
+            };
+
+            let parent_path = &block_path[..block_path.len().saturating_sub(1)];
+            let parent = if parent_path.is_empty() {
+                doc.root()
+            } else {
+                match doc.node_at(parent_path) {
+                    Some(parent) => parent,
+                    None => return Ok(None),
+                }
+            };
+            let Some(parent_spec) = self.schema.node(parent.node_type()) else {
+                return Ok(None);
+            };
+            let replace_from = match Self::node_delete_start_pos(doc, block_path) {
+                Some(pos) => pos,
+                None => return Ok(None),
+            };
+            let replace_to = replace_from + block.node_size();
+
+            let candidates = preferred_text_block_node_names_for_parent(
+                &self.schema,
+                parent_spec,
+                usize::from(block_index),
+            );
+            if matches!(candidates.first(), Some(candidate) if candidate == block.node_type()) {
+                return Ok(None);
+            }
+            let mut selected = None;
+            for candidate in candidates {
+                if candidate == block.node_type() {
+                    continue;
+                }
+
+                let replacement =
+                    Node::element(candidate.clone(), HashMap::new(), Fragment::empty());
+                let mut tx = Transaction::new(Source::Input);
+                tx.add_step(Step::ReplaceRange {
+                    from: replace_from,
+                    to: replace_to,
+                    content: Fragment::from(vec![replacement]),
+                });
+                if tx.apply(doc, &self.schema).is_ok() {
+                    selected = Some(candidate);
+                    break;
+                }
+            }
+
+            selected.map(|node_type| (replace_from, replace_to, node_type))
+        };
+
+        let Some((replace_from, replace_to, replacement_type)) = replacement_type else {
+            return Ok(None);
+        };
+        let replacement = Node::element(replacement_type, HashMap::new(), Fragment::empty());
+
+        let mut tx = Transaction::new(Source::Input);
+        tx.add_step(Step::ReplaceRange {
+            from: replace_from,
+            to: replace_to,
+            content: Fragment::from(vec![replacement]),
+        });
+
+        self.apply_transaction_with_selection_adjustments(
+            tx,
+            None,
+            Some(Selection::cursor(replace_from.saturating_add(1))),
+        )
+        .map(Some)
     }
 
     fn is_block_void_node(&self, node: &Node) -> bool {
@@ -3089,7 +3234,13 @@ impl Editor {
         }
 
         let mut overlapping_marks = Vec::new();
-        Self::collect_text_marks_in_range(self.backend.document().root(), 0, from, to, &mut overlapping_marks);
+        Self::collect_text_marks_in_range(
+            self.backend.document().root(),
+            0,
+            from,
+            to,
+            &mut overlapping_marks,
+        );
 
         let mut iter = overlapping_marks.into_iter();
         let Some(first_marks) = iter.next() else {
@@ -3130,7 +3281,11 @@ impl Editor {
             return;
         };
 
-        let mut child_start = if node.node_type() == "doc" { start } else { start + 1 };
+        let mut child_start = if node.node_type() == "doc" {
+            start
+        } else {
+            start + 1
+        };
         for child in content.iter() {
             let child_end = child_start + child.node_size();
             if child_end > from && child_start < to {
@@ -3145,21 +3300,101 @@ impl Editor {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Create an empty document with a single empty paragraph.
-fn make_empty_doc(schema: &Schema) -> Document {
-    let para_name = schema
+fn preferred_text_block_node_names_for_parent(
+    schema: &Schema,
+    parent_spec: &NodeSpec,
+    existing_child_count: usize,
+) -> Vec<String> {
+    let accepting_groups = accepting_groups_for_child_count(parent_spec, existing_child_count);
+    if accepting_groups.is_empty() {
+        return Vec::new();
+    }
+
+    let paragraph_name = schema
         .node_by_html_tag("p")
-        .or_else(|| schema.node("paragraph"))
-        .map(|n| n.name.as_str())
+        .map(|spec| spec.name.as_str())
+        .or_else(|| schema.node("paragraph").map(|spec| spec.name.as_str()));
+
+    let mut candidates: Vec<String> = schema
+        .all_nodes()
+        .filter(|spec| matches!(spec.role, NodeRole::TextBlock))
+        .filter(|spec| {
+            accepting_groups
+                .iter()
+                .any(|group| spec.name == *group || spec.group.as_deref() == Some(*group))
+        })
+        .map(|spec| spec.name.clone())
+        .collect();
+
+    candidates.sort_by(|left, right| {
+        let left_priority = if Some(left.as_str()) == paragraph_name {
+            0
+        } else {
+            1
+        };
+        let right_priority = if Some(right.as_str()) == paragraph_name {
+            0
+        } else {
+            1
+        };
+        left_priority.cmp(&right_priority).then_with(|| left.cmp(right))
+    });
+    candidates.dedup();
+    candidates
+}
+
+fn accepting_groups_for_child_count(parent_spec: &NodeSpec, existing_child_count: usize) -> Vec<&str> {
+    let mut remaining = existing_child_count;
+    let mut accepting_groups = Vec::new();
+
+    for part in &parent_spec.content.parts {
+        let min = part.min as usize;
+        let max = part.max.map(|value| value as usize);
+
+        if remaining >= min {
+            let consumed = match max {
+                Some(limit) => remaining.min(limit),
+                None => remaining,
+            };
+            remaining = remaining.saturating_sub(consumed);
+
+            let at_max = max.map(|limit| consumed >= limit).unwrap_or(false);
+            if !at_max {
+                accepting_groups.push(part.group.as_str());
+            }
+        } else {
+            accepting_groups.push(part.group.as_str());
+            break;
+        }
+    }
+
+    accepting_groups
+}
+
+/// Create an empty document with a single schema-valid empty text block.
+fn make_empty_doc(schema: &Schema) -> Document {
+    let empty_text_block_name = schema
+        .node("doc")
+        .map(|doc_spec| preferred_text_block_node_names_for_parent(schema, doc_spec, 0))
+        .and_then(|mut candidates| candidates.drain(..).next())
         .or_else(|| {
             schema
-                .all_nodes()
-                .find(|n| matches!(n.role, crate::schema::NodeRole::TextBlock))
-                .map(|n| n.name.as_str())
+                .node_by_html_tag("p")
+                .or_else(|| schema.node("paragraph"))
+                .map(|n| n.name.clone())
         })
-        .unwrap_or("paragraph");
+        .or_else(|| {
+            let mut candidates: Vec<String> = schema
+                .all_nodes()
+                .filter(|n| matches!(n.role, crate::schema::NodeRole::TextBlock))
+                .map(|n| n.name.clone())
+                .collect();
+            candidates.sort();
+            candidates.into_iter().next()
+        })
+        .unwrap_or_else(|| "paragraph".to_string());
 
-    let para = Node::element(para_name.to_string(), HashMap::new(), Fragment::empty());
+    let para = Node::element(empty_text_block_name, HashMap::new(), Fragment::empty());
     let doc_node = Node::element(
         "doc".to_string(),
         HashMap::new(),

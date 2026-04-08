@@ -1276,7 +1276,10 @@ fn apply_update_node_attrs(
         Node::element(
             target_child.node_type().to_string(),
             attrs.clone(),
-            target_child.content().cloned().unwrap_or_else(Fragment::empty),
+            target_child
+                .content()
+                .cloned()
+                .unwrap_or_else(Fragment::empty),
         )
     };
 

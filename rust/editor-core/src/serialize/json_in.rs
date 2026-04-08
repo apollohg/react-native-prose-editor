@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::Schema;
@@ -68,7 +68,8 @@ pub fn from_prosemirror_json(
     schema: &Schema,
     mode: UnknownTypeMode,
 ) -> Result<Document, JsonParseError> {
-    let root = parse_node(json, schema, mode)?;
+    let normalized = normalize_json_aliases(json);
+    let root = parse_node(&normalized, schema, mode)?;
     Ok(Document::new(root))
 }
 
@@ -268,4 +269,53 @@ fn build_opaque_json_node(type_name: &str, original_json: &Value) -> Node {
     );
     attrs.insert("original_json".to_string(), original_json.clone());
     Node::void("__opaque_json".to_string(), attrs)
+}
+
+fn normalize_json_aliases(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(values.iter().map(normalize_json_aliases).collect()),
+        Value::Object(object) => normalize_json_object_aliases(object),
+        other => other.clone(),
+    }
+}
+
+fn normalize_json_object_aliases(object: &Map<String, Value>) -> Value {
+    let mut normalized = object
+        .iter()
+        .map(|(key, value)| (key.clone(), normalize_json_aliases(value)))
+        .collect::<Map<String, Value>>();
+
+    let type_name = normalized.get("type").and_then(Value::as_str);
+    if type_name == Some("heading") {
+        let level = normalized
+            .get("attrs")
+            .and_then(Value::as_object)
+            .and_then(|attrs| parse_heading_level_value(attrs.get("level")));
+        if let Some(level) = level {
+            normalized.insert("type".to_string(), Value::String(format!("h{level}")));
+            if let Some(Value::Object(attrs)) = normalized.get_mut("attrs") {
+                attrs.remove("level");
+                if attrs.is_empty() {
+                    normalized.remove("attrs");
+                }
+            }
+        }
+    }
+
+    Value::Object(normalized)
+}
+
+fn parse_heading_level_value(value: Option<&Value>) -> Option<u8> {
+    let value = value?;
+    let level = match value {
+        Value::Number(number) => number.as_u64().and_then(|value| u8::try_from(value).ok())?,
+        Value::String(value) => value.parse::<u8>().ok()?,
+        _ => return None,
+    };
+
+    if (1..=6).contains(&level) {
+        Some(level)
+    } else {
+        None
+    }
 }

@@ -24,7 +24,10 @@ pub struct RenderMark {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderElement {
     /// A run of text with applied mark names.
-    TextRun { text: String, marks: Vec<RenderMark> },
+    TextRun {
+        text: String,
+        marks: Vec<RenderMark>,
+    },
     /// An inline void node (e.g. hardBreak).
     VoidInline {
         node_type: String,
@@ -85,7 +88,8 @@ pub fn inline_atom_label(
     node_type: &str,
     attrs: &std::collections::HashMap<String, serde_json::Value>,
 ) -> String {
-    attrs.get("label")
+    attrs
+        .get("label")
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)

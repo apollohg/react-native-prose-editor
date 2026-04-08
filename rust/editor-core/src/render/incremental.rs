@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 use crate::model::Document;
 use crate::render::empty_text_block_placeholder_string;
+use crate::render::inline_atom_label;
 use crate::render::RenderElement;
 use crate::render::RenderMark;
-use crate::render::inline_atom_label;
 use crate::schema::{NodeRole, Schema};
 
 fn render_marks(node: &crate::model::Node) -> Vec<RenderMark> {

@@ -144,10 +144,7 @@ pub fn collaboration_session_apply_encoded_state(id: u64, encoded_state_json: St
         let encoded_state: Vec<u8> = match serde_json::from_str(&encoded_state_json) {
             Ok(bytes) => bytes,
             Err(error) => {
-                return format!(
-                    "{{\"error\":\"invalid encoded state json: {}\"}}",
-                    error
-                )
+                return format!("{{\"error\":\"invalid encoded state json: {}\"}}", error)
             }
         };
         match session.apply_encoded_state(encoded_state) {
@@ -165,10 +162,7 @@ pub fn collaboration_session_replace_encoded_state(id: u64, encoded_state_json: 
         let encoded_state: Vec<u8> = match serde_json::from_str(&encoded_state_json) {
             Ok(bytes) => bytes,
             Err(error) => {
-                return format!(
-                    "{{\"error\":\"invalid encoded state json: {}\"}}",
-                    error
-                )
+                return format!("{{\"error\":\"invalid encoded state json: {}\"}}", error)
             }
         };
         match session.replace_encoded_state(encoded_state) {
@@ -201,9 +195,7 @@ pub fn collaboration_session_set_local_awareness(id: u64, awareness_json: String
     with_collaboration_session(id, |session| {
         let value: serde_json::Value = match serde_json::from_str(&awareness_json) {
             Ok(value) => value,
-            Err(error) => {
-                return format!("{{\"error\":\"invalid awareness json: {}\"}}", error)
-            }
+            Err(error) => return format!("{{\"error\":\"invalid awareness json: {}\"}}", error),
         };
         serde_json::to_string(&session.set_local_awareness(value))
             .unwrap_or_else(|_| "{}".to_string())
@@ -215,8 +207,7 @@ pub fn collaboration_session_set_local_awareness(id: u64, awareness_json: String
 #[uniffi::export]
 pub fn collaboration_session_clear_local_awareness(id: u64) -> String {
     with_collaboration_session(id, |session| {
-        serde_json::to_string(&session.clear_local_awareness())
-            .unwrap_or_else(|_| "{}".to_string())
+        serde_json::to_string(&session.clear_local_awareness()).unwrap_or_else(|_| "{}".to_string())
     })
     .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
 }
@@ -708,15 +699,12 @@ pub fn editor_insert_node_at_selection_scalar(
 
 /// Resize an image node at a document position. Returns an update JSON string.
 #[uniffi::export]
-pub fn editor_resize_image_at_doc_pos(
-    id: u64,
-    doc_pos: u32,
-    width: u32,
-    height: u32,
-) -> String {
-    with_editor(id, |editor| match editor.resize_image_at_doc_pos(doc_pos, width, height) {
-        Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+pub fn editor_resize_image_at_doc_pos(id: u64, doc_pos: u32, width: u32, height: u32) -> String {
+    with_editor(id, |editor| {
+        match editor.resize_image_at_doc_pos(doc_pos, width, height) {
+            Ok(update) => serialize_editor_update(&update),
+            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -775,6 +763,22 @@ pub fn editor_insert_text_scalar(id: u64, scalar_pos: u32, text: String) -> Stri
 pub fn editor_delete_scalar_range(id: u64, scalar_from: u32, scalar_to: u32) -> String {
     with_editor(id, |editor| {
         match editor.delete_scalar_range(scalar_from, scalar_to) {
+            Ok(update) => serialize_editor_update(&update),
+            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        }
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
+/// Delete backward relative to an explicit scalar selection. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_delete_backward_at_selection_scalar(
+    id: u64,
+    scalar_anchor: u32,
+    scalar_head: u32,
+) -> String {
+    with_editor(id, |editor| {
+        match editor.delete_backward_at_selection_scalar(scalar_anchor, scalar_head) {
             Ok(update) => serialize_editor_update(&update),
             Err(e) => format!("{{\"error\":\"{}\"}}", e),
         }
@@ -887,9 +891,7 @@ fn serialize_render_elements(elements: &[render::RenderElement]) -> serde_json::
                     "docPos": doc_pos,
                 });
                 if !attrs.is_empty() {
-                    obj["attrs"] = serde_json::Value::Object(
-                        attrs.clone().into_iter().collect()
-                    );
+                    obj["attrs"] = serde_json::Value::Object(attrs.clone().into_iter().collect());
                 }
                 obj
             }
@@ -904,9 +906,7 @@ fn serialize_render_elements(elements: &[render::RenderElement]) -> serde_json::
                     "docPos": doc_pos,
                 });
                 if !attrs.is_empty() {
-                    obj["attrs"] = serde_json::Value::Object(
-                        attrs.clone().into_iter().collect()
-                    );
+                    obj["attrs"] = serde_json::Value::Object(attrs.clone().into_iter().collect());
                 }
                 obj
             }
@@ -986,8 +986,8 @@ fn parse_mark_attrs_json(
     if attrs_json.trim().is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let value: serde_json::Value =
-        serde_json::from_str(attrs_json).map_err(|error| format!("invalid mark attrs json: {}", error))?;
+    let value: serde_json::Value = serde_json::from_str(attrs_json)
+        .map_err(|error| format!("invalid mark attrs json: {}", error))?;
     match value {
         serde_json::Value::Object(map) => Ok(map.into_iter().collect()),
         _ => Err("invalid mark attrs json: expected object".to_string()),
