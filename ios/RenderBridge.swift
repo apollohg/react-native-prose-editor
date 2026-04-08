@@ -221,6 +221,12 @@ final class RenderBridge {
 
                 // Add inter-block newline if not the first block.
                 if !isFirstBlock {
+                    collapseTrailingSpacingBeforeHorizontalRuleIfNeeded(
+                        in: result,
+                        pendingParagraphSpacing: &pendingTrailingParagraphSpacing,
+                        nodeType: nodeType,
+                        theme: theme
+                    )
                     applyPendingTrailingParagraphSpacing(
                         in: result,
                         pendingParagraphSpacing: &pendingTrailingParagraphSpacing
@@ -323,12 +329,19 @@ final class RenderBridge {
                         } else {
                             newlineBlockStack = blockStack + [ctx]
                         }
+                        let collapsedSeparatorSpacing = collapsedParagraphSpacingAfterHorizontalRule(
+                            in: result,
+                            separatorBlockStack: newlineBlockStack,
+                            theme: theme,
+                            baseFont: baseFont
+                        )
                         result.append(
                             interBlockNewline(
                                 baseFont: baseFont,
                                 textColor: textColor,
                                 blockStack: newlineBlockStack,
-                                theme: theme
+                                theme: theme,
+                                paragraphSpacingOverride: collapsedSeparatorSpacing
                             )
                         )
                     }
@@ -541,7 +554,7 @@ final class RenderBridge {
             let attachment = HorizontalRuleAttachment()
             attachment.lineColor = theme?.horizontalRule?.color ?? textColor.withAlphaComponent(0.3)
             attachment.lineHeight = theme?.horizontalRule?.thickness ?? LayoutConstants.horizontalRuleHeight
-            attachment.verticalPadding = theme?.horizontalRule?.verticalMargin ?? LayoutConstants.horizontalRuleVerticalPadding
+            attachment.verticalPadding = resolvedHorizontalRuleVerticalMargin(theme: theme)
             let attrStr = NSMutableAttributedString(
                 attachment: attachment
             )
@@ -810,13 +823,21 @@ final class RenderBridge {
         baseFont: UIFont,
         textColor: UIColor,
         blockStack: [BlockContext],
-        theme: EditorTheme?
+        theme: EditorTheme?,
+        paragraphSpacingOverride: CGFloat? = nil
     ) -> NSAttributedString {
-        let attrs = applyBlockStyle(
+        var attrs = applyBlockStyle(
             to: defaultAttributes(baseFont: baseFont, textColor: textColor),
             blockStack: blockStack,
             theme: theme
         )
+        if let paragraphSpacingOverride,
+           let paragraphStyle = (attrs[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy()
+               as? NSMutableParagraphStyle
+        {
+            paragraphStyle.paragraphSpacing = paragraphSpacingOverride
+            attrs[.paragraphStyle] = paragraphStyle
+        }
         return NSAttributedString(string: "\n", attributes: attrs)
     }
 
@@ -891,6 +912,54 @@ final class RenderBridge {
         }
     }
 
+    private static func collapseTrailingSpacingBeforeHorizontalRuleIfNeeded(
+        in result: NSMutableAttributedString,
+        pendingParagraphSpacing: inout CGFloat?,
+        nodeType: String,
+        theme: EditorTheme?
+    ) {
+        guard nodeType == "horizontalRule" else { return }
+        let horizontalRuleMargin = resolvedHorizontalRuleVerticalMargin(theme: theme)
+
+        if let pendingSpacing = pendingParagraphSpacing {
+            pendingParagraphSpacing = collapsedSpacing(
+                existingSpacing: pendingSpacing,
+                adjacentHorizontalRuleMargin: horizontalRuleMargin
+            )
+            return
+        }
+
+        guard let trailingParagraphSpacing = trailingParagraphSpacing(in: result) else { return }
+        let adjustedSpacing = collapsedSpacing(
+            existingSpacing: trailingParagraphSpacing,
+            adjacentHorizontalRuleMargin: horizontalRuleMargin
+        )
+        guard abs(adjustedSpacing - trailingParagraphSpacing) > 0.01 else { return }
+        overrideTrailingParagraphSpacing(in: result, paragraphSpacing: adjustedSpacing)
+    }
+
+    private static func collapsedParagraphSpacingAfterHorizontalRule(
+        in result: NSAttributedString,
+        separatorBlockStack: [BlockContext],
+        theme: EditorTheme?,
+        baseFont: UIFont
+    ) -> CGFloat? {
+        guard let horizontalRuleMargin = trailingHorizontalRuleMargin(in: result),
+              let separatorSpacing = separatorParagraphSpacing(
+                  for: separatorBlockStack,
+                  theme: theme,
+                  baseFont: baseFont
+              )
+        else {
+            return nil
+        }
+
+        return collapsedSpacing(
+            existingSpacing: separatorSpacing,
+            adjacentHorizontalRuleMargin: horizontalRuleMargin
+        )
+    }
+
     @discardableResult
     private static func applyPendingTrailingParagraphSpacing(
         in result: NSMutableAttributedString,
@@ -900,6 +969,71 @@ final class RenderBridge {
         overrideTrailingParagraphSpacing(in: result, paragraphSpacing: paragraphSpacing)
         pendingParagraphSpacing = nil
         return true
+    }
+
+    private static func trailingParagraphSpacing(in result: NSAttributedString) -> CGFloat? {
+        guard result.length > 0 else { return nil }
+
+        let nsString = result.string as NSString
+        let paragraphRange = nsString.paragraphRange(for: NSRange(location: result.length - 1, length: 0))
+        var spacing: CGFloat? = nil
+        result.enumerateAttribute(.paragraphStyle, in: paragraphRange, options: [.reverse]) { value, _, stop in
+            if let paragraphStyle = value as? NSParagraphStyle {
+                spacing = paragraphStyle.paragraphSpacing
+                stop.pointee = true
+            }
+        }
+        return spacing
+    }
+
+    private static func separatorParagraphSpacing(
+        for blockStack: [BlockContext],
+        theme: EditorTheme?,
+        baseFont: UIFont
+    ) -> CGFloat? {
+        guard let currentBlock = effectiveBlockContext(blockStack) else { return nil }
+        return paragraphStyleForBlock(
+            currentBlock,
+            blockStack: blockStack,
+            theme: theme,
+            baseFont: baseFont
+        ).paragraphSpacing
+    }
+
+    private static func trailingHorizontalRuleMargin(in result: NSAttributedString) -> CGFloat? {
+        guard result.length > 0 else { return nil }
+        let nsString = result.string as NSString
+
+        for index in stride(from: result.length - 1, through: 0, by: -1) {
+            let scalar = nsString.character(at: index)
+            if scalar == 0x000A || scalar == 0x000D {
+                continue
+            }
+            guard result.attribute(
+                RenderBridgeAttributes.voidNodeType,
+                at: index,
+                effectiveRange: nil
+            ) as? String == "horizontalRule" else {
+                return nil
+            }
+            return (
+                result.attribute(.attachment, at: index, effectiveRange: nil)
+                    as? HorizontalRuleAttachment
+            )?.verticalPadding
+        }
+
+        return nil
+    }
+
+    private static func resolvedHorizontalRuleVerticalMargin(theme: EditorTheme?) -> CGFloat {
+        theme?.horizontalRule?.verticalMargin ?? LayoutConstants.horizontalRuleVerticalPadding
+    }
+
+    private static func collapsedSpacing(
+        existingSpacing: CGFloat,
+        adjacentHorizontalRuleMargin: CGFloat
+    ) -> CGFloat {
+        max(existingSpacing, adjacentHorizontalRuleMargin) - adjacentHorizontalRuleMargin
     }
 
     private static func appendTrailingHardBreakPlaceholderIfNeeded(

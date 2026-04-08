@@ -640,7 +640,7 @@ private final class ImageResizeOverlayView: UIView {
 /// fast enough for main-thread use. If profiling shows otherwise, we can
 /// dispatch to a serial queue and batch updates.
 final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerDelegate {
-    private static let emptyBlockPlaceholderScalar = UnicodeScalar(0x200B)
+    private static let emptyBlockPlaceholderScalar = UnicodeScalar(0x200B)!
 
     // MARK: - Properties
 
@@ -1160,6 +1160,12 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
 
     private func resolvedCaretReferenceRect(for position: UITextPosition) -> CGRect {
         let directRect = super.caretRect(for: position)
+        if let horizontalRuleRect = resolvedHorizontalRuleAdjacentCaretRect(
+            for: position,
+            directRect: directRect
+        ) {
+            return horizontalRuleRect
+        }
         guard directRect.height <= 0 || directRect.isEmpty else {
             return directRect
         }
@@ -1195,6 +1201,48 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         }
 
         return directRect
+    }
+
+    private func resolvedHorizontalRuleAdjacentCaretRect(
+        for position: UITextPosition,
+        directRect: CGRect
+    ) -> CGRect? {
+        guard textStorage.length > 0 else { return nil }
+
+        let utf16Offset = offset(from: beginningOfDocument, to: position)
+        let caretWidth = max(directRect.width, 2)
+
+        if isHorizontalRuleAttachment(at: utf16Offset),
+           let previousCharacterIndex = nearestVisibleCharacterIndex(
+               from: utf16Offset - 1,
+               direction: -1
+           ),
+           let previousRect = visibleSelectionRect(forCharacterAt: previousCharacterIndex)
+        {
+            return CGRect(
+                x: previousRect.maxX,
+                y: previousRect.minY,
+                width: caretWidth,
+                height: max(directRect.height, previousRect.height)
+            )
+        }
+
+        if isHorizontalRuleAttachment(at: utf16Offset - 1),
+           let nextCharacterIndex = nearestVisibleCharacterIndex(
+               from: utf16Offset,
+               direction: 1
+           ),
+           let nextRect = visibleSelectionRect(forCharacterAt: nextCharacterIndex)
+        {
+            return CGRect(
+                x: nextRect.minX,
+                y: nextRect.minY,
+                width: caretWidth,
+                height: max(directRect.height, nextRect.height)
+            )
+        }
+
+        return nil
     }
 
     // MARK: - Editor Binding
@@ -1338,7 +1386,12 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         } else {
             // Cursor: delete one grapheme cluster backward.
             let cursorPos = PositionBridge.textViewToScalar(selectedRange.start, in: self)
-            guard cursorPos > 0 else { return }
+            if cursorPos == 0 {
+                performInterceptedInput {
+                    deleteBackwardAtSelectionScalarInRust(anchor: cursorPos, head: cursorPos)
+                }
+                return
+            }
 
             let cursorUtf16Offset = offset(from: beginningOfDocument, to: selectedRange.start)
             if let marker = PositionBridge.virtualListMarker(
@@ -1380,7 +1433,11 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
             let prevScalar = PositionBridge.textViewToScalar(prevPos, in: self)
 
             performInterceptedInput {
-                deleteScalarRangeInRust(from: prevScalar, to: cursorPos)
+                if prevScalar < cursorPos {
+                    deleteScalarRangeInRust(from: prevScalar, to: cursorPos)
+                } else {
+                    deleteBackwardAtSelectionScalarInRust(anchor: cursorPos, head: cursorPos)
+                }
             }
         }
     }
@@ -1947,6 +2004,10 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         let rawOffset = offset(from: beginningOfDocument, to: position)
         let clampedOffset = min(max(rawOffset, 0), textStorage.length)
 
+        if let horizontalRuleBaselineY = horizontalRuleAdjacentBaselineY(at: clampedOffset) {
+            return horizontalRuleBaselineY
+        }
+
         if let hardBreakBaselineY = hardBreakBaselineY(after: clampedOffset) {
             return hardBreakBaselineY
         }
@@ -1990,6 +2051,91 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         }
 
         return bestMatch?.baselineY
+    }
+
+    private func horizontalRuleAdjacentBaselineY(at utf16Offset: Int) -> CGFloat? {
+        guard textStorage.length > 0 else { return nil }
+
+        if isHorizontalRuleAttachment(at: utf16Offset),
+           let previousCharacterIndex = nearestVisibleCharacterIndex(
+               from: utf16Offset - 1,
+               direction: -1
+           )
+        {
+            return baselineY(forCharacterAt: previousCharacterIndex)
+        }
+
+        if isHorizontalRuleAttachment(at: utf16Offset - 1),
+           let nextCharacterIndex = nearestVisibleCharacterIndex(
+               from: utf16Offset,
+               direction: 1
+           )
+        {
+            return baselineY(forCharacterAt: nextCharacterIndex)
+        }
+
+        return nil
+    }
+
+    private func baselineY(forCharacterAt characterIndex: Int) -> CGFloat? {
+        guard characterIndex >= 0, characterIndex < textStorage.length else { return nil }
+
+        let glyphIndex = layoutManager.glyphIndexForCharacter(at: characterIndex)
+        guard glyphIndex < layoutManager.numberOfGlyphs else { return nil }
+
+        let lineFragmentRect = layoutManager.lineFragmentRect(
+            forGlyphAt: glyphIndex,
+            effectiveRange: nil
+        )
+        let glyphLocation = layoutManager.location(forGlyphAt: glyphIndex)
+        return textContainerInset.top + lineFragmentRect.minY + glyphLocation.y
+    }
+
+    private func visibleSelectionRect(forCharacterAt characterIndex: Int) -> CGRect? {
+        guard characterIndex >= 0, characterIndex < textStorage.length else { return nil }
+        guard let start = position(from: beginningOfDocument, offset: characterIndex),
+              let end = position(from: start, offset: 1),
+              let range = textRange(from: start, to: end)
+        else {
+            return nil
+        }
+
+        return selectionRects(for: range)
+            .map(\.rect)
+            .first(where: { !$0.isEmpty && $0.width > 0 && $0.height > 0 })
+    }
+
+    private func nearestVisibleCharacterIndex(from startIndex: Int, direction: Int) -> Int? {
+        guard direction == -1 || direction == 1 else { return nil }
+        guard textStorage.length > 0 else { return nil }
+
+        let text = textStorage.string as NSString
+        var index = startIndex
+
+        while index >= 0, index < text.length {
+            let attrs = textStorage.attributes(at: index, effectiveRange: nil)
+            let character = text.substring(with: NSRange(location: index, length: 1))
+
+            if attrs[.attachment] == nil,
+               character != "\n",
+               character != "\r",
+               visibleSelectionRect(forCharacterAt: index) != nil
+            {
+                return index
+            }
+
+            index += direction
+        }
+
+        return nil
+    }
+
+    private func isHorizontalRuleAttachment(at utf16Offset: Int) -> Bool {
+        guard utf16Offset >= 0, utf16Offset < textStorage.length else { return false }
+
+        let attrs = textStorage.attributes(at: utf16Offset, effectiveRange: nil)
+        return attrs[.attachment] is NSTextAttachment
+            && (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "horizontalRule"
     }
 
     private func hardBreakBaselineY(after utf16Offset: Int) -> CGFloat? {
@@ -2194,6 +2340,18 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
             "[rust.deleteScalarRange] scalar=\(from)-\(to) selection=\(self.selectionSummary(), privacy: .public)"
         )
         let updateJSON = editorDeleteScalarRange(id: editorId, scalarFrom: from, scalarTo: to)
+        applyUpdateJSON(updateJSON)
+    }
+
+    private func deleteBackwardAtSelectionScalarInRust(anchor: UInt32, head: UInt32) {
+        Self.inputLog.debug(
+            "[rust.deleteBackwardAtSelectionScalar] scalar=\(anchor)-\(head) selection=\(self.selectionSummary(), privacy: .public)"
+        )
+        let updateJSON = editorDeleteBackwardAtSelectionScalar(
+            id: editorId,
+            scalarAnchor: anchor,
+            scalarHead: head
+        )
         applyUpdateJSON(updateJSON)
     }
 
@@ -2486,8 +2644,14 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
             let anchorScalar = editorDocToScalar(id: editorId, docPos: anchorNum.uint32Value)
             let headScalar = editorDocToScalar(id: editorId, docPos: headNum.uint32Value)
 
-            let startPos = PositionBridge.scalarToTextView(min(anchorScalar, headScalar), in: self)
-            let endPos = PositionBridge.scalarToTextView(max(anchorScalar, headScalar), in: self)
+            var startPos = PositionBridge.scalarToTextView(min(anchorScalar, headScalar), in: self)
+            var endPos = PositionBridge.scalarToTextView(max(anchorScalar, headScalar), in: self)
+            if anchorScalar == headScalar,
+               let adjustedPosition = autocapitalizationFriendlyEmptyBlockPosition(for: endPos)
+            {
+                startPos = adjustedPosition
+                endPos = adjustedPosition
+            }
             selectedTextRange = textRange(from: startPos, to: endPos)
             refreshNativeSelectionChromeVisibility()
             Self.selectionLog.debug(
@@ -2519,6 +2683,19 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         default:
             break
         }
+    }
+
+    private func autocapitalizationFriendlyEmptyBlockPosition(
+        for position: UITextPosition
+    ) -> UITextPosition? {
+        guard textStorage.length == 1 else { return nil }
+        guard textStorage.string.unicodeScalars.elementsEqual([Self.emptyBlockPlaceholderScalar]) else {
+            return nil
+        }
+
+        let utf16Offset = offset(from: beginningOfDocument, to: position)
+        guard utf16Offset == textStorage.length else { return nil }
+        return beginningOfDocument
     }
 
 }

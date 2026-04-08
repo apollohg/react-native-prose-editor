@@ -46,6 +46,24 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertLessThan(placeholderFrame.height, 200)
     }
 
+    func testEmptyDocumentSelectionStaysBeforePlaceholderForAutocapitalization() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        textView.bindEditor(id: editorId)
+
+        XCTAssertEqual(textView.text, "\u{200B}")
+        XCTAssertEqual(
+            textView.offset(
+                from: textView.beginningOfDocument,
+                to: textView.selectedTextRange?.start ?? textView.endOfDocument
+            ),
+            0,
+            "empty single-block documents should keep the caret at paragraph start so UIKit auto-capitalization still applies"
+        )
+    }
+
     func testEditorThemeContentInsetsApplyToTextView() {
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
         let defaultInset = view.textView.textContainerInset
@@ -1565,6 +1583,122 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(heightAfterBreak, heightAfterTyping, accuracy: 1.0)
     }
 
+    func testCaretBeforeHorizontalRuleUsesPreviousParagraphLine() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 220))
+        textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p><hr><p>World</p>")
+        textView.layoutIfNeeded()
+
+        guard let hrRange = firstHorizontalRuleRange(in: textView) else {
+            XCTFail("expected a horizontal rule attachment in the rendered text")
+            return
+        }
+        guard let previousCharacterIndex = previousVisibleCharacterIndex(before: hrRange.location, in: textView) else {
+            XCTFail("expected visible content before the horizontal rule")
+            return
+        }
+
+        setCollapsedSelection(in: textView, utf16Offset: hrRange.location)
+        guard let position = textView.selectedTextRange?.start else {
+            XCTFail("expected caret position before the horizontal rule")
+            return
+        }
+
+        let caretRect = textView.caretRect(for: position)
+        let expected = expectedCaretRectForCharacterEdge(
+            in: textView,
+            characterIndex: previousCharacterIndex,
+            edge: .trailing,
+            font: UIFont.systemFont(ofSize: 16)
+        )
+
+        XCTAssertEqual(caretRect.minX, expected.minX, accuracy: 1.0)
+        XCTAssertEqual(caretRect.minY, expected.minY, accuracy: 1.0)
+        XCTAssertEqual(caretRect.height, expected.height, accuracy: 1.0)
+    }
+
+    func testCaretAfterHorizontalRuleUsesFollowingParagraphLine() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 220))
+        textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p><hr><p>World</p>")
+        textView.layoutIfNeeded()
+
+        guard let hrRange = firstHorizontalRuleRange(in: textView) else {
+            XCTFail("expected a horizontal rule attachment in the rendered text")
+            return
+        }
+        guard let nextCharacterIndex = nextVisibleCharacterIndex(after: hrRange.location, in: textView) else {
+            XCTFail("expected visible content after the horizontal rule")
+            return
+        }
+
+        setCollapsedSelection(in: textView, utf16Offset: hrRange.location + hrRange.length)
+        guard let position = textView.selectedTextRange?.start else {
+            XCTFail("expected caret position after the horizontal rule")
+            return
+        }
+
+        let caretRect = textView.caretRect(for: position)
+        let expected = expectedCaretRectForCharacterEdge(
+            in: textView,
+            characterIndex: nextCharacterIndex,
+            edge: .leading,
+            font: UIFont.systemFont(ofSize: 16)
+        )
+
+        XCTAssertEqual(caretRect.minX, expected.minX, accuracy: 1.0)
+        XCTAssertEqual(caretRect.minY, expected.minY, accuracy: 1.0)
+        XCTAssertEqual(caretRect.height, expected.height, accuracy: 1.0)
+    }
+
+    func testToolbarHorizontalRulePlacesCaretInTrailingParagraphLine() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 220))
+        textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p>")
+
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.layoutIfNeeded()
+
+        textView.performToolbarInsertNode("horizontalRule")
+        textView.layoutIfNeeded()
+
+        guard let hrRange = firstHorizontalRuleRange(in: textView) else {
+            XCTFail("expected a horizontal rule attachment after toolbar insertion")
+            return
+        }
+        guard let position = textView.selectedTextRange?.start else {
+            XCTFail("expected a caret after inserting a horizontal rule")
+            return
+        }
+
+        let selectionOffset = textView.offset(from: textView.beginningOfDocument, to: position)
+        let caretRect = textView.caretRect(for: position)
+        let hrRect = renderedRect(in: textView, utf16Range: hrRange)
+
+        XCTAssertEqual(
+            editorGetHtml(id: editorId),
+            "<p>Hello</p><hr><p></p>",
+            "toolbar hr insert should create a trailing empty paragraph"
+        )
+        XCTAssertEqual(
+            selectionOffset,
+            textView.text.count,
+            "toolbar hr insert should place the caret at the end of the rendered trailing paragraph"
+        )
+        XCTAssertGreaterThan(
+            caretRect.midY,
+            hrRect.midY,
+            "caret after inserting a horizontal rule should render below the rule line"
+        )
+    }
+
     func testMentionSuggestionTapInsertsMentionNode() {
         let editorId = editorCreate(configJson: mentionEditorConfigJson())
         defer { editorDestroy(id: editorId) }
@@ -2384,6 +2518,56 @@ final class RichTextEditorViewTests: XCTestCase {
         return bestMatch?.baselineY
     }
 
+    private enum CharacterEdge {
+        case leading
+        case trailing
+    }
+
+    private func expectedCaretRectForCharacterEdge(
+        in textView: UITextView,
+        characterIndex: Int,
+        edge: CharacterEdge,
+        font: UIFont
+    ) -> CGRect {
+        guard let rect = visibleCharacterRect(in: textView, characterIndex: characterIndex) else {
+            XCTFail("expected visible rect for character index \(characterIndex)")
+            return .zero
+        }
+        guard let baselineY = baselineYForCharacter(in: textView, characterIndex: characterIndex) else {
+            XCTFail("expected baseline for character index \(characterIndex)")
+            return .zero
+        }
+
+        let referenceRect = CGRect(
+            x: edge == .leading ? rect.minX : rect.maxX,
+            y: rect.minY,
+            width: 2,
+            height: rect.height
+        )
+        return EditorTextView.adjustedCaretRect(
+            from: referenceRect,
+            baselineY: baselineY,
+            font: font,
+            screenScale: 2
+        )
+    }
+
+    private func baselineYForCharacter(
+        in textView: UITextView,
+        characterIndex: Int
+    ) -> CGFloat? {
+        guard characterIndex >= 0, characterIndex < textView.attributedText.length else { return nil }
+        let glyphIndex = textView.layoutManager.glyphIndexForCharacter(at: characterIndex)
+        guard glyphIndex < textView.layoutManager.numberOfGlyphs else { return nil }
+
+        let lineFragmentRect = textView.layoutManager.lineFragmentRect(
+            forGlyphAt: glyphIndex,
+            effectiveRange: nil
+        )
+        let glyphLocation = textView.layoutManager.location(forGlyphAt: glyphIndex)
+        return textView.textContainerInset.top + lineFragmentRect.minY + glyphLocation.y
+    }
+
     private func setCollapsedSelection(in textView: UITextView, utf16Offset: Int) {
         guard
             let position = textView.position(from: textView.beginningOfDocument, offset: utf16Offset),
@@ -2409,12 +2593,92 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.selectedTextRange = range
     }
 
+    private func previousVisibleCharacterIndex(
+        before utf16Offset: Int,
+        in textView: UITextView
+    ) -> Int? {
+        let text = textView.textStorage.string as NSString
+        guard text.length > 0 else { return nil }
+
+        var index = min(utf16Offset - 1, text.length - 1)
+        while index >= 0 {
+            let attrs = textView.textStorage.attributes(at: index, effectiveRange: nil)
+            let character = text.substring(with: NSRange(location: index, length: 1))
+            if attrs[.attachment] == nil,
+               character != "\n",
+               character != "\r",
+               visibleCharacterRect(in: textView, characterIndex: index) != nil
+            {
+                return index
+            }
+            index -= 1
+        }
+
+        return nil
+    }
+
+    private func nextVisibleCharacterIndex(
+        after utf16Offset: Int,
+        in textView: UITextView
+    ) -> Int? {
+        let text = textView.textStorage.string as NSString
+        guard text.length > 0 else { return nil }
+
+        var index = max(utf16Offset, 0)
+        while index < text.length {
+            let attrs = textView.textStorage.attributes(at: index, effectiveRange: nil)
+            let character = text.substring(with: NSRange(location: index, length: 1))
+            if attrs[.attachment] == nil,
+               character != "\n",
+               character != "\r",
+               visibleCharacterRect(in: textView, characterIndex: index) != nil
+            {
+                return index
+            }
+            index += 1
+        }
+
+        return nil
+    }
+
+    private func visibleCharacterRect(
+        in textView: UITextView,
+        characterIndex: Int
+    ) -> CGRect? {
+        guard characterIndex >= 0, characterIndex < textView.textStorage.length else { return nil }
+        guard let start = textView.position(from: textView.beginningOfDocument, offset: characterIndex),
+              let end = textView.position(from: start, offset: 1),
+              let range = textView.textRange(from: start, to: end)
+        else {
+            return nil
+        }
+
+        return textView.selectionRects(for: range)
+            .map(\.rect)
+            .first(where: { !$0.isEmpty && $0.width > 0 && $0.height > 0 })
+    }
+
     private func firstImageRange(in textView: UITextView) -> NSRange? {
         guard textView.textStorage.length > 0 else { return nil }
 
         for index in 0..<textView.textStorage.length {
             let attrs = textView.textStorage.attributes(at: index, effectiveRange: nil)
             if (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "image" {
+                return NSRange(location: index, length: 1)
+            }
+        }
+
+        return nil
+    }
+
+    private func firstHorizontalRuleRange(in textView: UITextView) -> NSRange? {
+        guard textView.textStorage.length > 0 else { return nil }
+
+        for index in 0..<textView.textStorage.length {
+            let attrs = textView.textStorage.attributes(at: index, effectiveRange: nil)
+            if attrs[.attachment] is NSTextAttachment,
+               (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "horizontalRule"
+            {
                 return NSRange(location: index, length: 1)
             }
         }

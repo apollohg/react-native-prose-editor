@@ -401,6 +401,57 @@ final class RenderBridgeTests: XCTestCase {
         }
     }
 
+    func testRender_horizontalRuleCollapsesAdjacentParagraphSpacing() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Above", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "voidBlock", "nodeType": "horizontalRule", "docPos": 7},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Below", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+        let theme = EditorTheme(dictionary: [
+            "paragraph": [
+                "spacingAfter": 14,
+            ],
+            "horizontalRule": [
+                "verticalMargin": 10,
+            ],
+        ])
+
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: theme
+        )
+
+        let nsString = result.string as NSString
+        let aboveRange = nsString.range(of: "Above")
+        let hrRange = nsString.range(of: "\u{FFFC}")
+        guard aboveRange.location != NSNotFound, hrRange.location != NSNotFound else {
+            XCTFail("expected both paragraph text and horizontal rule in rendered output")
+            return
+        }
+
+        let aboveParagraphStyle = result.attribute(.paragraphStyle, at: aboveRange.location, effectiveRange: nil)
+            as? NSParagraphStyle
+        let separatorParagraphStyle = result.attribute(
+            .paragraphStyle,
+            at: hrRange.location + hrRange.length,
+            effectiveRange: nil
+        ) as? NSParagraphStyle
+        let attachment = result.attribute(.attachment, at: hrRange.location, effectiveRange: nil)
+            as? HorizontalRuleAttachment
+
+        XCTAssertEqual(attachment?.verticalPadding ?? 0, 10, accuracy: 0.1)
+        XCTAssertEqual(aboveParagraphStyle?.paragraphSpacing ?? -1, 4, accuracy: 0.1)
+        XCTAssertEqual(separatorParagraphStyle?.paragraphSpacing ?? -1, 4, accuracy: 0.1)
+    }
+
     // MARK: - Multiple Paragraphs
 
     /// Two consecutive paragraphs should be separated by a newline.
