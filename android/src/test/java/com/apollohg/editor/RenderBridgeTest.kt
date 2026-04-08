@@ -285,6 +285,24 @@ class RenderBridgeTest {
             "Should have a HorizontalRuleSpan",
             hrSpans.isNotEmpty()
         )
+
+        val replacementMetrics = Paint.FontMetricsInt()
+        val hrOffset = string.indexOf('\uFFFC')
+        val hrSpan = hrSpans.single()
+        assertEquals(
+            "Horizontal rule should not reserve glyph width for the replacement character",
+            0,
+            hrSpan.getSize(TextPaint().apply { textSize = baseFontSize }, result, hrOffset, hrOffset + 1, replacementMetrics)
+        )
+
+        val layout = StaticLayout.Builder
+            .obtain(result, 0, result.length, TextPaint().apply { textSize = baseFontSize }, 240)
+            .build()
+        val hrLine = layout.getLineForOffset(hrOffset)
+        assertTrue(
+            "Horizontal rule line should not report a visible replacement glyph width; actual width=${layout.getLineWidth(hrLine)}",
+            layout.getLineWidth(hrLine) <= 1f
+        )
     }
 
     @Test

@@ -31,4 +31,23 @@ class EditorEditTextHardwareKeyTest {
         assertEquals(2, editText.selectionStart)
         assertEquals(2, editText.selectionEnd)
     }
+
+    @Test
+    fun `soft backspace over empty block placeholder routes through scalar fallback`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.editorId = 1
+        editText.isApplyingRustState = true
+        editText.setText("\u200B")
+        editText.isApplyingRustState = false
+        editText.setSelection(1)
+
+        var fallbackSelection: Pair<Int, Int>? = null
+        editText.onDeleteBackwardAtSelectionScalarInRustForTesting = { anchor, head ->
+            fallbackSelection = anchor to head
+        }
+
+        editText.handleDelete(1, 0)
+
+        assertEquals(0 to 0, fallbackSelection)
+    }
 }

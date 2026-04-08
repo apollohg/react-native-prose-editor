@@ -218,9 +218,29 @@ class HorizontalRuleSpan(
     private val lineColor: Int,
     private val lineHeight: Float = LayoutConstants.HORIZONTAL_RULE_HEIGHT,
     private val verticalPadding: Float = LayoutConstants.HORIZONTAL_RULE_VERTICAL_PADDING
-) : LeadingMarginSpan {
+) : ReplacementSpan(), LeadingMarginSpan {
 
     override fun getLeadingMargin(first: Boolean): Int = 0
+
+    override fun getSize(
+        paint: Paint,
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        fm: Paint.FontMetricsInt?
+    ): Int {
+        if (fm != null) {
+            val totalHeight = kotlin.math.ceil(lineHeight + (verticalPadding * 2)).toInt()
+            val halfHeight = totalHeight / 2
+            fm.ascent = -halfHeight
+            fm.top = fm.ascent
+            fm.descent = totalHeight - halfHeight
+            fm.bottom = fm.descent
+        }
+        // Keep the placeholder atom in the text model without reserving
+        // visible glyph width, so Android does not paint a tofu/OBJ box.
+        return 0
+    }
 
     override fun drawLeadingMargin(
         canvas: Canvas,
@@ -254,6 +274,21 @@ class HorizontalRuleSpan(
 
         paint.color = savedColor
         paint.style = savedStyle
+    }
+
+    override fun draw(
+        canvas: Canvas,
+        text: CharSequence,
+        start: Int,
+        end: Int,
+        x: Float,
+        top: Int,
+        y: Int,
+        bottom: Int,
+        paint: Paint
+    ) {
+        // Intentionally empty: drawLeadingMargin renders the separator line,
+        // and ReplacementSpan suppresses drawing the underlying FFFC glyph.
     }
 }
 

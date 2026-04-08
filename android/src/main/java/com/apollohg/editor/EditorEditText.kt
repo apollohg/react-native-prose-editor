@@ -136,6 +136,8 @@ class EditorEditText @JvmOverloads constructor(
     private var lastHandledHardwareKeyCode: Int? = null
     private var lastHandledHardwareKeyDownTime: Long? = null
     private var explicitSelectedImageRange: ImageSelectionRange? = null
+    internal var onDeleteRangeInRustForTesting: ((Int, Int) -> Unit)? = null
+    internal var onDeleteBackwardAtSelectionScalarInRustForTesting: ((Int, Int) -> Unit)? = null
 
     init {
         // Configure for rich text editing.
@@ -485,6 +487,15 @@ class EditorEditText @JvmOverloads constructor(
 
         val currentText = text?.toString() ?: ""
         val cursor = selectionStart
+        if (beforeLength > 0 &&
+            afterLength == 0 &&
+            cursor > 0 &&
+            currentText.getOrNull(cursor - 1) == EMPTY_BLOCK_PLACEHOLDER
+        ) {
+            val scalarCursor = PositionBridge.utf16ToScalar(cursor - 1, currentText)
+            deleteBackwardAtSelectionScalarInRust(scalarCursor, scalarCursor)
+            return
+        }
         val delStart = maxOf(0, cursor - beforeLength)
         val delEnd = minOf(currentText.length, cursor + afterLength)
 
@@ -493,6 +504,8 @@ class EditorEditText @JvmOverloads constructor(
 
         if (scalarStart < scalarEnd) {
             deleteRangeInRust(scalarStart, scalarEnd)
+        } else if (beforeLength > 0 && afterLength == 0) {
+            deleteBackwardAtSelectionScalarInRust(scalarEnd, scalarEnd)
         }
     }
 
@@ -531,6 +544,11 @@ class EditorEditText @JvmOverloads constructor(
             val scalarEnd = PositionBridge.utf16ToScalar(end, currentText)
             deleteRangeInRust(scalarStart, scalarEnd)
         } else if (start > 0) {
+            if (currentText.getOrNull(start - 1) == EMPTY_BLOCK_PLACEHOLDER) {
+                val scalarCursor = PositionBridge.utf16ToScalar(start - 1, currentText)
+                deleteBackwardAtSelectionScalarInRust(scalarCursor, scalarCursor)
+                return
+            }
             // Cursor: delete one grapheme cluster backward.
             // Find the previous grapheme boundary by snapping (start - 1).
             val breakIter = java.text.BreakIterator.getCharacterInstance()
@@ -540,7 +558,13 @@ class EditorEditText @JvmOverloads constructor(
 
             val scalarStart = PositionBridge.utf16ToScalar(prevUtf16, currentText)
             val scalarEnd = PositionBridge.utf16ToScalar(start, currentText)
-            deleteRangeInRust(scalarStart, scalarEnd)
+            if (scalarStart < scalarEnd) {
+                deleteRangeInRust(scalarStart, scalarEnd)
+            } else {
+                deleteBackwardAtSelectionScalarInRust(scalarEnd, scalarEnd)
+            }
+        } else {
+            deleteBackwardAtSelectionScalarInRust(0, 0)
         }
     }
 
@@ -934,7 +958,24 @@ class EditorEditText @JvmOverloads constructor(
      */
     private fun deleteRangeInRust(scalarFrom: Int, scalarTo: Int) {
         if (scalarFrom >= scalarTo) return
+        onDeleteRangeInRustForTesting?.let { callback ->
+            callback(scalarFrom, scalarTo)
+            return
+        }
         val updateJSON = editorDeleteScalarRange(editorId.toULong(), scalarFrom.toUInt(), scalarTo.toUInt())
+        applyUpdateJSON(updateJSON)
+    }
+
+    private fun deleteBackwardAtSelectionScalarInRust(scalarAnchor: Int, scalarHead: Int) {
+        onDeleteBackwardAtSelectionScalarInRustForTesting?.let { callback ->
+            callback(scalarAnchor, scalarHead)
+            return
+        }
+        val updateJSON = editorDeleteBackwardAtSelectionScalar(
+            editorId.toULong(),
+            scalarAnchor.toUInt(),
+            scalarHead.toUInt()
+        )
         applyUpdateJSON(updateJSON)
     }
 
