@@ -26,6 +26,7 @@ const MOCK_EMPTY_UPDATE_JSON = JSON.stringify({
         insertableNodes: [],
     },
     historyState: { canUndo: false, canRedo: false },
+    documentVersion: 1,
 });
 
 const MOCK_BOLD_UPDATE_JSON = JSON.stringify({
@@ -40,6 +41,7 @@ const MOCK_BOLD_UPDATE_JSON = JSON.stringify({
         insertableNodes: [],
     },
     historyState: { canUndo: true, canRedo: false },
+    documentVersion: 2,
 });
 
 const MOCK_COLLAPSED_BOLD_UPDATE_JSON = JSON.stringify({
@@ -54,6 +56,7 @@ const MOCK_COLLAPSED_BOLD_UPDATE_JSON = JSON.stringify({
         insertableNodes: [],
     },
     historyState: { canUndo: true, canRedo: false },
+    documentVersion: 1,
 });
 
 const MOCK_LIST_UPDATE_JSON = JSON.stringify({
@@ -68,6 +71,7 @@ const MOCK_LIST_UPDATE_JSON = JSON.stringify({
         insertableNodes: [],
     },
     historyState: { canUndo: true, canRedo: false },
+    documentVersion: 2,
 });
 
 const MOCK_ORDERED_LIST_UPDATE_JSON = JSON.stringify({
@@ -82,6 +86,7 @@ const MOCK_ORDERED_LIST_UPDATE_JSON = JSON.stringify({
         insertableNodes: [],
     },
     historyState: { canUndo: true, canRedo: false },
+    documentVersion: 3,
 });
 
 const MOCK_NODE_UPDATE_JSON = JSON.stringify({
@@ -96,6 +101,7 @@ const MOCK_NODE_UPDATE_JSON = JSON.stringify({
         insertableNodes: [],
     },
     historyState: { canUndo: true, canRedo: false },
+    documentVersion: 2,
 });
 
 const MOCK_INSERT_UPDATE_JSON = JSON.stringify({
@@ -124,6 +130,7 @@ const MOCK_UNDO_UPDATE_JSON = JSON.stringify({
         insertableNodes: [],
     },
     historyState: { canUndo: false, canRedo: true },
+    documentVersion: 1,
 });
 
 const MOCK_REDO_UPDATE_JSON = JSON.stringify({
@@ -138,6 +145,7 @@ const MOCK_REDO_UPDATE_JSON = JSON.stringify({
         insertableNodes: [],
     },
     historyState: { canUndo: true, canRedo: false },
+    documentVersion: 2,
 });
 
 const MOCK_DOCUMENT_JSON_STR = JSON.stringify({
@@ -159,6 +167,12 @@ const mockNativeModule = {
     editorGetHtml: jest.fn(() => '<p>test content</p>'),
     editorSetJson: jest.fn(() => '[]'),
     editorGetJson: jest.fn(() => MOCK_DOCUMENT_JSON_STR),
+    editorGetContentSnapshot: jest.fn(() =>
+        JSON.stringify({
+            html: '<p>test content</p>',
+            json: JSON.parse(MOCK_DOCUMENT_JSON_STR),
+        })
+    ),
     editorInsertText: jest.fn(() => MOCK_INSERT_UPDATE_JSON),
     editorReplaceSelectionText: jest.fn(() => MOCK_INSERT_UPDATE_JSON),
     editorDeleteRange: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
@@ -168,6 +182,7 @@ const mockNativeModule = {
     editorToggleHeading: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorSetSelection: jest.fn(),
     editorGetSelection: jest.fn(() => JSON.stringify({ type: 'text', anchor: 5, head: 5 })),
+    editorGetSelectionState: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorGetCurrentState: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorSplitBlock: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
     editorInsertContentHtml: jest.fn(() => MOCK_INSERT_UPDATE_JSON),
@@ -260,6 +275,12 @@ describe('NativeRichTextEditor', () => {
         mockNativeModule.editorGetHtml.mockReturnValue('<p>test content</p>');
         mockNativeModule.editorSetJson.mockReturnValue('[]');
         mockNativeModule.editorGetJson.mockReturnValue(MOCK_DOCUMENT_JSON_STR);
+        mockNativeModule.editorGetContentSnapshot.mockReturnValue(
+            JSON.stringify({
+                html: '<p>test content</p>',
+                json: JSON.parse(MOCK_DOCUMENT_JSON_STR),
+            })
+        );
         mockNativeModule.editorInsertText.mockReturnValue(MOCK_INSERT_UPDATE_JSON);
         mockNativeModule.editorReplaceSelectionText.mockReturnValue(MOCK_INSERT_UPDATE_JSON);
         mockNativeModule.editorDeleteRange.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
@@ -268,6 +289,7 @@ describe('NativeRichTextEditor', () => {
         mockNativeModule.editorGetSelection.mockReturnValue(
             JSON.stringify({ type: 'text', anchor: 5, head: 5 })
         );
+        mockNativeModule.editorGetSelectionState.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
         mockNativeModule.editorGetCurrentState.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
         mockNativeModule.editorSplitBlock.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
         mockNativeModule.editorInsertContentHtml.mockReturnValue(MOCK_INSERT_UPDATE_JSON);
@@ -682,14 +704,11 @@ describe('NativeRichTextEditor', () => {
             expect(mockApplyEditorUpdate).toHaveBeenCalledWith(MOCK_BOLD_UPDATE_JSON);
         });
 
-        it('toggleMark at a collapsed cursor skips native reapply when HTML is unchanged', () => {
+        it('toggleMark at a collapsed cursor skips native reapply when the document version is unchanged', () => {
             const ref = createRef<NativeRichTextEditorRef>();
             mockNativeModule.editorToggleMarkAtSelectionScalar.mockReturnValue(
                 MOCK_COLLAPSED_BOLD_UPDATE_JSON
             );
-            mockNativeModule.editorGetHtml
-                .mockReturnValueOnce('<p>abc</p>')
-                .mockReturnValueOnce('<p>abc</p>');
             render(<NativeRichTextEditor ref={ref} />);
 
             act(() => {
@@ -1313,7 +1332,21 @@ describe('NativeRichTextEditor', () => {
 
             act(() => {
                 getByTestId('native-editor-view').props.onSelectionChange({
-                    nativeEvent: { anchor: 5, head: 5 },
+                    nativeEvent: {
+                        anchor: 5,
+                        head: 5,
+                        stateJson: JSON.stringify({
+                            selection: { type: 'text', anchor: 5, head: 5 },
+                            activeState: {
+                                marks: {},
+                                nodes: { paragraph: true },
+                                commands: {},
+                                allowedMarks: [],
+                                insertableNodes: [],
+                            },
+                            historyState: { canUndo: false, canRedo: false },
+                        }),
+                    },
                 });
             });
 
@@ -1407,6 +1440,29 @@ describe('NativeRichTextEditor', () => {
             expect(onContentChange).toHaveBeenCalledWith('<p>test content</p>');
         });
 
+        it('uses the combined content snapshot when both content callbacks are subscribed', () => {
+            const onContentChange = jest.fn();
+            const onContentChangeJSON = jest.fn();
+            const ref = createRef<NativeRichTextEditorRef>();
+            render(
+                <NativeRichTextEditor
+                    ref={ref}
+                    onContentChange={onContentChange}
+                    onContentChangeJSON={onContentChangeJSON}
+                />
+            );
+
+            act(() => {
+                ref.current!.toggleMark('bold');
+            });
+
+            expect(mockNativeModule.editorGetContentSnapshot).toHaveBeenCalledTimes(1);
+            expect(mockNativeModule.editorGetHtml).not.toHaveBeenCalled();
+            expect(mockNativeModule.editorGetJson).not.toHaveBeenCalled();
+            expect(onContentChange).toHaveBeenCalledWith('<p>test content</p>');
+            expect(onContentChangeJSON).toHaveBeenCalledWith(JSON.parse(MOCK_DOCUMENT_JSON_STR));
+        });
+
         it('passes onEditorUpdate handler to native view', () => {
             const { getByTestId } = render(<NativeRichTextEditor onContentChange={jest.fn()} />);
             const view = getByTestId('native-editor-view');
@@ -1423,35 +1479,20 @@ describe('NativeRichTextEditor', () => {
             const onActiveStateChange = jest.fn();
             const onHistoryStateChange = jest.fn();
             const onSelectionChange = jest.fn();
-            mockNativeModule.editorGetCurrentState
-                .mockReturnValueOnce(
-                    JSON.stringify({
-                        renderElements: [],
-                        selection: { type: 'text', anchor: 0, head: 0 },
-                        activeState: {
-                            marks: {},
-                            nodes: { paragraph: true },
-                            commands: {},
-                            allowedMarks: ['bold'],
-                            insertableNodes: ['horizontalRule'],
-                        },
-                        historyState: { canUndo: false, canRedo: false },
-                    })
-                )
-                .mockReturnValueOnce(
-                    JSON.stringify({
-                        renderElements: [],
-                        selection: { type: 'text', anchor: 5, head: 5 },
-                        activeState: {
-                            marks: {},
-                            nodes: { bulletList: true, listItem: true },
-                            commands: { indentList: false, outdentList: true },
-                            allowedMarks: ['bold'],
-                            insertableNodes: [],
-                        },
-                        historyState: { canUndo: false, canRedo: false },
-                    })
-                );
+            mockNativeModule.editorGetCurrentState.mockReturnValueOnce(
+                JSON.stringify({
+                    renderElements: [],
+                    selection: { type: 'text', anchor: 0, head: 0 },
+                    activeState: {
+                        marks: {},
+                        nodes: { paragraph: true },
+                        commands: {},
+                        allowedMarks: ['bold'],
+                        insertableNodes: ['horizontalRule'],
+                    },
+                    historyState: { canUndo: false, canRedo: false },
+                })
+            );
 
             const { getByTestId } = render(
                 <NativeRichTextEditor
@@ -1463,11 +1504,26 @@ describe('NativeRichTextEditor', () => {
 
             act(() => {
                 getByTestId('native-editor-view').props.onSelectionChange({
-                    nativeEvent: { anchor: 5, head: 5 },
+                    nativeEvent: {
+                        anchor: 5,
+                        head: 5,
+                        stateJson: JSON.stringify({
+                            selection: { type: 'text', anchor: 5, head: 5 },
+                            activeState: {
+                                marks: {},
+                                nodes: { bulletList: true, listItem: true },
+                                commands: { indentList: false, outdentList: true },
+                                allowedMarks: ['bold'],
+                                insertableNodes: [],
+                            },
+                            historyState: { canUndo: false, canRedo: false },
+                        }),
+                    },
                 });
             });
 
-            expect(mockNativeModule.editorGetCurrentState).toHaveBeenCalledTimes(2);
+            expect(mockNativeModule.editorGetCurrentState).toHaveBeenCalledTimes(1);
+            expect(mockNativeModule.editorGetSelectionState).not.toHaveBeenCalled();
             expect(onActiveStateChange).toHaveBeenCalledWith({
                 marks: {},
                 markAttrs: {},
@@ -1484,6 +1540,43 @@ describe('NativeRichTextEditor', () => {
                 type: 'text',
                 anchor: 5,
                 head: 5,
+            });
+        });
+
+        it('falls back to editorGetSelectionState when the native selection event omits stateJson', () => {
+            const onActiveStateChange = jest.fn();
+            mockNativeModule.editorGetSelectionState.mockReturnValueOnce(
+                JSON.stringify({
+                    selection: { type: 'text', anchor: 9, head: 9 },
+                    activeState: {
+                        marks: { italic: true },
+                        nodes: { paragraph: true },
+                        commands: {},
+                        allowedMarks: ['italic'],
+                        insertableNodes: [],
+                    },
+                    historyState: { canUndo: true, canRedo: false },
+                })
+            );
+
+            const { getByTestId } = render(
+                <NativeRichTextEditor onActiveStateChange={onActiveStateChange} />
+            );
+
+            act(() => {
+                getByTestId('native-editor-view').props.onSelectionChange({
+                    nativeEvent: { anchor: 9, head: 9 },
+                });
+            });
+
+            expect(mockNativeModule.editorGetSelectionState).toHaveBeenCalledTimes(1);
+            expect(onActiveStateChange).toHaveBeenCalledWith({
+                marks: { italic: true },
+                markAttrs: {},
+                nodes: { paragraph: true },
+                commands: {},
+                allowedMarks: ['italic'],
+                insertableNodes: [],
             });
         });
 

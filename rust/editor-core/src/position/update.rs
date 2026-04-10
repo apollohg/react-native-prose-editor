@@ -1,8 +1,15 @@
 use crate::model::Document;
 use crate::transform::StepMap;
 
-use super::build::build_position_map;
+use super::build::{build_position_map, rebuild_existing_block_mapping};
 use super::PositionMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateMode {
+    Rebuild,
+    MarksOnly,
+    InlineTextOnly,
+}
 
 impl PositionMap {
     /// Incrementally update the position map after a transaction.
@@ -14,11 +21,23 @@ impl PositionMap {
     ///
     /// `step_map` is the composed mapping from the transaction.
     /// `new_doc` is the document *after* the transaction has been applied.
-    pub fn update(&mut self, step_map: &StepMap, new_doc: &Document) {
+    pub fn update(
+        &mut self,
+        step_map: &StepMap,
+        old_doc: &Document,
+        new_doc: &Document,
+        mode: UpdateMode,
+    ) {
+        if mode == UpdateMode::MarksOnly {
+            return;
+        }
+
         // Try incremental update for simple single-range edits.
-        if let Some(range) = step_map.single_range() {
-            if self.try_incremental_update(range, new_doc) {
-                return;
+        if mode == UpdateMode::InlineTextOnly {
+            if let Some(range) = step_map.single_range() {
+                if self.try_incremental_update(range, old_doc, new_doc) {
+                    return;
+                }
             }
         }
 
@@ -33,6 +52,7 @@ impl PositionMap {
     fn try_incremental_update(
         &mut self,
         (pos, deleted, inserted): (u32, u32, u32),
+        old_doc: &Document,
         new_doc: &Document,
     ) -> bool {
         // Find which block contains the edit position (using current deltas).
@@ -54,29 +74,45 @@ impl PositionMap {
 
         // Compute the doc delta.
         let doc_delta = inserted as i32 - deleted as i32;
+        let old_block = self.blocks[block_idx].clone();
 
-        // Rebuild the full map from the new document to get exact block data.
-        // This is the "simple version" — a smarter implementation would only
-        // rebuild the affected block.
-        let new_map = build_position_map(new_doc);
-        if block_idx >= new_map.blocks.len() {
+        // Structural edits like split/join shift adjacent block paths. Require
+        // the neighboring blocks to remain identical at the same paths before
+        // we trust an inline-only update.
+        if block_idx > 0 {
+            let previous = &self.blocks[block_idx - 1];
+            let old_previous = old_doc.node_at(&previous.node_path);
+            let new_previous = new_doc.node_at(&previous.node_path);
+            if old_previous != new_previous {
+                return false;
+            }
+        }
+        if block_idx + 1 < self.blocks.len() {
+            let next = &self.blocks[block_idx + 1];
+            let old_next = old_doc.node_at(&next.node_path);
+            let new_next = new_doc.node_at(&next.node_path);
+            if old_next != new_next {
+                return false;
+            }
+        }
+
+        let new_node = match new_doc.node_at(&old_block.node_path) {
+            Some(node) => node,
+            None => return false,
+        };
+        let rebuilt_block = match rebuild_existing_block_mapping(new_node, &old_block) {
+            Some(block) => block,
+            None => return false,
+        };
+        let rebuilt_doc_delta = rebuilt_block.doc_end as i32 - old_block.doc_end as i32;
+        if rebuilt_doc_delta != doc_delta {
             return false;
         }
 
-        // Verify the block structure hasn't changed (same number of blocks).
-        // If it has, a structural edit occurred and we need a full rebuild.
-        if new_map.blocks.len() != self.blocks.len() {
-            // Replace with new map (which is already built).
-            *self = new_map;
-            return true;
-        }
-
-        // Compute scalar delta before replacing the block.
-        let new_scalar_len = new_map.blocks[block_idx].scalar_len;
-        let scalar_delta = new_scalar_len as i32 - old_scalar_len as i32;
+        let scalar_delta = rebuilt_block.scalar_len as i32 - old_scalar_len as i32;
 
         // Update the modified block in-place.
-        self.blocks[block_idx] = new_map.blocks[block_idx].clone();
+        self.blocks[block_idx] = rebuilt_block;
 
         // Record delta for trailing blocks.
         if block_idx + 1 < self.blocks.len() {

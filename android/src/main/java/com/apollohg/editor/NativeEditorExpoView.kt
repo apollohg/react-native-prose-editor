@@ -65,6 +65,11 @@ class NativeEditorExpoView(
     private var addons = NativeEditorAddons(null)
     private var mentionQueryState: MentionQueryState? = null
     private var lastMentionEventJson: String? = null
+    private var lastThemeJson: String? = null
+    private var lastAddonsJson: String? = null
+    private var lastRemoteSelectionsJson: String? = null
+    private var lastToolbarItemsJson: String? = null
+    private var lastToolbarFrameJson: String? = null
     private var toolbarState = NativeToolbarState.empty
     private var showsToolbar = true
     private var toolbarPlacement = ToolbarPlacement.KEYBOARD
@@ -110,6 +115,8 @@ class NativeEditorExpoView(
     }
 
     fun setThemeJson(themeJson: String?) {
+        if (lastThemeJson == themeJson) return
+        lastThemeJson = themeJson
         val theme = EditorTheme.fromJson(themeJson)
         richTextView.applyTheme(theme)
         keyboardToolbarView.applyTheme(theme?.toolbar)
@@ -141,12 +148,16 @@ class NativeEditorExpoView(
     }
 
     fun setAddonsJson(addonsJson: String?) {
+        if (lastAddonsJson == addonsJson) return
+        lastAddonsJson = addonsJson
         addons = NativeEditorAddons.fromJson(addonsJson)
         keyboardToolbarView.applyMentionTheme(richTextView.editorEditText.theme?.mentions ?: addons.mentions?.theme)
         refreshMentionQuery()
     }
 
     fun setRemoteSelectionsJson(remoteSelectionsJson: String?) {
+        if (lastRemoteSelectionsJson == remoteSelectionsJson) return
+        lastRemoteSelectionsJson = remoteSelectionsJson
         richTextView.setRemoteSelections(
             RemoteSelectionDecoration.fromJson(context, remoteSelectionsJson)
         )
@@ -175,10 +186,14 @@ class NativeEditorExpoView(
     }
 
     fun setToolbarItemsJson(toolbarItemsJson: String?) {
+        if (lastToolbarItemsJson == toolbarItemsJson) return
+        lastToolbarItemsJson = toolbarItemsJson
         keyboardToolbarView.setItems(NativeToolbarItem.fromJson(toolbarItemsJson))
     }
 
     fun setToolbarFrameJson(toolbarFrameJson: String?) {
+        if (lastToolbarFrameJson == toolbarFrameJson) return
+        lastToolbarFrameJson = toolbarFrameJson
         if (toolbarFrameJson.isNullOrBlank()) {
             toolbarFrameInWindow = null
             return
@@ -304,20 +319,20 @@ class NativeEditorExpoView(
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
             apply.run()
         } else {
-            val latch = java.util.concurrent.CountDownLatch(1)
-            post {
-                apply.run()
-                latch.countDown()
+            if (!post(apply)) {
+                richTextView.post(apply)
             }
-            latch.await()
         }
     }
 
     override fun onSelectionChanged(anchor: Int, head: Int) {
-        refreshToolbarStateFromEditorSelection()
+        val stateJson = refreshToolbarStateFromEditorSelection()
         refreshMentionQuery()
         richTextView.refreshRemoteSelections()
-        val event = mapOf<String, Any>("anchor" to anchor, "head" to head)
+        val event = mutableMapOf<String, Any>("anchor" to anchor, "head" to head)
+        if (stateJson != null) {
+            event["stateJson"] = stateJson
+        }
         onSelectionChange(event)
     }
 
@@ -541,13 +556,13 @@ class NativeEditorExpoView(
         clearMentionQueryState()
     }
 
-    private fun refreshToolbarStateFromEditorSelection() {
-        if (richTextView.editorId == 0L) return
-        val state = NativeToolbarState.fromUpdateJson(
-            editorGetCurrentState(richTextView.editorId.toULong())
-        ) ?: return
+    private fun refreshToolbarStateFromEditorSelection(): String? {
+        if (richTextView.editorId == 0L) return null
+        val stateJson = editorGetSelectionState(richTextView.editorId.toULong())
+        val state = NativeToolbarState.fromUpdateJson(stateJson) ?: return null
         toolbarState = state
         keyboardToolbarView.applyState(state)
+        return stateJson
     }
 
     private fun ensureKeyboardToolbarAttached() {

@@ -362,6 +362,11 @@ void uniffi_editor_core_fn_func_editor_destroy(uint64_t id, RustCallStatus *_Non
 uint32_t uniffi_editor_core_fn_func_editor_doc_to_scalar(uint64_t id, uint32_t doc_pos, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_GET_CONTENT_SNAPSHOT
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_GET_CONTENT_SNAPSHOT
+RustBuffer uniffi_editor_core_fn_func_editor_get_content_snapshot(uint64_t id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_GET_CURRENT_STATE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_GET_CURRENT_STATE
 RustBuffer uniffi_editor_core_fn_func_editor_get_current_state(uint64_t id, RustCallStatus *_Nonnull out_status
@@ -380,6 +385,11 @@ RustBuffer uniffi_editor_core_fn_func_editor_get_json(uint64_t id, RustCallStatu
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_GET_SELECTION
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_GET_SELECTION
 RustBuffer uniffi_editor_core_fn_func_editor_get_selection(uint64_t id, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_GET_SELECTION_STATE
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_GET_SELECTION_STATE
+RustBuffer uniffi_editor_core_fn_func_editor_get_selection_state(uint64_t id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_INDENT_LIST_ITEM
@@ -989,6 +999,12 @@ uint16_t uniffi_editor_core_checksum_func_editor_doc_to_scalar(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_CONTENT_SNAPSHOT
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_CONTENT_SNAPSHOT
+uint16_t uniffi_editor_core_checksum_func_editor_get_content_snapshot(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_CURRENT_STATE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_CURRENT_STATE
 uint16_t uniffi_editor_core_checksum_func_editor_get_current_state(void
@@ -1010,6 +1026,12 @@ uint16_t uniffi_editor_core_checksum_func_editor_get_json(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_SELECTION
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_SELECTION
 uint16_t uniffi_editor_core_checksum_func_editor_get_selection(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_SELECTION_STATE
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_SELECTION_STATE
+uint16_t uniffi_editor_core_checksum_func_editor_get_selection_state(void
     
 );
 #endif

@@ -20,6 +20,13 @@ fn render_marks(node: &crate::model::Node) -> Vec<RenderMark> {
 /// Result of an incremental re-render: a block index and its regenerated elements.
 pub type BlockPatch = (usize, Vec<RenderElement>);
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderBlocksPatch {
+    pub start_index: usize,
+    pub delete_count: usize,
+    pub blocks: Vec<Vec<RenderElement>>,
+}
+
 /// Re-generate render elements for only the affected top-level blocks.
 ///
 /// `affected_indices` are 0-based indices into the document root's children
@@ -50,6 +57,89 @@ pub fn incremental(doc: &Document, schema: &Schema, affected_indices: &[usize]) 
     }
 
     results
+}
+
+pub fn render_blocks(doc: &Document, schema: &Schema) -> Vec<Vec<RenderElement>> {
+    let root = doc.root();
+    if root.child_count() == 0 {
+        return Vec::new();
+    }
+    let indices = (0..root.child_count()).collect::<Vec<_>>();
+    incremental(doc, schema, &indices)
+        .into_iter()
+        .map(|(_, elements)| elements)
+        .collect()
+}
+
+pub fn flatten_render_blocks(blocks: &[Vec<RenderElement>]) -> Vec<RenderElement> {
+    let mut elements = Vec::new();
+    for block in blocks {
+        elements.extend(block.iter().cloned());
+    }
+    elements
+}
+
+pub fn contiguous_render_blocks_patch(
+    old_doc: &Document,
+    new_doc: &Document,
+    schema: &Schema,
+) -> Option<RenderBlocksPatch> {
+    let old_children = old_doc
+        .root()
+        .content()
+        .map(|content| content.children())
+        .unwrap_or(&[]);
+    let new_children = new_doc
+        .root()
+        .content()
+        .map(|content| content.children())
+        .unwrap_or(&[]);
+
+    let mut prefix = 0usize;
+    while prefix < old_children.len()
+        && prefix < new_children.len()
+        && old_children[prefix] == new_children[prefix]
+    {
+        prefix += 1;
+    }
+
+    if prefix == old_children.len() && prefix == new_children.len() {
+        return None;
+    }
+
+    let mut old_suffix = old_children.len();
+    let mut new_suffix = new_children.len();
+    while old_suffix > prefix
+        && new_suffix > prefix
+        && old_children[old_suffix - 1] == new_children[new_suffix - 1]
+    {
+        old_suffix -= 1;
+        new_suffix -= 1;
+    }
+
+    let start_index = if prefix > 0 { prefix - 1 } else { 0 };
+    let old_end = if old_suffix < old_children.len() {
+        old_suffix + 1
+    } else {
+        old_suffix
+    };
+    let new_end = if new_suffix < new_children.len() {
+        new_suffix + 1
+    } else {
+        new_suffix
+    };
+
+    let affected_indices = (start_index..new_end).collect::<Vec<_>>();
+    let blocks = incremental(new_doc, schema, &affected_indices)
+        .into_iter()
+        .map(|(_, elements)| elements)
+        .collect::<Vec<_>>();
+
+    Some(RenderBlocksPatch {
+        start_index,
+        delete_count: old_end.saturating_sub(start_index),
+        blocks,
+    })
 }
 
 /// Generate render elements for a single top-level block and its descendants.

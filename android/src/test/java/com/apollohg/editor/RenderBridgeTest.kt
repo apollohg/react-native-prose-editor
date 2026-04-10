@@ -1,5 +1,6 @@
 package com.apollohg.editor
 
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
@@ -30,6 +31,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Unit tests for [RenderBridge] — conversion of RenderElement JSON into
@@ -426,6 +430,49 @@ class RenderBridgeTest {
         val (widthPx, heightPx) = imageSpan.currentSizePx()
         assertEquals(1, widthPx)
         assertEquals(1, heightPx)
+    }
+
+    @Test
+    fun `render - image loader deduplicates concurrent remote loads`() {
+        RenderImageLoader.resetForTesting()
+        val decodeCount = AtomicInteger(0)
+        val decodeStarted = CountDownLatch(1)
+        val releaseDecode = CountDownLatch(1)
+        val callbacks = CountDownLatch(2)
+        val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val loaded = mutableListOf<Bitmap?>()
+
+        RenderImageLoader.decodeSourceOverride = {
+            decodeCount.incrementAndGet()
+            decodeStarted.countDown()
+            assertTrue(releaseDecode.await(2, TimeUnit.SECONDS))
+            bitmap
+        }
+
+        try {
+            RenderImageLoader.load("https://example.com/cat.png") {
+                synchronized(loaded) {
+                    loaded += it
+                }
+                callbacks.countDown()
+            }
+            assertTrue(decodeStarted.await(2, TimeUnit.SECONDS))
+            RenderImageLoader.load("https://example.com/cat.png") {
+                synchronized(loaded) {
+                    loaded += it
+                }
+                callbacks.countDown()
+            }
+
+            releaseDecode.countDown()
+            assertTrue(callbacks.await(2, TimeUnit.SECONDS))
+            assertEquals(1, decodeCount.get())
+            assertEquals(2, loaded.size)
+            assertTrue(loaded.all { loadedBitmap -> loadedBitmap === bitmap })
+        } finally {
+            releaseDecode.countDown()
+            RenderImageLoader.resetForTesting()
+        }
     }
 
     @Test

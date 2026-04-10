@@ -1596,6 +1596,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var addons = NativeEditorAddons(mentions: nil)
     private var mentionQueryState: MentionQueryState?
     private var lastMentionEventJSON: String?
+    private var lastThemeJSON: String?
+    private var lastAddonsJSON: String?
+    private var lastRemoteSelectionsJSON: String?
+    private var lastToolbarItemsJSON: String?
+    private var lastToolbarFrameJSON: String?
     private var pendingEditorUpdateJSON: String?
     private var pendingEditorUpdateRevision = 0
     private var appliedEditorUpdateRevision = 0
@@ -1624,17 +1629,18 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     let onToolbarAction = EventDispatcher()
     let onAddonEvent = EventDispatcher()
     private var lastEmittedContentHeight: CGFloat = 0
+    private var cachedAutoGrowContentHeight: CGFloat = 0
 
     // MARK: - Initialization
 
     required init(appContext: AppContext? = nil) {
         richTextView = RichTextEditorView(frame: .zero)
         super.init(appContext: appContext)
-        richTextView.onHeightMayChange = { [weak self] in
+        richTextView.onHeightMayChange = { [weak self] measuredHeight in
             guard let self, self.heightBehavior == .autoGrow else { return }
+            self.cachedAutoGrowContentHeight = measuredHeight
             self.invalidateIntrinsicContentSize()
-            self.superview?.setNeedsLayout()
-            self.emitContentHeightIfNeeded(force: true)
+            self.emitContentHeightIfNeeded(force: true, measuredHeight: measuredHeight)
         }
         richTextView.textView.editorDelegate = self
         configureAccessoryToolbar()
@@ -1666,6 +1672,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         guard heightBehavior == .autoGrow else {
             return CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
         }
+        if cachedAutoGrowContentHeight > 0 {
+            return CGSize(width: UIView.noIntrinsicMetric, height: cachedAutoGrowContentHeight)
+        }
         return richTextView.intrinsicContentSize
     }
 
@@ -1676,6 +1685,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         let currentWidth = bounds.width.rounded(.towardZero)
         guard currentWidth != lastAutoGrowWidth else { return }
         lastAutoGrowWidth = currentWidth
+        cachedAutoGrowContentHeight = 0
         invalidateIntrinsicContentSize()
         emitContentHeightIfNeeded(force: true)
     }
@@ -1711,6 +1721,8 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     func setThemeJson(_ themeJson: String?) {
+        guard lastThemeJSON != themeJson else { return }
+        lastThemeJSON = themeJson
         let theme = EditorTheme.from(json: themeJson)
         richTextView.applyTheme(theme)
         accessoryToolbar.apply(theme: theme?.toolbar)
@@ -1724,12 +1736,16 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     func setAddonsJson(_ addonsJson: String?) {
+        guard lastAddonsJSON != addonsJson else { return }
+        lastAddonsJSON = addonsJson
         addons = NativeEditorAddons.from(json: addonsJson)
         accessoryToolbar.apply(mentionTheme: richTextView.textView.theme?.mentions ?? addons.mentions?.theme)
         refreshMentionQuery()
     }
 
     func setRemoteSelectionsJson(_ remoteSelectionsJson: String?) {
+        guard lastRemoteSelectionsJSON != remoteSelectionsJson else { return }
+        lastRemoteSelectionsJSON = remoteSelectionsJson
         richTextView.setRemoteSelections(RemoteSelectionDecoration.from(json: remoteSelectionsJson))
     }
 
@@ -1758,6 +1774,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         let nextBehavior = EditorHeightBehavior(rawValue: rawHeightBehavior) ?? .fixed
         guard nextBehavior != heightBehavior else { return }
         heightBehavior = nextBehavior
+        if nextBehavior != .autoGrow {
+            cachedAutoGrowContentHeight = 0
+        }
         richTextView.heightBehavior = nextBehavior
         invalidateIntrinsicContentSize()
         setNeedsLayout()
@@ -1770,22 +1789,29 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         richTextView.allowImageResizing = allowImageResizing
     }
 
-    private func emitContentHeightIfNeeded(force: Bool = false) {
+    private func emitContentHeightIfNeeded(force: Bool = false, measuredHeight: CGFloat? = nil) {
         guard heightBehavior == .autoGrow else { return }
-        let contentHeight = ceil(richTextView.intrinsicContentSize.height)
+        let resolvedHeight = measuredHeight
+            ?? (cachedAutoGrowContentHeight > 0 ? cachedAutoGrowContentHeight : richTextView.intrinsicContentSize.height)
+        let contentHeight = ceil(resolvedHeight)
         guard contentHeight > 0 else { return }
         guard force || abs(contentHeight - lastEmittedContentHeight) > 0.5 else { return }
+        cachedAutoGrowContentHeight = contentHeight
         lastEmittedContentHeight = contentHeight
         onContentHeightChange(["contentHeight": contentHeight])
     }
 
     func setToolbarButtonsJson(_ toolbarButtonsJson: String?) {
+        guard lastToolbarItemsJSON != toolbarButtonsJson else { return }
+        lastToolbarItemsJSON = toolbarButtonsJson
         toolbarItems = NativeToolbarItem.from(json: toolbarButtonsJson)
         accessoryToolbar.setItems(toolbarItems)
         refreshSystemAssistantToolbarIfNeeded()
     }
 
     func setToolbarFrameJson(_ toolbarFrameJson: String?) {
+        guard lastToolbarFrameJSON != toolbarFrameJson else { return }
+        lastToolbarFrameJSON = toolbarFrameJson
         guard let toolbarFrameJson,
               let data = toolbarFrameJson.data(using: .utf8),
               let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1917,11 +1943,15 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     // MARK: - EditorTextViewDelegate
 
     func editorTextView(_ textView: EditorTextView, selectionDidChange anchor: UInt32, head: UInt32) {
-        refreshToolbarStateFromEditorSelection()
+        let stateJSON = refreshToolbarStateFromEditorSelection()
         refreshSystemAssistantToolbarIfNeeded()
         refreshMentionQuery()
         richTextView.refreshRemoteSelections()
-        onSelectionChange(["anchor": Int(anchor), "head": Int(head)])
+        var event: [String: Any] = ["anchor": Int(anchor), "head": Int(head)]
+        if let stateJSON {
+            event["stateJson"] = stateJSON
+        }
+        onSelectionChange(event)
     }
 
     func editorTextView(_ textView: EditorTextView, didReceiveUpdate updateJSON: String) {
@@ -1936,12 +1966,14 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         onEditorUpdate(["updateJson": updateJSON])
     }
 
-    private func refreshToolbarStateFromEditorSelection() {
-        guard richTextView.editorId != 0 else { return }
-        let stateJSON = editorGetCurrentState(id: richTextView.editorId)
-        guard let state = NativeToolbarState(updateJSON: stateJSON) else { return }
+    @discardableResult
+    private func refreshToolbarStateFromEditorSelection() -> String? {
+        guard richTextView.editorId != 0 else { return nil }
+        let stateJSON = editorGetSelectionState(id: richTextView.editorId)
+        guard let state = NativeToolbarState(updateJSON: stateJSON) else { return nil }
         toolbarState = state
         accessoryToolbar.apply(state: state)
+        return stateJSON
     }
 
     private func configureAccessoryToolbar() {

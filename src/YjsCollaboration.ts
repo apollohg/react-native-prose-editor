@@ -122,8 +122,18 @@ const EMPTY_DOCUMENT: DocumentJSON = {
 };
 const SELECTION_AWARENESS_DEBOUNCE_MS = 40;
 
-function cloneDocument(doc: DocumentJSON): DocumentJSON {
-    return JSON.parse(JSON.stringify(doc)) as DocumentJSON;
+function cloneJsonValue<T>(value: T): T {
+    if (Array.isArray(value)) {
+        return value.map((item) => cloneJsonValue(item)) as T;
+    }
+    if (value != null && typeof value === 'object') {
+        const clone: Record<string, unknown> = {};
+        for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+            clone[key] = cloneJsonValue(nestedValue);
+        }
+        return clone as T;
+    }
+    return value;
 }
 
 function acceptingGroupsForContent(content: string, existingChildCount: number): string[] {
@@ -169,7 +179,10 @@ function acceptingGroupsForContent(content: string, existingChildCount: number):
 
 function defaultEmptyDocument(schema?: SchemaDefinition): DocumentJSON {
     if (!schema) {
-        return cloneDocument(EMPTY_DOCUMENT);
+        return {
+            type: 'doc',
+            content: [{ type: 'paragraph' }],
+        };
     }
 
     const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
@@ -187,7 +200,10 @@ function defaultEmptyDocument(schema?: SchemaDefinition): DocumentJSON {
         schema.nodes.find((node) => node.role === 'textBlock');
 
     if (!preferredTextBlock) {
-        return cloneDocument(EMPTY_DOCUMENT);
+        return {
+            type: 'doc',
+            content: [{ type: 'paragraph' }],
+        };
     }
 
     return {
@@ -198,12 +214,12 @@ function defaultEmptyDocument(schema?: SchemaDefinition): DocumentJSON {
 
 function initialFallbackDocument(options: YjsCollaborationOptions): DocumentJSON {
     return options.initialDocumentJson
-        ? cloneDocument(options.initialDocumentJson)
+        ? cloneJsonValue(options.initialDocumentJson)
         : defaultEmptyDocument(options.schema);
 }
 
 function awarenessToRecord(awareness: LocalAwarenessState): Record<string, unknown> {
-    return JSON.parse(JSON.stringify(awareness)) as Record<string, unknown>;
+    return awareness as unknown as Record<string, unknown>;
 }
 
 function normalizeMessageBytes(data: unknown): number[] | null {
@@ -341,7 +357,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             isConnected: false,
             documentJson: hasInitialEncodedState || options.initialDocumentJson == null
                 ? this.bridge.getDocumentJson()
-                : cloneDocument(options.initialDocumentJson),
+                : cloneJsonValue(options.initialDocumentJson),
         };
         this._peers = this.bridge.getPeers();
         if (options.connect !== false) {
@@ -565,7 +581,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     private applyResult(result: CollaborationResult): void {
         if (result.documentChanged && result.documentJson) {
             this.setState({
-                documentJson: cloneDocument(result.documentJson),
+                documentJson: result.documentJson,
             });
         }
         if (result.peersChanged && result.peers) {

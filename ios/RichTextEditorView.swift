@@ -120,9 +120,16 @@ private final class RemoteSelectionBadgeLabel: UILabel {
 }
 
 private final class RemoteSelectionOverlayView: UIView {
+    private struct ColoredRect {
+        let frame: CGRect
+        let color: UIColor
+    }
+
     weak var textView: EditorTextView?
     private var editorId: UInt64 = 0
     private var selections: [RemoteSelectionDecoration] = []
+    private var selectionViews: [UIView] = []
+    private var caretViews: [UIView] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -146,20 +153,26 @@ private final class RemoteSelectionOverlayView: UIView {
     }
 
     func refresh() {
-        subviews.forEach { $0.removeFromSuperview() }
         guard editorId != 0,
               let textView
         else {
+            syncSelectionViews(with: [])
+            syncCaretViews(with: [])
             return
         }
+
+        var selectionRects: [ColoredRect] = []
+        var caretRects: [ColoredRect] = []
 
         for selection in selections {
             let geometry = geometry(for: selection, in: textView)
             for rect in geometry.selectionRects {
-                let selectionView = UIView(frame: rect.integral)
-                selectionView.backgroundColor = selection.color.withAlphaComponent(0.18)
-                selectionView.layer.cornerRadius = 3
-                addSubview(selectionView)
+                selectionRects.append(
+                    ColoredRect(
+                        frame: rect.integral,
+                        color: selection.color.withAlphaComponent(0.18)
+                    )
+                )
             }
 
             guard selection.isFocused,
@@ -168,16 +181,29 @@ private final class RemoteSelectionOverlayView: UIView {
                 continue
             }
 
-            let caretView = UIView(frame: CGRect(
-                x: round(caretRect.minX),
-                y: round(caretRect.minY),
-                width: max(2, round(caretRect.width)),
-                height: round(caretRect.height)
-            ))
-            caretView.backgroundColor = selection.color
-            caretView.layer.cornerRadius = caretView.bounds.width / 2
-            addSubview(caretView)
+            caretRects.append(
+                ColoredRect(
+                    frame: CGRect(
+                        x: round(caretRect.minX),
+                        y: round(caretRect.minY),
+                        width: max(2, round(caretRect.width)),
+                        height: round(caretRect.height)
+                    ),
+                    color: selection.color
+                )
+            )
         }
+
+        syncSelectionViews(with: selectionRects)
+        syncCaretViews(with: caretRects)
+    }
+
+    var hasVisibleDecorations: Bool {
+        selectionViews.contains { !$0.isHidden } || caretViews.contains { !$0.isHidden }
+    }
+
+    var hasSelectionsOrVisibleDecorations: Bool {
+        !selections.isEmpty || hasVisibleDecorations
     }
 
     private func geometry(
@@ -250,6 +276,49 @@ private final class RemoteSelectionOverlayView: UIView {
         }
 
         return directRect
+    }
+
+    private func syncSelectionViews(with rects: [ColoredRect]) {
+        syncViews(rects, existingViews: &selectionViews) { view, rect in
+            view.frame = rect.frame
+            view.backgroundColor = rect.color
+            view.layer.cornerRadius = 3
+        }
+    }
+
+    private func syncCaretViews(with rects: [ColoredRect]) {
+        syncViews(rects, existingViews: &caretViews) { view, rect in
+            view.frame = rect.frame
+            view.backgroundColor = rect.color
+            view.layer.cornerRadius = view.bounds.width / 2
+            bringSubviewToFront(view)
+        }
+    }
+
+    private func syncViews(
+        _ rects: [ColoredRect],
+        existingViews: inout [UIView],
+        configure: (UIView, ColoredRect) -> Void
+    ) {
+        while existingViews.count < rects.count {
+            let view = UIView(frame: .zero)
+            view.isUserInteractionEnabled = false
+            addSubview(view)
+            existingViews.append(view)
+        }
+
+        for (index, rect) in rects.enumerated() {
+            let view = existingViews[index]
+            view.isHidden = false
+            configure(view, rect)
+        }
+
+        if existingViews.count > rects.count {
+            for view in existingViews[rects.count...] {
+                view.isHidden = true
+                view.frame = .zero
+            }
+        }
     }
 }
 
@@ -425,6 +494,10 @@ private final class ImageResizeOverlayView: UIView {
 
     var visibleRectForTesting: CGRect? {
         isHidden ? nil : currentRect
+    }
+
+    var isOverlayVisible: Bool {
+        !isHidden
     }
 
     var previewHasImageForTesting: Bool {
@@ -642,6 +715,116 @@ private final class ImageResizeOverlayView: UIView {
 final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerDelegate {
     private static let emptyBlockPlaceholderScalar = UnicodeScalar(0x200B)!
 
+    override var undoManager: UndoManager? { nil }
+
+    struct ApplyUpdateTrace {
+        let attemptedPatch: Bool
+        let usedPatch: Bool
+        let usedSmallPatchTextMutation: Bool
+        let applyRenderReplaceUtf16Length: Int
+        let applyRenderReplacementUtf16Length: Int
+        let parseNanos: UInt64
+        let resolveRenderBlocksNanos: UInt64
+        let patchEligibilityNanos: UInt64
+        let patchTrimNanos: UInt64
+        let patchMetadataNanos: UInt64
+        let buildRenderNanos: UInt64
+        let applyRenderNanos: UInt64
+        let selectionNanos: UInt64
+        let postApplyNanos: UInt64
+        let totalNanos: UInt64
+        let applyRenderTextMutationNanos: UInt64
+        let applyRenderBeginEditingNanos: UInt64
+        let applyRenderEndEditingNanos: UInt64
+        let applyRenderStringMutationNanos: UInt64
+        let applyRenderAttributeMutationNanos: UInt64
+        let applyRenderAuthorizedTextNanos: UInt64
+        let applyRenderCacheInvalidationNanos: UInt64
+        let selectionResolveNanos: UInt64
+        let selectionAssignmentNanos: UInt64
+        let selectionChromeNanos: UInt64
+        let postApplyTypingAttributesNanos: UInt64
+        let postApplyHeightNotifyNanos: UInt64
+        let postApplyHeightNotifyMeasureNanos: UInt64
+        let postApplyHeightNotifyCallbackNanos: UInt64
+        let postApplyHeightNotifyEnsureLayoutNanos: UInt64
+        let postApplyHeightNotifyUsedRectNanos: UInt64
+        let postApplyHeightNotifyContentSizeNanos: UInt64
+        let postApplyHeightNotifySizeThatFitsNanos: UInt64
+        let postApplySelectionOrContentCallbackNanos: UInt64
+    }
+
+    private struct PatchApplyTrace {
+        let applied: Bool
+        let eligibilityNanos: UInt64
+        let trimNanos: UInt64
+        let metadataNanos: UInt64
+        let buildRenderNanos: UInt64
+        let applyRenderNanos: UInt64
+        let applyRenderReplaceUtf16Length: Int
+        let applyRenderReplacementUtf16Length: Int
+        let applyRenderTextMutationNanos: UInt64
+        let applyRenderBeginEditingNanos: UInt64
+        let applyRenderEndEditingNanos: UInt64
+        let applyRenderStringMutationNanos: UInt64
+        let applyRenderAttributeMutationNanos: UInt64
+        let applyRenderAuthorizedTextNanos: UInt64
+        let applyRenderCacheInvalidationNanos: UInt64
+        let usedSmallPatchTextMutation: Bool
+    }
+
+    private struct ApplyRenderTrace {
+        let totalNanos: UInt64
+        let replaceUtf16Length: Int
+        let replacementUtf16Length: Int
+        let textMutationNanos: UInt64
+        let beginEditingNanos: UInt64
+        let endEditingNanos: UInt64
+        let stringMutationNanos: UInt64
+        let attributeMutationNanos: UInt64
+        let authorizedTextNanos: UInt64
+        let cacheInvalidationNanos: UInt64
+        let usedSmallPatchTextMutation: Bool
+    }
+
+    private struct SelectionApplyTrace {
+        let totalNanos: UInt64
+        let resolveNanos: UInt64
+        let assignmentNanos: UInt64
+        let chromeNanos: UInt64
+    }
+
+    private struct PostApplyTrace {
+        let totalNanos: UInt64
+        let typingAttributesNanos: UInt64
+        let heightNotifyNanos: UInt64
+        let heightNotifyMeasureNanos: UInt64
+        let heightNotifyCallbackNanos: UInt64
+        let heightNotifyEnsureLayoutNanos: UInt64
+        let heightNotifyUsedRectNanos: UInt64
+        let heightNotifyContentSizeNanos: UInt64
+        let heightNotifySizeThatFitsNanos: UInt64
+        let selectionOrContentCallbackNanos: UInt64
+    }
+
+    private struct TopLevelChildMetadata {
+        var startOffset: Int
+        var containsAttachment: Bool
+        var containsPositionAdjustments: Bool
+    }
+
+    private struct TopLevelChildMetadataSlice {
+        let startIndex: Int
+        let entries: [TopLevelChildMetadata]
+    }
+
+    private enum PositionCacheUpdate {
+        case scan
+        case invalidate
+        case plainText
+        case attributed
+    }
+
     // MARK: - Properties
 
     /// The Rust editor instance ID (from editor_create / editor_create_with_max_length).
@@ -657,10 +840,20 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
     var allowImageResizing = true
 
     /// The base font used for unstyled text. Configurable from React props.
-    var baseFont: UIFont = .systemFont(ofSize: 16)
+    var baseFont: UIFont = .systemFont(ofSize: 16) {
+        didSet {
+            placeholderLabel.font = resolvedDefaultFont()
+            renderAppearanceRevision &+= 1
+            invalidateAutoGrowHeightMeasurement()
+        }
+    }
 
     /// The base text color. Configurable from React props.
-    var baseTextColor: UIColor = .label
+    var baseTextColor: UIColor = .label {
+        didSet {
+            renderAppearanceRevision &+= 1
+        }
+    }
 
     /// The base background color before theme overrides.
     var baseBackgroundColor: UIColor = .systemBackground
@@ -669,6 +862,7 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
     /// Optional render theme supplied by React.
     var theme: EditorTheme? {
         didSet {
+            renderAppearanceRevision &+= 1
             placeholderLabel.font = resolvedDefaultFont()
             backgroundColor = theme?.backgroundColor ?? baseBackgroundColor
             if let contentInsets = theme?.contentInsets {
@@ -681,6 +875,7 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
             } else {
                 textContainerInset = baseTextContainerInset
             }
+            invalidateAutoGrowHeightMeasurement()
             setNeedsLayout()
         }
     }
@@ -689,22 +884,42 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         didSet {
             guard oldValue != heightBehavior else { return }
             isScrollEnabled = heightBehavior == .fixed
+            invalidateAutoGrowHeightMeasurement()
             invalidateIntrinsicContentSize()
             notifyHeightChangeIfNeeded(force: true)
         }
     }
 
-    var onHeightMayChange: (() -> Void)?
+    var onHeightMayChange: ((CGFloat) -> Void)?
     var onViewportMayChange: (() -> Void)?
     var onSelectionOrContentMayChange: (() -> Void)?
     private var lastAutoGrowMeasuredHeight: CGFloat = 0
+    private var lastAutoGrowMeasuredWidth: CGFloat = 0
+    private var autoGrowHostHeight: CGFloat = 0
+    private var autoGrowHeightCheckIsDirty = true
+    private var lastHeightNotifyMeasureNanosForTesting: UInt64 = 0
+    private var lastHeightNotifyCallbackNanosForTesting: UInt64 = 0
+    private var lastHeightNotifyEnsureLayoutNanosForTesting: UInt64 = 0
+    private var lastHeightNotifyUsedRectNanosForTesting: UInt64 = 0
+    private var lastHeightNotifyContentSizeNanosForTesting: UInt64 = 0
+    private var lastHeightNotifySizeThatFitsNanosForTesting: UInt64 = 0
 
     /// Delegate for editor events.
     weak var editorDelegate: EditorTextViewDelegate?
 
     /// The plain text from the last Rust render, used by the reconciliation
     /// fallback to detect unauthorized text storage mutations.
-    private(set) var lastAuthorizedText: String = ""
+    private var lastAuthorizedTextStorage = NSMutableString()
+    private var lastAuthorizedText: String {
+        lastAuthorizedTextStorage as String
+    }
+    private(set) var lastRenderAppliedPatchForTesting: Bool = false
+    var captureApplyUpdateTraceForTesting = false
+    private(set) var lastApplyUpdateTraceForTesting: ApplyUpdateTrace?
+    private var currentRenderBlocks: [[[String: Any]]]? = nil
+    private var currentTopLevelChildMetadata: [TopLevelChildMetadata]? = nil
+    private var renderAppearanceRevision: UInt64 = 1
+    private var lastAppliedRenderAppearanceRevision: UInt64 = 0
 
     /// Number of times the reconciliation fallback has fired. Exposed for
     /// monitoring / kill-condition telemetry.
@@ -795,7 +1010,9 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
 
     private func commonInit() {
         textContainer.widthTracksTextView = true
-        editorLayoutManager.allowsNonContiguousLayout = false
+        // Large documents edit more smoothly when TextKit can invalidate and
+        // relayout only the touched region instead of forcing contiguous layout.
+        editorLayoutManager.allowsNonContiguousLayout = true
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleImageAttachmentDidLoad(_:)),
@@ -855,6 +1072,7 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         textStorage.beginEditing()
         textStorage.edited(.editedAttributes, range: NSRange(location: 0, length: textStorage.length), changeInLength: 0)
         textStorage.endEditing()
+        invalidateAutoGrowHeightMeasurement()
         setNeedsLayout()
         invalidateIntrinsicContentSize()
         onSelectionOrContentMayChange?()
@@ -880,28 +1098,43 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        installImageSelectionTapDependencies()
         let placeholderX = textContainerInset.left + textContainer.lineFragmentPadding
         let placeholderY = textContainerInset.top
         let placeholderWidth = max(
             0,
             bounds.width - textContainerInset.left - textContainerInset.right - 2 * textContainer.lineFragmentPadding
         )
-        let maxPlaceholderHeight = max(
-            0,
-            bounds.height - textContainerInset.top - textContainerInset.bottom
-        )
-        let fittedHeight = placeholderLabel.sizeThatFits(
-            CGSize(width: placeholderWidth, height: CGFloat.greatestFiniteMagnitude)
-        ).height
-        placeholderLabel.frame = CGRect(
-            x: placeholderX,
-            y: placeholderY,
-            width: placeholderWidth,
-            height: min(maxPlaceholderHeight, ceil(fittedHeight))
-        )
+        if placeholderLabel.isHidden {
+            placeholderLabel.frame = CGRect(
+                x: placeholderX,
+                y: placeholderY,
+                width: placeholderWidth,
+                height: 0
+            )
+        } else {
+            let maxPlaceholderHeight = max(
+                0,
+                bounds.height - textContainerInset.top - textContainerInset.bottom
+            )
+            let fittedHeight = placeholderLabel.sizeThatFits(
+                CGSize(width: placeholderWidth, height: CGFloat.greatestFiniteMagnitude)
+            ).height
+            placeholderLabel.frame = CGRect(
+                x: placeholderX,
+                y: placeholderY,
+                width: placeholderWidth,
+                height: min(maxPlaceholderHeight, ceil(fittedHeight))
+            )
+        }
         if heightBehavior == .autoGrow, !isPreviewingImageResize {
-            notifyHeightChangeIfNeeded()
+            let currentWidth = ceil(bounds.width)
+            if abs(currentWidth - lastAutoGrowMeasuredWidth) > 0.5 {
+                autoGrowHeightCheckIsDirty = true
+                lastAutoGrowMeasuredWidth = currentWidth
+            }
+            if autoGrowHeightCheckIsDirty {
+                notifyHeightChangeIfNeeded()
+            }
         }
         if !isPreviewingImageResize {
             onViewportMayChange?()
@@ -1031,7 +1264,11 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         let fullRange = NSRange(location: 0, length: textStorage.length)
         var resolvedRange: NSRange?
 
-        textStorage.enumerateAttribute(.attachment, in: fullRange) { value, range, stop in
+        textStorage.enumerateAttribute(
+            .attachment,
+            in: fullRange,
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, range, stop in
             guard value is NSTextAttachment, range.length > 0 else { return }
 
             let attrs = textStorage.attributes(at: range.location, effectiveRange: nil)
@@ -1062,6 +1299,14 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
 
     func placeholderFrameForTesting() -> CGRect {
         placeholderLabel.frame
+    }
+
+    func lastRenderAppliedPatch() -> Bool {
+        lastRenderAppliedPatchForTesting
+    }
+
+    func lastApplyUpdateTrace() -> ApplyUpdateTrace? {
+        lastApplyUpdateTraceForTesting
     }
 
     func blockquoteStripeRectsForTesting() -> [CGRect] {
@@ -1156,6 +1401,10 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
             font: caretFont,
             screenScale: screenScale
         )
+    }
+
+    func measuredAutoGrowHeightForTesting(width: CGFloat) -> CGFloat {
+        measuredAutoGrowHeight(forWidth: width)
     }
 
     private func resolvedCaretReferenceRect(for position: UITextPosition) -> CGRect {
@@ -1256,12 +1505,13 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         editorId = id
 
         if let html = initialHTML, !html.isEmpty {
-            let renderJSON = editorSetHtml(id: editorId, html: html)
-            applyRenderJSON(renderJSON)
+            _ = editorSetHtml(id: editorId, html: html)
+            let stateJSON = editorGetCurrentState(id: editorId)
+            applyUpdateJSON(stateJSON, notifyDelegate: false)
         } else {
             // Pull current state from Rust (content may already be loaded via bridge).
             let stateJSON = editorGetCurrentState(id: editorId)
-            applyUpdateJSON(stateJSON)
+            applyUpdateJSON(stateJSON, notifyDelegate: false)
         }
     }
 
@@ -1696,6 +1946,7 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
     /// internally during tap handling and word-boundary resolution.
     func textViewDidChangeSelection(_ textView: UITextView) {
         guard textView === self else { return }
+        guard !isApplyingRustState else { return }
         refreshNativeSelectionChromeVisibility()
         onSelectionOrContentMayChange?()
         scheduleSelectionSync()
@@ -1833,11 +2084,18 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
     }
 
     private func refreshNativeSelectionChromeVisibility() {
-        let hidden = selectedImageGeometry() != nil
+        let hidden = selectedImageSelectionState() != nil
         if !hidden, tintColor.cgColor.alpha > 0 {
             visibleSelectionTintColor = tintColor
         }
         setNativeSelectionChromeHidden(hidden)
+    }
+
+    private func showNativeSelectionChromeIfNeeded() {
+        if tintColor.cgColor.alpha > 0 {
+            visibleSelectionTintColor = tintColor
+        }
+        setNativeSelectionChromeHidden(false)
     }
 
     func refreshSelectionVisualState() {
@@ -1934,12 +2192,143 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         guard heightBehavior == .autoGrow else { return }
         let width = bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width
         guard width > 0 else { return }
-        let measuredHeight = ceil(
-            sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)).height
-        )
+        if !force {
+            let measuredWidth = ceil(width)
+            if !autoGrowHeightCheckIsDirty && abs(measuredWidth - lastAutoGrowMeasuredWidth) <= 0.5 {
+                return
+            }
+        }
+        lastHeightNotifyEnsureLayoutNanosForTesting = 0
+        lastHeightNotifyUsedRectNanosForTesting = 0
+        lastHeightNotifyContentSizeNanosForTesting = 0
+        lastHeightNotifySizeThatFitsNanosForTesting = 0
+        let measurementStartedAt = DispatchTime.now().uptimeNanoseconds
+        let measuredHeight = measuredAutoGrowHeight(forWidth: width)
+        lastHeightNotifyMeasureNanosForTesting =
+            DispatchTime.now().uptimeNanoseconds - measurementStartedAt
+        autoGrowHeightCheckIsDirty = false
+        lastAutoGrowMeasuredWidth = ceil(width)
         guard force || abs(measuredHeight - lastAutoGrowMeasuredHeight) > 0.5 else { return }
         lastAutoGrowMeasuredHeight = measuredHeight
-        onHeightMayChange?()
+        let callbackStartedAt = DispatchTime.now().uptimeNanoseconds
+        onHeightMayChange?(measuredHeight)
+        lastHeightNotifyCallbackNanosForTesting =
+            DispatchTime.now().uptimeNanoseconds - callbackStartedAt
+    }
+
+    private func measuredAutoGrowHeight(forWidth width: CGFloat) -> CGFloat {
+        guard width > 0 else { return 0 }
+
+        if abs(bounds.width - width) <= 0.5 {
+            let currentHeight = ceil(bounds.height)
+            let ensureLayoutStartedAt = DispatchTime.now().uptimeNanoseconds
+            editorLayoutManager.ensureLayout(for: textContainer)
+            lastHeightNotifyEnsureLayoutNanosForTesting =
+                DispatchTime.now().uptimeNanoseconds - ensureLayoutStartedAt
+
+            let usedRectStartedAt = DispatchTime.now().uptimeNanoseconds
+            var usedRect = editorLayoutManager.usedRect(for: textContainer)
+            let extraLineFragmentRect = editorLayoutManager.extraLineFragmentRect
+            if !extraLineFragmentRect.isEmpty {
+                usedRect = usedRect.union(extraLineFragmentRect)
+            }
+            lastHeightNotifyUsedRectNanosForTesting =
+                DispatchTime.now().uptimeNanoseconds - usedRectStartedAt
+            let layoutHeight = ceil(usedRect.height + textContainerInset.top + textContainerInset.bottom)
+
+            let contentSizeStartedAt = DispatchTime.now().uptimeNanoseconds
+            let contentHeight = ceil(contentSize.height)
+            lastHeightNotifyContentSizeNanosForTesting =
+                DispatchTime.now().uptimeNanoseconds - contentSizeStartedAt
+            if currentHeight > 0 {
+                if layoutHeight > currentHeight + 0.5 {
+                    return layoutHeight
+                }
+                let hostIsTrackingMeasuredHeight =
+                    autoGrowHostHeight > 0
+                    && abs(currentHeight - ceil(autoGrowHostHeight)) <= 1.0
+                guard hostIsTrackingMeasuredHeight else {
+                    return layoutHeight
+                }
+                let measuredFromLayout = max(layoutHeight, contentHeight)
+                if measuredFromLayout > currentHeight + 0.5 {
+                    return measuredFromLayout
+                }
+                let sizeThatFitsStartedAt = DispatchTime.now().uptimeNanoseconds
+                let fittedHeight = ceil(
+                    sizeThatFits(
+                        CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+                    ).height
+                )
+                lastHeightNotifySizeThatFitsNanosForTesting =
+                    DispatchTime.now().uptimeNanoseconds - sizeThatFitsStartedAt
+                if fittedHeight > currentHeight + 0.5 {
+                    return max(measuredFromLayout, fittedHeight)
+                }
+                return layoutHeight
+            }
+            return max(layoutHeight, contentHeight)
+        }
+
+        let sizeThatFitsStartedAt = DispatchTime.now().uptimeNanoseconds
+        let fittedHeight = ceil(
+            sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)).height
+        )
+        lastHeightNotifySizeThatFitsNanosForTesting =
+            DispatchTime.now().uptimeNanoseconds - sizeThatFitsStartedAt
+        return fittedHeight
+    }
+
+    func updateAutoGrowHostHeight(_ height: CGFloat) {
+        autoGrowHostHeight = max(0, ceil(height))
+    }
+
+    private func invalidateAutoGrowHeightMeasurement() {
+        autoGrowHeightCheckIsDirty = true
+        lastAutoGrowMeasuredWidth = 0
+    }
+
+    private func performPostApplyMaintenance(forceHeightNotify: Bool = false) -> PostApplyTrace {
+        let totalStartedAt = DispatchTime.now().uptimeNanoseconds
+
+        let typingAttributesStartedAt = totalStartedAt
+        refreshTypingAttributesForSelection()
+        let typingAttributesNanos = DispatchTime.now().uptimeNanoseconds - typingAttributesStartedAt
+
+        let heightNotifyStartedAt = DispatchTime.now().uptimeNanoseconds
+        lastHeightNotifyMeasureNanosForTesting = 0
+        lastHeightNotifyCallbackNanosForTesting = 0
+        lastHeightNotifyEnsureLayoutNanosForTesting = 0
+        lastHeightNotifyUsedRectNanosForTesting = 0
+        lastHeightNotifyContentSizeNanosForTesting = 0
+        lastHeightNotifySizeThatFitsNanosForTesting = 0
+        if heightBehavior == .autoGrow {
+            invalidateAutoGrowHeightMeasurement()
+            if forceHeightNotify || window == nil {
+                notifyHeightChangeIfNeeded(force: forceHeightNotify)
+            } else {
+                setNeedsLayout()
+            }
+        }
+        let heightNotifyNanos = DispatchTime.now().uptimeNanoseconds - heightNotifyStartedAt
+
+        let selectionOrContentStartedAt = DispatchTime.now().uptimeNanoseconds
+        onSelectionOrContentMayChange?()
+        let selectionOrContentCallbackNanos =
+            DispatchTime.now().uptimeNanoseconds - selectionOrContentStartedAt
+
+        return PostApplyTrace(
+            totalNanos: DispatchTime.now().uptimeNanoseconds - totalStartedAt,
+            typingAttributesNanos: typingAttributesNanos,
+            heightNotifyNanos: heightNotifyNanos,
+            heightNotifyMeasureNanos: lastHeightNotifyMeasureNanosForTesting,
+            heightNotifyCallbackNanos: lastHeightNotifyCallbackNanosForTesting,
+            heightNotifyEnsureLayoutNanos: lastHeightNotifyEnsureLayoutNanosForTesting,
+            heightNotifyUsedRectNanos: lastHeightNotifyUsedRectNanosForTesting,
+            heightNotifyContentSizeNanos: lastHeightNotifyContentSizeNanosForTesting,
+            heightNotifySizeThatFitsNanos: lastHeightNotifySizeThatFitsNanosForTesting,
+            selectionOrContentCallbackNanos: selectionOrContentCallbackNanos
+        )
     }
 
     static func adjustedCaretRect(
@@ -2371,35 +2760,35 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         return (anchor: scalarRange.from, head: scalarRange.to)
     }
 
-    func selectedImageGeometry() -> (docPos: UInt32, rect: CGRect)? {
+    private func selectedImageSelectionState() -> (docPos: UInt32, utf16Offset: Int)? {
         guard allowImageResizing else { return nil }
         guard isFirstResponder else { return nil }
-        guard let selectedRange = selectedTextRange else { return nil }
-
-        let startOffset = offset(from: beginningOfDocument, to: selectedRange.start)
-        let endOffset = offset(from: beginningOfDocument, to: selectedRange.end)
-        guard endOffset == startOffset + 1, startOffset >= 0, startOffset < textStorage.length else {
+        guard let selectedRange = selectedUtf16Range(),
+              selectedRange.length == 1,
+              selectedRange.location >= 0,
+              selectedRange.location < textStorage.length
+        else {
             return nil
         }
 
-        let attrs = textStorage.attributes(at: startOffset, effectiveRange: nil)
+        let attrs = textStorage.attributes(at: selectedRange.location, effectiveRange: nil)
         guard (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "image",
               attrs[.attachment] is NSTextAttachment
         else {
             return nil
         }
 
-        let docPos: UInt32
-        if let number = attrs[RenderBridgeAttributes.docPos] as? NSNumber {
-            docPos = number.uint32Value
-        } else if let value = attrs[RenderBridgeAttributes.docPos] as? UInt32 {
-            docPos = value
-        } else {
-            return nil
-        }
+        let docPos = (attrs[RenderBridgeAttributes.docPos] as? NSNumber)?.uint32Value
+            ?? (attrs[RenderBridgeAttributes.docPos] as? UInt32)
+        guard let docPos else { return nil }
+        return (docPos, selectedRange.location)
+    }
+
+    func selectedImageGeometry() -> (docPos: UInt32, rect: CGRect)? {
+        guard let selectionState = selectedImageSelectionState() else { return nil }
 
         let glyphRange = layoutManager.glyphRange(
-            forCharacterRange: NSRange(location: startOffset, length: 1),
+            forCharacterRange: NSRange(location: selectionState.utf16Offset, length: 1),
             actualCharacterRange: nil
         )
         guard glyphRange.length > 0 else { return nil }
@@ -2408,13 +2797,17 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         rect.origin.x += textContainerInset.left
         rect.origin.y += textContainerInset.top
         guard rect.width > 0, rect.height > 0 else { return nil }
-        return (docPos, rect)
+        return (selectionState.docPos, rect)
     }
 
     private func blockImageAttachment(docPos: UInt32) -> (range: NSRange, attachment: BlockImageAttachment)? {
         let fullRange = NSRange(location: 0, length: textStorage.length)
         var resolved: (range: NSRange, attachment: BlockImageAttachment)?
-        textStorage.enumerateAttribute(.attachment, in: fullRange) { value, range, stop in
+        textStorage.enumerateAttribute(
+            .attachment,
+            in: fullRange,
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, range, stop in
             guard let attachment = value as? BlockImageAttachment, range.length > 0 else { return }
             let attrs = textStorage.attributes(at: range.location, effectiveRange: nil)
             guard (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "image" else { return }
@@ -2529,6 +2922,851 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
 
     // MARK: - Applying Rust State
 
+    private struct ParsedRenderPatch {
+        let startIndex: Int
+        let deleteCount: Int
+        let renderBlocks: [[[String: Any]]]
+    }
+
+    private enum DerivedRenderPatch {
+        case unchanged
+        case patch(ParsedRenderPatch)
+    }
+
+    private func parseRenderBlocks(_ value: Any?) -> [[[String: Any]]]? {
+        value as? [[[String: Any]]]
+    }
+
+    private func parseRenderPatch(_ value: Any?) -> ParsedRenderPatch? {
+        guard let raw = value as? [String: Any],
+              let startIndex = RenderBridge.jsonInt(raw["startIndex"]),
+              let deleteCount = RenderBridge.jsonInt(raw["deleteCount"]),
+              let renderBlocks = parseRenderBlocks(raw["renderBlocks"])
+        else {
+            return nil
+        }
+
+        return ParsedRenderPatch(
+            startIndex: startIndex,
+            deleteCount: deleteCount,
+            renderBlocks: renderBlocks
+        )
+    }
+
+    private func mergeRenderBlocks(
+        applying patch: ParsedRenderPatch,
+        to current: [[[String: Any]]]
+    ) -> [[[String: Any]]]? {
+        guard patch.startIndex >= 0,
+              patch.deleteCount >= 0,
+              patch.startIndex <= current.count,
+              patch.startIndex + patch.deleteCount <= current.count
+        else {
+            return nil
+        }
+
+        var merged = current
+        merged.replaceSubrange(
+            patch.startIndex..<(patch.startIndex + patch.deleteCount),
+            with: patch.renderBlocks
+        )
+        return merged
+    }
+
+    private func renderBlockEquals(
+        _ lhs: [[String: Any]],
+        _ rhs: [[String: Any]]
+    ) -> Bool {
+        (lhs as NSArray).isEqual(rhs)
+    }
+
+    private func deriveRenderPatch(
+        from current: [[[String: Any]]],
+        to updated: [[[String: Any]]]
+    ) -> DerivedRenderPatch {
+        let sharedCount = min(current.count, updated.count)
+
+        var prefix = 0
+        while prefix < sharedCount, renderBlockEquals(current[prefix], updated[prefix]) {
+            prefix += 1
+        }
+
+        if prefix == current.count, prefix == updated.count {
+            return .unchanged
+        }
+
+        var suffix = 0
+        while suffix < (sharedCount - prefix),
+              renderBlockEquals(
+                  current[current.count - suffix - 1],
+                  updated[updated.count - suffix - 1]
+              )
+        {
+            suffix += 1
+        }
+
+        let startIndex = prefix
+        let deleteCount = current.count - prefix - suffix
+        let endIndex = updated.count - suffix
+        let replacementBlocks = Array(updated[startIndex..<endIndex])
+
+        return .patch(
+            ParsedRenderPatch(
+                startIndex: startIndex,
+                deleteCount: deleteCount,
+                renderBlocks: replacementBlocks
+            )
+        )
+    }
+
+    private func topLevelChildIndex(from value: Any?) -> Int? {
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        return value as? Int
+    }
+
+    private func topLevelChildMetadataSlice(
+        from attributedString: NSAttributedString
+    ) -> TopLevelChildMetadataSlice? {
+        guard attributedString.length > 0 else {
+            return TopLevelChildMetadataSlice(startIndex: 0, entries: [])
+        }
+
+        var entriesByIndex: [Int: TopLevelChildMetadata] = [:]
+        var orderedIndexes: [Int] = []
+
+        attributedString.enumerateAttributes(
+            in: NSRange(location: 0, length: attributedString.length),
+            options: []
+        ) { attrs, range, _ in
+            guard let index = topLevelChildIndex(from: attrs[RenderBridgeAttributes.topLevelChildIndex]) else {
+                return
+            }
+            if entriesByIndex[index] == nil {
+                entriesByIndex[index] = TopLevelChildMetadata(
+                    startOffset: range.location,
+                    containsAttachment: false,
+                    containsPositionAdjustments: false
+                )
+                orderedIndexes.append(index)
+            }
+            if attrs[.attachment] != nil {
+                entriesByIndex[index]?.containsAttachment = true
+            }
+            if attrs[RenderBridgeAttributes.syntheticPlaceholder] as? Bool == true
+                || attrs[RenderBridgeAttributes.listMarkerContext] != nil
+            {
+                entriesByIndex[index]?.containsPositionAdjustments = true
+            }
+        }
+
+        guard !orderedIndexes.isEmpty else { return nil }
+        orderedIndexes.sort()
+        guard let startIndex = orderedIndexes.first else { return nil }
+
+        var entries: [TopLevelChildMetadata] = []
+        entries.reserveCapacity(orderedIndexes.count)
+        for (offset, index) in orderedIndexes.enumerated() {
+            guard index == startIndex + offset,
+                  let entry = entriesByIndex[index]
+            else {
+                return nil
+            }
+            entries.append(entry)
+        }
+
+        return TopLevelChildMetadataSlice(startIndex: startIndex, entries: entries)
+    }
+
+    private func refreshTopLevelChildMetadata(
+        from attributedString: NSAttributedString
+    ) {
+        guard let slice = topLevelChildMetadataSlice(from: attributedString),
+              slice.startIndex == 0
+        else {
+            currentTopLevelChildMetadata = nil
+            return
+        }
+        currentTopLevelChildMetadata = slice.entries
+    }
+
+    private func applyTopLevelChildMetadataPatch(
+        _ patch: ParsedRenderPatch,
+        replaceRange: NSRange,
+        renderedPatchMetadata: TopLevelChildMetadataSlice?,
+        renderedPatchLength: Int
+    ) {
+        guard var currentMetadata = currentTopLevelChildMetadata else {
+            currentTopLevelChildMetadata = nil
+            return
+        }
+
+        let newEntries: [TopLevelChildMetadata]
+        if let renderedPatchMetadata,
+           renderedPatchMetadata.entries.isEmpty
+        {
+            newEntries = []
+        } else if let renderedPatchMetadata,
+                  renderedPatchMetadata.startIndex == patch.startIndex
+        {
+            newEntries = renderedPatchMetadata.entries.map { entry in
+                TopLevelChildMetadata(
+                    startOffset: replaceRange.location + entry.startOffset,
+                    containsAttachment: entry.containsAttachment,
+                    containsPositionAdjustments: entry.containsPositionAdjustments
+                )
+            }
+        } else {
+            currentTopLevelChildMetadata = nil
+            return
+        }
+
+        guard patch.startIndex >= 0,
+              patch.deleteCount >= 0,
+              patch.startIndex <= currentMetadata.count,
+              patch.startIndex + patch.deleteCount <= currentMetadata.count
+        else {
+            currentTopLevelChildMetadata = nil
+            return
+        }
+
+        currentMetadata.replaceSubrange(
+            patch.startIndex..<(patch.startIndex + patch.deleteCount),
+            with: newEntries
+        )
+
+        let delta = renderedPatchLength - replaceRange.length
+        if delta != 0 {
+            let shiftStart = patch.startIndex + newEntries.count
+            for index in shiftStart..<currentMetadata.count {
+                currentMetadata[index].startOffset += delta
+            }
+        }
+
+        currentTopLevelChildMetadata = currentMetadata
+    }
+
+    private func hasTopLevelChildMetadata() -> Bool {
+        currentTopLevelChildMetadata != nil
+    }
+
+    private func firstCharacterOffset(forTopLevelChildIndex index: Int) -> Int? {
+        guard let currentTopLevelChildMetadata,
+              index >= 0,
+              index < currentTopLevelChildMetadata.count
+        else {
+            return nil
+        }
+        return currentTopLevelChildMetadata[index].startOffset
+    }
+
+    private func replacementRangeForRenderPatch(
+        startIndex: Int,
+        deleteCount: Int
+    ) -> NSRange? {
+        let startLocation: Int
+        if let resolvedStart = firstCharacterOffset(forTopLevelChildIndex: startIndex) {
+            startLocation = resolvedStart
+        } else if deleteCount == 0 {
+            startLocation = textStorage.length
+        } else {
+            return nil
+        }
+
+        let endIndexExclusive = startIndex + deleteCount
+        let endLocation = firstCharacterOffset(forTopLevelChildIndex: endIndexExclusive)
+            ?? textStorage.length
+        guard startLocation <= endLocation else { return nil }
+        return NSRange(location: startLocation, length: endLocation - startLocation)
+    }
+
+    private func applyAttributedRender(
+        _ attrStr: NSAttributedString,
+        replaceRange: NSRange? = nil,
+        usedPatch: Bool,
+        positionCacheUpdate: PositionCacheUpdate = .scan
+    ) -> ApplyRenderTrace {
+        let totalStartedAt = DispatchTime.now().uptimeNanoseconds
+        let replaceUtf16Length = replaceRange?.length ?? textStorage.length
+        let replacementUtf16Length = attrStr.length
+        let shouldUseSmallPatchTextMutation =
+            replaceRange != nil && shouldUseSmallPatchTextMutation(for: attrStr, replaceRange: replaceRange)
+        isApplyingRustState = true
+        let textMutationStartedAt = DispatchTime.now().uptimeNanoseconds
+        let beginEditingStartedAt = DispatchTime.now().uptimeNanoseconds
+        textStorage.beginEditing()
+        let beginEditingNanos = DispatchTime.now().uptimeNanoseconds - beginEditingStartedAt
+        var stringMutationNanos: UInt64 = 0
+        var attributeMutationNanos: UInt64 = 0
+        let previousTextStorageDelegate = textStorage.delegate
+        let previousTextViewDelegate = delegate
+        textStorage.delegate = nil
+        delegate = nil
+        defer {
+            textStorage.delegate = previousTextStorageDelegate
+            delegate = previousTextViewDelegate
+        }
+        if let replaceRange {
+            if shouldUseSmallPatchTextMutation {
+                let stringMutationStartedAt = DispatchTime.now().uptimeNanoseconds
+                textStorage.replaceCharacters(in: replaceRange, with: attrStr.string)
+                stringMutationNanos =
+                    DispatchTime.now().uptimeNanoseconds - stringMutationStartedAt
+                let destinationRange = NSRange(location: replaceRange.location, length: attrStr.length)
+                let attributeMutationStartedAt = DispatchTime.now().uptimeNanoseconds
+                applyAttributes(from: attrStr, to: destinationRange)
+                attributeMutationNanos =
+                    DispatchTime.now().uptimeNanoseconds - attributeMutationStartedAt
+            } else {
+                let stringMutationStartedAt = DispatchTime.now().uptimeNanoseconds
+                textStorage.replaceCharacters(in: replaceRange, with: attrStr)
+                stringMutationNanos =
+                    DispatchTime.now().uptimeNanoseconds - stringMutationStartedAt
+            }
+        } else {
+            let stringMutationStartedAt = DispatchTime.now().uptimeNanoseconds
+            textStorage.setAttributedString(attrStr)
+            stringMutationNanos =
+                DispatchTime.now().uptimeNanoseconds - stringMutationStartedAt
+        }
+        let endEditingStartedAt = DispatchTime.now().uptimeNanoseconds
+        textStorage.endEditing()
+        let endEditingNanos = DispatchTime.now().uptimeNanoseconds - endEditingStartedAt
+        let textMutationNanos = DispatchTime.now().uptimeNanoseconds - textMutationStartedAt
+        let authorizedTextStartedAt = DispatchTime.now().uptimeNanoseconds
+        if let replaceRange,
+           replaceRange.location >= 0,
+           replaceRange.location + replaceRange.length <= lastAuthorizedTextStorage.length
+        {
+            lastAuthorizedTextStorage.replaceCharacters(in: replaceRange, with: attrStr.string)
+        } else {
+            lastAuthorizedTextStorage.setString(attrStr.string)
+        }
+        let authorizedTextNanos = DispatchTime.now().uptimeNanoseconds - authorizedTextStartedAt
+        let cacheInvalidationStartedAt = DispatchTime.now().uptimeNanoseconds
+        lastRenderAppliedPatchForTesting = usedPatch
+        switch positionCacheUpdate {
+        case .plainText:
+            guard let replaceRange else {
+                PositionBridge.invalidateCache(for: self)
+                break
+            }
+            let patchedPositionCache = PositionBridge.applyPlainTextPatchIfPossible(
+                for: self,
+                replaceRange: replaceRange,
+                replacementText: attrStr.string
+            )
+            if !patchedPositionCache {
+                PositionBridge.invalidateCache(for: self)
+            }
+        case .attributed:
+            guard let replaceRange else {
+                PositionBridge.invalidateCache(for: self)
+                break
+            }
+            let patchedPositionCache = PositionBridge.applyAttributedPatchIfPossible(
+                for: self,
+                replaceRange: replaceRange,
+                replacement: attrStr
+            )
+            if !patchedPositionCache {
+                PositionBridge.invalidateCache(for: self)
+            }
+        case .invalidate:
+            PositionBridge.invalidateCache(for: self)
+        case .scan:
+            let canPatchPositionCache = if let replaceRange {
+                replaceRange.location >= 0
+                    && !textStorageRangeContainsAttachment(replaceRange)
+                    && !attributedStringContainsAttachment(attrStr)
+            } else {
+                false
+            }
+            if let replaceRange, canPatchPositionCache {
+                let patchedPositionCache: Bool
+                if !textStorageRangeContainsPositionAdjustments(replaceRange),
+                   !attributedStringContainsPositionAdjustments(attrStr)
+                {
+                    patchedPositionCache = PositionBridge.applyPlainTextPatchIfPossible(
+                        for: self,
+                        replaceRange: replaceRange,
+                        replacementText: attrStr.string
+                    )
+                } else {
+                    patchedPositionCache = PositionBridge.applyAttributedPatchIfPossible(
+                        for: self,
+                        replaceRange: replaceRange,
+                        replacement: attrStr
+                    )
+                }
+
+                if !patchedPositionCache {
+                    PositionBridge.invalidateCache(for: self)
+                }
+            } else {
+                PositionBridge.invalidateCache(for: self)
+            }
+        }
+        let cacheInvalidationNanos = DispatchTime.now().uptimeNanoseconds - cacheInvalidationStartedAt
+        isApplyingRustState = false
+        return ApplyRenderTrace(
+            totalNanos: DispatchTime.now().uptimeNanoseconds - totalStartedAt,
+            replaceUtf16Length: replaceUtf16Length,
+            replacementUtf16Length: replacementUtf16Length,
+            textMutationNanos: textMutationNanos,
+            beginEditingNanos: beginEditingNanos,
+            endEditingNanos: endEditingNanos,
+            stringMutationNanos: stringMutationNanos,
+            attributeMutationNanos: attributeMutationNanos,
+            authorizedTextNanos: authorizedTextNanos,
+            cacheInvalidationNanos: cacheInvalidationNanos,
+            usedSmallPatchTextMutation: shouldUseSmallPatchTextMutation
+        )
+    }
+
+    private func shouldUseSmallPatchTextMutation(
+        for attributedString: NSAttributedString,
+        replaceRange: NSRange?
+    ) -> Bool {
+        attributedString.length > 0
+            && attributedString.length <= 512
+            && (replaceRange?.length ?? 0) <= 512
+            && !attributedStringContainsAttachment(attributedString)
+    }
+
+    private func attributesEqualForPatchTrimming(
+        _ lhs: [NSAttributedString.Key: Any],
+        _ rhs: [NSAttributedString.Key: Any]
+    ) -> Bool {
+        if let lhsValue = lhs[RenderBridgeAttributes.topLevelChildIndex] as? NSNumber,
+           let rhsValue = rhs[RenderBridgeAttributes.topLevelChildIndex] as? NSNumber,
+           lhsValue == rhsValue
+        {
+            return NSDictionary(dictionary: lhs).isEqual(to: rhs)
+        }
+
+        var lhsComparable = lhs
+        var rhsComparable = rhs
+        lhsComparable.removeValue(forKey: RenderBridgeAttributes.topLevelChildIndex)
+        rhsComparable.removeValue(forKey: RenderBridgeAttributes.topLevelChildIndex)
+        return NSDictionary(dictionary: lhsComparable).isEqual(to: rhsComparable)
+    }
+
+    private func applyAttributes(from attributedString: NSAttributedString, to destinationRange: NSRange) {
+        guard attributedString.length == destinationRange.length else { return }
+        if let uniformAttributes = uniformAttributes(in: attributedString) {
+            textStorage.setAttributes(uniformAttributes, range: destinationRange)
+            return
+        }
+        let sourceRange = NSRange(location: 0, length: attributedString.length)
+        attributedString.enumerateAttributes(
+            in: sourceRange,
+            options: [.longestEffectiveRangeNotRequired]
+        ) { attrs, range, _ in
+            let targetRange = NSRange(location: destinationRange.location + range.location, length: range.length)
+            textStorage.setAttributes(attrs, range: targetRange)
+        }
+    }
+
+    private func uniformAttributes(in attributedString: NSAttributedString) -> [NSAttributedString.Key: Any]? {
+        guard attributedString.length > 0 else { return [:] }
+        let firstAttributes = attributedString.attributes(at: 0, effectiveRange: nil)
+        var isUniform = true
+        attributedString.enumerateAttributes(
+            in: NSRange(location: 0, length: attributedString.length),
+            options: [.longestEffectiveRangeNotRequired]
+        ) { attrs, _, stop in
+            guard (attrs as NSDictionary).isEqual(firstAttributes) else {
+                isUniform = false
+                stop.pointee = true
+                return
+            }
+        }
+        return isUniform ? firstAttributes : nil
+    }
+
+    private func attributedStringContainsAttachment(_ attributedString: NSAttributedString) -> Bool {
+        guard attributedString.length > 0 else { return false }
+        var hasAttachment = false
+        attributedString.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: attributedString.length),
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, _, stop in
+            if value != nil {
+                hasAttachment = true
+                stop.pointee = true
+            }
+        }
+        return hasAttachment
+    }
+
+    private func attributedStringContainsPositionAdjustments(_ attributedString: NSAttributedString) -> Bool {
+        guard attributedString.length > 0 else { return false }
+        var hasAdjustments = false
+        attributedString.enumerateAttributes(
+            in: NSRange(location: 0, length: attributedString.length),
+            options: [.longestEffectiveRangeNotRequired]
+        ) { attrs, _, stop in
+            if attrs[RenderBridgeAttributes.syntheticPlaceholder] as? Bool == true
+                || attrs[RenderBridgeAttributes.listMarkerContext] != nil
+            {
+                hasAdjustments = true
+                stop.pointee = true
+            }
+        }
+        return hasAdjustments
+    }
+
+    private func attributedStringContainsListMarkerContext(_ attributedString: NSAttributedString) -> Bool {
+        guard attributedString.length > 0 else { return false }
+        var hasListMarkerContext = false
+        attributedString.enumerateAttribute(
+            RenderBridgeAttributes.listMarkerContext,
+            in: NSRange(location: 0, length: attributedString.length),
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, _, stop in
+            if value != nil {
+                hasListMarkerContext = true
+                stop.pointee = true
+            }
+        }
+        return hasListMarkerContext
+    }
+
+    private func textStorageRangeContainsPositionAdjustments(_ range: NSRange) -> Bool {
+        guard range.length > 0,
+              range.location >= 0,
+              range.location + range.length <= textStorage.length
+        else {
+            return false
+        }
+
+        var hasAdjustments = false
+        textStorage.enumerateAttributes(
+            in: range,
+            options: [.longestEffectiveRangeNotRequired]
+        ) { attrs, _, stop in
+            if attrs[RenderBridgeAttributes.syntheticPlaceholder] as? Bool == true
+                || attrs[RenderBridgeAttributes.listMarkerContext] != nil
+            {
+                hasAdjustments = true
+                stop.pointee = true
+            }
+        }
+        return hasAdjustments
+    }
+
+    private func textStorageRangeContainsListMarkerContext(_ range: NSRange) -> Bool {
+        guard range.length > 0,
+              range.location >= 0,
+              range.location + range.length <= textStorage.length
+        else {
+            return false
+        }
+
+        var hasListMarkerContext = false
+        textStorage.enumerateAttribute(
+            RenderBridgeAttributes.listMarkerContext,
+            in: range,
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, _, stop in
+            if value != nil {
+                hasListMarkerContext = true
+                stop.pointee = true
+            }
+        }
+        return hasListMarkerContext
+    }
+
+    private func textStorageRangeContainsAttachment(_ range: NSRange) -> Bool {
+        guard range.length > 0,
+              range.location >= 0,
+              range.location + range.length <= textStorage.length
+        else {
+            return false
+        }
+
+        var hasAttachment = false
+        textStorage.enumerateAttribute(
+            .attachment,
+            in: range,
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, _, stop in
+            if value != nil {
+                hasAttachment = true
+                stop.pointee = true
+            }
+        }
+        return hasAttachment
+    }
+
+    private func topLevelChildrenContainAttachment(
+        startIndex: Int,
+        deleteCount: Int
+    ) -> Bool {
+        guard deleteCount > 0,
+              let currentTopLevelChildMetadata,
+              startIndex >= 0,
+              startIndex + deleteCount <= currentTopLevelChildMetadata.count
+        else {
+            return false
+        }
+        return currentTopLevelChildMetadata[startIndex..<(startIndex + deleteCount)]
+            .contains(where: \.containsAttachment)
+    }
+
+    private func topLevelChildrenContainPositionAdjustments(
+        startIndex: Int,
+        deleteCount: Int
+    ) -> Bool {
+        guard deleteCount > 0,
+              let currentTopLevelChildMetadata,
+              startIndex >= 0,
+              startIndex + deleteCount <= currentTopLevelChildMetadata.count
+        else {
+            return false
+        }
+        return currentTopLevelChildMetadata[startIndex..<(startIndex + deleteCount)]
+            .contains(where: \.containsPositionAdjustments)
+    }
+
+    private func trimmedAttributedPatch(
+        replacing fullReplaceRange: NSRange,
+        with replacement: NSAttributedString
+    ) -> (replaceRange: NSRange, replacement: NSAttributedString) {
+        guard fullReplaceRange.length > 0 else {
+            return (fullReplaceRange, replacement)
+        }
+
+        let existing = textStorage.attributedSubstring(from: fullReplaceRange)
+        let existingString = existing.string as NSString
+        let replacementString = replacement.string as NSString
+        let sharedLength = min(existing.length, replacement.length)
+
+        var prefix = 0
+        while prefix < sharedLength {
+            var existingRange = NSRange()
+            let existingAttrs = existing.attributes(
+                at: prefix,
+                longestEffectiveRange: &existingRange,
+                in: NSRange(location: prefix, length: sharedLength - prefix)
+            )
+            var replacementRange = NSRange()
+            let replacementAttrs = replacement.attributes(
+                at: prefix,
+                longestEffectiveRange: &replacementRange,
+                in: NSRange(location: prefix, length: sharedLength - prefix)
+            )
+            guard attributesEqualForPatchTrimming(existingAttrs, replacementAttrs) else { break }
+            let runEnd = min(NSMaxRange(existingRange), NSMaxRange(replacementRange), sharedLength)
+            while prefix < runEnd,
+                  existingString.character(at: prefix) == replacementString.character(at: prefix)
+            {
+                prefix += 1
+            }
+            if prefix < runEnd {
+                break
+            }
+        }
+
+        var suffix = 0
+        while suffix < (sharedLength - prefix) {
+            let existingIndex = existing.length - suffix - 1
+            let replacementIndex = replacement.length - suffix - 1
+            var existingRange = NSRange()
+            let existingAttrs = existing.attributes(
+                at: existingIndex,
+                longestEffectiveRange: &existingRange,
+                in: NSRange(location: prefix, length: existingIndex - prefix + 1)
+            )
+            var replacementRange = NSRange()
+            let replacementAttrs = replacement.attributes(
+                at: replacementIndex,
+                longestEffectiveRange: &replacementRange,
+                in: NSRange(location: prefix, length: replacementIndex - prefix + 1)
+            )
+            guard attributesEqualForPatchTrimming(existingAttrs, replacementAttrs) else { break }
+            let maxComparableLength = min(
+                existingIndex - max(existingRange.location, prefix) + 1,
+                replacementIndex - max(replacementRange.location, prefix) + 1,
+                sharedLength - prefix - suffix
+            )
+            var matchedLength = 0
+            while matchedLength < maxComparableLength,
+                  existingString.character(at: existingIndex - matchedLength)
+                      == replacementString.character(at: replacementIndex - matchedLength)
+            {
+                matchedLength += 1
+            }
+            suffix += matchedLength
+            if matchedLength < maxComparableLength {
+                break
+            }
+        }
+
+        guard prefix > 0 || suffix > 0 else {
+            return (fullReplaceRange, replacement)
+        }
+
+        let trimmedReplaceRange = NSRange(
+            location: fullReplaceRange.location + prefix,
+            length: fullReplaceRange.length - prefix - suffix
+        )
+        let trimmedReplacementRange = NSRange(
+            location: prefix,
+            length: replacement.length - prefix - suffix
+        )
+        return (
+            trimmedReplaceRange,
+            replacement.attributedSubstring(from: trimmedReplacementRange)
+        )
+    }
+
+    private func applyRenderPatchIfPossible(_ patch: ParsedRenderPatch) -> PatchApplyTrace {
+        let eligibilityStartedAt = DispatchTime.now().uptimeNanoseconds
+        guard hasTopLevelChildMetadata(),
+              let fullReplaceRange = replacementRangeForRenderPatch(
+                  startIndex: patch.startIndex,
+                  deleteCount: patch.deleteCount
+              )
+        else {
+            return PatchApplyTrace(
+                applied: false,
+                eligibilityNanos: DispatchTime.now().uptimeNanoseconds - eligibilityStartedAt,
+                trimNanos: 0,
+                metadataNanos: 0,
+                buildRenderNanos: 0,
+                applyRenderNanos: 0,
+                applyRenderReplaceUtf16Length: 0,
+                applyRenderReplacementUtf16Length: 0,
+                applyRenderTextMutationNanos: 0,
+                applyRenderBeginEditingNanos: 0,
+                applyRenderEndEditingNanos: 0,
+                applyRenderStringMutationNanos: 0,
+                applyRenderAttributeMutationNanos: 0,
+                applyRenderAuthorizedTextNanos: 0,
+                applyRenderCacheInvalidationNanos: 0,
+                usedSmallPatchTextMutation: false
+            )
+        }
+
+        let buildStartedAt = DispatchTime.now().uptimeNanoseconds
+        let attrStr = RenderBridge.renderBlocks(
+            fromArray: patch.renderBlocks,
+            startIndex: patch.startIndex,
+            includeLeadingInterBlockSeparator: patch.startIndex > 0,
+            baseFont: baseFont,
+            textColor: baseTextColor,
+            theme: theme
+        )
+        let buildRenderNanos = DispatchTime.now().uptimeNanoseconds - buildStartedAt
+        let renderedPatchMetadata = topLevelChildMetadataSlice(from: attrStr)
+        let renderedPatchContainsAttachment =
+            renderedPatchMetadata?.entries.contains(where: \.containsAttachment)
+            ?? attributedStringContainsAttachment(attrStr)
+        let renderedPatchContainsListMarkerContext =
+            attributedStringContainsListMarkerContext(attrStr)
+        let renderedPatchContainsPositionAdjustments =
+            renderedPatchMetadata?.entries.contains(where: \.containsPositionAdjustments)
+            ?? attributedStringContainsPositionAdjustments(attrStr)
+        guard !topLevelChildrenContainAttachment(
+                  startIndex: patch.startIndex,
+                  deleteCount: patch.deleteCount
+              ),
+              !renderedPatchContainsAttachment
+        else {
+            return PatchApplyTrace(
+                applied: false,
+                eligibilityNanos: DispatchTime.now().uptimeNanoseconds - eligibilityStartedAt,
+                trimNanos: 0,
+                metadataNanos: 0,
+                buildRenderNanos: buildRenderNanos,
+                applyRenderNanos: 0,
+                applyRenderReplaceUtf16Length: 0,
+                applyRenderReplacementUtf16Length: 0,
+                applyRenderTextMutationNanos: 0,
+                applyRenderBeginEditingNanos: 0,
+                applyRenderEndEditingNanos: 0,
+                applyRenderStringMutationNanos: 0,
+                applyRenderAttributeMutationNanos: 0,
+                applyRenderAuthorizedTextNanos: 0,
+                applyRenderCacheInvalidationNanos: 0,
+                usedSmallPatchTextMutation: false
+            )
+        }
+        guard !textStorageRangeContainsListMarkerContext(fullReplaceRange),
+              !renderedPatchContainsListMarkerContext
+        else {
+            return PatchApplyTrace(
+                applied: false,
+                eligibilityNanos: DispatchTime.now().uptimeNanoseconds - eligibilityStartedAt,
+                trimNanos: 0,
+                metadataNanos: 0,
+                buildRenderNanos: buildRenderNanos,
+                applyRenderNanos: 0,
+                applyRenderReplaceUtf16Length: 0,
+                applyRenderReplacementUtf16Length: 0,
+                applyRenderTextMutationNanos: 0,
+                applyRenderBeginEditingNanos: 0,
+                applyRenderEndEditingNanos: 0,
+                applyRenderStringMutationNanos: 0,
+                applyRenderAttributeMutationNanos: 0,
+                applyRenderAuthorizedTextNanos: 0,
+                applyRenderCacheInvalidationNanos: 0,
+                usedSmallPatchTextMutation: false
+            )
+        }
+        let eligibilityNanos =
+            DispatchTime.now().uptimeNanoseconds - eligibilityStartedAt - buildRenderNanos
+        let positionCacheUpdate: PositionCacheUpdate =
+            if topLevelChildrenContainPositionAdjustments(
+                startIndex: patch.startIndex,
+                deleteCount: patch.deleteCount
+            ) || renderedPatchContainsPositionAdjustments
+            {
+                .attributed
+            } else {
+                .plainText
+            }
+        let trimStartedAt = DispatchTime.now().uptimeNanoseconds
+        let patchToApply = trimmedAttributedPatch(replacing: fullReplaceRange, with: attrStr)
+        let trimNanos = DispatchTime.now().uptimeNanoseconds - trimStartedAt
+        let applyTrace = applyAttributedRender(
+            patchToApply.replacement,
+            replaceRange: patchToApply.replaceRange,
+            usedPatch: true,
+            positionCacheUpdate: positionCacheUpdate
+        )
+        let metadataStartedAt = DispatchTime.now().uptimeNanoseconds
+        applyTopLevelChildMetadataPatch(
+            patch,
+            replaceRange: fullReplaceRange,
+            renderedPatchMetadata: renderedPatchMetadata,
+            renderedPatchLength: attrStr.length
+        )
+        let metadataNanos = DispatchTime.now().uptimeNanoseconds - metadataStartedAt
+        return PatchApplyTrace(
+            applied: true,
+            eligibilityNanos: eligibilityNanos,
+            trimNanos: trimNanos,
+            metadataNanos: metadataNanos,
+            buildRenderNanos: buildRenderNanos,
+            applyRenderNanos: applyTrace.totalNanos,
+            applyRenderReplaceUtf16Length: applyTrace.replaceUtf16Length,
+            applyRenderReplacementUtf16Length: applyTrace.replacementUtf16Length,
+            applyRenderTextMutationNanos: applyTrace.textMutationNanos,
+            applyRenderBeginEditingNanos: applyTrace.beginEditingNanos,
+            applyRenderEndEditingNanos: applyTrace.endEditingNanos,
+            applyRenderStringMutationNanos: applyTrace.stringMutationNanos,
+            applyRenderAttributeMutationNanos: applyTrace.attributeMutationNanos,
+            applyRenderAuthorizedTextNanos: applyTrace.authorizedTextNanos,
+            applyRenderCacheInvalidationNanos: applyTrace.cacheInvalidationNanos,
+            usedSmallPatchTextMutation: applyTrace.usedSmallPatchTextMutation
+        )
+    }
+
     /// Apply a full render update from Rust to the text view.
     ///
     /// Parses the update JSON, converts render elements to NSAttributedString
@@ -2536,48 +3774,177 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
     ///
     /// - Parameter updateJSON: The JSON string from editor_insert_text, etc.
     func applyUpdateJSON(_ updateJSON: String, notifyDelegate: Bool = true) {
+        let totalStartedAt = DispatchTime.now().uptimeNanoseconds
+        let parseStartedAt = totalStartedAt
         guard let data = updateJSON.data(using: .utf8),
               let update = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
+        let parseNanos = DispatchTime.now().uptimeNanoseconds - parseStartedAt
 
-        // Extract render elements.
-        guard let renderElements = update["renderElements"] as? [[String: Any]] else { return }
+        let renderElements = update["renderElements"] as? [[String: Any]]
         let selectionFromUpdate = (update["selection"] as? [String: Any])
             .map(self.selectionSummary(from:)) ?? "none"
         Self.updateLog.debug(
-            "[applyUpdateJSON.begin] renderCount=\(renderElements.count) updateSelection=\(selectionFromUpdate, privacy: .public) before=\(self.textSnapshotSummary(), privacy: .public)"
+            "[applyUpdateJSON.begin] renderCount=\(renderElements?.count ?? 0) updateSelection=\(selectionFromUpdate, privacy: .public) before=\(self.textSnapshotSummary(), privacy: .public)"
         )
+        let resolveRenderBlocksStartedAt = DispatchTime.now().uptimeNanoseconds
+        let renderBlocks = parseRenderBlocks(update["renderBlocks"])
+        let explicitRenderPatch = parseRenderPatch(update["renderPatch"])
+        let resolvedRenderBlocks = renderBlocks
+            ?? explicitRenderPatch.flatMap { patch in
+                currentRenderBlocks.flatMap { mergeRenderBlocks(applying: patch, to: $0) }
+            }
+        let resolveRenderBlocksNanos =
+            DispatchTime.now().uptimeNanoseconds - resolveRenderBlocksStartedAt
 
-        let attrStr = RenderBridge.renderElements(
-            fromArray: renderElements,
-            baseFont: baseFont,
-            textColor: baseTextColor,
-            theme: theme
-        )
+        let derivedRenderPatch: DerivedRenderPatch? =
+            if explicitRenderPatch == nil,
+               let currentRenderBlocks,
+               let resolvedRenderBlocks
+            {
+                deriveRenderPatch(from: currentRenderBlocks, to: resolvedRenderBlocks)
+            } else {
+                nil
+            }
+        let renderPatch = explicitRenderPatch ?? {
+            if case let .patch(patch)? = derivedRenderPatch {
+                return patch
+            }
+            return nil
+        }()
+        let shouldSkipRender = if case .unchanged? = derivedRenderPatch {
+            textStorage.string == lastAuthorizedText
+                && lastAppliedRenderAppearanceRevision == renderAppearanceRevision
+        } else {
+            false
+        }
 
-        // Apply the attributed string without triggering input interception.
-        isApplyingRustState = true
-        textStorage.beginEditing()
-        textStorage.setAttributedString(attrStr)
-        textStorage.endEditing()
-        lastAuthorizedText = textStorage.string
-        isApplyingRustState = false
+        let patchTrace = renderPatch.map(applyRenderPatchIfPossible)
+        let appliedPatch = patchTrace?.applied == true
+        var usedSmallPatchTextMutation = patchTrace?.usedSmallPatchTextMutation ?? false
+        var applyRenderReplaceUtf16Length = patchTrace?.applyRenderReplaceUtf16Length ?? 0
+        var applyRenderReplacementUtf16Length =
+            patchTrace?.applyRenderReplacementUtf16Length ?? 0
+        var buildRenderNanos = patchTrace?.buildRenderNanos ?? 0
+        var applyRenderNanos = patchTrace?.applyRenderNanos ?? 0
+        var applyRenderTextMutationNanos = patchTrace?.applyRenderTextMutationNanos ?? 0
+        var applyRenderBeginEditingNanos = patchTrace?.applyRenderBeginEditingNanos ?? 0
+        var applyRenderEndEditingNanos = patchTrace?.applyRenderEndEditingNanos ?? 0
+        var applyRenderStringMutationNanos = patchTrace?.applyRenderStringMutationNanos ?? 0
+        var applyRenderAttributeMutationNanos =
+            patchTrace?.applyRenderAttributeMutationNanos ?? 0
+        var applyRenderAuthorizedTextNanos = patchTrace?.applyRenderAuthorizedTextNanos ?? 0
+        var applyRenderCacheInvalidationNanos = patchTrace?.applyRenderCacheInvalidationNanos ?? 0
+        if shouldSkipRender {
+            lastRenderAppliedPatchForTesting = false
+            if let resolvedRenderBlocks {
+                currentRenderBlocks = resolvedRenderBlocks
+            }
+        } else if !appliedPatch {
+            let buildStartedAt = DispatchTime.now().uptimeNanoseconds
+            let attrStr: NSAttributedString
+            if let resolvedRenderBlocks {
+                attrStr = RenderBridge.renderBlocks(
+                    fromArray: resolvedRenderBlocks,
+                    baseFont: baseFont,
+                    textColor: baseTextColor,
+                    theme: theme
+                )
+                currentRenderBlocks = resolvedRenderBlocks
+            } else if let renderElements {
+                attrStr = RenderBridge.renderElements(
+                    fromArray: renderElements,
+                    baseFont: baseFont,
+                    textColor: baseTextColor,
+                    theme: theme
+                )
+                currentRenderBlocks = nil
+            } else {
+                return
+            }
+            buildRenderNanos = DispatchTime.now().uptimeNanoseconds - buildStartedAt
+            let applyTrace = applyAttributedRender(
+                attrStr,
+                usedPatch: false,
+                positionCacheUpdate: .invalidate
+            )
+            refreshTopLevelChildMetadata(from: attrStr)
+            applyRenderReplaceUtf16Length = applyTrace.replaceUtf16Length
+            applyRenderReplacementUtf16Length = applyTrace.replacementUtf16Length
+            applyRenderNanos = applyTrace.totalNanos
+            applyRenderTextMutationNanos = applyTrace.textMutationNanos
+            applyRenderBeginEditingNanos = applyTrace.beginEditingNanos
+            applyRenderEndEditingNanos = applyTrace.endEditingNanos
+            applyRenderStringMutationNanos = applyTrace.stringMutationNanos
+            applyRenderAttributeMutationNanos = applyTrace.attributeMutationNanos
+            applyRenderAuthorizedTextNanos = applyTrace.authorizedTextNanos
+            applyRenderCacheInvalidationNanos = applyTrace.cacheInvalidationNanos
+            usedSmallPatchTextMutation = applyTrace.usedSmallPatchTextMutation
+            lastAppliedRenderAppearanceRevision = renderAppearanceRevision
+        } else if let resolvedRenderBlocks {
+            currentRenderBlocks = resolvedRenderBlocks
+            lastAppliedRenderAppearanceRevision = renderAppearanceRevision
+        }
 
         refreshPlaceholderVisibility()
         Self.updateLog.debug(
-            "[applyUpdateJSON.rendered] after=\(self.textSnapshotSummary(), privacy: .public)"
+            "[applyUpdateJSON.rendered] mode=\(appliedPatch ? "patch" : "full", privacy: .public) after=\(self.textSnapshotSummary(), privacy: .public)"
         )
 
         // Apply the selection from the update.
+        let selectionTrace: SelectionApplyTrace
         if let selection = update["selection"] as? [String: Any] {
-            applySelectionFromJSON(selection)
+            selectionTrace = applySelectionFromJSON(selection)
+        } else {
+            selectionTrace = SelectionApplyTrace(
+                totalNanos: 0,
+                resolveNanos: 0,
+                assignmentNanos: 0,
+                chromeNanos: 0
+            )
         }
-        refreshTypingAttributesForSelection()
-        if heightBehavior == .autoGrow {
-            notifyHeightChangeIfNeeded(force: true)
-        }
-        onSelectionOrContentMayChange?()
+        let postApplyTrace = performPostApplyMaintenance()
+        let postApplyNanos = postApplyTrace.totalNanos
 
+        if captureApplyUpdateTraceForTesting {
+            lastApplyUpdateTraceForTesting = ApplyUpdateTrace(
+                attemptedPatch: renderPatch != nil,
+                usedPatch: appliedPatch,
+                usedSmallPatchTextMutation: usedSmallPatchTextMutation,
+                applyRenderReplaceUtf16Length: applyRenderReplaceUtf16Length,
+                applyRenderReplacementUtf16Length: applyRenderReplacementUtf16Length,
+                parseNanos: parseNanos,
+                resolveRenderBlocksNanos: resolveRenderBlocksNanos,
+                patchEligibilityNanos: patchTrace?.eligibilityNanos ?? 0,
+                patchTrimNanos: patchTrace?.trimNanos ?? 0,
+                patchMetadataNanos: patchTrace?.metadataNanos ?? 0,
+                buildRenderNanos: buildRenderNanos,
+                applyRenderNanos: applyRenderNanos,
+                selectionNanos: selectionTrace.totalNanos,
+                postApplyNanos: postApplyNanos,
+                totalNanos: DispatchTime.now().uptimeNanoseconds - totalStartedAt,
+                applyRenderTextMutationNanos: applyRenderTextMutationNanos,
+                applyRenderBeginEditingNanos: applyRenderBeginEditingNanos,
+                applyRenderEndEditingNanos: applyRenderEndEditingNanos,
+                applyRenderStringMutationNanos: applyRenderStringMutationNanos,
+                applyRenderAttributeMutationNanos: applyRenderAttributeMutationNanos,
+                applyRenderAuthorizedTextNanos: applyRenderAuthorizedTextNanos,
+                applyRenderCacheInvalidationNanos: applyRenderCacheInvalidationNanos,
+                selectionResolveNanos: selectionTrace.resolveNanos,
+                selectionAssignmentNanos: selectionTrace.assignmentNanos,
+                selectionChromeNanos: selectionTrace.chromeNanos,
+                postApplyTypingAttributesNanos: postApplyTrace.typingAttributesNanos,
+                postApplyHeightNotifyNanos: postApplyTrace.heightNotifyNanos,
+                postApplyHeightNotifyMeasureNanos: postApplyTrace.heightNotifyMeasureNanos,
+                postApplyHeightNotifyCallbackNanos: postApplyTrace.heightNotifyCallbackNanos,
+                postApplyHeightNotifyEnsureLayoutNanos: postApplyTrace.heightNotifyEnsureLayoutNanos,
+                postApplyHeightNotifyUsedRectNanos: postApplyTrace.heightNotifyUsedRectNanos,
+                postApplyHeightNotifyContentSizeNanos: postApplyTrace.heightNotifyContentSizeNanos,
+                postApplyHeightNotifySizeThatFitsNanos: postApplyTrace.heightNotifySizeThatFitsNanos,
+                postApplySelectionOrContentCallbackNanos:
+                    postApplyTrace.selectionOrContentCallbackNanos
+            )
+        }
         Self.updateLog.debug(
             "[applyUpdateJSON.end] finalSelection=\(self.selectionSummary(), privacy: .public) textState=\(self.textSnapshotSummary(), privacy: .public)"
         )
@@ -2602,20 +3969,12 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
             textColor: baseTextColor,
             theme: theme
         )
-
-        isApplyingRustState = true
-        textStorage.beginEditing()
-        textStorage.setAttributedString(attrStr)
-        textStorage.endEditing()
-        lastAuthorizedText = textStorage.string
-        isApplyingRustState = false
+        _ = applyAttributedRender(attrStr, usedPatch: false)
+        currentRenderBlocks = nil
+        lastAppliedRenderAppearanceRevision = renderAppearanceRevision
 
         refreshPlaceholderVisibility()
-        refreshTypingAttributesForSelection()
-        if heightBehavior == .autoGrow {
-            notifyHeightChangeIfNeeded(force: true)
-        }
-        onSelectionOrContentMayChange?()
+        _ = performPostApplyMaintenance()
         Self.updateLog.debug(
             "[applyRenderJSON.end] after=\(self.textSnapshotSummary(), privacy: .public)"
         )
@@ -2629,59 +3988,122 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
     /// {"type": "node", "pos": 10}
     /// {"type": "all"}
     /// ```
-    private func applySelectionFromJSON(_ selection: [String: Any]) {
-        guard let type = selection["type"] as? String else { return }
+    private func applySelectionFromJSON(_ selection: [String: Any]) -> SelectionApplyTrace {
+        guard let type = selection["type"] as? String else {
+            return SelectionApplyTrace(totalNanos: 0, resolveNanos: 0, assignmentNanos: 0, chromeNanos: 0)
+        }
 
+        let totalStartedAt = DispatchTime.now().uptimeNanoseconds
         isApplyingRustState = true
         defer { isApplyingRustState = false }
 
         switch type {
         case "text":
+            let resolveStartedAt = DispatchTime.now().uptimeNanoseconds
             guard let anchorNum = selection["anchor"] as? NSNumber,
                   let headNum = selection["head"] as? NSNumber
-            else { return }
-            // anchor/head from Rust are document positions; convert to scalar offsets first.
-            let anchorScalar = editorDocToScalar(id: editorId, docPos: anchorNum.uint32Value)
-            let headScalar = editorDocToScalar(id: editorId, docPos: headNum.uint32Value)
-
-            var startPos = PositionBridge.scalarToTextView(min(anchorScalar, headScalar), in: self)
-            var endPos = PositionBridge.scalarToTextView(max(anchorScalar, headScalar), in: self)
-            if anchorScalar == headScalar,
-               let adjustedPosition = autocapitalizationFriendlyEmptyBlockPosition(for: endPos)
-            {
-                startPos = adjustedPosition
-                endPos = adjustedPosition
+            else {
+                return SelectionApplyTrace(totalNanos: 0, resolveNanos: 0, assignmentNanos: 0, chromeNanos: 0)
             }
-            selectedTextRange = textRange(from: startPos, to: endPos)
-            refreshNativeSelectionChromeVisibility()
+            // anchor/head from Rust are document positions; convert to scalar offsets first.
+            let anchorScalar = (selection["anchorScalar"] as? NSNumber)?.uint32Value
+                ?? editorDocToScalar(id: editorId, docPos: anchorNum.uint32Value)
+            let headScalar = (selection["headScalar"] as? NSNumber)?.uint32Value
+                ?? editorDocToScalar(id: editorId, docPos: headNum.uint32Value)
+            let startUtf16 = PositionBridge.scalarToUtf16Offset(
+                min(anchorScalar, headScalar),
+                in: self
+            )
+            let endUtf16 = PositionBridge.scalarToUtf16Offset(
+                max(anchorScalar, headScalar),
+                in: self
+            )
+            let resolveNanos = DispatchTime.now().uptimeNanoseconds - resolveStartedAt
+
+            let assignmentStartedAt = DispatchTime.now().uptimeNanoseconds
+            if anchorScalar == headScalar {
+                let endPos = position(from: beginningOfDocument, offset: endUtf16) ?? endOfDocument
+                if let adjustedPosition = autocapitalizationFriendlyEmptyBlockPosition(for: endPos) {
+                    let adjustedOffset = offset(from: beginningOfDocument, to: adjustedPosition)
+                    let adjustedRange = NSRange(location: adjustedOffset, length: 0)
+                    if selectedRange != adjustedRange {
+                        selectedRange = adjustedRange
+                    }
+                } else {
+                    let targetRange = NSRange(location: endUtf16, length: 0)
+                    if selectedRange != targetRange {
+                        selectedRange = targetRange
+                    }
+                }
+            } else {
+                let targetRange = NSRange(location: startUtf16, length: endUtf16 - startUtf16)
+                if selectedRange != targetRange {
+                    selectedRange = targetRange
+                }
+            }
+            let assignmentNanos = DispatchTime.now().uptimeNanoseconds - assignmentStartedAt
+            let chromeStartedAt = DispatchTime.now().uptimeNanoseconds
+            showNativeSelectionChromeIfNeeded()
+            let chromeNanos = DispatchTime.now().uptimeNanoseconds - chromeStartedAt
             Self.selectionLog.debug(
                 "[applySelectionFromJSON.text] doc=\(anchorNum.uint32Value)-\(headNum.uint32Value) scalar=\(anchorScalar)-\(headScalar) final=\(self.selectionSummary(), privacy: .public)"
+            )
+            return SelectionApplyTrace(
+                totalNanos: DispatchTime.now().uptimeNanoseconds - totalStartedAt,
+                resolveNanos: resolveNanos,
+                assignmentNanos: assignmentNanos,
+                chromeNanos: chromeNanos
             )
 
         case "node":
             // Node selection: select the object replacement character at that position.
-            guard let posNum = selection["pos"] as? NSNumber else { return }
-            // pos from Rust is a document position; convert to scalar offset.
-            let posScalar = editorDocToScalar(id: editorId, docPos: posNum.uint32Value)
-            let startPos = PositionBridge.scalarToTextView(posScalar, in: self)
-            // Select one character (the void node placeholder).
-            if let endPos = position(from: startPos, offset: 1) {
-                selectedTextRange = textRange(from: startPos, to: endPos)
+            let resolveStartedAt = DispatchTime.now().uptimeNanoseconds
+            guard let posNum = selection["pos"] as? NSNumber else {
+                return SelectionApplyTrace(totalNanos: 0, resolveNanos: 0, assignmentNanos: 0, chromeNanos: 0)
             }
+            // pos from Rust is a document position; convert to scalar offset.
+            let posScalar = (selection["posScalar"] as? NSNumber)?.uint32Value
+                ?? editorDocToScalar(id: editorId, docPos: posNum.uint32Value)
+            let startUtf16 = PositionBridge.scalarToUtf16Offset(posScalar, in: self)
+            let targetRange = NSRange(location: startUtf16, length: 1)
+            let resolveNanos = DispatchTime.now().uptimeNanoseconds - resolveStartedAt
+            let assignmentStartedAt = DispatchTime.now().uptimeNanoseconds
+            if selectedRange != targetRange {
+                selectedRange = targetRange
+            }
+            let assignmentNanos = DispatchTime.now().uptimeNanoseconds - assignmentStartedAt
+            let chromeStartedAt = DispatchTime.now().uptimeNanoseconds
             refreshNativeSelectionChromeVisibility()
+            let chromeNanos = DispatchTime.now().uptimeNanoseconds - chromeStartedAt
             Self.selectionLog.debug(
                 "[applySelectionFromJSON.node] doc=\(posNum.uint32Value) scalar=\(posScalar) final=\(self.selectionSummary(), privacy: .public)"
             )
+            return SelectionApplyTrace(
+                totalNanos: DispatchTime.now().uptimeNanoseconds - totalStartedAt,
+                resolveNanos: resolveNanos,
+                assignmentNanos: assignmentNanos,
+                chromeNanos: chromeNanos
+            )
 
         case "all":
+            let assignmentStartedAt = DispatchTime.now().uptimeNanoseconds
             selectedTextRange = textRange(from: beginningOfDocument, to: endOfDocument)
-            refreshNativeSelectionChromeVisibility()
+            let assignmentNanos = DispatchTime.now().uptimeNanoseconds - assignmentStartedAt
+            let chromeStartedAt = DispatchTime.now().uptimeNanoseconds
+            showNativeSelectionChromeIfNeeded()
+            let chromeNanos = DispatchTime.now().uptimeNanoseconds - chromeStartedAt
             Self.selectionLog.debug(
                 "[applySelectionFromJSON.all] final=\(self.selectionSummary(), privacy: .public)"
             )
+            return SelectionApplyTrace(
+                totalNanos: DispatchTime.now().uptimeNanoseconds - totalStartedAt,
+                resolveNanos: 0,
+                assignmentNanos: assignmentNanos,
+                chromeNanos: chromeNanos
+            )
 
         default:
-            break
+            return SelectionApplyTrace(totalNanos: 0, resolveNanos: 0, assignmentNanos: 0, chromeNanos: 0)
         }
     }
 
@@ -2726,6 +4148,7 @@ extension EditorTextView: NSTextStorageDelegate {
         // Compare current text storage content against last authorized snapshot.
         let currentText = textStorage.string
         guard currentText != lastAuthorizedText else { return }
+        currentTopLevelChildMetadata = nil
         let authorizedPreview = preview(lastAuthorizedText)
         let storagePreview = preview(currentText)
 
@@ -2783,6 +4206,22 @@ extension EditorTextView: NSTextStorageDelegate {
 /// and serves as the integration point for the future Fabric component.
 final class RichTextEditorView: UIView {
 
+    struct HostedLayoutTrace {
+        let intrinsicContentSizeNanos: UInt64
+        let intrinsicContentSizeCount: Int
+        let measuredEditorHeightNanos: UInt64
+        let measuredEditorHeightCount: Int
+        let layoutSubviewsNanos: UInt64
+        let layoutSubviewsCount: Int
+        let refreshOverlaysNanos: UInt64
+        let refreshOverlaysCount: Int
+        let overlayScheduleRequestCount: Int
+        let overlayScheduleExecuteCount: Int
+        let overlayScheduleSkipCount: Int
+        let onHeightMayChangeNanos: UInt64
+        let onHeightMayChangeCount: Int
+    }
+
     // MARK: - Properties
 
     /// The editor text view that handles input interception.
@@ -2790,9 +4229,29 @@ final class RichTextEditorView: UIView {
     private let remoteSelectionOverlayView = RemoteSelectionOverlayView()
     private let imageTapOverlayView = ImageTapOverlayView()
     private let imageResizeOverlayView = ImageResizeOverlayView()
-    var onHeightMayChange: (() -> Void)?
+    var onHeightMayChange: ((CGFloat) -> Void)?
     private var lastAutoGrowWidth: CGFloat = 0
+    private var cachedAutoGrowMeasuredHeight: CGFloat = 0
     private var remoteSelections: [RemoteSelectionDecoration] = []
+    private var overlayRefreshScheduled = false
+    var captureHostedLayoutTraceForTesting = false
+    private var hostedLayoutTraceNanos = (
+        intrinsicContentSize: UInt64(0),
+        measuredEditorHeight: UInt64(0),
+        layoutSubviews: UInt64(0),
+        refreshOverlays: UInt64(0),
+        onHeightMayChange: UInt64(0)
+    )
+    private var hostedLayoutTraceCounts = (
+        intrinsicContentSize: 0,
+        measuredEditorHeight: 0,
+        layoutSubviews: 0,
+        refreshOverlays: 0,
+        overlayScheduleRequest: 0,
+        overlayScheduleExecute: 0,
+        overlayScheduleSkip: 0,
+        onHeightMayChange: 0
+    )
     var allowImageResizing = true {
         didSet {
             guard oldValue != allowImageResizing else { return }
@@ -2807,9 +4266,23 @@ final class RichTextEditorView: UIView {
         didSet {
             guard oldValue != heightBehavior else { return }
             textView.heightBehavior = heightBehavior
+            textView.updateAutoGrowHostHeight(heightBehavior == .autoGrow ? bounds.height : 0)
+            if heightBehavior != .autoGrow {
+                cachedAutoGrowMeasuredHeight = 0
+            }
             invalidateIntrinsicContentSize()
             setNeedsLayout()
-            onHeightMayChange?()
+            if heightBehavior == .autoGrow {
+                let measuredHeight = measuredEditorHeight()
+                if measuredHeight > 0 {
+                    cachedAutoGrowMeasuredHeight = measuredHeight
+                    onHeightMayChange?(measuredHeight)
+                } else {
+                    onHeightMayChange?(0)
+                }
+            } else {
+                onHeightMayChange?(0)
+            }
             remoteSelectionOverlayView.refresh()
             imageResizeOverlayView.refresh()
         }
@@ -2847,54 +4320,45 @@ final class RichTextEditorView: UIView {
     }
 
     private func setupView() {
-        // Add the text view as a subview.
-        textView.translatesAutoresizingMaskIntoConstraints = false
-        remoteSelectionOverlayView.translatesAutoresizingMaskIntoConstraints = false
-        imageTapOverlayView.translatesAutoresizingMaskIntoConstraints = false
-        imageResizeOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        // Add the text view as a subview. These views always track the host bounds,
+        // so manual layout is cheaper than driving them through Auto Layout.
         remoteSelectionOverlayView.bind(textView: textView)
         imageTapOverlayView.bind(editorView: self)
         imageResizeOverlayView.bind(editorView: self)
         textView.allowImageResizing = allowImageResizing
         imageTapOverlayView.isHidden = editorId == 0 || !allowImageResizing
-        textView.onHeightMayChange = { [weak self] in
+        textView.onHeightMayChange = { [weak self] measuredHeight in
             guard let self, self.heightBehavior == .autoGrow else { return }
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            self.cachedAutoGrowMeasuredHeight = measuredHeight
             self.invalidateIntrinsicContentSize()
-            self.superview?.setNeedsLayout()
-            self.onHeightMayChange?()
+            self.onHeightMayChange?(measuredHeight)
+            self.recordHostedLayoutTrace(
+                durationNanos: DispatchTime.now().uptimeNanoseconds - startedAt,
+                keyPath: .onHeightMayChange
+            )
         }
         textView.onViewportMayChange = { [weak self] in
-            self?.refreshOverlays()
+            self?.refreshOverlaysIfNeeded()
         }
         textView.onSelectionOrContentMayChange = { [weak self] in
-            self?.refreshOverlays()
+            self?.scheduleRefreshOverlaysIfNeeded()
         }
         addSubview(textView)
         addSubview(remoteSelectionOverlayView)
         addSubview(imageTapOverlayView)
         addSubview(imageResizeOverlayView)
-
-        NSLayoutConstraint.activate([
-            textView.topAnchor.constraint(equalTo: topAnchor),
-            textView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            textView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            textView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            remoteSelectionOverlayView.topAnchor.constraint(equalTo: topAnchor),
-            remoteSelectionOverlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            remoteSelectionOverlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            remoteSelectionOverlayView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            imageTapOverlayView.topAnchor.constraint(equalTo: topAnchor),
-            imageTapOverlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            imageTapOverlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            imageTapOverlayView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            imageResizeOverlayView.topAnchor.constraint(equalTo: topAnchor),
-            imageResizeOverlayView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            imageResizeOverlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            imageResizeOverlayView.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
+        layoutManagedSubviews()
     }
 
     override var intrinsicContentSize: CGSize {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        defer {
+            recordHostedLayoutTrace(
+                durationNanos: DispatchTime.now().uptimeNanoseconds - startedAt,
+                keyPath: .intrinsicContentSize
+            )
+        }
         guard heightBehavior == .autoGrow else {
             return CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
         }
@@ -2907,12 +4371,22 @@ final class RichTextEditorView: UIView {
     }
 
     override func layoutSubviews() {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        defer {
+            recordHostedLayoutTrace(
+                durationNanos: DispatchTime.now().uptimeNanoseconds - startedAt,
+                keyPath: .layoutSubviews
+            )
+        }
         super.layoutSubviews()
-        refreshOverlays()
+        layoutManagedSubviews()
+        refreshOverlaysIfNeeded()
         guard heightBehavior == .autoGrow else { return }
+        textView.updateAutoGrowHostHeight(bounds.height)
         let currentWidth = bounds.width.rounded(.towardZero)
         guard currentWidth != lastAutoGrowWidth else { return }
         lastAutoGrowWidth = currentWidth
+        cachedAutoGrowMeasuredHeight = 0
         invalidateIntrinsicContentSize()
     }
 
@@ -2954,11 +4428,50 @@ final class RichTextEditorView: UIView {
     }
 
     func refreshRemoteSelections() {
+        guard remoteSelectionOverlayView.hasSelectionsOrVisibleDecorations else { return }
         remoteSelectionOverlayView.refresh()
     }
 
     func remoteSelectionOverlaySubviewsForTesting() -> [UIView] {
-        remoteSelectionOverlayView.subviews
+        remoteSelectionOverlayView.subviews.filter { !$0.isHidden }
+    }
+
+    func resetHostedLayoutTraceForTesting() {
+        hostedLayoutTraceNanos = (
+            intrinsicContentSize: 0,
+            measuredEditorHeight: 0,
+            layoutSubviews: 0,
+            refreshOverlays: 0,
+            onHeightMayChange: 0
+        )
+        hostedLayoutTraceCounts = (
+            intrinsicContentSize: 0,
+            measuredEditorHeight: 0,
+            layoutSubviews: 0,
+            refreshOverlays: 0,
+            overlayScheduleRequest: 0,
+            overlayScheduleExecute: 0,
+            overlayScheduleSkip: 0,
+            onHeightMayChange: 0
+        )
+    }
+
+    func lastHostedLayoutTraceForTesting() -> HostedLayoutTrace {
+        HostedLayoutTrace(
+            intrinsicContentSizeNanos: hostedLayoutTraceNanos.intrinsicContentSize,
+            intrinsicContentSizeCount: hostedLayoutTraceCounts.intrinsicContentSize,
+            measuredEditorHeightNanos: hostedLayoutTraceNanos.measuredEditorHeight,
+            measuredEditorHeightCount: hostedLayoutTraceCounts.measuredEditorHeight,
+            layoutSubviewsNanos: hostedLayoutTraceNanos.layoutSubviews,
+            layoutSubviewsCount: hostedLayoutTraceCounts.layoutSubviews,
+            refreshOverlaysNanos: hostedLayoutTraceNanos.refreshOverlays,
+            refreshOverlaysCount: hostedLayoutTraceCounts.refreshOverlays,
+            overlayScheduleRequestCount: hostedLayoutTraceCounts.overlayScheduleRequest,
+            overlayScheduleExecuteCount: hostedLayoutTraceCounts.overlayScheduleExecute,
+            overlayScheduleSkipCount: hostedLayoutTraceCounts.overlayScheduleSkip,
+            onHeightMayChangeNanos: hostedLayoutTraceNanos.onHeightMayChange,
+            onHeightMayChangeCount: hostedLayoutTraceCounts.onHeightMayChange
+        )
     }
 
     func imageResizeOverlayRectForTesting() -> CGRect? {
@@ -3007,8 +4520,8 @@ final class RichTextEditorView: UIView {
     /// - Parameter html: The HTML string to load.
     func setContent(html: String) {
         guard editorId != 0 else { return }
-        let renderJSON = editorSetHtml(id: editorId, html: html)
-        textView.applyRenderJSON(renderJSON)
+        _ = editorSetHtml(id: editorId, html: html)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
     }
 
     /// Set initial content from ProseMirror JSON.
@@ -3016,18 +4529,28 @@ final class RichTextEditorView: UIView {
     /// - Parameter json: The JSON string to load.
     func setContent(json: String) {
         guard editorId != 0 else { return }
-        let renderJSON = editorSetJson(id: editorId, json: json)
-        textView.applyRenderJSON(renderJSON)
+        _ = editorSetJson(id: editorId, json: json)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
     }
 
     private func measuredEditorHeight() -> CGFloat {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        defer {
+            recordHostedLayoutTrace(
+                durationNanos: DispatchTime.now().uptimeNanoseconds - startedAt,
+                keyPath: .measuredEditorHeight
+            )
+        }
+        if cachedAutoGrowMeasuredHeight > 0 {
+            return cachedAutoGrowMeasuredHeight
+        }
         let width = resolvedMeasurementWidth()
         guard width > 0 else { return 0 }
-        return ceil(
-            textView.sizeThatFits(
-                CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
-            ).height
-        )
+        let measuredHeight = textView.measuredAutoGrowHeightForTesting(width: width)
+        if measuredHeight > 0 {
+            cachedAutoGrowMeasuredHeight = measuredHeight
+        }
+        return measuredHeight
     }
 
     private func resolvedMeasurementWidth() -> CGFloat {
@@ -3038,6 +4561,22 @@ final class RichTextEditorView: UIView {
             return superview?.bounds.width ?? 0
         }
         return UIScreen.main.bounds.width
+    }
+
+    private func layoutManagedSubviews() {
+        let managedFrame = bounds
+        if textView.frame != managedFrame {
+            textView.frame = managedFrame
+        }
+        if remoteSelectionOverlayView.frame != managedFrame {
+            remoteSelectionOverlayView.frame = managedFrame
+        }
+        if imageTapOverlayView.frame != managedFrame {
+            imageTapOverlayView.frame = managedFrame
+        }
+        if imageResizeOverlayView.frame != managedFrame {
+            imageResizeOverlayView.frame = managedFrame
+        }
     }
 
     fileprivate func selectedImageGeometry() -> (docPos: UInt32, rect: CGRect)? {
@@ -3080,8 +4619,88 @@ final class RichTextEditorView: UIView {
     }
 
     private func refreshOverlays() {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        defer {
+            recordHostedLayoutTrace(
+                durationNanos: DispatchTime.now().uptimeNanoseconds - startedAt,
+                keyPath: .refreshOverlays
+            )
+        }
         remoteSelectionOverlayView.refresh()
         imageResizeOverlayView.refresh()
+    }
+
+    private func refreshOverlaysIfNeeded() {
+        guard shouldRefreshOverlays() else { return }
+        refreshOverlays()
+    }
+
+    private func scheduleRefreshOverlaysIfNeeded() {
+        if !shouldRefreshOverlays() {
+            if captureHostedLayoutTraceForTesting {
+                hostedLayoutTraceCounts.overlayScheduleSkip += 1
+            }
+            return
+        }
+        scheduleRefreshOverlays()
+    }
+
+    private func scheduleRefreshOverlays() {
+        if captureHostedLayoutTraceForTesting {
+            hostedLayoutTraceCounts.overlayScheduleRequest += 1
+        }
+        guard !overlayRefreshScheduled else { return }
+        overlayRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.overlayRefreshScheduled = false
+            if self.captureHostedLayoutTraceForTesting {
+                self.hostedLayoutTraceCounts.overlayScheduleExecute += 1
+            }
+            self.refreshOverlays()
+        }
+    }
+
+    private func shouldRefreshOverlays() -> Bool {
+        if !remoteSelections.isEmpty || remoteSelectionOverlayView.hasVisibleDecorations {
+            return true
+        }
+        if imageResizeOverlayView.isOverlayVisible {
+            return true
+        }
+        if textView.selectedImageGeometry() != nil {
+            return true
+        }
+        return false
+    }
+
+    private enum HostedLayoutTraceKey {
+        case intrinsicContentSize
+        case measuredEditorHeight
+        case layoutSubviews
+        case refreshOverlays
+        case onHeightMayChange
+    }
+
+    private func recordHostedLayoutTrace(durationNanos: UInt64, keyPath: HostedLayoutTraceKey) {
+        guard captureHostedLayoutTraceForTesting else { return }
+        switch keyPath {
+        case .intrinsicContentSize:
+            hostedLayoutTraceNanos.intrinsicContentSize += durationNanos
+            hostedLayoutTraceCounts.intrinsicContentSize += 1
+        case .measuredEditorHeight:
+            hostedLayoutTraceNanos.measuredEditorHeight += durationNanos
+            hostedLayoutTraceCounts.measuredEditorHeight += 1
+        case .layoutSubviews:
+            hostedLayoutTraceNanos.layoutSubviews += durationNanos
+            hostedLayoutTraceCounts.layoutSubviews += 1
+        case .refreshOverlays:
+            hostedLayoutTraceNanos.refreshOverlays += durationNanos
+            hostedLayoutTraceCounts.refreshOverlays += 1
+        case .onHeightMayChange:
+            hostedLayoutTraceNanos.onHeightMayChange += durationNanos
+            hostedLayoutTraceCounts.onHeightMayChange += 1
+        }
     }
 
     // MARK: - Cleanup

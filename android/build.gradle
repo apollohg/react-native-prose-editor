@@ -14,10 +14,19 @@ android {
     namespace "com.apollohg.editor"
     testOptions {
         unitTests.includeAndroidResources = true
+        unitTests.all { test ->
+            if (project.findProperty("apollohgShowPerfTestOutput") == "true") {
+                test.testLogging {
+                    events "passed", "failed"
+                    showStandardStreams = true
+                }
+            }
+        }
     }
     defaultConfig {
         versionCode 1
         versionName packageJson.version
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // Include prebuilt Rust .so files from the package's rust/android/ directory
@@ -31,6 +40,16 @@ android {
                 "${project.projectDir}/../rust/bindings/kotlin"
             ]
         }
+        test {
+            java.srcDirs += [
+                "${project.projectDir}/src/sharedTest/java"
+            ]
+        }
+        androidTest {
+            java.srcDirs += [
+                "${project.projectDir}/src/sharedTest/java"
+            ]
+        }
     }
 }
 
@@ -41,4 +60,8 @@ dependencies {
 
     testImplementation "junit:junit:4.13.2"
     testImplementation "org.robolectric:robolectric:4.14.1"
+
+    androidTestImplementation "androidx.test:core-ktx:1.6.1"
+    androidTestImplementation "androidx.test:runner:1.6.2"
+    androidTestImplementation "androidx.test.ext:junit:1.2.1"
 }

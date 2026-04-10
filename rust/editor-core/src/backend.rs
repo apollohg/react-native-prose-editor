@@ -7,8 +7,11 @@ use std::collections::HashMap;
 
 use crate::history::UndoHistory;
 use crate::model::{Document, Fragment};
+use crate::position::update::UpdateMode;
 use crate::position::PositionMap;
-use crate::render::generate::generate;
+use crate::render::incremental::{
+    contiguous_render_blocks_patch, flatten_render_blocks, render_blocks, RenderBlocksPatch,
+};
 use crate::render::RenderElement;
 use crate::schema::Schema;
 use crate::selection::Selection;
@@ -22,6 +25,8 @@ use crate::transform::{Source, Step, Transaction, TransformError};
 pub struct DocState {
     pub doc: Document,
     pub render_elements: Vec<RenderElement>,
+    pub render_blocks: Vec<Vec<RenderElement>>,
+    pub render_patch: Option<RenderBlocksPatch>,
     pub selection_update: Option<Selection>,
 }
 
@@ -49,6 +54,9 @@ pub trait DocumentBackend {
     /// Generate render elements for the current document.
     fn to_render_elements(&self, schema: &Schema) -> Vec<RenderElement>;
 
+    /// Generate segmented top-level render blocks for the current document.
+    fn to_render_blocks(&self, schema: &Schema) -> Vec<Vec<RenderElement>>;
+
     /// Reference to the current position map.
     fn position_map(&self) -> &PositionMap;
 
@@ -74,17 +82,57 @@ pub struct StandaloneBackend {
     doc: Document,
     pos_map: PositionMap,
     history: UndoHistory,
+    render_blocks: Vec<Vec<RenderElement>>,
 }
 
 impl StandaloneBackend {
     /// Create a new backend from an initial document.
-    pub fn new(doc: Document) -> Self {
+    pub fn new(doc: Document, schema: &Schema) -> Self {
         let pos_map = PositionMap::build(&doc);
+        let render_blocks = render_blocks(&doc, schema);
         Self {
             doc,
             pos_map,
             history: UndoHistory::with_default_depth(),
+            render_blocks,
         }
+    }
+
+    fn apply_render_blocks_patch(
+        current_blocks: &[Vec<RenderElement>],
+        patch: &RenderBlocksPatch,
+    ) -> Option<Vec<Vec<RenderElement>>> {
+        if patch.start_index > current_blocks.len()
+            || patch.start_index + patch.delete_count > current_blocks.len()
+        {
+            return None;
+        }
+
+        let mut next_blocks = Vec::with_capacity(
+            current_blocks.len() + patch.blocks.len().saturating_sub(patch.delete_count),
+        );
+        next_blocks.extend_from_slice(&current_blocks[..patch.start_index]);
+        next_blocks.extend(patch.blocks.iter().cloned());
+        next_blocks.extend_from_slice(&current_blocks[(patch.start_index + patch.delete_count)..]);
+        Some(next_blocks)
+    }
+
+    fn classify_position_map_update(steps: &[Step]) -> UpdateMode {
+        if steps
+            .iter()
+            .all(|step| matches!(step, Step::AddMark { .. } | Step::RemoveMark { .. }))
+        {
+            return UpdateMode::MarksOnly;
+        }
+
+        if steps
+            .iter()
+            .all(|step| matches!(step, Step::InsertText { .. } | Step::DeleteRange { .. }))
+        {
+            return UpdateMode::InlineTextOnly;
+        }
+
+        UpdateMode::Rebuild
     }
 
     /// Compute inverse steps for a transaction before applying it.
@@ -289,10 +337,20 @@ impl DocumentBackend for StandaloneBackend {
         let (new_doc, step_map) = tx.apply(&self.doc, schema)?;
 
         // 3. Update position map.
-        self.pos_map.update(&step_map, &new_doc);
+        self.pos_map.update(
+            &step_map,
+            &self.doc,
+            &new_doc,
+            Self::classify_position_map_update(&tx.steps),
+        );
 
-        // 4. Generate render elements.
-        let render_elements = generate(&new_doc, schema);
+        // 4. Generate render elements and a contiguous top-level patch.
+        let render_patch = contiguous_render_blocks_patch(&self.doc, &new_doc, schema);
+        let render_blocks = render_patch
+            .as_ref()
+            .and_then(|patch| Self::apply_render_blocks_patch(&self.render_blocks, patch))
+            .unwrap_or_else(|| render_blocks(&new_doc, schema));
+        let render_elements = flatten_render_blocks(&render_blocks);
 
         // 5. Map the selection through the step map for a suggested update.
         let selection_update = Some(Selection::cursor(step_map.map_pos(0)));
@@ -310,10 +368,13 @@ impl DocumentBackend for StandaloneBackend {
 
         // 7. Update document.
         self.doc = new_doc.clone();
+        self.render_blocks = render_blocks.clone();
 
         Ok(DocState {
             doc: new_doc,
             render_elements,
+            render_blocks,
+            render_patch,
             selection_update,
         })
     }
@@ -323,7 +384,13 @@ impl DocumentBackend for StandaloneBackend {
     }
 
     fn to_render_elements(&self, schema: &Schema) -> Vec<RenderElement> {
-        generate(&self.doc, schema)
+        let _ = schema;
+        flatten_render_blocks(&self.render_blocks)
+    }
+
+    fn to_render_blocks(&self, schema: &Schema) -> Vec<Vec<RenderElement>> {
+        let _ = schema;
+        self.render_blocks.clone()
     }
 
     fn position_map(&self) -> &PositionMap {
@@ -340,12 +407,25 @@ impl DocumentBackend for StandaloneBackend {
 
         match tx.apply(&self.doc, schema) {
             Ok((new_doc, step_map)) => {
-                self.pos_map.update(&step_map, &new_doc);
-                let render_elements = generate(&new_doc, schema);
+                self.pos_map.update(
+                    &step_map,
+                    &self.doc,
+                    &new_doc,
+                    Self::classify_position_map_update(&tx.steps),
+                );
+                let render_patch = contiguous_render_blocks_patch(&self.doc, &new_doc, schema);
+                let render_blocks = render_patch
+                    .as_ref()
+                    .and_then(|patch| Self::apply_render_blocks_patch(&self.render_blocks, patch))
+                    .unwrap_or_else(|| render_blocks(&new_doc, schema));
+                let render_elements = flatten_render_blocks(&render_blocks);
                 self.doc = new_doc.clone();
+                self.render_blocks = render_blocks.clone();
                 Some(DocState {
                     doc: new_doc,
                     render_elements,
+                    render_blocks,
+                    render_patch,
                     selection_update: Some(saved_selection),
                 })
             }
@@ -363,12 +443,25 @@ impl DocumentBackend for StandaloneBackend {
 
         match tx.apply(&self.doc, schema) {
             Ok((new_doc, step_map)) => {
-                self.pos_map.update(&step_map, &new_doc);
-                let render_elements = generate(&new_doc, schema);
+                self.pos_map.update(
+                    &step_map,
+                    &self.doc,
+                    &new_doc,
+                    Self::classify_position_map_update(&tx.steps),
+                );
+                let render_patch = contiguous_render_blocks_patch(&self.doc, &new_doc, schema);
+                let render_blocks = render_patch
+                    .as_ref()
+                    .and_then(|patch| Self::apply_render_blocks_patch(&self.render_blocks, patch))
+                    .unwrap_or_else(|| render_blocks(&new_doc, schema));
+                let render_elements = flatten_render_blocks(&render_blocks);
                 self.doc = new_doc.clone();
+                self.render_blocks = render_blocks.clone();
                 Some(DocState {
                     doc: new_doc,
                     render_elements,
+                    render_blocks,
+                    render_patch,
                     selection_update: Some(saved_selection),
                 })
             }

@@ -29,7 +29,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.lang.ref.WeakReference
 import java.net.URL
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 object LayoutConstants {
     /** Base indentation per depth level (pixels at base scale). */
@@ -79,6 +81,7 @@ data class BlockContext(
     val nodeType: String,
     val depth: Int,
     val listContext: JSONObject?,
+    val topLevelChildIndex: Int? = null,
     var markerPending: Boolean = false,
     var renderStart: Int = 0
 )
@@ -400,13 +403,35 @@ internal object RenderImageDecoder {
     }
 }
 
-private object RenderImageLoader {
+internal object RenderImageLoader {
     private val cache = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
-    private val executor = Executors.newCachedThreadPool()
+    private val executor =
+        ThreadPoolExecutor(
+            2,
+            2,
+            30L,
+            TimeUnit.SECONDS,
+            LinkedBlockingQueue()
+        )
+    private val lock = Any()
+    private val inFlight = mutableMapOf<String, MutableList<(Bitmap?) -> Unit>>()
+
+    @Volatile
+    internal var decodeSourceOverride: ((String) -> Bitmap?)? = null
 
     fun cached(source: String): Bitmap? = synchronized(cache) { cache.get(source) }
+
+    internal fun resetForTesting() {
+        synchronized(cache) {
+            cache.evictAll()
+        }
+        synchronized(lock) {
+            inFlight.clear()
+        }
+        decodeSourceOverride = null
+    }
 
     fun load(source: String, onLoaded: (Bitmap?) -> Unit) {
         cached(source)?.let {
@@ -415,7 +440,7 @@ private object RenderImageLoader {
         }
 
         if (source.trim().startsWith("data:image/", ignoreCase = true)) {
-            val bitmap = RenderImageDecoder.decodeSource(source)
+            val bitmap = decode(source)
             if (bitmap != null) {
                 synchronized(cache) {
                     cache.put(source, bitmap)
@@ -425,15 +450,31 @@ private object RenderImageLoader {
             return
         }
 
+        synchronized(lock) {
+            val existing = inFlight[source]
+            if (existing != null) {
+                existing += onLoaded
+                return
+            }
+            inFlight[source] = mutableListOf(onLoaded)
+        }
+
         executor.execute {
-            val bitmap = RenderImageDecoder.decodeSource(source)
+            val bitmap = decode(source)
             if (bitmap != null) {
                 synchronized(cache) {
                     cache.put(source, bitmap)
                 }
             }
-            onLoaded(bitmap)
+            val callbacks = synchronized(lock) {
+                inFlight.remove(source) ?: mutableListOf()
+            }
+            callbacks.forEach { it(bitmap) }
         }
+    }
+
+    private fun decode(source: String): Bitmap? {
+        return decodeSourceOverride?.invoke(source) ?: RenderImageDecoder.decodeSource(source)
     }
 }
 
@@ -710,7 +751,16 @@ class CenteredBulletSpan(
 
 object RenderBridge {
     internal const val NATIVE_BLOCKQUOTE_ANNOTATION = "nativeBlockquote"
+    internal const val NATIVE_TOP_LEVEL_CHILD_INDEX_ANNOTATION = "nativeTopLevelChildIndex"
     private const val NATIVE_SYNTHETIC_PLACEHOLDER_ANNOTATION = "nativeSyntheticPlaceholder"
+
+    private data class RenderBuildState(
+        val result: SpannableStringBuilder = SpannableStringBuilder(),
+        val blockStack: MutableList<BlockContext> = mutableListOf(),
+        val pendingLeadingMargins: MutableMap<Int, PendingLeadingMargin> = linkedMapOf(),
+        var isFirstBlock: Boolean = true,
+        var nextBlockSpacingBefore: Float? = null
+    )
 
     fun buildSpannable(
         json: String,
@@ -737,12 +787,57 @@ object RenderBridge {
         density: Float = 1f,
         hostView: TextView? = null
     ): SpannableStringBuilder {
-        val result = SpannableStringBuilder()
-        val blockStack = mutableListOf<BlockContext>()
-        val pendingLeadingMargins = linkedMapOf<Int, PendingLeadingMargin>()
-        var isFirstBlock = true
-        var nextBlockSpacingBefore: Float? = null
+        val state = RenderBuildState()
+        appendElements(
+            state = state,
+            elements = elements,
+            baseFontSize = baseFontSize,
+            textColor = textColor,
+            theme = theme,
+            density = density,
+            hostView = hostView
+        )
+        applyPendingLeadingMargins(state.result, state.pendingLeadingMargins)
+        return state.result
+    }
 
+    fun buildSpannableFromBlocks(
+        blocks: JSONArray,
+        startIndex: Int = 0,
+        baseFontSize: Float,
+        textColor: Int,
+        theme: EditorTheme? = null,
+        density: Float = 1f,
+        hostView: TextView? = null
+    ): SpannableStringBuilder {
+        val state = RenderBuildState()
+        for (blockOffset in 0 until blocks.length()) {
+            val blockElements = blocks.optJSONArray(blockOffset) ?: continue
+            appendElements(
+                state = state,
+                elements = blockElements,
+                baseFontSize = baseFontSize,
+                textColor = textColor,
+                theme = theme,
+                density = density,
+                hostView = hostView,
+                topLevelChildIndex = startIndex + blockOffset
+            )
+        }
+        applyPendingLeadingMargins(state.result, state.pendingLeadingMargins)
+        return state.result
+    }
+
+    private fun appendElements(
+        state: RenderBuildState,
+        elements: JSONArray,
+        baseFontSize: Float,
+        textColor: Int,
+        theme: EditorTheme?,
+        density: Float,
+        hostView: TextView?,
+        topLevelChildIndex: Int? = null
+    ) {
         for (i in 0 until elements.length()) {
             val element = elements.optJSONObject(i) ?: continue
             val type = element.optString("type", "")
@@ -753,13 +848,13 @@ object RenderBridge {
                     val marksArray = element.optJSONArray("marks")
                     val marks = parseMarks(marksArray)
                     appendStyledText(
-                        result,
+                        state.result,
                         text,
                         marks,
                         baseFontSize,
                         textColor,
-                        blockStack,
-                        pendingLeadingMargins,
+                        state.blockStack,
+                        state.pendingLeadingMargins,
                         theme,
                         density
                     )
@@ -768,12 +863,12 @@ object RenderBridge {
                 "voidInline" -> {
                     val nodeType = element.optString("nodeType", "")
                     appendVoidInline(
-                        result,
+                        state.result,
                         nodeType,
                         baseFontSize,
                         textColor,
-                        blockStack,
-                        pendingLeadingMargins,
+                        state.blockStack,
+                        state.pendingLeadingMargins,
                         theme,
                         density
                     )
@@ -782,16 +877,22 @@ object RenderBridge {
                 "voidBlock" -> {
                     val nodeType = element.optString("nodeType", "")
                     val attrs = element.optJSONObject("attrs")
-                    if (!isFirstBlock) {
-                        val spacingPx = ((nextBlockSpacingBefore ?: 0f) * density).toInt()
-                        appendInterBlockNewline(result, baseFontSize, textColor, spacingPx)
+                    if (!state.isFirstBlock) {
+                        val spacingPx = ((state.nextBlockSpacingBefore ?: 0f) * density).toInt()
+                        appendInterBlockNewline(
+                            state.result,
+                            baseFontSize,
+                            textColor,
+                            spacingPx,
+                            topLevelChildIndex = topLevelChildIndex
+                        )
                     }
-                    isFirstBlock = false
+                    state.isFirstBlock = false
                     val spacingBefore = theme?.effectiveTextStyle(nodeType)?.spacingAfter
                         ?: theme?.list?.itemSpacing
-                    nextBlockSpacingBefore = spacingBefore
+                    state.nextBlockSpacingBefore = spacingBefore
                     appendVoidBlock(
-                        result,
+                        state.result,
                         nodeType,
                         attrs,
                         baseFontSize,
@@ -799,7 +900,8 @@ object RenderBridge {
                         theme,
                         density,
                         spacingBefore,
-                        hostView
+                        hostView,
+                        topLevelChildIndex
                     )
                 }
 
@@ -807,13 +909,13 @@ object RenderBridge {
                     val nodeType = element.optString("nodeType", "")
                     val label = element.optString("label", "?")
                     appendOpaqueInlineAtom(
-                        result,
+                        state.result,
                         nodeType,
                         label,
                         baseFontSize,
                         textColor,
-                        blockStack,
-                        pendingLeadingMargins,
+                        state.blockStack,
+                        state.pendingLeadingMargins,
                         theme,
                         density
                     )
@@ -823,13 +925,28 @@ object RenderBridge {
                     val nodeType = element.optString("nodeType", "")
                     val label = element.optString("label", "?")
                     val blockSpacing = theme?.effectiveTextStyle(nodeType)?.spacingAfter
-                    if (!isFirstBlock) {
-                        val spacingPx = ((nextBlockSpacingBefore ?: 0f) * density).toInt()
-                        appendInterBlockNewline(result, baseFontSize, textColor, spacingPx)
+                    if (!state.isFirstBlock) {
+                        val spacingPx = ((state.nextBlockSpacingBefore ?: 0f) * density).toInt()
+                        appendInterBlockNewline(
+                            state.result,
+                            baseFontSize,
+                            textColor,
+                            spacingPx,
+                            topLevelChildIndex = topLevelChildIndex
+                        )
                     }
-                    isFirstBlock = false
-                    nextBlockSpacingBefore = blockSpacing
-                    appendOpaqueBlockAtom(result, nodeType, label, baseFontSize, textColor, theme, blockSpacing)
+                    state.isFirstBlock = false
+                    state.nextBlockSpacingBefore = blockSpacing
+                    appendOpaqueBlockAtom(
+                        state.result,
+                        nodeType,
+                        label,
+                        baseFontSize,
+                        textColor,
+                        theme,
+                        blockSpacing,
+                        topLevelChildIndex
+                    )
                 }
 
                 "blockStart" -> {
@@ -839,7 +956,7 @@ object RenderBridge {
                     val isListItemContainer = nodeType == "listItem" && listContext != null
                     val isTransparentContainer = nodeType == "blockquote"
                     val nestedListItemContainer =
-                        isListItemContainer && blockStack.any { it.nodeType == "listItem" && it.listContext != null }
+                        isListItemContainer && state.blockStack.any { it.nodeType == "listItem" && it.listContext != null }
                     val blockSpacing = if (isListItemContainer) {
                         null
                     } else {
@@ -848,44 +965,47 @@ object RenderBridge {
                     }
 
                     if (!isListItemContainer && !isTransparentContainer) {
-                        if (!isFirstBlock) {
-                            val spacingPx = ((nextBlockSpacingBefore ?: 0f) * density).toInt()
-                            val nextBlockStack = blockStack + BlockContext(
+                        if (!state.isFirstBlock) {
+                            val spacingPx = ((state.nextBlockSpacingBefore ?: 0f) * density).toInt()
+                            val nextBlockStack = state.blockStack + BlockContext(
                                 nodeType = nodeType,
                                 depth = depth,
                                 listContext = listContext,
+                                topLevelChildIndex = topLevelChildIndex,
                                 markerPending = isListItemContainer,
-                                renderStart = result.length
+                                renderStart = state.result.length
                             )
                             val inBlockquoteSeparator =
-                                blockquoteDepth(nextBlockStack) > 0f && trailingRenderedContentHasBlockquote(result)
+                                blockquoteDepth(nextBlockStack) > 0f && trailingRenderedContentHasBlockquote(state.result)
                             appendInterBlockNewline(
-                                result,
+                                state.result,
                                 baseFontSize,
                                 textColor,
                                 spacingPx,
-                                inBlockquote = inBlockquoteSeparator
+                                inBlockquote = inBlockquoteSeparator,
+                                topLevelChildIndex = topLevelChildIndex
                             )
                         }
-                        isFirstBlock = false
-                        nextBlockSpacingBefore = blockSpacing
+                        state.isFirstBlock = false
+                        state.nextBlockSpacingBefore = blockSpacing
                     } else if (nestedListItemContainer && theme?.list?.itemSpacing != null) {
-                        nextBlockSpacingBefore = theme.list.itemSpacing
+                        state.nextBlockSpacingBefore = theme.list.itemSpacing
                     }
 
                     val ctx = BlockContext(
                         nodeType = nodeType,
                         depth = depth,
                         listContext = listContext,
+                        topLevelChildIndex = topLevelChildIndex,
                         markerPending = isListItemContainer,
-                        renderStart = result.length
+                        renderStart = state.result.length
                     )
-                    blockStack.add(ctx)
+                    state.blockStack.add(ctx)
 
                     val markerListContext = when {
                         isListItemContainer -> null
                         listContext != null -> listContext
-                        else -> consumePendingListMarker(blockStack, result.length)
+                        else -> consumePendingListMarker(state.blockStack, state.result.length)
                     }
 
                     if (markerListContext != null) {
@@ -895,33 +1015,34 @@ object RenderBridge {
                             resolveTextStyle(
                                 nodeType,
                                 theme,
-                                blockquoteDepth(blockStack) > 0
+                                blockquoteDepth(state.blockStack) > 0
                             ).fontSize?.times(density) ?: baseFontSize
                         val markerTextStyle = resolveTextStyle(
                             nodeType,
                             theme,
-                            blockquoteDepth(blockStack) > 0
+                            blockquoteDepth(state.blockStack) > 0
                         )
                         appendStyledText(
-                            result,
+                            state.result,
                             marker,
                             emptyList(),
                             markerBaseSize,
                             theme?.list?.markerColor ?: textColor,
-                            blockStack,
-                            pendingLeadingMargins,
+                            state.blockStack,
+                            state.pendingLeadingMargins,
                             null,
                             density,
                             applyBlockSpans = false
                         )
+                        val markerStart = state.result.length - marker.length
+                        val markerEnd = state.result.length
+                        annotateTopLevelChild(state.result, markerStart, markerEnd, topLevelChildIndex)
                         if (!ordered) {
-                            val markerStart = result.length - marker.length
-                            val markerEnd = result.length
                             val markerScale =
                                 theme?.list?.markerScale ?: LayoutConstants.UNORDERED_LIST_MARKER_FONT_SCALE
                             val markerWidth = calculateMarkerWidth(density)
                             val bulletRadius = ((markerBaseSize * markerScale) * 0.16f).coerceAtLeast(2f * density)
-                            result.setSpan(
+                            state.result.setSpan(
                                 CenteredBulletSpan(
                                     textColor = theme?.list?.markerColor ?: textColor,
                                     markerWidthPx = markerWidth,
@@ -935,9 +1056,9 @@ object RenderBridge {
                             )
                         }
                         applyLineHeightSpan(
-                            builder = result,
-                            start = result.length - marker.length,
-                            end = result.length,
+                            builder = state.result,
+                            start = markerStart,
+                            end = markerEnd,
                             lineHeight = markerTextStyle.lineHeight,
                             density = density
                         )
@@ -945,28 +1066,25 @@ object RenderBridge {
                 }
 
                 "blockEnd" -> {
-                    if (blockStack.isNotEmpty()) {
-                        val endedBlock = blockStack.removeAt(blockStack.lastIndex)
+                    if (state.blockStack.isNotEmpty()) {
+                        val endedBlock = state.blockStack.removeAt(state.blockStack.lastIndex)
                         appendTrailingHardBreakPlaceholderIfNeeded(
-                            builder = result,
+                            builder = state.result,
                             endedBlock = endedBlock,
-                            remainingBlockStack = blockStack,
+                            remainingBlockStack = state.blockStack,
                             baseFontSize = baseFontSize,
                             textColor = textColor,
                             theme = theme,
                             density = density,
-                            pendingLeadingMargins = pendingLeadingMargins
+                            pendingLeadingMargins = state.pendingLeadingMargins
                         )
                         if (endedBlock.nodeType == "listItem" && endedBlock.listContext != null) {
-                            nextBlockSpacingBefore = theme?.list?.itemSpacing
+                            state.nextBlockSpacingBefore = theme?.list?.itemSpacing
                         }
                     }
                 }
             }
         }
-
-        applyPendingLeadingMargins(result, pendingLeadingMargins)
-        return result
     }
 
     /**
@@ -1161,7 +1279,8 @@ object RenderBridge {
         theme: EditorTheme?,
         density: Float,
         spacingBefore: Float?,
-        hostView: TextView?
+        hostView: TextView?,
+        topLevelChildIndex: Int?
     ) {
         when (nodeType) {
             "horizontalRule" -> {
@@ -1183,6 +1302,7 @@ object RenderBridge {
                     ),
                     start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                 )
+                annotateTopLevelChild(builder, start, end, topLevelChildIndex)
             }
             "image" -> {
                 val source = if (attrs != null && attrs.has("src") && !attrs.isNull("src")) {
@@ -1209,9 +1329,12 @@ object RenderBridge {
                     ),
                     start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                 )
+                annotateTopLevelChild(builder, start, end, topLevelChildIndex)
             }
             else -> {
+                val start = builder.length
                 builder.append(LayoutConstants.OBJECT_REPLACEMENT_CHARACTER)
+                annotateTopLevelChild(builder, start, builder.length, topLevelChildIndex)
             }
         }
     }
@@ -1273,7 +1396,8 @@ object RenderBridge {
         baseFontSize: Float,
         textColor: Int,
         theme: EditorTheme?,
-        spacingBefore: Float?
+        spacingBefore: Float?,
+        topLevelChildIndex: Int?
     ) {
         val text = if (nodeType == "mention") label else "[$label]"
         val start = builder.length
@@ -1291,6 +1415,7 @@ object RenderBridge {
             Annotation("nativeVoidNodeType", nodeType),
             start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
         )
+        annotateTopLevelChild(builder, start, end, topLevelChildIndex)
     }
 
     private fun applyBlockStyle(
@@ -1369,6 +1494,7 @@ object RenderBridge {
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
         }
+        annotateTopLevelChild(builder, start, end, currentBlock.topLevelChildIndex)
 
         val lineHeight = resolveTextStyle(
             currentBlock.nodeType,
@@ -1634,7 +1760,8 @@ object RenderBridge {
         baseFontSize: Float,
         textColor: Int,
         spacingPx: Int = 0,
-        inBlockquote: Boolean = false
+        inBlockquote: Boolean = false,
+        topLevelChildIndex: Int? = null
     ) {
         val start = builder.length
         builder.append("\n")
@@ -1654,6 +1781,7 @@ object RenderBridge {
                 start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
         }
+        annotateTopLevelChild(builder, start, end, topLevelChildIndex)
         if (inBlockquote) {
             builder.setSpan(
                 Annotation(NATIVE_BLOCKQUOTE_ANNOTATION, "1"),
@@ -1710,6 +1838,21 @@ object RenderBridge {
         return builder.getSpans(lastIndex, builder.length, Annotation::class.java).any {
             it.key == "nativeVoidNodeType" && it.value == "hardBreak"
         }
+    }
+
+    private fun annotateTopLevelChild(
+        builder: SpannableStringBuilder,
+        start: Int,
+        end: Int,
+        topLevelChildIndex: Int?
+    ) {
+        if (topLevelChildIndex == null || start >= end) return
+        builder.setSpan(
+            Annotation(NATIVE_TOP_LEVEL_CHILD_INDEX_ANNOTATION, topLevelChildIndex.toString()),
+            start,
+            end,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
     }
 
     private fun trailingRenderedContentHasBlockquote(builder: Spanned): Boolean {

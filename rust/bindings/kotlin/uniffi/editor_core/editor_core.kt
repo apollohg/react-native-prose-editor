@@ -841,6 +841,10 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -900,6 +904,8 @@ fun uniffi_editor_core_checksum_func_editor_destroy(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_doc_to_scalar(
 ): Short
+fun uniffi_editor_core_checksum_func_editor_get_content_snapshot(
+): Short
 fun uniffi_editor_core_checksum_func_editor_get_current_state(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_get_html(
@@ -907,6 +913,8 @@ fun uniffi_editor_core_checksum_func_editor_get_html(
 fun uniffi_editor_core_checksum_func_editor_get_json(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_get_selection(
+): Short
+fun uniffi_editor_core_checksum_func_editor_get_selection_state(
 ): Short
 fun uniffi_editor_core_checksum_func_editor_indent_list_item(
 ): Short
@@ -1075,6 +1083,8 @@ fun uniffi_editor_core_fn_func_editor_destroy(`id`: Long,uniffi_out_err: UniffiR
 ): Unit
 fun uniffi_editor_core_fn_func_editor_doc_to_scalar(`id`: Long,`docPos`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): Int
+fun uniffi_editor_core_fn_func_editor_get_content_snapshot(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_get_current_state(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_get_html(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -1082,6 +1092,8 @@ fun uniffi_editor_core_fn_func_editor_get_html(`id`: Long,uniffi_out_err: Uniffi
 fun uniffi_editor_core_fn_func_editor_get_json(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_get_selection(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_editor_core_fn_func_editor_get_selection_state(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_editor_core_fn_func_editor_indent_list_item(`id`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1353,6 +1365,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_doc_to_scalar() != 48291.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_editor_core_checksum_func_editor_get_content_snapshot() != 32837.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_editor_core_checksum_func_editor_get_current_state() != 13946.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1363,6 +1378,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_get_selection() != 20571.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_get_selection_state() != 16471.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_indent_list_item() != 10818.toShort()) {
@@ -1982,6 +2000,18 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     
 
         /**
+         * Get both HTML and ProseMirror JSON content in one payload.
+         */ fun `editorGetContentSnapshot`(`id`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_get_content_snapshot(
+        FfiConverterULong.lower(`id`),_status)
+}
+    )
+    }
+    
+
+        /**
          * Get the current editor state (render elements, selection, active state,
          * history state) without performing any edits. Used by native views to pull
          * initial state when binding to an already-loaded editor.
@@ -2025,6 +2055,18 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
             return FfiConverterString.lift(
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_get_selection(
+        FfiConverterULong.lower(`id`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Get the current selection-related editor state without render elements.
+         */ fun `editorGetSelectionState`(`id`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_get_selection_state(
         FfiConverterULong.lower(`id`),_status)
 }
     )

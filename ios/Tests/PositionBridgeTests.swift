@@ -13,6 +13,41 @@ final class PositionBridgeTests: XCTestCase {
         return UITextView(frame: .zero, textContainer: textContainer)
     }
 
+    private func assertConversionsMatch(
+        _ patched: UITextView,
+        _ rebuilt: UITextView,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(patched.textStorage.length, rebuilt.textStorage.length, file: file, line: line)
+        for offset in 0...patched.textStorage.length {
+            XCTAssertEqual(
+                PositionBridge.utf16OffsetToScalar(offset, in: patched),
+                PositionBridge.utf16OffsetToScalar(offset, in: rebuilt),
+                "UTF-16 offset \(offset) should match a fresh conversion-table rebuild",
+                file: file,
+                line: line
+            )
+        }
+
+        let maxScalar = PositionBridge.utf16OffsetToScalar(patched.textStorage.length, in: rebuilt)
+        XCTAssertEqual(
+            maxScalar,
+            PositionBridge.utf16OffsetToScalar(patched.textStorage.length, in: patched),
+            file: file,
+            line: line
+        )
+        for scalar in 0...Int(maxScalar) {
+            XCTAssertEqual(
+                PositionBridge.scalarToUtf16Offset(UInt32(scalar), in: patched),
+                PositionBridge.scalarToUtf16Offset(UInt32(scalar), in: rebuilt),
+                "Scalar \(scalar) should map to the same UTF-16 offset after cache patching",
+                file: file,
+                line: line
+            )
+        }
+    }
+
     // MARK: - UTF-16 -> Scalar: ASCII
 
     /// ASCII characters are 1 UTF-16 code unit = 1 scalar each.
@@ -167,6 +202,139 @@ final class PositionBridgeTests: XCTestCase {
             2,
             "The synthetic trailing hardBreak placeholder should not count as content"
         )
+    }
+
+    func testApplyAttributedPatch_handlesSyntheticPlaceholderAdjustment() {
+        let initialJSON = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "A", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+        let replacementJSON = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "A", "marks": []},
+            {"type": "voidInline", "nodeType": "hardBreak", "docPos": 2},
+            {"type": "blockEnd"}
+        ]
+        """
+
+        let initial = RenderBridge.renderElements(
+            fromJSON: initialJSON,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label
+        )
+        let replacement = RenderBridge.renderElements(
+            fromJSON: replacementJSON,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label
+        )
+
+        let patched = makeTextView(with: initial)
+        _ = PositionBridge.utf16OffsetToScalar(patched.textStorage.length, in: patched)
+        let replaceRange = NSRange(location: 0, length: patched.textStorage.length)
+        patched.textStorage.beginEditing()
+        patched.textStorage.replaceCharacters(in: replaceRange, with: replacement)
+        patched.textStorage.endEditing()
+
+        XCTAssertTrue(
+            PositionBridge.applyAttributedPatchIfPossible(
+                for: patched,
+                replaceRange: replaceRange,
+                replacement: replacement
+            )
+        )
+
+        let rebuilt = makeTextView(with: replacement)
+        assertConversionsMatch(patched, rebuilt)
+    }
+
+    func testApplyAttributedPatch_handlesVirtualListMarkerAdjustment() {
+        let initialJSON = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+        let replacementJSON = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """
+
+        let initial = RenderBridge.renderElements(
+            fromJSON: initialJSON,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label
+        )
+        let replacement = RenderBridge.renderElements(
+            fromJSON: replacementJSON,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label
+        )
+
+        let patched = makeTextView(with: initial)
+        _ = PositionBridge.utf16OffsetToScalar(patched.textStorage.length, in: patched)
+        let replaceRange = NSRange(location: 0, length: patched.textStorage.length)
+        patched.textStorage.beginEditing()
+        patched.textStorage.replaceCharacters(in: replaceRange, with: replacement)
+        patched.textStorage.endEditing()
+
+        XCTAssertTrue(
+            PositionBridge.applyAttributedPatchIfPossible(
+                for: patched,
+                replaceRange: replaceRange,
+                replacement: replacement
+            )
+        )
+
+        let rebuilt = makeTextView(with: replacement)
+        assertConversionsMatch(patched, rebuilt)
+    }
+
+    func testApplyPlainTextPatch_handlesPartialPlainTextReplacement() {
+        let initial = NSAttributedString(
+            string: "Alpha Beta Gamma",
+            attributes: [.font: UIFont.systemFont(ofSize: 16)]
+        )
+        let replacementText = "Beta\n"
+        let replaceRange = NSRange(location: 6, length: 4)
+
+        let patched = makeTextView(with: initial)
+        _ = PositionBridge.utf16OffsetToScalar(patched.textStorage.length, in: patched)
+        patched.textStorage.beginEditing()
+        patched.textStorage.replaceCharacters(
+            in: replaceRange,
+            with: NSAttributedString(
+                string: replacementText,
+                attributes: [.font: UIFont.systemFont(ofSize: 16)]
+            )
+        )
+        patched.textStorage.endEditing()
+
+        XCTAssertTrue(
+            PositionBridge.applyPlainTextPatchIfPossible(
+                for: patched,
+                replaceRange: replaceRange,
+                replacementText: replacementText
+            )
+        )
+
+        let rebuilt = makeTextView(
+            with: NSAttributedString(
+                string: "Alpha Beta\n Gamma",
+                attributes: [.font: UIFont.systemFont(ofSize: 16)]
+            )
+        )
+        assertConversionsMatch(patched, rebuilt)
     }
 
     // MARK: - UTF-16 -> Scalar: BMP Emoji (1 scalar, 1 UTF-16)

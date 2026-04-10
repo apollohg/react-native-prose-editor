@@ -4,7 +4,7 @@ use crate::model::fragment::Fragment;
 use crate::model::mark::Mark;
 
 /// The kind of a node determines how it behaves in the position model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum NodeKind {
     /// A text node: carries a string and marks, occupies `text.chars().count()`
     /// tokens (Unicode scalar values). Has no children.
@@ -23,7 +23,7 @@ enum NodeKind {
 /// - **Text**: inline content with optional marks, measured in Unicode scalars
 /// - **Void**: atomic nodes like hard breaks, always 1 token
 /// - **Element**: container nodes with a content fragment
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     node_type: String,
     attrs: HashMap<String, serde_json::Value>,

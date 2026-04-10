@@ -8,7 +8,53 @@ extension Notification.Name {
 
 private enum RenderImageCache {
     static let cache = NSCache<NSString, UIImage>()
-    static let queue = DispatchQueue(label: "com.apollohg.editor.image-loader", qos: .userInitiated)
+    static let stateQueue = DispatchQueue(label: "com.apollohg.editor.image-loader-state")
+    static let queue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "com.apollohg.editor.image-loader"
+        queue.qualityOfService = .userInitiated
+        queue.maxConcurrentOperationCount = 2
+        return queue
+    }()
+    private static var inFlight: [String: [(UIImage?) -> Void]] = [:]
+
+    static func load(
+        source: String,
+        url: URL,
+        completion: @escaping (UIImage?) -> Void
+    ) {
+        if let cached = cache.object(forKey: source as NSString) {
+            completion(cached)
+            return
+        }
+
+        var shouldStartLoad = false
+        stateQueue.sync {
+            if inFlight[source] != nil {
+                inFlight[source]?.append(completion)
+            } else {
+                inFlight[source] = [completion]
+                shouldStartLoad = true
+            }
+        }
+        guard shouldStartLoad else { return }
+
+        queue.addOperation {
+            let data = try? Data(contentsOf: url)
+            let image = data.flatMap(UIImage.init(data:))
+            if let image {
+                cache.setObject(image, forKey: source as NSString)
+            }
+
+            let callbacks: [(UIImage?) -> Void] = stateQueue.sync {
+                let callbacks = inFlight.removeValue(forKey: source) ?? []
+                return callbacks
+            }
+            DispatchQueue.main.async {
+                callbacks.forEach { $0(image) }
+            }
+        }
+    }
 }
 
 // MARK: - Constants
@@ -57,6 +103,9 @@ enum RenderBridgeAttributes {
 
     /// Marks synthetic zero-width placeholders used only for UIKit layout.
     static let syntheticPlaceholder = NSAttributedString.Key("com.apollohg.editor.syntheticPlaceholder")
+
+    /// Stores the owning top-level document child index for partial native patching.
+    static let topLevelChildIndex = NSAttributedString.Key("com.apollohg.editor.topLevelChildIndex")
 }
 
 /// Layout constants for paragraph styles.
@@ -169,6 +218,7 @@ final class RenderBridge {
 
         for element in elements {
             guard let type = element["type"] as? String else { continue }
+            let topLevelChildIndex = jsonInt(element["topLevelChildIndex"])
 
             switch type {
             case "textRun":
@@ -194,7 +244,14 @@ final class RenderBridge {
                     blockStack: blockStack,
                     theme: theme
                 )
-                result.append(NSAttributedString(string: text, attributes: attrs))
+                let attributedText = NSAttributedString(string: text, attributes: attrs)
+                result.append(
+                    attributedStringApplyingLeadingTopLevelChildIndexIfNeeded(
+                        attributedText,
+                        topLevelChildIndex: topLevelChildIndex,
+                        resultIsEmpty: result.length == 0
+                    )
+                )
 
             case "voidInline":
                 let nodeType = element["nodeType"] as? String ?? ""
@@ -210,9 +267,16 @@ final class RenderBridge {
                     baseFont: baseFont,
                     textColor: textColor,
                     blockStack: blockStack,
+                    topLevelChildIndex: topLevelChildIndex,
                     theme: theme
                 )
-                result.append(attrStr)
+                result.append(
+                    attributedStringApplyingLeadingTopLevelChildIndexIfNeeded(
+                        attrStr,
+                        topLevelChildIndex: topLevelChildIndex,
+                        resultIsEmpty: result.length == 0
+                    )
+                )
 
             case "voidBlock":
                 let nodeType = element["nodeType"] as? String ?? ""
@@ -236,7 +300,8 @@ final class RenderBridge {
                             baseFont: baseFont,
                             textColor: textColor,
                             blockStack: [],
-                            theme: theme
+                            theme: theme,
+                            topLevelChildIndex: topLevelChildIndex
                         )
                     )
                 }
@@ -248,6 +313,7 @@ final class RenderBridge {
                     elementAttrs: attrs,
                     baseFont: baseFont,
                     textColor: textColor,
+                    topLevelChildIndex: topLevelChildIndex,
                     theme: theme
                 )
                 result.append(attrStr)
@@ -263,9 +329,16 @@ final class RenderBridge {
                     baseFont: baseFont,
                     textColor: textColor,
                     blockStack: blockStack,
+                    topLevelChildIndex: topLevelChildIndex,
                     theme: theme
                 )
-                result.append(attrStr)
+                result.append(
+                    attributedStringApplyingLeadingTopLevelChildIndexIfNeeded(
+                        attrStr,
+                        topLevelChildIndex: topLevelChildIndex,
+                        resultIsEmpty: result.length == 0
+                    )
+                )
 
             case "opaqueBlockAtom":
                 let nodeType = element["nodeType"] as? String ?? ""
@@ -282,7 +355,8 @@ final class RenderBridge {
                             baseFont: baseFont,
                             textColor: textColor,
                             blockStack: [],
-                            theme: theme
+                            theme: theme,
+                            topLevelChildIndex: topLevelChildIndex
                         )
                     )
                 }
@@ -294,6 +368,7 @@ final class RenderBridge {
                     docPos: docPos,
                     baseFont: baseFont,
                     textColor: textColor,
+                    topLevelChildIndex: topLevelChildIndex,
                     theme: theme
                 )
                 result.append(attrStr)
@@ -308,6 +383,7 @@ final class RenderBridge {
                     nodeType: nodeType,
                     depth: depth,
                     listContext: listContext,
+                    topLevelChildIndex: topLevelChildIndex,
                     markerPending: isListItemContainer
                 )
                 let nestedListItemContainer =
@@ -341,7 +417,8 @@ final class RenderBridge {
                                 textColor: textColor,
                                 blockStack: newlineBlockStack,
                                 theme: theme,
-                                paragraphSpacingOverride: collapsedSeparatorSpacing
+                                paragraphSpacingOverride: collapsedSeparatorSpacing,
+                                topLevelChildIndex: topLevelChildIndex
                             )
                         )
                     }
@@ -402,6 +479,54 @@ final class RenderBridge {
             }
         }
 
+        return result
+    }
+
+    static func renderBlocks(
+        fromArray blocks: [[[String: Any]]],
+        startIndex: Int = 0,
+        includeLeadingInterBlockSeparator: Bool = false,
+        baseFont: UIFont,
+        textColor: UIColor,
+        theme: EditorTheme? = nil
+    ) -> NSAttributedString {
+        var flattened: [[String: Any]] = []
+        flattened.reserveCapacity(blocks.reduce(0) { $0 + $1.count })
+
+        for (offset, block) in blocks.enumerated() {
+            let topLevelChildIndex = startIndex + offset
+            for element in block {
+                var tagged = element
+                tagged["topLevelChildIndex"] = topLevelChildIndex
+                flattened.append(tagged)
+            }
+        }
+
+        let renderedBlocks = renderElements(
+            fromArray: flattened,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: theme
+        )
+        guard includeLeadingInterBlockSeparator, startIndex > 0, !blocks.isEmpty else {
+            return renderedBlocks
+        }
+
+        let separatorReadyBlocks = removingLeadingTopLevelChildIndex(
+            from: renderedBlocks,
+            topLevelChildIndex: startIndex
+        )
+
+        let result = NSMutableAttributedString(
+            attributedString: interBlockNewline(
+                baseFont: baseFont,
+                textColor: textColor,
+                blockStack: [],
+                theme: theme,
+                topLevelChildIndex: startIndex
+            )
+        )
+        result.append(separatorReadyBlocks)
         return result
     }
 
@@ -499,6 +624,7 @@ final class RenderBridge {
         baseFont: UIFont,
         textColor: UIColor,
         blockStack: [BlockContext],
+        topLevelChildIndex _: Int?,
         theme: EditorTheme?
     ) -> NSAttributedString {
         let blockFont = resolvedFont(for: blockStack, baseFont: baseFont, theme: theme)
@@ -543,11 +669,15 @@ final class RenderBridge {
         elementAttrs: [String: Any],
         baseFont: UIFont,
         textColor: UIColor,
+        topLevelChildIndex: Int?,
         theme: EditorTheme?
     ) -> NSAttributedString {
         var attrs = defaultAttributes(baseFont: baseFont, textColor: textColor)
         attrs[RenderBridgeAttributes.voidNodeType] = nodeType
         attrs[RenderBridgeAttributes.docPos] = docPos
+        if let topLevelChildIndex {
+            attrs[RenderBridgeAttributes.topLevelChildIndex] = NSNumber(value: topLevelChildIndex)
+        }
 
         switch nodeType {
         case "horizontalRule":
@@ -600,6 +730,7 @@ final class RenderBridge {
         baseFont: UIFont,
         textColor: UIColor,
         blockStack: [BlockContext],
+        topLevelChildIndex _: Int?,
         theme: EditorTheme?
     ) -> NSAttributedString {
         let blockFont = resolvedFont(for: blockStack, baseFont: baseFont, theme: theme)
@@ -633,12 +764,16 @@ final class RenderBridge {
         docPos: UInt32,
         baseFont: UIFont,
         textColor: UIColor,
+        topLevelChildIndex: Int?,
         theme: EditorTheme?
     ) -> NSAttributedString {
         var attrs = defaultAttributes(baseFont: baseFont, textColor: textColor)
         attrs[RenderBridgeAttributes.voidNodeType] = nodeType
         attrs[RenderBridgeAttributes.docPos] = docPos
         attrs[.backgroundColor] = UIColor.systemGray5
+        if let topLevelChildIndex {
+            attrs[RenderBridgeAttributes.topLevelChildIndex] = NSNumber(value: topLevelChildIndex)
+        }
 
         return NSAttributedString(string: "[\(label)]", attributes: attrs)
     }
@@ -747,6 +882,18 @@ final class RenderBridge {
         return 0
     }
 
+    static func jsonInt(_ value: Any?) -> Int? {
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        if let string = value as? String,
+           let resolved = Int(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        {
+            return resolved
+        }
+        return nil
+    }
+
     /// Extract a positive `CGFloat` from a JSON value produced by `JSONSerialization`.
     static func jsonCGFloat(_ value: Any?) -> CGFloat? {
         if let number = value as? NSNumber {
@@ -824,13 +971,17 @@ final class RenderBridge {
         textColor: UIColor,
         blockStack: [BlockContext],
         theme: EditorTheme?,
-        paragraphSpacingOverride: CGFloat? = nil
+        paragraphSpacingOverride: CGFloat? = nil,
+        topLevelChildIndex: Int? = nil
     ) -> NSAttributedString {
         var attrs = applyBlockStyle(
             to: defaultAttributes(baseFont: baseFont, textColor: textColor),
             blockStack: blockStack,
             theme: theme
         )
+        if let topLevelChildIndex {
+            attrs[RenderBridgeAttributes.topLevelChildIndex] = NSNumber(value: topLevelChildIndex)
+        }
         if let paragraphSpacingOverride,
            let paragraphStyle = (attrs[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy()
                as? NSMutableParagraphStyle
@@ -839,6 +990,57 @@ final class RenderBridge {
             attrs[.paragraphStyle] = paragraphStyle
         }
         return NSAttributedString(string: "\n", attributes: attrs)
+    }
+
+    private static func attributedStringApplyingLeadingTopLevelChildIndexIfNeeded(
+        _ attributedString: NSAttributedString,
+        topLevelChildIndex: Int?,
+        resultIsEmpty: Bool
+    ) -> NSAttributedString {
+        guard resultIsEmpty,
+              let topLevelChildIndex,
+              attributedString.length > 0
+        else {
+            return attributedString
+        }
+
+        let tagged = NSMutableAttributedString(attributedString: attributedString)
+        tagged.addAttribute(
+            RenderBridgeAttributes.topLevelChildIndex,
+            value: NSNumber(value: topLevelChildIndex),
+            range: NSRange(location: 0, length: 1)
+        )
+        return tagged
+    }
+
+    private static func removingLeadingTopLevelChildIndex(
+        from attributedString: NSAttributedString,
+        topLevelChildIndex: Int
+    ) -> NSAttributedString {
+        guard attributedString.length > 0 else { return attributedString }
+
+        let firstValue = attributedString.attribute(
+            RenderBridgeAttributes.topLevelChildIndex,
+            at: 0,
+            effectiveRange: nil
+        ) as? NSNumber
+        guard firstValue?.intValue == topLevelChildIndex else {
+            return attributedString
+        }
+
+        let adjusted = NSMutableAttributedString(attributedString: attributedString)
+        var effectiveRange = NSRange(location: 0, length: 0)
+        adjusted.attribute(
+            RenderBridgeAttributes.topLevelChildIndex,
+            at: 0,
+            longestEffectiveRange: &effectiveRange,
+            in: NSRange(location: 0, length: adjusted.length)
+        )
+        adjusted.removeAttribute(
+            RenderBridgeAttributes.topLevelChildIndex,
+            range: effectiveRange
+        )
+        return adjusted
     }
 
     private static func effectiveBlockContext(_ blockStack: [BlockContext]) -> BlockContext? {
@@ -904,7 +1106,11 @@ final class RenderBridge {
 
         let nsString = result.string as NSString
         let paragraphRange = nsString.paragraphRange(for: NSRange(location: result.length - 1, length: 0))
-        result.enumerateAttribute(.paragraphStyle, in: paragraphRange, options: []) { value, range, _ in
+        result.enumerateAttribute(
+            .paragraphStyle,
+            in: paragraphRange,
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, range, _ in
             let sourceStyle = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
                 ?? NSMutableParagraphStyle()
             sourceStyle.paragraphSpacing = paragraphSpacing
@@ -977,7 +1183,11 @@ final class RenderBridge {
         let nsString = result.string as NSString
         let paragraphRange = nsString.paragraphRange(for: NSRange(location: result.length - 1, length: 0))
         var spacing: CGFloat? = nil
-        result.enumerateAttribute(.paragraphStyle, in: paragraphRange, options: [.reverse]) { value, _, stop in
+        result.enumerateAttribute(
+            .paragraphStyle,
+            in: paragraphRange,
+            options: [.reverse, .longestEffectiveRangeNotRequired]
+        ) { value, _, stop in
             if let paragraphStyle = value as? NSParagraphStyle {
                 spacing = paragraphStyle.paragraphSpacing
                 stop.pointee = true
@@ -1138,6 +1348,7 @@ struct BlockContext {
     let nodeType: String
     let depth: UInt8
     var listContext: [String: Any]?
+    var topLevelChildIndex: Int? = nil
     var listMarkerContext: [String: Any]? = nil
     var markerPending: Bool = false
 }
@@ -1310,25 +1521,15 @@ final class BlockImageAttachment: NSTextAttachment {
         }
 
         guard let url = URL(string: source) else { return }
-        RenderImageCache.queue.async { [weak self] in
-            guard let self else { return }
-            let data: Data?
-            if url.isFileURL {
-                data = try? Data(contentsOf: url)
-            } else {
-                data = try? Data(contentsOf: url)
-            }
-            guard let data,
-                  let image = UIImage(data: data)
+        RenderImageCache.load(source: source, url: url) { [weak self] image in
+            guard let self,
+                  let image
             else {
                 return
             }
-            RenderImageCache.cache.setObject(image, forKey: self.source as NSString)
-            DispatchQueue.main.async {
-                self.loadedImage = image
-                self.image = image
-                NotificationCenter.default.post(name: .editorImageAttachmentDidLoad, object: self)
-            }
+            self.loadedImage = image
+            self.image = image
+            NotificationCenter.default.post(name: .editorImageAttachmentDidLoad, object: self)
         }
     }
 

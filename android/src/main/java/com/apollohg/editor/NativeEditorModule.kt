@@ -63,6 +63,9 @@ class NativeEditorModule : Module() {
         Function("editorGetJson") { id: Int ->
             editorGetJson(id.toULong())
         }
+        Function("editorGetContentSnapshot") { id: Int ->
+            editorGetContentSnapshot(id.toULong())
+        }
 
         Function("editorInsertText") { id: Int, pos: Int, text: String ->
             editorInsertText(id.toULong(), pos.toUInt(), text)
@@ -257,6 +260,9 @@ class NativeEditorModule : Module() {
         }
         Function("editorGetSelection") { id: Int ->
             editorGetSelection(id.toULong())
+        }
+        Function("editorGetSelectionState") { id: Int ->
+            editorGetSelectionState(id.toULong())
         }
         Function("editorDocToScalar") { id: Int, docPos: Int ->
             editorDocToScalar(id.toULong(), docPos.toUInt()).toInt()

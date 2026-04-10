@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use editor_core::model::{Document, Fragment, Mark, Node};
 use editor_core::render::generate::generate;
-use editor_core::render::incremental::incremental;
+use editor_core::render::incremental::{contiguous_render_blocks_patch, incremental};
 use editor_core::render::{ListContext, RenderElement, RenderMark};
 use editor_core::tiptap_schema;
 
@@ -73,6 +73,16 @@ fn hard_break() -> Node {
 
 fn horizontal_rule() -> Node {
     Node::void("horizontalRule".to_string(), HashMap::new())
+}
+
+fn block_visible_text(elements: &[RenderElement]) -> String {
+    elements
+        .iter()
+        .filter_map(|element| match element {
+            RenderElement::TextRun { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +230,32 @@ fn test_two_paragraphs() {
         ],
         "Two paragraphs should produce two complete BlockStart/BlockEnd sequences"
     );
+}
+
+#[test]
+fn test_contiguous_render_blocks_patch_expands_adjacent_blocks_for_middle_insert() {
+    let schema = tiptap_schema();
+    let old_doc = Document::new(doc(vec![
+        paragraph(vec![text("One")]),
+        paragraph(vec![text("Two")]),
+        paragraph(vec![text("Three")]),
+    ]));
+    let new_doc = Document::new(doc(vec![
+        paragraph(vec![text("One")]),
+        paragraph(vec![text("Two")]),
+        paragraph(vec![text("Inserted")]),
+        paragraph(vec![text("Three")]),
+    ]));
+
+    let patch = contiguous_render_blocks_patch(&old_doc, &new_doc, &schema)
+        .expect("expected a render patch");
+
+    assert_eq!(patch.start_index, 1);
+    assert_eq!(patch.delete_count, 2);
+    assert_eq!(patch.blocks.len(), 3);
+    assert_eq!(block_visible_text(&patch.blocks[0]), "Two");
+    assert_eq!(block_visible_text(&patch.blocks[1]), "Inserted");
+    assert_eq!(block_visible_text(&patch.blocks[2]), "Three");
 }
 
 // ---------------------------------------------------------------------------

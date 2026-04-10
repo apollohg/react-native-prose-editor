@@ -117,6 +117,7 @@ Common commands:
 
 ```sh
 npm run typecheck
+npm run bench:rust -- --quick
 npm run publish:prepare
 npm run example:start
 npm run example:ios
@@ -130,6 +131,22 @@ Tests:
 npm test                                             # TypeScript unit tests
 cargo test --manifest-path rust/editor-core/Cargo.toml  # Rust core tests
 npm run android:test                                  # Android Robolectric tests
+npm run android:test:perf                             # Android native perf test suite
+npm run android:test:perf:device                      # Android on-device perf instrumentation suite
+npm run ios:test:perf                                 # iOS native perf XCTest suite
+npm run ios:test:perf:device                          # iOS on-device perf XCTest suite
+```
+
+Benchmarks:
+
+```sh
+npm run bench:rust -- --quick
+npm run bench:rust -- --filter collaboration
+npm run bench:rust -- --json > perf-results.json
+npm run android:test:perf
+npm run android:test:perf:device
+npm run ios:test:perf
+npm run ios:test:perf:device
 ```
 
 ## Documentation

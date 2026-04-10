@@ -1,6 +1,15 @@
 import XCTest
 
 final class RichTextEditorViewTests: XCTestCase {
+    func testEditorTextViewDisablesNativeUndoManager() {
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+
+        XCTAssertNil(
+            textView.undoManager,
+            "native UIKit undo should stay disabled because editor history is owned by Rust"
+        )
+    }
+
     func testPlaceholderShowsForRenderedEmptyParagraph() {
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.placeholder = "Type here"
@@ -62,6 +71,215 @@ final class RichTextEditorViewTests: XCTestCase {
             0,
             "empty single-block documents should keep the caret at paragraph start so UIKit auto-capitalization still applies"
         )
+    }
+
+    func testParagraphSplitAppliesTopLevelRenderPatch() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.captureApplyUpdateTraceForTesting = true
+        textView.bindEditor(id: editorId, initialHTML: "<p>Alpha</p><p>Beta</p><p>Gamma</p>")
+
+        let betaRange = (textView.text as NSString).range(of: "Beta")
+        XCTAssertNotEqual(betaRange.location, NSNotFound)
+        let splitOffset = UInt32(betaRange.location + betaRange.length)
+        editorSetSelectionScalar(id: editorId, scalarAnchor: splitOffset, scalarHead: splitOffset)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+
+        textView.insertText("\n")
+
+        XCTAssertTrue(
+            textView.lastRenderAppliedPatch(),
+            "splitting a middle paragraph should use the native top-level patch path"
+        )
+        XCTAssertEqual(
+            textView.textStorage.string,
+            "Alpha\nBeta\n\u{200B}\nGamma",
+            "split patches must replace the full structural block region so the new paragraph separator renders correctly"
+        )
+        let selectedOffset = textView.offset(
+            from: textView.beginningOfDocument,
+            to: textView.selectedTextRange?.start ?? textView.endOfDocument
+        )
+        let gammaRange = (textView.text as NSString).range(of: "Gamma")
+        XCTAssertGreaterThanOrEqual(
+            selectedOffset,
+            betaRange.location + betaRange.length + 1,
+            "after splitting at the end of a paragraph, the caret should land inside the inserted empty paragraph"
+        )
+        XCTAssertLessThan(
+            selectedOffset,
+            gammaRange.location,
+            "after splitting at the end of a paragraph, the caret must stay before the following paragraph"
+        )
+        XCTAssertEqual(
+            editorGetHtml(id: editorId),
+            "<p>Alpha</p><p>Beta</p><p></p><p>Gamma</p>"
+        )
+    }
+
+    func testSequentialParagraphSplitsKeepUsingTopLevelRenderPatch() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
+        textView.captureApplyUpdateTraceForTesting = true
+        textView.bindEditor(id: editorId, initialHTML: "<p>Alpha</p><p>Beta</p><p>Gamma</p>")
+
+        let betaRange = (textView.text as NSString).range(of: "Beta")
+        XCTAssertNotEqual(betaRange.location, NSNotFound)
+        let firstSplitOffset = UInt32(betaRange.location + betaRange.length)
+        editorSetSelectionScalar(id: editorId, scalarAnchor: firstSplitOffset, scalarHead: firstSplitOffset)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.insertText("\n")
+
+        XCTAssertTrue(textView.lastRenderAppliedPatch())
+
+        let gammaRange = (textView.text as NSString).range(of: "Gamma")
+        XCTAssertNotEqual(gammaRange.location, NSNotFound)
+        let secondSplitOffset = UInt32(gammaRange.location + gammaRange.length)
+        editorSetSelectionScalar(id: editorId, scalarAnchor: secondSplitOffset, scalarHead: secondSplitOffset)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.insertText("\n")
+
+        XCTAssertTrue(
+            textView.lastRenderAppliedPatch(),
+            "top-level metadata cache should remain valid across consecutive structural edits"
+        )
+        XCTAssertEqual(
+            textView.textStorage.string,
+            "Alpha\nBeta\n\u{200B}\nGamma\n\u{200B}"
+        )
+        XCTAssertEqual(
+            editorGetHtml(id: editorId),
+            "<p>Alpha</p><p>Beta</p><p></p><p>Gamma</p><p></p>"
+        )
+    }
+
+    func testTypingInsideListItemFallsBackToFullRenderAndPreservesTextOrder() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.captureApplyUpdateTraceForTesting = true
+        textView.bindEditor(
+            id: editorId,
+            initialHTML: "<ul><li><p>Alpha</p></li><li><p>Beta</p></li></ul>"
+        )
+
+        let alphaRange = (textView.text as NSString).range(of: "Alpha")
+        XCTAssertNotEqual(alphaRange.location, NSNotFound)
+        setCollapsedSelection(in: textView, utf16Offset: alphaRange.location + alphaRange.length)
+        flushMainQueue()
+
+        textView.insertText("!")
+
+        XCTAssertFalse(
+            textView.lastRenderAppliedPatch(),
+            "list items should bypass the top-level render patch path until list marker patching is made safe"
+        )
+        XCTAssertEqual(textView.textStorage.string, "Alpha!\nBeta")
+        XCTAssertEqual(
+            editorGetHtml(id: editorId),
+            "<ul><li><p>Alpha!</p></li><li><p>Beta</p></li></ul>"
+        )
+    }
+
+    func testReturnInsideListItemFallsBackToFullRenderAndKeepsTypingInNewItem() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
+        textView.captureApplyUpdateTraceForTesting = true
+        textView.bindEditor(
+            id: editorId,
+            initialHTML: "<ul><li><p>Alpha</p></li><li><p>Beta</p></li></ul>"
+        )
+
+        let alphaRange = (textView.text as NSString).range(of: "Alpha")
+        XCTAssertNotEqual(alphaRange.location, NSNotFound)
+        setCollapsedSelection(in: textView, utf16Offset: alphaRange.location + alphaRange.length)
+        flushMainQueue()
+
+        textView.insertText("\n")
+
+        XCTAssertFalse(
+            textView.lastRenderAppliedPatch(),
+            "splitting list items should use the full render path to keep caret mapping stable"
+        )
+        textView.insertText("B")
+
+        XCTAssertEqual(textView.textStorage.string, "Alpha\nB\nBeta")
+        XCTAssertEqual(
+            editorGetHtml(id: editorId),
+            "<ul><li><p>Alpha</p></li><li><p>B</p></li><li><p>Beta</p></li></ul>"
+        )
+    }
+
+    func testFullCurrentStateLocalEditUsesSynthesizedTopLevelPatch() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(id: editorId, initialHTML: "<p>Alpha</p><p>Beta</p><p>Gamma</p>")
+
+        let updatedDocument = """
+        {
+          "type": "doc",
+          "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "Alpha"}]},
+            {"type": "paragraph", "content": [{"type": "text", "text": "Better"}]},
+            {"type": "paragraph", "content": [{"type": "text", "text": "Gamma"}]}
+          ]
+        }
+        """
+        _ = editorSetJson(id: editorId, json: updatedDocument)
+
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+
+        XCTAssertTrue(
+            textView.lastRenderAppliedPatch(),
+            "full current-state updates should synthesize a top-level patch when only a local block range changes"
+        )
+        XCTAssertEqual(textView.textStorage.string, "Alpha\nBetter\nGamma")
+    }
+
+    func testIdenticalFullCurrentStateSkipsNativeTextReapply() throws {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(id: editorId, initialHTML: "<p>Alpha</p><p>Beta</p><p>Gamma</p>")
+        textView.captureApplyUpdateTraceForTesting = true
+
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+
+        let trace = try XCTUnwrap(textView.lastApplyUpdateTrace())
+        XCTAssertFalse(textView.lastRenderAppliedPatch())
+        XCTAssertEqual(trace.buildRenderNanos, 0)
+        XCTAssertEqual(trace.applyRenderNanos, 0)
+        XCTAssertEqual(trace.applyRenderTextMutationNanos, 0)
+        XCTAssertEqual(textView.textStorage.string, "Alpha\nBeta\nGamma")
+    }
+
+    func testRustDrivenSelectionApplyDoesNotNotifySelectionDelegate() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        let delegate = EditorTextViewDelegateSpy()
+        textView.editorDelegate = delegate
+        textView.bindEditor(id: editorId, initialHTML: "<p>Alpha</p><p>Beta</p>")
+        delegate.selectionChanges.removeAll()
+        delegate.receivedUpdates.removeAll()
+
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 8, scalarHead: 8)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        flushMainQueue()
+
+        XCTAssertEqual(delegate.selectionChanges.count, 0)
+        XCTAssertEqual(delegate.receivedUpdates.count, 0)
     }
 
     func testEditorThemeContentInsetsApplyToTextView() {
@@ -816,6 +1034,187 @@ final class RichTextEditorViewTests: XCTestCase {
 
         XCTAssertEqual(intrinsic.width, UIView.noIntrinsicMetric, accuracy: 0.1)
         XCTAssertGreaterThan(intrinsic.height, 0)
+    }
+
+    func testApplyThemeRerendersExistingContentWhenTextIsUnchanged() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p>")
+
+        let theme = EditorTheme(dictionary: [
+            "text": [
+                "fontFamily": "Courier",
+                "fontSize": 21,
+                "color": "#224466",
+            ],
+            "paragraph": [
+                "lineHeight": 30,
+            ],
+        ])
+
+        textView.applyTheme(theme)
+
+        let attrs = textView.textStorage.attributes(at: 0, effectiveRange: nil)
+        let font = attrs[.font] as? UIFont
+        let color = attrs[.foregroundColor] as? UIColor
+        let paragraphStyle = attrs[.paragraphStyle] as? NSParagraphStyle
+
+        XCTAssertEqual(font?.pointSize ?? 0, 21, accuracy: 0.1)
+        XCTAssertEqual(color, EditorTheme.color(from: "#224466"))
+        XCTAssertEqual(paragraphStyle?.minimumLineHeight ?? 0, 30, accuracy: 0.1)
+    }
+
+    func testEditorTextViewMeasuredAutoGrowHeightMatchesSizeThatFits() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
+        textView.heightBehavior = .autoGrow
+        textView.bindEditor(
+            id: editorId,
+            initialHTML: "<p>Alpha</p><p>Beta<br></p><p>Gamma</p>"
+        )
+        textView.layoutIfNeeded()
+
+        let measuredHeight = textView.measuredAutoGrowHeightForTesting(width: 320)
+        let fittedHeight = ceil(
+            textView.sizeThatFits(
+                CGSize(width: 320, height: CGFloat.greatestFiniteMagnitude)
+            ).height
+        )
+
+        XCTAssertEqual(measuredHeight, fittedHeight, accuracy: 1.0)
+    }
+
+    func testRichTextEditorViewAutoGrowHeightAfterParagraphSplitMatchesSizeThatFits() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+
+        view.heightBehavior = .autoGrow
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>Alpha beta gamma delta epsilon zeta eta theta iota.</p>
+        <p>Kappa lambda mu nu xi omicron pi rho sigma.</p>
+        <p>Tau upsilon phi chi psi omega.</p>
+        """)
+        view.layoutIfNeeded()
+
+        let splitOffset = ((view.textView.text as NSString).range(of: "sigma")).location + 5
+        setSelection(in: view.textView, utf16Range: NSRange(location: splitOffset, length: 0))
+
+        view.textView.insertText("\n")
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let intrinsicHeight = view.intrinsicContentSize.height
+        let fittedHeight = ceil(
+            view.textView.sizeThatFits(
+                CGSize(width: 320, height: CGFloat.greatestFiniteMagnitude)
+            ).height
+        )
+
+        XCTAssertEqual(intrinsicHeight, fittedHeight, accuracy: 1.0)
+    }
+
+    func testRichTextEditorViewAutoGrowIntrinsicHeightGrowsWhenHostAppliesMeasuredHeight() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+
+        view.heightBehavior = .autoGrow
+        view.editorId = editorId
+        view.setContent(html: "<p>Alpha</p>")
+        view.layoutIfNeeded()
+
+        var measuredHeight = ceil(view.intrinsicContentSize.height)
+        XCTAssertGreaterThan(measuredHeight, 0)
+
+        view.frame.size.height = measuredHeight
+        view.layoutIfNeeded()
+
+        let endOffset = (view.textView.text as NSString).length
+        setSelection(in: view.textView, utf16Range: NSRange(location: endOffset, length: 0))
+
+        view.textView.insertText("\n")
+        view.textView.insertText("Beta beta beta beta beta beta beta beta beta beta beta beta.")
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let grownHeight = ceil(view.intrinsicContentSize.height)
+
+        XCTAssertGreaterThan(
+            grownHeight,
+            measuredHeight,
+            "autoGrow should still expand when the host view applies the previously measured height"
+        )
+    }
+
+    func testRichTextEditorViewAutoGrowIntrinsicHeightShrinksAfterDeletingContent() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+
+        view.heightBehavior = .autoGrow
+        view.editorId = editorId
+        view.setContent(html: "<p>Alpha</p>")
+        view.layoutIfNeeded()
+
+        let baseHeight = ceil(view.intrinsicContentSize.height)
+        XCTAssertGreaterThan(baseHeight, 0)
+
+        view.frame.size.height = baseHeight
+        view.layoutIfNeeded()
+
+        let endOffset = (view.textView.text as NSString).length
+        setSelection(in: view.textView, utf16Range: NSRange(location: endOffset, length: 0))
+
+        let insertedSuffix = " beta beta beta beta beta beta beta beta beta beta beta beta."
+        view.textView.insertText(insertedSuffix)
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let grownHeight = ceil(view.intrinsicContentSize.height)
+        XCTAssertGreaterThan(grownHeight, baseHeight)
+
+        view.frame.size.height = grownHeight
+        view.layoutIfNeeded()
+
+        let insertedTextRange = (view.textView.text as NSString).range(of: insertedSuffix)
+        XCTAssertNotEqual(insertedTextRange.location, NSNotFound)
+        setSelection(in: view.textView, utf16Range: insertedTextRange)
+        view.textView.deleteBackward()
+        flushMainQueue()
+        view.layoutIfNeeded()
+
+        let shrunkHeight = ceil(view.intrinsicContentSize.height)
+
+        XCTAssertLessThan(
+            shrunkHeight,
+            grownHeight,
+            "autoGrow should shrink again after deleting content from a host-sized editor"
+        )
+        XCTAssertEqual(shrunkHeight, baseHeight, accuracy: 1.0)
     }
 
     func testCaretRectInTallLineHeightListItemUsesResolvedGlyphBaseline() {
@@ -2823,5 +3222,18 @@ final class RichTextEditorViewTests: XCTestCase {
 
         let data = try! JSONSerialization.data(withJSONObject: config)
         return String(data: data, encoding: .utf8)!
+    }
+}
+
+private final class EditorTextViewDelegateSpy: NSObject, EditorTextViewDelegate {
+    var selectionChanges: [(anchor: UInt32, head: UInt32)] = []
+    var receivedUpdates: [String] = []
+
+    func editorTextView(_ textView: EditorTextView, selectionDidChange anchor: UInt32, head: UInt32) {
+        selectionChanges.append((anchor: anchor, head: head))
+    }
+
+    func editorTextView(_ textView: EditorTextView, didReceiveUpdate updateJSON: String) {
+        receivedUpdates.append(updateJSON)
     }
 }

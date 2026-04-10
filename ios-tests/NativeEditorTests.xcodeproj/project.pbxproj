@@ -9,21 +9,22 @@
 /* Begin PBXBuildFile section */
 		109D03B935C7AEF00B35F7FD /* PositionBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */; };
 		2484E07FC282780223B6357B /* EditorCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8AE95B7397233B845D719292 /* EditorCore.xcframework */; };
-		2A21F2500522807AEC775714 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 95C8FF6D1BFB7FF2941CD91F /* PrivacyInfo.xcprivacy */; };
 		3A6AEEFA6827371E8015A30F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6225248E2F347AD95F31C25 /* AppDelegate.swift */; };
+		3BC1ECCE070C6FE94BBFD2E7 /* NativePerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 619D5E78F0F65CA7D5DE6A2E /* NativePerformanceTests.swift */; };
 		408339E7E0B80F1F36E719D7 /* NativeEditorModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */; };
 		41CB569BDACE6252AAA1E146 /* EditorAddons.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA17728099475A1BA3392F9D /* EditorAddons.swift */; };
-		426A69EC17D426C86A0B66DC /* libPods-NativeEditorTestHost-NativeEditorTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 1FA0C2A0FDDB59EEF0201047 /* libPods-NativeEditorTestHost-NativeEditorTests.a */; };
 		43F4AE17A9DCA615C506BBC6 /* EditorTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A21C9C4A12403CEC40DCC5F /* EditorTheme.swift */; };
 		464AF0D70C477A92AE784052 /* RichTextEditorViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */; };
 		4C50AEDC57A2F1DFD2FB47E9 /* PositionBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45F15AFE005F23CA6452674D /* PositionBridgeTests.swift */; };
 		5642EBDE70DB95F3337A753E /* RenderBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */; };
 		63686847E2C46533E28401AF /* RichTextEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1561A9AC095AC3464D02B016 /* RichTextEditorView.swift */; };
-		855BF91C9D9C3FD0F03DDEFC /* libPods-NativeEditorTestHost.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 70DA870FAF21156D986AA057 /* libPods-NativeEditorTestHost.a */; };
 		9863E4C17C554BABEFD9F984 /* EditorCore.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 8AE95B7397233B845D719292 /* EditorCore.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9A956ACF25320EA8F4016A05 /* RenderBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 516ABE2BD8A41C81DA442F32 /* RenderBridge.swift */; };
+		9F1A55F6449E8361540E5EB3 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 2FD50890F746C4B4E4B838BD /* PrivacyInfo.xcprivacy */; };
 		B38018A935CF0A1BFA0AF72E /* NativeEditorExpoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */; };
 		D706191CC74381BEB84776D7 /* EditorLayoutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22D9688A83204F92DB17B85B /* EditorLayoutManager.swift */; };
+		D7344AB7C1491512AC102875 /* libPods-NativeEditorTestHost-NativeEditorTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = B46C4C8413D852C1EA333360 /* libPods-NativeEditorTestHost-NativeEditorTests.a */; };
+		E595314D2FFDC841EFF200F6 /* libPods-NativeEditorTestHost.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 93C24F1AD3D63CE222077088 /* libPods-NativeEditorTestHost.a */; };
 		ED499271D47BBC23905FBF95 /* Generated_editor_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B2DD21676DB1880CDE24021 /* Generated_editor_core.swift */; };
 /* End PBXBuildFile section */
 
@@ -42,28 +43,29 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		06210A6FBD2AEFD9EF95EED4 /* Pods-NativeEditorTestHost.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost.debug.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost.debug.xcconfig"; sourceTree = "<group>"; };
 		08E2E15E6EE0B9E2C50A927D /* NativeEditorTestHost.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NativeEditorTestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1561A9AC095AC3464D02B016 /* RichTextEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichTextEditorView.swift; sourceTree = "<group>"; };
-		1FA0C2A0FDDB59EEF0201047 /* libPods-NativeEditorTestHost-NativeEditorTests.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-NativeEditorTestHost-NativeEditorTests.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		22D9688A83204F92DB17B85B /* EditorLayoutManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorLayoutManager.swift; sourceTree = "<group>"; };
 		2A21C9C4A12403CEC40DCC5F /* EditorTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorTheme.swift; sourceTree = "<group>"; };
 		2B2DD21676DB1880CDE24021 /* Generated_editor_core.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Generated_editor_core.swift; sourceTree = "<group>"; };
+		2FD50890F746C4B4E4B838BD /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		45F15AFE005F23CA6452674D /* PositionBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionBridgeTests.swift; sourceTree = "<group>"; };
 		516ABE2BD8A41C81DA442F32 /* RenderBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderBridge.swift; sourceTree = "<group>"; };
-		62E579085E5AA9190AD0EA97 /* Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig"; sourceTree = "<group>"; };
-		70DA870FAF21156D986AA057 /* libPods-NativeEditorTestHost.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-NativeEditorTestHost.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		619D5E78F0F65CA7D5DE6A2E /* NativePerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePerformanceTests.swift; sourceTree = "<group>"; };
 		786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeEditorExpoView.swift; sourceTree = "<group>"; };
 		8AE95B7397233B845D719292 /* EditorCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = EditorCore.xcframework; path = ../ios/EditorCore.xcframework; sourceTree = "<group>"; };
 		8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeEditorModule.swift; sourceTree = "<group>"; };
-		95C8FF6D1BFB7FF2941CD91F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		99EF4B91FE5A717D76D84364 /* Pods-NativeEditorTestHost.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost.release.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost.release.xcconfig"; sourceTree = "<group>"; };
+		93C24F1AD3D63CE222077088 /* libPods-NativeEditorTestHost.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-NativeEditorTestHost.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A0B1C4A9F48B82BE8D608CB4 /* Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig"; sourceTree = "<group>"; };
 		A6225248E2F347AD95F31C25 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderBridgeTests.swift; sourceTree = "<group>"; };
 		AAFA4DB42F32DDE95171E72A /* NativeEditorTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NativeEditorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		BDD646F5710B60C0B02B1718 /* Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig"; sourceTree = "<group>"; };
+		B46C4C8413D852C1EA333360 /* libPods-NativeEditorTestHost-NativeEditorTests.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-NativeEditorTestHost-NativeEditorTests.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		C3D24C682231420ABA5F6B40 /* Pods-NativeEditorTestHost.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost.release.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost.release.xcconfig"; sourceTree = "<group>"; };
 		C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichTextEditorViewTests.swift; sourceTree = "<group>"; };
 		CA17728099475A1BA3392F9D /* EditorAddons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorAddons.swift; sourceTree = "<group>"; };
-		CDA588E292BB9F5CF5717FD0 /* Pods-NativeEditorTestHost.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost.debug.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost.debug.xcconfig"; sourceTree = "<group>"; };
+		DCE248D423DAF4342DD2C363 /* Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig"; sourceTree = "<group>"; };
 		F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PositionBridge.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -73,15 +75,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				2484E07FC282780223B6357B /* EditorCore.xcframework in Frameworks */,
-				426A69EC17D426C86A0B66DC /* libPods-NativeEditorTestHost-NativeEditorTests.a in Frameworks */,
+				D7344AB7C1491512AC102875 /* libPods-NativeEditorTestHost-NativeEditorTests.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BF04150D6DB5034331C76907 /* Frameworks */ = {
+		085326C727DF6C46B2770924 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				855BF91C9D9C3FD0F03DDEFC /* libPods-NativeEditorTestHost.a in Frameworks */,
+				E595314D2FFDC841EFF200F6 /* libPods-NativeEditorTestHost.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -125,6 +127,7 @@
 		A1B0488D87C3F2E91B9D51E8 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				619D5E78F0F65CA7D5DE6A2E /* NativePerformanceTests.swift */,
 				45F15AFE005F23CA6452674D /* PositionBridgeTests.swift */,
 				A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */,
 				C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */,
@@ -139,8 +142,8 @@
 				826B7C4721EE65856D6795B7 /* TestHost */,
 				F8F271012D7DA540461B0D5B /* Frameworks */,
 				1F4B898E39618084B1EF4DD5 /* Products */,
-				95C8FF6D1BFB7FF2941CD91F /* PrivacyInfo.xcprivacy */,
-				D9EEADBE7224EFF78F8AA709 /* Pods */,
+				2FD50890F746C4B4E4B838BD /* PrivacyInfo.xcprivacy */,
+				F912CA5F89FCAE5E11943441 /* Pods */,
 			);
 			sourceTree = "<group>";
 		};
@@ -153,26 +156,26 @@
 			path = ..;
 			sourceTree = "<group>";
 		};
-		D9EEADBE7224EFF78F8AA709 /* Pods */ = {
-			isa = PBXGroup;
-			children = (
-				CDA588E292BB9F5CF5717FD0 /* Pods-NativeEditorTestHost.debug.xcconfig */,
-				99EF4B91FE5A717D76D84364 /* Pods-NativeEditorTestHost.release.xcconfig */,
-				62E579085E5AA9190AD0EA97 /* Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig */,
-				BDD646F5710B60C0B02B1718 /* Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig */,
-			);
-			name = Pods;
-			path = Pods;
-			sourceTree = "<group>";
-		};
 		F8F271012D7DA540461B0D5B /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
 				8AE95B7397233B845D719292 /* EditorCore.xcframework */,
-				70DA870FAF21156D986AA057 /* libPods-NativeEditorTestHost.a */,
-				1FA0C2A0FDDB59EEF0201047 /* libPods-NativeEditorTestHost-NativeEditorTests.a */,
+				93C24F1AD3D63CE222077088 /* libPods-NativeEditorTestHost.a */,
+				B46C4C8413D852C1EA333360 /* libPods-NativeEditorTestHost-NativeEditorTests.a */,
 			);
 			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		F912CA5F89FCAE5E11943441 /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				06210A6FBD2AEFD9EF95EED4 /* Pods-NativeEditorTestHost.debug.xcconfig */,
+				C3D24C682231420ABA5F6B40 /* Pods-NativeEditorTestHost.release.xcconfig */,
+				A0B1C4A9F48B82BE8D608CB4 /* Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig */,
+				DCE248D423DAF4342DD2C363 /* Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig */,
+			);
+			name = Pods;
+			path = Pods;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -182,12 +185,12 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = F552DE382289921B2E97DDC7 /* Build configuration list for PBXNativeTarget "NativeEditorTests" */;
 			buildPhases = (
-				466EDFAA76D516D8EA902B66 /* [CP] Check Pods Manifest.lock */,
+				B374142B959D4E29BB4E04EA /* [CP] Check Pods Manifest.lock */,
 				A8B845B3B6EC5F9072D2E478 /* Sources */,
 				0124C3477E84879D546E1ED3 /* Frameworks */,
 				81BCEB4597512FA9ECA93406 /* Embed Frameworks */,
-				63F098B1E6F644F48717C77A /* [CP] Embed Pods Frameworks */,
-				B79303BF254385104DC55B8D /* [CP] Copy Pods Resources */,
+				06E368675DF52E0BD314AB4C /* [CP] Embed Pods Frameworks */,
+				89DF861AD63C46859B4544E0 /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
 			);
@@ -202,12 +205,12 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 4CB6E8BE6741388FB1D0C6A8 /* Build configuration list for PBXNativeTarget "NativeEditorTestHost" */;
 			buildPhases = (
-				198B6CF21F741A9B72ECCA04 /* [CP] Check Pods Manifest.lock */,
+				860D064659643F60D7625B43 /* [CP] Check Pods Manifest.lock */,
 				A05115A3812E3122F2A470AA /* Sources */,
-				25023F772F6FC430B933E994 /* Resources */,
-				BF04150D6DB5034331C76907 /* Frameworks */,
-				F4CA2F643912CA8B11AA8B5C /* [CP] Embed Pods Frameworks */,
-				3064C4805142165972DF7102 /* [CP] Copy Pods Resources */,
+				37AFFF93F7F30784160D88AC /* Resources */,
+				085326C727DF6C46B2770924 /* Frameworks */,
+				D7D799B6499F5DEAC3E0545E /* [CP] Embed Pods Frameworks */,
+				4B3489A0CB5D1348FCBC8A9B /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
 			);
@@ -228,10 +231,13 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					19C22BD2CB0BC83B9918257D = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = "$(IOS_DEVELOPMENT_TEAM)";
+						ProvisioningStyle = Automatic;
+						TestTargetID = 36BE18DD6515FBAF43F806D5;
 					};
 					36BE18DD6515FBAF43F806D5 = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = "$(IOS_DEVELOPMENT_TEAM)";
+						ProvisioningStyle = Automatic;
 					};
 				};
 			};
@@ -256,18 +262,52 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		25023F772F6FC430B933E994 /* Resources */ = {
+		37AFFF93F7F30784160D88AC /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				2A21F2500522807AEC775714 /* PrivacyInfo.xcprivacy in Resources */,
+				9F1A55F6449E8361540E5EB3 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		198B6CF21F741A9B72ECCA04 /* [CP] Check Pods Manifest.lock */ = {
+		06E368675DF52E0BD314AB4C /* [CP] Embed Pods Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+			);
+			name = "[CP] Embed Pods Frameworks";
+			outputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		4B3489A0CB5D1348FCBC8A9B /* [CP] Copy Pods Resources */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources-${CONFIGURATION}-input-files.xcfilelist",
+			);
+			name = "[CP] Copy Pods Resources";
+			outputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		860D064659643F60D7625B43 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -289,24 +329,24 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		3064C4805142165972DF7102 /* [CP] Copy Pods Resources */ = {
+		89DF861AD63C46859B4544E0 /* [CP] Copy Pods Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources-${CONFIGURATION}-input-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
 			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources-${CONFIGURATION}-output-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-resources-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost-resources.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
-		466EDFAA76D516D8EA902B66 /* [CP] Check Pods Manifest.lock */ = {
+		B374142B959D4E29BB4E04EA /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -328,41 +368,7 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		63F098B1E6F644F48717C77A /* [CP] Embed Pods Frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-frameworks-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			name = "[CP] Embed Pods Frameworks";
-			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-frameworks.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		B79303BF254385104DC55B8D /* [CP] Copy Pods Resources */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-resources-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			name = "[CP] Copy Pods Resources";
-			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-resources-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-NativeEditorTestHost-NativeEditorTests/Pods-NativeEditorTestHost-NativeEditorTests-resources.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		F4CA2F643912CA8B11AA8B5C /* [CP] Embed Pods Frameworks */ = {
+		D7D799B6499F5DEAC3E0545E /* [CP] Embed Pods Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -400,6 +406,7 @@
 				ED499271D47BBC23905FBF95 /* Generated_editor_core.swift in Sources */,
 				B38018A935CF0A1BFA0AF72E /* NativeEditorExpoView.swift in Sources */,
 				408339E7E0B80F1F36E719D7 /* NativeEditorModule.swift in Sources */,
+				3BC1ECCE070C6FE94BBFD2E7 /* NativePerformanceTests.swift in Sources */,
 				109D03B935C7AEF00B35F7FD /* PositionBridge.swift in Sources */,
 				4C50AEDC57A2F1DFD2FB47E9 /* PositionBridgeTests.swift in Sources */,
 				9A956ACF25320EA8F4016A05 /* RenderBridge.swift in Sources */,
@@ -414,7 +421,7 @@
 /* Begin XCBuildConfiguration section */
 		1DC8ACECC9EAFD09CE1BD287 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = CDA588E292BB9F5CF5717FD0 /* Pods-NativeEditorTestHost.debug.xcconfig */;
+			baseConfigurationReference = 06210A6FBD2AEFD9EF95EED4 /* Pods-NativeEditorTestHost.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -438,7 +445,7 @@
 		};
 		2B8ECBFC8174F7DBDC7F24BD /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = BDD646F5710B60C0B02B1718 /* Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig */;
+			baseConfigurationReference = DCE248D423DAF4342DD2C363 /* Pods-NativeEditorTestHost-NativeEditorTests.release.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				FRAMEWORK_SEARCH_PATHS = (
@@ -464,12 +471,14 @@
 				SDKROOT = iphoneos;
 				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/../ios/editor_coreFFI";
 				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/NativeEditorTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/NativeEditorTestHost";
+				TEST_TARGET_NAME = NativeEditorTestHost;
 			};
 			name = Release;
 		};
 		5713D6574C27C924197974FA /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 99EF4B91FE5A717D76D84364 /* Pods-NativeEditorTestHost.release.xcconfig */;
+			baseConfigurationReference = C3D24C682231420ABA5F6B40 /* Pods-NativeEditorTestHost.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -524,11 +533,15 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
+				"CODE_SIGNING_ALLOWED[sdk=iphoneos*]" = YES;
+				"CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]" = NO;
+				"CODE_SIGNING_REQUIRED[sdk=iphoneos*]" = YES;
+				"CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]" = NO;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = "$(IOS_DEVELOPMENT_TEAM)";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -545,6 +558,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				IOS_DEVELOPMENT_TEAM = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -592,11 +606,15 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
+				"CODE_SIGNING_ALLOWED[sdk=iphoneos*]" = YES;
+				"CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]" = NO;
+				"CODE_SIGNING_REQUIRED[sdk=iphoneos*]" = YES;
+				"CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]" = NO;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = "$(IOS_DEVELOPMENT_TEAM)";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -607,6 +625,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				IOS_DEVELOPMENT_TEAM = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -622,7 +641,7 @@
 		};
 		F579126E2C089C48A85F156F /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 62E579085E5AA9190AD0EA97 /* Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig */;
+			baseConfigurationReference = A0B1C4A9F48B82BE8D608CB4 /* Pods-NativeEditorTestHost-NativeEditorTests.debug.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				FRAMEWORK_SEARCH_PATHS = (
@@ -648,6 +667,8 @@
 				SDKROOT = iphoneos;
 				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/../ios/editor_coreFFI";
 				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/NativeEditorTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/NativeEditorTestHost";
+				TEST_TARGET_NAME = NativeEditorTestHost;
 			};
 			name = Debug;
 		};

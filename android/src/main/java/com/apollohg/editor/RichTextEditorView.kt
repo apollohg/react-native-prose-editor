@@ -182,7 +182,8 @@ class RichTextEditorView @JvmOverloads constructor(
     }
 
     fun refreshRemoteSelections() {
-        remoteSelectionOverlayView.invalidate()
+        if (!remoteSelectionOverlayView.hasSelectionsOrCachedGeometry()) return
+        remoteSelectionOverlayView.refreshGeometry()
     }
 
     fun imageResizeOverlayRectForTesting(): android.graphics.RectF? =
@@ -205,14 +206,14 @@ class RichTextEditorView @JvmOverloads constructor(
 
     fun setContent(html: String) {
         if (editorId == 0L) return
-        val renderJSON = editorSetHtml(editorId.toULong(), html)
-        editorEditText.applyRenderJSON(renderJSON)
+        editorSetHtml(editorId.toULong(), html)
+        editorEditText.applyUpdateJSON(editorGetCurrentState(editorId.toULong()), notifyListener = false)
     }
 
     fun setContent(json: org.json.JSONObject) {
         if (editorId == 0L) return
-        val renderJSON = editorSetJson(editorId.toULong(), json.toString())
-        editorEditText.applyRenderJSON(renderJSON)
+        editorSetJson(editorId.toULong(), json.toString())
+        editorEditText.applyUpdateJSON(editorGetCurrentState(editorId.toULong()), notifyListener = false)
     }
 
     override fun onDetachedFromWindow() {
@@ -322,7 +323,7 @@ class RichTextEditorView @JvmOverloads constructor(
     }
 
     private fun refreshOverlays() {
-        remoteSelectionOverlayView.invalidate()
+        remoteSelectionOverlayView.refreshGeometry()
         imageResizeOverlayView.refresh()
     }
 }

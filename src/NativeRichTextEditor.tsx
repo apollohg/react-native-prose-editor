@@ -25,7 +25,6 @@ import {
     type HistoryState,
     type RenderElement,
     type Selection,
-    parseEditorUpdateJson,
 } from './NativeEditorBridge';
 import {
     DEFAULT_EDITOR_TOOLBAR_ITEMS,
@@ -173,6 +172,7 @@ interface NativeUpdateEvent {
 interface NativeSelectionEvent {
     anchor: number;
     head: number;
+    stateJson?: string;
 }
 
 interface NativeFocusEvent {
@@ -228,7 +228,55 @@ function serializeRemoteSelections(
     if (!remoteSelections || remoteSelections.length === 0) {
         return undefined;
     }
-    return JSON.stringify(remoteSelections);
+    return stringifyCachedJson(remoteSelections);
+}
+
+const serializedJsonCache = new WeakMap<object, string>();
+
+function stringifyCachedJson(value: unknown): string {
+    if (value != null && typeof value === 'object') {
+        const cached = serializedJsonCache.get(value);
+        if (cached != null) {
+            return cached;
+        }
+        const serialized = JSON.stringify(value);
+        serializedJsonCache.set(value, serialized);
+        return serialized;
+    }
+    return JSON.stringify(value);
+}
+
+function useSerializedValue<T>(
+    value: T | null | undefined,
+    serialize: (value: T) => string | undefined,
+    revision?: unknown
+): string | undefined {
+    const cacheRef = useRef<{
+        value: T | null | undefined;
+        revision: unknown;
+        hasRevision: boolean;
+        serialized: string | undefined;
+    } | null>(null);
+    const hasRevision = revision !== undefined;
+    const cached = cacheRef.current;
+
+    if (cached) {
+        if (hasRevision && cached.hasRevision && Object.is(cached.revision, revision)) {
+            return cached.serialized;
+        }
+        if (Object.is(cached.value, value) && cached.hasRevision === hasRevision) {
+            return cached.serialized;
+        }
+    }
+
+    const serialized = value == null ? undefined : serialize(value);
+    cacheRef.current = {
+        value,
+        revision,
+        hasRevision,
+        serialized,
+    };
+    return serialized;
 }
 
 export type NativeRichTextEditorHeightBehavior = 'fixed' | 'autoGrow';
@@ -267,6 +315,8 @@ export interface NativeRichTextEditorProps {
     value?: string;
     /** Controlled ProseMirror JSON content. Ignored if value is set. */
     valueJSON?: DocumentJSON;
+    /** Optional stable revision hint for `valueJSON` to avoid reserializing equal docs on rerender. */
+    valueJSONRevision?: string | number;
     /** Schema definition. Defaults to tiptapSchema if not provided. */
     schema?: SchemaDefinition;
     /** Placeholder text shown when editor is empty. */
@@ -388,6 +438,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             initialJSON,
             value,
             valueJSON,
+            valueJSONRevision,
             schema,
             placeholder,
             editable = true,
@@ -449,7 +500,19 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         // Selection and rendered text length refs (non-rendering state)
         const selectionRef = useRef<Selection>({ type: 'text', anchor: 0, head: 0 });
         const renderedTextLengthRef = useRef(0);
+        const documentVersionRef = useRef<number | null>(null);
         const toolbarRef = useRef<View | null>(null);
+        const toolbarItemsSerializationCacheRef = useRef<{
+            toolbarItems: readonly EditorToolbarItem[];
+            editable: boolean;
+            isLinkActive: boolean;
+            allowsLink: boolean;
+            canRequestLink: boolean;
+            canRequestImage: boolean;
+            canInsertImage: boolean;
+            mappedItems: EditorToolbarItem[];
+            serialized: string;
+        } | null>(null);
 
         // Stable callback refs to avoid re-renders
         const onContentChangeRef = useRef(onContentChange);
@@ -478,13 +541,75 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             (addons?.mentions?.suggestions ?? []).map((suggestion) => [suggestion.key, suggestion])
         );
 
+        const serializedSchemaJson = useSerializedValue(
+            addons?.mentions != null ? withMentionsSchema(schema ?? tiptapSchema) : schema,
+            (nextSchema) => stringifyCachedJson(nextSchema)
+        );
+        const serializedInitialJson = useSerializedValue(initialJSON, stringifyCachedJson);
+        const serializedValueJson = useSerializedValue(
+            valueJSON,
+            stringifyCachedJson,
+            valueJSONRevision
+        );
+        const themeJson = useSerializedValue(theme, serializeEditorTheme);
+        const addonsJson = useSerializedValue(addons, serializeEditorAddons);
+        const remoteSelectionsJson = useSerializedValue(
+            remoteSelections,
+            (selections) => serializeRemoteSelections(selections)
+        );
+
         const syncStateFromUpdate = useCallback((update: EditorUpdate | null) => {
             if (!update) return;
             setActiveState(update.activeState);
             setHistoryState(update.historyState);
             selectionRef.current = update.selection;
             renderedTextLengthRef.current = computeRenderedTextLength(update.renderElements);
+            if (typeof update.documentVersion === 'number') {
+                documentVersionRef.current = update.documentVersion;
+            }
         }, []);
+
+        const syncSelectionStateFromUpdate = useCallback((update: EditorUpdate | null) => {
+            if (!update) return;
+            setActiveState(update.activeState);
+            setHistoryState(update.historyState);
+            selectionRef.current = update.selection;
+            if (typeof update.documentVersion === 'number') {
+                documentVersionRef.current = update.documentVersion;
+            }
+        }, []);
+
+        const emitContentCallbacksForUpdate = useCallback(
+            (update: EditorUpdate | null, previousDocumentVersion: number | null) => {
+                if (!update || !bridgeRef.current || bridgeRef.current.isDestroyed) return;
+                const wantsHtml = typeof onContentChangeRef.current === 'function';
+                const wantsJson = typeof onContentChangeJSONRef.current === 'function';
+                if (!wantsHtml && !wantsJson) return;
+
+                if (
+                    previousDocumentVersion != null &&
+                    typeof update.documentVersion === 'number' &&
+                    update.documentVersion === previousDocumentVersion
+                ) {
+                    return;
+                }
+
+                if (wantsHtml && wantsJson) {
+                    const snapshot = bridgeRef.current.getContentSnapshot();
+                    onContentChangeRef.current?.(snapshot.html);
+                    onContentChangeJSONRef.current?.(snapshot.json);
+                    return;
+                }
+
+                if (wantsHtml) {
+                    onContentChangeRef.current?.(bridgeRef.current.getHtml());
+                }
+                if (wantsJson) {
+                    onContentChangeJSONRef.current?.(bridgeRef.current.getJson());
+                }
+            },
+            []
+        );
 
         // Warn if both value and valueJSON are set
         if (__DEV__ && value != null && valueJSON != null) {
@@ -499,15 +624,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 mutate: () => EditorUpdate | null,
                 options?: RunAndApplyOptions
             ): EditorUpdate | null => {
+                const previousDocumentVersion = documentVersionRef.current;
                 const preservedSelection =
                     options?.preserveLiveTextSelection === true ? selectionRef.current : null;
-                const shouldCheckForNoopNativeApply =
-                    options?.skipNativeApplyIfContentUnchanged === true &&
-                    bridgeRef.current != null &&
-                    !bridgeRef.current.isDestroyed;
-                const htmlBefore = shouldCheckForNoopNativeApply
-                    ? bridgeRef.current!.getHtml()
-                    : null;
                 const update = mutate();
                 if (!update) return null;
 
@@ -529,10 +648,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     };
                 }
 
-                const htmlAfter = shouldCheckForNoopNativeApply
-                    ? bridgeRef.current!.getHtml()
-                    : null;
-                if (!shouldCheckForNoopNativeApply || htmlBefore !== htmlAfter) {
+                const contentChanged =
+                    previousDocumentVersion == null ||
+                    typeof update.documentVersion !== 'number' ||
+                    update.documentVersion !== previousDocumentVersion;
+
+                if (!options?.skipNativeApplyIfContentUnchanged || contentChanged) {
                     const updateJson = JSON.stringify(update);
                     if (Platform.OS === 'android') {
                         setPendingNativeUpdate((current) => ({
@@ -560,30 +681,24 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 onHistoryStateChangeRef.current?.(update.historyState);
 
                 if (!options?.suppressContentCallbacks) {
-                    if (onContentChangeRef.current && bridgeRef.current) {
-                        onContentChangeRef.current(bridgeRef.current.getHtml());
-                    }
-                    if (onContentChangeJSONRef.current && bridgeRef.current) {
-                        onContentChangeJSONRef.current(bridgeRef.current.getJson());
-                    }
+                    emitContentCallbacksForUpdate(update, previousDocumentVersion);
                 }
 
                 onSelectionChangeRef.current?.(update.selection);
 
                 return update;
             },
-            [syncStateFromUpdate]
+            [emitContentCallbacksForUpdate, syncStateFromUpdate]
         );
 
         useEffect(() => {
-            const effectiveSchema =
-                addonsRef.current?.mentions != null
-                    ? withMentionsSchema(schema ?? tiptapSchema)
-                    : schema;
-            const schemaJson = effectiveSchema ? JSON.stringify(effectiveSchema) : undefined;
             const bridgeConfig =
-                maxLength != null || schemaJson || allowBase64Images
-                    ? { maxLength, schemaJson, allowBase64Images }
+                maxLength != null || serializedSchemaJson || allowBase64Images
+                    ? {
+                          maxLength,
+                          schemaJson: serializedSchemaJson,
+                          allowBase64Images,
+                      }
                     : undefined;
             const bridge = NativeEditorBridge.create(bridgeConfig);
             bridgeRef.current = bridge;
@@ -592,10 +707,10 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             // Four-way content initialization: value > valueJSON > initialJSON > initialContent
             if (value != null) {
                 bridge.setHtml(value);
-            } else if (valueJSON != null) {
-                bridge.setJson(valueJSON);
-            } else if (initialJSON) {
-                bridge.setJson(initialJSON);
+            } else if (serializedValueJson != null) {
+                bridge.setJsonString(serializedValueJson);
+            } else if (serializedInitialJson != null) {
+                bridge.setJsonString(serializedInitialJson);
             } else if (initialContent) {
                 bridge.setHtml(initialContent);
             }
@@ -611,7 +726,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 setIsReady(false);
             };
             // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [schema, maxLength, syncStateFromUpdate, Boolean(addons?.mentions), allowBase64Images]);
+        }, [
+            maxLength,
+            syncStateFromUpdate,
+            allowBase64Images,
+            serializedSchemaJson,
+        ]);
 
         useEffect(() => {
             if (value == null) return;
@@ -627,18 +747,17 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         }, [value, runAndApply]);
 
         useEffect(() => {
-            if (valueJSON == null || value != null) return;
+            if (serializedValueJson == null || value != null) return;
             if (!bridgeRef.current || bridgeRef.current.isDestroyed) return;
 
-            // No-op if JSON content is identical (avoids churning undo history)
-            const currentJson = bridgeRef.current.getJson();
-            if (JSON.stringify(currentJson) === JSON.stringify(valueJSON)) return;
+            const currentJson = bridgeRef.current.getJsonString();
+            if (currentJson === serializedValueJson) return;
 
-            runAndApply(() => bridgeRef.current!.replaceJson(valueJSON), {
+            runAndApply(() => bridgeRef.current!.replaceJsonString(serializedValueJson), {
                 suppressContentCallbacks: true,
                 preserveLiveTextSelection: true,
             });
-        }, [valueJSON, value, runAndApply]);
+        }, [serializedValueJson, value, runAndApply]);
 
         const updateToolbarFrame = useCallback(() => {
             const toolbar = toolbarRef.current;
@@ -681,33 +800,29 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 if (!bridgeRef.current || bridgeRef.current.isDestroyed) return;
 
                 try {
-                    const update = parseEditorUpdateJson(event.nativeEvent.updateJson);
+                    const previousDocumentVersion = documentVersionRef.current;
+                    const update = bridgeRef.current.parseUpdateJson(event.nativeEvent.updateJson);
                     if (!update) return;
                     syncStateFromUpdate(update);
 
                     onActiveStateChangeRef.current?.(update.activeState);
                     onHistoryStateChangeRef.current?.(update.historyState);
 
-                    if (onContentChangeRef.current) {
-                        onContentChangeRef.current(bridgeRef.current.getHtml());
-                    }
-                    if (onContentChangeJSONRef.current) {
-                        onContentChangeJSONRef.current(bridgeRef.current.getJson());
-                    }
+                    emitContentCallbacksForUpdate(update, previousDocumentVersion);
 
                     onSelectionChangeRef.current?.(update.selection);
                 } catch {
                     // Invalid JSON from native — skip
                 }
             },
-            [syncStateFromUpdate]
+            [emitContentCallbacksForUpdate, syncStateFromUpdate]
         );
 
         const handleSelectionChange = useCallback(
             (event: NativeSyntheticEvent<NativeSelectionEvent>) => {
                 if (!bridgeRef.current || bridgeRef.current.isDestroyed) return;
 
-                const { anchor, head } = event.nativeEvent;
+                const { anchor, head, stateJson } = event.nativeEvent;
                 let selection: Selection;
 
                 if (
@@ -721,8 +836,17 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 }
 
                 bridgeRef.current.updateSelectionFromNative(anchor, head);
-                const currentState = bridgeRef.current.getCurrentState();
-                syncStateFromUpdate(currentState);
+                let currentState: EditorUpdate | null = null;
+                if (typeof stateJson === 'string' && stateJson.length > 0) {
+                    try {
+                        currentState = bridgeRef.current.parseUpdateJson(stateJson);
+                    } catch {
+                        currentState = bridgeRef.current.getSelectionState();
+                    }
+                } else {
+                    currentState = bridgeRef.current.getSelectionState();
+                }
+                syncSelectionStateFromUpdate(currentState);
                 const nextSelection =
                     selection.type === 'all' ? selection : (currentState?.selection ?? selection);
                 selectionRef.current = nextSelection;
@@ -732,7 +856,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 }
                 onSelectionChangeRef.current?.(nextSelection);
             },
-            [syncStateFromUpdate]
+            [syncSelectionStateFromUpdate]
         );
 
         const handleFocusChange = useCallback((event: NativeSyntheticEvent<NativeFocusEvent>) => {
@@ -988,17 +1112,44 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
 
         if (!isReady) return null;
 
-        const toolbarItemsForNative = mapToolbarItemsForNative(
-            toolbarItems,
-            activeState,
-            editable,
-            onRequestLink,
-            onRequestImage
-        );
-        const themeJson = serializeEditorTheme(theme);
-        const addonsJson = serializeEditorAddons(addons);
-        const toolbarItemsJson = JSON.stringify(toolbarItemsForNative);
-        const remoteSelectionsJson = serializeRemoteSelections(remoteSelections);
+        const isLinkActive = activeState.marks.link === true;
+        const allowsLink = activeState.allowedMarks.includes('link');
+        const canInsertImage = activeState.insertableNodes.includes(IMAGE_NODE_NAME);
+        const canRequestLink = typeof onRequestLink === 'function';
+        const canRequestImage = typeof onRequestImage === 'function';
+        const cachedToolbarItems = toolbarItemsSerializationCacheRef.current;
+        let toolbarItemsJson: string;
+        if (
+            cachedToolbarItems?.toolbarItems === toolbarItems &&
+            cachedToolbarItems.editable === editable &&
+            cachedToolbarItems.isLinkActive === isLinkActive &&
+            cachedToolbarItems.allowsLink === allowsLink &&
+            cachedToolbarItems.canRequestLink === canRequestLink &&
+            cachedToolbarItems.canRequestImage === canRequestImage &&
+            cachedToolbarItems.canInsertImage === canInsertImage
+        ) {
+            toolbarItemsJson = cachedToolbarItems.serialized;
+        } else {
+            const mappedItems = mapToolbarItemsForNative(
+                toolbarItems,
+                activeState,
+                editable,
+                onRequestLink,
+                onRequestImage
+            );
+            toolbarItemsJson = stringifyCachedJson(mappedItems);
+            toolbarItemsSerializationCacheRef.current = {
+                toolbarItems,
+                editable,
+                isLinkActive,
+                allowsLink,
+                canRequestLink,
+                canRequestImage,
+                canInsertImage,
+                mappedItems,
+                serialized: toolbarItemsJson,
+            };
+        }
         const usesNativeKeyboardToolbar =
             toolbarPlacement === 'keyboard' && (Platform.OS === 'ios' || Platform.OS === 'android');
         const shouldRenderJsToolbar = !usesNativeKeyboardToolbar && showToolbar && editable;

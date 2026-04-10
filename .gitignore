@@ -13,6 +13,8 @@ example/android/build
 example/android/app/build
 android/build
 *.xcresult
+ios-tests/.device-test.env
+example/android/.device-test.env
 coverage
 dist
 npm-debug.log*

@@ -9,6 +9,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -98,6 +100,39 @@ class RichTextEditorViewTest {
         ]
     """.trimIndent()
 
+    private fun paragraphRenderBlock(text: String): JSONArray {
+        return JSONArray().apply {
+            put(
+                JSONObject()
+                    .put("type", "blockStart")
+                    .put("nodeType", "paragraph")
+                    .put("depth", 0)
+            )
+            put(
+                JSONObject()
+                    .put("type", "textRun")
+                    .put("text", text)
+                    .put("marks", JSONArray())
+            )
+            put(JSONObject().put("type", "blockEnd"))
+        }
+    }
+
+    private fun renderUpdateJson(
+        blocks: JSONArray,
+        includeFullRenderBlocks: Boolean = true,
+        renderPatch: JSONObject? = null
+    ): String {
+        return JSONObject().apply {
+            if (includeFullRenderBlocks) {
+                put("renderBlocks", blocks)
+            }
+            if (renderPatch != null) {
+                put("renderPatch", renderPatch)
+            }
+        }.toString()
+    }
+
     @Test
     fun `placeholder shows for rendered empty paragraph`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
@@ -105,6 +140,46 @@ class RichTextEditorViewTest {
         editText.applyRenderJSON(emptyParagraphRenderJson())
 
         assertTrue(editText.shouldDisplayPlaceholderForTesting())
+    }
+
+    @Test
+    fun `apply update json resolves patch-only payload for middle paragraph split`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        val initialBlocks = JSONArray().apply {
+            put(paragraphRenderBlock("Alpha"))
+            put(paragraphRenderBlock("Beta"))
+            put(paragraphRenderBlock("Gamma"))
+        }
+        editText.applyUpdateJSON(renderUpdateJson(initialBlocks), notifyListener = false)
+
+        val patchedBlocks = JSONArray().apply {
+            put(paragraphRenderBlock("Alpha"))
+            put(paragraphRenderBlock("Beta"))
+            put(paragraphRenderBlock("\u200B"))
+            put(paragraphRenderBlock("Gamma"))
+        }
+        val renderPatch = JSONObject()
+            .put("startIndex", 1)
+            .put("deleteCount", 2)
+            .put(
+                "renderBlocks",
+                JSONArray().apply {
+                    put(paragraphRenderBlock("Beta"))
+                    put(paragraphRenderBlock("\u200B"))
+                    put(paragraphRenderBlock("Gamma"))
+                }
+            )
+
+        editText.applyUpdateJSON(
+            renderUpdateJson(
+                patchedBlocks,
+                includeFullRenderBlocks = false,
+                renderPatch = renderPatch
+            ),
+            notifyListener = false
+        )
+
+        assertEquals("Alpha\nBeta\n\u200B\nGamma", editText.text?.toString())
     }
 
     @Test
@@ -734,6 +809,95 @@ class RichTextEditorViewTest {
         val snapshot = view.remoteSelectionDebugSnapshotsForTesting().single()
         assertEquals(8, snapshot.clientId)
         assertTrue(snapshot.caretRect == null)
+    }
+
+    @Test
+    fun `remote selection geometry is cached across redraws`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = RichTextEditorView(context)
+        view.setRemoteSelectionEditorIdForTesting(1L)
+        view.editorEditText.setText("Hello world from remote selections")
+
+        var resolverCalls = 0
+        view.setRemoteSelectionScalarResolverForTesting { _, docPos ->
+            resolverCalls += 1
+            docPos
+        }
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        view.measure(widthSpec, heightSpec)
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+
+        view.setRemoteSelections(
+            listOf(
+                RemoteSelectionDecoration(
+                    clientId = 11,
+                    anchor = 6,
+                    head = 12,
+                    color = Color.parseColor("#ff9500"),
+                    name = "Range",
+                    isFocused = true,
+                )
+            )
+        )
+
+        val bitmap = Bitmap.createBitmap(600, 240, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        resolverCalls = 0
+
+        view.draw(canvas)
+        view.draw(canvas)
+
+        assertEquals(0, resolverCalls)
+    }
+
+    @Test
+    fun `setting identical remote selections does not invalidate cached geometry`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = RichTextEditorView(context)
+        view.setRemoteSelectionEditorIdForTesting(1L)
+        view.editorEditText.setText("Hello world from remote selections")
+
+        var resolverCalls = 0
+        view.setRemoteSelectionScalarResolverForTesting { _, docPos ->
+            resolverCalls += 1
+            docPos
+        }
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        view.measure(widthSpec, heightSpec)
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+
+        val initialSelections = listOf(
+            RemoteSelectionDecoration(
+                clientId = 12,
+                anchor = 6,
+                head = 12,
+                color = Color.parseColor("#34c759"),
+                name = "Range",
+                isFocused = true,
+            )
+        )
+        view.setRemoteSelections(initialSelections)
+        view.remoteSelectionDebugSnapshotsForTesting()
+
+        resolverCalls = 0
+        val identicalSelections = listOf(
+            RemoteSelectionDecoration(
+                clientId = 12,
+                anchor = 6,
+                head = 12,
+                color = Color.parseColor("#34c759"),
+                name = "Range",
+                isFocused = true,
+            )
+        )
+        view.setRemoteSelections(identicalSelections)
+        view.remoteSelectionDebugSnapshotsForTesting()
+
+        assertEquals(0, resolverCalls)
     }
 
     @Test

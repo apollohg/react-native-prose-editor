@@ -4,7 +4,7 @@ use crate::model::node::Node;
 ///
 /// Fragment tracks the aggregate token size of its children, avoiding
 /// repeated traversal when computing document positions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Fragment {
     children: Vec<Node>,
     /// Cached token size: sum of each child's `node_size()`.

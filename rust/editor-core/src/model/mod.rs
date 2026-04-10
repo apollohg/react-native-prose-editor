@@ -12,7 +12,7 @@ use smallvec::SmallVec;
 
 /// A document is a wrapper around a root node (typically "doc") that provides
 /// position resolution and tree queries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Document {
     root: Node,
 }

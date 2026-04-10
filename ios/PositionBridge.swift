@@ -1,4 +1,5 @@
 import UIKit
+import ObjectiveC
 
 // MARK: - PositionBridge
 
@@ -16,10 +17,33 @@ import UIKit
 /// This bridge converts between those scalar offsets and UITextView UTF-16 offsets.
 final class PositionBridge {
 
+    private struct StringConversionTable {
+        let utf16ToScalar: [UInt32]
+        let scalarToUtf16: [Int]
+    }
+
+    private final class TextViewConversionTable: NSObject {
+        let adjustedUtf16ToScalar: [UInt32]
+
+        init(adjustedUtf16ToScalar: [UInt32]) {
+            self.adjustedUtf16ToScalar = adjustedUtf16ToScalar
+        }
+    }
+
     struct VirtualListMarker {
         let paragraphStartUtf16: Int
         let scalarLength: UInt32
     }
+
+    private struct PositionAdjustments {
+        let placeholders: [Int]
+        let listMarkers: [VirtualListMarker]
+    }
+
+    private static var textViewConversionTableKey: UInt8 = 0
+    private static let stringTableLock = NSLock()
+    private static var lastStringTableText = ""
+    private static var lastStringTable: StringConversionTable?
 
     // MARK: - UTF-16 <-> Scalar Conversion
 
@@ -58,36 +82,27 @@ final class PositionBridge {
 
     static func utf16OffsetToScalar(_ utf16Offset: Int, in textView: UITextView) -> UInt32 {
         let text = textView.text ?? ""
-        let nsString = text as NSString
-        let clampedOffset = min(max(utf16Offset, 0), nsString.length)
-        var scalarOffset = utf16OffsetToScalar(clampedOffset, in: text)
-
-        for placeholderOffset in syntheticPlaceholderOffsets(in: textView) where clampedOffset > placeholderOffset {
-            if scalarOffset > 0 {
-                scalarOffset -= 1
-            }
-        }
-
-        for marker in virtualListMarkers(in: textView) where clampedOffset >= marker.paragraphStartUtf16 {
-            scalarOffset += marker.scalarLength
-        }
-
-        return scalarOffset
+        let clampedOffset = min(max(utf16Offset, 0), (text as NSString).length)
+        let conversionTable = textViewConversionTable(for: textView)
+        return conversionTable.adjustedUtf16ToScalar[clampedOffset]
     }
 
     static func scalarToUtf16Offset(_ scalar: UInt32, in textView: UITextView) -> Int {
-        let text = textView.text ?? ""
-        let maxUtf16 = (text as NSString).length
-
-        if scalar == 0 || maxUtf16 == 0 {
+        let conversionTable = textViewConversionTable(for: textView)
+        let utf16ToScalar = conversionTable.adjustedUtf16ToScalar
+        guard scalar > 0, !utf16ToScalar.isEmpty else {
             return 0
         }
 
+        if let last = utf16ToScalar.last, scalar > last {
+            return utf16ToScalar.count - 1
+        }
+
         var low = 0
-        var high = maxUtf16
+        var high = utf16ToScalar.count - 1
         while low < high {
             let mid = (low + high) / 2
-            if utf16OffsetToScalar(mid, in: textView) < scalar {
+            if utf16ToScalar[mid] < scalar {
                 low = mid + 1
             } else {
                 high = mid
@@ -107,21 +122,9 @@ final class PositionBridge {
     ///   - text: The string to walk.
     /// - Returns: The number of Unicode scalars from the start to the given UTF-16 offset.
     static func utf16OffsetToScalar(_ utf16Offset: Int, in text: String) -> UInt32 {
-        guard utf16Offset > 0 else { return 0 }
-
-        let utf16View = text.utf16
-        let endIndex = min(utf16Offset, utf16View.count)
-        var scalarCount: UInt32 = 0
-        var utf16Pos = 0
-
-        for scalar in text.unicodeScalars {
-            if utf16Pos >= endIndex { break }
-            let scalarUtf16Len = scalar.utf16.count
-            utf16Pos += scalarUtf16Len
-            scalarCount += 1
-        }
-
-        return scalarCount
+        let conversionTable = stringConversionTable(for: text)
+        let clampedOffset = min(max(utf16Offset, 0), conversionTable.utf16ToScalar.count - 1)
+        return conversionTable.utf16ToScalar[clampedOffset]
     }
 
     /// Convert a Unicode scalar offset to a UTF-16 offset within a string.
@@ -134,18 +137,10 @@ final class PositionBridge {
     ///   - text: The string to walk.
     /// - Returns: The number of UTF-16 code units from the start to the given scalar offset.
     static func scalarToUtf16Offset(_ scalar: UInt32, in text: String) -> Int {
+        let conversionTable = stringConversionTable(for: text)
         guard scalar > 0 else { return 0 }
-
-        var utf16Len = 0
-        var scalarsSeen: UInt32 = 0
-
-        for s in text.unicodeScalars {
-            if scalarsSeen >= scalar { break }
-            utf16Len += s.utf16.count
-            scalarsSeen += 1
-        }
-
-        return utf16Len
+        let scalarIndex = min(Int(scalar), conversionTable.scalarToUtf16.count - 1)
+        return conversionTable.scalarToUtf16[scalarIndex]
     }
 
     // MARK: - Grapheme Boundary Snapping
@@ -238,31 +233,259 @@ final class PositionBridge {
         atUtf16Offset utf16Offset: Int,
         in textView: UITextView
     ) -> VirtualListMarker? {
-        virtualListMarkers(in: textView).first { $0.paragraphStartUtf16 == utf16Offset }
+        virtualListMarkers(in: textView.textStorage).first { $0.paragraphStartUtf16 == utf16Offset }
     }
 
-    private static func virtualListMarkers(in textView: UITextView) -> [VirtualListMarker] {
-        let textStorage = textView.textStorage
-        guard textStorage.length > 0 else { return [] }
+    static func invalidateCache(for textView: UITextView) {
+        objc_setAssociatedObject(
+            textView,
+            &textViewConversionTableKey,
+            nil,
+            .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        )
+    }
 
-        let nsString = textStorage.string as NSString
+    @discardableResult
+    static func applyAttributedPatchIfPossible(
+        for textView: UITextView,
+        replaceRange: NSRange,
+        replacement: NSAttributedString
+    ) -> Bool {
+        guard let cached = objc_getAssociatedObject(textView, &textViewConversionTableKey) as? TextViewConversionTable else {
+            return false
+        }
+
+        let oldAdjusted = cached.adjustedUtf16ToScalar
+        let oldUtf16Count = max(0, oldAdjusted.count - 1)
+        guard replaceRange.location >= 0,
+              replaceRange.length >= 0,
+              replaceRange.location + replaceRange.length <= oldUtf16Count
+        else {
+            return false
+        }
+
+        let startOffset = replaceRange.location
+        let endOffset = replaceRange.location + replaceRange.length
+        let replacementAdjusted = adjustedConversionTable(for: replacement)
+        let patched = patchedAdjustedConversionTable(
+            oldAdjusted: oldAdjusted,
+            startOffset: startOffset,
+            endOffset: endOffset,
+            replacementAdjusted: replacementAdjusted
+        )
+
+        objc_setAssociatedObject(
+            textView,
+            &textViewConversionTableKey,
+            TextViewConversionTable(adjustedUtf16ToScalar: patched),
+            .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        )
+        return true
+    }
+
+    @discardableResult
+    static func applyPlainTextPatchIfPossible(
+        for textView: UITextView,
+        replaceRange: NSRange,
+        replacementText: String
+    ) -> Bool {
+        guard let cached = objc_getAssociatedObject(textView, &textViewConversionTableKey) as? TextViewConversionTable else {
+            return false
+        }
+
+        let oldAdjusted = cached.adjustedUtf16ToScalar
+        let oldUtf16Count = max(0, oldAdjusted.count - 1)
+        guard replaceRange.location >= 0,
+              replaceRange.length >= 0,
+              replaceRange.location + replaceRange.length <= oldUtf16Count
+        else {
+            return false
+        }
+
+        let startOffset = replaceRange.location
+        let endOffset = replaceRange.location + replaceRange.length
+        let replacementBase = stringConversionTable(for: replacementText).utf16ToScalar
+        let patched = patchedAdjustedConversionTable(
+            oldAdjusted: oldAdjusted,
+            startOffset: startOffset,
+            endOffset: endOffset,
+            replacementAdjusted: replacementBase
+        )
+
+        objc_setAssociatedObject(
+            textView,
+            &textViewConversionTableKey,
+            TextViewConversionTable(adjustedUtf16ToScalar: patched),
+            .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        )
+        return true
+    }
+
+    private static func patchedAdjustedConversionTable(
+        oldAdjusted: [UInt32],
+        startOffset: Int,
+        endOffset: Int,
+        replacementAdjusted: [UInt32]
+    ) -> [UInt32] {
+        let startScalar = Int32(oldAdjusted[startOffset])
+        let deletedScalarCount = Int32(oldAdjusted[endOffset]) - startScalar
+        let replacementScalarCount = Int32(replacementAdjusted.last ?? 0)
+        let scalarDelta = replacementScalarCount - deletedScalarCount
+        let replacement = replacementAdjusted.map { value in
+            UInt32(max(0, Int32(value) + startScalar))
+        }
+        let prefix = Array(oldAdjusted[..<startOffset])
+        let suffix = oldAdjusted[(endOffset + 1)...].map { value in
+            UInt32(max(0, Int32(value) + scalarDelta))
+        }
+        return prefix + replacement + suffix
+    }
+
+    private static func stringConversionTable(for text: String) -> StringConversionTable {
+        stringTableLock.lock()
+        if lastStringTableText == text, let lastStringTable {
+            stringTableLock.unlock()
+            return lastStringTable
+        }
+        stringTableLock.unlock()
+
+        let utf16Count = text.utf16.count
+        let scalarCount = text.unicodeScalars.count
+        var utf16ToScalar = Array(repeating: UInt32(0), count: utf16Count + 1)
+        var scalarToUtf16 = Array(repeating: 0, count: scalarCount + 1)
+        var utf16Pos = 0
+        var scalarPos = 0
+
+        for scalar in text.unicodeScalars {
+            let nextUtf16Pos = utf16Pos + scalar.utf16.count
+            scalarPos += 1
+            if nextUtf16Pos > utf16Pos {
+                for offset in (utf16Pos + 1)...nextUtf16Pos {
+                    utf16ToScalar[offset] = UInt32(scalarPos)
+                }
+            }
+            scalarToUtf16[scalarPos] = nextUtf16Pos
+            utf16Pos = nextUtf16Pos
+        }
+
+        let conversionTable = StringConversionTable(
+            utf16ToScalar: utf16ToScalar,
+            scalarToUtf16: scalarToUtf16
+        )
+
+        stringTableLock.lock()
+        lastStringTableText = text
+        lastStringTable = conversionTable
+        stringTableLock.unlock()
+
+        return conversionTable
+    }
+
+    private static func adjustedConversionTable(for attributedString: NSAttributedString) -> [UInt32] {
+        let baseTable = stringConversionTable(for: attributedString.string)
+        let adjustments = positionAdjustments(in: attributedString)
+        return adjustedUtf16ToScalar(
+            baseUtf16ToScalar: baseTable.utf16ToScalar,
+            placeholders: adjustments.placeholders,
+            listMarkers: adjustments.listMarkers
+        )
+    }
+
+    private static func textViewConversionTable(for textView: UITextView) -> TextViewConversionTable {
+        if let cached = objc_getAssociatedObject(textView, &textViewConversionTableKey) as? TextViewConversionTable {
+            return cached
+        }
+
+        let text = textView.text ?? ""
+        let baseTable = stringConversionTable(for: text)
+        let adjustments = positionAdjustments(in: textView.textStorage)
+        let adjustedUtf16ToScalar = adjustedUtf16ToScalar(
+            baseUtf16ToScalar: baseTable.utf16ToScalar,
+            placeholders: adjustments.placeholders,
+            listMarkers: adjustments.listMarkers
+        )
+        let conversionTable = TextViewConversionTable(adjustedUtf16ToScalar: adjustedUtf16ToScalar)
+        objc_setAssociatedObject(
+            textView,
+            &textViewConversionTableKey,
+            conversionTable,
+            .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        )
+        return conversionTable
+    }
+
+    private static func adjustedUtf16ToScalar(
+        baseUtf16ToScalar: [UInt32],
+        placeholders: [Int],
+        listMarkers: [VirtualListMarker] = [],
+    ) -> [UInt32] {
+        let utf16Count = max(0, baseUtf16ToScalar.count - 1)
+        var deltas = Array(repeating: Int32(0), count: utf16Count + 2)
+
+        for placeholderOffset in placeholders {
+            let startOffset = min(max(placeholderOffset + 1, 0), utf16Count + 1)
+            if startOffset <= utf16Count {
+                deltas[startOffset] -= 1
+            }
+        }
+
+        for marker in listMarkers {
+            let startOffset = min(max(marker.paragraphStartUtf16, 0), utf16Count)
+            deltas[startOffset] += Int32(marker.scalarLength)
+        }
+
+        var adjustedUtf16ToScalar = Array(repeating: UInt32(0), count: utf16Count + 1)
+        var runningDelta: Int32 = 0
+        for offset in 0...utf16Count {
+            runningDelta += deltas[offset]
+            let adjustedValue = Int32(baseUtf16ToScalar[offset]) + runningDelta
+            adjustedUtf16ToScalar[offset] = UInt32(max(0, adjustedValue))
+        }
+        return adjustedUtf16ToScalar
+    }
+
+    private static func adjustedUtf16ToScalar(
+        baseUtf16ToScalar: [UInt32],
+        listMarkers: [VirtualListMarker]
+    ) -> [UInt32] {
+        adjustedUtf16ToScalar(baseUtf16ToScalar: baseUtf16ToScalar, placeholders: [], listMarkers: listMarkers)
+    }
+
+    private static func virtualListMarkers(in attributedString: NSAttributedString) -> [VirtualListMarker] {
+        positionAdjustments(in: attributedString).listMarkers
+    }
+
+    private static func positionAdjustments(in attributedString: NSAttributedString) -> PositionAdjustments {
+        guard attributedString.length > 0 else {
+            return PositionAdjustments(placeholders: [], listMarkers: [])
+        }
+
+        let nsString = attributedString.string as NSString
+        var placeholders: [Int] = []
         var markers: [VirtualListMarker] = []
         var seenStarts = Set<Int>()
-        let fullRange = NSRange(location: 0, length: textStorage.length)
+        let fullRange = NSRange(location: 0, length: attributedString.length)
 
-        textStorage.enumerateAttribute(
-            RenderBridgeAttributes.listMarkerContext,
+        attributedString.enumerateAttributes(
             in: fullRange,
-            options: []
-        ) { value, range, _ in
-            guard range.length > 0, let listContext = value as? [String: Any] else { return }
+            options: [.longestEffectiveRangeNotRequired]
+        ) { attrs, range, _ in
+            guard range.length > 0 else { return }
+
+            if attrs[RenderBridgeAttributes.syntheticPlaceholder] as? Bool == true {
+                placeholders.append(range.location)
+            }
+
+            guard let listContext = attrs[RenderBridgeAttributes.listMarkerContext] as? [String: Any] else {
+                return
+            }
 
             let paragraphStart = nsString.paragraphRange(
                 for: NSRange(location: range.location, length: 0)
             ).location
-            guard !EditorLayoutManager.isParagraphStartCreatedByHardBreak(
+            guard !isParagraphStartCreatedByHardBreak(
                 paragraphStart,
-                in: textStorage
+                in: attributedString
             ) else {
                 return
             }
@@ -279,22 +502,34 @@ final class PositionBridge {
             )
         }
 
-        return markers.sorted { $0.paragraphStartUtf16 < $1.paragraphStartUtf16 }
+        return PositionAdjustments(
+            placeholders: placeholders,
+            listMarkers: markers.sorted { $0.paragraphStartUtf16 < $1.paragraphStartUtf16 }
+        )
     }
 
-    private static func syntheticPlaceholderOffsets(in textView: UITextView) -> [Int] {
-        let textStorage = textView.textStorage
-        guard textStorage.length > 0 else { return [] }
+    private static func virtualListMarkers(in textStorage: NSTextStorage) -> [VirtualListMarker] {
+        virtualListMarkers(in: textStorage as NSAttributedString)
+    }
 
-        var offsets: [Int] = []
-        textStorage.enumerateAttribute(
-            RenderBridgeAttributes.syntheticPlaceholder,
-            in: NSRange(location: 0, length: textStorage.length),
-            options: []
-        ) { value, range, _ in
-            guard range.length > 0, (value as? Bool) == true else { return }
-            offsets.append(range.location)
-        }
-        return offsets
+    private static func syntheticPlaceholderOffsets(in attributedString: NSAttributedString) -> [Int] {
+        positionAdjustments(in: attributedString).placeholders
+    }
+
+    private static func syntheticPlaceholderOffsets(in textStorage: NSTextStorage) -> [Int] {
+        syntheticPlaceholderOffsets(in: textStorage as NSAttributedString)
+    }
+
+    private static func isParagraphStartCreatedByHardBreak(
+        _ paragraphStart: Int,
+        in attributedString: NSAttributedString
+    ) -> Bool {
+        guard paragraphStart > 0, paragraphStart <= attributedString.length else { return false }
+        let previousVoidType = attributedString.attribute(
+            RenderBridgeAttributes.voidNodeType,
+            at: paragraphStart - 1,
+            effectiveRange: nil
+        ) as? String
+        return previousVoidType == "hardBreak"
     }
 }

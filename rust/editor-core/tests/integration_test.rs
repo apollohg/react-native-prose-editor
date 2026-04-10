@@ -1562,9 +1562,9 @@ fn test_backspace_from_empty_first_heading_reverts_to_paragraph() {
             assert_eq!(anchor, 1);
             assert_eq!(head, 1);
         }
-        other => panic!(
-            "expected collapsed text selection after reverting empty heading, got {other:?}"
-        ),
+        other => {
+            panic!("expected collapsed text selection after reverting empty heading, got {other:?}")
+        }
     }
 }
 
@@ -1617,9 +1617,9 @@ fn test_backspace_from_empty_first_required_title_stays_schema_valid() {
             assert_eq!(anchor, 1);
             assert_eq!(head, 1);
         }
-        other => panic!(
-            "expected collapsed text selection after preserving empty title, got {other:?}"
-        ),
+        other => {
+            panic!("expected collapsed text selection after preserving empty title, got {other:?}")
+        }
     }
 }
 

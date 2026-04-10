@@ -67,6 +67,44 @@ pub fn build_position_map(doc: &Document) -> PositionMap {
     PositionMap::from_blocks(blocks)
 }
 
+pub(crate) fn rebuild_existing_block_mapping(
+    node: &Node,
+    old_block: &BlockMapping,
+) -> Option<BlockMapping> {
+    if old_block.is_void_block {
+        if !node.is_void() {
+            return None;
+        }
+
+        return Some(BlockMapping {
+            doc_start: old_block.doc_start,
+            doc_end: old_block.doc_start,
+            scalar_start: old_block.scalar_start,
+            scalar_len: block_visible_scalar_len(node),
+            scalar_prefix_len: old_block.scalar_prefix_len,
+            rendered_break_after: old_block.rendered_break_after,
+            node_path: old_block.node_path.clone(),
+            is_void_block: true,
+        });
+    }
+
+    if !is_text_block(node) {
+        return None;
+    }
+
+    let content = node.content()?;
+    Some(BlockMapping {
+        doc_start: old_block.doc_start,
+        doc_end: old_block.doc_start + content.size(),
+        scalar_start: old_block.scalar_start,
+        scalar_len: compute_inline_scalars(node),
+        scalar_prefix_len: old_block.scalar_prefix_len,
+        rendered_break_after: old_block.rendered_break_after,
+        node_path: old_block.node_path.clone(),
+        is_void_block: false,
+    })
+}
+
 /// Recursively walk a node to find text blocks and block-level void nodes.
 ///
 /// `doc_offset` is the doc position at the start of `node`'s content

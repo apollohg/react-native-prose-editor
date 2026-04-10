@@ -751,6 +751,16 @@ public func editorDocToScalar(id: UInt64, docPos: UInt32) -> UInt32  {
 })
 }
 /**
+ * Get both HTML and ProseMirror JSON content in one payload.
+ */
+public func editorGetContentSnapshot(id: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_get_content_snapshot(
+        FfiConverterUInt64.lower(id),$0
+    )
+})
+}
+/**
  * Get the current editor state (render elements, selection, active state,
  * history state) without performing any edits. Used by native views to pull
  * initial state when binding to an already-loaded editor.
@@ -788,6 +798,16 @@ public func editorGetJson(id: UInt64) -> String  {
 public func editorGetSelection(id: UInt64) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_get_selection(
+        FfiConverterUInt64.lower(id),$0
+    )
+})
+}
+/**
+ * Get the current selection-related editor state without render elements.
+ */
+public func editorGetSelectionState(id: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_get_selection_state(
         FfiConverterUInt64.lower(id),$0
     )
 })
@@ -1323,6 +1343,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_editor_doc_to_scalar() != 48291) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_editor_core_checksum_func_editor_get_content_snapshot() != 32837) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_editor_core_checksum_func_editor_get_current_state() != 13946) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1333,6 +1356,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_get_selection() != 20571) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_get_selection_state() != 16471) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_indent_list_item() != 10818) {

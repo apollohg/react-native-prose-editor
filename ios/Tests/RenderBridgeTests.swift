@@ -201,6 +201,33 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertNil(attrs[.link])
     }
 
+    func testRenderBlocks_withLeadingSeparatorDoesNotDuplicateTopLevelChildIndexOnContent() {
+        let blocks: [[[String: Any]]] = [[
+            ["type": "blockStart", "nodeType": "paragraph", "depth": 0],
+            ["type": "textRun", "text": "Hello", "marks": []],
+            ["type": "blockEnd"],
+        ]]
+
+        let result = RenderBridge.renderBlocks(
+            fromArray: blocks,
+            startIndex: 3,
+            includeLeadingInterBlockSeparator: true,
+            baseFont: baseFont,
+            textColor: textColor
+        )
+
+        XCTAssertEqual(result.string, "\nHello")
+        XCTAssertEqual(
+            (result.attribute(RenderBridgeAttributes.topLevelChildIndex, at: 0, effectiveRange: nil)
+                as? NSNumber)?.intValue,
+            3
+        )
+        XCTAssertNil(
+            result.attribute(RenderBridgeAttributes.topLevelChildIndex, at: 1, effectiveRange: nil),
+            "Leading content should not duplicate the separator's top-level child index"
+        )
+    }
+
     // MARK: - Code Mark (Monospace)
 
     func testRender_codeInline() {

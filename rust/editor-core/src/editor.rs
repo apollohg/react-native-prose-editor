@@ -58,9 +58,22 @@ impl From<InterceptError> for EditorError {
 /// The result of an editing operation, returned to the host platform.
 pub struct EditorUpdate {
     pub render_elements: Vec<RenderElement>,
+    pub render_blocks: Vec<Vec<RenderElement>>,
+    pub render_patch: Option<crate::render::incremental::RenderBlocksPatch>,
     pub selection: Selection,
+    pub selection_scalar: Selection,
     pub active_state: ActiveState,
     pub history_state: HistoryState,
+    pub document_version: u64,
+}
+
+/// Lightweight editor state used for selection and toolbar refreshes.
+pub struct EditorSelectionState {
+    pub selection: Selection,
+    pub selection_scalar: Selection,
+    pub active_state: ActiveState,
+    pub history_state: HistoryState,
+    pub document_version: u64,
 }
 
 /// Which marks and node types are active at the current selection.
@@ -119,6 +132,7 @@ pub struct Editor {
     stored_marks: Option<Vec<Mark>>,
     interceptors: InterceptorPipeline,
     allow_base64_images: bool,
+    document_version: u64,
 }
 
 impl Editor {
@@ -131,7 +145,7 @@ impl Editor {
         allow_base64_images: bool,
     ) -> Self {
         let doc = make_empty_doc(&schema);
-        let backend = StandaloneBackend::new(doc);
+        let backend = StandaloneBackend::new(doc, &schema);
         Self {
             schema,
             backend,
@@ -139,6 +153,7 @@ impl Editor {
             stored_marks: None,
             interceptors,
             allow_base64_images,
+            document_version: 1,
         }
     }
 
@@ -157,9 +172,10 @@ impl Editor {
             },
         )
         .map_err(|e| EditorError::Parse(e.to_string()))?;
-        self.backend = StandaloneBackend::new(doc);
+        self.backend = StandaloneBackend::new(doc, &self.schema);
         self.selection = Selection::cursor(1);
         self.stored_marks = None;
+        self.document_version = self.document_version.saturating_add(1);
         let elements = self.backend.to_render_elements(&self.schema);
         Ok(elements)
     }
@@ -175,9 +191,10 @@ impl Editor {
             serialize::UnknownTypeMode::Preserve,
         )
         .map_err(|e| EditorError::Parse(e.to_string()))?;
-        self.backend = StandaloneBackend::new(doc);
+        self.backend = StandaloneBackend::new(doc, &self.schema);
         self.selection = Selection::cursor(1);
         self.stored_marks = None;
+        self.document_version = self.document_version.saturating_add(1);
         let elements = self.backend.to_render_elements(&self.schema);
         Ok(elements)
     }
@@ -891,23 +908,31 @@ impl Editor {
     /// Undo the last edit.
     pub fn undo(&mut self) -> Option<EditorUpdate> {
         let state = self.backend.undo(&self.schema)?;
-        let render_elements = state.render_elements;
         if let Some(sel) = state.selection_update {
             self.selection = sel;
         }
         self.stored_marks = None;
-        Some(self.build_update(render_elements))
+        self.document_version = self.document_version.saturating_add(1);
+        Some(self.build_update(
+            state.render_elements,
+            state.render_blocks,
+            state.render_patch,
+        ))
     }
 
     /// Redo the last undone edit.
     pub fn redo(&mut self) -> Option<EditorUpdate> {
         let state = self.backend.redo(&self.schema)?;
-        let render_elements = state.render_elements;
         if let Some(sel) = state.selection_update {
             self.selection = sel;
         }
         self.stored_marks = None;
-        Some(self.build_update(render_elements))
+        self.document_version = self.document_version.saturating_add(1);
+        Some(self.build_update(
+            state.render_elements,
+            state.render_blocks,
+            state.render_patch,
+        ))
     }
 
     /// Whether undo is available.
@@ -925,6 +950,11 @@ impl Editor {
     /// when binding to an editor that already has content loaded via the bridge.
     pub fn get_current_state(&self) -> EditorUpdate {
         self.build_update_from_current()
+    }
+
+    /// Get the current selection-related state without regenerating render elements.
+    pub fn get_selection_state(&self) -> EditorSelectionState {
+        self.build_selection_state()
     }
 
     // -----------------------------------------------------------------------
@@ -1354,6 +1384,7 @@ impl Editor {
             &selection_before,
             &selection_after,
         )?;
+        self.document_version = self.document_version.saturating_add(1);
 
         // Set the selection to the mapped/normalized version using the
         // post-apply position map and document.
@@ -1367,26 +1398,58 @@ impl Editor {
             self.stored_marks = None;
         }
 
-        Ok(self.build_update(state.render_elements))
+        Ok(self.build_update(
+            state.render_elements,
+            state.render_blocks,
+            state.render_patch,
+        ))
     }
 
     /// Build an EditorUpdate from render elements and current state.
-    fn build_update(&self, render_elements: Vec<RenderElement>) -> EditorUpdate {
+    fn build_update(
+        &self,
+        render_elements: Vec<RenderElement>,
+        render_blocks: Vec<Vec<RenderElement>>,
+        render_patch: Option<crate::render::incremental::RenderBlocksPatch>,
+    ) -> EditorUpdate {
+        let selection_state = self.build_selection_state();
         EditorUpdate {
             render_elements,
-            selection: self.selection.clone(),
-            active_state: self.compute_active_state(),
-            history_state: HistoryState {
-                can_undo: self.backend.can_undo(),
-                can_redo: self.backend.can_redo(),
-            },
+            render_blocks,
+            render_patch,
+            selection: selection_state.selection,
+            selection_scalar: selection_state.selection_scalar,
+            active_state: selection_state.active_state,
+            history_state: selection_state.history_state,
+            document_version: selection_state.document_version,
         }
     }
 
     /// Build an EditorUpdate from the current document state (no changes).
     fn build_update_from_current(&self) -> EditorUpdate {
         let render_elements = self.backend.to_render_elements(&self.schema);
-        self.build_update(render_elements)
+        let render_blocks = self.backend.to_render_blocks(&self.schema);
+        self.build_update(render_elements, render_blocks, None)
+    }
+
+    fn build_selection_state(&self) -> EditorSelectionState {
+        EditorSelectionState {
+            selection: self.selection.clone(),
+            selection_scalar: self.selection_to_scalar_selection(&self.selection),
+            active_state: self.compute_active_state(),
+            history_state: self.compute_history_state(),
+            document_version: self.document_version,
+        }
+    }
+
+    fn selection_to_scalar_selection(&self, selection: &Selection) -> Selection {
+        match selection {
+            Selection::Text { anchor, head } => {
+                Selection::text(self.doc_to_scalar(*anchor), self.doc_to_scalar(*head))
+            }
+            Selection::Node { pos } => Selection::node(self.doc_to_scalar(*pos)),
+            Selection::All => Selection::All,
+        }
     }
 
     /// Compute which marks and nodes are active at the current selection.
@@ -1496,6 +1559,13 @@ impl Editor {
             commands,
             allowed_marks,
             insertable_nodes,
+        }
+    }
+
+    fn compute_history_state(&self) -> HistoryState {
+        HistoryState {
+            can_undo: self.backend.can_undo(),
+            can_redo: self.backend.can_redo(),
         }
     }
 
@@ -2389,19 +2459,123 @@ impl Editor {
         range: &BlockSelectionRange,
         target_type: &str,
     ) -> bool {
-        let Some(replacement) = self.replacement_text_blocks(&range.selected_blocks, target_type)
-        else {
+        let Some(target_spec) = self.schema.node(target_type) else {
+            return false;
+        };
+        if !matches!(target_spec.role, NodeRole::TextBlock)
+            || range
+                .selected_blocks
+                .iter()
+                .any(|block| !self.is_text_block_node(block))
+        {
+            return false;
+        }
+
+        let doc = self.backend.document();
+        let parent = if range.parent_path.is_empty() {
+            doc.root()
+        } else {
+            let Some(parent) = doc.node_at(&range.parent_path) else {
+                return false;
+            };
+            parent
+        };
+        let Some(parent_spec) = self.schema.node(parent.node_type()) else {
             return false;
         };
 
-        let mut tx = Transaction::new(Source::Format);
-        tx.add_step(Step::ReplaceRange {
-            from: range.replace_from,
-            to: range.replace_to,
-            content: Fragment::from(replacement),
-        });
+        let last_replaced_index = range
+            .first_child_index
+            .saturating_add(range.selected_blocks.len());
+        let child_types = parent
+            .content()
+            .map(|content| {
+                content
+                    .iter()
+                    .enumerate()
+                    .map(|(index, child)| {
+                        if index >= range.first_child_index && index < last_replaced_index {
+                            target_type
+                        } else {
+                            child.node_type()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
-        tx.apply(self.backend.document(), &self.schema).is_ok()
+        self.parent_content_rule_matches_child_types(parent_spec, &child_types)
+    }
+
+    fn parent_content_rule_matches_child_types(
+        &self,
+        parent_spec: &NodeSpec,
+        child_types: &[&str],
+    ) -> bool {
+        fn child_matches_part(schema: &Schema, child_type: &str, group: &str) -> bool {
+            schema
+                .node(child_type)
+                .map(|spec| spec.name == group || spec.group.as_deref() == Some(group))
+                .unwrap_or(false)
+        }
+
+        fn matches_from(
+            schema: &Schema,
+            parts: &[crate::schema::content_rule::ContentPart],
+            child_types: &[&str],
+            part_index: usize,
+            child_index: usize,
+            memo: &mut HashMap<(usize, usize), bool>,
+        ) -> bool {
+            if let Some(result) = memo.get(&(part_index, child_index)) {
+                return *result;
+            }
+
+            let result = if part_index == parts.len() {
+                child_index == child_types.len()
+            } else {
+                let part = &parts[part_index];
+                let max_allowed = part
+                    .max
+                    .map(|max| max as usize)
+                    .unwrap_or_else(|| child_types.len().saturating_sub(child_index));
+                let max_matching = (child_index..child_types.len())
+                    .take_while(|index| {
+                        child_matches_part(schema, child_types[*index], &part.group)
+                    })
+                    .count()
+                    .min(max_allowed);
+                let min_required = part.min as usize;
+
+                if max_matching < min_required {
+                    false
+                } else {
+                    (min_required..=max_matching).any(|consumed| {
+                        matches_from(
+                            schema,
+                            parts,
+                            child_types,
+                            part_index + 1,
+                            child_index + consumed,
+                            memo,
+                        )
+                    })
+                }
+            };
+
+            memo.insert((part_index, child_index), result);
+            result
+        }
+
+        let mut memo = HashMap::new();
+        matches_from(
+            &self.schema,
+            &parent_spec.content.parts,
+            child_types,
+            0,
+            0,
+            &mut memo,
+        )
     }
 
     fn replace_selected_text_blocks(
@@ -2489,6 +2663,7 @@ impl Editor {
 
         Some(BlockSelectionRange {
             parent_path,
+            first_child_index: first_idx,
             replace_from,
             replace_to,
             selected_blocks,
@@ -3337,13 +3512,18 @@ fn preferred_text_block_node_names_for_parent(
         } else {
             1
         };
-        left_priority.cmp(&right_priority).then_with(|| left.cmp(right))
+        left_priority
+            .cmp(&right_priority)
+            .then_with(|| left.cmp(right))
     });
     candidates.dedup();
     candidates
 }
 
-fn accepting_groups_for_child_count(parent_spec: &NodeSpec, existing_child_count: usize) -> Vec<&str> {
+fn accepting_groups_for_child_count(
+    parent_spec: &NodeSpec,
+    existing_child_count: usize,
+) -> Vec<&str> {
     let mut remaining = existing_child_count;
     let mut accepting_groups = Vec::new();
 
@@ -3426,6 +3606,7 @@ struct ListItemContext {
 
 struct BlockSelectionRange {
     parent_path: Vec<u16>,
+    first_child_index: usize,
     replace_from: u32,
     replace_to: u32,
     selected_blocks: Vec<Node>,

@@ -24,6 +24,7 @@ namespace editor_core {
     string editor_get_html(u64 id);
     string editor_set_json(u64 id, string json);
     string editor_get_json(u64 id);
+    string editor_get_content_snapshot(u64 id);
 
     // Content replacement
     string editor_replace_html(u64 id, string html);
@@ -74,6 +75,7 @@ namespace editor_core {
     // Selection and state
     void editor_set_selection(u64 id, u32 anchor, u32 head);
     string editor_get_selection(u64 id);
+    string editor_get_selection_state(u64 id);
     string editor_get_current_state(u64 id);
 
     // History

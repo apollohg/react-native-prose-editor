@@ -65,12 +65,20 @@ impl CollaborationSessionRegistry {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CollaborationPeer {
     pub client_id: u64,
     pub is_local: bool,
     pub state: Value,
+}
+
+#[derive(Debug, Clone)]
+struct CachedPeerState {
+    raw_json: Option<String>,
+    parsed_state: Value,
+    normalized_state: Value,
+    normalized_document_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +109,10 @@ pub struct CollaborationSession {
     fragment_name: String,
     void_element_tags: HashSet<String>,
     cached_document_json: Value,
+    document_revision: u64,
+    cached_peers: Vec<CollaborationPeer>,
+    cached_peer_states: HashMap<u64, CachedPeerState>,
+    peers_revision: u64,
     local_awareness_state: Option<Value>,
 }
 
@@ -134,6 +146,10 @@ impl CollaborationSession {
             fragment_name,
             void_element_tags,
             cached_document_json: empty_document_json(),
+            document_revision: 0,
+            cached_peers: Vec::new(),
+            cached_peer_states: HashMap::new(),
+            peers_revision: 0,
             local_awareness_state: None,
         };
 
@@ -146,6 +162,8 @@ impl CollaborationSession {
         if let Some(local_awareness) = config.get("localAwareness") {
             session.set_local_awareness(local_awareness.clone());
         }
+
+        session.refresh_cached_peers();
 
         session
     }
@@ -175,8 +193,8 @@ impl CollaborationSession {
         &mut self,
         encoded_state: Vec<u8>,
     ) -> Result<CollaborationResult, String> {
-        let previous_document = self.cached_document_json.clone();
-        let previous_peers = self.peers_json_string();
+        let previous_document_revision = self.document_revision;
+        let previous_peers_revision = self.peers_revision;
 
         let update = Update::decode_v1(encoded_state.as_slice())
             .map_err(|error| format!("invalid encoded state: {error}"))?;
@@ -187,6 +205,7 @@ impl CollaborationSession {
             .map_err(|error| format!("failed to apply encoded state: {error}"))?;
 
         self.refresh_cached_document_json();
+        self.refresh_cached_peers();
 
         let mut messages = Vec::new();
         if !encoded_state.is_empty() {
@@ -194,7 +213,11 @@ impl CollaborationSession {
                 encoded_state,
             ))));
         }
-        Ok(self.finish_result(previous_document, previous_peers, messages))
+        Ok(self.finish_result(
+            previous_document_revision,
+            previous_peers_revision,
+            messages,
+        ))
     }
 
     pub fn start(&mut self) -> CollaborationResult {
@@ -204,7 +227,7 @@ impl CollaborationSession {
             result.messages.push(message);
         }
         result.peers_changed = true;
-        result.peers = Some(self.peers());
+        result.peers = Some(self.cached_peers.clone());
         result
     }
 
@@ -213,56 +236,75 @@ impl CollaborationSession {
     }
 
     pub fn peers(&self) -> Vec<CollaborationPeer> {
+        self.cached_peers.clone()
+    }
+
+    fn collect_peers(&mut self) -> Vec<CollaborationPeer> {
         let local_id = self.doc.client_id();
-        self.awareness
+        let mut seen_client_ids = HashSet::new();
+        let awareness_states = self
+            .awareness
             .iter()
-            .map(|(client_id, state)| CollaborationPeer {
-                client_id,
-                is_local: client_id == local_id,
-                state: state
-                    .data
-                    .as_ref()
-                    .and_then(|json| serde_json::from_str(json).ok())
-                    .map(|value| self.normalize_awareness_state(value))
-                    .unwrap_or(Value::Null),
+            .map(|(client_id, state)| (client_id, state.data.as_ref().map(ToString::to_string)))
+            .collect::<Vec<_>>();
+        let peers = awareness_states
+            .into_iter()
+            .map(|(client_id, raw_json)| {
+                seen_client_ids.insert(client_id);
+                let parsed_state = self.cached_or_normalize_peer_state(client_id, raw_json);
+                CollaborationPeer {
+                    client_id,
+                    is_local: client_id == local_id,
+                    state: parsed_state,
+                }
             })
-            .collect()
+            .collect();
+        self.cached_peer_states
+            .retain(|client_id, _| seen_client_ids.contains(client_id));
+        peers
     }
 
     pub fn apply_local_document(&mut self, next_json: Value) -> CollaborationResult {
-        let previous_peers = self.peers_json_string();
-        let previous_document = self.cached_document_json.clone();
+        let previous_peers_revision = self.peers_revision;
+        let previous_document_revision = self.document_revision;
         let previous_state_vector = self.doc.transact().state_vector();
 
         {
-            let mut txn = self.doc.transact_mut();
-            let fragment = txn.get_or_insert_xml_fragment(self.fragment_name.as_str());
-            let current_children = previous_document
+            let current_children = self
+                .cached_document_json
                 .get("content")
                 .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             let next_children = next_json
                 .get("content")
                 .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let mut txn = self.doc.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment(self.fragment_name.as_str());
             apply_children(&fragment, &mut txn, &current_children, &next_children);
         }
 
         self.refresh_cached_document_json();
+        self.refresh_cached_peers();
         let update = self.doc.transact().encode_diff_v1(&previous_state_vector);
         let messages = if update.is_empty() {
             Vec::new()
         } else {
             vec![encode_message(Message::Sync(SyncMessage::Update(update)))]
         };
-        self.finish_result(previous_document, previous_peers, messages)
+        self.finish_result(
+            previous_document_revision,
+            previous_peers_revision,
+            messages,
+        )
     }
 
     pub fn handle_message(&mut self, message: Vec<u8>) -> Result<CollaborationResult, String> {
-        let previous_document = self.cached_document_json.clone();
-        let previous_peers = self.peers_json_string();
+        let previous_document_revision = self.document_revision;
+        let previous_peers_revision = self.peers_revision;
+        let refresh_scope = refresh_scope_for_message(message.as_slice());
 
         let protocol = DefaultProtocol;
         let mut responses = Vec::new();
@@ -273,34 +315,53 @@ impl CollaborationSession {
             responses.push(encode_message(reply));
         }
 
-        self.refresh_cached_document_json();
+        if refresh_scope.document {
+            self.refresh_cached_document_json();
+        }
+        if refresh_scope.peers || refresh_scope.document {
+            self.refresh_cached_peers();
+        }
 
-        Ok(self.finish_result(previous_document, previous_peers, responses))
+        Ok(self.finish_result(
+            previous_document_revision,
+            previous_peers_revision,
+            responses,
+        ))
     }
 
     pub fn set_local_awareness(&mut self, next_state: Value) -> CollaborationResult {
-        let previous_document = self.cached_document_json.clone();
-        let previous_peers = self.peers_json_string();
+        let previous_document_revision = self.document_revision;
+        let previous_peers_revision = self.peers_revision;
         let next_state = self.normalize_awareness_state(next_state);
         self.local_awareness_state = Some(next_state.clone());
         if self.awareness.set_local_state(&next_state).is_err() {
             return CollaborationResult::empty();
         }
+        self.refresh_cached_peers();
 
         let messages = self
             .encode_local_awareness_message()
             .into_iter()
             .collect::<Vec<_>>();
-        self.finish_result(previous_document, previous_peers, messages)
+        self.finish_result(
+            previous_document_revision,
+            previous_peers_revision,
+            messages,
+        )
     }
 
     pub fn clear_local_awareness(&mut self) -> CollaborationResult {
-        let previous_document = self.cached_document_json.clone();
-        let previous_peers = self.peers_json_string();
+        let previous_document_revision = self.document_revision;
+        let previous_peers_revision = self.peers_revision;
         self.local_awareness_state = None;
         self.awareness.remove_state(self.doc.client_id());
+        self.refresh_cached_peers();
 
-        self.finish_result(previous_document, previous_peers, Vec::new())
+        self.finish_result(
+            previous_document_revision,
+            previous_peers_revision,
+            Vec::new(),
+        )
     }
 
     fn replace_document(&mut self, next_json: Value) {
@@ -318,6 +379,7 @@ impl CollaborationSession {
         }
         drop(txn);
         self.refresh_cached_document_json();
+        self.refresh_cached_peers();
     }
 
     fn reset_shared_state(&mut self) {
@@ -328,6 +390,7 @@ impl CollaborationSession {
             let _ = self.awareness.set_local_state(&local_awareness_state);
         }
         self.refresh_cached_document_json();
+        self.refresh_cached_peers();
     }
 
     fn encode_sync_step_1(&self) -> Vec<u8> {
@@ -341,34 +404,88 @@ impl CollaborationSession {
         Some(encode_message(Message::Awareness(update)))
     }
 
-    fn refresh_cached_document_json(&mut self) {
+    fn refresh_cached_document_json(&mut self) -> bool {
         let txn = self.doc.transact();
-        self.cached_document_json = txn
+        let next_document_json = txn
             .get_xml_fragment(self.fragment_name.as_str())
             .map(|fragment| xml_fragment_to_document_json(&fragment, &txn))
             .unwrap_or_else(empty_document_json);
+        if next_document_json == self.cached_document_json {
+            return false;
+        }
+        self.cached_document_json = next_document_json;
+        self.document_revision = self.document_revision.wrapping_add(1);
+        true
     }
 
-    fn peers_json_string(&self) -> String {
-        serde_json::to_string(&self.peers()).unwrap_or_else(|_| "[]".to_string())
+    fn refresh_cached_peers(&mut self) -> bool {
+        let next_peers = self.collect_peers();
+        if next_peers == self.cached_peers {
+            return false;
+        }
+        self.cached_peers = next_peers;
+        self.peers_revision = self.peers_revision.wrapping_add(1);
+        true
+    }
+
+    fn cached_or_normalize_peer_state(
+        &mut self,
+        client_id: u64,
+        raw_json: Option<String>,
+    ) -> Value {
+        if let Some(cached) = self.cached_peer_states.get(&client_id) {
+            if cached.raw_json == raw_json {
+                if cached.normalized_document_revision == self.document_revision {
+                    return cached.normalized_state.clone();
+                }
+
+                let parsed_state = cached.parsed_state.clone();
+                let normalized_state = self.normalize_awareness_state(parsed_state.clone());
+                self.cached_peer_states.insert(
+                    client_id,
+                    CachedPeerState {
+                        raw_json,
+                        parsed_state,
+                        normalized_state: normalized_state.clone(),
+                        normalized_document_revision: self.document_revision,
+                    },
+                );
+                return normalized_state;
+            }
+        }
+
+        let parsed_state = raw_json
+            .as_ref()
+            .and_then(|json| serde_json::from_str(json).ok())
+            .unwrap_or(Value::Null);
+        let normalized_state = self.normalize_awareness_state(parsed_state.clone());
+        self.cached_peer_states.insert(
+            client_id,
+            CachedPeerState {
+                raw_json,
+                parsed_state,
+                normalized_state: normalized_state.clone(),
+                normalized_document_revision: self.document_revision,
+            },
+        );
+        normalized_state
     }
 
     fn finish_result(
         &self,
-        previous_document: Value,
-        previous_peers: String,
+        previous_document_revision: u64,
+        previous_peers_revision: u64,
         messages: Vec<Vec<u8>>,
     ) -> CollaborationResult {
         let mut result = CollaborationResult::empty();
         result.messages = messages;
-        if self.cached_document_json != previous_document {
+        if self.document_revision != previous_document_revision {
             result.document_changed = true;
             result.document_json = Some(self.cached_document_json.clone());
         }
-        let peers_now = self.peers_json_string();
-        if peers_now != previous_peers {
+        if self.peers_revision != previous_peers_revision {
             result.peers_changed = true;
-            result.peers = Some(self.peers());
+            result.peers = Some(self.cached_peers.clone());
         }
         result
     }
@@ -769,6 +886,35 @@ fn xml_out_pm_size<T: ReadTxn>(txn: &T, node: &XmlOut, void_element_tags: &HashS
     }
 }
 
+#[derive(Clone, Copy)]
+struct RefreshScope {
+    document: bool,
+    peers: bool,
+}
+
+fn refresh_scope_for_message(message: &[u8]) -> RefreshScope {
+    let decoded: Result<Message, _> = Decode::decode_v1(message);
+    match decoded {
+        Ok(Message::Awareness(_)) => RefreshScope {
+            document: false,
+            peers: true,
+        },
+        Ok(Message::Sync(SyncMessage::SyncStep1(_))) => RefreshScope {
+            document: false,
+            peers: false,
+        },
+        Ok(Message::Sync(SyncMessage::SyncStep2(_)))
+        | Ok(Message::Sync(SyncMessage::Update(_))) => RefreshScope {
+            document: true,
+            peers: true,
+        },
+        _ => RefreshScope {
+            document: true,
+            peers: true,
+        },
+    }
+}
+
 fn encode_message(message: Message) -> Vec<u8> {
     let mut encoder = EncoderV1::new();
     message.encode(&mut encoder);
@@ -963,13 +1109,13 @@ fn apply_element_node(
     let old_children = old_node
         .get("content")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     let new_children = new_node
         .get("content")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     apply_children(element, txn, &old_children, &new_children);
 }
 

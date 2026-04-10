@@ -269,7 +269,10 @@ fn test_active_state_allows_link_mark_in_heading() {
     let state = editor.get_current_state();
 
     assert!(
-        state.active_state.allowed_marks.contains(&"link".to_string()),
+        state
+            .active_state
+            .allowed_marks
+            .contains(&"link".to_string()),
         "heading should allow link mark, got: {:?}",
         state.active_state.allowed_marks
     );

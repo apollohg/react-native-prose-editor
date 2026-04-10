@@ -11,9 +11,14 @@ options:
 settings:
   base:
     SWIFT_VERSION: 5.9
-    CODE_SIGNING_ALLOWED: NO
-    CODE_SIGNING_REQUIRED: NO
-    DEVELOPMENT_TEAM: ""
+    IOS_DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: $(IOS_DEVELOPMENT_TEAM)
+    CODE_SIGN_STYLE: Automatic
+    "CODE_SIGN_IDENTITY[sdk=iphoneos*]": Apple Development
+    "CODE_SIGNING_ALLOWED[sdk=iphoneos*]": YES
+    "CODE_SIGNING_REQUIRED[sdk=iphoneos*]": YES
+    "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO
+    "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": NO
 
 targets:
   NativeEditorTestHost:
@@ -55,6 +60,9 @@ targets:
         PRODUCT_NAME: NativeEditorTests
         PRODUCT_BUNDLE_IDENTIFIER: com.apollohg.NativeEditorTests
         GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: NativeEditorTestHost
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/NativeEditorTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/NativeEditorTestHost
+        BUNDLE_LOADER: $(TEST_HOST)
         INFOPLIST_KEY_CFBundleDisplayName: NativeEditorTests
         HEADER_SEARCH_PATHS:
           - $(inherited)

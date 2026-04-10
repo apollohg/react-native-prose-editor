@@ -256,6 +256,19 @@ pub fn editor_get_json(id: u64) -> String {
     .unwrap_or_else(|| "{}".to_string())
 }
 
+/// Get both HTML and ProseMirror JSON content in one payload.
+#[uniffi::export]
+pub fn editor_get_content_snapshot(id: u64) -> String {
+    with_editor(id, |editor| {
+        let result = serde_json::json!({
+            "html": editor.get_html(),
+            "json": editor.get_json(),
+        });
+        serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string())
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
 /// Insert text at a position. Returns an update JSON string.
 #[uniffi::export]
 pub fn editor_insert_text(id: u64, pos: u32, text: String) -> String {
@@ -721,20 +734,21 @@ pub fn editor_get_current_state(id: u64) -> String {
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
 
+/// Get the current selection-related editor state without render elements.
+#[uniffi::export]
+pub fn editor_get_selection_state(id: u64) -> String {
+    with_editor(id, |editor| {
+        let state = editor.get_selection_state();
+        serialize_editor_selection_state(&state)
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
 /// Get the current selection as JSON.
 #[uniffi::export]
 pub fn editor_get_selection(id: u64) -> String {
     with_editor(id, |editor| {
-        let sel = editor.selection();
-        match sel {
-            selection::Selection::Text { anchor, head } => {
-                serde_json::json!({"type": "text", "anchor": anchor, "head": head}).to_string()
-            }
-            selection::Selection::Node { pos } => {
-                serde_json::json!({"type": "node", "pos": pos}).to_string()
-            }
-            selection::Selection::All => serde_json::json!({"type": "all"}).to_string(),
-        }
+        selection_to_json(editor.selection(), None).to_string()
     })
     .unwrap_or_else(|| "{\"type\":\"text\",\"anchor\":0,\"head\":0}".to_string())
 }
@@ -980,6 +994,23 @@ fn serialize_render_mark(mark: &render::RenderMark) -> serde_json::Value {
     }
 }
 
+fn serialize_render_blocks(blocks: &[Vec<render::RenderElement>]) -> serde_json::Value {
+    serde_json::Value::Array(
+        blocks
+            .iter()
+            .map(|block| serialize_render_elements(block))
+            .collect(),
+    )
+}
+
+fn serialize_render_patch(patch: &render::incremental::RenderBlocksPatch) -> serde_json::Value {
+    serde_json::json!({
+        "startIndex": patch.start_index,
+        "deleteCount": patch.delete_count,
+        "renderBlocks": serialize_render_blocks(&patch.blocks),
+    })
+}
+
 fn parse_mark_attrs_json(
     attrs_json: &str,
 ) -> Result<std::collections::HashMap<String, serde_json::Value>, String> {
@@ -996,36 +1027,110 @@ fn parse_mark_attrs_json(
 
 /// Serialize an EditorUpdate to a JSON string.
 fn serialize_editor_update(update: &editor::EditorUpdate) -> String {
-    let sel = match &update.selection {
-        selection::Selection::Text { anchor, head } => {
-            serde_json::json!({"type": "text", "anchor": anchor, "head": head})
-        }
-        selection::Selection::Node { pos } => {
-            serde_json::json!({"type": "node", "pos": pos})
-        }
-        selection::Selection::All => {
-            serde_json::json!({"type": "all"})
-        }
-    };
+    let mut result = serde_json::Map::new();
+    let should_serialize_full_render_blocks = update
+        .render_patch
+        .as_ref()
+        .map(|patch| patch.blocks.len() >= update.render_blocks.len())
+        .unwrap_or(true);
 
+    if should_serialize_full_render_blocks {
+        result.insert(
+            "renderBlocks".to_string(),
+            serialize_render_blocks(&update.render_blocks),
+        );
+    }
+    result.insert(
+        "renderPatch".to_string(),
+        update
+            .render_patch
+            .as_ref()
+            .map(serialize_render_patch)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    result.insert(
+        "selection".to_string(),
+        selection_to_json(&update.selection, Some(&update.selection_scalar)),
+    );
+    result.insert(
+        "activeState".to_string(),
+        serialize_active_state(&update.active_state),
+    );
+    result.insert(
+        "historyState".to_string(),
+        serialize_history_state(&update.history_state),
+    );
+    result.insert(
+        "documentVersion".to_string(),
+        serde_json::Value::from(update.document_version),
+    );
+
+    serde_json::to_string(&serde_json::Value::Object(result)).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn serialize_editor_selection_state(state: &editor::EditorSelectionState) -> String {
     let result = serde_json::json!({
-        "renderElements": serialize_render_elements(&update.render_elements),
-        "selection": sel,
-        "activeState": {
-            "marks": update.active_state.marks,
-            "markAttrs": update.active_state.mark_attrs,
-            "nodes": update.active_state.nodes,
-            "commands": update.active_state.commands,
-            "allowedMarks": update.active_state.allowed_marks,
-            "insertableNodes": update.active_state.insertable_nodes,
-        },
-        "historyState": {
-            "canUndo": update.history_state.can_undo,
-            "canRedo": update.history_state.can_redo,
-        },
+        "selection": selection_to_json(&state.selection, Some(&state.selection_scalar)),
+        "activeState": serialize_active_state(&state.active_state),
+        "historyState": serialize_history_state(&state.history_state),
+        "documentVersion": state.document_version,
     });
 
     serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn selection_to_json(
+    selection: &selection::Selection,
+    scalar_selection: Option<&selection::Selection>,
+) -> serde_json::Value {
+    match (selection, scalar_selection) {
+        (
+            selection::Selection::Text { anchor, head },
+            Some(selection::Selection::Text {
+                anchor: anchor_scalar,
+                head: head_scalar,
+            }),
+        ) => serde_json::json!({
+            "type": "text",
+            "anchor": anchor,
+            "head": head,
+            "anchorScalar": anchor_scalar,
+            "headScalar": head_scalar,
+        }),
+        (selection::Selection::Text { anchor, head }, _) => {
+            serde_json::json!({"type": "text", "anchor": anchor, "head": head})
+        }
+        (
+            selection::Selection::Node { pos },
+            Some(selection::Selection::Node { pos: pos_scalar }),
+        ) => serde_json::json!({
+            "type": "node",
+            "pos": pos,
+            "posScalar": pos_scalar,
+        }),
+        (selection::Selection::Node { pos }, _) => {
+            serde_json::json!({"type": "node", "pos": pos})
+        }
+        (selection::Selection::All, _) => serde_json::json!({"type": "all"}),
+    }
+}
+
+fn serialize_active_state(active_state: &editor::ActiveState) -> serde_json::Value {
+    serde_json::json!({
+        "marks": &active_state.marks,
+        "markAttrs": &active_state.mark_attrs,
+        "nodes": &active_state.nodes,
+        "commands": &active_state.commands,
+        "allowedMarks": &active_state.allowed_marks,
+        "insertableNodes": &active_state.insertable_nodes,
+    })
+}
+
+fn serialize_history_state(history_state: &editor::HistoryState) -> serde_json::Value {
+    serde_json::json!({
+        "canUndo": history_state.can_undo,
+        "canRedo": history_state.can_redo,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,5 +1175,117 @@ mod tests {
                 )
             });
         }
+    }
+
+    #[test]
+    fn test_editor_get_selection_state_omits_render_elements() {
+        let id = editor_create("{}".to_string());
+        let json = editor_get_selection_state(id);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid selection state");
+
+        assert!(value.get("renderElements").is_none());
+        assert!(value.get("selection").is_some());
+        assert!(value.get("activeState").is_some());
+        assert!(value.get("historyState").is_some());
+        assert!(value.get("documentVersion").is_some());
+
+        editor_destroy(id);
+    }
+
+    #[test]
+    fn test_editor_get_current_state_serializes_render_blocks_without_flattened_elements() {
+        let id = editor_create("{}".to_string());
+        let json = editor_get_current_state(id);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid editor state");
+
+        assert!(value.get("renderElements").is_none());
+        assert!(value
+            .get("renderBlocks")
+            .and_then(|raw| raw.as_array())
+            .is_some());
+        assert!(value.get("selection").is_some());
+        assert!(value.get("activeState").is_some());
+        assert!(value.get("historyState").is_some());
+        assert!(value.get("documentVersion").is_some());
+
+        editor_destroy(id);
+    }
+
+    #[test]
+    fn test_incremental_editor_update_omits_full_render_blocks_when_patch_is_smaller() {
+        let block = vec![
+            render::RenderElement::BlockStart {
+                node_type: "paragraph".to_string(),
+                depth: 0,
+                list_context: None,
+            },
+            render::RenderElement::TextRun {
+                text: "hello".to_string(),
+                marks: vec![],
+            },
+            render::RenderElement::BlockEnd,
+        ];
+        let update = editor::EditorUpdate {
+            render_elements: vec![],
+            render_blocks: vec![
+                block.clone(),
+                block.clone(),
+                block.clone(),
+                block.clone(),
+                block.clone(),
+            ],
+            render_patch: Some(render::incremental::RenderBlocksPatch {
+                start_index: 1,
+                delete_count: 2,
+                blocks: vec![block.clone(), block.clone(), block],
+            }),
+            selection: selection::Selection::cursor(0),
+            selection_scalar: selection::Selection::cursor(0),
+            active_state: editor::ActiveState {
+                marks: std::collections::HashMap::new(),
+                mark_attrs: std::collections::HashMap::new(),
+                nodes: std::collections::HashMap::new(),
+                commands: std::collections::HashMap::new(),
+                allowed_marks: vec![],
+                insertable_nodes: vec![],
+            },
+            history_state: editor::HistoryState {
+                can_undo: true,
+                can_redo: false,
+            },
+            document_version: 7,
+        };
+
+        let json = serialize_editor_update(&update);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid editor update");
+
+        assert!(value.get("renderBlocks").is_none());
+        assert!(value
+            .get("renderPatch")
+            .and_then(|raw| raw.as_object())
+            .is_some());
+        assert_eq!(
+            value
+                .get("selection")
+                .and_then(|raw| raw.get("anchorScalar"))
+                .and_then(|raw| raw.as_u64()),
+            Some(0)
+        );
+        assert_eq!(
+            value.get("documentVersion").and_then(|raw| raw.as_u64()),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn test_editor_get_content_snapshot_includes_html_and_json() {
+        let id = editor_create("{}".to_string());
+        let json = editor_get_content_snapshot(id);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid snapshot");
+
+        assert!(value.get("html").and_then(|raw| raw.as_str()).is_some());
+        assert!(value.get("json").and_then(|raw| raw.as_object()).is_some());
+
+        editor_destroy(id);
     }
 }

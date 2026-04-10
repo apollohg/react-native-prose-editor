@@ -25,6 +25,7 @@ export interface NativeEditorModule {
     editorGetHtml(editorId: number): string;
     editorSetJson(editorId: number, json: string): string;
     editorGetJson(editorId: number): string;
+    editorGetContentSnapshot(editorId: number): string;
     editorReplaceHtml(editorId: number, html: string): string;
     editorReplaceJson(editorId: number, json: string): string;
     editorInsertText(editorId: number, pos: number, text: string): string;
@@ -46,6 +47,7 @@ export interface NativeEditorModule {
     editorToggleHeading(editorId: number, level: number): string;
     editorSetSelection(editorId: number, anchor: number, head: number): void;
     editorGetSelection(editorId: number): string;
+    editorGetSelectionState(editorId: number): string;
     editorGetCurrentState(editorId: number): string;
     // Scalar-position APIs (used by native views internally)
     editorInsertTextScalar(editorId: number, scalarPos: number, text: string): string;
@@ -171,6 +173,12 @@ export interface RenderElement {
     listContext?: ListContext;
 }
 
+interface RenderBlocksPatch {
+    startIndex: number;
+    deleteCount: number;
+    renderBlocks: RenderElement[][];
+}
+
 export interface ActiveState {
     marks: Record<string, boolean>;
     markAttrs: Record<string, Record<string, unknown>>;
@@ -187,9 +195,17 @@ export interface HistoryState {
 
 export interface EditorUpdate {
     renderElements: RenderElement[];
+    renderBlocks?: RenderElement[][];
+    renderPatch?: RenderBlocksPatch;
     selection: Selection;
     activeState: ActiveState;
     historyState: HistoryState;
+    documentVersion?: number;
+}
+
+export interface ContentSnapshot {
+    html: string;
+    json: DocumentJSON;
 }
 
 export interface DocumentJSON {
@@ -248,21 +264,97 @@ function parseRenderElements(json: string): RenderElement[] {
     }
 }
 
-export function parseEditorUpdateJson(json: string): EditorUpdate | null {
+export function parseEditorUpdateJson(
+    json: string,
+    previousRenderBlocks?: RenderElement[][]
+): EditorUpdate | null {
     if (!json || json === '') return null;
     try {
         const parsed = JSON.parse(json) as Record<string, unknown>;
         if ('error' in parsed) {
             throw new Error(`NativeEditorBridge: ${parsed.error}`);
         }
+        const renderBlocks = Array.isArray(parsed.renderBlocks)
+            ? (parsed.renderBlocks as RenderElement[][])
+            : applyRenderBlocksPatch(
+                  previousRenderBlocks,
+                  parsed.renderPatch != null && typeof parsed.renderPatch === 'object'
+                      ? (parsed.renderPatch as RenderBlocksPatch)
+                      : undefined
+              );
+        const renderPatch =
+            parsed.renderPatch != null && typeof parsed.renderPatch === 'object'
+                ? (parsed.renderPatch as RenderBlocksPatch)
+                : undefined;
         return {
-            renderElements: (parsed.renderElements ?? []) as RenderElement[],
+            renderElements: Array.isArray(parsed.renderElements)
+                ? (parsed.renderElements as RenderElement[])
+                : flattenRenderBlocks(renderBlocks),
+            renderBlocks,
+            renderPatch,
             selection: (parsed.selection ?? { type: 'text', anchor: 0, head: 0 }) as Selection,
             activeState: normalizeActiveState(parsed.activeState),
             historyState: (parsed.historyState ?? {
                 canUndo: false,
                 canRedo: false,
             }) as HistoryState,
+            documentVersion:
+                typeof parsed.documentVersion === 'number' ? parsed.documentVersion : undefined,
+        };
+    } catch (e) {
+        if (e instanceof Error && e.message.startsWith('NativeEditorBridge:')) {
+            throw e;
+        }
+        throw new Error(ERR_NATIVE_RESPONSE);
+    }
+}
+
+function flattenRenderBlocks(renderBlocks?: RenderElement[][]): RenderElement[] {
+    if (!renderBlocks || renderBlocks.length === 0) {
+        return [];
+    }
+    return renderBlocks.flat();
+}
+
+function applyRenderBlocksPatch(
+    previousRenderBlocks?: RenderElement[][],
+    renderPatch?: RenderBlocksPatch
+): RenderElement[][] | undefined {
+    if (!previousRenderBlocks || !renderPatch) {
+        return undefined;
+    }
+
+    const { startIndex, deleteCount, renderBlocks } = renderPatch;
+    if (
+        !Number.isInteger(startIndex) ||
+        !Number.isInteger(deleteCount) ||
+        startIndex < 0 ||
+        deleteCount < 0 ||
+        startIndex > previousRenderBlocks.length ||
+        startIndex + deleteCount > previousRenderBlocks.length
+    ) {
+        return undefined;
+    }
+
+    return [
+        ...previousRenderBlocks.slice(0, startIndex),
+        ...renderBlocks,
+        ...previousRenderBlocks.slice(startIndex + deleteCount),
+    ];
+}
+
+function parseContentSnapshotJson(json: string): ContentSnapshot {
+    try {
+        const parsed = JSON.parse(json) as Record<string, unknown>;
+        if ('error' in parsed) {
+            throw new Error(`NativeEditorBridge: ${parsed.error}`);
+        }
+        return {
+            html: typeof parsed.html === 'string' ? parsed.html : '',
+            json:
+                parsed.json != null && typeof parsed.json === 'object'
+                    ? (parsed.json as DocumentJSON)
+                    : {},
         };
     } catch (e) {
         if (e instanceof Error && e.message.startsWith('NativeEditorBridge:')) {
@@ -436,6 +528,10 @@ export class NativeEditorBridge {
     private _editorId: number;
     private _destroyed = false;
     private _lastSelection: Selection = { type: 'text', anchor: 0, head: 0 };
+    private _documentVersion = 0;
+    private _cachedHtml: { version: number; value: string } | null = null;
+    private _cachedJsonString: { version: number; value: string } | null = null;
+    private _renderBlocksCache: RenderElement[][] | null = null;
 
     private constructor(editorId: number) {
         this._editorId = editorId;
@@ -477,12 +573,15 @@ export class NativeEditorBridge {
     destroy(): void {
         if (this._destroyed) return;
         this._destroyed = true;
+        this._renderBlocksCache = null;
         getNativeModule().editorDestroy(this._editorId);
     }
 
     /** Set content from HTML. Returns render elements for display. */
     setHtml(html: string): RenderElement[] {
         this.assertNotDestroyed();
+        this.invalidateContentCaches();
+        this._renderBlocksCache = null;
         const json = getNativeModule().editorSetHtml(this._editorId, html);
         return parseRenderElements(json);
     }
@@ -490,48 +589,86 @@ export class NativeEditorBridge {
     /** Get content as HTML. */
     getHtml(): string {
         this.assertNotDestroyed();
-        return getNativeModule().editorGetHtml(this._editorId);
+        if (this._cachedHtml?.version === this._documentVersion) {
+            return this._cachedHtml.value;
+        }
+        const html = getNativeModule().editorGetHtml(this._editorId);
+        this._cachedHtml = { version: this._documentVersion, value: html };
+        return html;
     }
 
     /** Set content from ProseMirror JSON. Returns render elements. */
     setJson(doc: DocumentJSON): RenderElement[] {
+        return this.setJsonString(JSON.stringify(doc));
+    }
+
+    /** Set content from a serialized ProseMirror JSON string. Returns render elements. */
+    setJsonString(jsonString: string): RenderElement[] {
         this.assertNotDestroyed();
-        const json = getNativeModule().editorSetJson(this._editorId, JSON.stringify(doc));
+        this.invalidateContentCaches();
+        this._renderBlocksCache = null;
+        const json = getNativeModule().editorSetJson(this._editorId, jsonString);
         return parseRenderElements(json);
+    }
+
+    /** Get content as raw ProseMirror JSON string. */
+    getJsonString(): string {
+        this.assertNotDestroyed();
+        if (this._cachedJsonString?.version === this._documentVersion) {
+            return this._cachedJsonString.value;
+        }
+        const json = getNativeModule().editorGetJson(this._editorId);
+        this._cachedJsonString = { version: this._documentVersion, value: json };
+        return json;
     }
 
     /** Get content as ProseMirror JSON. */
     getJson(): DocumentJSON {
+        return parseDocumentJSON(this.getJsonString());
+    }
+
+    /** Get both HTML and JSON content in one native roundtrip. */
+    getContentSnapshot(): ContentSnapshot {
         this.assertNotDestroyed();
-        const json = getNativeModule().editorGetJson(this._editorId);
-        return parseDocumentJSON(json);
+        if (
+            this._cachedHtml?.version === this._documentVersion &&
+            this._cachedJsonString?.version === this._documentVersion
+        ) {
+            return {
+                html: this._cachedHtml.value,
+                json: parseDocumentJSON(this._cachedJsonString.value),
+            };
+        }
+        const snapshot = parseContentSnapshotJson(
+            getNativeModule().editorGetContentSnapshot(this._editorId)
+        );
+        this._cachedHtml = { version: this._documentVersion, value: snapshot.html };
+        this._cachedJsonString = {
+            version: this._documentVersion,
+            value: JSON.stringify(snapshot.json),
+        };
+        return snapshot;
     }
 
     /** Insert text at a document position. Returns the full update. */
     insertText(pos: number, text: string): EditorUpdate | null {
         this.assertNotDestroyed();
         const json = getNativeModule().editorInsertText(this._editorId, pos, text);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Delete a range [from, to). Returns the full update. */
     deleteRange(from: number, to: number): EditorUpdate | null {
         this.assertNotDestroyed();
         const json = getNativeModule().editorDeleteRange(this._editorId, from, to);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Replace the current selection with text atomically. */
     replaceSelectionText(text: string): EditorUpdate | null {
         this.assertNotDestroyed();
         const json = getNativeModule().editorReplaceSelectionText(this._editorId, text);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Toggle a mark (bold, italic, etc.) on the current selection. */
@@ -546,9 +683,7 @@ export class NativeEditorBridge {
                   markType
               )
             : getNativeModule().editorToggleMark(this._editorId, markType);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Set a mark with attrs on the current selection. */
@@ -565,9 +700,7 @@ export class NativeEditorBridge {
                   attrsJson
               )
             : getNativeModule().editorSetMark(this._editorId, markType, attrsJson);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Remove a mark from the current selection. */
@@ -582,9 +715,7 @@ export class NativeEditorBridge {
                   markType
               )
             : getNativeModule().editorUnsetMark(this._editorId, markType);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Toggle blockquote wrapping for the current block selection. */
@@ -598,9 +729,7 @@ export class NativeEditorBridge {
                   scalarSelection.head
               )
             : getNativeModule().editorToggleBlockquote(this._editorId);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Toggle a heading level on the current block selection. */
@@ -618,9 +747,7 @@ export class NativeEditorBridge {
                   level
               )
             : getNativeModule().editorToggleHeading(this._editorId, level);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Set the document selection by anchor and head positions. */
@@ -655,36 +782,35 @@ export class NativeEditorBridge {
     getCurrentState(): EditorUpdate | null {
         this.assertNotDestroyed();
         const json = getNativeModule().editorGetCurrentState(this._editorId);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
+    }
+
+    /** Get the current selection-related state without render elements. */
+    getSelectionState(): EditorUpdate | null {
+        this.assertNotDestroyed();
+        const json = getNativeModule().editorGetSelectionState(this._editorId);
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Split the block at a position (Enter key). */
     splitBlock(pos: number): EditorUpdate | null {
         this.assertNotDestroyed();
         const json = getNativeModule().editorSplitBlock(this._editorId, pos);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Insert HTML content at the current selection. */
     insertContentHtml(html: string): EditorUpdate | null {
         this.assertNotDestroyed();
         const json = getNativeModule().editorInsertContentHtml(this._editorId, html);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Insert JSON content at the current selection. */
     insertContentJson(doc: DocumentJSON): EditorUpdate | null {
         this.assertNotDestroyed();
         const json = getNativeModule().editorInsertContentJson(this._editorId, JSON.stringify(doc));
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Insert JSON content at an explicit scalar selection. */
@@ -700,45 +826,40 @@ export class NativeEditorBridge {
             scalarHead,
             JSON.stringify(doc)
         );
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Replace entire document with HTML via transaction (preserves undo history). */
     replaceHtml(html: string): EditorUpdate | null {
         this.assertNotDestroyed();
         const json = getNativeModule().editorReplaceHtml(this._editorId, html);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Replace entire document with JSON via transaction (preserves undo history). */
     replaceJson(doc: DocumentJSON): EditorUpdate | null {
+        return this.replaceJsonString(JSON.stringify(doc));
+    }
+
+    /** Replace entire document with a serialized JSON transaction. */
+    replaceJsonString(jsonString: string): EditorUpdate | null {
         this.assertNotDestroyed();
-        const json = getNativeModule().editorReplaceJson(this._editorId, JSON.stringify(doc));
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        const json = getNativeModule().editorReplaceJson(this._editorId, jsonString);
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Undo the last operation. Returns update or null if nothing to undo. */
     undo(): EditorUpdate | null {
         this.assertNotDestroyed();
         const json = getNativeModule().editorUndo(this._editorId);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Redo the last undone operation. Returns update or null if nothing to redo. */
     redo(): EditorUpdate | null {
         this.assertNotDestroyed();
         const json = getNativeModule().editorRedo(this._editorId);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Check if undo is available. */
@@ -775,10 +896,7 @@ export class NativeEditorBridge {
                     listType
                 )
               : getNativeModule().editorWrapInList(this._editorId, listType);
-
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Unwrap the current list item back to a paragraph. */
@@ -792,9 +910,7 @@ export class NativeEditorBridge {
                   scalarSelection.head
               )
             : getNativeModule().editorUnwrapFromList(this._editorId);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Indent the current list item into a nested list. */
@@ -808,9 +924,7 @@ export class NativeEditorBridge {
                   scalarSelection.head
               )
             : getNativeModule().editorIndentListItem(this._editorId);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Outdent the current list item to the parent list level. */
@@ -824,9 +938,7 @@ export class NativeEditorBridge {
                   scalarSelection.head
               )
             : getNativeModule().editorOutdentListItem(this._editorId);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
-        return update;
+        return this.parseAndNoteUpdate(json);
     }
 
     /** Insert a void node (e.g. 'horizontalRule') at the current selection. */
@@ -841,9 +953,47 @@ export class NativeEditorBridge {
                   nodeType
               )
             : getNativeModule().editorInsertNode(this._editorId, nodeType);
-        const update = parseEditorUpdateJson(json);
-        if (update) this._lastSelection = update.selection;
+        return this.parseAndNoteUpdate(json);
+    }
+
+    parseUpdateJson(json: string): EditorUpdate | null {
+        this.assertNotDestroyed();
+        return this.parseAndNoteUpdate(json);
+    }
+
+    private noteUpdate(update: EditorUpdate | null): void {
+        if (!update) {
+            return;
+        }
+        this._lastSelection = update.selection;
+        if (update.renderBlocks) {
+            this._renderBlocksCache = update.renderBlocks;
+        }
+        if (typeof update.documentVersion !== 'number') {
+            this.invalidateContentCaches();
+            return;
+        }
+        if (update.documentVersion !== this._documentVersion) {
+            this._documentVersion = update.documentVersion;
+            this.invalidateContentCaches();
+        }
+    }
+
+    private parseAndNoteUpdate(json: string): EditorUpdate | null {
+        let update = parseEditorUpdateJson(json, this._renderBlocksCache ?? undefined);
+        if (update?.renderPatch && !update.renderBlocks) {
+            update = parseEditorUpdateJson(
+                getNativeModule().editorGetCurrentState(this._editorId),
+                this._renderBlocksCache ?? undefined
+            );
+        }
+        this.noteUpdate(update);
         return update;
+    }
+
+    private invalidateContentCaches(): void {
+        this._cachedHtml = null;
+        this._cachedJsonString = null;
     }
 
     private assertNotDestroyed(): void {

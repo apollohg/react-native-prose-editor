@@ -62,16 +62,46 @@ npm test
 cargo test --manifest-path rust/editor-core/Cargo.toml
 ```
 
+## Performance Benchmarks
+
+Run the dedicated Rust-core benchmark suite in release mode:
+
+```sh
+npm run bench:rust -- --quick
+```
+
+Useful options:
+
+```sh
+npm run bench:rust -- --filter collaboration
+npm run bench:rust -- --json > perf-results.json
+npm run bench:rust:quick
+```
+
+The suite covers editor state/render generation, editing operations, position
+mapping sweeps, and collaboration update handling. Use `--quick` for fast local
+checks and omit it for a heavier run.
+
 ### Android Unit Tests
 
 ```sh
 npm run android:test
+npm run android:test:perf
+npm run android:test:perf:device
 ```
 
 This runs the Robolectric-based unit tests for the Android native module. You can also compile-check Android Kotlin without running tests:
 
 ```sh
 npm run android:compile
+```
+
+For physical-device or emulator instrumentation runs, set `ANDROID_DEVICE_ID`
+or `ANDROID_SERIAL`, or create `example/android/.device-test.env`, then run:
+
+```sh
+npm run android:test:device
+npm run android:test:perf:device
 ```
 
 ### iOS XCTest
@@ -87,6 +117,15 @@ Pass through any extra `xcodebuild` flags after `--`:
 
 ```sh
 npm run ios:test -- -only-testing:NativeEditorTests/RenderBridgeTests
+npm run ios:test:perf
+```
+
+For physical-device runs, set `IOS_DEVICE_ID` and `IOS_DEVELOPMENT_TEAM`, or
+create `ios-tests/.device-test.env`, then run:
+
+```sh
+npm run ios:test:device
+npm run ios:test:perf:device
 ```
 
 Override the auto-selected simulator if needed:
@@ -96,7 +135,7 @@ IOS_SIMULATOR_NAME="iPhone 17" npm run ios:test
 IOS_DESTINATION="platform=iOS Simulator,id=<simulator-id>" npm run ios:test
 ```
 
-If you change [ios-tests/project.yml](../../ios-tests/project.yml), regenerate the Xcode project before running CocoaPods or tests:
+If you change [ios-tests/project.yml](../../ios-tests/project.yml) or add/remove files under [ios/Tests](../../ios/Tests), regenerate the Xcode project before running CocoaPods or tests:
 
 ```sh
 cd ios-tests

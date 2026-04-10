@@ -23,7 +23,7 @@ final class EditorLayoutManager: NSLayoutManager {
         textStorage.enumerateAttribute(
             RenderBridgeAttributes.blockquoteBorderColor,
             in: characterRange,
-            options: []
+            options: [.longestEffectiveRangeNotRequired]
         ) { value, range, _ in
             guard range.length > 0, let color = value as? UIColor else { return }
 
@@ -68,7 +68,7 @@ final class EditorLayoutManager: NSLayoutManager {
         textStorage.enumerateAttribute(
             RenderBridgeAttributes.listMarkerContext,
             in: characterRange,
-            options: []
+            options: [.longestEffectiveRangeNotRequired]
         ) { value, range, _ in
             guard range.length > 0, let listContext = value as? [String: Any] else { return }
 
@@ -90,7 +90,7 @@ final class EditorLayoutManager: NSLayoutManager {
         textStorage.enumerateAttribute(
             RenderBridgeAttributes.blockquoteBorderColor,
             in: characterRange,
-            options: []
+            options: [.longestEffectiveRangeNotRequired]
         ) { value, range, _ in
             guard range.length > 0, let color = value as? UIColor else { return }
 

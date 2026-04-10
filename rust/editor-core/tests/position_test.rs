@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use editor_core::model::{Document, Fragment, Node};
+use editor_core::position::update::UpdateMode;
 use editor_core::position::PositionMap;
 use editor_core::schema::presets::tiptap_schema;
 use editor_core::transform::{Source, Step, StepMap, Transaction};
@@ -1053,7 +1054,7 @@ fn test_incremental_update_insert_text_in_first_block() {
     let (new_doc, step_map) = tx.apply(&document, &schema).expect("insert should succeed");
 
     // Update the position map
-    map.update(&step_map, &new_doc);
+    map.update(&step_map, &document, &new_doc, UpdateMode::InlineTextOnly);
 
     // Verify: first block should now have 7 scalars ("HXXello")
     assert_eq!(map.block_count(), 2, "block count should remain 2");
@@ -1103,7 +1104,7 @@ fn test_incremental_update_preserves_roundtrip() {
         marks: vec![],
     });
     let (new_doc, step_map) = tx.apply(&document, &schema).expect("insert should succeed");
-    map.update(&step_map, &new_doc);
+    map.update(&step_map, &document, &new_doc, UpdateMode::InlineTextOnly);
     map.compact();
 
     // Verify round-trip for all scalar positions in the updated doc.
@@ -1144,7 +1145,7 @@ fn test_compact_folds_deltas() {
         marks: vec![],
     });
     let (new_doc, step_map) = tx.apply(&document, &schema).unwrap();
-    map.update(&step_map, &new_doc);
+    map.update(&step_map, &document, &new_doc, UpdateMode::InlineTextOnly);
 
     // Before compact, the second block should have stale doc_start but correct
     // effective positions via delta tree.
@@ -1240,7 +1241,7 @@ fn test_update_fallback_to_rebuild() {
 
     // Use a StepMap that won't match the single-range optimization.
     let step_map = StepMap::empty();
-    map.update(&step_map, &new_document);
+    map.update(&step_map, &document, &new_document, UpdateMode::Rebuild);
 
     assert_eq!(map.block_count(), 2, "should have rebuilt with 2 blocks");
     assert_eq!(

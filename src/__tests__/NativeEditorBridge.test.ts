@@ -36,6 +36,7 @@ const MOCK_UPDATE_JSON = JSON.stringify({
         insertableNodes: [],
     },
     historyState: { canUndo: true, canRedo: false },
+    documentVersion: 2,
 });
 
 const MOCK_TOGGLE_BOLD_UPDATE_JSON = JSON.stringify({
@@ -54,6 +55,7 @@ const MOCK_TOGGLE_BOLD_UPDATE_JSON = JSON.stringify({
         insertableNodes: [],
     },
     historyState: { canUndo: true, canRedo: false },
+    documentVersion: 3,
 });
 
 const MOCK_ORDERED_LIST_UPDATE_JSON = JSON.stringify({
@@ -76,6 +78,7 @@ const MOCK_ORDERED_LIST_UPDATE_JSON = JSON.stringify({
         insertableNodes: [],
     },
     historyState: { canUndo: true, canRedo: false },
+    documentVersion: 4,
 });
 
 const MOCK_DOCUMENT_JSON = JSON.stringify({
@@ -166,6 +169,12 @@ function resetMockNativeModule() {
     mockNativeModule.editorGetHtml = jest.fn(() => '<p>hello world</p>');
     mockNativeModule.editorSetJson = jest.fn(() => MOCK_RENDER_ELEMENTS_JSON);
     mockNativeModule.editorGetJson = jest.fn(() => MOCK_DOCUMENT_JSON);
+    mockNativeModule.editorGetContentSnapshot = jest.fn(() =>
+        JSON.stringify({
+            html: '<p>hello world</p>',
+            json: JSON.parse(MOCK_DOCUMENT_JSON),
+        })
+    );
     mockNativeModule.editorInsertText = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorReplaceSelectionText = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorDeleteRange = jest.fn(() => MOCK_UPDATE_JSON);
@@ -178,6 +187,7 @@ function resetMockNativeModule() {
     mockNativeModule.editorGetSelection = jest.fn(() =>
         JSON.stringify({ type: 'text', anchor: 0, head: 0 })
     );
+    mockNativeModule.editorGetSelectionState = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorGetCurrentState = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorSplitBlock = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorInsertContentHtml = jest.fn(() => MOCK_UPDATE_JSON);
@@ -560,6 +570,30 @@ describe('NativeEditorBridge', () => {
         });
     });
 
+    describe('getContentSnapshot', () => {
+        it('returns html and json in one native roundtrip', () => {
+            const bridge = NativeEditorBridge.create();
+
+            const snapshot = bridge.getContentSnapshot();
+
+            expect(mockNativeModule.editorGetContentSnapshot).toHaveBeenCalledWith(bridge.editorId);
+            expect(snapshot).toEqual({
+                html: '<p>hello world</p>',
+                json: {
+                    type: 'doc',
+                    content: [
+                        {
+                            type: 'paragraph',
+                            content: [{ type: 'text', text: 'hello world' }],
+                        },
+                    ],
+                },
+            });
+
+            bridge.destroy();
+        });
+    });
+
     // ── Editing Operations ──────────────────────────────────────
 
     describe('insertText', () => {
@@ -591,6 +625,108 @@ describe('NativeEditorBridge', () => {
             expect(update!.historyState).toEqual({
                 canUndo: true,
                 canRedo: false,
+            });
+
+            bridge.destroy();
+        });
+
+        it('reconstructs renderElements from renderBlocks when flattened elements are omitted', () => {
+            const blocksOnlyUpdate = JSON.stringify({
+                renderBlocks: [
+                    [
+                        { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                        { type: 'textRun', text: 'hello world', marks: [] },
+                        { type: 'blockEnd' },
+                    ],
+                ],
+                selection: { type: 'text', anchor: 11, head: 11 },
+                activeState: {
+                    marks: {},
+                    markAttrs: {},
+                    nodes: { paragraph: true },
+                    commands: {},
+                    allowedMarks: [],
+                    insertableNodes: [],
+                },
+                historyState: { canUndo: true, canRedo: false },
+                documentVersion: 2,
+            });
+            mockNativeModule.editorInsertText.mockReturnValueOnce(blocksOnlyUpdate);
+
+            const bridge = NativeEditorBridge.create();
+            const update = bridge.insertText(0, 'hello world');
+
+            expect(update).not.toBeNull();
+            expect(update!.renderElements).toHaveLength(3);
+            expect(update!.renderElements[1]).toEqual({
+                type: 'textRun',
+                text: 'hello world',
+                marks: [],
+            });
+            expect(update!.renderBlocks).toHaveLength(1);
+
+            bridge.destroy();
+        });
+
+        it('reconstructs patch-only updates from the cached render blocks', () => {
+            const initialState = JSON.stringify({
+                renderBlocks: [
+                    [
+                        { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                        { type: 'textRun', text: 'hello', marks: [] },
+                        { type: 'blockEnd' },
+                    ],
+                ],
+                selection: { type: 'text', anchor: 5, head: 5 },
+                activeState: {
+                    marks: {},
+                    markAttrs: {},
+                    nodes: { paragraph: true },
+                    commands: {},
+                    allowedMarks: [],
+                    insertableNodes: [],
+                },
+                historyState: { canUndo: false, canRedo: false },
+                documentVersion: 1,
+            });
+            const patchOnlyUpdate = JSON.stringify({
+                renderPatch: {
+                    startIndex: 0,
+                    deleteCount: 1,
+                    renderBlocks: [
+                        [
+                            { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                            { type: 'textRun', text: 'hello world', marks: [] },
+                            { type: 'blockEnd' },
+                        ],
+                    ],
+                },
+                selection: { type: 'text', anchor: 11, head: 11 },
+                activeState: {
+                    marks: {},
+                    markAttrs: {},
+                    nodes: { paragraph: true },
+                    commands: {},
+                    allowedMarks: [],
+                    insertableNodes: [],
+                },
+                historyState: { canUndo: true, canRedo: false },
+                documentVersion: 2,
+            });
+            mockNativeModule.editorGetCurrentState.mockReturnValueOnce(initialState);
+            mockNativeModule.editorInsertText.mockReturnValueOnce(patchOnlyUpdate);
+
+            const bridge = NativeEditorBridge.create();
+            bridge.getCurrentState();
+            const update = bridge.insertText(5, ' world');
+
+            expect(update).not.toBeNull();
+            expect(update!.renderBlocks).toHaveLength(1);
+            expect(update!.renderElements).toHaveLength(3);
+            expect(update!.renderElements[1]).toEqual({
+                type: 'textRun',
+                text: 'hello world',
+                marks: [],
             });
 
             bridge.destroy();
@@ -748,6 +884,44 @@ describe('NativeEditorBridge', () => {
             bridge.setSelection(3, 7);
 
             expect(mockNativeModule.editorSetSelection).toHaveBeenCalledWith(bridge.editorId, 3, 7);
+
+            bridge.destroy();
+        });
+    });
+
+    describe('getSelectionState', () => {
+        it('returns parsed selection-related state without requiring render elements', () => {
+            mockNativeModule.editorGetSelectionState.mockReturnValueOnce(
+                JSON.stringify({
+                    selection: { type: 'text', anchor: 4, head: 4 },
+                    activeState: {
+                        marks: { bold: true },
+                        nodes: { paragraph: true },
+                        commands: {},
+                        allowedMarks: ['bold'],
+                        insertableNodes: [],
+                    },
+                    historyState: { canUndo: true, canRedo: false },
+                })
+            );
+            const bridge = NativeEditorBridge.create();
+
+            const update = bridge.getSelectionState();
+
+            expect(mockNativeModule.editorGetSelectionState).toHaveBeenCalledWith(bridge.editorId);
+            expect(update).toEqual({
+                renderElements: [],
+                selection: { type: 'text', anchor: 4, head: 4 },
+                activeState: {
+                    marks: { bold: true },
+                    markAttrs: {},
+                    nodes: { paragraph: true },
+                    commands: {},
+                    allowedMarks: ['bold'],
+                    insertableNodes: [],
+                },
+                historyState: { canUndo: true, canRedo: false },
+            });
 
             bridge.destroy();
         });

@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Typeface
 import android.graphics.Rect
 import android.graphics.RectF
+import android.text.Annotation
 import android.text.Editable
 import android.text.Layout
 import android.text.Spanned
@@ -51,9 +52,40 @@ class EditorEditText @JvmOverloads constructor(
     attrs: AttributeSet? = null,
     defStyleAttr: Int = android.R.attr.editTextStyle
 ) : AppCompatEditText(context, attrs, defStyleAttr) {
+    data class ApplyUpdateTrace(
+        val attemptedPatch: Boolean,
+        val usedPatch: Boolean,
+        val parseNanos: Long,
+        val resolveRenderBlocksNanos: Long,
+        val patchEligibilityNanos: Long,
+        val buildRenderNanos: Long,
+        val applyRenderNanos: Long,
+        val selectionNanos: Long,
+        val postApplyNanos: Long,
+        val totalNanos: Long
+    )
+
     data class SelectedImageGeometry(
         val docPos: Int,
         val rect: RectF
+    )
+
+    private data class ParsedRenderPatch(
+        val startIndex: Int,
+        val deleteCount: Int,
+        val renderBlocks: org.json.JSONArray
+    )
+
+    private data class RenderReplaceRange(
+        val start: Int,
+        val endExclusive: Int
+    )
+
+    private data class PatchApplyTrace(
+        val applied: Boolean,
+        val eligibilityNanos: Long,
+        val buildRenderNanos: Long,
+        val applyRenderNanos: Long
     )
 
     private data class ImageSelectionRange(
@@ -136,8 +168,15 @@ class EditorEditText @JvmOverloads constructor(
     private var lastHandledHardwareKeyCode: Int? = null
     private var lastHandledHardwareKeyDownTime: Long? = null
     private var explicitSelectedImageRange: ImageSelectionRange? = null
+    private var lastRenderAppliedPatchForTesting: Boolean = false
+    internal var captureApplyUpdateTraceForTesting: Boolean = false
+    private var lastApplyUpdateTraceForTesting: ApplyUpdateTrace? = null
+    private var currentRenderBlocksJson: org.json.JSONArray? = null
     internal var onDeleteRangeInRustForTesting: ((Int, Int) -> Unit)? = null
     internal var onDeleteBackwardAtSelectionScalarInRustForTesting: ((Int, Int) -> Unit)? = null
+
+    fun lastRenderAppliedPatch(): Boolean = lastRenderAppliedPatchForTesting
+    fun lastApplyUpdateTrace(): ApplyUpdateTrace? = lastApplyUpdateTraceForTesting
 
     init {
         // Configure for rich text editing.
@@ -264,8 +303,9 @@ class EditorEditText @JvmOverloads constructor(
         editorId = id
 
         if (!initialHTML.isNullOrEmpty()) {
-            val renderJSON = editorSetHtml(editorId.toULong(), initialHTML)
-            applyRenderJSON(renderJSON)
+            editorSetHtml(editorId.toULong(), initialHTML)
+            val stateJSON = editorGetCurrentState(editorId.toULong())
+            applyUpdateJSON(stateJSON, notifyListener = false)
         } else {
             // Pull current state from Rust (content may already be loaded via bridge).
             val stateJSON = editorGetCurrentState(editorId.toULong())
@@ -913,6 +953,7 @@ class EditorEditText @JvmOverloads constructor(
      */
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
         super.onSelectionChanged(selStart, selEnd)
+        if (isApplyingRustState) return
         val spannable = text as? Spanned
         if (spannable != null && isExactImageSpanRange(spannable, selStart, selEnd)) {
             explicitSelectedImageRange = ImageSelectionRange(selStart, selEnd)
@@ -920,7 +961,7 @@ class EditorEditText @JvmOverloads constructor(
         ensureSelectionVisible()
         onSelectionOrContentMayChange?.invoke()
 
-        if (isApplyingRustState || editorId == 0L) return
+        if (editorId == 0L) return
 
         val currentText = text?.toString() ?: ""
         if (currentText != lastAuthorizedText) return
@@ -1070,6 +1111,192 @@ class EditorEditText @JvmOverloads constructor(
 
     // ── Applying Rust State ─────────────────────────────────────────────
 
+    private fun parseRenderPatch(raw: org.json.JSONObject?): ParsedRenderPatch? {
+        if (raw == null) return null
+        val renderBlocks = raw.optJSONArray("renderBlocks") ?: return null
+        return ParsedRenderPatch(
+            startIndex = raw.optInt("startIndex", -1),
+            deleteCount = raw.optInt("deleteCount", -1),
+            renderBlocks = renderBlocks
+        ).takeIf { it.startIndex >= 0 && it.deleteCount >= 0 }
+    }
+
+    private fun hasTopLevelChildMetadata(content: Spanned): Boolean =
+        content.getSpans(0, content.length, Annotation::class.java).any {
+            it.key == RenderBridge.NATIVE_TOP_LEVEL_CHILD_INDEX_ANNOTATION
+        }
+
+    private fun firstCharacterOffsetForTopLevelChildIndex(content: Spanned, index: Int): Int? {
+        val targetValue = index.toString()
+        return content
+            .getSpans(0, content.length, Annotation::class.java)
+            .asSequence()
+            .filter { it.key == RenderBridge.NATIVE_TOP_LEVEL_CHILD_INDEX_ANNOTATION && it.value == targetValue }
+            .mapNotNull { span ->
+                val spanStart = content.getSpanStart(span)
+                val spanEnd = content.getSpanEnd(span)
+                if (spanStart < 0 || spanEnd <= spanStart) {
+                    null
+                } else {
+                    var candidate = spanStart
+                    while (candidate < spanEnd && candidate < content.length) {
+                        when (content[candidate]) {
+                            '\n', '\r' -> candidate += 1
+                            else -> return@mapNotNull candidate
+                        }
+                    }
+                    null
+                }
+            }
+            .minOrNull()
+    }
+
+    private fun replacementRangeForRenderPatch(
+        content: Spanned,
+        startIndex: Int,
+        deleteCount: Int
+    ): RenderReplaceRange? {
+        val start = firstCharacterOffsetForTopLevelChildIndex(content, startIndex)
+            ?: if (deleteCount == 0) content.length else return null
+        val endExclusive = firstCharacterOffsetForTopLevelChildIndex(content, startIndex + deleteCount)
+            ?: content.length
+        if (start > endExclusive) return null
+        return RenderReplaceRange(start = start, endExclusive = endExclusive)
+    }
+
+    private fun spannedRangeContainsImageSpan(content: Spanned, start: Int, endExclusive: Int): Boolean {
+        if (start >= endExclusive) return false
+        return content.getSpans(start, endExclusive, BlockImageSpan::class.java).isNotEmpty()
+    }
+
+    private fun spannedContainsImageSpan(content: Spanned): Boolean =
+        spannedRangeContainsImageSpan(content, 0, content.length)
+
+    private fun applyRenderedSpannable(
+        spannable: CharSequence,
+        replaceRange: RenderReplaceRange? = null,
+        usedPatch: Boolean
+    ) {
+        isApplyingRustState = true
+        beginBatchEdit()
+        try {
+            if (replaceRange != null) {
+                editableText.replace(replaceRange.start, replaceRange.endExclusive, spannable)
+            } else {
+                setText(spannable)
+            }
+            lastAuthorizedText = text?.toString().orEmpty()
+            lastRenderAppliedPatchForTesting = usedPatch
+        } finally {
+            endBatchEdit()
+            isApplyingRustState = false
+        }
+    }
+
+    private fun buildPatchedSpannable(patch: ParsedRenderPatch): android.text.SpannableStringBuilder =
+        RenderBridge.buildSpannableFromBlocks(
+            patch.renderBlocks,
+            startIndex = patch.startIndex,
+            baseFontSize = baseFontSize,
+            textColor = baseTextColor,
+            theme = theme,
+            density = resources.displayMetrics.density,
+            hostView = this
+        )
+
+    private fun cloneJsonArray(array: org.json.JSONArray): org.json.JSONArray =
+        org.json.JSONArray().also { clone ->
+            for (index in 0 until array.length()) {
+                clone.put(array.opt(index))
+            }
+        }
+
+    private fun mergeRenderBlocks(
+        current: org.json.JSONArray,
+        patch: ParsedRenderPatch
+    ): org.json.JSONArray? {
+        if (
+            patch.startIndex < 0 ||
+            patch.deleteCount < 0 ||
+            patch.startIndex > current.length() ||
+            patch.startIndex + patch.deleteCount > current.length()
+        ) {
+            return null
+        }
+
+        return org.json.JSONArray().also { merged ->
+            for (index in 0 until patch.startIndex) {
+                merged.put(current.opt(index))
+            }
+            for (index in 0 until patch.renderBlocks.length()) {
+                merged.put(patch.renderBlocks.opt(index))
+            }
+            for (index in (patch.startIndex + patch.deleteCount) until current.length()) {
+                merged.put(current.opt(index))
+            }
+        }
+    }
+
+    private fun applyRenderPatchIfPossible(patch: ParsedRenderPatch): PatchApplyTrace {
+        val eligibilityStartedAt = System.nanoTime()
+        val content = text as? Spanned ?: return PatchApplyTrace(
+            applied = false,
+            eligibilityNanos = System.nanoTime() - eligibilityStartedAt,
+            buildRenderNanos = 0L,
+            applyRenderNanos = 0L
+        )
+        if (!hasTopLevelChildMetadata(content)) {
+            return PatchApplyTrace(
+                applied = false,
+                eligibilityNanos = System.nanoTime() - eligibilityStartedAt,
+                buildRenderNanos = 0L,
+                applyRenderNanos = 0L
+            )
+        }
+
+        val replaceRange = replacementRangeForRenderPatch(content, patch.startIndex, patch.deleteCount)
+            ?: return PatchApplyTrace(
+                applied = false,
+                eligibilityNanos = System.nanoTime() - eligibilityStartedAt,
+                buildRenderNanos = 0L,
+                applyRenderNanos = 0L
+            )
+        if (spannedRangeContainsImageSpan(content, replaceRange.start, replaceRange.endExclusive)) {
+            return PatchApplyTrace(
+                applied = false,
+                eligibilityNanos = System.nanoTime() - eligibilityStartedAt,
+                buildRenderNanos = 0L,
+                applyRenderNanos = 0L
+            )
+        }
+        val eligibilityNanos = System.nanoTime() - eligibilityStartedAt
+
+        val buildStartedAt = System.nanoTime()
+        val patchedSpannable = buildPatchedSpannable(patch)
+        val buildRenderNanos = System.nanoTime() - buildStartedAt
+        if (spannedContainsImageSpan(patchedSpannable)) {
+            return PatchApplyTrace(
+                applied = false,
+                eligibilityNanos = eligibilityNanos,
+                buildRenderNanos = buildRenderNanos,
+                applyRenderNanos = 0L
+            )
+        }
+
+        val applyStartedAt = System.nanoTime()
+        applyRenderedSpannable(
+            spannable = patchedSpannable,
+            replaceRange = replaceRange,
+            usedPatch = true
+        )
+        return PatchApplyTrace(
+            applied = true,
+            eligibilityNanos = eligibilityNanos,
+            buildRenderNanos = buildRenderNanos,
+            applyRenderNanos = System.nanoTime() - applyStartedAt
+        )
+    }
+
     /**
      * Apply a full render update from Rust to the EditText.
      *
@@ -1079,38 +1306,69 @@ class EditorEditText @JvmOverloads constructor(
      * @param updateJSON The JSON string from editor_insert_text, etc.
      */
     fun applyUpdateJSON(updateJSON: String, notifyListener: Boolean = true) {
+        val totalStartedAt = System.nanoTime()
+        val parseStartedAt = totalStartedAt
         val update = try {
             org.json.JSONObject(updateJSON)
         } catch (_: Exception) {
             return
         }
+        val parseNanos = System.nanoTime() - parseStartedAt
 
-        val renderElements = update.optJSONArray("renderElements") ?: return
-
-        val spannable = RenderBridge.buildSpannableFromArray(
-            renderElements,
-            baseFontSize,
-            baseTextColor,
-            theme,
-            resources.displayMetrics.density,
-            this
-        )
-
+        val resolveRenderBlocksStartedAt = System.nanoTime()
+        val renderElements = update.optJSONArray("renderElements")
+        val renderBlocks = update.optJSONArray("renderBlocks")
+        val renderPatch = parseRenderPatch(update.optJSONObject("renderPatch"))
+        val resolvedRenderBlocks = renderBlocks
+            ?: renderPatch?.let { patch ->
+                currentRenderBlocksJson?.let { mergeRenderBlocks(it, patch) }
+            }
+        val resolveRenderBlocksNanos = System.nanoTime() - resolveRenderBlocksStartedAt
         val previousScrollX = scrollX
         val previousScrollY = scrollY
 
         explicitSelectedImageRange = null
-        isApplyingRustState = true
-        setText(spannable)
-        lastAuthorizedText = spannable.toString()
-        isApplyingRustState = false
+        // Android's Editable.replace(...) path benchmarks substantially slower than
+        // rebuilding from merged render blocks, so patch payloads are treated as a
+        // transport optimization only. We still resolve the merged block state above,
+        // then apply it through the faster full-text path here.
+        val buildStartedAt = System.nanoTime()
+        val fullSpannable = if (resolvedRenderBlocks != null) {
+            RenderBridge.buildSpannableFromBlocks(
+                resolvedRenderBlocks,
+                baseFontSize = baseFontSize,
+                textColor = baseTextColor,
+                theme = theme,
+                density = resources.displayMetrics.density,
+                hostView = this
+            )
+        } else if (renderElements != null) {
+            RenderBridge.buildSpannableFromArray(
+                renderElements,
+                baseFontSize,
+                baseTextColor,
+                theme,
+                resources.displayMetrics.density,
+                this
+            )
+        } else {
+            return
+        }
+        val buildRenderNanos = System.nanoTime() - buildStartedAt
+        currentRenderBlocksJson = resolvedRenderBlocks?.let(::cloneJsonArray)
+        val applyStartedAt = System.nanoTime()
+        applyRenderedSpannable(fullSpannable, usedPatch = false)
+        val applyRenderNanos = System.nanoTime() - applyStartedAt
 
         // Apply the selection from the update.
+        val selectionStartedAt = System.nanoTime()
         val selection = update.optJSONObject("selection")
         if (selection != null) {
             applySelectionFromJSON(selection)
         }
+        val selectionNanos = System.nanoTime() - selectionStartedAt
 
+        val postApplyStartedAt = System.nanoTime()
         if (notifyListener) {
             editorListener?.onEditorUpdate(updateJSON)
         }
@@ -1119,6 +1377,22 @@ class EditorEditText @JvmOverloads constructor(
             requestLayout()
         } else {
             preserveScrollPosition(previousScrollX, previousScrollY)
+        }
+        val postApplyNanos = System.nanoTime() - postApplyStartedAt
+
+        if (captureApplyUpdateTraceForTesting) {
+            lastApplyUpdateTraceForTesting = ApplyUpdateTrace(
+                attemptedPatch = renderPatch != null,
+                usedPatch = false,
+                parseNanos = parseNanos,
+                resolveRenderBlocksNanos = resolveRenderBlocksNanos,
+                patchEligibilityNanos = 0L,
+                buildRenderNanos = buildRenderNanos,
+                applyRenderNanos = applyRenderNanos,
+                selectionNanos = selectionNanos,
+                postApplyNanos = postApplyNanos,
+                totalNanos = System.nanoTime() - totalStartedAt
+            )
         }
     }
 
@@ -1144,10 +1418,8 @@ class EditorEditText @JvmOverloads constructor(
         val previousScrollY = scrollY
 
         explicitSelectedImageRange = null
-        isApplyingRustState = true
-        setText(spannable)
-        lastAuthorizedText = spannable.toString()
-        isApplyingRustState = false
+        currentRenderBlocksJson = null
+        applyRenderedSpannable(spannable, usedPatch = false)
         onSelectionOrContentMayChange?.invoke()
         if (heightBehavior == EditorHeightBehavior.AUTO_GROW) {
             requestLayout()

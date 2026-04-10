@@ -58,6 +58,9 @@ public class NativeEditorModule: Module {
         Function("editorGetJson") { (id: Int) -> String in
             editorGetJson(id: UInt64(id))
         }
+        Function("editorGetContentSnapshot") { (id: Int) -> String in
+            editorGetContentSnapshot(id: UInt64(id))
+        }
         Function("editorInsertText") { (id: Int, pos: Int, text: String) -> String in
             editorInsertText(id: UInt64(id), pos: UInt32(pos), text: text)
         }
@@ -233,6 +236,9 @@ public class NativeEditorModule: Module {
         }
         Function("editorGetSelection") { (id: Int) -> String in
             editorGetSelection(id: UInt64(id))
+        }
+        Function("editorGetSelectionState") { (id: Int) -> String in
+            editorGetSelectionState(id: UInt64(id))
         }
         Function("editorDocToScalar") { (id: Int, docPos: Int) -> Int in
             Int(editorDocToScalar(id: UInt64(id), docPos: UInt32(docPos)))
