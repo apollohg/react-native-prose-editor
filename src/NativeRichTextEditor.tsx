@@ -44,11 +44,13 @@ import {
     type MentionSuggestion,
     withMentionsSchema,
 } from './addons';
-import { tiptapSchema, type SchemaDefinition } from './schemas';
 import {
     IMAGE_NODE_NAME,
     buildImageFragmentJson,
+    normalizeDocumentJson,
+    tiptapSchema,
     type ImageNodeAttributes,
+    type SchemaDefinition,
 } from './schemas';
 
 interface NativeEditorViewHandle {
@@ -541,14 +543,19 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             (addons?.mentions?.suggestions ?? []).map((suggestion) => [suggestion.key, suggestion])
         );
 
+        const bridgeSchema =
+            addons?.mentions != null ? withMentionsSchema(schema ?? tiptapSchema) : schema;
+        const documentSchema = bridgeSchema ?? tiptapSchema;
         const serializedSchemaJson = useSerializedValue(
-            addons?.mentions != null ? withMentionsSchema(schema ?? tiptapSchema) : schema,
+            bridgeSchema,
             (nextSchema) => stringifyCachedJson(nextSchema)
         );
-        const serializedInitialJson = useSerializedValue(initialJSON, stringifyCachedJson);
+        const serializedInitialJson = useSerializedValue(initialJSON, (doc) =>
+            stringifyCachedJson(normalizeDocumentJson(doc, documentSchema))
+        );
         const serializedValueJson = useSerializedValue(
             valueJSON,
-            stringifyCachedJson,
+            (doc) => stringifyCachedJson(normalizeDocumentJson(doc, documentSchema)),
             valueJSONRevision
         );
         const themeJson = useSerializedValue(theme, serializeEditorTheme);

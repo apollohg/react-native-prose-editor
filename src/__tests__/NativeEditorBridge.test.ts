@@ -102,6 +102,38 @@ const MOCK_COLLABORATION_RESULT_JSON = JSON.stringify({
     peers: [{ clientId: 1, isLocal: true, state: { user: { name: 'Alice' } } }],
 });
 
+const NORMALIZED_EMPTY_DOC = {
+    type: 'doc',
+    content: [{ type: 'paragraph' }],
+};
+
+const TITLE_FIRST_SCHEMA = {
+    nodes: [
+        { name: 'doc', content: 'title block*', role: 'doc' },
+        {
+            name: 'title',
+            content: 'inline*',
+            group: 'block',
+            role: 'textBlock',
+            htmlTag: 'h1',
+        },
+        {
+            name: 'paragraph',
+            content: 'inline*',
+            group: 'block',
+            role: 'textBlock',
+            htmlTag: 'p',
+        },
+        { name: 'text', content: '', group: 'inline', role: 'text' },
+    ],
+    marks: [],
+};
+
+const TITLE_EMPTY_DOC = {
+    type: 'doc',
+    content: [{ type: 'title' }],
+};
+
 const MOCK_ENCODED_COLLABORATION_STATE_JSON = JSON.stringify([1, 2, 3, 4]);
 const MOCK_COLLABORATION_SCHEMA = {
     nodes: [
@@ -541,9 +573,24 @@ describe('NativeEditorBridge', () => {
 
             expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(
                 bridge.editorId,
-                JSON.stringify(doc)
+                JSON.stringify(NORMALIZED_EMPTY_DOC)
             );
             expect(elements).toHaveLength(3);
+
+            bridge.destroy();
+        });
+
+        it('normalizes empty root docs against the configured schema', () => {
+            const bridge = NativeEditorBridge.create({
+                schemaJson: JSON.stringify(TITLE_FIRST_SCHEMA),
+            });
+
+            bridge.setJsonString(JSON.stringify({ type: 'doc', content: [] }));
+
+            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(
+                bridge.editorId,
+                JSON.stringify(TITLE_EMPTY_DOC)
+            );
 
             bridge.destroy();
         });
@@ -813,6 +860,36 @@ describe('NativeEditorBridge', () => {
                 anchor: 11,
                 head: 11,
             });
+
+            bridge.destroy();
+        });
+    });
+
+    describe('replaceJson', () => {
+        it('normalizes empty root docs before replacing content', () => {
+            const bridge = NativeEditorBridge.create();
+
+            bridge.replaceJson({ type: 'doc', content: [] });
+
+            expect(mockNativeModule.editorReplaceJson).toHaveBeenCalledWith(
+                bridge.editorId,
+                JSON.stringify(NORMALIZED_EMPTY_DOC)
+            );
+
+            bridge.destroy();
+        });
+
+        it('uses the configured schema when normalizing string replacements', () => {
+            const bridge = NativeEditorBridge.create({
+                schemaJson: JSON.stringify(TITLE_FIRST_SCHEMA),
+            });
+
+            bridge.replaceJsonString(JSON.stringify({ type: 'doc', content: [] }));
+
+            expect(mockNativeModule.editorReplaceJson).toHaveBeenCalledWith(
+                bridge.editorId,
+                JSON.stringify(TITLE_EMPTY_DOC)
+            );
 
             bridge.destroy();
         });

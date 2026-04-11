@@ -71,6 +71,8 @@ Use controlled mode when your app owns the current document.
 
 If both `value` and `valueJSON` are provided, `value` wins.
 
+For whole-document JSON loads, an empty root doc like `{ type: 'doc', content: [] }` is normalized to a schema-valid empty text block for the active schema. That applies to `initialJSON`, controlled `valueJSON`, and imperative whole-document replacement APIs such as `setContentJson()`. Fragment insertion APIs such as `insertContentJson()` still use the content you pass through unchanged.
+
 ## Common Setup Patterns
 
 ### Simple Built-In Toolbar

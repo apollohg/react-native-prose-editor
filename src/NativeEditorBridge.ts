@@ -1,5 +1,5 @@
 import { requireNativeModule } from 'expo-modules-core';
-import type { SchemaDefinition } from './schemas';
+import { normalizeDocumentJson, type SchemaDefinition } from './schemas';
 
 const ERR_DESTROYED = 'NativeEditorBridge: editor has been destroyed';
 const ERR_NATIVE_RESPONSE = 'NativeEditorBridge: invalid JSON response from native module';
@@ -479,6 +479,16 @@ export function decodeCollaborationStateBase64(base64: string): Uint8Array {
     return base64ToBytes(base64);
 }
 
+function normalizeDocumentJsonString(jsonString: string, schema?: SchemaDefinition): string {
+    try {
+        const parsed = JSON.parse(jsonString) as DocumentJSON;
+        const normalized = normalizeDocumentJson(parsed, schema);
+        return normalized === parsed ? jsonString : JSON.stringify(normalized);
+    } catch {
+        return jsonString;
+    }
+}
+
 export function parseCollaborationResultJson(json: string): CollaborationResult {
     if (!json || json === '') {
         return {
@@ -526,6 +536,7 @@ export function _resetNativeModuleCache(): void {
 
 export class NativeEditorBridge {
     private _editorId: number;
+    private _schema?: SchemaDefinition;
     private _destroyed = false;
     private _lastSelection: Selection = { type: 'text', anchor: 0, head: 0 };
     private _documentVersion = 0;
@@ -533,8 +544,9 @@ export class NativeEditorBridge {
     private _cachedJsonString: { version: number; value: string } | null = null;
     private _renderBlocksCache: RenderElement[][] | null = null;
 
-    private constructor(editorId: number) {
+    private constructor(editorId: number, schema?: SchemaDefinition) {
         this._editorId = editorId;
+        this._schema = schema;
     }
 
     /** Create a new editor instance backed by the Rust engine. */
@@ -544,19 +556,21 @@ export class NativeEditorBridge {
         allowBase64Images?: boolean;
     }): NativeEditorBridge {
         const configObj: Record<string, unknown> = {};
+        let parsedSchema: SchemaDefinition | undefined;
         if (config?.maxLength != null) configObj.maxLength = config.maxLength;
         if (config?.allowBase64Images != null) {
             configObj.allowBase64Images = config.allowBase64Images;
         }
         if (config?.schemaJson != null) {
             try {
-                configObj.schema = JSON.parse(config.schemaJson);
+                parsedSchema = JSON.parse(config.schemaJson) as SchemaDefinition;
+                configObj.schema = parsedSchema;
             } catch {
                 // Fall back to the default schema when the provided JSON is invalid.
             }
         }
         const id = getNativeModule().editorCreate(JSON.stringify(configObj));
-        return new NativeEditorBridge(id);
+        return new NativeEditorBridge(id, parsedSchema);
     }
 
     /** The underlying native editor ID. */
@@ -599,7 +613,7 @@ export class NativeEditorBridge {
 
     /** Set content from ProseMirror JSON. Returns render elements. */
     setJson(doc: DocumentJSON): RenderElement[] {
-        return this.setJsonString(JSON.stringify(doc));
+        return this.setJsonString(JSON.stringify(normalizeDocumentJson(doc, this._schema)));
     }
 
     /** Set content from a serialized ProseMirror JSON string. Returns render elements. */
@@ -607,7 +621,8 @@ export class NativeEditorBridge {
         this.assertNotDestroyed();
         this.invalidateContentCaches();
         this._renderBlocksCache = null;
-        const json = getNativeModule().editorSetJson(this._editorId, jsonString);
+        const normalizedJsonString = normalizeDocumentJsonString(jsonString, this._schema);
+        const json = getNativeModule().editorSetJson(this._editorId, normalizedJsonString);
         return parseRenderElements(json);
     }
 
@@ -838,13 +853,14 @@ export class NativeEditorBridge {
 
     /** Replace entire document with JSON via transaction (preserves undo history). */
     replaceJson(doc: DocumentJSON): EditorUpdate | null {
-        return this.replaceJsonString(JSON.stringify(doc));
+        return this.replaceJsonString(JSON.stringify(normalizeDocumentJson(doc, this._schema)));
     }
 
     /** Replace entire document with a serialized JSON transaction. */
     replaceJsonString(jsonString: string): EditorUpdate | null {
         this.assertNotDestroyed();
-        const json = getNativeModule().editorReplaceJson(this._editorId, jsonString);
+        const normalizedJsonString = normalizeDocumentJsonString(jsonString, this._schema);
+        const json = getNativeModule().editorReplaceJson(this._editorId, normalizedJsonString);
         return this.parseAndNoteUpdate(json);
     }
 

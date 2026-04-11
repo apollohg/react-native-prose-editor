@@ -153,6 +153,38 @@ const MOCK_DOCUMENT_JSON_STR = JSON.stringify({
     content: [{ type: 'paragraph', content: [{ type: 'text', text: 'hello' }] }],
 });
 
+const NORMALIZED_EMPTY_DOC = {
+    type: 'doc',
+    content: [{ type: 'paragraph' }],
+};
+
+const TITLE_FIRST_SCHEMA = {
+    nodes: [
+        { name: 'doc', content: 'title block*', role: 'doc' },
+        {
+            name: 'title',
+            content: 'inline*',
+            group: 'block',
+            role: 'textBlock',
+            htmlTag: 'h1',
+        },
+        {
+            name: 'paragraph',
+            content: 'inline*',
+            group: 'block',
+            role: 'textBlock',
+            htmlTag: 'p',
+        },
+        { name: 'text', content: '', group: 'inline', role: 'text' },
+    ],
+    marks: [],
+};
+
+const TITLE_EMPTY_DOC = {
+    type: 'doc',
+    content: [{ type: 'title' }],
+};
+
 // ─── Mock Setup (must be before imports) ────────────────────────
 
 let mockEditorIdCounter = 0;
@@ -369,7 +401,23 @@ describe('NativeRichTextEditor', () => {
         it('sets initialJSON via setJson when provided', () => {
             const doc = { type: 'doc', content: [] };
             render(<NativeRichTextEditor initialJSON={doc} />);
-            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(1, JSON.stringify(doc));
+            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify(NORMALIZED_EMPTY_DOC)
+            );
+        });
+
+        it('normalizes empty initialJSON using the provided schema', () => {
+            render(
+                <NativeRichTextEditor
+                    initialJSON={{ type: 'doc', content: [] }}
+                    schema={TITLE_FIRST_SCHEMA}
+                />
+            );
+            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify(TITLE_EMPTY_DOC)
+            );
         });
 
         it('does not call setHtml when no initialContent is provided', () => {
@@ -1111,7 +1159,10 @@ describe('NativeRichTextEditor', () => {
                 ref.current!.setContentJson(doc);
             });
 
-            expect(mockNativeModule.editorReplaceJson).toHaveBeenCalledWith(1, JSON.stringify(doc));
+            expect(mockNativeModule.editorReplaceJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify(NORMALIZED_EMPTY_DOC)
+            );
             expect(mockApplyEditorUpdate).toHaveBeenCalled();
         });
 
@@ -1253,7 +1304,24 @@ describe('NativeRichTextEditor', () => {
             const doc = { type: 'doc', content: [] };
             render(<NativeRichTextEditor valueJSON={doc} />);
 
-            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(1, JSON.stringify(doc));
+            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify(NORMALIZED_EMPTY_DOC)
+            );
+        });
+
+        it('normalizes empty valueJSON using the provided schema', () => {
+            render(
+                <NativeRichTextEditor
+                    valueJSON={{ type: 'doc', content: [] }}
+                    schema={TITLE_FIRST_SCHEMA}
+                />
+            );
+
+            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify(TITLE_EMPTY_DOC)
+            );
         });
 
         it('does not call replaceJson when valueJSON is unchanged', () => {

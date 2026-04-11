@@ -44,9 +44,9 @@ interface NativeRichTextEditorProps {
 | Prop | Type | Default | Description |
 | --- | --- | --- | --- |
 | `initialContent` | `string` | — | Initial uncontrolled HTML content. |
-| `initialJSON` | `DocumentJSON` | — | Initial uncontrolled JSON content. |
+| `initialJSON` | `DocumentJSON` | — | Initial uncontrolled JSON content. If you pass `{ type: 'doc', content: [] }`, the editor normalizes it to a schema-valid empty text block for the active schema. |
 | `value` | `string` | — | Controlled HTML content. Highest-priority content source. |
-| `valueJSON` | `DocumentJSON` | — | Controlled JSON content. Ignored if `value` is set. In collaboration mode, bind this from `useYjsCollaboration().editorBindings.valueJSON`, not from separate app-owned document state. |
+| `valueJSON` | `DocumentJSON` | — | Controlled JSON content. Ignored if `value` is set. Empty root docs are normalized the same way as `initialJSON`. In collaboration mode, bind this from `useYjsCollaboration().editorBindings.valueJSON`, not from separate app-owned document state. |
 | `schema` | `SchemaDefinition` | `tiptapSchema` | Schema definition passed to the Rust core. |
 | `placeholder` | `string` | — | Placeholder text shown when the editor is empty. On native platforms it follows the effective `paragraph` text style for font family, weight, and size. |
 | `editable` | `boolean` | `true` | Enables or disables editing. |
@@ -79,6 +79,12 @@ interface NativeRichTextEditorProps {
 - The native placeholder uses the resolved `paragraph` text style from `theme`, so font family, weight, and size stay aligned with normal empty-paragraph rendering.
 - The placeholder still uses the platform hint color rather than the paragraph text color.
 - On Android, `heightBehavior="autoGrow"` measures wrapped placeholder lines while the editor is empty, so a multiline placeholder can expand the view before any content is entered.
+
+## JSON Normalization
+
+- Whole-document JSON entry points normalize `{ type: 'doc', content: [] }` to a schema-valid empty document for the active schema.
+- This applies to `initialJSON`, controlled `valueJSON`, and imperative whole-document replacements such as `setContentJson()`.
+- Selection-level fragment insertion APIs such as `insertContentJson()` are not rewritten; they use the content you provide.
 
 ## `RemoteSelectionDecoration`
 

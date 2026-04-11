@@ -49,7 +49,6 @@ The minimum tested Expo version is SDK 54.
 Required peer dependencies:
 
 - `expo`
-- `expo-modules-core`
 - `react`
 - `react-native`
 - `@expo/vector-icons`
@@ -57,7 +56,7 @@ Required peer dependencies:
 Install the package:
 
 ```sh
-npm install @apollohg/react-native-prose-editor
+npm install @apollohg/react-native-prose-editor@0.4.2
 ```
 
 For local package development in this repo:
@@ -110,6 +109,8 @@ The main extension points today are:
 For setup and customization details, start with the [Documentation Index](./docs/README.md).
 
 For realtime collaboration, including the correct `useYjsCollaboration()` wiring, encoded-state persistence, remote cursors, and automatic reconnect behavior, see the [Collaboration Guide](./docs/modules/collaboration.md).
+
+For whole-document JSON loads, `initialJSON`, controlled `valueJSON`, and `setContentJson()` will normalize an empty root document like `{ type: 'doc', content: [] }` to the active schema's empty text block so block-constrained schemas still load a valid empty document.
 
 ## Development
 

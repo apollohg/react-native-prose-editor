@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.2] - 2026-04-11
+
+### Fixed
+
+- Whole-document JSON entry points now normalize `{ type: 'doc', content: [] }` to a schema-valid empty document before passing content into the Rust core. This covers `initialJSON`, controlled `valueJSON`, and imperative `setContentJson()` or bridge-level JSON replacement calls, preventing `doc requires at least 1 child` transform errors with schemas that require block content.
+
 ## [0.4.1] - 2026-04-11
 
 ### Fixed
@@ -87,6 +93,7 @@
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[0.4.2]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.1...0.4.2
 [0.4.1]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.2.0...0.3.0

@@ -13,7 +13,6 @@ The minimum tested Expo version is SDK 54. Earlier Expo versions may work, but t
 The consuming app is expected to install:
 
 - `expo`
-- `expo-modules-core`
 - `react`
 - `react-native`
 - `@expo/vector-icons`
@@ -83,8 +82,8 @@ This package contains native code, so use a development build rather than Expo G
 The expected consumer setup looks like:
 
 ```sh
-npm install @apollohg/react-native-prose-editor
-npx expo install expo expo-modules-core react react-native @expo/vector-icons
+npm install @apollohg/react-native-prose-editor@0.4.2
+npx expo install expo react react-native @expo/vector-icons
 npx expo prebuild
 ```
 
