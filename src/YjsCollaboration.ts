@@ -218,8 +218,47 @@ function initialFallbackDocument(options: YjsCollaborationOptions): DocumentJSON
         : defaultEmptyDocument(options.schema);
 }
 
+function shouldUseFallbackForNativeDocument(
+    doc: DocumentJSON,
+    options: YjsCollaborationOptions
+): boolean {
+    if (options.initialDocumentJson != null || options.initialEncodedState != null) {
+        return false;
+    }
+    if (doc.type !== 'doc') {
+        return false;
+    }
+    return !Array.isArray(doc.content) || doc.content.length === 0;
+}
+
 function awarenessToRecord(awareness: LocalAwarenessState): Record<string, unknown> {
     return awareness as unknown as Record<string, unknown>;
+}
+
+function localAwarenessEquals(left: LocalAwarenessState, right: LocalAwarenessState): boolean {
+    const leftSelection = left.selection;
+    const rightSelection = right.selection;
+    if (leftSelection == null || rightSelection == null) {
+        if (leftSelection !== rightSelection) {
+            return false;
+        }
+    } else if (
+        leftSelection.anchor !== rightSelection.anchor ||
+        leftSelection.head !== rightSelection.head
+    ) {
+        return false;
+    }
+
+    const leftUser = left.user;
+    const rightUser = right.user;
+    return (
+        left.focused === right.focused &&
+        leftUser.userId === rightUser.userId &&
+        leftUser.name === rightUser.name &&
+        leftUser.color === rightUser.color &&
+        leftUser.avatarUrl === rightUser.avatarUrl &&
+        JSON.stringify(leftUser.extra ?? null) === JSON.stringify(rightUser.extra ?? null)
+    );
 }
 
 function normalizeMessageBytes(data: unknown): number[] | null {
@@ -340,7 +379,6 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.callbacks = callbacks;
         this.createWebSocket = options.createWebSocket;
         this.retryIntervalMs = options.retryIntervalMs;
-        const hasInitialEncodedState = options.initialEncodedState != null;
         this.localAwarenessState = {
             user: options.localAwareness,
             focused: false,
@@ -351,13 +389,17 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             initialEncodedState: options.initialEncodedState,
             localAwareness: awarenessToRecord(this.localAwarenessState),
         });
+        const nativeDocumentJson = this.bridge.getDocumentJson();
         this._state = {
             documentId: options.documentId,
             status: 'idle',
             isConnected: false,
-            documentJson: hasInitialEncodedState || options.initialDocumentJson == null
-                ? this.bridge.getDocumentJson()
-                : cloneJsonValue(options.initialDocumentJson),
+            documentJson:
+                options.initialDocumentJson != null
+                    ? cloneJsonValue(options.initialDocumentJson)
+                    : shouldUseFallbackForNativeDocument(nativeDocumentJson, options)
+                      ? defaultEmptyDocument(options.schema)
+                      : nativeDocumentJson,
         };
         this._peers = this.bridge.getPeers();
         if (options.connect !== false) {
@@ -543,10 +585,10 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
 
     destroy(): void {
         if (this.destroyed) return;
-        this.destroyed = true;
         this.cancelRetry();
         this.cancelPendingAwarenessSync();
         this.disconnect();
+        this.destroyed = true;
         this.bridge.destroy();
     }
 
@@ -565,16 +607,27 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
 
     handleSelectionChange(selection: Selection): void {
         if (this.destroyed) return;
-        this.localAwarenessState = this.mergeLocalAwareness({
+        const nextAwareness = this.mergeLocalAwareness({
             focused: true,
             selection: selectionToAwarenessRange(selection),
         });
+        if (localAwarenessEquals(nextAwareness, this.localAwarenessState)) {
+            return;
+        }
+        this.localAwarenessState = nextAwareness;
         this.scheduleAwarenessSync();
     }
 
     handleFocusChange(focused: boolean): void {
         if (this.destroyed) return;
-        this.localAwarenessState = this.mergeLocalAwareness({ focused });
+        const nextAwareness = this.mergeLocalAwareness({ focused });
+        if (localAwarenessEquals(nextAwareness, this.localAwarenessState)) {
+            if (this.pendingAwarenessTimer != null) {
+                this.commitLocalAwareness();
+            }
+            return;
+        }
+        this.localAwarenessState = nextAwareness;
         this.commitLocalAwareness();
     }
 

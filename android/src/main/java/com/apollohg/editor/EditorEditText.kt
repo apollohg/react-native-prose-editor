@@ -10,6 +10,7 @@ import android.text.Editable
 import android.text.Layout
 import android.text.Spanned
 import android.text.StaticLayout
+import android.text.TextPaint
 import android.text.TextWatcher
 import android.util.AttributeSet
 import android.util.Log
@@ -55,6 +56,7 @@ class EditorEditText @JvmOverloads constructor(
     data class ApplyUpdateTrace(
         val attemptedPatch: Boolean,
         val usedPatch: Boolean,
+        val skippedRender: Boolean,
         val parseNanos: Long,
         val resolveRenderBlocksNanos: Long,
         val patchEligibilityNanos: Long,
@@ -141,7 +143,9 @@ class EditorEditText @JvmOverloads constructor(
 
     var placeholderText: String = ""
         set(value) {
+            if (field == value) return
             field = value
+            requestLayout()
             invalidate()
         }
 
@@ -172,6 +176,8 @@ class EditorEditText @JvmOverloads constructor(
     internal var captureApplyUpdateTraceForTesting: Boolean = false
     private var lastApplyUpdateTraceForTesting: ApplyUpdateTrace? = null
     private var currentRenderBlocksJson: org.json.JSONArray? = null
+    private var renderAppearanceRevision: Long = 1L
+    private var lastAppliedRenderAppearanceRevision: Long = 0L
     internal var onDeleteRangeInRustForTesting: ((Int, Int) -> Unit)? = null
     internal var onDeleteBackwardAtSelectionScalarInRustForTesting: ((Int, Int) -> Unit)? = null
 
@@ -227,23 +233,31 @@ class EditorEditText @JvmOverloads constructor(
     override fun onDraw(canvas: android.graphics.Canvas) {
         super.onDraw(canvas)
 
-        if (!shouldDisplayPlaceholder()) return
-
-        val availableWidth = width - compoundPaddingLeft - compoundPaddingRight
-        if (availableWidth <= 0) return
+        val placeholderLayout =
+            buildPlaceholderLayout(width - compoundPaddingLeft - compoundPaddingRight) ?: return
 
         val previousColor = paint.color
         val saveCount = canvas.save()
-        paint.color = currentHintTextColor
         canvas.translate(compoundPaddingLeft.toFloat(), extendedPaddingTop.toFloat())
-        StaticLayout.Builder
-            .obtain(placeholderText, 0, placeholderText.length, paint, availableWidth)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .setIncludePad(includeFontPadding)
-            .build()
-            .draw(canvas)
+        placeholderLayout.draw(canvas)
         canvas.restoreToCount(saveCount)
         paint.color = previousColor
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+
+        val placeholderHeight = resolvePlaceholderHeightForMeasuredWidth(measuredWidth) ?: return
+        val desiredHeight = maxOf(measuredHeight, placeholderHeight)
+        val resolvedHeight = when (MeasureSpec.getMode(heightMeasureSpec)) {
+            MeasureSpec.EXACTLY -> measuredHeight
+            MeasureSpec.AT_MOST -> desiredHeight.coerceAtMost(MeasureSpec.getSize(heightMeasureSpec))
+            else -> desiredHeight
+        }
+
+        if (resolvedHeight != measuredHeight) {
+            setMeasuredDimension(measuredWidth, resolvedHeight)
+        }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -291,6 +305,59 @@ class EditorEditText @JvmOverloads constructor(
 
     fun shouldDisplayPlaceholderForTesting(): Boolean = shouldDisplayPlaceholder()
 
+    private fun buildPlaceholderLayout(availableWidth: Int): StaticLayout? {
+        if (!shouldDisplayPlaceholder()) return null
+        if (availableWidth <= 0) return null
+
+        val placeholderPaint = resolvedPlaceholderPaint()
+        return StaticLayout.Builder
+            .obtain(
+                placeholderText,
+                0,
+                placeholderText.length,
+                placeholderPaint,
+                availableWidth
+            )
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setIncludePad(includeFontPadding)
+            .build()
+    }
+
+    private fun resolvedPlaceholderPaint(): TextPaint {
+        val textStyle = theme?.effectiveTextStyle("paragraph")
+        val resolvedTextSize = textStyle?.fontSize?.times(resources.displayMetrics.density) ?: baseFontSize
+        val resolvedTypeface = resolvePlaceholderTypeface(textStyle)
+
+        return TextPaint(paint).apply {
+            color = currentHintTextColor
+            textSize = resolvedTextSize
+            typeface = resolvedTypeface
+        }
+    }
+
+    private fun resolvePlaceholderTypeface(textStyle: EditorTextStyle?): Typeface {
+        val baseTypeface = typeface ?: Typeface.DEFAULT
+        val requestedStyle = textStyle?.typefaceStyle() ?: Typeface.NORMAL
+        val family = textStyle?.fontFamily?.takeIf { it.isNotBlank() }
+
+        return when {
+            family != null -> Typeface.create(family, requestedStyle)
+            requestedStyle != Typeface.NORMAL -> Typeface.create(baseTypeface, requestedStyle)
+            else -> baseTypeface
+        }
+    }
+
+    private fun resolvePlaceholderHeightForMeasuredWidth(widthPx: Int): Int? {
+        val availableWidth = (widthPx - compoundPaddingLeft - compoundPaddingRight).coerceAtLeast(0)
+        return resolvePlaceholderHeightForAvailableWidth(availableWidth)
+    }
+
+    private fun resolvePlaceholderHeightForAvailableWidth(availableWidth: Int): Int? {
+        val placeholderLayout = buildPlaceholderLayout(availableWidth) ?: return null
+        val placeholderHeight = placeholderLayout.height.takeIf { it > 0 } ?: lineHeight
+        return placeholderHeight + compoundPaddingTop + compoundPaddingBottom
+    }
+
     // ── Editor Binding ──────────────────────────────────────────────────
 
     /**
@@ -321,6 +388,9 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun setBaseStyle(fontSizePx: Float, textColor: Int, backgroundColor: Int) {
+        if (baseFontSize != fontSizePx || baseTextColor != textColor) {
+            renderAppearanceRevision += 1L
+        }
         baseFontSize = fontSizePx
         baseTextColor = textColor
         baseBackgroundColor = backgroundColor
@@ -331,6 +401,7 @@ class EditorEditText @JvmOverloads constructor(
 
     fun applyTheme(theme: EditorTheme?) {
         this.theme = theme
+        renderAppearanceRevision += 1L
         setBackgroundColor(theme?.backgroundColor ?: baseBackgroundColor)
         applyContentInsets(theme?.contentInsets)
         if (editorId != 0L) {
@@ -400,12 +471,16 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     fun resolveAutoGrowHeight(): Int {
+        val availableWidth = (measuredWidth - compoundPaddingLeft - compoundPaddingRight).coerceAtLeast(0)
+        val placeholderHeight = resolvePlaceholderHeightForAvailableWidth(availableWidth)
         val laidOutTextHeight = if (isLaidOut) layout?.height else null
         if (laidOutTextHeight != null && laidOutTextHeight > 0) {
-            return laidOutTextHeight + compoundPaddingTop + compoundPaddingBottom
+            return maxOf(
+                laidOutTextHeight + compoundPaddingTop + compoundPaddingBottom,
+                placeholderHeight ?: 0
+            )
         }
 
-        val availableWidth = (measuredWidth - compoundPaddingLeft - compoundPaddingRight).coerceAtLeast(0)
         val currentText = text
         if (availableWidth > 0 && currentText != null) {
             val staticLayout = StaticLayout.Builder
@@ -414,11 +489,17 @@ class EditorEditText @JvmOverloads constructor(
                 .setIncludePad(includeFontPadding)
                 .build()
             val textHeight = staticLayout.height.takeIf { it > 0 } ?: lineHeight
-            return textHeight + compoundPaddingTop + compoundPaddingBottom
+            return maxOf(
+                textHeight + compoundPaddingTop + compoundPaddingBottom,
+                placeholderHeight ?: 0
+            )
         }
 
         val minimumHeight = suggestedMinimumHeight.coerceAtLeast(minHeight)
-        return (lineHeight + compoundPaddingTop + compoundPaddingBottom).coerceAtLeast(minimumHeight)
+        return maxOf(
+            placeholderHeight ?: 0,
+            (lineHeight + compoundPaddingTop + compoundPaddingBottom).coerceAtLeast(minimumHeight)
+        )
     }
 
     private fun preserveScrollPosition(previousScrollX: Int, previousScrollY: Int) {
@@ -1211,6 +1292,58 @@ class EditorEditText @JvmOverloads constructor(
             }
         }
 
+    private fun normalizedJsonValue(value: Any?): Any? =
+        if (value === org.json.JSONObject.NULL) null else value
+
+    private fun jsonValuesEqual(left: Any?, right: Any?): Boolean {
+        val normalizedLeft = normalizedJsonValue(left)
+        val normalizedRight = normalizedJsonValue(right)
+        if (normalizedLeft === normalizedRight) return true
+        if (normalizedLeft == null || normalizedRight == null) return false
+
+        if (normalizedLeft is org.json.JSONArray && normalizedRight is org.json.JSONArray) {
+            if (normalizedLeft.length() != normalizedRight.length()) return false
+            for (index in 0 until normalizedLeft.length()) {
+                if (!jsonValuesEqual(normalizedLeft.opt(index), normalizedRight.opt(index))) {
+                    return false
+                }
+            }
+            return true
+        }
+
+        if (normalizedLeft is org.json.JSONObject && normalizedRight is org.json.JSONObject) {
+            if (normalizedLeft.length() != normalizedRight.length()) return false
+            val keys = normalizedLeft.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                if (!normalizedRight.has(key)) return false
+                if (!jsonValuesEqual(normalizedLeft.opt(key), normalizedRight.opt(key))) {
+                    return false
+                }
+            }
+            return true
+        }
+
+        if (normalizedLeft is Number && normalizedRight is Number) {
+            return normalizedLeft.toDouble() == normalizedRight.toDouble()
+        }
+
+        return normalizedLeft == normalizedRight
+    }
+
+    private fun renderBlocksEqual(
+        current: org.json.JSONArray,
+        updated: org.json.JSONArray
+    ): Boolean {
+        if (current.length() != updated.length()) return false
+        for (index in 0 until current.length()) {
+            if (!jsonValuesEqual(current.opt(index), updated.opt(index))) {
+                return false
+            }
+        }
+        return true
+    }
+
     private fun mergeRenderBlocks(
         current: org.json.JSONArray,
         patch: ParsedRenderPatch
@@ -1324,41 +1457,57 @@ class EditorEditText @JvmOverloads constructor(
                 currentRenderBlocksJson?.let { mergeRenderBlocks(it, patch) }
             }
         val resolveRenderBlocksNanos = System.nanoTime() - resolveRenderBlocksStartedAt
+        val shouldSkipRender = resolvedRenderBlocks != null &&
+            currentRenderBlocksJson?.let { current ->
+                renderBlocksEqual(current, resolvedRenderBlocks)
+            } == true &&
+            text?.toString() == lastAuthorizedText &&
+            lastAppliedRenderAppearanceRevision == renderAppearanceRevision
         val previousScrollX = scrollX
         val previousScrollY = scrollY
 
         explicitSelectedImageRange = null
-        // Android's Editable.replace(...) path benchmarks substantially slower than
-        // rebuilding from merged render blocks, so patch payloads are treated as a
-        // transport optimization only. We still resolve the merged block state above,
-        // then apply it through the faster full-text path here.
-        val buildStartedAt = System.nanoTime()
-        val fullSpannable = if (resolvedRenderBlocks != null) {
-            RenderBridge.buildSpannableFromBlocks(
-                resolvedRenderBlocks,
-                baseFontSize = baseFontSize,
-                textColor = baseTextColor,
-                theme = theme,
-                density = resources.displayMetrics.density,
-                hostView = this
-            )
-        } else if (renderElements != null) {
-            RenderBridge.buildSpannableFromArray(
-                renderElements,
-                baseFontSize,
-                baseTextColor,
-                theme,
-                resources.displayMetrics.density,
-                this
-            )
+        val buildRenderNanos: Long
+        val applyRenderNanos: Long
+        if (shouldSkipRender) {
+            lastRenderAppliedPatchForTesting = false
+            currentRenderBlocksJson = resolvedRenderBlocks?.let(::cloneJsonArray)
+            buildRenderNanos = 0L
+            applyRenderNanos = 0L
         } else {
-            return
+            // Android's Editable.replace(...) path benchmarks substantially slower than
+            // rebuilding from merged render blocks, so patch payloads are treated as a
+            // transport optimization only. We still resolve the merged block state above,
+            // then apply it through the faster full-text path here.
+            val buildStartedAt = System.nanoTime()
+            val fullSpannable = if (resolvedRenderBlocks != null) {
+                RenderBridge.buildSpannableFromBlocks(
+                    resolvedRenderBlocks,
+                    baseFontSize = baseFontSize,
+                    textColor = baseTextColor,
+                    theme = theme,
+                    density = resources.displayMetrics.density,
+                    hostView = this
+                )
+            } else if (renderElements != null) {
+                RenderBridge.buildSpannableFromArray(
+                    renderElements,
+                    baseFontSize,
+                    baseTextColor,
+                    theme,
+                    resources.displayMetrics.density,
+                    this
+                )
+            } else {
+                return
+            }
+            buildRenderNanos = System.nanoTime() - buildStartedAt
+            currentRenderBlocksJson = resolvedRenderBlocks?.let(::cloneJsonArray)
+            val applyStartedAt = System.nanoTime()
+            applyRenderedSpannable(fullSpannable, usedPatch = false)
+            applyRenderNanos = System.nanoTime() - applyStartedAt
+            lastAppliedRenderAppearanceRevision = renderAppearanceRevision
         }
-        val buildRenderNanos = System.nanoTime() - buildStartedAt
-        currentRenderBlocksJson = resolvedRenderBlocks?.let(::cloneJsonArray)
-        val applyStartedAt = System.nanoTime()
-        applyRenderedSpannable(fullSpannable, usedPatch = false)
-        val applyRenderNanos = System.nanoTime() - applyStartedAt
 
         // Apply the selection from the update.
         val selectionStartedAt = System.nanoTime()
@@ -1384,6 +1533,7 @@ class EditorEditText @JvmOverloads constructor(
             lastApplyUpdateTraceForTesting = ApplyUpdateTrace(
                 attemptedPatch = renderPatch != null,
                 usedPatch = false,
+                skippedRender = shouldSkipRender,
                 parseNanos = parseNanos,
                 resolveRenderBlocksNanos = resolveRenderBlocksNanos,
                 patchEligibilityNanos = 0L,

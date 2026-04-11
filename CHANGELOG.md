@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.1] - 2026-04-11
+
+### Fixed
+
+- Collaboration disconnect and destroy flows now clear and broadcast removal of the local awareness session so remote peers do not keep stale duplicate cursors after unmounts or reconnects.
+- Collaboration state now preserves legitimately empty shared documents. The schema-aware empty-document fallback is bootstrap-only and is no longer reported back as durable shared content.
+- Android placeholders now follow the effective paragraph text style and auto-grow height accounts for wrapped placeholder lines while the editor is empty.
+
+### Performance
+
+- iOS now applies localised render-block patches and faster attributed-text mutations for many in-place edits.
+- iOS position conversion now uses cached UTF-16/scalar lookup tables with incremental patch updates.
+- iOS auto-grow layout and remote-selection rendering now do less redundant work by caching measured content height, coalescing overlay refreshes, and skipping unchanged native prop payloads for theme, addons, toolbar, and remote selections.
+- Android now skips full native render rebuilds for no-op updates when the resolved render blocks and visual styling are unchanged.
+- Collaboration now avoids rebroadcasting identical local selection and focus awareness payloads.
+
 ## [0.4.0] - 2026-04-07
 
 ### Added
@@ -71,6 +87,7 @@
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[0.4.1]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.1.0...0.2.0

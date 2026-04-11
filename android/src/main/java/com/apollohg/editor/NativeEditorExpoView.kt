@@ -275,31 +275,44 @@ class NativeEditorExpoView(
         if (heightBehavior != EditorHeightBehavior.AUTO_GROW) return
         val editText = richTextView.editorEditText
         val resolvedEditHeight = editText.resolveAutoGrowHeight()
+        val resolvedContainerHeight =
+            resolvedEditHeight +
+                richTextView.paddingTop +
+                richTextView.paddingBottom +
+                paddingTop +
+                paddingBottom
         val contentHeight = (
             when {
                 editText.isLaidOut && (editText.layout?.height ?: 0) > 0 -> {
-                    (editText.layout?.height ?: 0) +
-                        editText.compoundPaddingTop +
-                        editText.compoundPaddingBottom +
-                        richTextView.paddingTop +
-                        richTextView.paddingBottom
+                    maxOf(
+                        (editText.layout?.height ?: 0) +
+                            editText.compoundPaddingTop +
+                            editText.compoundPaddingBottom +
+                            richTextView.paddingTop +
+                            richTextView.paddingBottom +
+                            paddingTop +
+                            paddingBottom,
+                        resolvedContainerHeight
+                    )
                 }
                 richTextView.measuredHeight > 0 -> {
-                    richTextView.measuredHeight + paddingTop + paddingBottom
+                    maxOf(
+                        richTextView.measuredHeight + paddingTop + paddingBottom,
+                        resolvedContainerHeight
+                    )
                 }
                 editText.measuredHeight > 0 -> {
-                    editText.measuredHeight +
-                        richTextView.paddingTop +
-                        richTextView.paddingBottom +
-                        paddingTop +
-                        paddingBottom
+                    maxOf(
+                        editText.measuredHeight +
+                            richTextView.paddingTop +
+                            richTextView.paddingBottom +
+                            paddingTop +
+                            paddingBottom,
+                        resolvedContainerHeight
+                    )
                 }
                 else -> {
-                    resolvedEditHeight +
-                        richTextView.paddingTop +
-                        richTextView.paddingBottom +
-                        paddingTop +
-                        paddingBottom
+                    resolvedContainerHeight
                 }
             }
         ).coerceAtLeast(0)

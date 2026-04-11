@@ -3,6 +3,8 @@ package com.apollohg.editor
 import android.graphics.Color
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.text.Spanned
 import android.widget.LinearLayout
 import android.view.MotionEvent
@@ -12,6 +14,7 @@ import android.widget.FrameLayout
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -183,12 +186,123 @@ class RichTextEditorViewTest {
     }
 
     @Test
+    fun `apply update json skips render work when render blocks are unchanged`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            captureApplyUpdateTraceForTesting = true
+        }
+        val initialBlocks = JSONArray().apply {
+            put(paragraphRenderBlock("Alpha"))
+            put(paragraphRenderBlock("Beta"))
+        }
+
+        editText.applyUpdateJSON(renderUpdateJson(initialBlocks), notifyListener = false)
+        editText.lastApplyUpdateTrace()
+
+        val selectionOnlyUpdate = JSONObject()
+            .put("renderBlocks", JSONArray(initialBlocks.toString()))
+            .toString()
+
+        editText.applyUpdateJSON(selectionOnlyUpdate, notifyListener = false)
+
+        val trace = editText.lastApplyUpdateTrace()
+        assertNotNull(trace)
+        assertTrue(trace?.skippedRender == true)
+        assertFalse(trace?.usedPatch == true)
+        assertEquals(0L, trace?.buildRenderNanos)
+        assertEquals(0L, trace?.applyRenderNanos)
+        assertEquals("Alpha\nBeta", editText.text?.toString())
+    }
+
+    @Test
     fun `placeholder hides for rendered non-empty paragraph`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
         editText.placeholderText = "Type here"
         editText.setText("Hello")
 
         assertTrue(!editText.shouldDisplayPlaceholderForTesting())
+    }
+
+    @Test
+    fun `multiline placeholder expands empty editor height`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.setHeightBehavior(EditorHeightBehavior.AUTO_GROW)
+        editText.placeholderText =
+            "Type a much longer placeholder that should wrap onto multiple lines in the empty editor"
+        editText.applyRenderJSON(emptyParagraphRenderJson())
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(220, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        editText.measure(widthSpec, heightSpec)
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+
+        val availableWidth =
+            editText.measuredWidth - editText.compoundPaddingLeft - editText.compoundPaddingRight
+        val expectedPlaceholderHeight =
+            StaticLayout.Builder
+                .obtain(
+                    editText.placeholderText,
+                    0,
+                    editText.placeholderText.length,
+                    editText.paint,
+                    availableWidth
+                )
+                .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
+                .setIncludePad(editText.includeFontPadding)
+                .build()
+                .height +
+                editText.compoundPaddingTop +
+                editText.compoundPaddingBottom
+
+        assertTrue(editText.measuredHeight >= expectedPlaceholderHeight)
+        assertTrue(editText.resolveAutoGrowHeight() >= expectedPlaceholderHeight)
+    }
+
+    @Test
+    fun `placeholder uses paragraph font size from theme`() {
+        val context = RuntimeEnvironment.getApplication()
+        val density = context.resources.displayMetrics.density
+        val editText = EditorEditText(context)
+        editText.setBaseStyle(24f * density, Color.BLACK, Color.WHITE)
+        editText.setHeightBehavior(EditorHeightBehavior.AUTO_GROW)
+        editText.placeholderText = "Placeholder wraps"
+        editText.applyTheme(
+            EditorTheme.fromJson(
+                """
+                {
+                  "text": { "fontSize": 12 },
+                  "paragraph": { "fontSize": 10 }
+                }
+                """.trimIndent()
+            )
+        )
+        editText.applyRenderJSON(emptyParagraphRenderJson())
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(220, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        editText.measure(widthSpec, heightSpec)
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+
+        val availableWidth =
+            editText.measuredWidth - editText.compoundPaddingLeft - editText.compoundPaddingRight
+        val expectedPlaceholderHeight =
+            StaticLayout.Builder
+                .obtain(
+                    editText.placeholderText,
+                    0,
+                    editText.placeholderText.length,
+                    TextPaint(editText.paint).apply {
+                        textSize = 10f * density
+                    },
+                    availableWidth
+                )
+                .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
+                .setIncludePad(editText.includeFontPadding)
+                .build()
+                .height +
+                editText.compoundPaddingTop +
+                editText.compoundPaddingBottom
+
+        assertEquals(expectedPlaceholderHeight, editText.resolveAutoGrowHeight())
     }
 
     @Test
@@ -898,6 +1012,30 @@ class RichTextEditorViewTest {
         view.remoteSelectionDebugSnapshotsForTesting()
 
         assertEquals(0, resolverCalls)
+    }
+
+    @Test
+    fun `remote selection json parsing tolerates invalid colors`() {
+        val context = RuntimeEnvironment.getApplication()
+
+        val selections = RemoteSelectionDecoration.fromJson(
+            context,
+            """
+            [
+              {
+                "clientId": 19,
+                "anchor": 2,
+                "head": 2,
+                "color": "not-a-color",
+                "name": "Alice",
+                "isFocused": true
+              }
+            ]
+            """.trimIndent()
+        )
+
+        assertEquals(1, selections.size)
+        assertEquals(19, selections.single().clientId)
     }
 
     @Test

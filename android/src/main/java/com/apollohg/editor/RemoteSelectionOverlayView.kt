@@ -10,7 +10,6 @@ import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.View
 import androidx.appcompat.content.res.AppCompatResources
-import com.google.android.material.R as MaterialR
 import org.json.JSONArray
 import uniffi.editor_core.editorDocToScalar
 
@@ -61,8 +60,8 @@ data class RemoteSelectionDecoration(
         private fun resolveFallbackColor(context: Context): Int {
             val typedValue = TypedValue()
             val attrs = intArrayOf(
-                MaterialR.attr.colorPrimary,
-                MaterialR.attr.colorSecondary,
+                androidx.appcompat.R.attr.colorPrimary,
+                androidx.appcompat.R.attr.colorAccent,
                 android.R.attr.colorAccent,
                 android.R.attr.textColorPrimary
             )

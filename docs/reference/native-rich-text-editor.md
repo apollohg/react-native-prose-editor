@@ -48,7 +48,7 @@ interface NativeRichTextEditorProps {
 | `value` | `string` | — | Controlled HTML content. Highest-priority content source. |
 | `valueJSON` | `DocumentJSON` | — | Controlled JSON content. Ignored if `value` is set. In collaboration mode, bind this from `useYjsCollaboration().editorBindings.valueJSON`, not from separate app-owned document state. |
 | `schema` | `SchemaDefinition` | `tiptapSchema` | Schema definition passed to the Rust core. |
-| `placeholder` | `string` | — | Placeholder text shown when the editor is empty. |
+| `placeholder` | `string` | — | Placeholder text shown when the editor is empty. On native platforms it follows the effective `paragraph` text style for font family, weight, and size. |
 | `editable` | `boolean` | `true` | Enables or disables editing. |
 | `maxLength` | `number` | — | Character limit enforced by the Rust core. |
 | `autoFocus` | `boolean` | `false` | Focuses the editor when the native view first mounts. |
@@ -73,6 +73,12 @@ interface NativeRichTextEditorProps {
 | `theme` | `EditorTheme` | — | Theme object for content, mentions, and toolbar styling. See [EditorTheme Reference](./editor-theme.md). |
 | `addons` | `EditorAddons` | — | Optional addon configuration. Currently supports the mentions addon. See [Mentions Guide](../modules/mentions.md). |
 | `remoteSelections` | `readonly RemoteSelectionDecoration[]` | — | Remote awareness selections rendered as native overlays. Used by the collaboration module. |
+
+## Placeholder Behavior
+
+- The native placeholder uses the resolved `paragraph` text style from `theme`, so font family, weight, and size stay aligned with normal empty-paragraph rendering.
+- The placeholder still uses the platform hint color rather than the paragraph text color.
+- On Android, `heightBehavior="autoGrow"` measures wrapped placeholder lines while the editor is empty, so a multiline placeholder can expand the view before any content is entered.
 
 ## `RemoteSelectionDecoration`
 
@@ -219,6 +225,7 @@ type NativeRichTextEditorHeightBehavior = 'fixed' | 'autoGrow';
 ### Keyboard Avoidance Notes
 
 - `autoGrow` is designed for parent-managed scroll containers. If your screen uses a React Native `ScrollView`, `FlatList`, or similar container, you should still use app-level keyboard avoidance such as `KeyboardAvoidingView` or an equivalent screen-level inset strategy.
+- In the empty state, auto-grow sizing uses the larger of the content height and placeholder height. This matters most for multiline placeholders on Android.
 - `fixed` keeps scrolling inside the native editor. The editor handles its own internal viewport and caret visibility, but your app still needs to ensure the outer screen responds to the keyboard when the editor itself sits low on the page.
 - On Android with `toolbarPlacement="keyboard"`, the built-in toolbar renders above the keyboard. The editor reserves that obscured bottom space internally, but that does not replace outer layout avoidance for the rest of the screen.
 - If you use `KeyboardAvoidingView` on Android with `toolbarPlacement="keyboard"`, also budget for the native toolbar height in `keyboardVerticalOffset`. The example app currently uses `60` as a practical default for the built-in toolbar.

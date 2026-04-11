@@ -79,6 +79,10 @@ internal data class ApplyUpdateTraceStats(
             append(traces.count { it.usedPatch })
             append("/")
             append(traces.size)
+            append(" skippedRender=")
+            append(traces.count { it.skippedRender })
+            append("/")
+            append(traces.size)
         }
     }
 }

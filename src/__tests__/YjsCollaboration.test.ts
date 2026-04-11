@@ -430,6 +430,29 @@ describe('YjsCollaboration', () => {
         controller.destroy();
     });
 
+    it('ignores identical selection awareness updates', () => {
+        const controller = createYjsCollaborationController({
+            documentId: 'doc-3-repeat',
+            connect: false,
+            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            initialDocumentJson: INITIAL_DOC,
+            localAwareness: {
+                userId: '1',
+                name: 'Alice',
+                color: '#f00',
+            },
+        });
+
+        controller.handleSelectionChange({ type: 'text', anchor: 3, head: 5 });
+        jest.advanceTimersByTime(40);
+        controller.handleSelectionChange({ type: 'text', anchor: 3, head: 5 });
+        jest.advanceTimersByTime(40);
+
+        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledTimes(1);
+
+        controller.destroy();
+    });
+
     it('responds to y-websocket queryAwareness with a local awareness update', () => {
         const sockets: MockWebSocket[] = [];
         const controller = createYjsCollaborationController({
@@ -507,6 +530,27 @@ describe('YjsCollaboration', () => {
                 selection: { anchor: 1, head: 2 },
             })
         );
+
+        controller.destroy();
+    });
+
+    it('ignores identical focus awareness updates', () => {
+        const controller = createYjsCollaborationController({
+            documentId: 'doc-4-repeat',
+            connect: false,
+            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            initialDocumentJson: INITIAL_DOC,
+            localAwareness: {
+                userId: '1',
+                name: 'Alice',
+                color: '#f00',
+            },
+        });
+
+        controller.handleFocusChange(true);
+        controller.handleFocusChange(true);
+
+        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledTimes(1);
 
         controller.destroy();
     });
@@ -661,6 +705,46 @@ describe('YjsCollaboration', () => {
         controller.destroy();
     });
 
+    it('clears local awareness when the collaboration hook unmounts', () => {
+        const sockets: MockWebSocket[] = [];
+
+        function Harness() {
+            useYjsCollaboration({
+                documentId: 'doc-unmount-awareness',
+                createWebSocket: () => {
+                    const socket = new MockWebSocket();
+                    sockets.push(socket);
+                    return socket as unknown as WebSocket;
+                },
+                initialDocumentJson: INITIAL_DOC,
+                localAwareness: {
+                    userId: '1',
+                    name: 'Alice',
+                    color: '#f00',
+                },
+            });
+            return null;
+        }
+
+        const rendered = render(React.createElement(Harness));
+
+        expect(sockets).toHaveLength(1);
+        act(() => {
+            sockets[0].open();
+        });
+        sockets[0].send.mockClear();
+
+        rendered.unmount();
+
+        expect(mockNativeModule.collaborationSessionClearLocalAwareness).toHaveBeenCalledWith(1);
+        expect(sockets[0].close).toHaveBeenCalledTimes(1);
+        expect(sockets[0].send).toHaveBeenCalledTimes(1);
+        expect(Array.from(new Uint8Array(sockets[0].send.mock.calls[0][0] as ArrayBuffer))).toEqual(
+            [7, 7, 7]
+        );
+        expect(mockNativeModule.collaborationSessionDestroy).toHaveBeenCalledWith(1);
+    });
+
     it('supports disabling automatic retry', () => {
         const sockets: MockWebSocket[] = [];
         const controller = createYjsCollaborationController({
@@ -748,6 +832,31 @@ describe('YjsCollaboration', () => {
                 },
             })
         );
+        expect(controller.state.documentJson).toEqual(TITLE_EMPTY_DOC);
+
+        controller.destroy();
+    });
+
+    it('falls back to a schema-valid empty document when native returns an empty doc', () => {
+        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValueOnce(
+            JSON.stringify({
+                type: 'doc',
+                content: [],
+            })
+        );
+
+        const controller = createYjsCollaborationController({
+            documentId: 'doc-6-empty-native',
+            connect: false,
+            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            schema: TITLE_FIRST_SCHEMA,
+            localAwareness: {
+                userId: '1',
+                name: 'Alice',
+                color: '#f00',
+            },
+        });
+
         expect(controller.state.documentJson).toEqual(TITLE_EMPTY_DOC);
 
         controller.destroy();

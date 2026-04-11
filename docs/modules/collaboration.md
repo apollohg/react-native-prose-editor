@@ -51,6 +51,7 @@ interface YjsCollaborationOptions {
   connect?: boolean;
   retryIntervalMs?: YjsRetryInterval | false;
   fragmentName?: string;
+  schema?: SchemaDefinition;
   initialDocumentJson?: DocumentJSON;
   initialEncodedState?: EncodedCollaborationStateInput;
   localAwareness: LocalAwarenessUser;
@@ -67,6 +68,7 @@ interface YjsCollaborationOptions {
 | `connect` | `boolean` | `true` | Whether to connect automatically when the controller is created. Set to `false` to defer connection until `connect()` is called. |
 | `retryIntervalMs` | `YjsRetryInterval \| false` | exponential backoff | Retry interval configuration. Pass `false` to disable automatic retry entirely. See [Reconnect Behavior](#reconnect-behavior). |
 | `fragmentName` | `string` | `'default'` | Name of the Yjs XML fragment within the shared document. Only change this if your server uses a non-default fragment name. |
+| `schema` | `SchemaDefinition` | preset default | Optional schema passed to the native collaboration bridge. Also used to choose the local empty-document bootstrap block when there is no encoded state yet. |
 | `initialDocumentJson` | `DocumentJSON` | — | Local fallback document used when there is no encoded state yet. Not a durable collaboration restore format. See [Initial State Rules](#initial-state-rules). |
 | `initialEncodedState` | `EncodedCollaborationStateInput` | — | Previously persisted CRDT state to restore from. Accepts `Uint8Array`, `readonly number[]`, or a base64 `string`. |
 | `localAwareness` | `LocalAwarenessUser` | — | Local user identity and appearance. See [LocalAwarenessUser](#localawarenessuser). |
@@ -134,7 +136,7 @@ interface YjsCollaborationState {
 | `documentId` | `string` | The document identifier for this session. |
 | `status` | `YjsTransportStatus` | Current transport status. |
 | `isConnected` | `boolean` | Whether the transport is currently connected. |
-| `documentJson` | `DocumentJSON` | Current document content as JSON. |
+| `documentJson` | `DocumentJSON` | Current shared document content as JSON. This is the actual CRDT-backed state and may legitimately be an empty `doc`. |
 | `lastError` | `Error \| undefined` | Most recent error, if any. |
 
 ## `CollaborationPeer`
@@ -199,7 +201,7 @@ interface UseYjsCollaborationResult {
 | `peers` | `CollaborationPeer[]` | All currently connected peers (including the local user). |
 | `isConnected` | `boolean` | Shorthand for `state.isConnected`. |
 | `connect()` | `() => void` | Open the WebSocket connection. Only needed if `connect: false` was passed. |
-| `disconnect()` | `() => void` | Close the WebSocket connection and stop retrying. |
+| `disconnect()` | `() => void` | Close the WebSocket connection, clear the local awareness session from peers, and stop retrying. |
 | `reconnect()` | `() => void` | Disconnect and immediately reconnect. |
 | `getEncodedState()` | `() => Uint8Array` | Get the current encoded CRDT state as bytes. |
 | `getEncodedStateBase64()` | `() => string` | Get the current encoded CRDT state as a base64 string. |
@@ -246,9 +248,9 @@ interface YjsCollaborationController {
 | `state` | `YjsCollaborationState` | Current collaboration state (read-only). |
 | `peers` | `CollaborationPeer[]` | Currently connected peers (read-only). |
 | `connect()` | `() => void` | Open the WebSocket connection. |
-| `disconnect()` | `() => void` | Close the WebSocket connection and stop retrying. |
+| `disconnect()` | `() => void` | Close the WebSocket connection, clear the local awareness session from peers, and stop retrying. |
 | `reconnect()` | `() => void` | Disconnect and immediately reconnect. |
-| `destroy()` | `() => void` | Disconnect and release all resources. The controller cannot be reused after this. |
+| `destroy()` | `() => void` | Disconnect, clear the local awareness session from peers, and release all resources. The controller cannot be reused after this. |
 | `getEncodedState()` | `() => Uint8Array` | Get the current encoded CRDT state as bytes. |
 | `getEncodedStateBase64()` | `() => string` | Get the current encoded CRDT state as a base64 string. |
 | `applyEncodedState(...)` | `(state) => void` | Merge an encoded CRDT state into the current document. |
@@ -350,11 +352,21 @@ Prefer these inputs in this order:
 
 `initialDocumentJson` is not a durable collaboration restore format.
 
+If neither `initialEncodedState` nor `initialDocumentJson` is provided, the controller may synthesize a schema-aware empty text block locally so the native editor has an editable bootstrap document.
+
+That bootstrap fallback is not the shared collaboration state. After the session starts, `state.documentJson` and `editorBindings.valueJSON` reflect the actual CRDT document, including a legitimately empty `{ type: 'doc', content: [] }` when collaborators delete all content or a backend restores an empty state.
+
 ## Awareness And Remote Cursors
 
 Remote cursors should be passed through `remoteSelections` from `editorBindings`. Do not map remote awareness peers onto the local editor selection yourself.
 
 The package renders remote selections as native overlays. They are not meant to become the local user selection or move the active caret.
+
+## Lifecycle And Awareness Cleanup
+
+When the hook unmounts, it disconnects automatically and clears the local awareness session before releasing the native controller.
+
+If you use the imperative controller directly, call `disconnect()` when the editor should leave the room, or `destroy()` when the controller will never be reused. Both paths clear the local awareness session so remote clients can remove the departing cursor instead of showing duplicate stale peers after a remount.
 
 ## Web Compatibility Notes
 

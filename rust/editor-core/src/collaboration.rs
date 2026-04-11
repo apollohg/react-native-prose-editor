@@ -353,14 +353,24 @@ impl CollaborationSession {
     pub fn clear_local_awareness(&mut self) -> CollaborationResult {
         let previous_document_revision = self.document_revision;
         let previous_peers_revision = self.peers_revision;
+        let had_local_awareness = self.awareness.local_state_raw().is_some();
         self.local_awareness_state = None;
         self.awareness.remove_state(self.doc.client_id());
         self.refresh_cached_peers();
+        let messages = if had_local_awareness {
+            self.awareness
+                .update_with_clients([self.doc.client_id()])
+                .ok()
+                .map(|update| vec![encode_message(Message::Awareness(update))])
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         self.finish_result(
             previous_document_revision,
             previous_peers_revision,
-            Vec::new(),
+            messages,
         )
     }
 
@@ -1400,6 +1410,27 @@ mod tests {
         responses
     }
 
+    #[test]
+    fn collaboration_session_preserves_empty_document_json_for_custom_schema() {
+        let session = CollaborationSession::new(
+            &json!({
+                "clientId": 1,
+                "schema": {
+                    "nodes": [
+                        { "name": "doc", "content": "title? block*", "role": "doc" },
+                        { "name": "title", "content": "inline*", "group": "block", "role": "textBlock" },
+                        { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
+                        { "name": "text", "content": "", "group": "inline", "role": "text" }
+                    ],
+                    "marks": []
+                }
+            })
+            .to_string(),
+        );
+
+        assert_eq!(session.document_json(), empty_document_json());
+    }
+
     fn peer_document_json(peer: &Awareness) -> Value {
         let txn = peer.doc().transact();
         txn.get_xml_fragment("prosemirror")
@@ -1791,6 +1822,34 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn collaboration_session_clear_local_awareness_emits_removal_update() {
+        let mut session = CollaborationSession::new(r#"{"clientId":1}"#);
+        let peer = Awareness::new(Doc::with_client_id(2));
+
+        let awareness = session.set_local_awareness(json!({
+            "user": {
+                "name": "Session"
+            },
+            "selection": {
+                "anchor": 2,
+                "head": 4
+            }
+        }));
+        let _ = apply_messages_to_peer(&peer, awareness.messages);
+        let peer_states: HashMap<_, _> = peer
+            .iter()
+            .flat_map(|(id, state)| state.data.map(|data| (id, data)))
+            .collect();
+        assert!(peer_states.contains_key(&1));
+
+        let cleared = session.clear_local_awareness();
+        assert_eq!(cleared.messages.len(), 1);
+        let _ = apply_messages_to_peer(&peer, cleared.messages);
+
+        assert!(peer.state::<Value>(1).is_none());
     }
 
     #[test]
