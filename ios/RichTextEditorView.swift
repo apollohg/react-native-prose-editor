@@ -1153,6 +1153,15 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         }
     }
 
+    override func becomeFirstResponder() -> Bool {
+        let didBecomeFirstResponder = super.becomeFirstResponder()
+        if didBecomeFirstResponder {
+            _ = normalizeSelectionForEmptyBlockAutocapitalizationIfNeeded()
+            refreshTypingAttributesForSelection()
+        }
+        return didBecomeFirstResponder
+    }
+
     private func isRenderedContentEmpty() -> Bool {
         let renderedText = textStorage.string
         guard !renderedText.isEmpty else { return true }
@@ -1166,6 +1175,23 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
             }
         }
 
+        return true
+    }
+
+    @discardableResult
+    private func normalizeSelectionForEmptyBlockAutocapitalizationIfNeeded() -> Bool {
+        guard textStorage.length == 1 else { return false }
+        guard textStorage.string.unicodeScalars.elementsEqual([Self.emptyBlockPlaceholderScalar]) else {
+            return false
+        }
+
+        let currentRange = selectedRange
+        guard currentRange.location != NSNotFound, currentRange.length == 0 else { return false }
+        guard currentRange.location == textStorage.length else { return false }
+
+        let adjustedRange = NSRange(location: 0, length: 0)
+        guard currentRange != adjustedRange else { return false }
+        selectedRange = adjustedRange
         return true
     }
 
@@ -1947,6 +1973,9 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
     func textViewDidChangeSelection(_ textView: UITextView) {
         guard textView === self else { return }
         guard !isApplyingRustState else { return }
+        if normalizeSelectionForEmptyBlockAutocapitalizationIfNeeded() {
+            return
+        }
         refreshNativeSelectionChromeVisibility()
         onSelectionOrContentMayChange?()
         scheduleSelectionSync()
@@ -2099,7 +2128,9 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
     }
 
     func refreshSelectionVisualState() {
+        _ = normalizeSelectionForEmptyBlockAutocapitalizationIfNeeded()
         refreshNativeSelectionChromeVisibility()
+        refreshTypingAttributesForSelection()
         onSelectionOrContentMayChange?()
     }
 

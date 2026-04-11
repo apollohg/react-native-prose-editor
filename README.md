@@ -56,7 +56,7 @@ Required peer dependencies:
 Install the package:
 
 ```sh
-npm install @apollohg/react-native-prose-editor@0.4.2
+npm install @apollohg/react-native-prose-editor@0.4.3
 ```
 
 For local package development in this repo:

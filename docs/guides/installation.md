@@ -82,7 +82,7 @@ This package contains native code, so use a development build rather than Expo G
 The expected consumer setup looks like:
 
 ```sh
-npm install @apollohg/react-native-prose-editor@0.4.2
+npm install @apollohg/react-native-prose-editor@0.4.3
 npx expo install expo react react-native @expo/vector-icons
 npx expo prebuild
 ```

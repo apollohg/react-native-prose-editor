@@ -73,6 +73,51 @@ final class RichTextEditorViewTests: XCTestCase {
         )
     }
 
+    func testEmptyDocumentFocusRepositionsCaretBeforePlaceholderForAutocapitalization() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.editorId = editorId
+
+        setCollapsedSelection(in: view.textView, utf16Offset: 1)
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+
+        XCTAssertEqual(
+            view.textView.offset(
+                from: view.textView.beginningOfDocument,
+                to: view.textView.selectedTextRange?.start ?? view.textView.endOfDocument
+            ),
+            0,
+            "focus should keep the caret before the empty-paragraph placeholder so UIKit sentence capitalization still treats the editor as empty"
+        )
+    }
+
+    func testEmptyDocumentSelectionDriftSnapsBackBeforePlaceholderForAutocapitalization() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        textView.bindEditor(id: editorId)
+
+        setCollapsedSelection(in: textView, utf16Offset: 1)
+        textView.refreshSelectionVisualState()
+
+        XCTAssertEqual(
+            textView.offset(
+                from: textView.beginningOfDocument,
+                to: textView.selectedTextRange?.start ?? textView.endOfDocument
+            ),
+            0,
+            "selection refreshes should snap a collapsed caret off the synthetic empty-block placeholder back to the paragraph start"
+        )
+    }
+
     func testParagraphSplitAppliesTopLevelRenderPatch() {
         let editorId = editorCreate(configJson: "{}")
         defer { editorDestroy(id: editorId) }

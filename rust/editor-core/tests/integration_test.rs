@@ -1997,6 +1997,94 @@ fn test_insert_content_html_block_image_resolves_to_block_level() {
 }
 
 #[test]
+fn test_insert_content_html_mixed_block_fragment_replaces_empty_paragraph() {
+    let mut editor = default_editor();
+
+    let html_fragment =
+        "<p>Intro</p><ul><li><p>One</p></li><li><p>Two</p></li></ul><p>Outro</p>";
+
+    let update = editor
+        .insert_content_html(html_fragment)
+        .expect("insert mixed block HTML into empty editor");
+
+    let html = editor.get_html();
+    assert_eq!(
+        html, html_fragment,
+        "mixed block HTML should replace the synthetic empty paragraph, got: {html}"
+    );
+
+    let json = editor.get_json();
+    assert_eq!(json["content"].as_array().map(|nodes| nodes.len()), Some(3));
+    assert_eq!(json["content"][0]["type"], "paragraph");
+    assert_eq!(json["content"][1]["type"], "bulletList");
+    assert_eq!(json["content"][2]["type"], "paragraph");
+    assert_eq!(json["content"][2]["content"][0]["text"], "Outro");
+    assert_eq!(
+        update.selection,
+        Selection::cursor(editor.document().content_size().saturating_sub(1)),
+        "caret should land at the end of the final paragraph"
+    );
+}
+
+#[test]
+fn test_insert_content_json_mixed_block_fragment_replaces_empty_paragraph() {
+    let mut editor = default_editor();
+
+    let content_doc = serde_json::json!({
+        "type": "doc",
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "Intro" }]
+            },
+            {
+                "type": "bulletList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "content": [
+                            {
+                                "type": "paragraph",
+                                "content": [{ "type": "text", "text": "One" }]
+                            }
+                        ]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [
+                            {
+                                "type": "paragraph",
+                                "content": [{ "type": "text", "text": "Two" }]
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "Outro" }]
+            }
+        ]
+    });
+
+    let update = editor
+        .insert_content_json(&content_doc)
+        .expect("insert mixed block JSON into empty editor");
+
+    let html = editor.get_html();
+    assert_eq!(
+        html,
+        "<p>Intro</p><ul><li><p>One</p></li><li><p>Two</p></li></ul><p>Outro</p>",
+        "mixed block JSON should replace the synthetic empty paragraph, got: {html}"
+    );
+    assert_eq!(
+        update.selection,
+        Selection::cursor(editor.document().content_size().saturating_sub(1)),
+        "caret should land at the end of the final paragraph"
+    );
+}
+
+#[test]
 fn test_resize_image_at_doc_pos_updates_attrs_and_selects_image_node() {
     let mut editor = default_editor();
     editor

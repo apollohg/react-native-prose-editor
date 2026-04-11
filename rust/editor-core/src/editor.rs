@@ -764,8 +764,8 @@ impl Editor {
         let doc = self.backend.document();
         let from = self.selection.from(doc);
 
-        if self.is_block_void_fragment(&content) {
-            return self.insert_block_void_fragment_at_selection(from, &content, Source::Paste);
+        if self.is_block_fragment(&content) {
+            return self.insert_block_fragment_at_selection(from, &content, Source::Paste);
         }
 
         let to = self.selection.to(doc);
@@ -795,8 +795,8 @@ impl Editor {
         let doc = self.backend.document();
         let from = self.selection.from(doc);
 
-        if self.is_block_void_fragment(&content) {
-            return self.insert_block_void_fragment_at_selection(from, &content, Source::Api);
+        if self.is_block_fragment(&content) {
+            return self.insert_block_fragment_at_selection(from, &content, Source::Api);
         }
 
         let to = self.selection.to(doc);
@@ -1685,14 +1685,28 @@ impl Editor {
             .any(|insertable| insertable == node_type)
     }
 
-    fn is_block_void_fragment(&self, content: &Fragment) -> bool {
+    fn is_block_fragment(&self, content: &Fragment) -> bool {
         content.size() > 0
             && content.iter().all(|node| {
                 self.schema
                     .node(node.node_type())
-                    .map(|spec| matches!(spec.role, NodeRole::Block) && spec.is_void)
+                    .map(|spec| {
+                        matches!(
+                            spec.role,
+                            NodeRole::TextBlock | NodeRole::List { .. } | NodeRole::Block
+                        )
+                    })
                     .unwrap_or(false)
             })
+    }
+
+    fn block_fragment_ends_with_text_block(&self, content: &Fragment) -> bool {
+        content
+            .iter()
+            .last()
+            .and_then(|node| self.schema.node(node.node_type()))
+            .map(|spec| matches!(spec.role, NodeRole::TextBlock))
+            .unwrap_or(false)
     }
 
     fn image_node_at_doc_pos(
@@ -1713,19 +1727,12 @@ impl Editor {
         Some((block.doc_start, node.attrs().clone()))
     }
 
-    fn insert_block_void_fragment_at_selection(
+    fn insert_block_fragment_at_selection(
         &mut self,
         pos: u32,
         content: &Fragment,
         source: Source,
     ) -> Result<EditorUpdate, EditorError> {
-        if !content
-            .iter()
-            .all(|node| self.can_insert_block_node_at_pos(pos, node.node_type()))
-        {
-            return Ok(self.build_update_from_current());
-        }
-
         let insert_pos = self.resolve_block_insert_pos(pos);
         let replace_range = self.empty_text_block_replace_range_at(pos);
         let replace_from = replace_range.map(|(from, _)| from).unwrap_or(insert_pos);
@@ -1733,7 +1740,16 @@ impl Editor {
         let inserted_size = content.size();
 
         let mut replacement_nodes: Vec<Node> = content.iter().cloned().collect();
-        replacement_nodes.push(Self::empty_paragraph_node());
+        let selection_after = if self.block_fragment_ends_with_text_block(content) {
+            Some(Selection::cursor(
+                replace_from.saturating_add(inserted_size.saturating_sub(1)),
+            ))
+        } else {
+            replacement_nodes.push(Self::empty_paragraph_node());
+            Some(Selection::cursor(
+                replace_from.saturating_add(inserted_size).saturating_add(1),
+            ))
+        };
 
         let mut tx = Transaction::new(source);
         tx.add_step(Step::ReplaceRange {
@@ -1742,13 +1758,11 @@ impl Editor {
             content: Fragment::from(replacement_nodes),
         });
 
-        self.apply_transaction_with_selection_adjustments(
-            tx,
-            None,
-            Some(Selection::cursor(
-                replace_from.saturating_add(inserted_size).saturating_add(1),
-            )),
-        )
+        match self.apply_transaction_with_selection_adjustments(tx, None, selection_after) {
+            Ok(update) => Ok(update),
+            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
+            Err(e) => Err(e),
+        }
     }
 
     fn is_inline_insertable_node(&self, node_type: &str) -> bool {

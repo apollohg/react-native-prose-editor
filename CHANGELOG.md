@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3] - 2026-04-11
+
+### Fixed
+
+- iOS now restores sentence-start auto-capitalization when focus lands in a fully empty editor.
+- `insertContentHtml()` and `insertContentJson()` now resolve mixed block fragments such as paragraph-plus-list content at the block level instead of trying to nest block nodes inside the current paragraph, preventing `paragraph has unexpected child 'paragraph'` transform errors.
+
 ## [0.4.2] - 2026-04-11
 
 ### Fixed
@@ -93,6 +100,7 @@
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[0.4.3]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.2...0.4.3
 [0.4.2]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.1...0.4.2
 [0.4.1]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.3.0...0.4.0
