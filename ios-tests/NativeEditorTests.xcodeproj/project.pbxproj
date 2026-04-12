@@ -21,6 +21,7 @@
 		9863E4C17C554BABEFD9F984 /* EditorCore.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 8AE95B7397233B845D719292 /* EditorCore.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9A956ACF25320EA8F4016A05 /* RenderBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 516ABE2BD8A41C81DA442F32 /* RenderBridge.swift */; };
 		9F1A55F6449E8361540E5EB3 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 2FD50890F746C4B4E4B838BD /* PrivacyInfo.xcprivacy */; };
+		A1B2C3D4E5F60718293A4B5C /* NativeProseViewerExpoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5061728394A5B6C /* NativeProseViewerExpoView.swift */; };
 		B38018A935CF0A1BFA0AF72E /* NativeEditorExpoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */; };
 		D706191CC74381BEB84776D7 /* EditorLayoutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22D9688A83204F92DB17B85B /* EditorLayoutManager.swift */; };
 		D7344AB7C1491512AC102875 /* libPods-NativeEditorTestHost-NativeEditorTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = B46C4C8413D852C1EA333360 /* libPods-NativeEditorTestHost-NativeEditorTests.a */; };
@@ -61,6 +62,7 @@
 		A6225248E2F347AD95F31C25 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A700A64843C00E6FC5892B16 /* RenderBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderBridgeTests.swift; sourceTree = "<group>"; };
 		AAFA4DB42F32DDE95171E72A /* NativeEditorTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NativeEditorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B1C2D3E4F5061728394A5B6C /* NativeProseViewerExpoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeProseViewerExpoView.swift; sourceTree = "<group>"; };
 		B46C4C8413D852C1EA333360 /* libPods-NativeEditorTestHost-NativeEditorTests.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-NativeEditorTestHost-NativeEditorTests.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C3D24C682231420ABA5F6B40 /* Pods-NativeEditorTestHost.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-NativeEditorTestHost.release.xcconfig"; path = "Target Support Files/Pods-NativeEditorTestHost/Pods-NativeEditorTestHost.release.xcconfig"; sourceTree = "<group>"; };
 		C601336010F52C4C427A726B /* RichTextEditorViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichTextEditorViewTests.swift; sourceTree = "<group>"; };
@@ -100,6 +102,7 @@
 				2B2DD21676DB1880CDE24021 /* Generated_editor_core.swift */,
 				786BFC8DCAD00895F167F944 /* NativeEditorExpoView.swift */,
 				8C79AD6B373E7B39BF9C2584 /* NativeEditorModule.swift */,
+				B1C2D3E4F5061728394A5B6C /* NativeProseViewerExpoView.swift */,
 				F75CAFD6EDB9B56164227CB6 /* PositionBridge.swift */,
 				516ABE2BD8A41C81DA442F32 /* RenderBridge.swift */,
 				1561A9AC095AC3464D02B016 /* RichTextEditorView.swift */,
@@ -406,6 +409,7 @@
 				ED499271D47BBC23905FBF95 /* Generated_editor_core.swift in Sources */,
 				B38018A935CF0A1BFA0AF72E /* NativeEditorExpoView.swift in Sources */,
 				408339E7E0B80F1F36E719D7 /* NativeEditorModule.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5C /* NativeProseViewerExpoView.swift in Sources */,
 				3BC1ECCE070C6FE94BBFD2E7 /* NativePerformanceTests.swift in Sources */,
 				109D03B935C7AEF00B35F7FD /* PositionBridge.swift in Sources */,
 				4C50AEDC57A2F1DFD2FB47E9 /* PositionBridgeTests.swift in Sources */,
