@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.1] - 2026-04-12
+
+### Fixed
+
+- Moved prettier to dev dependencies.
+
 ## [0.5.0] - 2026-04-12
 
 ### Added
@@ -108,6 +114,7 @@
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[0.5.1]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.3...0.5.0
 [0.4.3]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.2...0.4.3
 [0.4.2]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.1...0.4.2
