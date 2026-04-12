@@ -287,6 +287,14 @@ class NativeEditorModule : Module() {
         Function("editorCanRedo") { id: Int ->
             editorCanRedo(id.toULong())
         }
+        Function("renderDocumentJson") { configJson: String, json: String ->
+            val editorId = editorCreate(configJson)
+            try {
+                editorSetJson(editorId, json)
+            } finally {
+                editorDestroy(editorId)
+            }
+        }
 
         View(NativeEditorExpoView::class) {
             Events(
@@ -358,6 +366,18 @@ class NativeEditorModule : Module() {
                 view.applyEditorUpdate(updateJson)
             }
 
+        }
+
+        View(NativeProseViewerExpoView::class) {
+            Name("NativeProseViewer")
+            Events("onContentHeightChange", "onPressMention")
+
+            Prop("renderJson") { view: NativeProseViewerExpoView, renderJson: String? ->
+                view.setRenderJson(renderJson)
+            }
+            Prop("themeJson") { view: NativeProseViewerExpoView, themeJson: String? ->
+                view.setThemeJson(themeJson)
+            }
         }
     }
 }

@@ -10,6 +10,12 @@ export {
 } from './NativeRichTextEditor';
 
 export {
+    NativeProseViewer,
+    type NativeProseViewerProps,
+    type NativeProseViewerMentionPressEvent,
+} from './NativeProseViewer';
+
+export {
     EditorToolbar,
     DEFAULT_EDITOR_TOOLBAR_ITEMS,
     type EditorToolbarProps,

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0] - 2026-04-12
+
+### Added
+
+- `NativeProseViewer` for rendering static ProseMirror/Prose JSON without creating a full editable editor instance.
+- Tappable mention support in the viewer via `onPressMention`.
+- Native `renderDocumentJson` bridge support for turning document JSON into render elements without mounting an editor surface.
+
 ## [0.4.3] - 2026-04-11
 
 ### Fixed
@@ -100,6 +108,7 @@
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[0.5.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.3...0.5.0
 [0.4.3]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.2...0.4.3
 [0.4.2]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.1...0.4.2
 [0.4.1]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.0...0.4.1

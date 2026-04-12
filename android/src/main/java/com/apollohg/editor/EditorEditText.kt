@@ -72,6 +72,11 @@ class EditorEditText @JvmOverloads constructor(
         val rect: RectF
     )
 
+    data class MentionHit(
+        val docPos: Int,
+        val label: String
+    )
+
     private data class ParsedRenderPatch(
         val startIndex: Int,
         val deleteCount: Int,
@@ -1576,6 +1581,49 @@ class EditorEditText @JvmOverloads constructor(
         } else {
             preserveScrollPosition(previousScrollX, previousScrollY)
         }
+    }
+
+    fun mentionHitAt(x: Float, y: Float): MentionHit? {
+        val spannable = text as? Spanned ?: return null
+        val layout = layout ?: return null
+        if (spannable.isEmpty()) return null
+
+        val localX = x - totalPaddingLeft + scrollX
+        val localY = y - totalPaddingTop + scrollY
+        if (localY < 0f || localY > layout.height.toFloat()) {
+            return null
+        }
+
+        val line = layout.getLineForVertical(localY.toInt())
+        val lineLeft = layout.getLineLeft(line)
+        val lineRight = layout.getLineRight(line)
+        if (localX < lineLeft || localX > lineRight) {
+            return null
+        }
+
+        val offset = layout.getOffsetForHorizontal(line, localX)
+            .coerceIn(0, maxOf(spannable.length - 1, 0))
+        val annotations = spannable.getSpans(
+            offset,
+            (offset + 1).coerceAtMost(spannable.length),
+            Annotation::class.java
+        )
+        val mentionAnnotation = annotations.firstOrNull {
+            it.key == "nativeVoidNodeType" && it.value == "mention"
+        } ?: return null
+        val docPos = annotations.firstOrNull { it.key == "nativeDocPos" }
+            ?.value
+            ?.toIntOrNull() ?: return null
+        val start = spannable.getSpanStart(mentionAnnotation)
+        val end = spannable.getSpanEnd(mentionAnnotation)
+        if (start < 0 || end <= start) {
+            return null
+        }
+
+        return MentionHit(
+            docPos = docPos,
+            label = spannable.subSequence(start, end).toString()
+        )
     }
 
     private fun handleImageTap(event: MotionEvent): Boolean {

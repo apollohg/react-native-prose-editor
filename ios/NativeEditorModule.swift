@@ -261,6 +261,13 @@ public class NativeEditorModule: Module {
         Function("editorCanRedo") { (id: Int) -> Bool in
             editorCanRedo(id: UInt64(id))
         }
+        Function("renderDocumentJson") { (configJson: String, json: String) -> String in
+            let editorId = editorCreate(configJson: configJson)
+            defer {
+                editorDestroy(id: editorId)
+            }
+            return editorSetJson(id: editorId, json: json)
+        }
         Function("editorReplaceHtml") { (id: Int, html: String) -> String in
             editorReplaceHtml(id: UInt64(id), html: html)
         }
@@ -363,6 +370,18 @@ public class NativeEditorModule: Module {
             }
             AsyncFunction("blur") { (view: NativeEditorExpoView) in
                 view.blur()
+            }
+        }
+
+        View(NativeProseViewerExpoView.self) {
+            ViewName("NativeProseViewer")
+            Events("onContentHeightChange", "onPressMention")
+
+            Prop("renderJson") { (view: NativeProseViewerExpoView, renderJson: String?) in
+                view.setRenderJson(renderJson)
+            }
+            Prop("themeJson") { (view: NativeProseViewerExpoView, themeJson: String?) in
+                view.setThemeJson(themeJson)
             }
         }
     }

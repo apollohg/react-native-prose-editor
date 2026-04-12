@@ -908,10 +908,12 @@ object RenderBridge {
                 "opaqueInlineAtom" -> {
                     val nodeType = element.optString("nodeType", "")
                     val label = element.optString("label", "?")
+                    val docPos = element.optInt("docPos", 0)
                     appendOpaqueInlineAtom(
                         state.result,
                         nodeType,
                         label,
+                        docPos,
                         baseFontSize,
                         textColor,
                         state.blockStack,
@@ -924,6 +926,7 @@ object RenderBridge {
                 "opaqueBlockAtom" -> {
                     val nodeType = element.optString("nodeType", "")
                     val label = element.optString("label", "?")
+                    val docPos = element.optInt("docPos", 0)
                     val blockSpacing = theme?.effectiveTextStyle(nodeType)?.spacingAfter
                     if (!state.isFirstBlock) {
                         val spacingPx = ((state.nextBlockSpacingBefore ?: 0f) * density).toInt()
@@ -941,6 +944,7 @@ object RenderBridge {
                         state.result,
                         nodeType,
                         label,
+                        docPos,
                         baseFontSize,
                         textColor,
                         theme,
@@ -1343,6 +1347,7 @@ object RenderBridge {
         builder: SpannableStringBuilder,
         nodeType: String,
         label: String,
+        docPos: Int,
         baseFontSize: Float,
         textColor: Int,
         blockStack: MutableList<BlockContext>,
@@ -1378,6 +1383,10 @@ object RenderBridge {
             Annotation("nativeVoidNodeType", nodeType),
             start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
         )
+        builder.setSpan(
+            Annotation("nativeDocPos", docPos.toString()),
+            start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
         if (isMention && (theme?.mentions?.fontWeight == "bold" ||
                 theme?.mentions?.fontWeight?.toIntOrNull()?.let { it >= 600 } == true)
         ) {
@@ -1393,6 +1402,7 @@ object RenderBridge {
         builder: SpannableStringBuilder,
         nodeType: String,
         label: String,
+        docPos: Int,
         baseFontSize: Float,
         textColor: Int,
         theme: EditorTheme?,
@@ -1413,6 +1423,10 @@ object RenderBridge {
         )
         builder.setSpan(
             Annotation("nativeVoidNodeType", nodeType),
+            start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        builder.setSpan(
+            Annotation("nativeDocPos", docPos.toString()),
             start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
         )
         annotateTopLevelChild(builder, start, end, topLevelChildIndex)
