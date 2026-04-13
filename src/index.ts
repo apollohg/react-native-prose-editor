@@ -12,6 +12,7 @@ export {
 export {
     NativeProseViewer,
     type NativeProseViewerProps,
+    type NativeProseViewerMentionRenderContext,
     type NativeProseViewerMentionPressEvent,
 } from './NativeProseViewer';
 
@@ -55,6 +56,7 @@ export {
     type MentionsAddonConfig,
     type MentionSuggestion,
     type MentionQueryChangeEvent,
+    type MentionSelectionAttrsEvent,
     type MentionSelectEvent,
     type EditorAddonEvent,
 } from './addons';

@@ -26,10 +26,23 @@ export interface MentionSelectEvent {
     attrs: Record<string, unknown>;
 }
 
+export interface MentionSelectionAttrsEvent {
+    trigger: string;
+    suggestion: MentionSuggestion;
+    attrs: Record<string, unknown>;
+    range: {
+        anchor: number;
+        head: number;
+    };
+}
+
 export interface MentionsAddonConfig {
     trigger?: string;
     suggestions?: readonly MentionSuggestion[];
     theme?: EditorMentionTheme;
+    resolveSelectionAttrs?: (
+        event: MentionSelectionAttrsEvent
+    ) => Record<string, unknown> | null | undefined;
     onQueryChange?: (event: MentionQueryChangeEvent) => void;
     onSelect?: (event: MentionSelectEvent) => void;
 }
@@ -49,6 +62,7 @@ export interface SerializedMentionSuggestion {
 export interface SerializedMentionsAddonConfig {
     trigger: string;
     theme?: EditorMentionTheme;
+    resolveSelectionAttrs?: boolean;
     suggestions: SerializedMentionSuggestion[];
 }
 
@@ -66,6 +80,16 @@ export type EditorAddonEvent =
               head: number;
           };
           isActive: boolean;
+      }
+    | {
+          type: 'mentionsSelectRequest';
+          trigger: string;
+          suggestionKey: string;
+          attrs: Record<string, unknown>;
+          range: {
+              anchor: number;
+              head: number;
+          };
       }
     | {
           type: 'mentionsSelect';
@@ -112,6 +136,7 @@ export function normalizeEditorAddons(addons?: EditorAddons): SerializedEditorAd
         const label = suggestion.label?.trim() || `${trigger}${suggestion.title}`;
         const attrs = {
             label,
+            mentionSuggestionChar: trigger,
             ...(suggestion.attrs ?? {}),
         };
 
@@ -128,6 +153,9 @@ export function normalizeEditorAddons(addons?: EditorAddons): SerializedEditorAd
         mentions: {
             trigger,
             theme: addons.mentions.theme,
+            ...(typeof addons.mentions.resolveSelectionAttrs === 'function'
+                ? { resolveSelectionAttrs: true }
+                : {}),
             suggestions,
         },
     };

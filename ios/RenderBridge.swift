@@ -89,6 +89,9 @@ enum RenderBridgeAttributes {
     /// Stores the rendered list marker scale for unordered bullets.
     static let listMarkerScale = NSAttributedString.Key("com.apollohg.editor.listMarkerScale")
 
+    /// Stores the paragraph base font used to render the list marker.
+    static let listMarkerBaseFont = NSAttributedString.Key("com.apollohg.editor.listMarkerBaseFont")
+
     /// Stores the reserved list marker gutter width.
     static let listMarkerWidth = NSAttributedString.Key("com.apollohg.editor.listMarkerWidth")
 
@@ -242,7 +245,8 @@ final class RenderBridge {
                 let attrs = applyBlockStyle(
                     to: baseAttrs,
                     blockStack: blockStack,
-                    theme: theme
+                    theme: theme,
+                    blockBaseFont: blockFont
                 )
                 let attributedText = NSAttributedString(string: text, attributes: attrs)
                 result.append(
@@ -322,6 +326,9 @@ final class RenderBridge {
                 let nodeType = element["nodeType"] as? String ?? ""
                 let label = element["label"] as? String ?? "?"
                 let docPos = jsonUInt32(element["docPos"])
+                let mentionTheme = (element["mentionTheme"] as? [String: Any]).map(
+                    EditorMentionTheme.init(dictionary:)
+                )
                 let attrStr = attributedStringForOpaqueInlineAtom(
                     nodeType: nodeType,
                     label: label,
@@ -330,7 +337,8 @@ final class RenderBridge {
                     textColor: textColor,
                     blockStack: blockStack,
                     topLevelChildIndex: topLevelChildIndex,
-                    theme: theme
+                    theme: theme,
+                    mentionTheme: mentionTheme
                 )
                 result.append(
                     attributedStringApplyingLeadingTopLevelChildIndexIfNeeded(
@@ -635,7 +643,8 @@ final class RenderBridge {
         let styledAttrs = applyBlockStyle(
             to: attrs,
             blockStack: blockStack,
-            theme: theme
+            theme: theme,
+            blockBaseFont: blockFont
         )
 
         switch nodeType {
@@ -731,7 +740,8 @@ final class RenderBridge {
         textColor: UIColor,
         blockStack: [BlockContext],
         topLevelChildIndex _: Int?,
-        theme: EditorTheme?
+        theme: EditorTheme?,
+        mentionTheme: EditorMentionTheme?
     ) -> NSAttributedString {
         let blockFont = resolvedFont(for: blockStack, baseFont: baseFont, theme: theme)
         let blockColor = resolvedTextColor(for: blockStack, textColor: textColor, theme: theme)
@@ -739,9 +749,11 @@ final class RenderBridge {
         attrs[RenderBridgeAttributes.voidNodeType] = nodeType
         attrs[RenderBridgeAttributes.docPos] = docPos
         if nodeType == "mention" {
-            attrs[.foregroundColor] = theme?.mentions?.textColor ?? blockColor
-            attrs[.backgroundColor] = theme?.mentions?.backgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12)
-            if let mentionFont = mentionFont(from: blockFont, theme: theme?.mentions) {
+            let resolvedMentionTheme = theme?.mentions?.merged(with: mentionTheme) ?? mentionTheme
+            attrs[.foregroundColor] = resolvedMentionTheme?.textColor ?? blockColor
+            attrs[.backgroundColor] =
+                resolvedMentionTheme?.backgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12)
+            if let mentionFont = mentionFont(from: blockFont, theme: resolvedMentionTheme) {
                 attrs[.font] = mentionFont
             }
         } else {
@@ -750,7 +762,8 @@ final class RenderBridge {
         let styledAttrs = applyBlockStyle(
             to: attrs,
             blockStack: blockStack,
-            theme: theme
+            theme: theme,
+            blockBaseFont: blockFont
         )
 
         let visibleText = nodeType == "mention" ? label : "[\(label)]"
@@ -923,16 +936,18 @@ final class RenderBridge {
     private static func applyBlockStyle(
         to attrs: [NSAttributedString.Key: Any],
         blockStack: [BlockContext],
-        theme: EditorTheme?
+        theme: EditorTheme?,
+        blockBaseFont: UIFont? = nil
     ) -> [NSAttributedString.Key: Any] {
         guard let currentBlock = effectiveBlockContext(blockStack) else { return attrs }
         var mutableAttrs = attrs
-        let blockFont = mutableAttrs[.font] as? UIFont ?? .systemFont(ofSize: 16)
+        let renderedFont = mutableAttrs[.font] as? UIFont ?? .systemFont(ofSize: 16)
+        let paragraphBaseFont = blockBaseFont ?? renderedFont
         mutableAttrs[.paragraphStyle] = paragraphStyleForBlock(
             currentBlock,
             blockStack: blockStack,
             theme: theme,
-            baseFont: blockFont
+            baseFont: paragraphBaseFont
         )
         mutableAttrs[RenderBridgeAttributes.blockNodeType] = currentBlock.nodeType
         mutableAttrs[RenderBridgeAttributes.blockDepth] = currentBlock.depth
@@ -943,10 +958,11 @@ final class RenderBridge {
             mutableAttrs[RenderBridgeAttributes.listMarkerContext] = markerContext
             mutableAttrs[RenderBridgeAttributes.listMarkerColor] = theme?.list?.markerColor
             mutableAttrs[RenderBridgeAttributes.listMarkerScale] = theme?.list?.markerScale
+            mutableAttrs[RenderBridgeAttributes.listMarkerBaseFont] = paragraphBaseFont
             mutableAttrs[RenderBridgeAttributes.listMarkerWidth] = listMarkerWidth(
                 for: currentBlock,
                 theme: theme,
-                baseFont: blockFont
+                baseFont: paragraphBaseFont
             )
         }
         if blockquoteDepth(in: blockStack) > 0 {
@@ -977,7 +993,8 @@ final class RenderBridge {
         var attrs = applyBlockStyle(
             to: defaultAttributes(baseFont: baseFont, textColor: textColor),
             blockStack: blockStack,
-            theme: theme
+            theme: theme,
+            blockBaseFont: baseFont
         )
         if let topLevelChildIndex {
             attrs[RenderBridgeAttributes.topLevelChildIndex] = NSNumber(value: topLevelChildIndex)
@@ -1280,7 +1297,8 @@ final class RenderBridge {
         var styledAttrs = applyBlockStyle(
             to: attrs,
             blockStack: placeholderBlockStack,
-            theme: theme
+            theme: theme,
+            blockBaseFont: blockFont
         )
         if let paragraphStyle = (styledAttrs[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy()
             as? NSMutableParagraphStyle

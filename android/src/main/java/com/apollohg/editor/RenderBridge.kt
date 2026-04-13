@@ -909,6 +909,9 @@ object RenderBridge {
                     val nodeType = element.optString("nodeType", "")
                     val label = element.optString("label", "?")
                     val docPos = element.optInt("docPos", 0)
+                    val mentionTheme = EditorMentionTheme.fromJson(
+                        element.optJSONObject("mentionTheme")
+                    )
                     appendOpaqueInlineAtom(
                         state.result,
                         nodeType,
@@ -919,6 +922,7 @@ object RenderBridge {
                         state.blockStack,
                         state.pendingLeadingMargins,
                         theme,
+                        mentionTheme,
                         density
                     )
                 }
@@ -1353,6 +1357,7 @@ object RenderBridge {
         blockStack: MutableList<BlockContext>,
         pendingLeadingMargins: MutableMap<Int, PendingLeadingMargin>,
         theme: EditorTheme?,
+        mentionTheme: EditorMentionTheme?,
         density: Float
     ) {
         val isMention = nodeType == "mention"
@@ -1360,8 +1365,13 @@ object RenderBridge {
         val start = builder.length
         builder.append(text)
         val end = builder.length
+        val resolvedMentionTheme = if (isMention) {
+            theme?.mentions?.mergedWith(mentionTheme) ?: mentionTheme
+        } else {
+            null
+        }
         val inlineTextColor = if (isMention) {
-            theme?.mentions?.textColor ?: resolveInlineTextColor(blockStack, textColor, theme)
+            resolvedMentionTheme?.textColor ?: resolveInlineTextColor(blockStack, textColor, theme)
         } else {
             resolveInlineTextColor(blockStack, textColor, theme)
         }
@@ -1372,7 +1382,7 @@ object RenderBridge {
         builder.setSpan(
             BackgroundColorSpan(
                 if (isMention) {
-                    theme?.mentions?.backgroundColor ?: 0x1f1d4ed8
+                    resolvedMentionTheme?.backgroundColor ?: 0x1f1d4ed8
                 } else {
                     0x20000000
                 }
@@ -1387,8 +1397,8 @@ object RenderBridge {
             Annotation("nativeDocPos", docPos.toString()),
             start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
         )
-        if (isMention && (theme?.mentions?.fontWeight == "bold" ||
-                theme?.mentions?.fontWeight?.toIntOrNull()?.let { it >= 600 } == true)
+        if (isMention && (resolvedMentionTheme?.fontWeight == "bold" ||
+                resolvedMentionTheme?.fontWeight?.toIntOrNull()?.let { it >= 600 } == true)
         ) {
             builder.setSpan(
                 StyleSpan(Typeface.BOLD),

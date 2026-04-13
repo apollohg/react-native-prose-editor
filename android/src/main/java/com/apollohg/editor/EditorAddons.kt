@@ -30,7 +30,8 @@ data class NativeMentionSuggestion(
 data class NativeMentionsAddonConfig(
     val trigger: String,
     val suggestions: List<NativeMentionSuggestion>,
-    val theme: EditorMentionTheme?
+    val theme: EditorMentionTheme?,
+    val resolveSelectionAttrs: Boolean
 ) {
     companion object {
         fun fromJson(json: JSONObject?): NativeMentionsAddonConfig? {
@@ -51,7 +52,8 @@ data class NativeMentionsAddonConfig(
             return NativeMentionsAddonConfig(
                 trigger = trigger,
                 suggestions = suggestions,
-                theme = EditorMentionTheme.fromJson(json.optJSONObject("theme"))
+                theme = EditorMentionTheme.fromJson(json.optJSONObject("theme")),
+                resolveSelectionAttrs = json.optBoolean("resolveSelectionAttrs", false)
             )
         }
     }

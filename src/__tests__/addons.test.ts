@@ -51,6 +51,7 @@ describe('mentions addon helpers', () => {
                         label: '@Alice',
                         attrs: {
                             label: '@Alice',
+                            mentionSuggestionChar: '@',
                             id: 'u1',
                             kind: 'user',
                         },
@@ -86,7 +87,40 @@ describe('mentions addon helpers', () => {
                             key: 'u1',
                             title: 'Alice',
                             label: '@Alice',
-                            attrs: { label: '@Alice', id: 'u1' },
+                            attrs: {
+                                label: '@Alice',
+                                mentionSuggestionChar: '@',
+                                id: 'u1',
+                            },
+                        },
+                    ],
+                },
+            })
+        );
+    });
+
+    it('marks mention configs that require JS-side selection attr resolution', () => {
+        const serialized = serializeEditorAddons({
+            mentions: {
+                suggestions: [{ key: 'u1', title: 'Alice' }],
+                resolveSelectionAttrs: () => ({ source: 'js' }),
+            },
+        });
+
+        expect(serialized).toBe(
+            JSON.stringify({
+                mentions: {
+                    trigger: '@',
+                    resolveSelectionAttrs: true,
+                    suggestions: [
+                        {
+                            key: 'u1',
+                            title: 'Alice',
+                            label: '@Alice',
+                            attrs: {
+                                label: '@Alice',
+                                mentionSuggestionChar: '@',
+                            },
                         },
                     ],
                 },

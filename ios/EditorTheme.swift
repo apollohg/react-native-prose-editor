@@ -139,6 +139,31 @@ struct EditorMentionTheme {
     var optionHighlightedBackgroundColor: UIColor?
     var optionHighlightedTextColor: UIColor?
 
+    func merged(with override: EditorMentionTheme?) -> EditorMentionTheme {
+        guard let override else { return self }
+        var merged = self
+        merged.textColor = override.textColor ?? merged.textColor
+        merged.backgroundColor = override.backgroundColor ?? merged.backgroundColor
+        merged.borderColor = override.borderColor ?? merged.borderColor
+        merged.borderWidth = override.borderWidth ?? merged.borderWidth
+        merged.borderRadius = override.borderRadius ?? merged.borderRadius
+        merged.fontWeight = override.fontWeight ?? merged.fontWeight
+        merged.popoverBackgroundColor =
+            override.popoverBackgroundColor ?? merged.popoverBackgroundColor
+        merged.popoverBorderColor = override.popoverBorderColor ?? merged.popoverBorderColor
+        merged.popoverBorderWidth = override.popoverBorderWidth ?? merged.popoverBorderWidth
+        merged.popoverBorderRadius = override.popoverBorderRadius ?? merged.popoverBorderRadius
+        merged.popoverShadowColor = override.popoverShadowColor ?? merged.popoverShadowColor
+        merged.optionTextColor = override.optionTextColor ?? merged.optionTextColor
+        merged.optionSecondaryTextColor =
+            override.optionSecondaryTextColor ?? merged.optionSecondaryTextColor
+        merged.optionHighlightedBackgroundColor =
+            override.optionHighlightedBackgroundColor ?? merged.optionHighlightedBackgroundColor
+        merged.optionHighlightedTextColor =
+            override.optionHighlightedTextColor ?? merged.optionHighlightedTextColor
+        return merged
+    }
+
     init(dictionary: [String: Any]) {
         textColor = EditorTheme.color(from: dictionary["textColor"])
         backgroundColor = EditorTheme.color(from: dictionary["backgroundColor"])

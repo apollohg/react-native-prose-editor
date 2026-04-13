@@ -247,6 +247,7 @@ function resetMockNativeModule() {
     mockNativeModule.editorOutdentListItemAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorInsertNodeAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorDocToScalar = jest.fn((_: number, pos: number) => pos);
+    mockNativeModule.editorScalarToDoc = jest.fn((_: number, scalar: number) => scalar);
     // List / node APIs
     mockNativeModule.editorWrapInList = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorUnwrapFromList = jest.fn(() => MOCK_UPDATE_JSON);
@@ -935,6 +936,25 @@ describe('NativeEditorBridge', () => {
             bridge.destroy();
         });
 
+        it('sets an attributed link mark on an explicit scalar selection', () => {
+            const bridge = NativeEditorBridge.create();
+
+            const update = bridge.setMarkAtSelectionScalar(7, 26, 'link', {
+                href: 'https://example.com',
+            });
+
+            expect(mockNativeModule.editorSetMarkAtSelectionScalar).toHaveBeenCalledWith(
+                bridge.editorId,
+                7,
+                26,
+                'link',
+                JSON.stringify({ href: 'https://example.com' })
+            );
+            expect(update).not.toBeNull();
+
+            bridge.destroy();
+        });
+
         it('removes an attributed link mark from the current selection', () => {
             const bridge = NativeEditorBridge.create();
 
@@ -961,6 +981,18 @@ describe('NativeEditorBridge', () => {
             bridge.setSelection(3, 7);
 
             expect(mockNativeModule.editorSetSelection).toHaveBeenCalledWith(bridge.editorId, 3, 7);
+
+            bridge.destroy();
+        });
+
+        it('converts between document and scalar positions via the native bridge', () => {
+            const bridge = NativeEditorBridge.create();
+
+            expect(bridge.docToScalar(12)).toBe(12);
+            expect(bridge.scalarToDoc(9)).toBe(9);
+
+            expect(mockNativeModule.editorDocToScalar).toHaveBeenCalledWith(bridge.editorId, 12);
+            expect(mockNativeModule.editorScalarToDoc).toHaveBeenCalledWith(bridge.editorId, 9);
 
             bridge.destroy();
         });

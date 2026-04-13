@@ -858,6 +858,7 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
     /// The base background color before theme overrides.
     var baseBackgroundColor: UIColor = .systemBackground
     var baseTextContainerInset: UIEdgeInsets = .zero
+    var baseLineFragmentPadding: CGFloat = 0
 
     /// Optional render theme supplied by React.
     var theme: EditorTheme? {
@@ -872,8 +873,10 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
                     bottom: contentInsets.bottom ?? 0,
                     right: contentInsets.right ?? 0
                 )
+                textContainer.lineFragmentPadding = 0
             } else {
                 textContainerInset = baseTextContainerInset
+                textContainer.lineFragmentPadding = baseLineFragmentPadding
             }
             invalidateAutoGrowHeightMeasurement()
             setNeedsLayout()
@@ -1040,6 +1043,7 @@ final class EditorTextView: UITextView, UITextViewDelegate, UIGestureRecognizerD
         textColor = baseTextColor
         backgroundColor = baseBackgroundColor
         baseTextContainerInset = textContainerInset
+        baseLineFragmentPadding = textContainer.lineFragmentPadding
         visibleSelectionTintColor = tintColor
 
         // Register as the text storage delegate so we can detect unauthorized

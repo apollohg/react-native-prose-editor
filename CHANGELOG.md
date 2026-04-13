@@ -1,6 +1,25 @@
 # Changelog
 
+## [0.5.2] - 2026-04-13
+
+### Added
+
+- `NativeRichTextEditor.autoDetectLinks` for opt-in automatic URL detection.
+- Mentions addon `resolveSelectionAttrs` to merge custom attrs into mention nodes.
+- `NativeProseViewer` mention rendering hooks for prefix insertion and per-mention theme overrides.
+
+### Fixed
+
+- Mention insertions now preserve `mentionSuggestionChar` in node attrs for parity with Tiptap-style mention payloads.
+- `NativeProseViewer` auto-height is more stable for long content in delayed-layout contexts and ignores stale late shrink measurements.
+- iOS now removes the leftover leading text gutter when `contentInsets` are explicitly set to zero.
+- iOS list bullets and ordered markers no longer inherit bold sizing or weight from the first inline run in a list item.
+
 ## [0.5.1] - 2026-04-12
+
+### Added
+
+- `NativeProseViewer` mention rendering hooks for viewer-side prefix insertion and per-mention theme overrides.
 
 ### Fixed
 
@@ -114,6 +133,7 @@
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[0.5.2]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.1...0.5.2
 [0.5.1]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.3...0.5.0
 [0.4.3]: https://github.com/apollohg/react-native-prose-editor/compare/0.4.2...0.4.3

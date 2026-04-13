@@ -354,6 +354,32 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(view.textView.textContainerInset.right, defaultInset.right, accuracy: 0.1)
     }
 
+    func testEditorThemeZeroContentInsetsRemoveLeadingTextGutter() {
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
+        view.textView.placeholder = "Type here"
+        view.textView.applyRenderJSON("""
+        [
+          {"type":"blockStart","nodeType":"paragraph","depth":0},
+          {"type":"textRun","text":"\\u200B","marks":[]},
+          {"type":"blockEnd"}
+        ]
+        """)
+
+        view.applyTheme(EditorTheme(dictionary: [
+            "contentInsets": [
+                "top": 0,
+                "right": 0,
+                "bottom": 0,
+                "left": 0,
+            ],
+        ]))
+        view.layoutIfNeeded()
+        view.textView.layoutIfNeeded()
+
+        XCTAssertEqual(view.textView.textContainer.lineFragmentPadding, 0, accuracy: 0.1)
+        XCTAssertEqual(view.textView.placeholderFrameForTesting().minX, 0, accuracy: 0.1)
+    }
+
     func testEditorThemeBorderRadiusAppliesToEditorContainer() {
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
         let theme = EditorTheme(dictionary: [
@@ -2179,6 +2205,10 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertTrue(
             html.contains("@alice"),
             "mention insertion should preserve the visible label, got: \(html)"
+        )
+        XCTAssertTrue(
+            html.contains("mentionSuggestionChar"),
+            "mention insertion should preserve the suggestion trigger in attrs, got: \(html)"
         )
     }
 

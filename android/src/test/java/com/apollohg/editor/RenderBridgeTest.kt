@@ -754,6 +754,44 @@ class RenderBridgeTest {
     }
 
     @Test
+    fun `render - mention inline atom merges element mention theme override`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {
+                "type": "opaqueInlineAtom",
+                "nodeType": "mention",
+                "label": "@Alice",
+                "docPos": 1,
+                "mentionTheme": {"textColor": "#445566"}
+            },
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme(
+            mentions = EditorMentionTheme(
+                textColor = 0xff112233.toInt(),
+                backgroundColor = 0xffddeeff.toInt(),
+                fontWeight = "bold"
+            )
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme)
+
+        assertEquals("@Alice", result.toString())
+        val foreground = result.getSpans(0, result.length, ForegroundColorSpan::class.java)
+            .firstOrNull()
+        val background = result.getSpans(0, result.length, BackgroundColorSpan::class.java)
+            .firstOrNull()
+        val boldSpan = result.getSpans(0, result.length, StyleSpan::class.java)
+            .firstOrNull { it.style == Typeface.BOLD }
+
+        assertEquals(Color.parseColor("#445566"), foreground?.foregroundColor)
+        assertEquals(0xffddeeff.toInt(), background?.backgroundColor)
+        assertNotNull("Mention override should preserve global bold styling", boldSpan)
+    }
+
+    @Test
     fun `render - opaque block atom`() {
         val json = """
         [

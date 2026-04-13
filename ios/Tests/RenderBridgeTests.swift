@@ -1239,6 +1239,62 @@ final class RenderBridgeTests: XCTestCase {
         )
     }
 
+    func testRender_mentionInlineAtomMergesElementMentionThemeOverride() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {
+                "type": "opaqueInlineAtom",
+                "nodeType": "mention",
+                "label": "@Alice",
+                "docPos": 1,
+                "mentionTheme": {"textColor": "#445566"}
+            },
+            {"type": "blockEnd"}
+        ]
+        """
+        let theme = EditorTheme(dictionary: [
+            "mentions": [
+                "textColor": "#112233",
+                "backgroundColor": "#ddeeff",
+                "fontWeight": "bold",
+            ],
+        ])
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: theme
+        )
+
+        XCTAssertEqual(result.string, "@Alice")
+
+        let attrs = result.attributes(at: 0, effectiveRange: nil)
+        XCTAssertEqual(
+            attrs[.foregroundColor] as? UIColor,
+            UIColor(
+                red: 0x44 as CGFloat / 255.0,
+                green: 0x55 as CGFloat / 255.0,
+                blue: 0x66 as CGFloat / 255.0,
+                alpha: 1.0
+            )
+        )
+        XCTAssertEqual(
+            attrs[.backgroundColor] as? UIColor,
+            UIColor(
+                red: 0xdd as CGFloat / 255.0,
+                green: 0xee as CGFloat / 255.0,
+                blue: 0xff as CGFloat / 255.0,
+                alpha: 1.0
+            )
+        )
+        let font = attrs[.font] as? UIFont
+        XCTAssertTrue(
+            font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false,
+            "Mention override should preserve global bold styling. Got: \(String(describing: font))"
+        )
+    }
+
     func testRender_opaqueBlockAtom() {
         let json = """
         [
@@ -1663,6 +1719,41 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertNotEqual(point.x, usedRect.minX - 4.0 - fullWidth, accuracy: 0.1)
     }
 
+    func testListMarkerBaseFontUsesParagraphFontInsteadOfLeadingBoldRun() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Bold", "marks": ["bold"]},
+            {"type": "textRun", "text": " start", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """
+
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor
+        )
+
+        let attrs = result.attributes(at: 0, effectiveRange: nil)
+        let textFont = attrs[.font] as? UIFont
+        let markerBaseFont = attrs[RenderBridgeAttributes.listMarkerBaseFont] as? UIFont
+
+        XCTAssertTrue(
+            textFont?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false,
+            "First text run should still be bold"
+        )
+        XCTAssertNotNil(markerBaseFont, "List marker should carry its paragraph base font")
+        XCTAssertFalse(
+            markerBaseFont?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false,
+            "Marker base font should ignore inline bold marks on the first run"
+        )
+        XCTAssertEqual(markerBaseFont?.pointSize ?? 0, baseFont.pointSize, accuracy: 0.1)
+    }
+
     func testListMarkerParagraphStylePreservesThemedLineHeight() {
         let sourceStyle = NSMutableParagraphStyle()
         sourceStyle.minimumLineHeight = 28
@@ -1788,6 +1879,22 @@ final class RenderBridgeTests: XCTestCase {
         )
 
         XCTAssertEqual(offset, 0, accuracy: 0.1)
+    }
+
+    func testMarkerBaseFontPrefersStoredParagraphFont() {
+        let boldDescriptor = baseFont.fontDescriptor.withSymbolicTraits(.traitBold)
+            ?? baseFont.fontDescriptor
+        let boldFont = UIFont(descriptor: boldDescriptor, size: baseFont.pointSize)
+        let resolved = EditorLayoutManager.markerBaseFont(from: [
+            .font: boldFont,
+            RenderBridgeAttributes.listMarkerBaseFont: baseFont,
+        ])
+
+        XCTAssertFalse(
+            resolved.fontDescriptor.symbolicTraits.contains(.traitBold),
+            "Stored paragraph font should win over the inline bold run font"
+        )
+        XCTAssertEqual(resolved.pointSize, baseFont.pointSize, accuracy: 0.1)
     }
 
     // MARK: - HorizontalRuleAttachment

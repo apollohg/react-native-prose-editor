@@ -127,6 +127,29 @@ data class EditorMentionTheme(
     val optionHighlightedBackgroundColor: Int? = null,
     val optionHighlightedTextColor: Int? = null
 ) {
+    fun mergedWith(other: EditorMentionTheme?): EditorMentionTheme {
+        other ?: return this
+        return copy(
+            textColor = other.textColor ?: textColor,
+            backgroundColor = other.backgroundColor ?: backgroundColor,
+            borderColor = other.borderColor ?: borderColor,
+            borderWidth = other.borderWidth ?: borderWidth,
+            borderRadius = other.borderRadius ?: borderRadius,
+            fontWeight = other.fontWeight ?: fontWeight,
+            popoverBackgroundColor = other.popoverBackgroundColor ?: popoverBackgroundColor,
+            popoverBorderColor = other.popoverBorderColor ?: popoverBorderColor,
+            popoverBorderWidth = other.popoverBorderWidth ?: popoverBorderWidth,
+            popoverBorderRadius = other.popoverBorderRadius ?: popoverBorderRadius,
+            popoverShadowColor = other.popoverShadowColor ?: popoverShadowColor,
+            optionTextColor = other.optionTextColor ?: optionTextColor,
+            optionSecondaryTextColor = other.optionSecondaryTextColor ?: optionSecondaryTextColor,
+            optionHighlightedBackgroundColor =
+                other.optionHighlightedBackgroundColor ?: optionHighlightedBackgroundColor,
+            optionHighlightedTextColor =
+                other.optionHighlightedTextColor ?: optionHighlightedTextColor
+        )
+    }
+
     companion object {
         fun fromJson(json: JSONObject?): EditorMentionTheme? {
             json ?: return null

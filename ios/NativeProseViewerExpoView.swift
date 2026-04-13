@@ -10,6 +10,7 @@ final class NativeProseViewerExpoView: ExpoView {
     private var lastThemeJSON: String?
     private var lastEmittedContentHeight: CGFloat = 0
     private var lastMeasuredWidth: CGFloat = 0
+    private var allowContentHeightShrink = true
 
     private lazy var mentionTapRecognizer: UITapGestureRecognizer = {
         let recognizer = UITapGestureRecognizer(
@@ -42,12 +43,14 @@ final class NativeProseViewerExpoView: ExpoView {
     func setRenderJson(_ renderJson: String?) {
         guard lastRenderJSON != renderJson else { return }
         lastRenderJSON = renderJson
+        allowContentHeightShrink = true
         applyRenderJSON()
     }
 
     func setThemeJson(_ themeJson: String?) {
         guard lastThemeJSON != themeJson else { return }
         lastThemeJSON = themeJson
+        allowContentHeightShrink = true
         let theme = EditorTheme.from(json: themeJson)
         textView.applyTheme(theme)
         let cornerRadius = theme?.borderRadius ?? 0
@@ -87,11 +90,11 @@ final class NativeProseViewerExpoView: ExpoView {
             ? bounds.width
             : (superview?.bounds.width ?? UIScreen.main.bounds.width)
         let fittedHeight = measuredHeight
-            ?? textView.sizeThatFits(
-                CGSize(width: resolvedWidth, height: CGFloat.greatestFiniteMagnitude)
-            ).height
+            ?? textView.measuredAutoGrowHeightForTesting(width: resolvedWidth)
         let contentHeight = ceil(fittedHeight)
         guard contentHeight > 0 else { return }
+        guard allowContentHeightShrink || contentHeight >= lastEmittedContentHeight else { return }
+        allowContentHeightShrink = false
         guard force || abs(contentHeight - lastEmittedContentHeight) > 0.5 else { return }
         lastEmittedContentHeight = contentHeight
         invalidateIntrinsicContentSize()

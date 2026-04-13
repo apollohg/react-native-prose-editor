@@ -140,7 +140,7 @@ final class EditorLayoutManager: NSLayoutManager {
         let lineFragmentRect = self.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
         let attrs = textStorage.attributes(at: paragraphStart, effectiveRange: nil)
 
-        let baseFont = attrs[.font] as? UIFont ?? .systemFont(ofSize: 16)
+        let baseFont = Self.markerBaseFont(from: attrs)
         let textColor = attrs[RenderBridgeAttributes.listMarkerColor] as? UIColor
             ?? attrs[.foregroundColor] as? UIColor
             ?? .label
@@ -463,6 +463,15 @@ final class EditorLayoutManager: NSLayoutManager {
             return baseFont
         }
         return baseFont.withSize(baseFont.pointSize * markerScale)
+    }
+
+    static func markerBaseFont(
+        from attrs: [NSAttributedString.Key: Any],
+        fallback fallbackFont: UIFont = .systemFont(ofSize: 16)
+    ) -> UIFont {
+        (attrs[RenderBridgeAttributes.listMarkerBaseFont] as? UIFont)
+            ?? (attrs[.font] as? UIFont)
+            ?? fallbackFont
     }
 
     private static func unorderedBulletGlyphBounds(for font: UIFont) -> CGRect {

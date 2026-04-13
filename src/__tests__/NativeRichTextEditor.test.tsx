@@ -118,6 +118,36 @@ const MOCK_INSERT_UPDATE_JSON = JSON.stringify({
     historyState: { canUndo: true, canRedo: false },
 });
 
+const MOCK_AUTO_LINK_SOURCE_UPDATE_JSON = JSON.stringify({
+    renderElements: [],
+    selection: { type: 'text', anchor: 27, head: 27 },
+    activeState: {
+        marks: {},
+        markAttrs: {},
+        nodes: { paragraph: true },
+        commands: {},
+        allowedMarks: ['link'],
+        insertableNodes: [],
+    },
+    historyState: { canUndo: true, canRedo: false },
+    documentVersion: 5,
+});
+
+const MOCK_AUTO_LINKED_UPDATE_JSON = JSON.stringify({
+    renderElements: [],
+    selection: { type: 'text', anchor: 27, head: 27 },
+    activeState: {
+        marks: {},
+        markAttrs: {},
+        nodes: { paragraph: true },
+        commands: {},
+        allowedMarks: ['link'],
+        insertableNodes: [],
+    },
+    historyState: { canUndo: true, canRedo: false },
+    documentVersion: 6,
+});
+
 const MOCK_UNDO_UPDATE_JSON = JSON.stringify({
     renderElements: [],
     selection: { type: 'text', anchor: 0, head: 0 },
@@ -240,6 +270,7 @@ const mockNativeModule = {
     editorOutdentListItemAtSelectionScalar: jest.fn(() => MOCK_LIST_UPDATE_JSON),
     editorInsertNodeAtSelectionScalar: jest.fn(() => MOCK_NODE_UPDATE_JSON),
     editorDocToScalar: jest.fn((_: number, pos: number) => pos),
+    editorScalarToDoc: jest.fn((_: number, scalar: number) => scalar),
     // List / node APIs
     editorWrapInList: jest.fn(() => MOCK_LIST_UPDATE_JSON),
     editorUnwrapFromList: jest.fn(() => MOCK_EMPTY_UPDATE_JSON),
@@ -337,6 +368,7 @@ describe('NativeRichTextEditor', () => {
         mockNativeModule.editorSplitBlockScalar.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
         mockNativeModule.editorDeleteAndSplitScalar.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
         mockNativeModule.editorDocToScalar.mockImplementation((_: number, pos: number) => pos);
+        mockNativeModule.editorScalarToDoc.mockImplementation((_: number, scalar: number) => scalar);
         mockNativeModule.editorToggleBlockquoteAtSelectionScalar.mockReturnValue(
             MOCK_EMPTY_UPDATE_JSON
         );
@@ -670,6 +702,7 @@ describe('NativeRichTextEditor', () => {
                                 label: '@Alice',
                                 attrs: {
                                     label: '@Alice',
+                                    mentionSuggestionChar: '@',
                                     id: 'u1',
                                     type: 'user',
                                 },
@@ -720,6 +753,7 @@ describe('NativeRichTextEditor', () => {
                                 label: '@Alice',
                                 attrs: {
                                     label: '@Alice',
+                                    mentionSuggestionChar: '@',
                                 },
                             },
                         ],
@@ -1300,6 +1334,42 @@ describe('NativeRichTextEditor', () => {
             expect(mockNativeModule.editorReplaceHtml).not.toHaveBeenCalled();
         });
 
+        it('skips autolink rewriting for controlled value updates', () => {
+            const linkedDoc = {
+                type: 'doc',
+                content: [
+                    {
+                        type: 'paragraph',
+                        content: [{ type: 'text', text: 'Visit https://example.com ' }],
+                    },
+                ],
+            };
+
+            const { rerender } = render(
+                <NativeRichTextEditor value='<p>old</p>' autoDetectLinks />
+            );
+
+            mockNativeModule.editorGetJson.mockClear();
+            mockNativeModule.editorSetMarkAtSelectionScalar.mockClear();
+            mockNativeModule.editorGetHtml.mockReturnValueOnce('<p>old</p>');
+            mockNativeModule.editorGetJson.mockReturnValueOnce(JSON.stringify(linkedDoc));
+            mockNativeModule.editorReplaceHtml.mockReturnValueOnce(MOCK_AUTO_LINK_SOURCE_UPDATE_JSON);
+
+            rerender(
+                <NativeRichTextEditor
+                    value='<p>Visit https://example.com</p>'
+                    autoDetectLinks
+                />
+            );
+
+            expect(mockNativeModule.editorReplaceHtml).toHaveBeenCalledWith(
+                1,
+                '<p>Visit https://example.com</p>'
+            );
+            expect(mockNativeModule.editorGetJson).not.toHaveBeenCalled();
+            expect(mockNativeModule.editorSetMarkAtSelectionScalar).not.toHaveBeenCalled();
+        });
+
         it('calls setJson when valueJSON prop is provided', () => {
             const doc = { type: 'doc', content: [] };
             render(<NativeRichTextEditor valueJSON={doc} />);
@@ -1847,6 +1917,62 @@ describe('NativeRichTextEditor', () => {
             });
         });
 
+        it('does not auto-link native updates unless the feature is enabled', () => {
+            const { getByTestId } = render(<NativeRichTextEditor />);
+
+            act(() => {
+                getByTestId('native-editor-view').props.onEditorUpdate({
+                    nativeEvent: { updateJson: MOCK_AUTO_LINK_SOURCE_UPDATE_JSON },
+                });
+            });
+
+            expect(mockNativeModule.editorGetJson).not.toHaveBeenCalled();
+            expect(mockNativeModule.editorDocToScalar).not.toHaveBeenCalled();
+            expect(mockNativeModule.editorSetMarkAtSelectionScalar).not.toHaveBeenCalled();
+            expect(mockNativeModule.editorSetSelection).not.toHaveBeenCalled();
+            expect(mockApplyEditorUpdate).not.toHaveBeenCalled();
+        });
+
+        it('auto-links a detected URL from native updates when enabled', () => {
+            const linkedDoc = {
+                type: 'doc',
+                content: [
+                    {
+                        type: 'paragraph',
+                        content: [{ type: 'text', text: 'Visit https://example.com ' }],
+                    },
+                ],
+            };
+            mockNativeModule.editorGetJson.mockReturnValueOnce(JSON.stringify(linkedDoc));
+            mockNativeModule.editorSetMarkAtSelectionScalar.mockReturnValueOnce(
+                MOCK_AUTO_LINKED_UPDATE_JSON
+            );
+            mockNativeModule.editorGetSelectionState.mockReturnValueOnce(
+                MOCK_AUTO_LINKED_UPDATE_JSON
+            );
+
+            const { getByTestId } = render(<NativeRichTextEditor autoDetectLinks />);
+
+            act(() => {
+                getByTestId('native-editor-view').props.onEditorUpdate({
+                    nativeEvent: { updateJson: MOCK_AUTO_LINK_SOURCE_UPDATE_JSON },
+                });
+            });
+
+            expect(mockNativeModule.editorGetJson).toHaveBeenCalledWith(1);
+            expect(mockNativeModule.editorDocToScalar).toHaveBeenNthCalledWith(1, 1, 7);
+            expect(mockNativeModule.editorDocToScalar).toHaveBeenNthCalledWith(2, 1, 26);
+            expect(mockNativeModule.editorSetMarkAtSelectionScalar).toHaveBeenCalledWith(
+                1,
+                7,
+                26,
+                'link',
+                JSON.stringify({ href: 'https://example.com' })
+            );
+            expect(mockNativeModule.editorSetSelection).toHaveBeenCalledWith(1, 27, 27);
+            expect(mockApplyEditorUpdate).toHaveBeenCalledWith(MOCK_AUTO_LINKED_UPDATE_JSON);
+        });
+
         it('forwards mention addon query and select events to the configured callbacks', () => {
             const onQueryChange = jest.fn();
             const onSelect = jest.fn();
@@ -1889,7 +2015,12 @@ describe('NativeRichTextEditor', () => {
                             type: 'mentionsSelect',
                             trigger: '@',
                             suggestionKey: 'u1',
-                            attrs: { id: 'u1', kind: 'user', label: '@Alice' },
+                            attrs: {
+                                id: 'u1',
+                                kind: 'user',
+                                label: '@Alice',
+                                mentionSuggestionChar: '@',
+                            },
                         }),
                     },
                 });
@@ -1909,7 +2040,112 @@ describe('NativeRichTextEditor', () => {
                     label: '@Alice',
                     attrs: { id: 'u1', kind: 'user' },
                 },
-                attrs: { id: 'u1', kind: 'user', label: '@Alice' },
+                attrs: {
+                    id: 'u1',
+                    kind: 'user',
+                    label: '@Alice',
+                    mentionSuggestionChar: '@',
+                },
+            });
+        });
+
+        it('resolves custom attrs before inserting a selected mention when configured', () => {
+            const resolveSelectionAttrs = jest.fn(() => ({
+                source: 'directory',
+                entityType: 'user',
+            }));
+            const onSelect = jest.fn();
+            const { getByTestId } = render(
+                <NativeRichTextEditor
+                    addons={{
+                        mentions: {
+                            suggestions: [
+                                {
+                                    key: 'u1',
+                                    title: 'Alice',
+                                    label: '@Alice',
+                                    attrs: { id: 'u1', kind: 'user' },
+                                },
+                            ],
+                            resolveSelectionAttrs,
+                            onSelect,
+                        },
+                    }}
+                />
+            );
+
+            act(() => {
+                getByTestId('native-editor-view').props.onAddonEvent({
+                    nativeEvent: {
+                        eventJson: JSON.stringify({
+                            type: 'mentionsSelectRequest',
+                            trigger: '@',
+                            suggestionKey: 'u1',
+                            range: { anchor: 3, head: 7 },
+                            attrs: {
+                                id: 'u1',
+                                kind: 'user',
+                                label: '@Alice',
+                                mentionSuggestionChar: '@',
+                            },
+                        }),
+                    },
+                });
+            });
+
+            expect(resolveSelectionAttrs).toHaveBeenCalledWith({
+                trigger: '@',
+                suggestion: {
+                    key: 'u1',
+                    title: 'Alice',
+                    label: '@Alice',
+                    attrs: { id: 'u1', kind: 'user' },
+                },
+                range: { anchor: 3, head: 7 },
+                attrs: {
+                    id: 'u1',
+                    kind: 'user',
+                    label: '@Alice',
+                    mentionSuggestionChar: '@',
+                },
+            });
+            expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).toHaveBeenCalledWith(
+                1,
+                3,
+                7,
+                JSON.stringify({
+                    type: 'doc',
+                    content: [
+                        {
+                            type: 'mention',
+                            attrs: {
+                                id: 'u1',
+                                kind: 'user',
+                                label: '@Alice',
+                                mentionSuggestionChar: '@',
+                                source: 'directory',
+                                entityType: 'user',
+                            },
+                        },
+                    ],
+                })
+            );
+            expect(onSelect).toHaveBeenCalledWith({
+                trigger: '@',
+                suggestion: {
+                    key: 'u1',
+                    title: 'Alice',
+                    label: '@Alice',
+                    attrs: { id: 'u1', kind: 'user' },
+                },
+                attrs: {
+                    id: 'u1',
+                    kind: 'user',
+                    label: '@Alice',
+                    mentionSuggestionChar: '@',
+                    source: 'directory',
+                    entityType: 'user',
+                },
             });
         });
     });

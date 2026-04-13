@@ -529,12 +529,42 @@ class NativeEditorExpoView(
         onAddonEvent(mapOf("eventJson" to eventJson))
     }
 
-    private fun emitMentionSelect(trigger: String, suggestion: NativeMentionSuggestion) {
+    private fun resolvedMentionAttrs(
+        trigger: String,
+        suggestion: NativeMentionSuggestion
+    ): JSONObject {
+        val attrs = JSONObject(suggestion.attrs.toString())
+        if (!attrs.has("label")) {
+            attrs.put("label", suggestion.label)
+        }
+        if (!attrs.has("mentionSuggestionChar")) {
+            attrs.put("mentionSuggestionChar", trigger)
+        }
+        return attrs
+    }
+
+    private fun emitMentionSelect(trigger: String, suggestion: NativeMentionSuggestion, attrs: JSONObject) {
         val eventJson = JSONObject()
             .put("type", "mentionsSelect")
             .put("trigger", trigger)
             .put("suggestionKey", suggestion.key)
-            .put("attrs", suggestion.attrs)
+            .put("attrs", attrs)
+            .toString()
+        onAddonEvent(mapOf("eventJson" to eventJson))
+    }
+
+    private fun emitMentionSelectRequest(
+        trigger: String,
+        suggestion: NativeMentionSuggestion,
+        attrs: JSONObject,
+        range: MentionQueryState
+    ) {
+        val eventJson = JSONObject()
+            .put("type", "mentionsSelectRequest")
+            .put("trigger", trigger)
+            .put("suggestionKey", suggestion.key)
+            .put("attrs", attrs)
+            .put("range", JSONObject().put("anchor", range.anchor).put("head", range.head))
             .toString()
         onAddonEvent(mapOf("eventJson" to eventJson))
     }
@@ -542,9 +572,12 @@ class NativeEditorExpoView(
     private fun insertMentionSuggestion(suggestion: NativeMentionSuggestion) {
         val mentions = addons.mentions ?: return
         val queryState = mentionQueryState ?: return
-        val attrs = JSONObject(suggestion.attrs.toString())
-        if (!attrs.has("label")) {
-            attrs.put("label", suggestion.label)
+        val attrs = resolvedMentionAttrs(mentions.trigger, suggestion)
+        if (mentions.resolveSelectionAttrs) {
+            emitMentionSelectRequest(mentions.trigger, suggestion, attrs, queryState)
+            lastMentionEventJson = null
+            clearMentionQueryState()
+            return
         }
         val docJson = JSONObject()
             .put("type", "doc")
@@ -564,7 +597,7 @@ class NativeEditorExpoView(
             docJson.toString()
         )
         richTextView.editorEditText.applyUpdateJSON(updateJson)
-        emitMentionSelect(mentions.trigger, suggestion)
+        emitMentionSelect(mentions.trigger, suggestion, attrs)
         lastMentionEventJson = null
         clearMentionQueryState()
     }

@@ -2062,12 +2062,54 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         onAddonEvent(["eventJson": json])
     }
 
-    private func emitMentionSelect(trigger: String, suggestion: NativeMentionSuggestion) {
+    private func resolvedMentionAttrs(
+        trigger: String,
+        suggestion: NativeMentionSuggestion
+    ) -> [String: Any] {
+        var attrs = suggestion.attrs
+        if attrs["label"] == nil {
+            attrs["label"] = suggestion.label
+        }
+        if attrs["mentionSuggestionChar"] == nil {
+            attrs["mentionSuggestionChar"] = trigger
+        }
+        return attrs
+    }
+
+    private func emitMentionSelect(
+        trigger: String,
+        suggestion: NativeMentionSuggestion,
+        attrs: [String: Any]
+    ) {
         let payload: [String: Any] = [
             "type": "mentionsSelect",
             "trigger": trigger,
             "suggestionKey": suggestion.key,
-            "attrs": suggestion.attrs,
+            "attrs": attrs,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8)
+        else {
+            return
+        }
+        onAddonEvent(["eventJson": json])
+    }
+
+    private func emitMentionSelectRequest(
+        trigger: String,
+        suggestion: NativeMentionSuggestion,
+        attrs: [String: Any],
+        range: MentionQueryState
+    ) {
+        let payload: [String: Any] = [
+            "type": "mentionsSelectRequest",
+            "trigger": trigger,
+            "suggestionKey": suggestion.key,
+            "attrs": attrs,
+            "range": [
+                "anchor": Int(range.anchor),
+                "head": Int(range.head),
+            ],
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8)
@@ -2175,9 +2217,17 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             return
         }
 
-        var attrs = suggestion.attrs
-        if attrs["label"] == nil {
-            attrs["label"] = suggestion.label
+        let attrs = resolvedMentionAttrs(trigger: mentions.trigger, suggestion: suggestion)
+        if mentions.resolveSelectionAttrs {
+            emitMentionSelectRequest(
+                trigger: mentions.trigger,
+                suggestion: suggestion,
+                attrs: attrs,
+                range: queryState
+            )
+            lastMentionEventJSON = nil
+            clearMentionQueryStateAndHidePopover()
+            return
         }
         let payload: [String: Any] = [
             "type": "doc",
@@ -2199,7 +2249,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             json: json
         )
         richTextView.textView.applyUpdateJSON(updateJSON)
-        emitMentionSelect(trigger: mentions.trigger, suggestion: suggestion)
+        emitMentionSelect(trigger: mentions.trigger, suggestion: suggestion, attrs: attrs)
         lastMentionEventJSON = nil
         clearMentionQueryStateAndHidePopover()
     }

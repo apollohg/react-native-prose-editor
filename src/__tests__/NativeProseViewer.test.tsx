@@ -151,7 +151,87 @@ describe('NativeProseViewer', () => {
         });
     });
 
-    it('updates the native view height when content height changes', () => {
+    it('applies mention prefixes and per-mention theme overrides before rendering', () => {
+        const onPressMention = jest.fn();
+        mockRenderDocumentJson.mockReturnValueOnce(
+            JSON.stringify([
+                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                { type: 'textRun', text: 'Hello ', marks: [] },
+                {
+                    type: 'opaqueInlineAtom',
+                    nodeType: 'mention',
+                    label: 'alice',
+                    docPos: 7,
+                },
+                { type: 'blockEnd' },
+            ])
+        );
+        const contentJSON = {
+            type: 'doc',
+            content: [
+                {
+                    type: 'paragraph',
+                    content: [
+                        { type: 'text', text: 'Hello ' },
+                        {
+                            type: 'mention',
+                            attrs: { id: 'vip-1', label: 'alice', kind: 'user' },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        const { getByTestId } = render(
+            <NativeProseViewer
+                contentJSON={contentJSON}
+                mentionPrefix={({ attrs }) =>
+                    attrs.kind === 'user' ? '@' : undefined
+                }
+                resolveMentionTheme={({ attrs }) =>
+                    attrs.id === 'vip-1'
+                        ? {
+                              textColor: '#445566',
+                              backgroundColor: '#ddeeff',
+                          }
+                        : undefined
+                }
+                onPressMention={onPressMention}
+            />
+        );
+
+        const nativeView = getByTestId('native-prose-viewer');
+        const renderElements = JSON.parse(nativeView.props.renderJson) as Array<{
+            type: string;
+            nodeType?: string;
+            label?: string;
+            mentionTheme?: Record<string, unknown>;
+        }>;
+        const renderedMention = renderElements.find(
+            (element) =>
+                element.type === 'opaqueInlineAtom' && element.nodeType === 'mention'
+        );
+
+        expect(renderedMention).toMatchObject({
+            label: '@alice',
+            mentionTheme: {
+                textColor: '#445566',
+                backgroundColor: '#ddeeff',
+            },
+        });
+
+        fireEvent(nativeView, 'onPressMention', {
+            nativeEvent: { docPos: 7, label: 'alice' },
+        });
+
+        expect(onPressMention).toHaveBeenCalledWith({
+            docPos: 7,
+            label: '@alice',
+            attrs: { id: 'vip-1', label: 'alice', kind: 'user' },
+        });
+    });
+
+    it('applies measured content height as a minimum height', () => {
         const { getByTestId } = render(
             <NativeProseViewer
                 contentJSON={{
@@ -168,7 +248,61 @@ describe('NativeProseViewer', () => {
         expect(getByTestId('native-prose-viewer').props.style).toEqual([
             { minHeight: 1 },
             undefined,
-            { height: 84 },
+            { minHeight: 84 },
+        ]);
+    });
+
+    it('ignores stale smaller measurements until the rendered content changes', () => {
+        const baseContent = {
+            type: 'doc',
+            content: [{ type: 'paragraph', content: [] }],
+        };
+        const { getByTestId, rerender } = render(
+            <NativeProseViewer
+                contentJSON={baseContent}
+                contentJSONRevision='first'
+            />
+        );
+
+        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
+            nativeEvent: { contentHeight: 84 },
+        });
+
+        expect(getByTestId('native-prose-viewer').props.style).toEqual([
+            { minHeight: 1 },
+            undefined,
+            { minHeight: 84 },
+        ]);
+
+        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
+            nativeEvent: {
+                contentHeight: 20,
+            },
+        });
+
+        expect(getByTestId('native-prose-viewer').props.style).toEqual([
+            { minHeight: 1 },
+            undefined,
+            { minHeight: 84 },
+        ]);
+
+        rerender(
+            <NativeProseViewer
+                contentJSON={baseContent}
+                contentJSONRevision='second'
+            />
+        );
+
+        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
+            nativeEvent: {
+                contentHeight: 52,
+            },
+        });
+
+        expect(getByTestId('native-prose-viewer').props.style).toEqual([
+            { minHeight: 1 },
+            undefined,
+            { minHeight: 52 },
         ]);
     });
 

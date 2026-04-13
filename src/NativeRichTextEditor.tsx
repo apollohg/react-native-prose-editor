@@ -38,9 +38,11 @@ import {
 } from './EditorToolbar';
 import { serializeEditorTheme, type EditorTheme } from './EditorTheme';
 import {
+    buildMentionFragmentJson,
     serializeEditorAddons,
     type EditorAddonEvent,
     type EditorAddons,
+    type MentionSelectionAttrsEvent,
     type MentionSuggestion,
     withMentionsSchema,
 } from './addons';
@@ -164,6 +166,381 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
         typeof value === 'object' &&
         'then' in value &&
         typeof (value as Promise<unknown>).then === 'function'
+    );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+interface AutoLinkCandidate {
+    docFrom: number;
+    docTo: number;
+    href: string;
+}
+
+interface AutoLinkInlineBlock {
+    chars: string[];
+    docPositions: number[];
+    linked: boolean[];
+    contentStart: number;
+    contentEnd: number;
+    nextPos: number;
+}
+
+const AUTO_LINK_URL_REGEX = /(?:https?:\/\/|www\.)\S+/giu;
+const AUTO_LINK_INLINE_PLACEHOLDER = '\uFFFC';
+const AUTO_LINK_LEADING_BOUNDARY_CHARS = new Set(['(', '[', '{', '<', '"', "'"]);
+const AUTO_LINK_TRAILING_DELIMITER_CHARS = new Set([
+    '.',
+    ',',
+    '!',
+    '?',
+    ';',
+    ':',
+    ')',
+    ']',
+    '}',
+    '>',
+    '"',
+    "'",
+]);
+const AUTO_LINK_ALWAYS_TRIM_CHARS = new Set(['.', ',', '!', '?', ';', ':']);
+const AUTO_LINK_MATCHED_CLOSERS: Record<string, string> = {
+    ')': '(',
+    ']': '[',
+    '}': '{',
+};
+
+function unicodeScalars(text: string): string[] {
+    return Array.from(text);
+}
+
+function unicodeScalarCount(text: string): number {
+    return unicodeScalars(text).length;
+}
+
+function hasDocumentLinkMark(marks: unknown): boolean {
+    if (!Array.isArray(marks)) {
+        return false;
+    }
+    return marks.some(
+        (mark) => isRecord(mark) && typeof mark.type === 'string' && mark.type === 'link'
+    );
+}
+
+function isInlineDocumentNode(node: unknown): boolean {
+    if (!isRecord(node)) {
+        return false;
+    }
+    if (node.type === 'text') {
+        return true;
+    }
+    return !Array.isArray(node.content);
+}
+
+function isInlineTextBlockNode(node: Record<string, unknown>): boolean {
+    const content = Array.isArray(node.content) ? node.content : [];
+    return content.length > 0 && content.every((child) => isInlineDocumentNode(child));
+}
+
+function countOccurrences(text: string, target: string): number {
+    let count = 0;
+    for (const char of text) {
+        if (char === target) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+function trimAutoLinkTrailingPunctuation(value: string): string {
+    let result = value;
+
+    while (result.length > 0) {
+        const chars = unicodeScalars(result);
+        const lastChar = chars[chars.length - 1];
+        if (!lastChar) {
+            break;
+        }
+
+        if (AUTO_LINK_ALWAYS_TRIM_CHARS.has(lastChar)) {
+            chars.pop();
+            result = chars.join('');
+            continue;
+        }
+
+        const matchingOpener = AUTO_LINK_MATCHED_CLOSERS[lastChar];
+        if (
+            matchingOpener &&
+            countOccurrences(result, lastChar) > countOccurrences(result, matchingOpener)
+        ) {
+            chars.pop();
+            result = chars.join('');
+            continue;
+        }
+
+        if ((lastChar === '"' || lastChar === "'") && countOccurrences(result, lastChar) % 2 !== 0) {
+            chars.pop();
+            result = chars.join('');
+            continue;
+        }
+
+        break;
+    }
+
+    return result;
+}
+
+function normalizeAutoDetectedHref(value: string): string | null {
+    const trimmed = trimAutoLinkTrailingPunctuation(value);
+    if (!trimmed) {
+        return null;
+    }
+
+    const normalized = /^www\./iu.test(trimmed) ? `https://${trimmed}` : trimmed;
+    try {
+        new URL(normalized);
+        return normalized;
+    } catch {
+        return null;
+    }
+}
+
+function isAutoLinkBoundaryChar(char: string | undefined): boolean {
+    if (!char) {
+        return true;
+    }
+    return /\s/u.test(char) || char === AUTO_LINK_INLINE_PLACEHOLDER || AUTO_LINK_LEADING_BOUNDARY_CHARS.has(char);
+}
+
+function isAutoLinkTrailingDelimiterChar(char: string | undefined): boolean {
+    if (!char) {
+        return true;
+    }
+    return (
+        /\s/u.test(char) ||
+        char === AUTO_LINK_INLINE_PLACEHOLDER ||
+        AUTO_LINK_TRAILING_DELIMITER_CHARS.has(char)
+    );
+}
+
+function codeUnitBoundariesForScalars(chars: readonly string[]): number[] {
+    const boundaries = [0];
+    let offset = 0;
+    for (const char of chars) {
+        offset += char.length;
+        boundaries.push(offset);
+    }
+    return boundaries;
+}
+
+function codeUnitOffsetToScalarIndex(boundaries: readonly number[], offset: number): number {
+    let scalarIndex = 0;
+    while (scalarIndex + 1 < boundaries.length && boundaries[scalarIndex + 1] <= offset) {
+        scalarIndex += 1;
+    }
+    return scalarIndex;
+}
+
+function buildAutoLinkInlineBlock(
+    node: Record<string, unknown>,
+    pos: number
+): AutoLinkInlineBlock {
+    const chars: string[] = [];
+    const docPositions: number[] = [];
+    const linked: boolean[] = [];
+    const content = Array.isArray(node.content) ? node.content : [];
+    let nextPos = pos + 1;
+
+    for (const child of content) {
+        if (!isRecord(child)) {
+            continue;
+        }
+
+        if (child.type === 'text') {
+            const childText = typeof child.text === 'string' ? child.text : '';
+            const childChars = unicodeScalars(childText);
+            const hasLink = hasDocumentLinkMark(child.marks);
+            for (const char of childChars) {
+                chars.push(char);
+                docPositions.push(nextPos);
+                linked.push(hasLink);
+                nextPos += 1;
+            }
+            continue;
+        }
+
+        chars.push(child.type === 'hardBreak' ? '\n' : AUTO_LINK_INLINE_PLACEHOLDER);
+        docPositions.push(nextPos);
+        linked.push(false);
+        nextPos += 1;
+    }
+
+    return {
+        chars,
+        docPositions,
+        linked,
+        contentStart: pos + 1,
+        contentEnd: nextPos,
+        nextPos: nextPos + 1,
+    };
+}
+
+function findAutoLinkCandidateInInlineBlock(
+    block: AutoLinkInlineBlock,
+    cursorDocPos: number
+): AutoLinkCandidate | null {
+    if (cursorDocPos < block.contentStart || cursorDocPos > block.contentEnd) {
+        return null;
+    }
+
+    let localIndex = 0;
+    while (localIndex < block.docPositions.length && block.docPositions[localIndex] < cursorDocPos) {
+        localIndex += 1;
+    }
+
+    if (localIndex === 0) {
+        return null;
+    }
+
+    if (cursorDocPos < block.contentEnd && !isAutoLinkTrailingDelimiterChar(block.chars[localIndex - 1])) {
+        return null;
+    }
+
+    const prefixChars = block.chars.slice(0, localIndex);
+    const prefixText = prefixChars.join('');
+    if (!prefixText) {
+        return null;
+    }
+
+    const boundaries = codeUnitBoundariesForScalars(prefixChars);
+    AUTO_LINK_URL_REGEX.lastIndex = 0;
+    let lastMatch: RegExpExecArray | null = null;
+    for (const match of prefixText.matchAll(AUTO_LINK_URL_REGEX)) {
+        lastMatch = match;
+    }
+
+    if (!lastMatch || typeof lastMatch.index !== 'number') {
+        return null;
+    }
+
+    const rawStartScalar = codeUnitOffsetToScalarIndex(boundaries, lastMatch.index);
+    const normalizedHref = normalizeAutoDetectedHref(lastMatch[0]);
+    const trimmedText = trimAutoLinkTrailingPunctuation(lastMatch[0]);
+    if (!normalizedHref || !trimmedText) {
+        return null;
+    }
+
+    const candidateEndScalar = rawStartScalar + unicodeScalarCount(trimmedText);
+    if (candidateEndScalar > prefixChars.length) {
+        return null;
+    }
+
+    if (!isAutoLinkBoundaryChar(prefixChars[rawStartScalar - 1])) {
+        return null;
+    }
+
+    for (let index = candidateEndScalar; index < localIndex; index += 1) {
+        if (!isAutoLinkTrailingDelimiterChar(prefixChars[index])) {
+            return null;
+        }
+    }
+
+    for (let index = rawStartScalar; index < candidateEndScalar; index += 1) {
+        if (block.linked[index]) {
+            return null;
+        }
+    }
+
+    const docFrom = block.docPositions[rawStartScalar];
+    const docTo =
+        candidateEndScalar < block.docPositions.length
+            ? block.docPositions[candidateEndScalar]
+            : block.contentEnd;
+
+    if (!(docTo > docFrom)) {
+        return null;
+    }
+
+    return {
+        docFrom,
+        docTo,
+        href: normalizedHref,
+    };
+}
+
+function findAutoLinkCandidateInDocument(
+    document: DocumentJSON,
+    cursorDocPos: number
+): AutoLinkCandidate | null {
+    const visit = (
+        node: unknown,
+        pos: number,
+        isRoot = false
+    ): { candidate: AutoLinkCandidate | null; nextPos: number } => {
+        if (!isRecord(node)) {
+            return { candidate: null, nextPos: pos };
+        }
+
+        const nodeType = typeof node.type === 'string' ? node.type : '';
+        const content = Array.isArray(node.content) ? node.content : [];
+
+        if (nodeType === 'text') {
+            const text = typeof node.text === 'string' ? node.text : '';
+            return { candidate: null, nextPos: pos + unicodeScalarCount(text) };
+        }
+
+        if (isRoot && nodeType === 'doc') {
+            let nextPos = pos;
+            for (const child of content) {
+                const result = visit(child, nextPos);
+                if (result.candidate) {
+                    return result;
+                }
+                nextPos = result.nextPos;
+            }
+            return { candidate: null, nextPos };
+        }
+
+        if (isInlineTextBlockNode(node)) {
+            const block = buildAutoLinkInlineBlock(node, pos);
+            return {
+                candidate: findAutoLinkCandidateInInlineBlock(block, cursorDocPos),
+                nextPos: block.nextPos,
+            };
+        }
+
+        if (content.length === 0) {
+            return { candidate: null, nextPos: pos + 1 };
+        }
+
+        let nextPos = pos + 1;
+        for (const child of content) {
+            const result = visit(child, nextPos);
+            if (result.candidate) {
+                return result;
+            }
+            nextPos = result.nextPos;
+        }
+
+        return { candidate: null, nextPos: nextPos + 1 };
+    };
+
+    return visit(document, 0, true).candidate;
+}
+
+function didContentChange(
+    previousDocumentVersion: number | null,
+    update: EditorUpdate | null
+): boolean {
+    if (!update) {
+        return false;
+    }
+    return (
+        previousDocumentVersion == null ||
+        typeof update.documentVersion !== 'number' ||
+        update.documentVersion !== previousDocumentVersion
     );
 }
 
@@ -343,6 +720,8 @@ export interface NativeRichTextEditorProps {
     onRequestLink?: (context: LinkRequestContext) => void;
     /** Called when a toolbar image item is pressed so the host can choose an image source. */
     onRequestImage?: (context: ImageRequestContext) => void;
+    /** Whether plain URLs typed or pasted into the editor should be converted into link marks automatically. */
+    autoDetectLinks?: boolean;
     /** Whether `data:image/...` sources are accepted for image insertion and HTML parsing. */
     allowBase64Images?: boolean;
     /** Whether selected images show native resize handles. */
@@ -431,6 +810,8 @@ interface RunAndApplyOptions {
     skipNativeApplyIfContentUnchanged?: boolean;
     /** If true, preserve the current live text selection instead of the update selection. */
     preserveLiveTextSelection?: boolean;
+    /** Internal: skip the autolink pass for this mutation. */
+    skipAutoDetectLinks?: boolean;
 }
 
 export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRichTextEditorProps>(
@@ -453,6 +834,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             onToolbarAction,
             onRequestLink,
             onRequestImage,
+            autoDetectLinks = false,
             onContentChange,
             onContentChangeJSON,
             onSelectionChange,
@@ -618,49 +1000,15 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             []
         );
 
-        // Warn if both value and valueJSON are set
-        if (__DEV__ && value != null && valueJSON != null) {
-            console.warn(
-                'NativeRichTextEditor: value and valueJSON are mutually exclusive. ' +
-                    'Only value will be used.'
-            );
-        }
-
-        const runAndApply = useCallback(
+        const applyUpdateToNativeView = useCallback(
             (
-                mutate: () => EditorUpdate | null,
-                options?: RunAndApplyOptions
-            ): EditorUpdate | null => {
-                const previousDocumentVersion = documentVersionRef.current;
-                const preservedSelection =
-                    options?.preserveLiveTextSelection === true ? selectionRef.current : null;
-                const update = mutate();
-                if (!update) return null;
+                update: EditorUpdate,
+                previousDocumentVersion: number | null,
+                skipNativeApplyIfContentUnchanged = false
+            ) => {
+                const contentChanged = didContentChange(previousDocumentVersion, update);
 
-                if (
-                    preservedSelection?.type === 'text' &&
-                    typeof preservedSelection.anchor === 'number' &&
-                    typeof preservedSelection.head === 'number' &&
-                    bridgeRef.current != null &&
-                    !bridgeRef.current.isDestroyed
-                ) {
-                    bridgeRef.current.setSelection(
-                        preservedSelection.anchor,
-                        preservedSelection.head
-                    );
-                    update.selection = {
-                        type: 'text',
-                        anchor: preservedSelection.anchor,
-                        head: preservedSelection.head,
-                    };
-                }
-
-                const contentChanged =
-                    previousDocumentVersion == null ||
-                    typeof update.documentVersion !== 'number' ||
-                    update.documentVersion !== previousDocumentVersion;
-
-                if (!options?.skipNativeApplyIfContentUnchanged || contentChanged) {
+                if (!skipNativeApplyIfContentUnchanged || contentChanged) {
                     const updateJson = JSON.stringify(update);
                     if (Platform.OS === 'android') {
                         setPendingNativeUpdate((current) => ({
@@ -682,6 +1030,121 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     }
                 }
 
+                return contentChanged;
+            },
+            []
+        );
+
+        const maybeApplyAutoDetectedLink = useCallback(
+            (update: EditorUpdate | null, previousDocumentVersion: number | null) => {
+                if (
+                    !autoDetectLinks ||
+                    !update ||
+                    !didContentChange(previousDocumentVersion, update) ||
+                    !bridgeRef.current ||
+                    bridgeRef.current.isDestroyed ||
+                    !update.activeState.allowedMarks.includes('link') ||
+                    update.selection.type !== 'text' ||
+                    update.selection.anchor == null ||
+                    update.selection.head == null ||
+                    update.selection.anchor !== update.selection.head
+                ) {
+                    return update;
+                }
+
+                const cursorDocPos = update.selection.head;
+                const candidate = findAutoLinkCandidateInDocument(
+                    bridgeRef.current.getJson(),
+                    cursorDocPos
+                );
+                if (!candidate) {
+                    return update;
+                }
+
+                const scalarFrom = bridgeRef.current.docToScalar(candidate.docFrom);
+                const scalarTo = bridgeRef.current.docToScalar(candidate.docTo);
+                if (!(scalarTo > scalarFrom)) {
+                    return update;
+                }
+
+                const autoLinkUpdate = bridgeRef.current.setMarkAtSelectionScalar(
+                    scalarFrom,
+                    scalarTo,
+                    'link',
+                    { href: candidate.href }
+                );
+                if (!autoLinkUpdate) {
+                    return update;
+                }
+
+                bridgeRef.current.setSelection(update.selection.anchor, update.selection.head);
+                const selectionState = bridgeRef.current.getSelectionState();
+                if (selectionState) {
+                    autoLinkUpdate.selection = selectionState.selection;
+                    autoLinkUpdate.activeState = selectionState.activeState;
+                    autoLinkUpdate.historyState = selectionState.historyState;
+                    if (typeof selectionState.documentVersion === 'number') {
+                        autoLinkUpdate.documentVersion = selectionState.documentVersion;
+                    }
+                } else {
+                    autoLinkUpdate.selection = update.selection;
+                }
+
+                return autoLinkUpdate;
+            },
+            [autoDetectLinks]
+        );
+
+        // Warn if both value and valueJSON are set
+        if (__DEV__ && value != null && valueJSON != null) {
+            console.warn(
+                'NativeRichTextEditor: value and valueJSON are mutually exclusive. ' +
+                    'Only value will be used.'
+            );
+        }
+
+        const runAndApply = useCallback(
+            (
+                mutate: () => EditorUpdate | null,
+                options?: RunAndApplyOptions
+            ): EditorUpdate | null => {
+                const previousDocumentVersion = documentVersionRef.current;
+                const preservedSelection =
+                    options?.preserveLiveTextSelection === true ? selectionRef.current : null;
+                let update = mutate();
+                if (!update) return null;
+
+                if (!options?.skipAutoDetectLinks) {
+                    update = maybeApplyAutoDetectedLink(update, previousDocumentVersion);
+                    if (!update) {
+                        return null;
+                    }
+                }
+
+                if (
+                    preservedSelection?.type === 'text' &&
+                    typeof preservedSelection.anchor === 'number' &&
+                    typeof preservedSelection.head === 'number' &&
+                    bridgeRef.current != null &&
+                    !bridgeRef.current.isDestroyed
+                ) {
+                    bridgeRef.current.setSelection(
+                        preservedSelection.anchor,
+                        preservedSelection.head
+                    );
+                    update.selection = {
+                        type: 'text',
+                        anchor: preservedSelection.anchor,
+                        head: preservedSelection.head,
+                    };
+                }
+
+                applyUpdateToNativeView(
+                    update,
+                    previousDocumentVersion,
+                    options?.skipNativeApplyIfContentUnchanged
+                );
+
                 syncStateFromUpdate(update);
 
                 onActiveStateChangeRef.current?.(update.activeState);
@@ -695,7 +1158,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
 
                 return update;
             },
-            [emitContentCallbacksForUpdate, syncStateFromUpdate]
+            [
+                applyUpdateToNativeView,
+                emitContentCallbacksForUpdate,
+                maybeApplyAutoDetectedLink,
+                syncStateFromUpdate,
+            ]
         );
 
         useEffect(() => {
@@ -750,6 +1218,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             runAndApply(() => bridgeRef.current!.replaceHtml(value), {
                 suppressContentCallbacks: true,
                 preserveLiveTextSelection: true,
+                skipAutoDetectLinks: true,
             });
         }, [value, runAndApply]);
 
@@ -763,6 +1232,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             runAndApply(() => bridgeRef.current!.replaceJsonString(serializedValueJson), {
                 suppressContentCallbacks: true,
                 preserveLiveTextSelection: true,
+                skipAutoDetectLinks: true,
             });
         }, [serializedValueJson, value, runAndApply]);
 
@@ -808,8 +1278,16 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
 
                 try {
                     const previousDocumentVersion = documentVersionRef.current;
-                    const update = bridgeRef.current.parseUpdateJson(event.nativeEvent.updateJson);
+                    const nativeUpdate = bridgeRef.current.parseUpdateJson(event.nativeEvent.updateJson);
+                    if (!nativeUpdate) return;
+                    const update = maybeApplyAutoDetectedLink(
+                        nativeUpdate,
+                        previousDocumentVersion
+                    );
                     if (!update) return;
+                    if (update !== nativeUpdate) {
+                        applyUpdateToNativeView(update, previousDocumentVersion);
+                    }
                     syncStateFromUpdate(update);
 
                     onActiveStateChangeRef.current?.(update.activeState);
@@ -822,7 +1300,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     // Invalid JSON from native — skip
                 }
             },
-            [emitContentCallbacksForUpdate, syncStateFromUpdate]
+            [
+                applyUpdateToNativeView,
+                emitContentCallbacksForUpdate,
+                maybeApplyAutoDetectedLink,
+                syncStateFromUpdate,
+            ]
         );
 
         const handleSelectionChange = useCallback(
@@ -1013,6 +1496,53 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 return;
             }
 
+            if (parsed.type === 'mentionsSelectRequest') {
+                const suggestion = mentionSuggestionsByKeyRef.current.get(parsed.suggestionKey);
+                if (!suggestion || !bridgeRef.current || bridgeRef.current.isDestroyed) return;
+
+                const selectionEvent: MentionSelectionAttrsEvent = {
+                    trigger: parsed.trigger,
+                    suggestion,
+                    attrs: parsed.attrs,
+                    range: parsed.range,
+                };
+
+                let resolvedAttrs: Record<string, unknown> | null | undefined;
+                try {
+                    resolvedAttrs =
+                        addonsRef.current?.mentions?.resolveSelectionAttrs?.(selectionEvent);
+                } catch (error) {
+                    if (__DEV__) {
+                        console.error(
+                            'NativeRichTextEditor: mentions.resolveSelectionAttrs threw',
+                            error
+                        );
+                    }
+                }
+
+                const finalAttrs = isRecord(resolvedAttrs)
+                    ? { ...parsed.attrs, ...resolvedAttrs }
+                    : parsed.attrs;
+
+                const update = runAndApply(
+                    () =>
+                        bridgeRef.current?.insertContentJsonAtSelectionScalar(
+                            parsed.range.anchor,
+                            parsed.range.head,
+                            buildMentionFragmentJson(finalAttrs)
+                        ) ?? null
+                );
+
+                if (update) {
+                    addonsRef.current?.mentions?.onSelect?.({
+                        trigger: parsed.trigger,
+                        suggestion,
+                        attrs: finalAttrs,
+                    });
+                }
+                return;
+            }
+
             if (parsed.type === 'mentionsSelect') {
                 const suggestion = mentionSuggestionsByKeyRef.current.get(parsed.suggestionKey);
                 if (!suggestion) return;
@@ -1022,7 +1552,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     attrs: parsed.attrs,
                 });
             }
-        }, []);
+        }, [runAndApply]);
 
         useImperativeHandle(
             ref,

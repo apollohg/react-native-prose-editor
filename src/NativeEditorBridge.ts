@@ -1,4 +1,5 @@
 import { requireNativeModule } from 'expo-modules-core';
+import type { EditorMentionTheme } from './EditorTheme';
 import { normalizeDocumentJson, type SchemaDefinition } from './schemas';
 
 const ERR_DESTROYED = 'NativeEditorBridge: editor has been destroyed';
@@ -170,6 +171,7 @@ export interface RenderElement {
     docPos?: number;
     label?: string;
     attrs?: Record<string, unknown>;
+    mentionTheme?: EditorMentionTheme;
     listContext?: ListContext;
 }
 
@@ -718,6 +720,24 @@ export class NativeEditorBridge {
         return this.parseAndNoteUpdate(json);
     }
 
+    /** Set a mark with attrs at an explicit scalar selection. */
+    setMarkAtSelectionScalar(
+        scalarAnchor: number,
+        scalarHead: number,
+        markType: string,
+        attrs: Record<string, unknown>
+    ): EditorUpdate | null {
+        this.assertNotDestroyed();
+        const json = getNativeModule().editorSetMarkAtSelectionScalar(
+            this._editorId,
+            scalarAnchor,
+            scalarHead,
+            markType,
+            JSON.stringify(attrs)
+        );
+        return this.parseAndNoteUpdate(json);
+    }
+
     /** Remove a mark from the current selection. */
     unsetMark(markType: string): EditorUpdate | null {
         this.assertNotDestroyed();
@@ -770,6 +790,18 @@ export class NativeEditorBridge {
         this.assertNotDestroyed();
         getNativeModule().editorSetSelection(this._editorId, anchor, head);
         this._lastSelection = { type: 'text', anchor, head };
+    }
+
+    /** Convert a document position to a scalar position used by native text views. */
+    docToScalar(docPos: number): number {
+        this.assertNotDestroyed();
+        return getNativeModule().editorDocToScalar(this._editorId, docPos);
+    }
+
+    /** Convert a native scalar position back to a document position. */
+    scalarToDoc(scalar: number): number {
+        this.assertNotDestroyed();
+        return getNativeModule().editorScalarToDoc(this._editorId, scalar);
     }
 
     /** Get the current selection from the Rust engine (synchronous native call).
