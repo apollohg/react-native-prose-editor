@@ -107,6 +107,9 @@ enum RenderBridgeAttributes {
     /// Marks synthetic zero-width placeholders used only for UIKit layout.
     static let syntheticPlaceholder = NSAttributedString.Key("com.apollohg.editor.syntheticPlaceholder")
 
+    /// Stores the link href for visually styled link text without enabling UITextView's default link interaction.
+    static let linkHref = NSAttributedString.Key("com.apollohg.editor.linkHref")
+
     /// Stores the owning top-level document child index for partial native patching.
     static let topLevelChildIndex = NSAttributedString.Key("com.apollohg.editor.topLevelChildIndex")
 }
@@ -564,11 +567,11 @@ final class RenderBridge {
         var traits: UIFontDescriptor.SymbolicTraits = []
         var useMonospace = false
         for mark in marks {
+            let markObject = mark as? [String: Any]
             let markType: String
             if let markName = mark as? String {
                 markType = markName
-            } else if let markObject = mark as? [String: Any],
-                      let resolvedType = markObject["type"] as? String {
+            } else if let resolvedType = markObject?["type"] as? String {
                 markType = resolvedType
             } else {
                 continue
@@ -588,6 +591,9 @@ final class RenderBridge {
             case "link":
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
                 attrs[.foregroundColor] = UIColor.systemBlue
+                if let href = markObject?["href"] as? String, !href.isEmpty {
+                    attrs[RenderBridgeAttributes.linkHref] = href
+                }
             default:
                 break
             }

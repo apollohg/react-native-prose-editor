@@ -752,6 +752,7 @@ class CenteredBulletSpan(
 object RenderBridge {
     internal const val NATIVE_BLOCKQUOTE_ANNOTATION = "nativeBlockquote"
     internal const val NATIVE_TOP_LEVEL_CHILD_INDEX_ANNOTATION = "nativeTopLevelChildIndex"
+    internal const val NATIVE_LINK_HREF_ANNOTATION = "nativeLinkHref"
     private const val NATIVE_SYNTHETIC_PLACEHOLDER_ANNOTATION = "nativeSyntheticPlaceholder"
 
     private data class RenderBuildState(
@@ -1174,6 +1175,15 @@ object RenderBridge {
                             end,
                             Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                         )
+                        val href = mark.optString("href", "")
+                        if (href.isNotBlank()) {
+                            builder.setSpan(
+                                Annotation(NATIVE_LINK_HREF_ANNOTATION, href),
+                                start,
+                                end,
+                                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                            )
+                        }
                     }
                 }
             }

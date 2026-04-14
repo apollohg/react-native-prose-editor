@@ -77,6 +77,11 @@ class EditorEditText @JvmOverloads constructor(
         val label: String
     )
 
+    data class LinkHit(
+        val href: String,
+        val text: String
+    )
+
     private data class ParsedRenderPatch(
         val startIndex: Int,
         val deleteCount: Int,
@@ -1583,7 +1588,7 @@ class EditorEditText @JvmOverloads constructor(
         }
     }
 
-    fun mentionHitAt(x: Float, y: Float): MentionHit? {
+    private fun textOffsetHitAt(x: Float, y: Float): Pair<Spanned, Int>? {
         val spannable = text as? Spanned ?: return null
         val layout = layout ?: return null
         if (spannable.isEmpty()) return null
@@ -1603,6 +1608,11 @@ class EditorEditText @JvmOverloads constructor(
 
         val offset = layout.getOffsetForHorizontal(line, localX)
             .coerceIn(0, maxOf(spannable.length - 1, 0))
+        return spannable to offset
+    }
+
+    fun mentionHitAt(x: Float, y: Float): MentionHit? {
+        val (spannable, offset) = textOffsetHitAt(x, y) ?: return null
         val annotations = spannable.getSpans(
             offset,
             (offset + 1).coerceAtMost(spannable.length),
@@ -1623,6 +1633,28 @@ class EditorEditText @JvmOverloads constructor(
         return MentionHit(
             docPos = docPos,
             label = spannable.subSequence(start, end).toString()
+        )
+    }
+
+    fun linkHitAt(x: Float, y: Float): LinkHit? {
+        val (spannable, offset) = textOffsetHitAt(x, y) ?: return null
+        val annotations = spannable.getSpans(
+            offset,
+            (offset + 1).coerceAtMost(spannable.length),
+            Annotation::class.java
+        )
+        val linkAnnotation = annotations.firstOrNull {
+            it.key == RenderBridge.NATIVE_LINK_HREF_ANNOTATION && it.value.isNotBlank()
+        } ?: return null
+        val start = spannable.getSpanStart(linkAnnotation)
+        val end = spannable.getSpanEnd(linkAnnotation)
+        if (start < 0 || end <= start) {
+            return null
+        }
+
+        return LinkHit(
+            href = linkAnnotation.value,
+            text = spannable.subSequence(start, end).toString()
         )
     }
 

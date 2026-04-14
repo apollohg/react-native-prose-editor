@@ -3,6 +3,7 @@ import UIKit
 
 final class NativeProseViewerExpoView: ExpoView {
     let onContentHeightChange = EventDispatcher()
+    let onPressLink = EventDispatcher()
     let onPressMention = EventDispatcher()
 
     private let textView = EditorTextView(frame: .zero, textContainer: nil)
@@ -11,11 +12,13 @@ final class NativeProseViewerExpoView: ExpoView {
     private var lastEmittedContentHeight: CGFloat = 0
     private var lastMeasuredWidth: CGFloat = 0
     private var allowContentHeightShrink = true
+    private var enableLinkTaps = true
+    private var interceptLinkTaps = false
 
-    private lazy var mentionTapRecognizer: UITapGestureRecognizer = {
+    private lazy var interactiveTapRecognizer: UITapGestureRecognizer = {
         let recognizer = UITapGestureRecognizer(
             target: self,
-            action: #selector(handleMentionTap(_:))
+            action: #selector(handleInteractiveTap(_:))
         )
         recognizer.cancelsTouchesInView = false
         return recognizer
@@ -36,8 +39,16 @@ final class NativeProseViewerExpoView: ExpoView {
         textView.onHeightMayChange = { [weak self] measuredHeight in
             self?.emitContentHeightIfNeeded(measuredHeight: measuredHeight, force: true)
         }
-        textView.addGestureRecognizer(mentionTapRecognizer)
+        textView.addGestureRecognizer(interactiveTapRecognizer)
         addSubview(textView)
+    }
+
+    func setEnableLinkTaps(_ enabled: Bool?) {
+        enableLinkTaps = enabled ?? true
+    }
+
+    func setInterceptLinkTaps(_ intercept: Bool?) {
+        interceptLinkTaps = intercept ?? false
     }
 
     func setRenderJson(_ renderJson: String?) {
@@ -101,20 +112,32 @@ final class NativeProseViewerExpoView: ExpoView {
         onContentHeightChange(["contentHeight": contentHeight])
     }
 
-    @objc private func handleMentionTap(_ recognizer: UITapGestureRecognizer) {
-        guard recognizer.state == .ended,
-              let mention = mentionHit(at: recognizer.location(in: textView))
-        else {
+    @objc private func handleInteractiveTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended else {
             return
         }
 
+        let location = recognizer.location(in: textView)
+        if enableLinkTaps, let link = linkHit(at: location) {
+            if interceptLinkTaps {
+                onPressLink([
+                    "href": link.href,
+                    "text": link.text,
+                ])
+            } else {
+                openLink(link.href)
+            }
+            return
+        }
+
+        guard let mention = mentionHit(at: location) else { return }
         onPressMention([
             "docPos": mention.docPos,
             "label": mention.label,
         ])
     }
 
-    private func mentionHit(at location: CGPoint) -> (docPos: Int, label: String)? {
+    private func characterIndex(at location: CGPoint) -> Int? {
         let textStorage = textView.textStorage
         guard textStorage.length > 0 else { return nil }
 
@@ -133,6 +156,26 @@ final class NativeProseViewerExpoView: ExpoView {
         guard glyphIndex < layoutManager.numberOfGlyphs else { return nil }
         let characterIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
         guard characterIndex < textStorage.length else { return nil }
+        return characterIndex
+    }
+
+    private func linkHit(at location: CGPoint) -> (href: String, text: String)? {
+        let textStorage = textView.textStorage
+        guard let characterIndex = characterIndex(at: location) else { return nil }
+
+        var effectiveRange = NSRange(location: 0, length: 0)
+        let attrs = textStorage.attributes(at: characterIndex, effectiveRange: &effectiveRange)
+        guard let href = attrs[RenderBridgeAttributes.linkHref] as? String, !href.isEmpty else {
+            return nil
+        }
+
+        let text = (textStorage.string as NSString).substring(with: effectiveRange)
+        return (href: href, text: text)
+    }
+
+    private func mentionHit(at location: CGPoint) -> (docPos: Int, label: String)? {
+        let textStorage = textView.textStorage
+        guard let characterIndex = characterIndex(at: location) else { return nil }
 
         var effectiveRange = NSRange(location: 0, length: 0)
         let attrs = textStorage.attributes(at: characterIndex, effectiveRange: &effectiveRange)
@@ -145,5 +188,10 @@ final class NativeProseViewerExpoView: ExpoView {
             ?? Int((attrs[RenderBridgeAttributes.docPos] as? UInt32) ?? 0)
         let label = (textStorage.string as NSString).substring(with: effectiveRange)
         return (docPos: docPos, label: label)
+    }
+
+    private func openLink(_ href: String) {
+        guard let url = URL(string: href) else { return }
+        UIApplication.shared.open(url, options: [:], completionHandler: nil)
     }
 }

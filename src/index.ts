@@ -12,6 +12,7 @@ export {
 export {
     NativeProseViewer,
     type NativeProseViewerProps,
+    type NativeProseViewerLinkPressEvent,
     type NativeProseViewerMentionRenderContext,
     type NativeProseViewerMentionPressEvent,
 } from './NativeProseViewer';

@@ -866,6 +866,8 @@ class RenderBridgeTest {
         val underlineSpans = result.getSpans(0, result.length, UnderlineSpan::class.java)
         val colorSpans = result.getSpans(0, result.length, ForegroundColorSpan::class.java)
         val urlSpans = result.getSpans(0, result.length, URLSpan::class.java)
+        val hrefAnnotations = result.getSpans(0, result.length, Annotation::class.java)
+            .filter { it.key == RenderBridge.NATIVE_LINK_HREF_ANNOTATION }
 
         assertTrue("Link text should be underlined", underlineSpans.isNotEmpty())
         assertTrue(
@@ -873,6 +875,8 @@ class RenderBridgeTest {
             colorSpans.any { it.foregroundColor == Color.parseColor("#1B73E8") }
         )
         assertTrue("Editor render should not expose clickable URL spans", urlSpans.isEmpty())
+        assertEquals(1, hrefAnnotations.size)
+        assertEquals("https://example.com", hrefAnnotations.first().value)
     }
 
     // ── Depth Indentation ───────────────────────────────────────────────

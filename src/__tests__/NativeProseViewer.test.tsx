@@ -2,6 +2,7 @@ const mockRenderDocumentJson = jest.fn();
 
 const mockNativeModule = {
     renderDocumentJson: mockRenderDocumentJson,
+    renderDocumentHtml: jest.fn(),
 };
 
 jest.mock('expo-modules-core', () => {
@@ -54,6 +55,14 @@ describe('NativeProseViewer', () => {
                 { type: 'blockEnd' },
             ])
         );
+        mockNativeModule.renderDocumentHtml.mockReset();
+        mockNativeModule.renderDocumentHtml.mockReturnValue(
+            JSON.stringify([
+                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                { type: 'textRun', text: 'Hello from HTML', marks: [] },
+                { type: 'blockEnd' },
+            ])
+        );
     });
 
     afterEach(() => {
@@ -98,6 +107,20 @@ describe('NativeProseViewer', () => {
         render(<NativeProseViewer contentJSON={contentJSON} />);
 
         expect(mockRenderDocumentJson.mock.calls[0]?.[1]).toBe(contentJSON);
+    });
+
+    it('renders native view from HTML input', () => {
+        const contentHTML = '<p>Hello from HTML</p>';
+
+        const { getByTestId } = render(<NativeProseViewer contentHTML={contentHTML} />);
+
+        const nativeView = getByTestId('native-prose-viewer');
+        expect(mockNativeModule.renderDocumentHtml).toHaveBeenCalledTimes(1);
+        expect(mockNativeModule.renderDocumentHtml.mock.calls[0]?.[1]).toBe(
+            contentHTML
+        );
+        expect(mockRenderDocumentJson).not.toHaveBeenCalled();
+        expect(nativeView.props.renderJson).toContain('Hello from HTML');
     });
 
     it('includes mention schema support in the native render config', () => {
@@ -231,6 +254,116 @@ describe('NativeProseViewer', () => {
         });
     });
 
+    it('enables native link taps by default', () => {
+        const { getByTestId } = render(
+            <NativeProseViewer
+                contentJSON={{
+                    type: 'doc',
+                    content: [{ type: 'paragraph', content: [] }],
+                }}
+            />
+        );
+
+        expect(getByTestId('native-prose-viewer').props.enableLinkTaps).toBe(true);
+        expect(getByTestId('native-prose-viewer').props.interceptLinkTaps).toBe(false);
+    });
+
+    it('routes native link taps through onPressLink when provided', () => {
+        const onPressLink = jest.fn();
+
+        const { getByTestId } = render(
+            <NativeProseViewer
+                contentJSON={{
+                    type: 'doc',
+                    content: [{ type: 'paragraph', content: [] }],
+                }}
+                onPressLink={onPressLink}
+            />
+        );
+
+        const nativeView = getByTestId('native-prose-viewer');
+        expect(nativeView.props.enableLinkTaps).toBe(true);
+        expect(nativeView.props.interceptLinkTaps).toBe(true);
+
+        fireEvent(nativeView, 'onPressLink', {
+            nativeEvent: { href: 'https://example.com', text: 'Example' },
+        });
+
+        expect(onPressLink).toHaveBeenCalledWith({
+            href: 'https://example.com',
+            text: 'Example',
+        });
+    });
+
+    it('collapses trailing empty paragraphs by default', () => {
+        mockRenderDocumentJson.mockReturnValueOnce(
+            JSON.stringify([
+                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                { type: 'textRun', text: 'Hello', marks: [] },
+                { type: 'blockEnd' },
+                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                { type: 'textRun', text: '\u200B', marks: [] },
+                { type: 'blockEnd' },
+                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                { type: 'textRun', text: '\u200B', marks: [] },
+                { type: 'blockEnd' },
+            ])
+        );
+
+        const { getByTestId } = render(
+            <NativeProseViewer
+                contentJSON={{
+                    type: 'doc',
+                    content: [{ type: 'paragraph', content: [] }],
+                }}
+            />
+        );
+
+        expect(JSON.parse(getByTestId('native-prose-viewer').props.renderJson)).toEqual([
+            { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+            { type: 'textRun', text: 'Hello', marks: [] },
+            { type: 'blockEnd' },
+        ]);
+    });
+
+    it('preserves trailing empty paragraphs when collapseTrailingEmptyParagraphs is false', () => {
+        mockRenderDocumentJson.mockReturnValueOnce(
+            JSON.stringify([
+                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                { type: 'textRun', text: 'Hello', marks: [] },
+                { type: 'blockEnd' },
+                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                { type: 'textRun', text: '\u200B', marks: [] },
+                { type: 'blockEnd' },
+                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                { type: 'textRun', text: '\u200B', marks: [] },
+                { type: 'blockEnd' },
+            ])
+        );
+
+        const { getByTestId } = render(
+            <NativeProseViewer
+                contentJSON={{
+                    type: 'doc',
+                    content: [{ type: 'paragraph', content: [] }],
+                }}
+                collapseTrailingEmptyParagraphs={false}
+            />
+        );
+
+        expect(JSON.parse(getByTestId('native-prose-viewer').props.renderJson)).toEqual([
+            { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+            { type: 'textRun', text: 'Hello', marks: [] },
+            { type: 'blockEnd' },
+            { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+            { type: 'textRun', text: '\u200B', marks: [] },
+            { type: 'blockEnd' },
+            { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+            { type: 'textRun', text: '\u200B', marks: [] },
+            { type: 'blockEnd' },
+        ]);
+    });
+
     it('applies measured content height as a minimum height', () => {
         const { getByTestId } = render(
             <NativeProseViewer
@@ -260,7 +393,7 @@ describe('NativeProseViewer', () => {
         const { getByTestId, rerender } = render(
             <NativeProseViewer
                 contentJSON={baseContent}
-                contentJSONRevision='first'
+                contentRevision='first'
             />
         );
 
@@ -289,7 +422,7 @@ describe('NativeProseViewer', () => {
         rerender(
             <NativeProseViewer
                 contentJSON={baseContent}
-                contentJSONRevision='second'
+                contentRevision='second'
             />
         );
 
@@ -297,6 +430,49 @@ describe('NativeProseViewer', () => {
             nativeEvent: {
                 contentHeight: 52,
             },
+        });
+
+        expect(getByTestId('native-prose-viewer').props.style).toEqual([
+            { minHeight: 1 },
+            undefined,
+            { minHeight: 52 },
+        ]);
+    });
+
+    it('accepts contentJSONRevision as a compatibility alias for contentRevision', () => {
+        const baseContent = {
+            type: 'doc',
+            content: [{ type: 'paragraph', content: [] }],
+        };
+        const { getByTestId, rerender } = render(
+            <NativeProseViewer
+                contentJSON={baseContent}
+                contentJSONRevision='first'
+            />
+        );
+
+        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
+            nativeEvent: { contentHeight: 84 },
+        });
+        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
+            nativeEvent: { contentHeight: 20 },
+        });
+
+        expect(getByTestId('native-prose-viewer').props.style).toEqual([
+            { minHeight: 1 },
+            undefined,
+            { minHeight: 84 },
+        ]);
+
+        rerender(
+            <NativeProseViewer
+                contentJSON={baseContent}
+                contentJSONRevision='second'
+            />
+        );
+
+        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
+            nativeEvent: { contentHeight: 52 },
         });
 
         expect(getByTestId('native-prose-viewer').props.style).toEqual([

@@ -295,6 +295,14 @@ class NativeEditorModule : Module() {
                 editorDestroy(editorId)
             }
         }
+        Function("renderDocumentHtml") { configJson: String, html: String ->
+            val editorId = editorCreate(configJson)
+            try {
+                editorSetHtml(editorId, html)
+            } finally {
+                editorDestroy(editorId)
+            }
+        }
 
         View(NativeEditorExpoView::class) {
             Events(
@@ -370,13 +378,19 @@ class NativeEditorModule : Module() {
 
         View(NativeProseViewerExpoView::class) {
             Name("NativeProseViewer")
-            Events("onContentHeightChange", "onPressMention")
+            Events("onContentHeightChange", "onPressLink", "onPressMention")
 
             Prop("renderJson") { view: NativeProseViewerExpoView, renderJson: String? ->
                 view.setRenderJson(renderJson)
             }
             Prop("themeJson") { view: NativeProseViewerExpoView, themeJson: String? ->
                 view.setThemeJson(themeJson)
+            }
+            Prop("enableLinkTaps") { view: NativeProseViewerExpoView, enableLinkTaps: Boolean? ->
+                view.setEnableLinkTaps(enableLinkTaps)
+            }
+            Prop("interceptLinkTaps") { view: NativeProseViewerExpoView, interceptLinkTaps: Boolean? ->
+                view.setInterceptLinkTaps(interceptLinkTaps)
             }
         }
     }

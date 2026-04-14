@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.3] - 2026-04-14
+
+### Added
+
+- `NativeProseViewer.collapseTrailingEmptyParagraphs` to trim trailing empty paragraph blocks in viewer output, enabled by default.
+- `NativeProseViewer` link taps are now enabled by default, with `onPressLink` available to intercept taps and run custom actions instead of the native default open behaviour.
+- `NativeProseViewer.contentHTML` for rendering read-only HTML input directly.
+
+### Changed
+
+- `NativeProseViewer.contentRevision` replaces the JSON-specific `contentJSONRevision` prop name.
+
 ## [0.5.2] - 2026-04-13
 
 ### Added

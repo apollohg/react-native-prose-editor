@@ -1,7 +1,9 @@
 package com.apollohg.editor
 
+import android.content.Intent
 import android.content.Context
 import android.graphics.Color
+import android.net.Uri
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -17,11 +19,15 @@ class NativeProseViewerExpoView(
     private val proseView = EditorEditText(context)
     private val onContentHeightChange by EventDispatcher<Map<String, Any>>()
     @Suppress("unused")
+    private val onPressLink by EventDispatcher<Map<String, Any>>()
+    @Suppress("unused")
     private val onPressMention by EventDispatcher<Map<String, Any>>()
 
     private var lastRenderJson: String? = null
     private var lastThemeJson: String? = null
     private var lastEmittedContentHeight = 0
+    private var enableLinkTaps = true
+    private var interceptLinkTaps = false
 
     init {
         proseView.setBaseStyle(
@@ -43,14 +49,27 @@ class NativeProseViewerExpoView(
                 return@setOnTouchListener false
             }
 
-            val mention = proseView.mentionHitAt(event.x, event.y) ?: return@setOnTouchListener false
-            onPressMention(
-                mapOf(
-                    "docPos" to mention.docPos,
-                    "label" to mention.label
+            proseView.mentionHitAt(event.x, event.y)?.let { mention ->
+                onPressMention(mapOf("docPos" to mention.docPos, "label" to mention.label))
+                return@setOnTouchListener true
+            }
+
+            if (!enableLinkTaps) {
+                return@setOnTouchListener false
+            }
+
+            val link = proseView.linkHitAt(event.x, event.y) ?: return@setOnTouchListener false
+            if (interceptLinkTaps) {
+                onPressLink(
+                    mapOf(
+                        "href" to link.href,
+                        "text" to link.text
+                    )
                 )
-            )
-            true
+                return@setOnTouchListener true
+            }
+
+            return@setOnTouchListener openLink(link.href)
         }
 
         addView(
@@ -81,6 +100,14 @@ class NativeProseViewerExpoView(
             requestLayout()
             emitContentHeightIfNeeded(force = true)
         }
+    }
+
+    fun setEnableLinkTaps(enableLinkTaps: Boolean?) {
+        this.enableLinkTaps = enableLinkTaps ?: true
+    }
+
+    fun setInterceptLinkTaps(interceptLinkTaps: Boolean?) {
+        this.interceptLinkTaps = interceptLinkTaps ?: false
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -153,5 +180,15 @@ class NativeProseViewerExpoView(
         }
 
         return (resources.displayMetrics.widthPixels - paddingLeft - paddingRight).coerceAtLeast(1)
+    }
+
+    private fun openLink(href: String): Boolean {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(href)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return runCatching {
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
     }
 }

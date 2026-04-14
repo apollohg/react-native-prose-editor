@@ -268,6 +268,13 @@ public class NativeEditorModule: Module {
             }
             return editorSetJson(id: editorId, json: json)
         }
+        Function("renderDocumentHtml") { (configJson: String, html: String) -> String in
+            let editorId = editorCreate(configJson: configJson)
+            defer {
+                editorDestroy(id: editorId)
+            }
+            return editorSetHtml(id: editorId, html: html)
+        }
         Function("editorReplaceHtml") { (id: Int, html: String) -> String in
             editorReplaceHtml(id: UInt64(id), html: html)
         }
@@ -375,13 +382,19 @@ public class NativeEditorModule: Module {
 
         View(NativeProseViewerExpoView.self) {
             ViewName("NativeProseViewer")
-            Events("onContentHeightChange", "onPressMention")
+            Events("onContentHeightChange", "onPressLink", "onPressMention")
 
             Prop("renderJson") { (view: NativeProseViewerExpoView, renderJson: String?) in
                 view.setRenderJson(renderJson)
             }
             Prop("themeJson") { (view: NativeProseViewerExpoView, themeJson: String?) in
                 view.setThemeJson(themeJson)
+            }
+            Prop("enableLinkTaps") { (view: NativeProseViewerExpoView, enableLinkTaps: Bool?) in
+                view.setEnableLinkTaps(enableLinkTaps)
+            }
+            Prop("interceptLinkTaps") { (view: NativeProseViewerExpoView, interceptLinkTaps: Bool?) in
+                view.setInterceptLinkTaps(interceptLinkTaps)
             }
         }
     }

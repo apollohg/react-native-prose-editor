@@ -199,6 +199,10 @@ final class RenderBridgeTests: XCTestCase {
         )
         XCTAssertEqual(attrs[.foregroundColor] as? UIColor, UIColor.systemBlue)
         XCTAssertNil(attrs[.link])
+        XCTAssertEqual(
+            attrs[RenderBridgeAttributes.linkHref] as? String,
+            "https://openai.com"
+        )
     }
 
     func testRenderBlocks_withLeadingSeparatorDoesNotDuplicateTopLevelChildIndexOnContent() {
