@@ -1,7 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { requireNativeModule, requireNativeViewManager } from 'expo-modules-core';
 import {
     type NativeSyntheticEvent,
+    PixelRatio,
+    Platform,
     type StyleProp,
     type ViewStyle,
 } from 'react-native';
@@ -611,17 +613,13 @@ export function NativeProseViewer({
         [collapseTrailingEmptyParagraphs, renderJson]
     );
     const [contentHeight, setContentHeight] = useState<number | null>(null);
-    const allowContentHeightShrinkRef = useRef(true);
-
-    useEffect(() => {
-        allowContentHeightShrinkRef.current = true;
-    }, [resolvedContentRevision, renderJson, themeJson]);
 
     const handleContentHeightChange = useCallback(
         (
             event: NativeSyntheticEvent<NativeProseViewerContentHeightEvent>
         ) => {
-            const nextHeight = event.nativeEvent.contentHeight;
+            const density = Platform.OS === 'android' ? PixelRatio.get() : 1;
+            const nextHeight = Math.ceil(event.nativeEvent.contentHeight / density);
             if (nextHeight < 0) return;
             if (nextHeight === 0 && !renderJsonIsCollapsedEmpty) return;
             if (nextHeight === 0) {
@@ -631,16 +629,7 @@ export function NativeProseViewer({
                 return;
             }
             setContentHeight((currentHeight) =>
-                currentHeight == null ||
-                nextHeight >= currentHeight ||
-                allowContentHeightShrinkRef.current
-                    ? (() => {
-                          allowContentHeightShrinkRef.current = false;
-                          return currentHeight === nextHeight
-                              ? currentHeight
-                              : nextHeight;
-                      })()
-                    : currentHeight
+                currentHeight === nextHeight ? currentHeight : nextHeight
             );
         },
         [renderJsonIsCollapsedEmpty]

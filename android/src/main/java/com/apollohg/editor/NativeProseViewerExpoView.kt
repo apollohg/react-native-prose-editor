@@ -10,6 +10,7 @@ import android.view.ViewGroup
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
+import kotlin.math.abs
 import org.json.JSONArray
 
 class NativeProseViewerExpoView(
@@ -31,6 +32,7 @@ class NativeProseViewerExpoView(
     private var isCollapsedEmptyContent = false
     private var enableLinkTaps = true
     private var interceptLinkTaps = false
+    internal var suppressContentHeightEventsForTesting = false
 
     init {
         proseView.setBaseStyle(
@@ -39,6 +41,9 @@ class NativeProseViewerExpoView(
             Color.TRANSPARENT
         )
         proseView.isEditable = false
+        proseView.inputType = android.text.InputType.TYPE_CLASS_TEXT or
+            android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+            android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         proseView.setImageResizingEnabled(false)
         proseView.setHeightBehavior(EditorHeightBehavior.AUTO_GROW)
         proseView.isFocusable = false
@@ -88,10 +93,7 @@ class NativeProseViewerExpoView(
         if (lastRenderJson == renderJson) return
         lastRenderJson = renderJson
         applyRenderJson()
-        post {
-            requestLayout()
-            emitContentHeightIfNeeded(force = true)
-        }
+        requestLayout()
     }
 
     fun setThemeJson(themeJson: String?) {
@@ -99,10 +101,7 @@ class NativeProseViewerExpoView(
         lastThemeJson = themeJson
         proseView.applyTheme(EditorTheme.fromJson(themeJson))
         applyRenderJson()
-        post {
-            requestLayout()
-            emitContentHeightIfNeeded(force = true)
-        }
+        requestLayout()
     }
 
     fun setCollapsesWhenEmpty(collapsesWhenEmpty: Boolean?) {
@@ -125,6 +124,7 @@ class NativeProseViewerExpoView(
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         if (isCollapsedEmptyContent) {
             setMeasuredDimension(resolveSize(0, widthMeasureSpec), 0)
+            emitContentHeightIfNeeded()
             return
         }
 
@@ -139,12 +139,20 @@ class NativeProseViewerExpoView(
         )
         proseView.measure(childWidthSpec, childHeightSpec)
 
+        val resolvedContentHeight = proseView.resolveAutoGrowHeight()
         val desiredWidth = proseView.measuredWidth + paddingLeft + paddingRight
-        val desiredHeight = proseView.measuredHeight + paddingTop + paddingBottom
+        val desiredHeight = resolvedContentHeight + paddingTop + paddingBottom
+        val measuredHeight = when (View.MeasureSpec.getMode(heightMeasureSpec)) {
+            View.MeasureSpec.AT_MOST -> desiredHeight.coerceAtMost(
+                View.MeasureSpec.getSize(heightMeasureSpec)
+            )
+            else -> desiredHeight
+        }
         setMeasuredDimension(
             resolveSize(desiredWidth, widthMeasureSpec),
-            resolveSize(desiredHeight, heightMeasureSpec)
+            measuredHeight
         )
+        emitContentHeightIfNeeded(measuredContentHeight = desiredHeight)
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
@@ -177,11 +185,16 @@ class NativeProseViewerExpoView(
         proseView.visibility = if (isCollapsedEmptyContent) View.GONE else View.VISIBLE
     }
 
-    private fun emitContentHeightIfNeeded(force: Boolean = false) {
+    private fun emitContentHeightIfNeeded(
+        force: Boolean = false,
+        measuredContentHeight: Int? = null
+    ) {
         val contentHeight = if (isCollapsedEmptyContent) {
             0
         } else {
-            (measureContentHeightPx() + paddingTop + paddingBottom).coerceAtLeast(0)
+            (
+                measuredContentHeight ?: (measureContentHeightPx() + paddingTop + paddingBottom)
+            ).coerceAtLeast(0)
         }
         if (contentHeight <= 0 && !isCollapsedEmptyContent) {
             return
@@ -190,6 +203,9 @@ class NativeProseViewerExpoView(
             return
         }
         lastEmittedContentHeight = contentHeight
+        if (suppressContentHeightEventsForTesting) {
+            return
+        }
         onContentHeightChange(mapOf("contentHeight" to contentHeight))
     }
 
@@ -198,16 +214,22 @@ class NativeProseViewerExpoView(
             return 0
         }
 
-        val currentMeasuredHeight = proseView.measuredHeight
-        if (currentMeasuredHeight > 0 && proseView.layout != null) {
-            return currentMeasuredHeight
-        }
-
         val availableWidthPx = resolveAvailableWidthPx()
-        val childWidthSpec = View.MeasureSpec.makeMeasureSpec(availableWidthPx, View.MeasureSpec.EXACTLY)
-        val childHeightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-        proseView.measure(childWidthSpec, childHeightSpec)
-        return proseView.measuredHeight
+        if (
+            proseView.measuredWidth <= 0 ||
+            abs(proseView.measuredWidth - availableWidthPx) > 1
+        ) {
+            val childWidthSpec = View.MeasureSpec.makeMeasureSpec(
+                availableWidthPx,
+                View.MeasureSpec.EXACTLY
+            )
+            val childHeightSpec = View.MeasureSpec.makeMeasureSpec(
+                0,
+                View.MeasureSpec.UNSPECIFIED
+            )
+            proseView.measure(childWidthSpec, childHeightSpec)
+        }
+        return proseView.resolveAutoGrowHeight()
     }
 
     private fun resolveAvailableWidthPx(): Int {

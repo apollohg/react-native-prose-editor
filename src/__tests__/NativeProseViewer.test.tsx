@@ -30,6 +30,7 @@ jest.mock('expo-modules-core', () => {
 
 import React from 'react';
 import { fireEvent, render } from '@testing-library/react-native';
+import { PixelRatio, Platform } from 'react-native';
 
 import { NativeProseViewer } from '../NativeProseViewer';
 
@@ -471,7 +472,43 @@ describe('NativeProseViewer', () => {
         ]);
     });
 
-    it('ignores stale smaller measurements until the rendered content changes', () => {
+    it('converts Android pixel heights to density-independent points', () => {
+        const originalPlatform = Platform.OS;
+        Object.defineProperty(Platform, 'OS', {
+            configurable: true,
+            value: 'android',
+        });
+        const pixelRatioSpy = jest.spyOn(PixelRatio, 'get').mockReturnValue(2.625);
+
+        try {
+            const { getByTestId } = render(
+                <NativeProseViewer
+                    contentJSON={{
+                        type: 'doc',
+                        content: [{ type: 'paragraph', content: [] }],
+                    }}
+                />
+            );
+
+            fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
+                nativeEvent: { contentHeight: 252 },
+            });
+
+            expect(getByTestId('native-prose-viewer').props.style).toEqual([
+                { minHeight: 1 },
+                undefined,
+                { minHeight: Math.ceil(252 / 2.625) },
+            ]);
+        } finally {
+            pixelRatioSpy.mockRestore();
+            Object.defineProperty(Platform, 'OS', {
+                configurable: true,
+                value: originalPlatform,
+            });
+        }
+    });
+
+    it('accepts later positive shrink measurements from native layout stabilization', () => {
         const baseContent = {
             type: 'doc',
             content: [{ type: 'paragraph', content: [] }],
@@ -502,7 +539,7 @@ describe('NativeProseViewer', () => {
         expect(getByTestId('native-prose-viewer').props.style).toEqual([
             { minHeight: 1 },
             undefined,
-            { minHeight: 84 },
+            { minHeight: 20 },
         ]);
 
         rerender(
@@ -547,7 +584,7 @@ describe('NativeProseViewer', () => {
         expect(getByTestId('native-prose-viewer').props.style).toEqual([
             { minHeight: 1 },
             undefined,
-            { minHeight: 84 },
+            { minHeight: 20 },
         ]);
 
         rerender(

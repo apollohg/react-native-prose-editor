@@ -1,10 +1,19 @@
 # Changelog
 
+## [0.5.5] - 2026-04-30
+
+### Fixed
+
+- `NativeProseViewer` no longer emits height before the native text view has been laid out, fixing inflated heights for long messages in list contexts on both iOS and Android.
+- `NativeProseViewer` now converts Android pixel heights to density-independent points, matching `NativeRichTextEditor` behaviour.
+- `NativeProseViewer` on Android no longer shows spellcheck underlines on rendered text.
+
 ## [0.5.4] - 2026-04-30
 
 ### Fixed
 
 - `NativeProseViewer` now collapses to zero height when `collapseTrailingEmptyParagraphs` is enabled and the rendered document contains only empty paragraphs.
+- `NativeProseViewer` now accepts later corrected height measurements so very long messages do not keep stale extra bottom spacing.
 
 ## [0.5.3] - 2026-04-14
 

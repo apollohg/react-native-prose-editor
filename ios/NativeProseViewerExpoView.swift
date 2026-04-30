@@ -11,7 +11,6 @@ final class NativeProseViewerExpoView: ExpoView {
     private var lastThemeJSON: String?
     private var lastEmittedContentHeight: CGFloat = 0
     private var lastMeasuredWidth: CGFloat = 0
-    private var allowContentHeightShrink = true
     private var collapsesWhenEmpty = true
     private var isCollapsedEmptyContent = false
     private var enableLinkTaps = true
@@ -57,7 +56,6 @@ final class NativeProseViewerExpoView: ExpoView {
         let nextValue = collapses ?? true
         guard collapsesWhenEmpty != nextValue else { return }
         collapsesWhenEmpty = nextValue
-        allowContentHeightShrink = true
         updateCollapsedEmptyState()
         setNeedsLayout()
         emitContentHeightIfNeeded(force: true)
@@ -66,14 +64,12 @@ final class NativeProseViewerExpoView: ExpoView {
     func setRenderJson(_ renderJson: String?) {
         guard lastRenderJSON != renderJson else { return }
         lastRenderJSON = renderJson
-        allowContentHeightShrink = true
         applyRenderJSON()
     }
 
     func setThemeJson(_ themeJson: String?) {
         guard lastThemeJSON != themeJson else { return }
         lastThemeJSON = themeJson
-        allowContentHeightShrink = true
         let theme = EditorTheme.from(json: themeJson)
         textView.applyTheme(theme)
         let cornerRadius = theme?.borderRadius ?? 0
@@ -112,9 +108,9 @@ final class NativeProseViewerExpoView: ExpoView {
         updateCollapsedEmptyState()
         textView.applyRenderJSON(lastRenderJSON ?? "[]")
         textView.isHidden = isCollapsedEmptyContent
+        lastMeasuredWidth = 0
         invalidateIntrinsicContentSize()
         setNeedsLayout()
-        emitContentHeightIfNeeded(force: true)
     }
 
     private func updateCollapsedEmptyState() {
@@ -131,16 +127,12 @@ final class NativeProseViewerExpoView: ExpoView {
         if isCollapsedEmptyContent {
             contentHeight = 0
         } else {
-            let resolvedWidth = bounds.width > 0
-                ? bounds.width
-                : (superview?.bounds.width ?? UIScreen.main.bounds.width)
+            guard bounds.width > 0 else { return }
             let fittedHeight = measuredHeight
-                ?? textView.measuredAutoGrowHeightForTesting(width: resolvedWidth)
+                ?? textView.measuredAutoGrowHeightForTesting(width: bounds.width)
             contentHeight = ceil(fittedHeight)
             guard contentHeight > 0 else { return }
         }
-        guard allowContentHeightShrink || contentHeight >= lastEmittedContentHeight else { return }
-        allowContentHeightShrink = false
         guard force || abs(contentHeight - lastEmittedContentHeight) > 0.5 else { return }
         lastEmittedContentHeight = contentHeight
         invalidateIntrinsicContentSize()
