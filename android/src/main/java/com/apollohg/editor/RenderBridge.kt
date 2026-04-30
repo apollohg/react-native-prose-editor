@@ -1465,6 +1465,9 @@ object RenderBridge {
         val indent = calculateIndent(currentBlock, blockStack, theme, density)
         val markerWidth = calculateMarkerWidth(density)
         val quoteDepth = blockquoteDepth(blockStack)
+        val indentPerDepth = (theme?.list?.indent ?: LayoutConstants.INDENT_PER_DEPTH) * density
+        val listBaseIndentAdjustment =
+            calculateListBaseIndentAdjustment(currentBlock, theme, density)
         val quoteStripeColor = if (quoteDepth > 0) {
             theme?.blockquote?.borderColor ?: Color.argb(
                 (Color.alpha(resolveInlineTextColor(blockStack, Color.BLACK, theme)) * 0.3f).toInt(),
@@ -1486,8 +1489,9 @@ object RenderBridge {
         ) * density
         val blockquoteIndentPx = (quoteDepth * quoteIndent).toInt()
         val quoteBaseIndent = if (quoteDepth > 0) {
-            ((currentBlock.depth * ((theme?.list?.indent ?: LayoutConstants.INDENT_PER_DEPTH) * density))
-                - (quoteDepth * ((theme?.list?.indent ?: LayoutConstants.INDENT_PER_DEPTH) * density))
+            ((currentBlock.depth * indentPerDepth)
+                - (quoteDepth * indentPerDepth)
+                + listBaseIndentAdjustment
                 + ((quoteDepth - 1f) * quoteIndent)).toInt()
         } else {
             0
@@ -1666,7 +1670,25 @@ object RenderBridge {
             (theme?.blockquote?.markerGap ?: LayoutConstants.BLOCKQUOTE_MARKER_GAP) +
                 (theme?.blockquote?.borderWidth ?: LayoutConstants.BLOCKQUOTE_BORDER_WIDTH)
         ) * density
-        return (context.depth * indentPerDepth) - (quoteDepth * indentPerDepth) + (quoteDepth * quoteIndent)
+        val listBaseIndentAdjustment = calculateListBaseIndentAdjustment(context, theme, density)
+        return (context.depth * indentPerDepth) -
+            (quoteDepth * indentPerDepth) +
+            listBaseIndentAdjustment +
+            (quoteDepth * quoteIndent)
+    }
+
+    private fun calculateListBaseIndentAdjustment(
+        context: BlockContext,
+        theme: EditorTheme?,
+        density: Float
+    ): Float {
+        if (context.listContext == null) {
+            return 0f
+        }
+
+        val indentPerDepth = (theme?.list?.indent ?: LayoutConstants.INDENT_PER_DEPTH) * density
+        val listBaseIndentMultiplier = maxOf(theme?.list?.baseIndentMultiplier ?: 1f, 0f)
+        return (listBaseIndentMultiplier - 1f) * indentPerDepth
     }
 
     private fun effectiveBlockContext(blockStack: List<BlockContext>): BlockContext? {

@@ -1827,7 +1827,7 @@ PODS:
     - React-utils (= 0.81.5)
     - ReactNativeDependencies
   - ReactNativeDependencies (0.81.5)
-  - ReactNativeProseEditor (0.5.3):
+  - ReactNativeProseEditor (0.5.4):
     - ExpoModulesCore
   - SDWebImage/Core (5.21.7)
   - SDWebImageWebPCoder (0.15.0):
@@ -1916,7 +1916,7 @@ DEPENDENCIES:
   - ReactCodegen (from `build/generated/ios`)
   - ReactCommon/turbomodule/core (from `../node_modules/react-native/ReactCommon`)
   - ReactNativeDependencies (from `../node_modules/react-native/third-party-podspecs/ReactNativeDependencies.podspec`)
-  - ReactNativeProseEditor (0.5.3)
+  - ReactNativeProseEditor (0.5.4)
   - Yoga (from `../node_modules/react-native/ReactCommon/yoga`)
 
 SPEC REPOS:

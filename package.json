@@ -1,6 +1,6 @@
 {
     "name": "@apollohg/react-native-prose-editor",
-    "version": "0.5.3",
+    "version": "0.5.4",
     "description": "Native rich text editor with Rust core for React Native",
     "license": "Apache-2.0",
     "homepage": "https://github.com/apollohg/react-native-prose-editor",

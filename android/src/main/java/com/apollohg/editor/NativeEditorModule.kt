@@ -386,6 +386,11 @@ class NativeEditorModule : Module() {
             Prop("themeJson") { view: NativeProseViewerExpoView, themeJson: String? ->
                 view.setThemeJson(themeJson)
             }
+            Prop("collapsesWhenEmpty") {
+                view: NativeProseViewerExpoView,
+                collapsesWhenEmpty: Boolean? ->
+                view.setCollapsesWhenEmpty(collapsesWhenEmpty)
+            }
             Prop("enableLinkTaps") { view: NativeProseViewerExpoView, enableLinkTaps: Boolean? ->
                 view.setEnableLinkTaps(enableLinkTaps)
             }

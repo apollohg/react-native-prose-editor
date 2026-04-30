@@ -419,6 +419,21 @@ describe('EditorToolbar', () => {
             expect(tree).not.toBeNull();
             expect(style.borderTopWidth).toBe(0);
         });
+
+        it('uses theme.showTopBorder when the prop is omitted', () => {
+            const { toJSON } = renderToolbar({
+                theme: {
+                    borderColor: '#123456',
+                    borderWidth: 2,
+                    showTopBorder: false,
+                },
+            });
+            const tree = toJSON();
+            const style = StyleSheet.flatten(tree?.props.style);
+
+            expect(tree).not.toBeNull();
+            expect(style.borderTopWidth).toBe(0);
+        });
     });
 
     // ── Active State (Record<string, boolean>) ─────────────────

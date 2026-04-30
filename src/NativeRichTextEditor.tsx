@@ -9,7 +9,10 @@ import React, {
 import {
     PixelRatio,
     Platform,
+    Pressable,
+    ScrollView,
     StyleSheet,
+    Text,
     View,
     type NativeSyntheticEvent,
     type StyleProp,
@@ -42,6 +45,7 @@ import {
     serializeEditorAddons,
     type EditorAddonEvent,
     type EditorAddons,
+    type MentionQueryChangeEvent,
     type MentionSelectionAttrsEvent,
     type MentionSuggestion,
     withMentionsSchema,
@@ -95,6 +99,9 @@ const DEV_NATIVE_VIEW_KEY = __DEV__
     : 'native-editor';
 const LINK_TOOLBAR_ACTION_KEY = '__native-editor-link__';
 const IMAGE_TOOLBAR_ACTION_KEY = '__native-editor-image__';
+const DEFAULT_MENTION_TRIGGER = '@';
+const MAX_INLINE_MENTION_SUGGESTIONS = 8;
+const INLINE_TOOLBAR_BORDER_COLOR = '#E5E5EA';
 
 function mapToolbarChildForNative(
     item: EditorToolbarGroupChildItem,
@@ -121,7 +128,9 @@ function mapToolbarChildForNative(
             icon: item.icon as EditorToolbarIcon,
             isActive: false,
             isDisabled:
-                !editable || !onRequestImage || !activeState.insertableNodes.includes(IMAGE_NODE_NAME),
+                !editable ||
+                !onRequestImage ||
+                !activeState.insertableNodes.includes(IMAGE_NODE_NAME),
         };
     }
     return item;
@@ -171,6 +180,48 @@ function isPromiseLike(value: unknown): value is Promise<unknown> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function resolveMentionTrigger(addons?: EditorAddons): string {
+    return addons?.mentions?.trigger?.trim() || DEFAULT_MENTION_TRIGGER;
+}
+
+function resolveMentionSuggestionLabel(suggestion: MentionSuggestion, trigger: string): string {
+    return suggestion.label?.trim() || `${trigger}${suggestion.title}`;
+}
+
+function filterMentionSuggestions(
+    suggestions: readonly MentionSuggestion[],
+    query: string,
+    trigger: string
+): MentionSuggestion[] {
+    const normalizedQuery = query.trim().toLowerCase();
+    const filtered =
+        normalizedQuery.length === 0
+            ? suggestions
+            : suggestions.filter((suggestion) => {
+                  const label = resolveMentionSuggestionLabel(suggestion, trigger);
+                  return (
+                      suggestion.title.toLowerCase().includes(normalizedQuery) ||
+                      label.toLowerCase().includes(normalizedQuery) ||
+                      suggestion.subtitle?.toLowerCase().includes(normalizedQuery) === true
+                  );
+              });
+    return filtered.slice(0, MAX_INLINE_MENTION_SUGGESTIONS);
+}
+
+function resolveMentionSuggestionAttrs(
+    suggestion: MentionSuggestion,
+    trigger: string
+): Record<string, unknown> {
+    const attrs = { ...(suggestion.attrs ?? {}) };
+    if (!('label' in attrs)) {
+        attrs.label = resolveMentionSuggestionLabel(suggestion, trigger);
+    }
+    if (!('mentionSuggestionChar' in attrs)) {
+        attrs.mentionSuggestionChar = trigger;
+    }
+    return attrs;
 }
 
 interface AutoLinkCandidate {
@@ -280,7 +331,10 @@ function trimAutoLinkTrailingPunctuation(value: string): string {
             continue;
         }
 
-        if ((lastChar === '"' || lastChar === "'") && countOccurrences(result, lastChar) % 2 !== 0) {
+        if (
+            (lastChar === '"' || lastChar === "'") &&
+            countOccurrences(result, lastChar) % 2 !== 0
+        ) {
             chars.pop();
             result = chars.join('');
             continue;
@@ -311,7 +365,11 @@ function isAutoLinkBoundaryChar(char: string | undefined): boolean {
     if (!char) {
         return true;
     }
-    return /\s/u.test(char) || char === AUTO_LINK_INLINE_PLACEHOLDER || AUTO_LINK_LEADING_BOUNDARY_CHARS.has(char);
+    return (
+        /\s/u.test(char) ||
+        char === AUTO_LINK_INLINE_PLACEHOLDER ||
+        AUTO_LINK_LEADING_BOUNDARY_CHARS.has(char)
+    );
 }
 
 function isAutoLinkTrailingDelimiterChar(char: string | undefined): boolean {
@@ -343,10 +401,7 @@ function codeUnitOffsetToScalarIndex(boundaries: readonly number[], offset: numb
     return scalarIndex;
 }
 
-function buildAutoLinkInlineBlock(
-    node: Record<string, unknown>,
-    pos: number
-): AutoLinkInlineBlock {
+function buildAutoLinkInlineBlock(node: Record<string, unknown>, pos: number): AutoLinkInlineBlock {
     const chars: string[] = [];
     const docPositions: number[] = [];
     const linked: boolean[] = [];
@@ -396,7 +451,10 @@ function findAutoLinkCandidateInInlineBlock(
     }
 
     let localIndex = 0;
-    while (localIndex < block.docPositions.length && block.docPositions[localIndex] < cursorDocPos) {
+    while (
+        localIndex < block.docPositions.length &&
+        block.docPositions[localIndex] < cursorDocPos
+    ) {
         localIndex += 1;
     }
 
@@ -404,7 +462,10 @@ function findAutoLinkCandidateInInlineBlock(
         return null;
     }
 
-    if (cursorDocPos < block.contentEnd && !isAutoLinkTrailingDelimiterChar(block.chars[localIndex - 1])) {
+    if (
+        cursorDocPos < block.contentEnd &&
+        !isAutoLinkTrailingDelimiterChar(block.chars[localIndex - 1])
+    ) {
         return null;
     }
 
@@ -880,12 +941,17 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             canUndo: false,
             canRedo: false,
         });
+        const [mentionQueryEvent, setMentionQueryEvent] = useState<MentionQueryChangeEvent | null>(
+            null
+        );
 
         // Selection and rendered text length refs (non-rendering state)
         const selectionRef = useRef<Selection>({ type: 'text', anchor: 0, head: 0 });
         const renderedTextLengthRef = useRef(0);
         const documentVersionRef = useRef<number | null>(null);
         const toolbarRef = useRef<View | null>(null);
+        const mentionQueryEventRef = useRef<MentionQueryChangeEvent | null>(null);
+        mentionQueryEventRef.current = mentionQueryEvent;
         const toolbarItemsSerializationCacheRef = useRef<{
             toolbarItems: readonly EditorToolbarItem[];
             editable: boolean;
@@ -928,9 +994,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const bridgeSchema =
             addons?.mentions != null ? withMentionsSchema(schema ?? tiptapSchema) : schema;
         const documentSchema = bridgeSchema ?? tiptapSchema;
-        const serializedSchemaJson = useSerializedValue(
-            bridgeSchema,
-            (nextSchema) => stringifyCachedJson(nextSchema)
+        const serializedSchemaJson = useSerializedValue(bridgeSchema, (nextSchema) =>
+            stringifyCachedJson(nextSchema)
         );
         const serializedInitialJson = useSerializedValue(initialJSON, (doc) =>
             stringifyCachedJson(normalizeDocumentJson(doc, documentSchema))
@@ -942,9 +1007,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         );
         const themeJson = useSerializedValue(theme, serializeEditorTheme);
         const addonsJson = useSerializedValue(addons, serializeEditorAddons);
-        const remoteSelectionsJson = useSerializedValue(
-            remoteSelections,
-            (selections) => serializeRemoteSelections(selections)
+        const remoteSelectionsJson = useSerializedValue(remoteSelections, (selections) =>
+            serializeRemoteSelections(selections)
         );
 
         const syncStateFromUpdate = useCallback((update: EditorUpdate | null) => {
@@ -1201,12 +1265,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 setIsReady(false);
             };
             // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [
-            maxLength,
-            syncStateFromUpdate,
-            allowBase64Images,
-            serializedSchemaJson,
-        ]);
+        }, [maxLength, syncStateFromUpdate, allowBase64Images, serializedSchemaJson]);
 
         useEffect(() => {
             if (value == null) return;
@@ -1278,7 +1337,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
 
                 try {
                     const previousDocumentVersion = documentVersionRef.current;
-                    const nativeUpdate = bridgeRef.current.parseUpdateJson(event.nativeEvent.updateJson);
+                    const nativeUpdate = bridgeRef.current.parseUpdateJson(
+                        event.nativeEvent.updateJson
+                    );
                     if (!nativeUpdate) return;
                     const update = maybeApplyAutoDetectedLink(
                         nativeUpdate,
@@ -1352,12 +1413,22 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         const handleFocusChange = useCallback((event: NativeSyntheticEvent<NativeFocusEvent>) => {
             const { isFocused: focused } = event.nativeEvent;
             setIsFocused(focused);
+            if (!focused) {
+                setMentionQueryEvent(null);
+            }
             if (focused) {
                 onFocusRef.current?.();
             } else {
                 onBlurRef.current?.();
             }
         }, []);
+
+        useEffect(() => {
+            if (addons?.mentions != null) {
+                return;
+            }
+            setMentionQueryEvent(null);
+        }, [addons?.mentions]);
 
         const handleContentHeightChange = useCallback(
             (event: NativeSyntheticEvent<NativeContentHeightEvent>) => {
@@ -1390,11 +1461,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         }, []);
 
         const insertImage = useCallback(
-            (
-                src: string,
-                attrs?: Omit<ImageNodeAttributes, 'src'>,
-                selection?: Selection
-            ) => {
+            (src: string, attrs?: Omit<ImageNodeAttributes, 'src'>, selection?: Selection) => {
                 const trimmedSrc = src.trim();
                 if (!trimmedSrc) return;
                 if (!allowBase64Images && isImageDataUrl(trimmedSrc)) {
@@ -1477,36 +1544,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             [onToolbarAction, openImageRequest, openLinkRequest]
         );
 
-        const handleAddonEvent = useCallback((event: NativeSyntheticEvent<NativeAddonEvent>) => {
-            let parsed: EditorAddonEvent | null = null;
-            try {
-                parsed = JSON.parse(event.nativeEvent.eventJson) as EditorAddonEvent;
-            } catch {
-                return;
-            }
-            if (!parsed) return;
-
-            if (parsed.type === 'mentionsQueryChange') {
-                addonsRef.current?.mentions?.onQueryChange?.({
-                    query: parsed.query,
-                    trigger: parsed.trigger,
-                    range: parsed.range,
-                    isActive: parsed.isActive,
-                });
-                return;
-            }
-
-            if (parsed.type === 'mentionsSelectRequest') {
-                const suggestion = mentionSuggestionsByKeyRef.current.get(parsed.suggestionKey);
-                if (!suggestion || !bridgeRef.current || bridgeRef.current.isDestroyed) return;
-
-                const selectionEvent: MentionSelectionAttrsEvent = {
-                    trigger: parsed.trigger,
-                    suggestion,
-                    attrs: parsed.attrs,
-                    range: parsed.range,
-                };
-
+        const resolveMentionSelectionAttrs = useCallback(
+            (selectionEvent: MentionSelectionAttrsEvent): Record<string, unknown> => {
                 let resolvedAttrs: Record<string, unknown> | null | undefined;
                 try {
                     resolvedAttrs =
@@ -1520,39 +1559,124 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     }
                 }
 
-                const finalAttrs = isRecord(resolvedAttrs)
-                    ? { ...parsed.attrs, ...resolvedAttrs }
-                    : parsed.attrs;
+                return isRecord(resolvedAttrs)
+                    ? { ...selectionEvent.attrs, ...resolvedAttrs }
+                    : selectionEvent.attrs;
+            },
+            []
+        );
+
+        const handleInlineMentionSuggestionPress = useCallback(
+            (suggestion: MentionSuggestion) => {
+                const mentionQuery = mentionQueryEventRef.current;
+                const mentions = addonsRef.current?.mentions;
+                if (
+                    !mentionQuery ||
+                    !mentions ||
+                    !bridgeRef.current ||
+                    bridgeRef.current.isDestroyed
+                ) {
+                    return;
+                }
+
+                const attrs = resolveMentionSelectionAttrs({
+                    trigger: mentionQuery.trigger,
+                    suggestion,
+                    attrs: resolveMentionSuggestionAttrs(suggestion, mentionQuery.trigger),
+                    range: mentionQuery.range,
+                });
 
                 const update = runAndApply(
                     () =>
                         bridgeRef.current?.insertContentJsonAtSelectionScalar(
-                            parsed.range.anchor,
-                            parsed.range.head,
-                            buildMentionFragmentJson(finalAttrs)
+                            mentionQuery.range.anchor,
+                            mentionQuery.range.head,
+                            buildMentionFragmentJson(attrs)
                         ) ?? null
                 );
 
                 if (update) {
+                    setMentionQueryEvent(null);
+                    mentions.onSelect?.({
+                        trigger: mentionQuery.trigger,
+                        suggestion,
+                        attrs,
+                    });
+                }
+            },
+            [resolveMentionSelectionAttrs, runAndApply]
+        );
+
+        const handleAddonEvent = useCallback(
+            (event: NativeSyntheticEvent<NativeAddonEvent>) => {
+                let parsed: EditorAddonEvent | null = null;
+                try {
+                    parsed = JSON.parse(event.nativeEvent.eventJson) as EditorAddonEvent;
+                } catch {
+                    return;
+                }
+                if (!parsed) return;
+
+                if (parsed.type === 'mentionsQueryChange') {
+                    const nextEvent: MentionQueryChangeEvent = {
+                        query: parsed.query,
+                        trigger: parsed.trigger,
+                        range: parsed.range,
+                        isActive: parsed.isActive,
+                    };
+                    setMentionQueryEvent(parsed.isActive ? nextEvent : null);
+                    addonsRef.current?.mentions?.onQueryChange?.({
+                        query: nextEvent.query,
+                        trigger: nextEvent.trigger,
+                        range: nextEvent.range,
+                        isActive: nextEvent.isActive,
+                    });
+                    return;
+                }
+
+                if (parsed.type === 'mentionsSelectRequest') {
+                    const suggestion = mentionSuggestionsByKeyRef.current.get(parsed.suggestionKey);
+                    if (!suggestion || !bridgeRef.current || bridgeRef.current.isDestroyed) return;
+
+                    const selectionEvent: MentionSelectionAttrsEvent = {
+                        trigger: parsed.trigger,
+                        suggestion,
+                        attrs: parsed.attrs,
+                        range: parsed.range,
+                    };
+                    const finalAttrs = resolveMentionSelectionAttrs(selectionEvent);
+
+                    const update = runAndApply(
+                        () =>
+                            bridgeRef.current?.insertContentJsonAtSelectionScalar(
+                                parsed.range.anchor,
+                                parsed.range.head,
+                                buildMentionFragmentJson(finalAttrs)
+                            ) ?? null
+                    );
+
+                    if (update) {
+                        addonsRef.current?.mentions?.onSelect?.({
+                            trigger: parsed.trigger,
+                            suggestion,
+                            attrs: finalAttrs,
+                        });
+                    }
+                    return;
+                }
+
+                if (parsed.type === 'mentionsSelect') {
+                    const suggestion = mentionSuggestionsByKeyRef.current.get(parsed.suggestionKey);
+                    if (!suggestion) return;
                     addonsRef.current?.mentions?.onSelect?.({
                         trigger: parsed.trigger,
                         suggestion,
-                        attrs: finalAttrs,
+                        attrs: parsed.attrs,
                     });
                 }
-                return;
-            }
-
-            if (parsed.type === 'mentionsSelect') {
-                const suggestion = mentionSuggestionsByKeyRef.current.get(parsed.suggestionKey);
-                if (!suggestion) return;
-                addonsRef.current?.mentions?.onSelect?.({
-                    trigger: parsed.trigger,
-                    suggestion,
-                    attrs: parsed.attrs,
-                });
-            }
-        }, [runAndApply]);
+            },
+            [resolveMentionSelectionAttrs, runAndApply]
+        );
 
         useImperativeHandle(
             ref,
@@ -1696,6 +1820,31 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             borderWidth: theme?.toolbar?.borderWidth,
             borderRadius: theme?.toolbar?.borderRadius,
         };
+        const inlineToolbarMarginTop = theme?.toolbar?.marginTop ?? 8;
+        const inlineToolbarShowTopBorder = theme?.toolbar?.showTopBorder ?? false;
+        const inlineToolbarMentionTheme = theme?.mentions ?? addons?.mentions?.theme;
+        const inlineToolbarContentTopBorderStyle = inlineToolbarShowTopBorder
+            ? {
+                  borderTopWidth: theme?.toolbar?.borderWidth ?? StyleSheet.hairlineWidth,
+                  borderTopColor: theme?.toolbar?.borderColor ?? INLINE_TOOLBAR_BORDER_COLOR,
+              }
+            : null;
+        const inlineMentionSuggestions =
+            toolbarPlacement === 'inline' &&
+            isFocused &&
+            mentionQueryEvent != null &&
+            addons?.mentions != null
+                ? filterMentionSuggestions(
+                      addons.mentions.suggestions ?? [],
+                      mentionQueryEvent.query,
+                      mentionQueryEvent.trigger || resolveMentionTrigger(addons)
+                  )
+                : [];
+        const shouldShowInlineMentionSuggestions =
+            shouldRenderJsToolbar &&
+            toolbarPlacement === 'inline' &&
+            isFocused &&
+            inlineMentionSuggestions.length > 0;
         const containerMinHeight = StyleSheet.flatten(containerStyle)?.minHeight;
         const nativeViewStyleParts: StyleProp<ViewStyle>[] = [];
         if (containerMinHeight != null) {
@@ -1715,6 +1864,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 testID='native-editor-js-toolbar'
                 style={[
                     styles.inlineToolbar,
+                    { marginTop: inlineToolbarMarginTop },
                     inlineToolbarChrome.backgroundColor != null
                         ? { backgroundColor: inlineToolbarChrome.backgroundColor }
                         : null,
@@ -1729,89 +1879,176 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                         : null,
                 ]}
                 onLayout={updateToolbarFrame}>
-                <EditorToolbar
-                    activeState={activeState}
-                    historyState={historyState}
-                    toolbarItems={toolbarItems}
-                    theme={theme?.toolbar}
-                    showTopBorder={false}
-                    onToggleMark={(mark) =>
-                        runAndApply(() => bridgeRef.current?.toggleMark(mark) ?? null, {
-                            skipNativeApplyIfContentUnchanged: true,
-                        })
-                    }
-                    onToggleListType={(listType: EditorToolbarListType) =>
-                        runAndApply(() => bridgeRef.current?.toggleList(listType) ?? null)
-                    }
-                    onToggleHeading={(level: EditorToolbarHeadingLevel) =>
-                        runAndApply(() => bridgeRef.current?.toggleHeading(level) ?? null)
-                    }
-                    onToggleBlockquote={() =>
-                        runAndApply(() => bridgeRef.current?.toggleBlockquote() ?? null)
-                    }
-                    onInsertNodeType={(nodeType) =>
-                        runAndApply(() => bridgeRef.current?.insertNode(nodeType) ?? null)
-                    }
-                    onRunCommand={(command: EditorToolbarCommand) => {
-                        switch (command) {
-                            case 'indentList':
-                                runAndApply(() => bridgeRef.current?.indentListItem() ?? null);
-                                break;
-                            case 'outdentList':
-                                runAndApply(() => bridgeRef.current?.outdentListItem() ?? null);
-                                break;
-                            case 'undo':
-                                runAndApply(() => bridgeRef.current?.undo() ?? null);
-                                break;
-                            case 'redo':
-                                runAndApply(() => bridgeRef.current?.redo() ?? null);
-                                break;
+                {shouldShowInlineMentionSuggestions ? (
+                    <View
+                        testID='native-editor-inline-mention-suggestions'
+                        style={[
+                            styles.inlineMentionSuggestionsContainer,
+                            inlineToolbarContentTopBorderStyle,
+                        ]}>
+                        <ScrollView
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            contentContainerStyle={styles.inlineMentionSuggestionsContent}
+                            keyboardShouldPersistTaps='always'>
+                            {inlineMentionSuggestions.map((suggestion) => {
+                                const label = resolveMentionSuggestionLabel(
+                                    suggestion,
+                                    mentionQueryEvent?.trigger ?? resolveMentionTrigger(addons)
+                                );
+
+                                return (
+                                    <Pressable
+                                        key={suggestion.key}
+                                        testID={`native-editor-inline-mention-suggestion-${suggestion.key}`}
+                                        onPress={() =>
+                                            handleInlineMentionSuggestionPress(suggestion)
+                                        }
+                                        accessibilityRole='button'
+                                        accessibilityLabel={label}
+                                        style={({ pressed }) => [
+                                            styles.inlineMentionSuggestion,
+                                            {
+                                                backgroundColor: pressed
+                                                    ? (inlineToolbarMentionTheme?.optionHighlightedBackgroundColor ??
+                                                      'rgba(0, 122, 255, 0.12)')
+                                                    : (inlineToolbarMentionTheme?.backgroundColor ??
+                                                      '#F2F2F7'),
+                                                borderColor:
+                                                    inlineToolbarMentionTheme?.borderColor ??
+                                                    'transparent',
+                                                borderWidth:
+                                                    inlineToolbarMentionTheme?.borderWidth ?? 0,
+                                                borderRadius:
+                                                    inlineToolbarMentionTheme?.borderRadius ?? 12,
+                                            },
+                                        ]}>
+                                        {({ pressed }) => (
+                                            <>
+                                                <Text
+                                                    numberOfLines={1}
+                                                    style={[
+                                                        styles.inlineMentionSuggestionTitle,
+                                                        {
+                                                            color: pressed
+                                                                ? (inlineToolbarMentionTheme?.optionHighlightedTextColor ??
+                                                                  inlineToolbarMentionTheme?.optionTextColor ??
+                                                                  '#000000')
+                                                                : (inlineToolbarMentionTheme?.optionTextColor ??
+                                                                  inlineToolbarMentionTheme?.textColor ??
+                                                                  '#000000'),
+                                                        },
+                                                    ]}>
+                                                    {label}
+                                                </Text>
+                                                {suggestion.subtitle ? (
+                                                    <Text
+                                                        numberOfLines={1}
+                                                        style={[
+                                                            styles.inlineMentionSuggestionSubtitle,
+                                                            {
+                                                                color:
+                                                                    inlineToolbarMentionTheme?.optionSecondaryTextColor ??
+                                                                    '#8E8E93',
+                                                            },
+                                                        ]}>
+                                                        {suggestion.subtitle}
+                                                    </Text>
+                                                ) : null}
+                                            </>
+                                        )}
+                                    </Pressable>
+                                );
+                            })}
+                        </ScrollView>
+                    </View>
+                ) : (
+                    <EditorToolbar
+                        activeState={activeState}
+                        historyState={historyState}
+                        toolbarItems={toolbarItems}
+                        theme={theme?.toolbar}
+                        showTopBorder={inlineToolbarShowTopBorder}
+                        onToggleMark={(mark) =>
+                            runAndApply(() => bridgeRef.current?.toggleMark(mark) ?? null, {
+                                skipNativeApplyIfContentUnchanged: true,
+                            })
                         }
-                    }}
-                    onRequestLink={openLinkRequest}
-                    onRequestImage={openImageRequest}
-                    onToolbarAction={onToolbarAction}
-                    onToggleBold={() =>
-                        runAndApply(() => bridgeRef.current?.toggleMark('bold') ?? null, {
-                            skipNativeApplyIfContentUnchanged: true,
-                        })
-                    }
-                    onToggleItalic={() =>
-                        runAndApply(() => bridgeRef.current?.toggleMark('italic') ?? null, {
-                            skipNativeApplyIfContentUnchanged: true,
-                        })
-                    }
-                    onToggleUnderline={() =>
-                        runAndApply(() => bridgeRef.current?.toggleMark('underline') ?? null, {
-                            skipNativeApplyIfContentUnchanged: true,
-                        })
-                    }
-                    onToggleStrike={() =>
-                        runAndApply(() => bridgeRef.current?.toggleMark('strike') ?? null, {
-                            skipNativeApplyIfContentUnchanged: true,
-                        })
-                    }
-                    onToggleBulletList={() =>
-                        runAndApply(() => bridgeRef.current?.toggleList('bulletList') ?? null)
-                    }
-                    onToggleOrderedList={() =>
-                        runAndApply(() => bridgeRef.current?.toggleList('orderedList') ?? null)
-                    }
-                    onIndentList={() =>
-                        runAndApply(() => bridgeRef.current?.indentListItem() ?? null)
-                    }
-                    onOutdentList={() =>
-                        runAndApply(() => bridgeRef.current?.outdentListItem() ?? null)
-                    }
-                    onInsertHorizontalRule={() =>
-                        runAndApply(() => bridgeRef.current?.insertNode('horizontalRule') ?? null)
-                    }
-                    onInsertLineBreak={() =>
-                        runAndApply(() => bridgeRef.current?.insertNode('hardBreak') ?? null)
-                    }
-                    onUndo={() => runAndApply(() => bridgeRef.current?.undo() ?? null)}
-                    onRedo={() => runAndApply(() => bridgeRef.current?.redo() ?? null)}
-                />
+                        onToggleListType={(listType: EditorToolbarListType) =>
+                            runAndApply(() => bridgeRef.current?.toggleList(listType) ?? null)
+                        }
+                        onToggleHeading={(level: EditorToolbarHeadingLevel) =>
+                            runAndApply(() => bridgeRef.current?.toggleHeading(level) ?? null)
+                        }
+                        onToggleBlockquote={() =>
+                            runAndApply(() => bridgeRef.current?.toggleBlockquote() ?? null)
+                        }
+                        onInsertNodeType={(nodeType) =>
+                            runAndApply(() => bridgeRef.current?.insertNode(nodeType) ?? null)
+                        }
+                        onRunCommand={(command: EditorToolbarCommand) => {
+                            switch (command) {
+                                case 'indentList':
+                                    runAndApply(() => bridgeRef.current?.indentListItem() ?? null);
+                                    break;
+                                case 'outdentList':
+                                    runAndApply(() => bridgeRef.current?.outdentListItem() ?? null);
+                                    break;
+                                case 'undo':
+                                    runAndApply(() => bridgeRef.current?.undo() ?? null);
+                                    break;
+                                case 'redo':
+                                    runAndApply(() => bridgeRef.current?.redo() ?? null);
+                                    break;
+                            }
+                        }}
+                        onRequestLink={openLinkRequest}
+                        onRequestImage={openImageRequest}
+                        onToolbarAction={onToolbarAction}
+                        onToggleBold={() =>
+                            runAndApply(() => bridgeRef.current?.toggleMark('bold') ?? null, {
+                                skipNativeApplyIfContentUnchanged: true,
+                            })
+                        }
+                        onToggleItalic={() =>
+                            runAndApply(() => bridgeRef.current?.toggleMark('italic') ?? null, {
+                                skipNativeApplyIfContentUnchanged: true,
+                            })
+                        }
+                        onToggleUnderline={() =>
+                            runAndApply(() => bridgeRef.current?.toggleMark('underline') ?? null, {
+                                skipNativeApplyIfContentUnchanged: true,
+                            })
+                        }
+                        onToggleStrike={() =>
+                            runAndApply(() => bridgeRef.current?.toggleMark('strike') ?? null, {
+                                skipNativeApplyIfContentUnchanged: true,
+                            })
+                        }
+                        onToggleBulletList={() =>
+                            runAndApply(() => bridgeRef.current?.toggleList('bulletList') ?? null)
+                        }
+                        onToggleOrderedList={() =>
+                            runAndApply(() => bridgeRef.current?.toggleList('orderedList') ?? null)
+                        }
+                        onIndentList={() =>
+                            runAndApply(() => bridgeRef.current?.indentListItem() ?? null)
+                        }
+                        onOutdentList={() =>
+                            runAndApply(() => bridgeRef.current?.outdentListItem() ?? null)
+                        }
+                        onInsertHorizontalRule={() =>
+                            runAndApply(
+                                () => bridgeRef.current?.insertNode('horizontalRule') ?? null
+                            )
+                        }
+                        onInsertLineBreak={() =>
+                            runAndApply(() => bridgeRef.current?.insertNode('hardBreak') ?? null)
+                        }
+                        onUndo={() => runAndApply(() => bridgeRef.current?.undo() ?? null)}
+                        onRedo={() => runAndApply(() => bridgeRef.current?.redo() ?? null)}
+                    />
+                )}
             </View>
         );
 
@@ -1856,9 +2093,32 @@ const styles = StyleSheet.create({
         position: 'relative',
     },
     inlineToolbar: {
-        marginTop: 8,
         borderWidth: StyleSheet.hairlineWidth,
-        borderColor: '#E5E5EA',
+        borderColor: INLINE_TOOLBAR_BORDER_COLOR,
         overflow: 'hidden',
+    },
+    inlineMentionSuggestionsContainer: {
+        overflow: 'hidden',
+    },
+    inlineMentionSuggestionsContent: {
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        alignItems: 'center',
+    },
+    inlineMentionSuggestion: {
+        minWidth: 88,
+        minHeight: 40,
+        marginRight: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        justifyContent: 'center',
+    },
+    inlineMentionSuggestionTitle: {
+        fontSize: 14,
+        fontWeight: '600',
+    },
+    inlineMentionSuggestionSubtitle: {
+        marginTop: 1,
+        fontSize: 12,
     },
 });

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.4] - 2026-04-30
+
+### Fixed
+
+- `NativeProseViewer` now collapses to zero height when `collapseTrailingEmptyParagraphs` is enabled and the rendered document contains only empty paragraphs.
+
 ## [0.5.3] - 2026-04-14
 
 ### Added
@@ -7,10 +13,13 @@
 - `NativeProseViewer.collapseTrailingEmptyParagraphs` to trim trailing empty paragraph blocks in viewer output, enabled by default.
 - `NativeProseViewer` link taps are now enabled by default, with `onPressLink` available to intercept taps and run custom actions instead of the native default open behaviour.
 - `NativeProseViewer.contentHTML` for rendering read-only HTML input directly.
+- `EditorTheme.list.baseIndentMultiplier` to control the starting list indent level independently from the per-level `indent` step.
+- `EditorTheme.toolbar.marginTop` and `EditorTheme.toolbar.showTopBorder` to tune the inline toolbar spacing and top separator.
 
 ### Changed
 
 - `NativeProseViewer.contentRevision` replaces the JSON-specific `contentJSONRevision` prop name.
+- Mention suggestions now render inside the JS inline toolbar path when `NativeRichTextEditor.toolbarPlacement` is set to `"inline"`.
 
 ## [0.5.2] - 2026-04-13
 

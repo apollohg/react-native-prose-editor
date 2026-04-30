@@ -10,6 +10,7 @@ import android.view.ViewGroup
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
+import org.json.JSONArray
 
 class NativeProseViewerExpoView(
     context: Context,
@@ -26,6 +27,8 @@ class NativeProseViewerExpoView(
     private var lastRenderJson: String? = null
     private var lastThemeJson: String? = null
     private var lastEmittedContentHeight = 0
+    private var collapsesWhenEmpty = true
+    private var isCollapsedEmptyContent = false
     private var enableLinkTaps = true
     private var interceptLinkTaps = false
 
@@ -84,7 +87,7 @@ class NativeProseViewerExpoView(
     fun setRenderJson(renderJson: String?) {
         if (lastRenderJson == renderJson) return
         lastRenderJson = renderJson
-        proseView.applyRenderJSON(renderJson ?: "[]")
+        applyRenderJson()
         post {
             requestLayout()
             emitContentHeightIfNeeded(force = true)
@@ -95,11 +98,20 @@ class NativeProseViewerExpoView(
         if (lastThemeJson == themeJson) return
         lastThemeJson = themeJson
         proseView.applyTheme(EditorTheme.fromJson(themeJson))
-        proseView.applyRenderJSON(lastRenderJson ?: "[]")
+        applyRenderJson()
         post {
             requestLayout()
             emitContentHeightIfNeeded(force = true)
         }
+    }
+
+    fun setCollapsesWhenEmpty(collapsesWhenEmpty: Boolean?) {
+        val nextValue = collapsesWhenEmpty ?: true
+        if (this.collapsesWhenEmpty == nextValue) return
+        this.collapsesWhenEmpty = nextValue
+        updateCollapsedEmptyState()
+        requestLayout()
+        emitContentHeightIfNeeded(force = true)
     }
 
     fun setEnableLinkTaps(enableLinkTaps: Boolean?) {
@@ -111,6 +123,11 @@ class NativeProseViewerExpoView(
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        if (isCollapsedEmptyContent) {
+            setMeasuredDimension(resolveSize(0, widthMeasureSpec), 0)
+            return
+        }
+
         val childWidthSpec = getChildMeasureSpec(
             widthMeasureSpec,
             paddingLeft + paddingRight,
@@ -131,6 +148,12 @@ class NativeProseViewerExpoView(
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        if (isCollapsedEmptyContent) {
+            proseView.layout(paddingLeft, paddingTop, right - left - paddingRight, paddingTop)
+            emitContentHeightIfNeeded()
+            return
+        }
+
         val childLeft = paddingLeft
         val childTop = paddingTop
         proseView.layout(
@@ -142,10 +165,25 @@ class NativeProseViewerExpoView(
         emitContentHeightIfNeeded()
     }
 
+    private fun applyRenderJson() {
+        updateCollapsedEmptyState()
+        proseView.applyRenderJSON(lastRenderJson ?: "[]")
+        proseView.visibility = if (isCollapsedEmptyContent) View.GONE else View.VISIBLE
+    }
+
+    private fun updateCollapsedEmptyState() {
+        isCollapsedEmptyContent = collapsesWhenEmpty &&
+            renderJsonContainsOnlyEmptyParagraphs(lastRenderJson ?: "[]")
+        proseView.visibility = if (isCollapsedEmptyContent) View.GONE else View.VISIBLE
+    }
+
     private fun emitContentHeightIfNeeded(force: Boolean = false) {
-        val contentHeight = (measureContentHeightPx() + paddingTop + paddingBottom)
-            .coerceAtLeast(0)
-        if (contentHeight <= 0) {
+        val contentHeight = if (isCollapsedEmptyContent) {
+            0
+        } else {
+            (measureContentHeightPx() + paddingTop + paddingBottom).coerceAtLeast(0)
+        }
+        if (contentHeight <= 0 && !isCollapsedEmptyContent) {
             return
         }
         if (!force && contentHeight == lastEmittedContentHeight) {
@@ -156,6 +194,10 @@ class NativeProseViewerExpoView(
     }
 
     private fun measureContentHeightPx(): Int {
+        if (isCollapsedEmptyContent) {
+            return 0
+        }
+
         val currentMeasuredHeight = proseView.measuredHeight
         if (currentMeasuredHeight > 0 && proseView.layout != null) {
             return currentMeasuredHeight
@@ -190,5 +232,62 @@ class NativeProseViewerExpoView(
             context.startActivity(intent)
             true
         }.getOrDefault(false)
+    }
+
+    companion object {
+        private const val EMPTY_TEXT_BLOCK_PLACEHOLDER = '\u200B'
+
+        internal fun renderJsonContainsOnlyEmptyParagraphs(renderJson: String): Boolean {
+            val elements = try {
+                JSONArray(renderJson)
+            } catch (_: Exception) {
+                return false
+            }
+
+            if (elements.length() == 0) {
+                return true
+            }
+
+            var hasParagraph = false
+            var paragraphIsOpen = false
+
+            for (index in 0 until elements.length()) {
+                val element = elements.optJSONObject(index) ?: return false
+                when (element.optString("type", "")) {
+                    "blockStart" -> {
+                        if (
+                            paragraphIsOpen ||
+                            element.optString("nodeType", "") != "paragraph" ||
+                            element.optInt("depth", 0) != 0
+                        ) {
+                            return false
+                        }
+                        paragraphIsOpen = true
+                        hasParagraph = true
+                    }
+
+                    "textRun" -> {
+                        val text = element.optString("text", "")
+                        if (
+                            !paragraphIsOpen ||
+                            !text.all { it == EMPTY_TEXT_BLOCK_PLACEHOLDER }
+                        ) {
+                            return false
+                        }
+                    }
+
+                    "blockEnd" -> {
+                        if (!paragraphIsOpen) {
+                            return false
+                        }
+                        paragraphIsOpen = false
+                    }
+
+                    else -> return false
+                }
+            }
+
+            return hasParagraph && !paragraphIsOpen
+        }
     }
 }

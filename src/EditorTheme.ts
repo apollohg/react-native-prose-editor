@@ -52,6 +52,7 @@ export interface EditorHeadingTheme {
 
 export interface EditorListTheme {
     indent?: number;
+    baseIndentMultiplier?: number;
     itemSpacing?: number;
     markerColor?: string;
     markerScale?: number;
@@ -79,6 +80,8 @@ export interface EditorToolbarTheme {
     borderColor?: string;
     borderWidth?: number;
     borderRadius?: number;
+    marginTop?: number;
+    showTopBorder?: boolean;
     keyboardOffset?: number;
     horizontalInset?: number;
     separatorColor?: string;

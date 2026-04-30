@@ -80,12 +80,14 @@ struct EditorTextStyle {
 
 struct EditorListTheme {
     var indent: CGFloat?
+    var baseIndentMultiplier: CGFloat?
     var itemSpacing: CGFloat?
     var markerColor: UIColor?
     var markerScale: CGFloat?
 
     init(dictionary: [String: Any]) {
         indent = EditorTheme.cgFloat(dictionary["indent"])
+        baseIndentMultiplier = EditorTheme.cgFloat(dictionary["baseIndentMultiplier"])
         itemSpacing = EditorTheme.cgFloat(dictionary["itemSpacing"])
         markerColor = EditorTheme.color(from: dictionary["markerColor"])
         markerScale = EditorTheme.cgFloat(dictionary["markerScale"])
@@ -194,6 +196,8 @@ struct EditorToolbarTheme {
     var borderColor: UIColor?
     var borderWidth: CGFloat?
     var borderRadius: CGFloat?
+    var marginTop: CGFloat?
+    var showTopBorder: Bool?
     var keyboardOffset: CGFloat?
     var horizontalInset: CGFloat?
     var separatorColor: UIColor?
@@ -209,6 +213,8 @@ struct EditorToolbarTheme {
         borderColor = EditorTheme.color(from: dictionary["borderColor"])
         borderWidth = EditorTheme.cgFloat(dictionary["borderWidth"])
         borderRadius = EditorTheme.cgFloat(dictionary["borderRadius"])
+        marginTop = EditorTheme.cgFloat(dictionary["marginTop"])
+        showTopBorder = dictionary["showTopBorder"] as? Bool
         keyboardOffset = EditorTheme.cgFloat(dictionary["keyboardOffset"])
         horizontalInset = EditorTheme.cgFloat(dictionary["horizontalInset"])
         separatorColor = EditorTheme.color(from: dictionary["separatorColor"])

@@ -41,13 +41,17 @@ export function ToolbarSettingsPanel({
             | 'borderWidth'
             | 'buttonBorderRadius'
             | 'keyboardOffset'
-            | 'horizontalInset',
+            | 'horizontalInset'
+            | 'marginTop',
         value: number
     ) => {
         onToolbarThemeChange((current) => ({ ...current, [key]: value }));
     };
 
     const updateColor = (key: ToolbarColorKey, value: string) => {
+        onToolbarThemeChange((current) => ({ ...current, [key]: value }));
+    };
+    const updateBoolean = (key: 'showTopBorder', value: boolean) => {
         onToolbarThemeChange((current) => ({ ...current, [key]: value }));
     };
     const updateAppearance = (appearance: EditorToolbarAppearance) => {
@@ -68,8 +72,8 @@ export function ToolbarSettingsPanel({
                     Toolbar Theme
                 </Text>
                 <Text style={[sharedStyles.controlHint, { color: appChrome.controlHintColor }]}>
-                    Tweak every toolbar token and confirm the styling applies on both the iOS
-                    accessory bar and Android toolbar.
+                    Tweak every toolbar token and confirm the styling applies on the native keyboard
+                    toolbar and the inline bubble.
                 </Text>
 
                 <View style={styles.appearanceRow}>
@@ -109,8 +113,8 @@ export function ToolbarSettingsPanel({
                 {isNativeAppearance ? (
                     <Text style={[sharedStyles.controlHint, { color: appChrome.controlHintColor }]}>
                         Native appearance uses platform chrome and ignores the visual color and
-                        radius tokens below. Layout-only controls like keyboard offset and
-                        horizontal inset still apply.
+                        radius tokens below. Layout-only controls like keyboard offset, horizontal
+                        inset, inline margin, and the inline top border still apply.
                     </Text>
                 ) : (
                     <View style={sharedStyles.inputRow}>
@@ -272,6 +276,84 @@ export function ToolbarSettingsPanel({
                     </View>
                 </View>
 
+                <View style={sharedStyles.inputRow}>
+                    <View style={sharedStyles.inputGroup}>
+                        <View style={sharedStyles.sliderHeader}>
+                            <Text
+                                style={[
+                                    sharedStyles.controlLabel,
+                                    { color: appChrome.controlLabelColor },
+                                ]}>
+                                Inline Margin
+                            </Text>
+                            <Text
+                                style={[
+                                    sharedStyles.sliderValue,
+                                    { color: appChrome.sliderValueColor },
+                                ]}>
+                                {toolbarTheme.marginTop}px
+                            </Text>
+                        </View>
+                        <Slider
+                            style={sharedStyles.slider}
+                            minimumValue={0}
+                            maximumValue={24}
+                            step={1}
+                            minimumTrackTintColor={sliderTheme.minimumTrackTintColor}
+                            maximumTrackTintColor={sliderTheme.maximumTrackTintColor}
+                            thumbTintColor={sliderTheme.thumbTintColor}
+                            value={toolbarTheme.marginTop}
+                            onValueChange={(value) => updateNumeric('marginTop', value)}
+                        />
+                    </View>
+
+                    <View style={sharedStyles.inputGroup}>
+                        <Text
+                            style={[
+                                sharedStyles.controlLabel,
+                                { color: appChrome.controlLabelColor },
+                            ]}>
+                            Inline Top Border
+                        </Text>
+                        <View style={styles.booleanChipRow}>
+                            {[
+                                { label: 'Off', value: false },
+                                { label: 'On', value: true },
+                            ].map((option) => {
+                                const selected = toolbarTheme.showTopBorder === option.value;
+                                return (
+                                    <Pressable
+                                        key={option.label}
+                                        onPress={() => updateBoolean('showTopBorder', option.value)}
+                                        style={[
+                                            styles.booleanChip,
+                                            {
+                                                borderColor: selected
+                                                    ? appChrome.chipActiveBorderColor
+                                                    : appChrome.chipBorderColor,
+                                                backgroundColor: selected
+                                                    ? appChrome.chipActiveBackgroundColor
+                                                    : appChrome.chipBackgroundColor,
+                                            },
+                                        ]}>
+                                        <Text
+                                            style={[
+                                                styles.booleanChipText,
+                                                {
+                                                    color: selected
+                                                        ? appChrome.chipActiveTextColor
+                                                        : appChrome.chipTextColor,
+                                                },
+                                            ]}>
+                                            {option.label}
+                                        </Text>
+                                    </Pressable>
+                                );
+                            })}
+                        </View>
+                    </View>
+                </View>
+
                 {!isNativeAppearance ? (
                     <View style={styles.colorGrid}>
                         {TOOLBAR_COLOR_FIELDS.map(({ key, label }) => (
@@ -310,6 +392,22 @@ const styles = StyleSheet.create({
         paddingVertical: 8,
     },
     appearanceChipText: {
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    booleanChipRow: {
+        flexDirection: 'row',
+        gap: 10,
+    },
+    booleanChip: {
+        flex: 1,
+        borderWidth: 1,
+        borderRadius: 999,
+        paddingHorizontal: 14,
+        paddingVertical: 8,
+        alignItems: 'center',
+    },
+    booleanChipText: {
         fontSize: 13,
         fontWeight: '700',
     },

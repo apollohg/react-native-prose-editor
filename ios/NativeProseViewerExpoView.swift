@@ -12,6 +12,8 @@ final class NativeProseViewerExpoView: ExpoView {
     private var lastEmittedContentHeight: CGFloat = 0
     private var lastMeasuredWidth: CGFloat = 0
     private var allowContentHeightShrink = true
+    private var collapsesWhenEmpty = true
+    private var isCollapsedEmptyContent = false
     private var enableLinkTaps = true
     private var interceptLinkTaps = false
 
@@ -51,6 +53,16 @@ final class NativeProseViewerExpoView: ExpoView {
         interceptLinkTaps = intercept ?? false
     }
 
+    func setCollapsesWhenEmpty(_ collapses: Bool?) {
+        let nextValue = collapses ?? true
+        guard collapsesWhenEmpty != nextValue else { return }
+        collapsesWhenEmpty = nextValue
+        allowContentHeightShrink = true
+        updateCollapsedEmptyState()
+        setNeedsLayout()
+        emitContentHeightIfNeeded(force: true)
+    }
+
     func setRenderJson(_ renderJson: String?) {
         guard lastRenderJSON != renderJson else { return }
         lastRenderJSON = renderJson
@@ -71,6 +83,9 @@ final class NativeProseViewerExpoView: ExpoView {
     }
 
     override var intrinsicContentSize: CGSize {
+        if isCollapsedEmptyContent {
+            return CGSize(width: UIView.noIntrinsicMetric, height: 0)
+        }
         guard lastEmittedContentHeight > 0 else {
             return CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
         }
@@ -79,8 +94,13 @@ final class NativeProseViewerExpoView: ExpoView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        textView.frame = bounds
-        textView.updateAutoGrowHostHeight(bounds.height)
+        if isCollapsedEmptyContent {
+            textView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 0)
+            textView.updateAutoGrowHostHeight(0)
+        } else {
+            textView.frame = bounds
+            textView.updateAutoGrowHostHeight(bounds.height)
+        }
 
         let currentWidth = ceil(bounds.width)
         guard abs(currentWidth - lastMeasuredWidth) > 0.5 else { return }
@@ -89,21 +109,36 @@ final class NativeProseViewerExpoView: ExpoView {
     }
 
     private func applyRenderJSON() {
+        updateCollapsedEmptyState()
         textView.applyRenderJSON(lastRenderJSON ?? "[]")
+        textView.isHidden = isCollapsedEmptyContent
+        invalidateIntrinsicContentSize()
+        setNeedsLayout()
         emitContentHeightIfNeeded(force: true)
+    }
+
+    private func updateCollapsedEmptyState() {
+        isCollapsedEmptyContent = collapsesWhenEmpty
+            && Self.renderJsonContainsOnlyEmptyParagraphs(lastRenderJSON ?? "[]")
+        textView.isHidden = isCollapsedEmptyContent
     }
 
     private func emitContentHeightIfNeeded(
         measuredHeight: CGFloat? = nil,
         force: Bool = false
     ) {
-        let resolvedWidth = bounds.width > 0
-            ? bounds.width
-            : (superview?.bounds.width ?? UIScreen.main.bounds.width)
-        let fittedHeight = measuredHeight
-            ?? textView.measuredAutoGrowHeightForTesting(width: resolvedWidth)
-        let contentHeight = ceil(fittedHeight)
-        guard contentHeight > 0 else { return }
+        let contentHeight: CGFloat
+        if isCollapsedEmptyContent {
+            contentHeight = 0
+        } else {
+            let resolvedWidth = bounds.width > 0
+                ? bounds.width
+                : (superview?.bounds.width ?? UIScreen.main.bounds.width)
+            let fittedHeight = measuredHeight
+                ?? textView.measuredAutoGrowHeightForTesting(width: resolvedWidth)
+            contentHeight = ceil(fittedHeight)
+            guard contentHeight > 0 else { return }
+        }
         guard allowContentHeightShrink || contentHeight >= lastEmittedContentHeight else { return }
         allowContentHeightShrink = false
         guard force || abs(contentHeight - lastEmittedContentHeight) > 0.5 else { return }
@@ -193,5 +228,57 @@ final class NativeProseViewerExpoView: ExpoView {
     private func openLink(_ href: String) {
         guard let url = URL(string: href) else { return }
         UIApplication.shared.open(url, options: [:], completionHandler: nil)
+    }
+
+    static func renderJsonContainsOnlyEmptyParagraphs(_ renderJson: String) -> Bool {
+        guard let data = renderJson.data(using: .utf8),
+              let elements = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else {
+            return false
+        }
+
+        if elements.isEmpty {
+            return true
+        }
+
+        var hasParagraph = false
+        var paragraphIsOpen = false
+
+        for element in elements {
+            guard let type = element["type"] as? String else {
+                return false
+            }
+
+            switch type {
+            case "blockStart":
+                guard !paragraphIsOpen,
+                      element["nodeType"] as? String == "paragraph",
+                      (element["depth"] as? NSNumber)?.intValue == 0
+                else {
+                    return false
+                }
+                paragraphIsOpen = true
+                hasParagraph = true
+
+            case "textRun":
+                guard paragraphIsOpen,
+                      let text = element["text"] as? String,
+                      text.allSatisfy({ $0 == "\u{200B}" })
+                else {
+                    return false
+                }
+
+            case "blockEnd":
+                guard paragraphIsOpen else {
+                    return false
+                }
+                paragraphIsOpen = false
+
+            default:
+                return false
+            }
+        }
+
+        return hasParagraph && !paragraphIsOpen
     }
 }

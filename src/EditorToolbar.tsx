@@ -375,7 +375,7 @@ export function EditorToolbar({
     onRequestImage,
     toolbarItems = DEFAULT_EDITOR_TOOLBAR_ITEMS,
     theme,
-    showTopBorder = true,
+    showTopBorder,
 }: EditorToolbarProps) {
     const marks = activeState.marks ?? {};
     const nodes = activeState.nodes ?? {};
@@ -507,7 +507,12 @@ export function EditorToolbar({
     );
 
     const resolveButton = useCallback(
-        (item: EditorToolbarLeafItem, index: number, prefix = '', groupKey?: string): ToolbarButton | null => {
+        (
+            item: EditorToolbarLeafItem,
+            index: number,
+            prefix = '',
+            groupKey?: string
+        ): ToolbarButton | null => {
             const action = getActionForItem(item);
             if (!action) {
                 return null;
@@ -630,8 +635,7 @@ export function EditorToolbar({
                     icon: item.icon,
                     presentation,
                     children,
-                    isActive:
-                        children.some((child) => child.isActive) || isExpanded || isMenuOpen,
+                    isActive: children.some((child) => child.isActive) || isExpanded || isMenuOpen,
                     isDisabled: children.every((child) => child.isDisabled),
                     isExpanded,
                     isOpen: isExpanded || isMenuOpen,
@@ -671,6 +675,8 @@ export function EditorToolbar({
             groupsByKey: nextGroups,
         };
     }, [expandedGroupKey, menuState?.groupKey, resolveButton, toolbarItems]);
+
+    const resolvedShowTopBorder = showTopBorder ?? theme?.showTopBorder ?? true;
 
     useEffect(() => {
         if (expandedGroupKey != null && !groupsByKey.has(expandedGroupKey)) {
@@ -722,7 +728,7 @@ export function EditorToolbar({
         });
     }, []);
 
-    const menuGroup = menuState != null ? groupsByKey.get(menuState.groupKey) ?? null : null;
+    const menuGroup = menuState != null ? (groupsByKey.get(menuState.groupKey) ?? null) : null;
     const menuHeight = menuGroup ? menuGroup.children.length * 40 + 16 : 0;
     const menuTop =
         menuState == null
@@ -757,7 +763,11 @@ export function EditorToolbar({
         const activeColor = theme?.buttonActiveColor ?? ACTIVE_COLOR;
         const defaultColor = theme?.buttonColor ?? DEFAULT_COLOR;
         const disabledColor = theme?.buttonDisabledColor ?? DISABLED_COLOR;
-        const color = button.isActive ? activeColor : button.isDisabled ? disabledColor : defaultColor;
+        const color = button.isActive
+            ? activeColor
+            : button.isDisabled
+              ? disabledColor
+              : defaultColor;
         const anchorGroupKey = options?.anchorGroupKey;
 
         return (
@@ -821,15 +831,15 @@ export function EditorToolbar({
         <View
             style={[
                 styles.container,
-                !showTopBorder && styles.containerWithoutTopBorder,
+                !resolvedShowTopBorder && styles.containerWithoutTopBorder,
                 theme?.backgroundColor != null ? { backgroundColor: theme.backgroundColor } : null,
                 theme?.borderColor != null
-                    ? showTopBorder
+                    ? resolvedShowTopBorder
                         ? { borderTopColor: theme.borderColor }
                         : null
                     : null,
                 theme?.borderWidth != null
-                    ? showTopBorder
+                    ? resolvedShowTopBorder
                         ? { borderTopWidth: theme.borderWidth }
                         : null
                     : null,

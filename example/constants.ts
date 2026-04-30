@@ -141,6 +141,8 @@ export type ToolbarColorKey = Exclude<
     | 'appearance'
     | 'borderRadius'
     | 'borderWidth'
+    | 'marginTop'
+    | 'showTopBorder'
     | 'buttonBorderRadius'
     | 'keyboardOffset'
     | 'horizontalInset'

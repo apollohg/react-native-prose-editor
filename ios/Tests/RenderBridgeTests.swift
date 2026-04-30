@@ -10,6 +10,43 @@ final class RenderBridgeTests: XCTestCase {
     private let baseFont = UIFont.systemFont(ofSize: 16)
     private let textColor = UIColor.black
 
+    func testViewerEmptyCollapseDetectsDocumentsWithOnlyEmptyTopLevelParagraphs() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "\\u200B", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+
+        XCTAssertTrue(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+    }
+
+    func testViewerEmptyCollapseKeepsVisibleRenderedContentMeasurable() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Hello", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+
+        XCTAssertFalse(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+    }
+
+    func testViewerEmptyCollapseKeepsNonParagraphRenderedBlocksMeasurable() {
+        let json = """
+        [
+            {"type": "voidBlock", "nodeType": "image", "docPos": 1, "attrs": {}}
+        ]
+        """
+
+        XCTAssertFalse(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+    }
+
     // MARK: - Plain Text Rendering
 
     /// A single paragraph with unstyled text should produce the text with base font.
@@ -885,6 +922,57 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(
             style.headIndent, baseIndent + 20.0,  // + listMarkerWidth
             "List item head indent should include marker width"
+        )
+    }
+
+    func testParagraphStyle_listBaseIndentMultiplierCanCollapseTopLevelIndent() {
+        let listCtx: [String: Any] = [
+            "ordered": false,
+            "index": 1,
+            "total": 1,
+            "start": 1,
+            "isFirst": true,
+            "isLast": true,
+        ]
+        let topLevelCtx = BlockContext(nodeType: "paragraph", depth: 1, listContext: listCtx)
+        let nestedCtx = BlockContext(nodeType: "paragraph", depth: 2, listContext: listCtx)
+        let theme = EditorTheme(dictionary: [
+            "list": [
+                "indent": 24,
+                "baseIndentMultiplier": 0,
+            ],
+        ])
+
+        let topLevelStyle = RenderBridge.paragraphStyleForBlock(
+            topLevelCtx,
+            blockStack: [topLevelCtx],
+            theme: theme,
+            baseFont: baseFont
+        )
+        let nestedStyle = RenderBridge.paragraphStyleForBlock(
+            nestedCtx,
+            blockStack: [nestedCtx],
+            theme: theme,
+            baseFont: baseFont
+        )
+
+        XCTAssertEqual(
+            topLevelStyle.firstLineHeadIndent,
+            LayoutConstants.listMarkerWidth,
+            accuracy: 0.1,
+            "Top-level list items should be flush-left apart from the marker gutter"
+        )
+        XCTAssertEqual(
+            topLevelStyle.headIndent,
+            LayoutConstants.listMarkerWidth,
+            accuracy: 0.1,
+            "Wrapped lines should align with the marker gutter when the base indent multiplier is zero"
+        )
+        XCTAssertEqual(
+            nestedStyle.headIndent - topLevelStyle.headIndent,
+            24,
+            accuracy: 0.1,
+            "Nested list levels should still add one indent unit each"
         )
     }
 

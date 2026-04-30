@@ -847,8 +847,13 @@ final class RenderBridge {
             (theme?.blockquote?.markerGap ?? LayoutConstants.blockquoteMarkerGap)
                 + (theme?.blockquote?.borderWidth ?? LayoutConstants.blockquoteBorderWidth)
         )
+        let listBaseIndentMultiplier = max(theme?.list?.baseIndentMultiplier ?? 1, 0)
+        let listBaseIndentAdjustment = context.listContext != nil
+            ? ((listBaseIndentMultiplier - 1) * indentPerDepth)
+            : 0
         let baseIndent = (CGFloat(context.depth) * indentPerDepth)
             - (quoteDepth * indentPerDepth)
+            + listBaseIndentAdjustment
             + (quoteDepth * quoteIndent)
 
         if context.listContext != nil {

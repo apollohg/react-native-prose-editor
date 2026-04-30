@@ -324,6 +324,9 @@ describe('NativeProseViewer', () => {
             { type: 'textRun', text: 'Hello', marks: [] },
             { type: 'blockEnd' },
         ]);
+        expect(getByTestId('native-prose-viewer').props.collapsesWhenEmpty).toBe(
+            true
+        );
     });
 
     it('preserves trailing empty paragraphs when collapseTrailingEmptyParagraphs is false', () => {
@@ -361,6 +364,89 @@ describe('NativeProseViewer', () => {
             { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
             { type: 'textRun', text: '\u200B', marks: [] },
             { type: 'blockEnd' },
+        ]);
+        expect(getByTestId('native-prose-viewer').props.collapsesWhenEmpty).toBe(
+            false
+        );
+    });
+
+    it('collapses all-empty paragraph documents to zero height by default', () => {
+        mockRenderDocumentJson.mockReturnValueOnce(
+            JSON.stringify([
+                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                { type: 'textRun', text: '\u200B', marks: [] },
+                { type: 'blockEnd' },
+            ])
+        );
+
+        const { getByTestId } = render(
+            <NativeProseViewer
+                contentJSON={{
+                    type: 'doc',
+                    content: [{ type: 'paragraph', content: [] }],
+                }}
+            />
+        );
+
+        expect(getByTestId('native-prose-viewer').props.style).toEqual([
+            { minHeight: 0 },
+            undefined,
+            { height: 0, minHeight: 0 },
+        ]);
+    });
+
+    it('keeps all-empty paragraph height measurable when collapseTrailingEmptyParagraphs is false', () => {
+        mockRenderDocumentJson.mockReturnValueOnce(
+            JSON.stringify([
+                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                { type: 'textRun', text: '\u200B', marks: [] },
+                { type: 'blockEnd' },
+            ])
+        );
+
+        const { getByTestId } = render(
+            <NativeProseViewer
+                contentJSON={{
+                    type: 'doc',
+                    content: [{ type: 'paragraph', content: [] }],
+                }}
+                collapseTrailingEmptyParagraphs={false}
+            />
+        );
+
+        expect(getByTestId('native-prose-viewer').props.style).toEqual([
+            { minHeight: 1 },
+            undefined,
+            null,
+        ]);
+    });
+
+    it('accepts zero-height native measurements for collapsed empty documents', () => {
+        mockRenderDocumentJson.mockReturnValueOnce(
+            JSON.stringify([
+                { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+                { type: 'textRun', text: '\u200B', marks: [] },
+                { type: 'blockEnd' },
+            ])
+        );
+
+        const { getByTestId } = render(
+            <NativeProseViewer
+                contentJSON={{
+                    type: 'doc',
+                    content: [{ type: 'paragraph', content: [] }],
+                }}
+            />
+        );
+
+        fireEvent(getByTestId('native-prose-viewer'), 'onContentHeightChange', {
+            nativeEvent: { contentHeight: 0 },
+        });
+
+        expect(getByTestId('native-prose-viewer').props.style).toEqual([
+            { minHeight: 0 },
+            undefined,
+            { height: 0, minHeight: 0 },
         ]);
     });
 

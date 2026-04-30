@@ -24,6 +24,7 @@ import android.text.style.TypefaceSpan
 import android.text.style.URLSpan
 import android.text.style.UnderlineSpan
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -57,6 +58,46 @@ class RenderBridgeTest {
 
     private val baseFontSize = 16f
     private val textColor = Color.BLACK
+
+    @Test
+    fun `viewer empty collapse detects documents with only empty top-level paragraphs`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "\u200B", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        assertTrue(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+    }
+
+    @Test
+    fun `viewer empty collapse keeps visible rendered content measurable`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "Hello", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        assertFalse(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+    }
+
+    @Test
+    fun `viewer empty collapse keeps non-paragraph rendered blocks measurable`() {
+        val json = """
+        [
+            {"type": "voidBlock", "nodeType": "image", "docPos": 1, "attrs": {}}
+        ]
+        """.trimIndent()
+
+        assertFalse(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+    }
 
     // ── Plain Text Rendering ────────────────────────────────────────────
 
@@ -1504,6 +1545,33 @@ class RenderBridgeTest {
         val marginSpans = result.getSpans(0, result.length, LeadingMarginSpan.Standard::class.java)
         assertTrue(marginSpans.isNotEmpty())
         assertEquals(64, marginSpans[0].getLeadingMargin(true))
+    }
+
+    @Test
+    fun `render - list base indent multiplier can collapse top-level list indent`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 0,
+             "listContext": {"ordered": false, "index": 1, "total": 1, "start": 1, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 1},
+            {"type": "textRun", "text": "Item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+        val theme = EditorTheme.fromJson(
+            """
+            {
+              "list": { "indent": 32, "baseIndentMultiplier": 0 }
+            }
+            """.trimIndent()
+        )
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor, theme, 1f)
+        val marginSpan = result.getSpans(0, result.length, LeadingMarginSpan.Standard::class.java).single()
+
+        assertEquals(0, marginSpan.getLeadingMargin(true))
+        assertEquals(LayoutConstants.LIST_MARKER_WIDTH.toInt(), marginSpan.getLeadingMargin(false))
     }
 
     @Test

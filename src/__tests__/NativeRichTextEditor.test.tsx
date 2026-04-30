@@ -308,8 +308,8 @@ jest.mock('expo-modules-core', () => {
 // ─── Imports (after mock setup) ─────────────────────────────────
 
 import React, { createRef } from 'react';
-import { render, act } from '@testing-library/react-native';
-import { PixelRatio, Platform } from 'react-native';
+import { render, act, fireEvent } from '@testing-library/react-native';
+import { PixelRatio, Platform, StyleSheet } from 'react-native';
 
 import { NativeRichTextEditor, type NativeRichTextEditorRef } from '../NativeRichTextEditor';
 import { _resetNativeModuleCache } from '../NativeEditorBridge';
@@ -368,7 +368,9 @@ describe('NativeRichTextEditor', () => {
         mockNativeModule.editorSplitBlockScalar.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
         mockNativeModule.editorDeleteAndSplitScalar.mockReturnValue(MOCK_EMPTY_UPDATE_JSON);
         mockNativeModule.editorDocToScalar.mockImplementation((_: number, pos: number) => pos);
-        mockNativeModule.editorScalarToDoc.mockImplementation((_: number, scalar: number) => scalar);
+        mockNativeModule.editorScalarToDoc.mockImplementation(
+            (_: number, scalar: number) => scalar
+        );
         mockNativeModule.editorToggleBlockquoteAtSelectionScalar.mockReturnValue(
             MOCK_EMPTY_UPDATE_JSON
         );
@@ -1353,13 +1355,12 @@ describe('NativeRichTextEditor', () => {
             mockNativeModule.editorSetMarkAtSelectionScalar.mockClear();
             mockNativeModule.editorGetHtml.mockReturnValueOnce('<p>old</p>');
             mockNativeModule.editorGetJson.mockReturnValueOnce(JSON.stringify(linkedDoc));
-            mockNativeModule.editorReplaceHtml.mockReturnValueOnce(MOCK_AUTO_LINK_SOURCE_UPDATE_JSON);
+            mockNativeModule.editorReplaceHtml.mockReturnValueOnce(
+                MOCK_AUTO_LINK_SOURCE_UPDATE_JSON
+            );
 
             rerender(
-                <NativeRichTextEditor
-                    value='<p>Visit https://example.com</p>'
-                    autoDetectLinks
-                />
+                <NativeRichTextEditor value='<p>Visit https://example.com</p>' autoDetectLinks />
             );
 
             expect(mockNativeModule.editorReplaceHtml).toHaveBeenCalledWith(
@@ -1540,9 +1541,7 @@ describe('NativeRichTextEditor', () => {
         it('onHistoryStateChange fires with HistoryState from update', () => {
             const onHistoryStateChange = jest.fn();
             const ref = createRef<NativeRichTextEditorRef>();
-            render(
-                <NativeRichTextEditor ref={ref} onHistoryStateChange={onHistoryStateChange} />
-            );
+            render(<NativeRichTextEditor ref={ref} onHistoryStateChange={onHistoryStateChange} />);
 
             act(() => {
                 ref.current!.toggleMark('bold');
@@ -1767,6 +1766,95 @@ describe('NativeRichTextEditor', () => {
             const { getByTestId } = render(<NativeRichTextEditor toolbarPlacement='inline' />);
 
             expect(getByTestId('native-editor-js-toolbar')).toBeTruthy();
+        });
+
+        it('applies theme.toolbar.marginTop to the inline JS toolbar chrome', () => {
+            const { getByTestId } = render(
+                <NativeRichTextEditor
+                    toolbarPlacement='inline'
+                    theme={{ toolbar: { marginTop: 24 } }}
+                />
+            );
+
+            expect(getByTestId('native-editor-js-toolbar').props.style).toEqual(
+                expect.arrayContaining([expect.objectContaining({ marginTop: 24 })])
+            );
+        });
+
+        it('applies theme.toolbar.showTopBorder to the inline JS toolbar content', () => {
+            const { toJSON } = render(
+                <NativeRichTextEditor
+                    toolbarPlacement='inline'
+                    theme={{
+                        toolbar: {
+                            showTopBorder: true,
+                            borderColor: '#123456',
+                            borderWidth: 2,
+                        },
+                    }}
+                />
+            );
+
+            const tree = toJSON();
+            const inlineToolbarContentStyle = StyleSheet.flatten(
+                tree?.children?.[1]?.children?.[0]?.props.style
+            );
+
+            expect(tree).not.toBeNull();
+            expect(inlineToolbarContentStyle.borderTopWidth).toBe(2);
+            expect(inlineToolbarContentStyle.borderTopColor).toBe('#123456');
+        });
+
+        it('applies theme.toolbar.showTopBorder to inline mention suggestions', () => {
+            const { getByTestId } = render(
+                <NativeRichTextEditor
+                    toolbarPlacement='inline'
+                    theme={{
+                        toolbar: {
+                            showTopBorder: true,
+                            borderColor: '#123456',
+                            borderWidth: 2,
+                        },
+                    }}
+                    addons={{
+                        mentions: {
+                            suggestions: [
+                                {
+                                    key: 'u1',
+                                    title: 'Alice',
+                                    label: '@Alice',
+                                },
+                            ],
+                        },
+                    }}
+                />
+            );
+
+            act(() => {
+                getByTestId('native-editor-view').props.onFocusChange({
+                    nativeEvent: { isFocused: true },
+                });
+            });
+            act(() => {
+                getByTestId('native-editor-view').props.onAddonEvent({
+                    nativeEvent: {
+                        eventJson: JSON.stringify({
+                            type: 'mentionsQueryChange',
+                            query: 'ali',
+                            trigger: '@',
+                            range: { anchor: 3, head: 7 },
+                            isActive: true,
+                        }),
+                    },
+                });
+            });
+
+            const style = StyleSheet.flatten(
+                getByTestId('native-editor-inline-mention-suggestions').props.style
+            );
+
+            expect(style.borderTopWidth).toBe(2);
+            expect(style.borderTopColor).toBe('#123456');
         });
 
         it('grows the native view height from native content-height events in autoGrow mode', () => {
@@ -2145,6 +2233,96 @@ describe('NativeRichTextEditor', () => {
                     mentionSuggestionChar: '@',
                     source: 'directory',
                     entityType: 'user',
+                },
+            });
+        });
+
+        it('renders inline mention suggestions in the JS toolbar and inserts the selected mention', () => {
+            const onSelect = jest.fn();
+            const { getByTestId, queryByTestId } = render(
+                <NativeRichTextEditor
+                    toolbarPlacement='inline'
+                    addons={{
+                        mentions: {
+                            suggestions: [
+                                {
+                                    key: 'u1',
+                                    title: 'Alice',
+                                    label: '@Alice',
+                                    subtitle: 'Design',
+                                    attrs: { id: 'u1', kind: 'user' },
+                                },
+                                {
+                                    key: 'u2',
+                                    title: 'Bob',
+                                    label: '@Bob',
+                                    attrs: { id: 'u2', kind: 'user' },
+                                },
+                            ],
+                            onSelect,
+                        },
+                    }}
+                />
+            );
+
+            act(() => {
+                getByTestId('native-editor-view').props.onFocusChange({
+                    nativeEvent: { isFocused: true },
+                });
+            });
+            act(() => {
+                getByTestId('native-editor-view').props.onAddonEvent({
+                    nativeEvent: {
+                        eventJson: JSON.stringify({
+                            type: 'mentionsQueryChange',
+                            query: 'ali',
+                            trigger: '@',
+                            range: { anchor: 3, head: 7 },
+                            isActive: true,
+                        }),
+                    },
+                });
+            });
+
+            expect(getByTestId('native-editor-inline-mention-suggestions')).toBeTruthy();
+            expect(getByTestId('native-editor-inline-mention-suggestion-u1')).toBeTruthy();
+            expect(queryByTestId('native-editor-inline-mention-suggestion-u2')).toBeNull();
+
+            fireEvent.press(getByTestId('native-editor-inline-mention-suggestion-u1'));
+
+            expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).toHaveBeenCalledWith(
+                1,
+                3,
+                7,
+                JSON.stringify({
+                    type: 'doc',
+                    content: [
+                        {
+                            type: 'mention',
+                            attrs: {
+                                id: 'u1',
+                                kind: 'user',
+                                label: '@Alice',
+                                mentionSuggestionChar: '@',
+                            },
+                        },
+                    ],
+                })
+            );
+            expect(onSelect).toHaveBeenCalledWith({
+                trigger: '@',
+                suggestion: {
+                    key: 'u1',
+                    title: 'Alice',
+                    label: '@Alice',
+                    subtitle: 'Design',
+                    attrs: { id: 'u1', kind: 'user' },
+                },
+                attrs: {
+                    id: 'u1',
+                    kind: 'user',
+                    label: '@Alice',
+                    mentionSuggestionChar: '@',
                 },
             });
         });

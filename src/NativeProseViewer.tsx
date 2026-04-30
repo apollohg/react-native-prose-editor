@@ -28,6 +28,7 @@ interface NativeProseViewerViewProps {
     style?: StyleProp<ViewStyle>;
     renderJson: string;
     themeJson?: string;
+    collapsesWhenEmpty?: boolean;
     enableLinkTaps?: boolean;
     interceptLinkTaps?: boolean;
     onContentHeightChange?: (
@@ -319,6 +320,68 @@ function isEmptyParagraphPlaceholderText(text: string): boolean {
     return Array.from(text).every((char) => char === EMPTY_TEXT_BLOCK_PLACEHOLDER);
 }
 
+function isCollapsibleEmptyParagraphText(text: string): boolean {
+    return Array.from(text).every((char) => char === EMPTY_TEXT_BLOCK_PLACEHOLDER);
+}
+
+function renderElementsJsonContainsOnlyEmptyParagraphs(renderJson: string): boolean {
+    let parsedElements: unknown;
+    try {
+        parsedElements = JSON.parse(renderJson);
+    } catch {
+        return false;
+    }
+    if (!Array.isArray(parsedElements)) {
+        return false;
+    }
+    if (parsedElements.length === 0) {
+        return true;
+    }
+
+    let hasParagraph = false;
+    let paragraphIsOpen = false;
+
+    for (const element of parsedElements) {
+        if (element == null || typeof element !== 'object' || Array.isArray(element)) {
+            return false;
+        }
+
+        const renderElement = element as RenderElement;
+        switch (renderElement.type) {
+            case 'blockStart':
+                if (
+                    paragraphIsOpen ||
+                    renderElement.nodeType !== 'paragraph' ||
+                    renderElement.depth !== 0
+                ) {
+                    return false;
+                }
+                paragraphIsOpen = true;
+                hasParagraph = true;
+                break;
+            case 'textRun':
+                if (
+                    !paragraphIsOpen ||
+                    typeof renderElement.text !== 'string' ||
+                    !isCollapsibleEmptyParagraphText(renderElement.text)
+                ) {
+                    return false;
+                }
+                break;
+            case 'blockEnd':
+                if (!paragraphIsOpen) {
+                    return false;
+                }
+                paragraphIsOpen = false;
+                break;
+            default:
+                return false;
+        }
+    }
+
+    return hasParagraph && !paragraphIsOpen;
+}
+
 function isTrailingEmptyParagraphRange(
     elements: RenderElement[],
     start: number,
@@ -541,6 +604,12 @@ export function NativeProseViewer({
         mentionPayloadsByDocPos,
         serializedContentJson,
     ]);
+    const renderJsonIsCollapsedEmpty = useMemo(
+        () =>
+            collapseTrailingEmptyParagraphs &&
+            renderElementsJsonContainsOnlyEmptyParagraphs(renderJson),
+        [collapseTrailingEmptyParagraphs, renderJson]
+    );
     const [contentHeight, setContentHeight] = useState<number | null>(null);
     const allowContentHeightShrinkRef = useRef(true);
 
@@ -553,7 +622,14 @@ export function NativeProseViewer({
             event: NativeSyntheticEvent<NativeProseViewerContentHeightEvent>
         ) => {
             const nextHeight = event.nativeEvent.contentHeight;
-            if (nextHeight <= 0) return;
+            if (nextHeight < 0) return;
+            if (nextHeight === 0 && !renderJsonIsCollapsedEmpty) return;
+            if (nextHeight === 0) {
+                setContentHeight((currentHeight) =>
+                    currentHeight === 0 ? currentHeight : 0
+                );
+                return;
+            }
             setContentHeight((currentHeight) =>
                 currentHeight == null ||
                 nextHeight >= currentHeight ||
@@ -567,7 +643,7 @@ export function NativeProseViewer({
                     : currentHeight
             );
         },
-        []
+        [renderJsonIsCollapsedEmpty]
     );
 
     const handlePressMention = useCallback(
@@ -598,20 +674,26 @@ export function NativeProseViewer({
         [onPressLink]
     );
 
-    const nativeStyle = useMemo(
-        () => [
-            { minHeight: 1 },
+    const nativeStyle = useMemo(() => {
+        let measuredStyle: ViewStyle | null = null;
+        if (renderJsonIsCollapsedEmpty) {
+            measuredStyle = { height: 0, minHeight: 0 };
+        } else if (contentHeight != null && contentHeight > 0) {
+            measuredStyle = { minHeight: contentHeight };
+        }
+        return [
+            { minHeight: renderJsonIsCollapsedEmpty ? 0 : 1 },
             style,
-            contentHeight != null ? { minHeight: contentHeight } : null,
-        ],
-        [contentHeight, style]
-    );
+            measuredStyle,
+        ];
+    }, [contentHeight, renderJsonIsCollapsedEmpty, style]);
 
     return (
         <NativeProseViewerView
             style={nativeStyle}
             renderJson={renderJson}
             themeJson={themeJson}
+            collapsesWhenEmpty={collapseTrailingEmptyParagraphs}
             enableLinkTaps={enableLinkTaps}
             interceptLinkTaps={typeof onPressLink === 'function'}
             onContentHeightChange={handleContentHeightChange}

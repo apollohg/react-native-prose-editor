@@ -55,6 +55,7 @@ data class EditorTextStyle(
 
 data class EditorListTheme(
     val indent: Float? = null,
+    val baseIndentMultiplier: Float? = null,
     val itemSpacing: Float? = null,
     val markerColor: Int? = null,
     val markerScale: Float? = null
@@ -64,6 +65,7 @@ data class EditorListTheme(
             json ?: return null
             return EditorListTheme(
                 indent = json.optNullableFloat("indent"),
+                baseIndentMultiplier = json.optNullableFloat("baseIndentMultiplier"),
                 itemSpacing = json.optNullableFloat("itemSpacing"),
                 markerColor = parseColor(json.optNullableString("markerColor")),
                 markerScale = json.optNullableFloat("markerScale")
@@ -194,6 +196,8 @@ data class EditorToolbarTheme(
     val borderColor: Int? = null,
     val borderWidth: Float? = null,
     val borderRadius: Float? = null,
+    val marginTop: Float? = null,
+    val showTopBorder: Boolean? = null,
     val keyboardOffset: Float? = null,
     val horizontalInset: Float? = null,
     val separatorColor: Int? = null,
@@ -222,6 +226,8 @@ data class EditorToolbarTheme(
                 borderColor = parseColor(json.optNullableString("borderColor")),
                 borderWidth = json.optNullableFloat("borderWidth"),
                 borderRadius = json.optNullableFloat("borderRadius"),
+                marginTop = json.optNullableFloat("marginTop"),
+                showTopBorder = if (json.has("showTopBorder")) json.optBoolean("showTopBorder") else null,
                 keyboardOffset = json.optNullableFloat("keyboardOffset"),
                 horizontalInset = json.optNullableFloat("horizontalInset"),
                 separatorColor = parseColor(json.optNullableString("separatorColor")),
