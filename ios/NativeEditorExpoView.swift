@@ -1009,7 +1009,10 @@ final class EditorAccessoryToolbarView: UIInputView {
     }
 
     @discardableResult
-    func setMentionSuggestions(_ suggestions: [NativeMentionSuggestion]) -> Bool {
+    func setMentionSuggestions(
+        _ suggestions: [NativeMentionSuggestion],
+        trigger: String = "@"
+    ) -> Bool {
         let hadSuggestions = !mentionButtons.isEmpty
 
         mentionButtons.forEach { button in
@@ -1021,6 +1024,7 @@ final class EditorAccessoryToolbarView: UIInputView {
         for suggestion in suggestions.prefix(8) {
             let button = MentionSuggestionChipButton(
                 suggestion: suggestion,
+                trigger: trigger,
                 theme: mentionTheme,
                 toolbarAppearance: resolvedAppearance
             )
@@ -2784,7 +2788,10 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         let suggestions = filteredMentionSuggestions(for: queryState, config: mentions)
         mentionQueryState = queryState
         accessoryToolbar.apply(mentionTheme: richTextView.textView.theme?.mentions ?? mentions.theme)
-        let didChangeToolbarHeight = accessoryToolbar.setMentionSuggestions(suggestions)
+        let didChangeToolbarHeight = accessoryToolbar.setMentionSuggestions(
+            suggestions,
+            trigger: mentions.trigger
+        )
         refreshSystemAssistantToolbarIfNeeded()
         if didChangeToolbarHeight,
            richTextView.textView.isFirstResponder,
@@ -3315,7 +3322,10 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     func setMentionSuggestionsForTesting(_ suggestions: [NativeMentionSuggestion]) {
-        accessoryToolbar.setMentionSuggestions(suggestions)
+        accessoryToolbar.setMentionSuggestions(
+            suggestions,
+            trigger: mentionQueryState?.trigger ?? "@"
+        )
     }
 
     func isShowingMentionSuggestionsForTesting() -> Bool {

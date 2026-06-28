@@ -21,6 +21,14 @@ struct NativeMentionSuggestion {
         self.label = label
         self.attrs = dictionary["attrs"] as? [String: Any] ?? [:]
     }
+
+    func displayLabel(trigger: String) -> String {
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trigger.isEmpty, !trimmedLabel.hasPrefix(trigger) else {
+            return trimmedLabel
+        }
+        return "\(trigger)\(trimmedLabel)"
+    }
 }
 
 struct NativeMentionsAddonConfig {
@@ -137,6 +145,7 @@ final class MentionSuggestionChipButton: UIButton {
     private let titleLabelView = UILabel()
     private let subtitleLabelView = UILabel()
     private let stackView = UIStackView()
+    private let displayLabel: String
     private var theme: EditorMentionTheme?
     private var toolbarAppearance: EditorToolbarAppearance = .custom
 
@@ -144,10 +153,12 @@ final class MentionSuggestionChipButton: UIButton {
 
     init(
         suggestion: NativeMentionSuggestion,
+        trigger: String = "@",
         theme: EditorMentionTheme?,
         toolbarAppearance: EditorToolbarAppearance = .custom
     ) {
         self.suggestion = suggestion
+        self.displayLabel = suggestion.displayLabel(trigger: trigger)
         self.theme = theme
         self.toolbarAppearance = toolbarAppearance
         super.init(frame: .zero)
@@ -163,7 +174,7 @@ final class MentionSuggestionChipButton: UIButton {
         titleLabelView.translatesAutoresizingMaskIntoConstraints = false
         titleLabelView.isUserInteractionEnabled = false
         titleLabelView.font = .systemFont(ofSize: 14, weight: .semibold)
-        titleLabelView.text = suggestion.label
+        titleLabelView.text = displayLabel
         titleLabelView.numberOfLines = 1
 
         subtitleLabelView.translatesAutoresizingMaskIntoConstraints = false
@@ -250,7 +261,7 @@ final class MentionSuggestionChipButton: UIButton {
                     bottom: Self.verticalContentInset,
                     trailing: Self.horizontalContentInset
                 )
-                configuration.title = suggestion.label
+                configuration.title = displayLabel
                 configuration.subtitle = suggestion.subtitle
                 configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
                     var outgoing = incoming
@@ -308,10 +319,14 @@ final class MentionSuggestionChipButton: UIButton {
         if #available(iOS 26.0, *) {
             return toolbarAppearance == .native
                 && stackView.isHidden
-                && configuration?.title == suggestion.label
+                && configuration?.title == displayLabel
         }
         #endif
         return false
+    }
+
+    func titleTextForTesting() -> String? {
+        titleLabelView.text
     }
 
     func usesNativeGlassSemiboldTitleForTesting() -> Bool {

@@ -17,7 +17,7 @@ export const EXAMPLE_MENTION_SUGGESTIONS: readonly MentionSuggestion[] = [
     {
         key: 'alice',
         title: 'Alice Chen',
-        label: '@alice',
+        label: 'alice',
         attrs: {
             id: 'user_alice',
             entityType: 'user',
@@ -28,7 +28,7 @@ export const EXAMPLE_MENTION_SUGGESTIONS: readonly MentionSuggestion[] = [
     {
         key: 'ben',
         title: 'Ben Ortiz',
-        label: '@ben',
+        label: 'ben',
         attrs: {
             id: 'user_ben',
             entityType: 'user',
@@ -39,7 +39,7 @@ export const EXAMPLE_MENTION_SUGGESTIONS: readonly MentionSuggestion[] = [
     {
         key: 'chloe',
         title: 'Chloe Park',
-        label: '@chloe',
+        label: 'chloe',
         attrs: {
             id: 'user_chloe',
             entityType: 'user',
@@ -50,7 +50,7 @@ export const EXAMPLE_MENTION_SUGGESTIONS: readonly MentionSuggestion[] = [
     {
         key: 'apollo-team',
         title: 'Apollo Team',
-        label: '@apollo-team',
+        label: 'apollo-team',
         attrs: {
             id: 'group_apollo',
             entityType: 'group',

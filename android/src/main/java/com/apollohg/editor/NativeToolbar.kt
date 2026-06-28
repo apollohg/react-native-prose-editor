@@ -481,6 +481,7 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
     private var mentionTheme: EditorMentionTheme? = null
     private var state: NativeToolbarState = NativeToolbarState.empty
     private var items: List<NativeToolbarItem> = NativeToolbarItem.defaults
+    private var mentionTrigger: String = "@"
     private var mentionSuggestions: List<NativeMentionSuggestion> = emptyList()
     private var expandedGroupKey: String? = null
     private var rebuildGeneration: Int = 0
@@ -569,8 +570,12 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
         }
     }
 
-    fun setMentionSuggestions(suggestions: List<NativeMentionSuggestion>): Boolean {
+    fun setMentionSuggestions(
+        suggestions: List<NativeMentionSuggestion>,
+        trigger: String = "@"
+    ): Boolean {
         val hadSuggestions = isShowingMentionSuggestions
+        mentionTrigger = trigger
         mentionSuggestions = suggestions.take(8)
         rebuildContent(preserveScrollPosition = hadSuggestions == isShowingMentionSuggestions)
         return hadSuggestions != isShowingMentionSuggestions
@@ -671,7 +676,7 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
 
     private fun rebuildMentionSuggestions() {
         for (suggestion in mentionSuggestions) {
-            val chip = MentionSuggestionChipView(context, suggestion).apply {
+            val chip = MentionSuggestionChipView(context, suggestion, mentionTrigger).apply {
                 applyTheme(mentionTheme, theme?.appearance ?: EditorToolbarAppearance.CUSTOM)
                 setOnClickListener { onSelectMentionSuggestion?.invoke(suggestion) }
             }
@@ -1060,7 +1065,8 @@ private fun withAlpha(color: Int, alphaFraction: Float): Int {
 
 internal class MentionSuggestionChipView(
     context: Context,
-    val suggestion: NativeMentionSuggestion
+    val suggestion: NativeMentionSuggestion,
+    private val trigger: String = "@"
 ) : LinearLayout(context) {
     private val titleView = AppCompatTextView(context)
     private val subtitleView = AppCompatTextView(context)
@@ -1077,7 +1083,7 @@ internal class MentionSuggestionChipView(
         isFocusable = true
 
         titleView.apply {
-            text = suggestion.label
+            text = suggestion.displayLabel(trigger)
             setTypeface(typeface, Typeface.BOLD)
             textSize = 14f
             includeFontPadding = false
@@ -1217,6 +1223,8 @@ internal class MentionSuggestionChipView(
     fun usesNativeAppearanceForTesting(): Boolean =
         toolbarAppearance == EditorToolbarAppearance.NATIVE
 
+    fun titleTextForTesting(): String = titleView.text.toString()
+
     private fun dp(value: Int): Int = (value * density).toInt()
 
     private fun resolveColorAttr(vararg attrs: Int): Int {
@@ -1235,6 +1243,11 @@ internal class MentionSuggestionChipView(
         }
         return Color.TRANSPARENT
     }
+}
+
+private fun NativeMentionSuggestion.displayLabel(trigger: String): String {
+    val label = this.label.trim()
+    return if (trigger.isNotEmpty() && !label.startsWith(trigger)) "$trigger$label" else label
 }
 
 private fun JSONObject.optNullableString(key: String): String? {

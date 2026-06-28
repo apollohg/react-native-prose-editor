@@ -673,21 +673,22 @@ final class RichTextEditorViewTests: XCTestCase {
                 "key": "alice",
                 "title": "Alice Chen",
                 "subtitle": "Design",
-                "label": "@alice",
-                "attrs": ["label": "@alice"],
+                "label": "alice",
+                "attrs": ["label": "alice"],
             ])!,
             NativeMentionSuggestion(dictionary: [
                 "key": "ben",
                 "title": "Ben Ortiz",
                 "subtitle": "Engineering",
-                "label": "@ben",
-                "attrs": ["label": "@ben"],
+                "label": "ben",
+                "attrs": ["label": "ben"],
             ])!,
-        ])
+        ], trigger: "@")
 
         XCTAssertTrue(didChange)
         XCTAssertEqual(toolbar.intrinsicContentSize.height, baseHeight + 2)
         XCTAssertTrue(toolbar.isShowingMentionSuggestions)
+        XCTAssertEqual(toolbar.mentionButtonAtForTesting(0)?.titleTextForTesting(), "@alice")
     }
 
     func testNativeEditorUsesZeroHeightAccessoryPlaceholderWhenToolbarIsInline() {

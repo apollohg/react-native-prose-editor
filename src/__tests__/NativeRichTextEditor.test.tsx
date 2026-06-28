@@ -731,9 +731,9 @@ describe('NativeRichTextEditor', () => {
                                 key: 'u1',
                                 title: 'Alice',
                                 subtitle: 'Design',
-                                label: '@Alice',
+                                label: 'Alice',
                                 attrs: {
-                                    label: '@Alice',
+                                    label: 'Alice',
                                     mentionSuggestionChar: '@',
                                     id: 'u1',
                                     type: 'user',
@@ -782,9 +782,9 @@ describe('NativeRichTextEditor', () => {
                             {
                                 key: 'u1',
                                 title: 'Alice',
-                                label: '@Alice',
+                                label: 'Alice',
                                 attrs: {
-                                    label: '@Alice',
+                                    label: 'Alice',
                                     mentionSuggestionChar: '@',
                                 },
                             },
@@ -6855,7 +6855,7 @@ describe('NativeRichTextEditor', () => {
 
         it('renders inline mention suggestions in the JS toolbar and inserts the selected mention', () => {
             const onSelect = jest.fn();
-            const { getByTestId, queryByTestId } = render(
+            const { getByTestId, getByText, queryByTestId } = render(
                 <NativeRichTextEditor
                     toolbarPlacement='inline'
                     addons={{
@@ -6864,14 +6864,14 @@ describe('NativeRichTextEditor', () => {
                                 {
                                     key: 'u1',
                                     title: 'Alice',
-                                    label: '@Alice',
+                                    label: 'Alice',
                                     subtitle: 'Design',
                                     attrs: { id: 'u1', kind: 'user' },
                                 },
                                 {
                                     key: 'u2',
                                     title: 'Bob',
-                                    label: '@Bob',
+                                    label: 'Bob',
                                     attrs: { id: 'u2', kind: 'user' },
                                 },
                             ],
@@ -6902,6 +6902,7 @@ describe('NativeRichTextEditor', () => {
 
             expect(getByTestId('native-editor-inline-mention-suggestions')).toBeTruthy();
             expect(getByTestId('native-editor-inline-mention-suggestion-u1')).toBeTruthy();
+            expect(getByText('@Alice')).toBeTruthy();
             expect(queryByTestId('native-editor-inline-mention-suggestion-u2')).toBeNull();
 
             fireEvent.press(getByTestId('native-editor-inline-mention-suggestion-u1'));
@@ -6918,7 +6919,7 @@ describe('NativeRichTextEditor', () => {
                             attrs: {
                                 id: 'u1',
                                 kind: 'user',
-                                label: '@Alice',
+                                label: 'Alice',
                                 mentionSuggestionChar: '@',
                             },
                         },
@@ -6930,14 +6931,14 @@ describe('NativeRichTextEditor', () => {
                 suggestion: {
                     key: 'u1',
                     title: 'Alice',
-                    label: '@Alice',
+                    label: 'Alice',
                     subtitle: 'Design',
                     attrs: { id: 'u1', kind: 'user' },
                 },
                 attrs: {
                     id: 'u1',
                     kind: 'user',
-                    label: '@Alice',
+                    label: 'Alice',
                     mentionSuggestionChar: '@',
                 },
             });
@@ -7675,14 +7676,14 @@ describe('NativeRichTextEditor', () => {
                                     {
                                         key: 'u1',
                                         title: 'Alice',
-                                        label: '@Alice',
+                                        label: 'Alice',
                                         subtitle: 'Design',
                                         attrs: { id: 'u1', kind: 'user' },
                                     },
                                     {
                                         key: 'u2',
                                         title: 'Bob',
-                                        label: '@Bob',
+                                        label: 'Bob',
                                         attrs: { id: 'u2', kind: 'user' },
                                     },
                                 ],
@@ -7778,7 +7779,7 @@ describe('NativeRichTextEditor', () => {
                             attrs: {
                                 id: 'u1',
                                 kind: 'channel',
-                                label: '@Alice',
+                                label: 'Alice',
                                 mentionSuggestionChar: '@',
                                 mentionTheme: {
                                     textColor: '#0055AA',
@@ -7796,14 +7797,14 @@ describe('NativeRichTextEditor', () => {
                 suggestion: {
                     key: 'u1',
                     title: 'Alice',
-                    label: '@Alice',
+                    label: 'Alice',
                     subtitle: 'Design',
                     attrs: { id: 'u1', kind: 'user' },
                 },
                 attrs: {
                     id: 'u1',
                     kind: 'channel',
-                    label: '@Alice',
+                    label: 'Alice',
                     mentionSuggestionChar: '@',
                     mentionTheme: {
                         textColor: '#0055AA',

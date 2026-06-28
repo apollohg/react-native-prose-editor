@@ -228,8 +228,16 @@ function resolveMentionTrigger(addons?: EditorAddons): string {
     return addons?.mentions?.trigger?.trim() || DEFAULT_MENTION_TRIGGER;
 }
 
-function resolveMentionSuggestionLabel(suggestion: MentionSuggestion, trigger: string): string {
-    return suggestion.label?.trim() || `${trigger}${suggestion.title}`;
+function resolveMentionSuggestionLabel(suggestion: MentionSuggestion): string {
+    return suggestion.label?.trim() || suggestion.title;
+}
+
+function resolveMentionSuggestionDisplayLabel(
+    suggestion: MentionSuggestion,
+    trigger: string
+): string {
+    const label = resolveMentionSuggestionLabel(suggestion);
+    return trigger.length > 0 && !label.startsWith(trigger) ? `${trigger}${label}` : label;
 }
 
 function filterMentionSuggestions(
@@ -242,10 +250,12 @@ function filterMentionSuggestions(
         normalizedQuery.length === 0
             ? suggestions
             : suggestions.filter((suggestion) => {
-                  const label = resolveMentionSuggestionLabel(suggestion, trigger);
+                  const label = resolveMentionSuggestionLabel(suggestion);
+                  const displayLabel = resolveMentionSuggestionDisplayLabel(suggestion, trigger);
                   return (
                       suggestion.title.toLowerCase().includes(normalizedQuery) ||
                       label.toLowerCase().includes(normalizedQuery) ||
+                      displayLabel.toLowerCase().includes(normalizedQuery) ||
                       suggestion.subtitle?.toLowerCase().includes(normalizedQuery) === true
                   );
               });
@@ -258,7 +268,7 @@ function resolveMentionSuggestionAttrs(
 ): Record<string, unknown> {
     const attrs = { ...(suggestion.attrs ?? {}) };
     if (!('label' in attrs)) {
-        attrs.label = resolveMentionSuggestionLabel(suggestion, trigger);
+        attrs.label = resolveMentionSuggestionLabel(suggestion);
     }
     if (!('mentionSuggestionChar' in attrs)) {
         attrs.mentionSuggestionChar = trigger;
@@ -3551,7 +3561,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                             contentContainerStyle={styles.inlineMentionSuggestionsContent}
                             keyboardShouldPersistTaps='always'>
                             {inlineMentionSuggestions.map((suggestion) => {
-                                const label = resolveMentionSuggestionLabel(
+                                const label = resolveMentionSuggestionDisplayLabel(
                                     suggestion,
                                     mentionQueryEvent?.trigger ?? resolveMentionTrigger(addons)
                                 );

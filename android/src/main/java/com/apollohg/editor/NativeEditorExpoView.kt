@@ -2728,7 +2728,7 @@ class NativeEditorExpoView(
         mentionQueryState = queryState
         val suggestions = filteredMentionSuggestions(queryState, mentions)
         keyboardToolbarView.applyMentionTheme(richTextView.editorEditText.theme?.mentions ?: mentions.theme)
-        syncKeyboardToolbarMentionSuggestions(suggestions)
+        syncKeyboardToolbarMentionSuggestions(suggestions, mentions.trigger)
         emitMentionQueryChange(
             queryState.query,
             queryState.trigger,
@@ -2784,8 +2784,11 @@ class NativeEditorExpoView(
         }
     }
 
-    private fun syncKeyboardToolbarMentionSuggestions(suggestions: List<NativeMentionSuggestion>) {
-        keyboardToolbarView.setMentionSuggestions(suggestions)
+    private fun syncKeyboardToolbarMentionSuggestions(
+        suggestions: List<NativeMentionSuggestion>,
+        trigger: String = addons.mentions?.trigger ?: "@"
+    ) {
+        keyboardToolbarView.setMentionSuggestions(suggestions, trigger)
         keyboardToolbarView.requestLayout()
         post {
             updateKeyboardToolbarLayout()

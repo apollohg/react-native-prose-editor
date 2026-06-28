@@ -1172,6 +1172,21 @@ describe('EditorToolbar', () => {
             ).toBe('always');
         });
 
+        it('prefixes raw mention suggestion labels with the trigger when rendered', () => {
+            act(() => {
+                setEditorToolbarMentionState(1, {
+                    trigger: '@',
+                    suggestions: [{ key: 'u1', title: 'Alice Chen', label: 'alice' }],
+                    onSelectSuggestion: jest.fn(),
+                });
+            });
+
+            const { getByLabelText, getByText } = renderToolbar();
+
+            expect(getByText('@alice')).toBeTruthy();
+            expect(getByLabelText('@alice')).toBeTruthy();
+        });
+
         it('subscribes to keyboard layout changes while preserving editor focus', () => {
             const keyboardListeners = new Map<string, () => void>();
             const removers: jest.Mock[] = [];

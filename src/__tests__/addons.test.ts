@@ -48,9 +48,9 @@ describe('mentions addon helpers', () => {
                         key: 'u1',
                         title: 'Alice',
                         subtitle: 'Design',
-                        label: '@Alice',
+                        label: 'Alice',
                         attrs: {
-                            label: '@Alice',
+                            label: 'Alice',
                             mentionSuggestionChar: '@',
                             id: 'u1',
                             kind: 'user',
@@ -116,9 +116,9 @@ describe('mentions addon helpers', () => {
                         {
                             key: 'u1',
                             title: 'Alice',
-                            label: '@Alice',
+                            label: 'Alice',
                             attrs: {
-                                label: '@Alice',
+                                label: 'Alice',
                                 mentionSuggestionChar: '@',
                             },
                         },
@@ -145,9 +145,9 @@ describe('mentions addon helpers', () => {
                         {
                             key: 'u1',
                             title: 'Alice',
-                            label: '@Alice',
+                            label: 'Alice',
                             attrs: {
-                                label: '@Alice',
+                                label: 'Alice',
                                 mentionSuggestionChar: '@',
                             },
                         },

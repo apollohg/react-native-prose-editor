@@ -586,8 +586,12 @@ const DEFAULT_MATERIAL_ICONS: Partial<Record<EditorToolbarDefaultIconId, string>
     redo: 'redo',
 };
 
-function resolveMentionSuggestionLabel(suggestion: MentionSuggestion, trigger: string): string {
-    return suggestion.label?.trim() || `${trigger}${suggestion.title}`;
+function resolveMentionSuggestionDisplayLabel(
+    suggestion: MentionSuggestion,
+    trigger: string
+): string {
+    const label = suggestion.label?.trim() || suggestion.title;
+    return trigger.length > 0 && !label.startsWith(trigger) ? `${trigger}${label}` : label;
 }
 
 export function EditorToolbar({
@@ -1260,7 +1264,7 @@ export function EditorToolbar({
                     contentContainerStyle={styles.mentionSuggestionsContent}
                     keyboardShouldPersistTaps='always'>
                     {mentionState.suggestions.map((suggestion) => {
-                        const label = resolveMentionSuggestionLabel(
+                        const label = resolveMentionSuggestionDisplayLabel(
                             suggestion,
                             mentionState.trigger
                         );

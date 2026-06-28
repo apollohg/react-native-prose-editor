@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.25] - 2026-06-28
+
+### Fixed
+
+- Mention suggestion chips now render raw suggestion labels prefixed by the configured trigger, so labels no longer need to include `@` in addon configuration.
+
+### Tests
+
+- Added React, Android, and iOS regression coverage for trigger-prefixed mention suggestion chip display with raw labels.
+
 ## [0.5.24] - 2026-06-22
 
 ### Fixed
@@ -379,6 +389,7 @@
 - Controlled and uncontrolled content modes (HTML and JSON).
 - Undo/redo history.
 
+[0.5.25]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.24...0.5.25
 [0.5.24]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.23...0.5.24
 [0.5.23]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.22...0.5.23
 [0.5.22]: https://github.com/apollohg/react-native-prose-editor/compare/0.5.21...0.5.22

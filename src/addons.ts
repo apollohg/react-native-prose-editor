@@ -144,7 +144,7 @@ export function normalizeEditorAddons(addons?: EditorAddons): SerializedEditorAd
 
     const trigger = addons.mentions.trigger?.trim() || DEFAULT_MENTION_TRIGGER;
     const suggestions = (addons.mentions.suggestions ?? []).map((suggestion) => {
-        const label = suggestion.label?.trim() || `${trigger}${suggestion.title}`;
+        const label = suggestion.label?.trim() || suggestion.title;
         const attrs = {
             label,
             mentionSuggestionChar: trigger,

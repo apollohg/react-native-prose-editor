@@ -315,14 +315,16 @@ class NativeToolbarTest {
                     key = "alice",
                     title = "Alice Chen",
                     subtitle = "Design",
-                    label = "@alice",
+                    label = "alice",
                     attrs = org.json.JSONObject().put("id", "user_alice")
                 )
-            )
+            ),
+            trigger = "@"
         )
 
         assertTrue(didChange)
         assertTrue(toolbar.isShowingMentionSuggestions)
+        assertEquals("@alice", toolbar.mentionChipAtForTesting(0)?.titleTextForTesting())
     }
 
     @Test
