@@ -6545,6 +6545,12 @@ final class RichTextEditorViewTests: XCTestCase {
                         "group": "inline",
                         "role": "inline",
                         "isVoid": true,
+                        // Mirrors mentionNodeSpec() in src/addons.ts: mention nodes
+                        // round-trip arbitrary app-defined attrs (e.g.
+                        // mentionSuggestionChar) that this fixed attrs map cannot
+                        // enumerate, so opt out of the schema-declared-attrs filter
+                        // that Rust's set_json ingestion otherwise applies.
+                        "allowUndeclaredAttrs": true,
                         "attrs": [
                             "label": ["default": NSNull()],
                         ],
