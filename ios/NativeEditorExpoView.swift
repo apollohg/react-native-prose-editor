@@ -828,6 +828,34 @@ final class EditorAccessoryToolbarView: UIInputView {
     var didAnimateChromeTransitionForTesting: Bool {
         didAnimateChromeTransition
     }
+    /// Forces `usesNativeBarToolbar` to a fixed value regardless of OS version or
+    /// resolved appearance, so the bar-toolbar layout restructure can be verified
+    /// structurally on any simulator OS. `nil` (the default) restores the real gate.
+    var usesNativeBarToolbarOverrideForTesting: Bool? {
+        get { usesNativeBarToolbarOverride }
+        set {
+            usesNativeBarToolbarOverride = newValue
+            apply(theme: theme)
+        }
+    }
+    var nativeToolbarScrollViewIsHiddenForTesting: Bool {
+        nativeToolbarScrollView.isHidden
+    }
+    var contentStackViewIsHiddenForTesting: Bool {
+        contentStackView.isHidden
+    }
+    var nativeToolbarScrollViewFrameForTesting: CGRect {
+        nativeToolbarScrollView.frame
+    }
+    var startPinnedStackViewFrameForTesting: CGRect {
+        startPinnedStackView.frame
+    }
+    var endPinnedStackViewFrameForTesting: CGRect {
+        endPinnedStackView.frame
+    }
+    var contentStackViewFrameForTesting: CGRect {
+        contentStackView.frame
+    }
     var nativeToolbarVisibleWidthForTesting: CGFloat {
         activeNativeToolbarScrollViewForTesting.bounds.width
     }
@@ -1223,7 +1251,12 @@ final class EditorAccessoryToolbarView: UIInputView {
         nativeToolbarScrollView.showsVerticalScrollIndicator = false
         nativeToolbarScrollView.alwaysBounceHorizontal = true
         nativeToolbarScrollView.alwaysBounceVertical = false
-        chromeView.addSubview(nativeToolbarScrollView)
+        // Matches contentStackView's horizontal hugging/compression below: both occupy the
+        // same middle slot of bodyStackView and are shown/hidden mutually exclusively (see
+        // apply(theme:animateChrome:)), so UIStackView never lays out both at once and they
+        // cannot overlap the pinned stacks on either side.
+        nativeToolbarScrollView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        nativeToolbarScrollView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         nativeToolbarView.translatesAutoresizingMaskIntoConstraints = false
         nativeToolbarView.isHidden = true
@@ -1246,6 +1279,12 @@ final class EditorAccessoryToolbarView: UIInputView {
         startPinnedStackView.setContentHuggingPriority(.required, for: .horizontal)
         startPinnedStackView.setContentCompressionResistancePriority(.required, for: .horizontal)
         bodyStackView.addArrangedSubview(startPinnedStackView)
+
+        // The native bar toolbar (UIToolbar-backed scroll view) occupies the same middle
+        // arranged-subview slot as contentStackView rather than spanning chromeView full-width;
+        // arranged subviews are laid out side-by-side by construction, so pinned start/end
+        // items never overlap whichever of the two is currently visible.
+        bodyStackView.addArrangedSubview(nativeToolbarScrollView)
 
         contentStackView.translatesAutoresizingMaskIntoConstraints = false
         contentStackView.axis = .vertical
@@ -1324,11 +1363,6 @@ final class EditorAccessoryToolbarView: UIInputView {
             glassTintView.leadingAnchor.constraint(equalTo: chromeView.leadingAnchor),
             glassTintView.trailingAnchor.constraint(equalTo: chromeView.trailingAnchor),
             glassTintView.bottomAnchor.constraint(equalTo: chromeView.bottomAnchor),
-
-            nativeToolbarScrollView.topAnchor.constraint(equalTo: chromeView.topAnchor),
-            nativeToolbarScrollView.leadingAnchor.constraint(equalTo: chromeView.leadingAnchor),
-            nativeToolbarScrollView.trailingAnchor.constraint(equalTo: chromeView.trailingAnchor),
-            nativeToolbarScrollView.bottomAnchor.constraint(equalTo: chromeView.bottomAnchor),
 
             nativeToolbarView.topAnchor.constraint(equalTo: nativeToolbarScrollView.contentLayoutGuide.topAnchor),
             nativeToolbarView.leadingAnchor.constraint(equalTo: nativeToolbarScrollView.contentLayoutGuide.leadingAnchor),
@@ -1512,7 +1546,12 @@ final class EditorAccessoryToolbarView: UIInputView {
             return
         }
 
-        let availableWidth = max(chromeView.bounds.width, bounds.width, 1)
+        // nativeToolbarScrollView now occupies only the middle slot of bodyStackView
+        // (beside the pinned start/end stacks), not the full chromeView width, so size
+        // against its own bounds rather than chromeView's/self's full width.
+        let availableWidth = nativeToolbarScrollView.bounds.width > 0
+            ? nativeToolbarScrollView.bounds.width
+            : max(chromeView.bounds.width, bounds.width, 1)
         let targetHeight = max(chromeView.bounds.height, resolvedToolbarHeight)
         nativeToolbarView.layoutIfNeeded()
         let fittingSize = nativeToolbarView.sizeThatFits(
@@ -1902,7 +1941,21 @@ final class EditorAccessoryToolbarView: UIInputView {
         return false
     }
 
+    private var usesNativeBarToolbarOverride: Bool?
+
+    /// The bar-style `UIToolbar` layout is available once iOS 26's `UIGlassEffect`
+    /// chrome is in play; on the "native" appearance we hand the scrollable middle
+    /// section over to `UIToolbar` and lay pinned items out beside it (see
+    /// `apply(theme:animateChrome:)` and the `bodyStackView` arrangement in
+    /// `setupView()`). Older OS versions and non-native appearances keep the
+    /// original custom stack-view toolbar unchanged.
     private var usesNativeBarToolbar: Bool {
+        if let usesNativeBarToolbarOverride {
+            return usesNativeBarToolbarOverride
+        }
+        if #available(iOS 26.0, *) {
+            return resolvedAppearance == .native
+        }
         return false
     }
 

@@ -792,6 +792,12 @@ final class RichTextEditorViewTests: XCTestCase {
             "appearance": "native",
             "height": 44,
         ]))
+        // This test targets the always-on chrome (glass blur + hairline border) that the
+        // custom stack toolbar itself renders for "native" appearance. On iOS 26 the bar
+        // toolbar (UIToolbar) supplies its own translucent chrome instead and intentionally
+        // suppresses these (see apply(theme:animateChrome:)'s usesBarToolbar branches), so
+        // pin this test to the custom stack path to keep testing what it was written to test.
+        toolbar.usesNativeBarToolbarOverrideForTesting = false
 
         XCTAssertTrue(toolbar.usesNativeAppearanceForTesting)
         if #available(iOS 26.0, *) {
@@ -1167,6 +1173,12 @@ final class RichTextEditorViewTests: XCTestCase {
         toolbar.apply(theme: EditorToolbarTheme(dictionary: [
             "appearance": "native",
         ]))
+        // This test targets the mention-suggestions-specific chrome transparency (the outer
+        // chrome fades out only while suggestions are showing). On iOS 26 the bar toolbar makes
+        // the outer chrome transparent unconditionally (UIToolbar supplies its own translucent
+        // material), which would make this test's baseline "not transparent yet" assertion
+        // meaningless. Pin to the custom stack path to keep testing the mention-specific behavior.
+        toolbar.usesNativeBarToolbarOverrideForTesting = false
 
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
@@ -1220,6 +1232,13 @@ final class RichTextEditorViewTests: XCTestCase {
             toolbar.removeFromSuperview()
             window.isHidden = true
         }
+
+        // This test targets the mention-suggestions-specific chrome fade-out animation on the
+        // custom stack toolbar's own blur/glass chrome. On iOS 26 the bar toolbar makes the
+        // outer chrome transparent unconditionally (UIToolbar supplies its own translucent
+        // material) rather than animating a fade tied to mention state, so pin to the custom
+        // stack path to keep testing the animated-transition behavior this test was written for.
+        toolbar.usesNativeBarToolbarOverrideForTesting = false
 
         toolbar.apply(theme: EditorToolbarTheme(dictionary: [
             "appearance": "native",
@@ -1333,6 +1352,187 @@ final class RichTextEditorViewTests: XCTestCase {
             )
         }
     }
+
+    /// Attaches `toolbar` to a fixed-width host so Auto Layout has a real width to resolve
+    /// `.fill`-distributed arranged subviews against. `EditorAccessoryToolbarView` sets
+    /// `translatesAutoresizingMaskIntoConstraints = false` on itself with no width/height
+    /// constraint of its own (it self-sizes as an input accessory view in production, where
+    /// the keyboard/window supplies its width) — without a host, `layoutIfNeeded()` on the bare
+    /// view collapses every flexible-width arranged subview to zero instead of distributing
+    /// space, which would make a "does not overlap" assertion pass vacuously.
+    private static func attachToFixedWidthHost(_ toolbar: EditorAccessoryToolbarView, width: CGFloat) -> UIView {
+        let host = UIView(frame: CGRect(x: 0, y: 0, width: width, height: 100))
+        host.addSubview(toolbar)
+        NSLayoutConstraint.activate([
+            toolbar.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            toolbar.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            toolbar.topAnchor.constraint(equalTo: host.topAnchor),
+        ])
+        return host
+    }
+
+    /// With appearance native on iOS 26, the bar toolbar activates, carries
+    /// the scroll items, and the pinned stacks stay visible without overlap.
+    func testNativeBarToolbarActivatesWithPinnedItems() throws {
+        guard #available(iOS 26.0, *) else { throw XCTSkip("native bar requires iOS 26") }
+
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        let host = Self.attachToFixedWidthHost(toolbar, width: 320)
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+        toolbar.setItemsJSONForTesting(Self.nativeBarToolbarFixtureJSON)
+        host.layoutIfNeeded()
+
+        XCTAssertFalse(
+            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
+            "the UIToolbar-backed scroll view should be visible once native appearance is active on iOS 26"
+        )
+        XCTAssertTrue(
+            toolbar.contentStackViewIsHiddenForTesting,
+            "the custom stack toolbar's content column should be hidden while the bar toolbar owns the middle slot"
+        )
+        XCTAssertEqual(
+            toolbar.buttonLabelsForPlacementForTesting("start"),
+            ["Start"],
+            "start-pinned items should remain custom buttons beside the bar, not bar buttons"
+        )
+        XCTAssertEqual(
+            toolbar.buttonLabelsForPlacementForTesting("end"),
+            ["End"],
+            "end-pinned items should remain custom buttons beside the bar, not bar buttons"
+        )
+        XCTAssertEqual(
+            toolbar.buttonLabelsForPlacementForTesting("scroll"),
+            ["Scroll One", "Scroll Two"],
+            "only scroll-placement items should be carried by the UIToolbar bar buttons"
+        )
+
+        let barFrame = toolbar.nativeToolbarScrollViewFrameForTesting
+        let startFrame = toolbar.startPinnedStackViewFrameForTesting
+        let endFrame = toolbar.endPinnedStackViewFrameForTesting
+        XCTAssertGreaterThan(
+            barFrame.width,
+            0,
+            "the bar toolbar must actually claim the middle slot's width, not just avoid overlap by being empty"
+        )
+        XCTAssertFalse(
+            barFrame.intersects(startFrame),
+            "bar toolbar frame \(barFrame) must not overlap the start pinned stack frame \(startFrame)"
+        )
+        XCTAssertFalse(
+            barFrame.intersects(endFrame),
+            "bar toolbar frame \(barFrame) must not overlap the end pinned stack frame \(endFrame)"
+        )
+    }
+
+    /// Structural counterpart to `testNativeBarToolbarActivatesWithPinnedItems` that does not
+    /// require an iOS 26 runtime: it drives the show/hide and no-overlap layout behavior directly
+    /// through `usesNativeBarToolbarOverrideForTesting`, so the `bodyStackView` restructure (the
+    /// bar toolbar and `contentStackView` occupying the same arranged-subview slot) is verified
+    /// even when the test simulator predates iOS 26.
+    func testNativeBarToolbarOverrideHidesContentStackAndAvoidsPinnedOverlap() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        let host = Self.attachToFixedWidthHost(toolbar, width: 320)
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+        toolbar.setItemsJSONForTesting(Self.nativeBarToolbarFixtureJSON)
+
+        // Each override toggle flips isHidden on two arranged subviews that swap the same
+        // bodyStackView slot; explicitly re-dirtying layout before layoutIfNeeded() ensures
+        // UIStackView fully redistributes the freed/claimed width within this single synchronous
+        // test call (outside a test harness, the normal run-loop display cycle does this for free).
+        toolbar.usesNativeBarToolbarOverrideForTesting = false
+        host.setNeedsLayout()
+        host.layoutIfNeeded()
+        XCTAssertTrue(
+            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
+            "with the bar toolbar forced off, the bar scroll view should stay hidden"
+        )
+        XCTAssertFalse(
+            toolbar.contentStackViewIsHiddenForTesting,
+            "with the bar toolbar forced off, the custom stack toolbar's content column should stay visible"
+        )
+        XCTAssertGreaterThan(
+            toolbar.contentStackViewFrameForTesting.width,
+            0,
+            "with the bar toolbar forced off, the content column should claim the middle slot's width"
+        )
+
+        toolbar.usesNativeBarToolbarOverrideForTesting = true
+        host.setNeedsLayout()
+        host.layoutIfNeeded()
+
+        XCTAssertFalse(
+            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
+            "forcing usesNativeBarToolbar on should reveal the bar toolbar scroll view"
+        )
+        XCTAssertTrue(
+            toolbar.contentStackViewIsHiddenForTesting,
+            "forcing usesNativeBarToolbar on should hide the custom stack toolbar's content column"
+        )
+        XCTAssertEqual(
+            toolbar.buttonLabelsForPlacementForTesting("start"),
+            ["Start"],
+            "pinned start items remain custom buttons beside the bar even when the bar is forced on"
+        )
+        XCTAssertEqual(
+            toolbar.buttonLabelsForPlacementForTesting("end"),
+            ["End"],
+            "pinned end items remain custom buttons beside the bar even when the bar is forced on"
+        )
+
+        let barFrame = toolbar.nativeToolbarScrollViewFrameForTesting
+        let startFrame = toolbar.startPinnedStackViewFrameForTesting
+        let endFrame = toolbar.endPinnedStackViewFrameForTesting
+        XCTAssertGreaterThan(
+            barFrame.width,
+            0,
+            "the bar toolbar must actually claim the middle slot's width, not just avoid overlap by being empty"
+        )
+        XCTAssertFalse(
+            barFrame.intersects(startFrame),
+            "bar toolbar frame \(barFrame) must not overlap the start pinned stack frame \(startFrame) (forced-on)"
+        )
+        XCTAssertFalse(
+            barFrame.intersects(endFrame),
+            "bar toolbar frame \(barFrame) must not overlap the end pinned stack frame \(endFrame) (forced-on)"
+        )
+
+        toolbar.usesNativeBarToolbarOverrideForTesting = nil
+    }
+
+    private static let nativeBarToolbarFixtureJSON = """
+    [
+      {
+        "type": "action",
+        "key": "start-item",
+        "label": "Start",
+        "icon": { "type": "glyph", "text": "S" },
+        "placement": "start"
+      },
+      {
+        "type": "action",
+        "key": "scroll-one",
+        "label": "Scroll One",
+        "icon": { "type": "glyph", "text": "1" }
+      },
+      {
+        "type": "action",
+        "key": "scroll-two",
+        "label": "Scroll Two",
+        "icon": { "type": "glyph", "text": "2" }
+      },
+      {
+        "type": "action",
+        "key": "end-item",
+        "label": "End",
+        "icon": { "type": "glyph", "text": "E" },
+        "placement": "end"
+      }
+    ]
+    """
 
     func testMentionSuggestionChipContentViewsAllowTouchPassthrough() {
         let chip = MentionSuggestionChipButton(
