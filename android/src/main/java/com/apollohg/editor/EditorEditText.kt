@@ -1350,7 +1350,9 @@ class EditorEditText @JvmOverloads constructor(
         }
         val (replacementStart, replacementEnd) = compositionReplacementRange() ?: return composingText
         if (replacementStart != replacementEnd) return composingText
-        if (!isRenderedLineStartForSentenceCaps(lastAuthorizedText, replacementStart)) {
+        val authorizedSpanned = lastAuthorizedRenderedText as? Spanned
+            ?: SpannableStringBuilder(lastAuthorizedText)
+        if (!isRenderedLineStartForSentenceCaps(authorizedSpanned, replacementStart)) {
             return composingText
         }
 
@@ -3419,7 +3421,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     private fun isCursorAtRenderedLineStartForSentenceCaps(): Boolean {
-        val currentText = text?.toString() ?: return false
+        val currentText = text ?: return false
         val start = selectionStart
         val end = selectionEnd
         if (start < 0 || end < 0 || start != end) return false
@@ -3428,7 +3430,7 @@ class EditorEditText @JvmOverloads constructor(
         return isRenderedLineStartForSentenceCaps(currentText, cursor)
     }
 
-    private fun isRenderedLineStartForSentenceCaps(text: String, cursor: Int): Boolean {
+    private fun isRenderedLineStartForSentenceCaps(text: Spanned, cursor: Int): Boolean {
         val cursor = cursor.coerceIn(0, text.length)
         if (cursor == 0) return true
 
@@ -3456,7 +3458,7 @@ class EditorEditText @JvmOverloads constructor(
             inputMethodId.contains("honeyboard", ignoreCase = true)
     }
 
-    private fun lastRenderedLineBreakBefore(text: String, cursor: Int): Int {
+    private fun lastRenderedLineBreakBefore(text: CharSequence, cursor: Int): Int {
         var index = cursor.coerceAtMost(text.length) - 1
         while (index >= 0) {
             when (text[index]) {
@@ -3473,7 +3475,7 @@ class EditorEditText @JvmOverloads constructor(
             ch == '\u00A0' ||
             ch == LayoutConstants.SYNTHETIC_PLACEHOLDER_CHARACTER[0]
 
-    private fun renderedListMarkerEnd(text: String, start: Int, endExclusive: Int): Int? {
+    private fun renderedListMarkerEnd(text: Spanned, start: Int, endExclusive: Int): Int? {
         if (start >= endExclusive) return null
         if (renderedTaskListMarkerEnd(text, start, endExclusive) != null) {
             return start + 2
@@ -3493,11 +3495,16 @@ class EditorEditText @JvmOverloads constructor(
         }
     }
 
-    private fun renderedTaskListMarkerEnd(text: String, start: Int, endExclusive: Int): Int? {
+    private fun renderedTaskListMarkerEnd(text: Spanned, start: Int, endExclusive: Int): Int? {
         if (start + 1 >= endExclusive) return null
         val marker = text[start]
-        if (marker != '\u2610' && marker != '\u2611') return null
-        return if (text[start + 1] == ' ') start + 2 else null
+        if (marker != LayoutConstants.TASK_LIST_MARKER_UNCHECKED[0] &&
+            marker != LayoutConstants.TASK_LIST_MARKER_CHECKED[0]
+        ) return null
+        if (text[start + 1] != ' ') return null
+        val isMarker = text.getSpans(start, start + 1, Annotation::class.java)
+            .any { it.key == RenderBridge.NATIVE_TASK_LIST_MARKER_ANNOTATION }
+        return if (isMarker) start + 2 else null
     }
 
     private fun normalizedUtf16SelectionRange(currentText: String): Pair<Int, Int>? {
@@ -4237,7 +4244,8 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     private fun taskListMarkerScalarHitAt(x: Float, y: Float): Int? {
-        val currentText = text?.toString() ?: return null
+        val currentSpanned = text ?: return null
+        val currentText = currentSpanned.toString()
         val textLayout = layout ?: return null
         if (currentText.isEmpty()) return null
 
@@ -4253,7 +4261,7 @@ class EditorEditText @JvmOverloads constructor(
         }
         val lineStart = textLayout.getLineStart(line).coerceIn(0, currentText.length)
         val lineEnd = textLayout.getLineEnd(line).coerceIn(lineStart, currentText.length)
-        val markerEnd = renderedTaskListMarkerEnd(currentText, lineStart, lineEnd) ?: return null
+        val markerEnd = renderedTaskListMarkerEnd(currentSpanned, lineStart, lineEnd) ?: return null
         val markerRight = textLayout.getPrimaryHorizontal(markerEnd).coerceAtLeast(
             textLayout.getPrimaryHorizontal(lineStart)
         ) + (8f * resources.displayMetrics.density)

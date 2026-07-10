@@ -65,6 +65,15 @@ object LayoutConstants {
     /** Scale factor applied only to unordered list marker glyphs. */
     const val UNORDERED_LIST_MARKER_FONT_SCALE: Float = 2.0f
 
+    /** Rendered marker text for task list items. Must stay in sync with the
+     *  Rust core's task_list_marker_string (render/mod.rs) — the marker's
+     *  scalar length is part of the position-mapping contract. */
+    const val TASK_LIST_MARKER_CHECKED: String = "☑ "
+    const val TASK_LIST_MARKER_UNCHECKED: String = "☐ "
+
+    /** Scale factor applied to task checkbox marker glyphs. */
+    const val TASK_LIST_MARKER_FONT_SCALE: Float = 1.55f
+
     /** Default visual treatment for link text when no explicit theme color exists. */
     const val DEFAULT_LINK_COLOR: Int = 0xFF1B73E8.toInt()
 
@@ -832,6 +841,7 @@ object RenderBridge {
     internal const val NATIVE_BLOCKQUOTE_ANNOTATION = "nativeBlockquote"
     internal const val NATIVE_TOP_LEVEL_CHILD_INDEX_ANNOTATION = "nativeTopLevelChildIndex"
     internal const val NATIVE_LINK_HREF_ANNOTATION = "nativeLinkHref"
+    internal const val NATIVE_TASK_LIST_MARKER_ANNOTATION = "nativeTaskListMarker"
     private const val NATIVE_SYNTHETIC_PLACEHOLDER_ANNOTATION = "nativeSyntheticPlaceholder"
 
     private data class RenderBuildState(
@@ -1160,7 +1170,7 @@ object RenderBridge {
                                 blockquoteDepth(state.blockStack) > 0
                             ).fontSize?.times(density) ?: baseFontSize
                         val resolvedMarkerBaseSize = if (isTask) {
-                            markerBaseSize * 1.55f
+                            markerBaseSize * LayoutConstants.TASK_LIST_MARKER_FONT_SCALE
                         } else {
                             markerBaseSize
                         }
@@ -1184,6 +1194,14 @@ object RenderBridge {
                         val markerStart = state.result.length - marker.length
                         val markerEnd = state.result.length
                         annotateTopLevelChild(state.result, markerStart, markerEnd, topLevelChildIndex)
+                        if (isTask) {
+                            state.result.setSpan(
+                                Annotation(NATIVE_TASK_LIST_MARKER_ANNOTATION, "1"),
+                                markerStart,
+                                markerEnd,
+                                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                            )
+                        }
                         if (!ordered && !isTask) {
                             val markerScale =
                                 theme?.list?.markerScale ?: LayoutConstants.UNORDERED_LIST_MARKER_FONT_SCALE
@@ -1988,7 +2006,11 @@ object RenderBridge {
 
     fun listMarkerString(listContext: JSONObject): String {
         if (listContext.optString("kind", "") == "task") {
-            return if (listContext.optBoolean("checked", false)) "\u2611 " else "\u2610 "
+            return if (listContext.optBoolean("checked", false)) {
+                LayoutConstants.TASK_LIST_MARKER_CHECKED
+            } else {
+                LayoutConstants.TASK_LIST_MARKER_UNCHECKED
+            }
         }
         val ordered = listContext.optBoolean("ordered", false)
         return if (ordered) {

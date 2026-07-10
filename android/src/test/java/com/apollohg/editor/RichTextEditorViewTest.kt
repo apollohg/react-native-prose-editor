@@ -95,6 +95,14 @@ class RichTextEditorViewTest {
         ]
     """.trimIndent()
 
+    private fun plainParagraphStartingWithCheckboxGlyphRenderJson(): String = """
+        [
+          {"type":"blockStart","nodeType":"paragraph","depth":0},
+          {"type":"textRun","text":"☐ not a task","marks":[]},
+          {"type":"blockEnd"}
+        ]
+    """.trimIndent()
+
     private fun emptyParagraphRenderJson(): String = """
         [
           {"type":"blockStart","nodeType":"paragraph","depth":0},
@@ -845,6 +853,51 @@ class RichTextEditorViewTest {
         up.recycle()
 
         assertEquals(0, toggleCount)
+    }
+
+    @Test
+    fun `tapping plain paragraph starting with checkbox glyph does not toggle task item`() {
+        // Regression: marker hit-testing must key off the nativeTaskListMarker
+        // annotation, not the leading glyph. A plain paragraph whose text
+        // happens to start with "☐ " (no listContext, no annotation) must not
+        // be treated as a task marker.
+        val context = RuntimeEnvironment.getApplication()
+        val editText = EditorEditText(context)
+        editText.editorId = 1
+        editText.applyRenderJSON(plainParagraphStartingWithCheckboxGlyphRenderJson())
+
+        assertTrue(
+            "Rendered text should start with the checkbox glyph. Got: '${editText.text}'",
+            editText.text.toString().startsWith("☐ ")
+        )
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        editText.measure(widthSpec, heightSpec)
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+
+        val textLayout = requireNotNull(editText.layout)
+        val tapX = editText.totalPaddingLeft + 1f
+        val tapY = editText.totalPaddingTop +
+            ((textLayout.getLineTop(0) + textLayout.getLineBottom(0)) / 2f)
+        var toggleCount = 0
+        editText.onToggleTaskItemCheckedAtSelectionScalarInRustForTesting = { _, _ ->
+            toggleCount += 1
+        }
+
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, tapX, tapY, 0)
+        editText.onTouchEvent(down)
+        down.recycle()
+
+        val up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, tapX, tapY, 0)
+        editText.onTouchEvent(up)
+        up.recycle()
+
+        assertEquals(
+            "Tapping a plain paragraph's checkbox-like glyph must not toggle any task item",
+            0,
+            toggleCount
+        )
     }
 
     @Test
