@@ -250,6 +250,12 @@ class EditorEditText @JvmOverloads constructor(
 
     var heightBehavior: EditorHeightBehavior = EditorHeightBehavior.FIXED
         private set
+
+    // Cached once per view instance so paired-tap tracking doesn't re-query
+    // ViewConfiguration on every MotionEvent.
+    private val touchSlopPx: Float by lazy(LazyThreadSafetyMode.NONE) {
+        android.view.ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+    }
     private var imageResizingEnabled = true
     private var nativeAutoCapitalize = DEFAULT_AUTO_CAPITALIZE
     private var nativeAutoCorrect = DEFAULT_AUTO_CORRECT
@@ -4230,24 +4236,58 @@ class EditorEditText @JvmOverloads constructor(
         return true
     }
 
+    private var pendingTaskMarkerDownScalar: Int? = null
+    private var pendingTaskMarkerDownX: Float = 0f
+    private var pendingTaskMarkerDownY: Float = 0f
+
+    /**
+     * Task-marker taps are recognized as a paired DOWN+UP on the same marker
+     * within touch slop. DOWN is never consumed (so scrolls and selection
+     * gestures that start on a checkbox keep working); only the matching UP
+     * is consumed.
+     */
     private fun handleTaskListMarkerTap(event: MotionEvent): Boolean {
-        if (event.actionMasked != MotionEvent.ACTION_DOWN && event.actionMasked != MotionEvent.ACTION_UP) {
-            return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                pendingTaskMarkerDownScalar = taskListMarkerScalarHitAt(event.x, event.y)
+                pendingTaskMarkerDownX = event.x
+                pendingTaskMarkerDownY = event.y
+                return false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (pendingTaskMarkerDownScalar != null && !withinTouchSlop(event)) {
+                    pendingTaskMarkerDownScalar = null
+                }
+                return false
+            }
+            MotionEvent.ACTION_UP -> {
+                val downScalar = pendingTaskMarkerDownScalar ?: return false
+                pendingTaskMarkerDownScalar = null
+                if (!withinTouchSlop(event)) return false
+                val upScalar = taskListMarkerScalarHitAt(event.x, event.y) ?: return false
+                if (upScalar != downScalar) return false
+                requestFocus()
+                toggleTaskItemCheckedAtSelectionScalarInRust(upScalar, upScalar)
+                performClick()
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                pendingTaskMarkerDownScalar = null
+                return false
+            }
+            else -> return false
         }
-        val scalarHit = taskListMarkerScalarHitAt(event.x, event.y) ?: return false
-        requestFocus()
-        if (event.actionMasked == MotionEvent.ACTION_UP) {
-            toggleTaskItemCheckedAtSelectionScalarInRust(scalarHit, scalarHit)
-            performClick()
-        }
-        return true
+    }
+
+    private fun withinTouchSlop(event: MotionEvent): Boolean {
+        return kotlin.math.abs(event.x - pendingTaskMarkerDownX) <= touchSlopPx &&
+            kotlin.math.abs(event.y - pendingTaskMarkerDownY) <= touchSlopPx
     }
 
     private fun taskListMarkerScalarHitAt(x: Float, y: Float): Int? {
-        val currentSpanned = text ?: return null
-        val currentText = currentSpanned.toString()
+        val spanned = text as? Spanned ?: return null
         val textLayout = layout ?: return null
-        if (currentText.isEmpty()) return null
+        if (spanned.isEmpty()) return null
 
         val localX = x + scrollX - totalPaddingLeft
         val localY = y + scrollY - totalPaddingTop
@@ -4259,15 +4299,19 @@ class EditorEditText @JvmOverloads constructor(
         if (localY < lineTop || localY > lineBottom) {
             return null
         }
-        val lineStart = textLayout.getLineStart(line).coerceIn(0, currentText.length)
-        val lineEnd = textLayout.getLineEnd(line).coerceIn(lineStart, currentText.length)
-        val markerEnd = renderedTaskListMarkerEnd(currentSpanned, lineStart, lineEnd) ?: return null
+        val lineStart = textLayout.getLineStart(line).coerceIn(0, spanned.length)
+        val lineEnd = textLayout.getLineEnd(line).coerceIn(lineStart, spanned.length)
+        val markerEnd = renderedTaskListMarkerEnd(spanned, lineStart, lineEnd) ?: return null
         val markerRight = textLayout.getPrimaryHorizontal(markerEnd).coerceAtLeast(
             textLayout.getPrimaryHorizontal(lineStart)
-        ) + (8f * resources.displayMetrics.density)
+        ) + MARKER_TAP_HORIZONTAL_SLOP_DP * resources.displayMetrics.density
         if (localX > markerRight) {
             return null
         }
+
+        // Confirmed hit: only now pay for the String conversion the
+        // PositionBridge scalar math requires.
+        val currentText = spanned.toString()
         val snappedUtf16 = PositionBridge.snapToScalarBoundary(
             lineStart,
             currentText,
@@ -4536,5 +4580,6 @@ class EditorEditText @JvmOverloads constructor(
         // Platform caret blink half-period (Editor.BLINK).
         private const val CARET_BLINK_INTERVAL_MS = 500L
         private const val MIN_CARET_WIDTH_PX = 2f
+        private const val MARKER_TAP_HORIZONTAL_SLOP_DP = 8f
     }
 }

@@ -95,6 +95,31 @@ class RichTextEditorViewTest {
         ]
     """.trimIndent()
 
+    /**
+     * A single task item followed by enough filler paragraphs to overflow a
+     * small FIXED-height viewport, so `canScrollVertically` is true and
+     * ACTION_DOWN/MOVE on the marker can be observed reaching the
+     * FIXED-height parent-intercept handling in EditorEditText.onTouchEvent.
+     */
+    private fun taskListWithOverflowRenderJson(fillerLineCount: Int = 30): String {
+        val blocks = StringBuilder()
+        blocks.append(
+            """
+            {"type":"blockStart","nodeType":"taskItem","depth":0,"listContext":{"ordered":false,"index":1,"total":1,"start":1,"isFirst":true,"isLast":true,"kind":"task","checked":false}},
+            {"type":"blockStart","nodeType":"paragraph","depth":1},
+            {"type":"textRun","text":"Task item","marks":[]},
+            {"type":"blockEnd"},
+            {"type":"blockEnd"}
+            """.trimIndent()
+        )
+        for (index in 1..fillerLineCount) {
+            blocks.append(
+                """,{"type":"blockStart","nodeType":"paragraph","depth":0},{"type":"textRun","text":"Filler line $index","marks":[]},{"type":"blockEnd"}"""
+            )
+        }
+        return "[$blocks]"
+    }
+
     private fun plainParagraphStartingWithCheckboxGlyphRenderJson(): String = """
         [
           {"type":"blockStart","nodeType":"paragraph","depth":0},
@@ -895,6 +920,145 @@ class RichTextEditorViewTest {
 
         assertEquals(
             "Tapping a plain paragraph's checkbox-like glyph must not toggle any task item",
+            0,
+            toggleCount
+        )
+    }
+
+    @Test
+    fun `down on marker then up elsewhere does not toggle`() {
+        // A DOWN that lands on the marker followed by an UP far away (e.g. a
+        // selection drag or a scroll gesture that started on the checkbox)
+        // must not toggle the task item. Critically, the DOWN itself must
+        // NOT be consumed by the marker handler: the pre-fix handler
+        // hit-tested and unconditionally returned true for a DOWN on a
+        // marker, short-circuiting onTouchEvent before the FIXED-height
+        // scroll-intercept handling below it ever ran -- which is exactly
+        // the "scrolls that start on a checkbox get blocked" bug. We prove
+        // the DOWN reached that code by observing its side effect: it asks
+        // the parent to disallow intercept while a FIXED-height, overflowing
+        // editor is being touched.
+        val context = RuntimeEnvironment.getApplication()
+        val parent = InterceptAwareFrameLayout(context)
+        val editText = EditorEditText(context)
+        editText.editorId = 1
+        editText.setHeightBehavior(EditorHeightBehavior.FIXED)
+        editText.applyRenderJSON(taskListWithOverflowRenderJson())
+        parent.addView(
+            editText,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 120)
+        )
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(120, View.MeasureSpec.EXACTLY)
+        parent.measure(widthSpec, heightSpec)
+        parent.layout(0, 0, parent.measuredWidth, parent.measuredHeight)
+
+        assertTrue(
+            "Test setup requires the FIXED-height editor content to overflow vertically",
+            editText.canScrollVertically(1)
+        )
+
+        val textLayout = requireNotNull(editText.layout)
+        val tapX = editText.totalPaddingLeft + 1f
+        val tapY = editText.totalPaddingTop +
+            ((textLayout.getLineTop(0) + textLayout.getLineBottom(0)) / 2f)
+        val toggles = mutableListOf<Pair<Int, Int>>()
+        editText.onToggleTaskItemCheckedAtSelectionScalarInRustForTesting = { anchor, head ->
+            toggles += anchor to head
+        }
+        // Reaching super.onTouchEvent for real now drives the normal
+        // EditText tap-to-place-cursor path, which syncs the new selection
+        // to Rust. Route that through the testing hook (the suite's
+        // established pattern, see EditorInputConnectionTest.kt) instead of
+        // a real FFI call, since this test isn't exercising selection sync.
+        editText.onSetSelectionScalarInRustForTesting = { _, _ -> }
+
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, tapX, tapY, 0)
+        editText.onTouchEvent(down)
+        down.recycle()
+
+        assertTrue(
+            "ACTION_DOWN on a marker must reach the FIXED-height scroll handling so drags/scrolls starting on a checkbox keep working",
+            parent.disallowInterceptRequested
+        )
+
+        val up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, tapX, tapY + 200f, 0)
+        editText.onTouchEvent(up)
+        up.recycle()
+
+        assertEquals(
+            "Lifting far away from the DOWN's marker must not toggle any task item",
+            emptyList<Pair<Int, Int>>(),
+            toggles
+        )
+    }
+
+    @Test
+    fun `clean tap on marker toggles exactly once`() {
+        val context = RuntimeEnvironment.getApplication()
+        val editText = EditorEditText(context)
+        editText.editorId = 1
+        editText.applyRenderJSON(singleTaskListRenderJson())
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        editText.measure(widthSpec, heightSpec)
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+
+        val textLayout = requireNotNull(editText.layout)
+        val tapX = editText.totalPaddingLeft + 1f
+        val tapY = editText.totalPaddingTop +
+            ((textLayout.getLineTop(0) + textLayout.getLineBottom(0)) / 2f)
+        val toggles = mutableListOf<Pair<Int, Int>>()
+        editText.onToggleTaskItemCheckedAtSelectionScalarInRustForTesting = { anchor, head ->
+            toggles += anchor to head
+        }
+
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, tapX, tapY, 0)
+        editText.onTouchEvent(down)
+        down.recycle()
+
+        val up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, tapX, tapY, 0)
+        editText.onTouchEvent(up)
+        up.recycle()
+
+        assertEquals(
+            "A clean DOWN+UP pair on the same marker must toggle exactly once",
+            listOf(0 to 0),
+            toggles
+        )
+    }
+
+    @Test
+    fun `up over marker without a paired down does not toggle`() {
+        // Simulates the UP a selection drag delivers when it happens to end
+        // over a marker, without that gesture's DOWN having started there.
+        val context = RuntimeEnvironment.getApplication()
+        val editText = EditorEditText(context)
+        editText.editorId = 1
+        editText.applyRenderJSON(singleTaskListRenderJson())
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        editText.measure(widthSpec, heightSpec)
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+
+        val textLayout = requireNotNull(editText.layout)
+        val tapX = editText.totalPaddingLeft + 1f
+        val tapY = editText.totalPaddingTop +
+            ((textLayout.getLineTop(0) + textLayout.getLineBottom(0)) / 2f)
+        var toggleCount = 0
+        editText.onToggleTaskItemCheckedAtSelectionScalarInRustForTesting = { _, _ ->
+            toggleCount += 1
+        }
+
+        val up = MotionEvent.obtain(0, 0, MotionEvent.ACTION_UP, tapX, tapY, 0)
+        editText.onTouchEvent(up)
+        up.recycle()
+
+        assertEquals(
+            "An UP over a marker with no preceding paired DOWN must not toggle",
             0,
             toggleCount
         )
