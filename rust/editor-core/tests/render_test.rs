@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use editor_core::model::{Document, Fragment, Mark, Node};
+use editor_core::render;
 use editor_core::render::generate::generate;
 use editor_core::render::incremental::{contiguous_render_blocks_patch, incremental};
 use editor_core::render::{ListContext, RenderElement, RenderMark};
@@ -928,4 +929,21 @@ fn test_incremental_list_block() {
         li_starts, 2,
         "List patch should have 2 listItem BlockStart elements"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Test 22: Cross-layer marker-string contract
+// ---------------------------------------------------------------------------
+
+/// The exact marker strings are a cross-layer contract: Android
+/// (LayoutConstants.TASK_LIST_MARKER_*), iOS (RenderBridge.listMarkerString),
+/// and TS (src/listMarkers.ts) all hardcode these values for hit-testing and
+/// scalar accounting. Changing them requires synchronized changes in all
+/// three platform layers — this test exists to make that impossible to miss.
+#[test]
+fn marker_strings_are_the_cross_layer_contract() {
+    assert_eq!(render::task_list_marker_string(true), "\u{2611} ");
+    assert_eq!(render::task_list_marker_string(false), "\u{2610} ");
+    assert_eq!(render::list_marker_string(false, 1), "\u{2022} ");
+    assert_eq!(render::list_marker_string(true, 3), "3. ");
 }

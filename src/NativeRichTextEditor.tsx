@@ -47,6 +47,12 @@ import {
 } from './EditorToolbar';
 import { serializeEditorTheme, type EditorMentionTheme, type EditorTheme } from './EditorTheme';
 import {
+    TASK_LIST_MARKER_CHECKED,
+    TASK_LIST_MARKER_UNCHECKED,
+    UNORDERED_LIST_MARKER,
+    orderedListMarker,
+} from './listMarkers';
+import {
     buildMentionFragmentJson,
     serializeEditorAddons,
     type EditorAddonEvent,
@@ -746,10 +752,12 @@ function computeRenderedTextLength(elements: RenderElement[]): number {
     for (const el of elements) {
         if (el.type === 'blockStart' && el.listContext) {
             len += el.listContext.kind === 'task'
-                ? unicodeScalarCount(el.listContext.checked ? '☑ ' : '☐ ')
+                ? unicodeScalarCount(
+                      el.listContext.checked ? TASK_LIST_MARKER_CHECKED : TASK_LIST_MARKER_UNCHECKED
+                  )
                 : el.listContext.ordered
-                  ? unicodeScalarCount(`${el.listContext.index}. `)
-                  : unicodeScalarCount('• ');
+                  ? unicodeScalarCount(orderedListMarker(el.listContext.index))
+                  : unicodeScalarCount(UNORDERED_LIST_MARKER);
         } else if (el.type === 'textRun' && el.text) {
             len += unicodeScalarCount(el.text);
         } else if (
