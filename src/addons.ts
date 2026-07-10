@@ -119,6 +119,12 @@ export function mentionNodeSpec(): NodeSpec {
         group: 'inline',
         role: 'inline',
         isVoid: true,
+        // Mention nodes round-trip arbitrary app-defined metadata (id, kind,
+        // mentionSuggestionChar, mentionTheme, and anything supplied via
+        // MentionSuggestion.attrs / resolveSelectionAttrs) that this fixed
+        // attrs map cannot enumerate. Opt out of the schema-declared-attrs
+        // filter that Rust's set_json ingestion otherwise applies.
+        allowUndeclaredAttrs: true,
         attrs: {
             label: { default: null },
         },

@@ -27,6 +27,14 @@ pub struct NodeSpec {
     pub html_tag: Option<String>,
     /// If `true`, this node has no editable content (e.g. horizontal rule, hard break).
     pub is_void: bool,
+    /// If `true`, JSON ingestion (`set_json`/`insert_content_json`) admits attrs
+    /// on this node that are not declared in `attrs`, instead of filtering them
+    /// out. Default `false`. This is an opt-in escape hatch for node types with
+    /// an intentional pass-through-metadata contract (e.g. the `mention` node,
+    /// which carries arbitrary app-defined attrs such as `id`/`kind`). Every
+    /// other node type is filtered to its schema-declared attrs, matching the
+    /// HTML ingestion path (`extract_node_attrs`).
+    pub allow_undeclared_attrs: bool,
 }
 
 /// The semantic role of a node, used by transactions and rendering to handle
@@ -273,6 +281,10 @@ impl Schema {
                 .get("isVoid")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let allow_undeclared_attrs = node_val
+                .get("allowUndeclaredAttrs")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             let role_str = node_val
                 .get("role")
@@ -313,6 +325,7 @@ impl Schema {
                 role,
                 html_tag,
                 is_void,
+                allow_undeclared_attrs,
             });
         }
 

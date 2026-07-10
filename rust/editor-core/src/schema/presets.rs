@@ -49,6 +49,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             role: NodeRole::Doc,
             html_tag: None,
             is_void: false,
+            allow_undeclared_attrs: false,
         },
         NodeSpec {
             name: "paragraph".to_string(),
@@ -58,6 +59,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             role: NodeRole::TextBlock,
             html_tag: Some("p".to_string()),
             is_void: false,
+            allow_undeclared_attrs: false,
         },
     ];
 
@@ -70,6 +72,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             role: NodeRole::TextBlock,
             html_tag: Some(format!("h{level}")),
             is_void: false,
+            allow_undeclared_attrs: false,
         });
     }
 
@@ -82,6 +85,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             role: NodeRole::Block,
             html_tag: Some("blockquote".to_string()),
             is_void: false,
+            allow_undeclared_attrs: false,
         },
         NodeSpec {
             name: name(&convention, "bulletList", "bullet_list"),
@@ -91,6 +95,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             role: NodeRole::List { ordered: false },
             html_tag: Some("ul".to_string()),
             is_void: false,
+            allow_undeclared_attrs: false,
         },
         NodeSpec {
             name: name(&convention, "orderedList", "ordered_list"),
@@ -109,6 +114,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             role: NodeRole::List { ordered: true },
             html_tag: Some("ol".to_string()),
             is_void: false,
+            allow_undeclared_attrs: false,
         },
         NodeSpec {
             name: list_item_name,
@@ -118,6 +124,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             role: NodeRole::ListItem,
             html_tag: Some("li".to_string()),
             is_void: false,
+            allow_undeclared_attrs: false,
         },
         NodeSpec {
             name: name(&convention, "hardBreak", "hard_break"),
@@ -127,6 +134,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             role: NodeRole::HardBreak,
             html_tag: Some("br".to_string()),
             is_void: true,
+            allow_undeclared_attrs: false,
         },
         NodeSpec {
             name: name(&convention, "horizontalRule", "horizontal_rule"),
@@ -136,6 +144,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             role: NodeRole::Block,
             html_tag: Some("hr".to_string()),
             is_void: true,
+            allow_undeclared_attrs: false,
         },
         NodeSpec {
             name: "image".to_string(),
@@ -153,6 +162,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             role: NodeRole::Block,
             html_tag: Some("img".to_string()),
             is_void: true,
+            allow_undeclared_attrs: false,
         },
         NodeSpec {
             name: "text".to_string(),
@@ -162,6 +172,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
             role: NodeRole::Text,
             html_tag: None,
             is_void: false,
+            allow_undeclared_attrs: false,
         },
     ]);
 

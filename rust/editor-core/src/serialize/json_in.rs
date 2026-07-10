@@ -221,10 +221,14 @@ fn parse_attrs(
         }
     }
 
-    // Overlay with values from JSON
+    // Overlay with values from JSON — only attrs the schema declares for this
+    // node (parity with the HTML path's extract_node_attrs), unless the spec
+    // opts into undeclared attrs (e.g. mention nodes carrying app metadata).
     if let Some(Value::Object(json_attrs)) = obj.get("attrs") {
         for (key, value) in json_attrs {
-            attrs.insert(key.clone(), value.clone());
+            if spec.allow_undeclared_attrs || spec.attrs.contains_key(key) {
+                attrs.insert(key.clone(), value.clone());
+            }
         }
     }
 

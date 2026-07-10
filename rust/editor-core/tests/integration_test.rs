@@ -40,6 +40,11 @@ fn mention_schema() -> Schema {
             role: NodeRole::Inline,
             html_tag: None,
             is_void: true,
+            // Mirrors the real `mentionNodeSpec()` (src/addons.ts), which
+            // intentionally round-trips arbitrary app-defined attrs
+            // (id/kind/mentionSuggestionChar/mentionTheme) through set_json /
+            // insert_content_json.
+            allow_undeclared_attrs: true,
         });
     }
     let marks = base.all_marks().cloned().collect();
@@ -67,6 +72,7 @@ fn title_first_schema() -> Schema {
             role: NodeRole::TextBlock,
             html_tag: None,
             is_void: false,
+            allow_undeclared_attrs: false,
         });
     }
     let marks = base.all_marks().cloned().collect();

@@ -35,6 +35,9 @@ fn mention_schema() -> Schema {
             role: NodeRole::Inline,
             html_tag: None,
             is_void: true,
+            // Mirrors the real `mentionNodeSpec()` (src/addons.ts), which
+            // intentionally round-trips arbitrary app-defined attrs.
+            allow_undeclared_attrs: true,
         });
     }
     let marks = base.all_marks().cloned().collect();
@@ -1928,6 +1931,114 @@ fn test_from_json_not_an_object() {
         Err(JsonParseError::InvalidStructure(_)) => {} // expected
         other => panic!("expected InvalidStructure, got: {:?}", other),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Undeclared attr filtering — parity with the HTML ingestion path
+// (extract_node_attrs), hardened against attrs the schema does not declare
+// for a given node type (e.g. "checked" on a plain listItem).
+// ---------------------------------------------------------------------------
+
+/// set_json must not admit attrs the schema does not declare for the node —
+/// parity with the HTML ingestion path (extract_node_attrs). A declared attr
+/// on a different node (orderedList's own "start") must still round-trip.
+#[test]
+fn set_json_drops_undeclared_attrs() {
+    let json = serde_json::json!({
+        "type": "doc",
+        "content": [
+            {
+                "type": "orderedList",
+                "attrs": { "start": 3 },
+                "content": [
+                    {
+                        "type": "listItem",
+                        "attrs": { "checked": true, "start": 3 },
+                        "content": [
+                            {
+                                "type": "paragraph",
+                                "content": [{ "type": "text", "text": "x" }]
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    });
+
+    let d = from_prosemirror_json(&json, &schema(), UnknownTypeMode::Error)
+        .expect("orderedList > listItem > paragraph > text should parse");
+
+    let ordered_list = d.root().child(0).unwrap();
+    assert_eq!(
+        ordered_list.node_type(),
+        "orderedList",
+        "sanity: first doc child should be the orderedList"
+    );
+    assert_eq!(
+        ordered_list.attrs().get("start"),
+        Some(&serde_json::Value::Number(3.into())),
+        "orderedList declares 'start' — it must still round-trip on its own node"
+    );
+
+    let list_item = ordered_list.child(0).unwrap();
+    assert_eq!(list_item.node_type(), "listItem");
+    assert!(
+        list_item.attrs().get("checked").is_none(),
+        "listItem's schema spec declares no 'checked' attr — it must be dropped, got attrs: {:?}",
+        list_item.attrs()
+    );
+    assert!(
+        list_item.attrs().get("start").is_none(),
+        "listItem's schema spec declares no 'start' attr (only orderedList does) — it must be dropped, got attrs: {:?}",
+        list_item.attrs()
+    );
+}
+
+/// A node spec with `allow_undeclared_attrs: true` (mirrors the real
+/// `mention` node) must keep attrs the schema does not declare — this is the
+/// approved escape hatch, not a regression of the filter above.
+#[test]
+fn set_json_keeps_undeclared_attrs_when_spec_opts_in() {
+    let json = serde_json::json!({
+        "type": "doc",
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [
+                    {
+                        "type": "mention",
+                        "attrs": {
+                            "id": "u1",
+                            "kind": "user",
+                            "label": "@Alice"
+                        }
+                    }
+                ]
+            }
+        ]
+    });
+
+    let d = from_prosemirror_json(&json, &mention_schema(), UnknownTypeMode::Error)
+        .expect("paragraph > mention should parse");
+
+    let mention = d.root().child(0).unwrap().child(0).unwrap();
+    assert_eq!(mention.node_type(), "mention");
+    assert_eq!(
+        mention.attrs().get("id"),
+        Some(&serde_json::Value::String("u1".to_string())),
+        "mention opts into allow_undeclared_attrs — 'id' must survive"
+    );
+    assert_eq!(
+        mention.attrs().get("kind"),
+        Some(&serde_json::Value::String("user".to_string())),
+        "mention opts into allow_undeclared_attrs — 'kind' must survive"
+    );
+    assert_eq!(
+        mention.attrs().get("label"),
+        Some(&serde_json::Value::String("@Alice".to_string())),
+        "'label' is declared on the mention spec and must survive regardless"
+    );
 }
 
 #[test]

@@ -12,6 +12,14 @@ export interface NodeSpec {
     role: string;
     htmlTag?: string;
     isVoid?: boolean;
+    /**
+     * Opt-in escape hatch: when `true`, JSON ingestion (`set_json` /
+     * `insert_content_json`) admits attrs on this node that are not declared
+     * in `attrs`, instead of filtering them out. Default `false`. Intended
+     * for node types with an intentional pass-through-metadata contract
+     * (e.g. the mention node — see `mentionNodeSpec()` in addons.ts).
+     */
+    allowUndeclaredAttrs?: boolean;
 }
 
 export interface MarkSpec {

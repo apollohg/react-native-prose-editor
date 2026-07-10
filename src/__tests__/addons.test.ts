@@ -20,6 +20,12 @@ describe('mentions addon helpers', () => {
             group: 'inline',
             role: 'inline',
             isVoid: true,
+            // The mention node intentionally round-trips arbitrary app-defined
+            // metadata (id/kind/mentionSuggestionChar/mentionTheme/etc. — see
+            // MentionSuggestion.attrs and resolveSelectionAttrs). Rust's
+            // set_json ingestion filters attrs to schema-declared keys unless
+            // this flag opts the node out of that filter.
+            allowUndeclaredAttrs: true,
             attrs: {
                 label: { default: null },
             },
