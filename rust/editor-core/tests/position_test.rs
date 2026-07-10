@@ -1,9 +1,14 @@
 use std::collections::HashMap;
 
+use editor_core::editor::Editor;
+use editor_core::intercept::InterceptorPipeline;
 use editor_core::model::{Document, Fragment, Node};
+use editor_core::position::build::BLOCK_BREAK_SCALARS;
 use editor_core::position::update::UpdateMode;
 use editor_core::position::PositionMap;
+use editor_core::render::{list_marker_string, task_list_marker_string, RenderElement};
 use editor_core::schema::presets::tiptap_schema;
+use editor_core::schema::Schema;
 use editor_core::transform::{Source, Step, StepMap, Transaction};
 
 // ---------------------------------------------------------------------------
@@ -72,6 +77,24 @@ fn horizontal_rule() -> Node {
     Node::void("horizontalRule".to_string(), HashMap::new())
 }
 
+/// A minimal schema declaring `taskList`/`taskItem` (by `NodeRole`, not just
+/// name) for tests that build documents using those node type names. The
+/// standard `tiptap_schema()` preset has no task-list node types, since task
+/// lists are an app-supplied schema extension in this editor.
+fn task_list_schema() -> Schema {
+    Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
+            { "name": "taskList", "content": "taskItem+", "group": "block", "role": "list" },
+            { "name": "taskItem", "content": "paragraph block*", "role": "listItem", "attrs": { "checked": { "default": false } } },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .expect("task list schema should parse")
+}
+
 // ===========================================================================
 // Test 1: Single paragraph — <doc><p>Hello</p></doc>
 // ===========================================================================
@@ -88,7 +111,7 @@ fn horizontal_rule() -> Node {
 #[test]
 fn test_single_paragraph_build() {
     let document = Document::new(doc(vec![paragraph(vec![text("Hello")])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.block_count(), 1, "single paragraph = 1 block");
     assert_eq!(map.total_scalars(), 5, "rendered text 'Hello' = 5 scalars");
@@ -107,7 +130,7 @@ fn test_single_paragraph_build() {
 #[test]
 fn test_single_paragraph_scalar_to_doc() {
     let document = Document::new(doc(vec![paragraph(vec![text("Hello")])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     // scalar 0 -> doc 1 (H)
     assert_eq!(map.scalar_to_doc(0, &document), 1, "scalar 0 -> doc 1 (H)");
@@ -138,7 +161,7 @@ fn test_single_paragraph_scalar_to_doc() {
 #[test]
 fn test_single_paragraph_doc_to_scalar() {
     let document = Document::new(doc(vec![paragraph(vec![text("Hello")])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     // doc 0 (before p, structural) -> snap to block start = scalar 0
     assert_eq!(
@@ -169,7 +192,7 @@ fn test_single_paragraph_doc_to_scalar() {
 #[test]
 fn test_single_paragraph_roundtrip() {
     let document = Document::new(doc(vec![paragraph(vec![text("Hello")])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     // All cursorable positions should round-trip through scalar -> doc -> scalar.
     for scalar in 0..=5u32 {
@@ -201,7 +224,7 @@ fn test_two_paragraphs_build() {
         paragraph(vec![text("Hello")]),
         paragraph(vec![text("World")]),
     ]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.block_count(), 2, "two paragraphs = 2 blocks");
     assert_eq!(
@@ -234,7 +257,7 @@ fn test_two_paragraphs_scalar_to_doc() {
         paragraph(vec![text("Hello")]),
         paragraph(vec![text("World")]),
     ]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     // First block: scalars 0..4 -> doc 1..5
     assert_eq!(map.scalar_to_doc(0, &document), 1, "scalar 0 -> doc 1 (H)");
@@ -271,7 +294,7 @@ fn test_two_paragraphs_doc_to_scalar() {
         paragraph(vec![text("Hello")]),
         paragraph(vec![text("World")]),
     ]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     // doc 0 (before first p) -> snap to start of first block = scalar 0
     assert_eq!(map.doc_to_scalar(0, &document), 0, "doc 0 -> scalar 0");
@@ -302,7 +325,7 @@ fn test_blockquote_followed_by_paragraph_scalar_to_doc() {
         blockquote(vec![paragraph(vec![text("Hello")])]),
         paragraph(vec![text("World")]),
     ]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(
         map.total_scalars(),
@@ -348,7 +371,7 @@ fn test_two_paragraphs_roundtrip() {
         paragraph(vec![text("Hello")]),
         paragraph(vec![text("World")]),
     ]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     // Cursorable scalars: 0..=5 (first block), 6..=11 (second block)
     for scalar in 0..=11u32 {
@@ -394,7 +417,7 @@ fn test_bullet_list_build() {
         list_item(vec![paragraph(vec![text("A")])]),
         list_item(vec![paragraph(vec![text("B")])]),
     ])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.block_count(), 2, "two list items = 2 blocks");
     assert_eq!(
@@ -434,7 +457,7 @@ fn test_bullet_list_scalar_to_doc() {
         list_item(vec![paragraph(vec![text("A")])]),
         list_item(vec![paragraph(vec![text("B")])]),
     ])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(
         map.scalar_to_doc(0, &document),
@@ -476,7 +499,7 @@ fn test_bullet_list_doc_to_scalar() {
         list_item(vec![paragraph(vec![text("A")])]),
         list_item(vec![paragraph(vec![text("B")])]),
     ])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.doc_to_scalar(3, &document), 2, "doc 3 -> scalar 2 (A)");
     assert_eq!(
@@ -498,7 +521,7 @@ fn test_bullet_list_roundtrip() {
         list_item(vec![paragraph(vec![text("A")])]),
         list_item(vec![paragraph(vec![text("B")])]),
     ])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     for scalar in 0..=7u32 {
         let doc_pos = map.scalar_to_doc(scalar, &document);
@@ -518,10 +541,18 @@ fn test_task_list_build_accounts_for_checkbox_prefixes() {
         task_item(true, vec![paragraph(vec![text("A")])]),
         task_item(false, vec![paragraph(vec![text("B")])]),
     ])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &task_list_schema());
 
-    assert_eq!(map.block_count(), 2, "two task items should produce two blocks");
-    assert_eq!(map.total_scalars(), 7, "'☑ A\\n☐ B' should be seven scalars");
+    assert_eq!(
+        map.block_count(),
+        2,
+        "two task items should produce two blocks"
+    );
+    assert_eq!(
+        map.total_scalars(),
+        7,
+        "'☑ A\\n☐ B' should be seven scalars"
+    );
 
     let first = map.block(0).unwrap();
     assert_eq!(first.scalar_prefix_len, 2);
@@ -538,7 +569,7 @@ fn test_task_list_content_positions_account_for_checkbox_prefixes() {
         task_item(true, vec![paragraph(vec![text("A")])]),
         task_item(false, vec![paragraph(vec![text("B")])]),
     ])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &task_list_schema());
 
     let first = map.block(0).unwrap();
     let second = map.block(1).unwrap();
@@ -584,7 +615,7 @@ fn test_void_inline_build() {
         hard_break(),
         text("llo"),
     ])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(
         map.block_count(),
@@ -610,7 +641,7 @@ fn test_void_inline_scalar_to_doc() {
         hard_break(),
         text("llo"),
     ])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.scalar_to_doc(0, &document), 1, "scalar 0 -> doc 1 (H)");
     assert_eq!(map.scalar_to_doc(1, &document), 2, "scalar 1 -> doc 2 (e)");
@@ -644,7 +675,7 @@ fn test_void_inline_doc_to_scalar() {
         hard_break(),
         text("llo"),
     ])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.doc_to_scalar(1, &document), 0, "doc 1 -> scalar 0");
     assert_eq!(map.doc_to_scalar(2, &document), 1, "doc 2 -> scalar 1");
@@ -666,7 +697,7 @@ fn test_void_inline_roundtrip() {
         hard_break(),
         text("llo"),
     ])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     for scalar in 0..=6u32 {
         let doc_pos = map.scalar_to_doc(scalar, &document);
@@ -714,7 +745,7 @@ fn test_horizontal_rule_build() {
         horizontal_rule(),
         paragraph(vec![text("B")]),
     ]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.block_count(), 3, "p + hr + p = 3 blocks");
     assert_eq!(
@@ -752,7 +783,7 @@ fn test_horizontal_rule_scalar_to_doc() {
         horizontal_rule(),
         paragraph(vec![text("B")]),
     ]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.scalar_to_doc(0, &document), 1, "scalar 0 -> doc 1 (A)");
     assert_eq!(
@@ -783,7 +814,7 @@ fn test_horizontal_rule_doc_to_scalar() {
         horizontal_rule(),
         paragraph(vec![text("B")]),
     ]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.doc_to_scalar(1, &document), 0, "doc 1 -> scalar 0");
     assert_eq!(map.doc_to_scalar(2, &document), 1, "doc 2 -> scalar 1");
@@ -809,7 +840,7 @@ fn test_emoji_build() {
     let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
     let content = format!("Hi {}!", family);
     let document = Document::new(doc(vec![paragraph(vec![text(&content)])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.block_count(), 1);
     assert_eq!(
@@ -829,7 +860,7 @@ fn test_emoji_scalar_to_doc_roundtrip() {
     let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
     let content = format!("Hi {}!", family);
     let document = Document::new(doc(vec![paragraph(vec![text(&content)])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     // For text-only blocks, scalar offset = doc intra-block offset.
     // So scalar i -> doc (1 + i), and doc (1 + i) -> scalar i.
@@ -868,7 +899,7 @@ fn test_emoji_scalar_to_doc_roundtrip() {
 #[test]
 fn test_empty_paragraph_build() {
     let document = Document::new(doc(vec![paragraph(vec![])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.block_count(), 1, "empty paragraph = 1 block");
     assert_eq!(
@@ -890,7 +921,7 @@ fn test_empty_paragraph_build() {
 #[test]
 fn test_empty_paragraph_doc_to_scalar() {
     let document = Document::new(doc(vec![paragraph(vec![])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     // doc 0 (before p) snaps to the only cursorable point in the empty block.
     assert_eq!(map.doc_to_scalar(0, &document), 1);
@@ -903,7 +934,7 @@ fn test_empty_paragraph_doc_to_scalar() {
 #[test]
 fn test_empty_paragraph_scalar_to_doc() {
     let document = Document::new(doc(vec![paragraph(vec![])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.scalar_to_doc(0, &document), 1);
     assert_eq!(map.scalar_to_doc(1, &document), 1);
@@ -916,7 +947,7 @@ fn test_empty_paragraph_scalar_to_doc() {
 #[test]
 fn test_normalize_cursor_pos_inside_text() {
     let document = Document::new(doc(vec![paragraph(vec![text("Hello")])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     // Positions inside text content are already cursorable.
     for pos in 1..=6u32 {
@@ -935,7 +966,7 @@ fn test_normalize_cursor_pos_structural_tokens() {
         paragraph(vec![text("Hello")]),
         paragraph(vec![text("World")]),
     ]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     // doc 0: before first paragraph (structural) -> snap to start of first block = 1
     assert_eq!(
@@ -965,7 +996,7 @@ fn test_normalize_cursor_pos_nested_list() {
     let document = Document::new(doc(vec![bullet_list(vec![list_item(vec![paragraph(
         vec![text("X")],
     )])])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     // doc 0: before bulletList -> snap to first block content start
     assert_eq!(
@@ -1091,7 +1122,7 @@ fn test_incremental_update_insert_text_in_first_block() {
     ]);
     let document = Document::new(doc_node);
     let schema = tiptap_schema();
-    let mut map = PositionMap::build(&document);
+    let mut map = PositionMap::build(&document, &tiptap_schema());
 
     // Verify initial state
     assert_eq!(map.block_count(), 2);
@@ -1110,7 +1141,13 @@ fn test_incremental_update_insert_text_in_first_block() {
     let (new_doc, step_map) = tx.apply(&document, &schema).expect("insert should succeed");
 
     // Update the position map
-    map.update(&step_map, &document, &new_doc, UpdateMode::InlineTextOnly);
+    map.update(
+        &step_map,
+        &document,
+        &new_doc,
+        UpdateMode::InlineTextOnly,
+        &tiptap_schema(),
+    );
 
     // Verify: first block should now have 7 scalars ("HXXello")
     assert_eq!(map.block_count(), 2, "block count should remain 2");
@@ -1151,7 +1188,7 @@ fn test_incremental_update_preserves_roundtrip() {
     ]);
     let document = Document::new(doc_node);
     let schema = tiptap_schema();
-    let mut map = PositionMap::build(&document);
+    let mut map = PositionMap::build(&document, &tiptap_schema());
 
     let mut tx = Transaction::new(Source::Input);
     tx.add_step(Step::InsertText {
@@ -1160,7 +1197,13 @@ fn test_incremental_update_preserves_roundtrip() {
         marks: vec![],
     });
     let (new_doc, step_map) = tx.apply(&document, &schema).expect("insert should succeed");
-    map.update(&step_map, &document, &new_doc, UpdateMode::InlineTextOnly);
+    map.update(
+        &step_map,
+        &document,
+        &new_doc,
+        UpdateMode::InlineTextOnly,
+        &tiptap_schema(),
+    );
     map.compact();
 
     // Verify round-trip for all scalar positions in the updated doc.
@@ -1191,7 +1234,7 @@ fn test_compact_folds_deltas() {
     ]);
     let document = Document::new(doc_node);
     let schema = tiptap_schema();
-    let mut map = PositionMap::build(&document);
+    let mut map = PositionMap::build(&document, &tiptap_schema());
 
     // Insert "X" at pos 2 -> "AXB"
     let mut tx = Transaction::new(Source::Input);
@@ -1201,7 +1244,13 @@ fn test_compact_folds_deltas() {
         marks: vec![],
     });
     let (new_doc, step_map) = tx.apply(&document, &schema).unwrap();
-    map.update(&step_map, &document, &new_doc, UpdateMode::InlineTextOnly);
+    map.update(
+        &step_map,
+        &document,
+        &new_doc,
+        UpdateMode::InlineTextOnly,
+        &tiptap_schema(),
+    );
 
     // Before compact, the second block should have stale doc_start but correct
     // effective positions via delta tree.
@@ -1225,7 +1274,7 @@ fn test_compact_folds_deltas() {
 fn test_multiple_text_nodes_single_paragraph() {
     // <doc><p>Hello World</p></doc> but split as two text nodes
     let document = Document::new(doc(vec![paragraph(vec![text("Hello "), text("World")])]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.block_count(), 1);
     assert_eq!(map.total_scalars(), 11, "'Hello World' = 11 scalars");
@@ -1255,7 +1304,7 @@ fn test_three_paragraphs() {
         paragraph(vec![text("B")]),
         paragraph(vec![text("C")]),
     ]));
-    let map = PositionMap::build(&document);
+    let map = PositionMap::build(&document, &tiptap_schema());
 
     assert_eq!(map.block_count(), 3);
     assert_eq!(map.total_scalars(), 5, "'A\\nB\\nC' = 5 scalars");
@@ -1286,7 +1335,7 @@ fn test_update_fallback_to_rebuild() {
     // full rebuild and still produce correct results.
     let doc_node = doc(vec![paragraph(vec![text("Hello")])]);
     let document = Document::new(doc_node);
-    let mut map = PositionMap::build(&document);
+    let mut map = PositionMap::build(&document, &tiptap_schema());
 
     // Simulate a structural change by providing a different document.
     let new_doc_node = doc(vec![
@@ -1297,12 +1346,190 @@ fn test_update_fallback_to_rebuild() {
 
     // Use a StepMap that won't match the single-range optimization.
     let step_map = StepMap::empty();
-    map.update(&step_map, &document, &new_document, UpdateMode::Rebuild);
+    map.update(
+        &step_map,
+        &document,
+        &new_document,
+        UpdateMode::Rebuild,
+        &tiptap_schema(),
+    );
 
     assert_eq!(map.block_count(), 2, "should have rebuilt with 2 blocks");
     assert_eq!(
         map.total_scalars(),
         11,
         "'Hello\\nWorld' = 11 scalars after rebuild"
+    );
+}
+
+// ===========================================================================
+// Renderer / position-map marker desync regression tests
+//
+// The renderer (`render::task_list_marker_metadata`) and the position map
+// must agree on which list items render a task marker and how long that
+// marker is. These tests build a document through `Editor::set_json`, take
+// the render elements the native platform would actually receive, and derive
+// the expected marker-prefixed scalar length purely from that render output
+// (not from a hand re-derivation of the heuristic) — then assert the
+// position map maps that scalar back to the correct document position.
+// ===========================================================================
+
+/// A `checked` attr on an item in a NON-task list must not desync the
+/// position map from the rendered text: whatever marker the renderer emits,
+/// the position map must reserve the same number of scalars.
+#[test]
+fn checked_attr_in_ordered_list_keeps_positionmap_in_sync_with_render() {
+    let mut editor = Editor::new(tiptap_schema(), InterceptorPipeline::new(), false);
+    let elements = editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "orderedList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "attrs": { "checked": true },
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{ "type": "text", "text": "Task A" }]
+                        }]
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{ "type": "text", "text": "Task B" }]
+                        }]
+                    }
+                ]
+            }]
+        }))
+        .expect("set_json should succeed");
+
+    // Walk the render elements (exactly what the native platform consumes)
+    // and sum the scalar length of everything rendered before "Task B"'s
+    // first character: item A's marker, item A's text, the inter-block
+    // break, and item B's marker.
+    let mut scalar_before_task_b: u32 = 0;
+    for element in &elements {
+        match element {
+            RenderElement::BlockStart {
+                node_type,
+                list_context: Some(ctx),
+                ..
+            } if node_type == "listItem" => {
+                let marker_len = if ctx.kind.as_deref() == Some("task") {
+                    task_list_marker_string(ctx.checked.unwrap_or(false))
+                        .chars()
+                        .count() as u32
+                } else {
+                    list_marker_string(ctx.ordered, ctx.index).chars().count() as u32
+                };
+                scalar_before_task_b += marker_len;
+            }
+            RenderElement::TextRun { text, .. } if text == "Task B" => break,
+            RenderElement::TextRun { text, .. } => {
+                scalar_before_task_b += text.chars().count() as u32;
+            }
+            _ => {}
+        }
+    }
+    // One inter-block break scalar between item A's paragraph and item B's
+    // paragraph (they are two separate text blocks).
+    scalar_before_task_b += BLOCK_BREAK_SCALARS;
+
+    let task_b_doc_start = editor
+        .position_map()
+        .block(1)
+        .expect("second paragraph should be block 1")
+        .doc_start;
+
+    // Convert doc -> scalar (not scalar -> doc): `scalar_to_doc` clamps any
+    // offset that lands inside a block's marker-prefix window back to that
+    // block's content start, which would mask a marker-length desync here.
+    // `doc_to_scalar` of the exact content-start doc position does not.
+    assert_eq!(
+        editor.doc_to_scalar(task_b_doc_start),
+        scalar_before_task_b,
+        "position map must reserve exactly the marker length the renderer emitted \
+         for item A (a task marker, because it has a `checked` attr, even though \
+         the list is an orderedList) — doc position of \"Task B\"'s first char \
+         should map back to scalar {}",
+        scalar_before_task_b
+    );
+}
+
+/// A custom schema list named `todoTaskList` (role: "list") must get the
+/// same marker treatment in the position map as in the renderer.
+#[test]
+fn custom_named_task_list_positionmap_matches_render() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
+            { "name": "todoTaskList", "content": "todoTaskItem+", "group": "block", "role": "list" },
+            {
+                "name": "todoTaskItem",
+                "content": "paragraph+",
+                "role": "listItem",
+                "attrs": { "checked": { "default": false } }
+            },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .expect("custom task-list schema should parse");
+
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+    let elements = editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "todoTaskList",
+                "content": [{
+                    "type": "todoTaskItem",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{ "type": "text", "text": "hello" }]
+                    }]
+                }]
+            }]
+        }))
+        .expect("set_json should succeed");
+
+    // The renderer decides "task" purely from the node type name containing
+    // "task" (case-insensitively) — `todoTaskItem` qualifies — so it must
+    // emit a checkbox marker even though this list isn't named `taskList`.
+    let list_context = elements
+        .iter()
+        .find_map(|element| match element {
+            RenderElement::BlockStart {
+                node_type,
+                list_context: Some(ctx),
+                ..
+            } if node_type == "todoTaskItem" => Some(ctx),
+            _ => None,
+        })
+        .expect("todoTaskItem should emit a ListContext");
+    assert_eq!(
+        list_context.kind.as_deref(),
+        Some("task"),
+        "custom-named task item should be classified as a task marker by the renderer"
+    );
+    let marker_len = task_list_marker_string(list_context.checked.unwrap_or(false))
+        .chars()
+        .count() as u32;
+
+    let hello_doc_start = editor
+        .position_map()
+        .block(0)
+        .expect("paragraph should be block 0")
+        .doc_start;
+
+    assert_eq!(
+        editor.scalar_to_doc(marker_len),
+        hello_doc_start,
+        "position map must reserve a task-marker prefix for a custom-named \
+         task list item, matching what the renderer emitted"
     );
 }

@@ -322,7 +322,7 @@ fn collect_cursorable_positions(pmap: &PositionMap) -> Vec<u32> {
 }
 
 fn check_invariants(doc: &Document) {
-    let pmap = PositionMap::build(doc);
+    let pmap = PositionMap::build(doc, &editor_core::schema::presets::tiptap_schema());
 
     // -- Invariant D: total_scalars matches expected flattened text length --
     let expected = expected_total_scalars(doc);

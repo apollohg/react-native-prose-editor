@@ -9,6 +9,7 @@ use crate::model::node::Node;
 use crate::model::resolved_pos::ResolvedPos;
 use crate::model::Document;
 use crate::render;
+use crate::schema::Schema;
 
 use delta_tree::DeltaTree;
 
@@ -62,8 +63,8 @@ pub struct PositionMap {
 
 impl PositionMap {
     /// Build a position map from a document.
-    pub fn build(doc: &Document) -> Self {
-        build::build_position_map(doc)
+    pub fn build(doc: &Document, schema: &Schema) -> Self {
+        build::build_position_map(doc, schema)
     }
 
     /// Create from pre-built block mappings (used by the build module).

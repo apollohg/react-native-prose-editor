@@ -88,7 +88,7 @@ pub struct StandaloneBackend {
 impl StandaloneBackend {
     /// Create a new backend from an initial document.
     pub fn new(doc: Document, schema: &Schema) -> Self {
-        let pos_map = PositionMap::build(&doc);
+        let pos_map = PositionMap::build(&doc, schema);
         let render_blocks = render_blocks(&doc, schema);
         Self {
             doc,
@@ -342,6 +342,7 @@ impl DocumentBackend for StandaloneBackend {
             &self.doc,
             &new_doc,
             Self::classify_position_map_update(&tx.steps),
+            schema,
         );
 
         // 4. Generate render elements and a contiguous top-level patch.
@@ -412,6 +413,7 @@ impl DocumentBackend for StandaloneBackend {
                     &self.doc,
                     &new_doc,
                     Self::classify_position_map_update(&tx.steps),
+                    schema,
                 );
                 let render_patch = contiguous_render_blocks_patch(&self.doc, &new_doc, schema);
                 let render_blocks = render_patch
@@ -448,6 +450,7 @@ impl DocumentBackend for StandaloneBackend {
                     &self.doc,
                     &new_doc,
                     Self::classify_position_map_update(&tx.steps),
+                    schema,
                 );
                 let render_patch = contiguous_render_blocks_patch(&self.doc, &new_doc, schema);
                 let render_blocks = render_patch

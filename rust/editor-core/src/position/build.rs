@@ -3,6 +3,7 @@ use smallvec::SmallVec;
 use crate::model::node::Node;
 use crate::model::Document;
 use crate::render;
+use crate::schema::{NodeRole, Schema};
 
 use super::{BlockMapping, PositionMap};
 
@@ -22,7 +23,12 @@ pub const BLOCK_BREAK_SCALARS: u32 = 1;
 /// The walk identifies every "text block" (a leaf-level element that directly
 /// contains inline content, e.g. `paragraph`) and every block-level void node
 /// (e.g. `horizontalRule`). Each one becomes a `BlockMapping`.
-pub fn build_position_map(doc: &Document) -> PositionMap {
+///
+/// `schema` is required so list/list-item detection matches the renderer,
+/// which walks by `NodeRole::List` / `NodeRole::ListItem` rather than
+/// hardcoded node names — a custom-named list (e.g. an app-defined
+/// `todoTaskList`) must be recognized here exactly as it is by the renderer.
+pub fn build_position_map(doc: &Document, schema: &Schema) -> PositionMap {
     let mut blocks: Vec<BlockMapping> = Vec::new();
     let mut scalar_cursor: u32 = 0;
     let path: SmallVec<[u16; 8]> = SmallVec::new();
@@ -31,6 +37,7 @@ pub fn build_position_map(doc: &Document) -> PositionMap {
     // children looking for text blocks and block-level void nodes.
     walk_node(
         doc.root(),
+        schema,
         &path,
         0, // doc_offset: content starts at position 0 inside the doc
         &mut blocks,
@@ -112,6 +119,7 @@ pub(crate) fn rebuild_existing_block_mapping(
 /// void/text node).
 fn walk_node(
     node: &Node,
+    schema: &Schema,
     path: &SmallVec<[u16; 8]>,
     doc_offset: u32,
     blocks: &mut Vec<BlockMapping>,
@@ -171,14 +179,15 @@ fn walk_node(
         let mut child_prefix_len = pending_prefix_len;
         pending_prefix_len = 0;
 
-        if is_list_node(node) && is_list_item_node(child) {
-            child_prefix_len += list_marker_len(node, child_idx);
+        if is_list_node(schema, node) && is_list_item_node(schema, child) {
+            child_prefix_len += list_marker_len(schema, node, child_idx);
         }
 
         if child.is_element() {
             // Skip the open tag to get to the child's content start
             walk_node(
                 child,
+                schema,
                 &child_path,
                 child_doc_offset + 1, // +1 for open tag
                 blocks,
@@ -190,6 +199,7 @@ fn walk_node(
             // The doc position of the void node is child_doc_offset.
             walk_node(
                 child,
+                schema,
                 &child_path,
                 child_doc_offset,
                 blocks,
@@ -255,32 +265,49 @@ fn compute_inline_scalars(node: &Node) -> u32 {
     count
 }
 
-fn is_list_node(node: &Node) -> bool {
-    matches!(
-        node.node_type(),
-        "bulletList" | "bullet_list" | "orderedList" | "ordered_list" | "taskList" | "task_list"
-    )
+/// Whether `node` is a list container, per its schema role — matches how the
+/// renderer walks lists (`NodeRole::List`), not hardcoded preset names, so a
+/// custom-named list (e.g. an app-defined `todoTaskList`) is recognized here
+/// exactly as it is by the renderer.
+fn is_list_node(schema: &Schema, node: &Node) -> bool {
+    schema
+        .node(node.node_type())
+        .map(|spec| matches!(spec.role, NodeRole::List { .. }))
+        .unwrap_or(false)
 }
 
-fn is_ordered_list_node(node: &Node) -> bool {
-    matches!(node.node_type(), "orderedList" | "ordered_list")
+/// Whether `node` is a list item, per its schema role (`NodeRole::ListItem`).
+fn is_list_item_node(schema: &Schema, node: &Node) -> bool {
+    schema
+        .node(node.node_type())
+        .map(|spec| matches!(spec.role, NodeRole::ListItem))
+        .unwrap_or(false)
 }
 
-fn is_list_item_node(node: &Node) -> bool {
-    matches!(node.node_type(), "listItem" | "list_item" | "taskItem" | "task_item")
+/// Whether `node` is an ordered list, per its schema role.
+fn is_ordered_list_node(schema: &Schema, node: &Node) -> bool {
+    schema
+        .node(node.node_type())
+        .map(|spec| matches!(spec.role, NodeRole::List { ordered: true }))
+        .unwrap_or(false)
 }
 
-fn list_marker_len(list_node: &Node, child_index: usize) -> u32 {
-    if is_task_list_node(list_node) {
-        let checked = list_node
-            .child(child_index)
-            .and_then(|item| item.attrs().get("checked"))
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-        return render::task_list_marker_string(checked).chars().count() as u32;
+/// Number of rendered scalars a list item's marker prefix occupies.
+///
+/// Derives from `render::task_list_marker_metadata` — the same predicate the
+/// renderer uses to decide whether an item gets a checkbox marker — so the
+/// position map can never disagree with what was actually rendered.
+fn list_marker_len(schema: &Schema, list_node: &Node, child_index: usize) -> u32 {
+    if let Some(item) = list_node.child(child_index) {
+        let (kind, checked) = render::task_list_marker_metadata(list_node.node_type(), item);
+        if kind.as_deref() == Some("task") {
+            return render::task_list_marker_string(checked.unwrap_or(false))
+                .chars()
+                .count() as u32;
+        }
     }
 
-    let ordered = is_ordered_list_node(list_node);
+    let ordered = is_ordered_list_node(schema, list_node);
     let start = list_node
         .attrs()
         .get("start")
@@ -292,10 +319,6 @@ fn list_marker_len(list_node: &Node, child_index: usize) -> u32 {
         child_index as u32 + 1
     };
     render::list_marker_string(ordered, index).chars().count() as u32
-}
-
-fn is_task_list_node(node: &Node) -> bool {
-    matches!(node.node_type(), "taskList" | "task_list")
 }
 
 fn inline_visible_scalar_len(node: &Node) -> u32 {

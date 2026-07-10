@@ -243,7 +243,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn check_invariants(doc: &Document, label: &str) {
-        let pmap = PositionMap::build(doc);
+        let pmap = PositionMap::build(doc, &crate::schema::presets::tiptap_schema());
 
         // -- Invariant D --
         let expected = expected_total_scalars(&pmap);

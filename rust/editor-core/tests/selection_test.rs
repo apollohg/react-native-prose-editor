@@ -271,7 +271,7 @@ fn test_normalize_cursor_on_structural_position() {
     // Position 0 is before the paragraph open tag — structural, not cursorable.
     // It should snap to 1 (start of paragraph content).
     let document = Document::new(doc(vec![paragraph(vec![text("Hello")])]));
-    let pos_map = PositionMap::build(&document);
+    let pos_map = PositionMap::build(&document, &tiptap_schema());
 
     let sel = Selection::cursor(0).normalized(&document, &pos_map);
     match &sel {
@@ -305,7 +305,7 @@ fn test_normalize_text_selection_on_structural_positions() {
         paragraph(vec![text("Hello")]),
         paragraph(vec![text("World")]),
     ]));
-    let pos_map = PositionMap::build(&document);
+    let pos_map = PositionMap::build(&document, &tiptap_schema());
 
     let sel = Selection::text(0, 7).normalized(&document, &pos_map);
     match &sel {
@@ -331,7 +331,7 @@ fn test_normalize_text_selection_on_structural_positions() {
 fn test_normalize_already_cursorable_position_unchanged() {
     // Position 3 is inside the first paragraph content — already cursorable.
     let document = Document::new(doc(vec![paragraph(vec![text("Hello")])]));
-    let pos_map = PositionMap::build(&document);
+    let pos_map = PositionMap::build(&document, &tiptap_schema());
 
     let sel = Selection::cursor(3).normalized(&document, &pos_map);
     match &sel {
@@ -352,7 +352,7 @@ fn test_normalize_already_cursorable_position_unchanged() {
 #[test]
 fn test_normalize_all_selection_stays_all() {
     let document = Document::new(doc(vec![paragraph(vec![text("Hello")])]));
-    let pos_map = PositionMap::build(&document);
+    let pos_map = PositionMap::build(&document, &tiptap_schema());
 
     let sel = Selection::all().normalized(&document, &pos_map);
     assert_eq!(
@@ -367,7 +367,7 @@ fn test_normalize_position_past_end_snaps_to_last_content() {
     // <doc><p>Hi</p></doc> — content_size = 4
     // Position 99 is way past the end; should snap to the end of the last block.
     let document = Document::new(doc(vec![paragraph(vec![text("Hi")])]));
-    let pos_map = PositionMap::build(&document);
+    let pos_map = PositionMap::build(&document, &tiptap_schema());
 
     let sel = Selection::cursor(99).normalized(&document, &pos_map);
     match &sel {

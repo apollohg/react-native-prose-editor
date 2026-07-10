@@ -4,6 +4,7 @@ use crate::model::Document;
 use crate::render::empty_text_block_placeholder_string;
 use crate::render::inline_atom_label;
 use crate::render::inline_atom_mention_theme;
+use crate::render::task_list_marker_metadata;
 use crate::render::ListContext;
 use crate::render::RenderElement;
 use crate::render::RenderMark;
@@ -27,28 +28,6 @@ pub struct RenderBlocksPatch {
     pub start_index: usize,
     pub delete_count: usize,
     pub blocks: Vec<Vec<RenderElement>>,
-}
-
-fn task_list_marker_metadata(
-    list_node_type: &str,
-    item: &crate::model::Node,
-) -> (Option<String>, Option<bool>) {
-    let is_task = list_node_type.to_ascii_lowercase().contains("task")
-        || item.node_type().to_ascii_lowercase().contains("task")
-        || item.attrs().contains_key("checked");
-    if !is_task {
-        return (None, None);
-    }
-
-    (
-        Some("task".to_string()),
-        Some(
-            item.attrs()
-                .get("checked")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false),
-        ),
-    )
 }
 
 /// Re-generate render elements for only the affected top-level blocks.

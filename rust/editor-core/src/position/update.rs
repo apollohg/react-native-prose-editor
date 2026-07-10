@@ -1,4 +1,5 @@
 use crate::model::Document;
+use crate::schema::Schema;
 use crate::transform::StepMap;
 
 use super::build::{build_position_map, rebuild_existing_block_mapping};
@@ -21,12 +22,16 @@ impl PositionMap {
     ///
     /// `step_map` is the composed mapping from the transaction.
     /// `new_doc` is the document *after* the transaction has been applied.
+    /// `schema` is only consulted on the full-rebuild fallback path (list
+    /// detection needs it); the incremental path reuses the existing block's
+    /// `scalar_prefix_len` unchanged.
     pub fn update(
         &mut self,
         step_map: &StepMap,
         old_doc: &Document,
         new_doc: &Document,
         mode: UpdateMode,
+        schema: &Schema,
     ) {
         if mode == UpdateMode::MarksOnly {
             return;
@@ -42,7 +47,7 @@ impl PositionMap {
         }
 
         // Fallback: full rebuild
-        *self = build_position_map(new_doc);
+        *self = build_position_map(new_doc, schema);
     }
 
     /// Attempt an incremental update for a single (pos, deleted, inserted) change.
