@@ -229,9 +229,6 @@ class CodeBlockSpan(
     private val paddingHorizontalPx: Int,
     private val paddingVerticalPx: Int
 ) : LeadingMarginSpan, LineBackgroundSpan {
-    var spanStart: Int = 0
-    var spanEnd: Int = 0
-
     override fun getLeadingMargin(first: Boolean): Int = paddingHorizontalPx
 
     override fun drawLeadingMargin(
@@ -262,7 +259,10 @@ class CodeBlockSpan(
         end: Int,
         lineNumber: Int
     ) {
-        if (start >= spanEnd || end <= spanStart) return
+        val spanned = text as? Spanned ?: return
+        val spanStart = spanned.getSpanStart(this)
+        val spanEnd = spanned.getSpanEnd(this)
+        if (spanStart < 0 || start >= spanEnd || end <= spanStart) return
 
         val isFirstLine = start <= spanStart
         val isLastLine = end >= spanEnd
@@ -1819,15 +1819,12 @@ object RenderBridge {
                 cornerRadiusPx = cornerRadiusPx,
                 paddingHorizontalPx = paddingHorizontalPx,
                 paddingVerticalPx = paddingVerticalPx
-            ).also {
-                it.spanStart = pending.start
-                it.spanEnd = spanEnd
-            }
+            )
             builder.setSpan(
                 span,
                 pending.start,
                 spanEnd,
-                Spanned.SPAN_PARAGRAPH
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
         }
     }

@@ -2023,5 +2023,52 @@ class RenderBridgeTest {
         )
     }
 
+    @Test
+    fun `render - code block followed by paragraph does not crash and carries CodeBlockSpan`() {
+        val json = """
+        [
+            {"type": "blockStart", "nodeType": "codeBlock", "depth": 0},
+            {"type": "textRun", "text": "let x = 1", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 0},
+            {"type": "textRun", "text": "after", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val result = RenderBridge.buildSpannable(json, baseFontSize, textColor)
+
+        assertEquals("let x = 1\nafter", result.toString())
+        val spans = result.getSpans(0, result.length, CodeBlockSpan::class.java)
+        assertEquals("Exactly one CodeBlockSpan expected", 1, spans.size)
+        assertEquals(0, result.getSpanStart(spans[0]))
+        assertEquals("let x = 1".length, result.getSpanEnd(spans[0]))
+    }
+
+    @Test
+    fun `code block span survives splice into a larger editable at the right offsets`() {
+        // Build a fragment containing only the codeBlock (as the incremental
+        // path does via buildSpannableFromBlocks), splice it into a builder
+        // that already has "intro\n" via replace(), and assert
+        // getSpanStart/getSpanEnd reflect the spliced position — this is what
+        // drawBackground must consume.
+        val fragment = RenderBridge.buildSpannable(
+            """
+            [
+                {"type": "blockStart", "nodeType": "codeBlock", "depth": 0},
+                {"type": "textRun", "text": "code", "marks": []},
+                {"type": "blockEnd"}
+            ]
+            """.trimIndent(),
+            baseFontSize, textColor
+        )
+        val host = android.text.SpannableStringBuilder("intro\n")
+        host.replace(host.length, host.length, fragment)
+
+        val spans = host.getSpans(0, host.length, CodeBlockSpan::class.java)
+        assertEquals(1, spans.size)
+        assertEquals("intro\n".length, host.getSpanStart(spans[0]))
+        assertEquals(host.length, host.getSpanEnd(spans[0]))
+    }
 
 }
