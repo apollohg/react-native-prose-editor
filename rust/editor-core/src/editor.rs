@@ -388,6 +388,9 @@ impl Editor {
     /// Split a block at the given position (e.g. pressing Enter).
     pub fn split_block(&mut self, pos: u32) -> Result<EditorUpdate, EditorError> {
         if self.is_code_block_at_pos(pos) {
+            if let Some(exit) = self.try_exit_code_block(pos) {
+                return exit;
+            }
             return self.insert_text(pos, "\n");
         }
 
@@ -1165,9 +1168,6 @@ impl Editor {
     /// Split a block at a scalar offset.
     pub fn split_block_scalar(&mut self, scalar_pos: u32) -> Result<EditorUpdate, EditorError> {
         let doc_pos = self.scalar_to_doc(scalar_pos);
-        if self.is_code_block_at_pos(doc_pos) {
-            return self.insert_text(doc_pos, "\n");
-        }
         self.split_block(doc_pos)
     }
 
@@ -1184,7 +1184,7 @@ impl Editor {
         let doc_to = self.scalar_to_doc(scalar_to);
 
         if doc_from == doc_to && self.is_code_block_at_pos(doc_from) {
-            return self.insert_text(doc_from, "\n");
+            return self.split_block(doc_from);
         }
 
         // Apply the delete as a separate transaction first.
@@ -1865,6 +1865,47 @@ impl Editor {
             Err(_) => return false,
         };
         resolved.parent(doc).node_type() == "codeBlock"
+    }
+
+    /// If `pos` sits at the very end of a code block whose text ends with a
+    /// newline (i.e. the caret is on an empty last line), exit the block:
+    /// delete that trailing newline and split into a paragraph after the
+    /// code block. Returns `None` when the exit does not apply (caller
+    /// should fall back to inserting a literal newline).
+    ///
+    /// Callers must already know `pos` resolves inside a code block (see
+    /// `is_code_block_at_pos`) — this is the only place that decision is
+    /// re-checked, via `parent.node_type()` below, so a caller passing an
+    /// unrelated position simply gets `None`.
+    fn try_exit_code_block(&mut self, pos: u32) -> Option<Result<EditorUpdate, EditorError>> {
+        {
+            let doc = self.backend.document();
+            let resolved = doc.resolve(pos).ok()?;
+            let parent = resolved.parent(doc);
+            if parent.node_type() != "codeBlock" {
+                return None;
+            }
+            // Caret must be at the end of the block's content.
+            if resolved.parent_offset != parent.content_size() {
+                return None;
+            }
+            // The block's text must end with a newline (empty last line).
+            if pos == 0 || !parent.text_content().ends_with('\n') {
+                return None;
+            }
+        }
+
+        let mut tx = Transaction::new(Source::Input);
+        tx.add_step(Step::DeleteRange {
+            from: pos - 1,
+            to: pos,
+        });
+        tx.add_step(Step::SplitBlock {
+            pos: pos - 1,
+            node_type: "paragraph".to_string(),
+            attrs: HashMap::new(),
+        });
+        Some(self.apply_transaction(tx))
     }
 
     fn is_horizontal_rule_node(node_type: &str) -> bool {

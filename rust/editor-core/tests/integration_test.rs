@@ -2851,3 +2851,160 @@ fn test_split_block_scalar_inside_code_block_inserts_newline() {
 
     assert_eq!(editor.get_html(), "<pre>a\nb</pre>");
 }
+
+/// Enter on an empty last line of a code block exits the block: the trailing
+/// newline is removed and a paragraph is created after the code block, with
+/// the cursor landing inside that new paragraph.
+#[test]
+fn enter_on_empty_last_line_exits_code_block() {
+    let mut editor = task_code_editor();
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "codeBlock",
+                "content": [{ "type": "text", "text": "line1\n" }]
+            }]
+        }))
+        .expect("set_json should succeed");
+
+    // Position 7 is the end of the codeBlock's content: 1 (open tag) + 6
+    // (chars of "line1\n").
+    editor.set_selection(Selection::cursor(7));
+    editor
+        .split_block(7)
+        .expect("enter on an empty last line should exit the code block");
+
+    assert_eq!(
+        editor.get_json(),
+        serde_json::json!({
+            "type": "doc",
+            "content": [
+                {
+                    "type": "codeBlock",
+                    "content": [{ "type": "text", "text": "line1" }]
+                },
+                { "type": "paragraph" }
+            ]
+        }),
+        "exiting the code block should drop the trailing newline and add a paragraph after it"
+    );
+
+    assert_eq!(
+        editor.selection(),
+        &Selection::cursor(8),
+        "cursor should land inside the newly created paragraph"
+    );
+}
+
+/// Enter mid-block, and Enter at the end of a non-empty last line, must both
+/// keep inserting a literal newline rather than exiting the code block.
+#[test]
+fn enter_inside_code_block_still_inserts_newline() {
+    // Mid-block: cursor after 'a' in "ab".
+    let mut mid_editor = task_code_editor();
+    mid_editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "codeBlock",
+                "content": [{ "type": "text", "text": "ab" }]
+            }]
+        }))
+        .expect("set_json should succeed");
+    mid_editor
+        .split_block(2)
+        .expect("mid-block enter should insert a newline");
+    assert_eq!(mid_editor.get_html(), "<pre>a\nb</pre>");
+
+    // End of a non-empty last line: cursor at the end of "ab" (no trailing
+    // newline in the source text), so this must NOT exit the block.
+    let mut end_editor = task_code_editor();
+    end_editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "codeBlock",
+                "content": [{ "type": "text", "text": "ab" }]
+            }]
+        }))
+        .expect("set_json should succeed");
+    end_editor
+        .split_block(3)
+        .expect("enter at the end of a non-empty last line should insert a newline");
+    assert_eq!(end_editor.get_html(), "<pre>ab\n</pre>");
+}
+
+/// The scalar entry point (used by both platforms) exits the code block too.
+#[test]
+fn split_block_scalar_exits_code_block_on_empty_last_line() {
+    let mut editor = task_code_editor();
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "codeBlock",
+                "content": [{ "type": "text", "text": "line1\n" }]
+            }]
+        }))
+        .expect("set_json should succeed");
+
+    let scalar_pos = editor.doc_to_scalar(7);
+    editor.set_selection(Selection::cursor(7));
+    editor
+        .split_block_scalar(scalar_pos)
+        .expect("split_block_scalar on an empty last code-block line should exit the block");
+
+    assert_eq!(
+        editor.get_json(),
+        serde_json::json!({
+            "type": "doc",
+            "content": [
+                {
+                    "type": "codeBlock",
+                    "content": [{ "type": "text", "text": "line1" }]
+                },
+                { "type": "paragraph" }
+            ]
+        }),
+        "split_block_scalar should exit the code block the same way split_block does"
+    );
+}
+
+/// A single undo after exiting the code block must atomically restore the
+/// pre-Enter document and selection — the delete-and-split transaction is one
+/// history entry, not two.
+#[test]
+fn undo_after_code_block_exit_restores_pre_enter_state() {
+    let mut editor = task_code_editor();
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "codeBlock",
+                "content": [{ "type": "text", "text": "line1\n" }]
+            }]
+        }))
+        .expect("set_json should succeed");
+
+    editor.set_selection(Selection::cursor(7));
+    editor
+        .split_block(7)
+        .expect("enter on an empty last line should exit the code block");
+    assert_eq!(editor.get_html(), "<pre>line1</pre><p></p>");
+
+    editor
+        .undo()
+        .expect("undo should restore the pre-exit code block");
+
+    assert_eq!(
+        editor.get_html(),
+        "<pre>line1\n</pre>",
+        "a single undo should atomically restore the trailing newline and remove the paragraph"
+    );
+    assert_eq!(
+        editor.selection(),
+        &Selection::cursor(7),
+        "undo should restore the pre-Enter cursor position"
+    );
+}
