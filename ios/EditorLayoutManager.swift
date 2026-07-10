@@ -55,9 +55,14 @@ final class EditorLayoutManager: NSLayoutManager {
     }
 
     override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
-        super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
-
         guard let textStorage, glyphsToShow.length > 0 else { return }
+
+        drawCodeBlockBackgrounds(
+            in: textStorage,
+            glyphsToShow: glyphsToShow,
+            origin: origin
+        )
+        super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
 
         let characterRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
         let nsString = textStorage.string as NSString
@@ -124,6 +129,113 @@ final class EditorLayoutManager: NSLayoutManager {
         }
     }
 
+    func taskListMarkerParagraphStart(
+        at point: CGPoint,
+        in textStorage: NSTextStorage,
+        textContainerOrigin: CGPoint
+    ) -> Int? {
+        guard numberOfGlyphs > 0 else { return nil }
+
+        let nsString = textStorage.string as NSString
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        var seenStarts = Set<Int>()
+        var matchedParagraphStart: Int?
+
+        textStorage.enumerateAttribute(
+            RenderBridgeAttributes.listMarkerContext,
+            in: fullRange,
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, range, stop in
+            guard range.length > 0,
+                  let listContext = value as? [String: Any],
+                  (listContext["kind"] as? String) == "task"
+            else {
+                return
+            }
+
+            let paragraphRange = nsString.paragraphRange(for: NSRange(location: range.location, length: 0))
+            let paragraphStart = paragraphRange.location
+            guard !Self.isParagraphStartCreatedByHardBreak(paragraphStart, in: textStorage) else {
+                return
+            }
+            guard seenStarts.insert(paragraphStart).inserted else { return }
+            guard paragraphStart < textStorage.length else { return }
+
+            let glyphIndex = self.glyphIndexForCharacter(at: paragraphStart)
+            guard glyphIndex < self.numberOfGlyphs else { return }
+
+            let attrs = textStorage.attributes(at: paragraphStart, effectiveRange: nil)
+            let baseFont = Self.markerBaseFont(from: attrs)
+            let markerWidth = (attrs[RenderBridgeAttributes.listMarkerWidth] as? NSNumber)
+                .map { CGFloat(truncating: $0) }
+                ?? LayoutConstants.listMarkerWidth
+
+            var lineGlyphRange = NSRange()
+            let usedRect = self.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphRange)
+            let lineFragmentRect = self.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            let glyphLocation = self.location(forGlyphAt: glyphIndex)
+            let baselineY = lineFragmentRect.minY + glyphLocation.y
+            let markerRect = Self.taskMarkerDrawingRect(
+                usedRect: usedRect,
+                lineFragmentRect: lineFragmentRect,
+                markerWidth: markerWidth,
+                baselineY: baselineY,
+                baseFont: baseFont,
+                origin: textContainerOrigin
+            ).insetBy(dx: -10, dy: -8)
+
+            if markerRect.contains(point) {
+                matchedParagraphStart = paragraphStart
+                stop.pointee = true
+            }
+        }
+
+        return matchedParagraphStart
+    }
+
+    private func drawCodeBlockBackgrounds(
+        in textStorage: NSTextStorage,
+        glyphsToShow: NSRange,
+        origin: CGPoint
+    ) {
+        let characterRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        let nsString = textStorage.string as NSString
+        var drawnParagraphStarts = Set<Int>()
+
+        textStorage.enumerateAttribute(
+            RenderBridgeAttributes.codeBlockBackgroundColor,
+            in: characterRange,
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, range, _ in
+            guard range.length > 0, let color = value as? UIColor else { return }
+
+            let paragraphRange = nsString.paragraphRange(for: NSRange(location: range.location, length: 0))
+            let paragraphStart = paragraphRange.location
+            guard drawnParagraphStarts.insert(paragraphStart).inserted else { return }
+
+            let codeBlockRange = Self.codeBlockCharacterRange(
+                containing: paragraphStart,
+                in: textStorage,
+                nsString: nsString
+            )
+            guard let rect = self.codeBlockRect(
+                characterRange: codeBlockRange,
+                textStorage: textStorage,
+                origin: origin
+            ) else {
+                return
+            }
+
+            let attrs = textStorage.attributes(at: paragraphStart, effectiveRange: nil)
+            let radius = (attrs[RenderBridgeAttributes.codeBlockBorderRadius] as? NSNumber)
+                .map { CGFloat(truncating: $0) }
+                ?? 8
+
+            color.setFill()
+            UIBezierPath(roundedRect: rect, cornerRadius: radius).fill()
+        }
+    }
+
     private func drawListMarker(
         listContext: [String: Any],
         paragraphStart: Int,
@@ -151,9 +263,27 @@ final class EditorLayoutManager: NSLayoutManager {
             .map { CGFloat(truncating: $0) }
             ?? LayoutConstants.listMarkerWidth
         let ordered = (listContext["ordered"] as? NSNumber)?.boolValue ?? false
+        let isTask = (listContext["kind"] as? String) == "task"
 
         let glyphLocation = location(forGlyphAt: glyphIndex)
         let baselineY = lineFragmentRect.minY + glyphLocation.y
+
+        if isTask {
+            let checkboxRect = Self.taskMarkerDrawingRect(
+                usedRect: usedRect,
+                lineFragmentRect: lineFragmentRect,
+                markerWidth: markerWidth,
+                baselineY: baselineY,
+                baseFont: baseFont,
+                origin: origin
+            )
+            drawTaskCheckbox(
+                in: checkboxRect,
+                checked: (listContext["checked"] as? NSNumber)?.boolValue ?? false,
+                color: textColor
+            )
+            return
+        }
 
         if ordered {
             let markerFont = markerFont(
@@ -343,6 +473,105 @@ final class EditorLayoutManager: NSLayoutManager {
         return trimmed.isEmpty && sawAnyQuotedCharacter
     }
 
+    private static func codeBlockCharacterRange(
+        containing paragraphStart: Int,
+        in textStorage: NSTextStorage,
+        nsString: NSString
+    ) -> NSRange {
+        let initialParagraphRange = nsString.paragraphRange(
+            for: NSRange(location: paragraphStart, length: 0)
+        )
+        var groupStart = initialParagraphRange.location
+        var groupEnd = NSMaxRange(initialParagraphRange)
+
+        var probeStart = groupStart
+        while probeStart > 0 {
+            let previousParagraphRange = nsString.paragraphRange(
+                for: NSRange(location: probeStart - 1, length: 0)
+            )
+            guard paragraphHasCodeBlockBackground(previousParagraphRange, in: textStorage) else {
+                break
+            }
+            groupStart = previousParagraphRange.location
+            probeStart = previousParagraphRange.location
+        }
+
+        var nextParagraphLocation = groupEnd
+        while nextParagraphLocation < textStorage.length {
+            let nextParagraphRange = nsString.paragraphRange(
+                for: NSRange(location: nextParagraphLocation, length: 0)
+            )
+            guard paragraphHasCodeBlockBackground(nextParagraphRange, in: textStorage) else {
+                break
+            }
+            groupEnd = NSMaxRange(nextParagraphRange)
+            nextParagraphLocation = groupEnd
+        }
+
+        return NSRange(location: groupStart, length: groupEnd - groupStart)
+    }
+
+    private static func paragraphHasCodeBlockBackground(
+        _ paragraphRange: NSRange,
+        in textStorage: NSTextStorage
+    ) -> Bool {
+        guard paragraphRange.length > 0 else { return false }
+        return textStorage.attribute(
+            RenderBridgeAttributes.codeBlockBackgroundColor,
+            at: paragraphRange.location,
+            effectiveRange: nil
+        ) != nil
+    }
+
+    private func codeBlockRect(
+        characterRange: NSRange,
+        textStorage: NSTextStorage,
+        origin: CGPoint
+    ) -> CGRect? {
+        guard characterRange.location < textStorage.length, !textContainers.isEmpty else {
+            return nil
+        }
+
+        ensureLayout(forCharacterRange: characterRange)
+        let glyphRange = self.glyphRange(forCharacterRange: characterRange, actualCharacterRange: nil)
+        guard glyphRange.length > 0 else { return nil }
+
+        let attrs = textStorage.attributes(at: characterRange.location, effectiveRange: nil)
+        let horizontalPadding = (attrs[RenderBridgeAttributes.codeBlockPaddingHorizontal] as? NSNumber)
+            .map { CGFloat(truncating: $0) }
+            ?? 12
+        let verticalPadding = (attrs[RenderBridgeAttributes.codeBlockPaddingVertical] as? NSNumber)
+            .map { CGFloat(truncating: $0) }
+            ?? 8
+
+        var minX: CGFloat?
+        var maxX: CGFloat?
+        var minY: CGFloat?
+        var maxY: CGFloat?
+
+        enumerateLineFragments(forGlyphRange: glyphRange) { lineFragmentRect, usedRect, _, _, _ in
+            let referenceRect = usedRect.height > 0 ? usedRect : lineFragmentRect
+            let lineMinX = referenceRect.minX - horizontalPadding
+            let lineMaxX = lineFragmentRect.maxX + horizontalPadding
+            let lineMinY = lineFragmentRect.minY
+            let lineMaxY = referenceRect.maxY
+
+            minX = min(minX ?? lineMinX, lineMinX)
+            maxX = max(maxX ?? lineMaxX, lineMaxX)
+            minY = min(minY ?? lineMinY, lineMinY)
+            maxY = max(maxY ?? lineMaxY, lineMaxY)
+        }
+
+        guard let minX, let maxX, let minY, let maxY, maxY > minY else { return nil }
+
+        return CGRect(
+            x: origin.x + minX,
+            y: origin.y + minY - verticalPadding,
+            width: maxX - minX,
+            height: (maxY - minY) + (verticalPadding * 2)
+        )
+    }
+
     static func markerParagraphStyle(from attrs: [NSAttributedString.Key: Any]) -> NSMutableParagraphStyle {
         let markerStyle = NSMutableParagraphStyle()
         let sourceStyle = attrs[.paragraphStyle] as? NSParagraphStyle
@@ -378,6 +607,25 @@ final class EditorLayoutManager: NSLayoutManager {
             width: markerWidth - 4.0,
             height: markerFont.lineHeight
         )
+    }
+
+    static func taskMarkerDrawingRect(
+        usedRect: CGRect,
+        lineFragmentRect: CGRect,
+        markerWidth: CGFloat,
+        baselineY: CGFloat,
+        baseFont: UIFont,
+        origin: CGPoint
+    ) -> CGRect {
+        let referenceRect = usedRect.height > 0 ? usedRect : lineFragmentRect
+        let checkboxSize = min(
+            max(baseFont.lineHeight * 1.05, 24),
+            max(markerWidth - 4, 24)
+        )
+        let centerY = baselineY - ((baseFont.ascender + baseFont.descender) / 2.0)
+        let x = origin.x + referenceRect.minX - LayoutConstants.listMarkerTextGap - checkboxSize
+        let y = origin.y + centerY - (checkboxSize / 2.0)
+        return CGRect(x: x, y: y, width: checkboxSize, height: checkboxSize)
     }
 
     static func orderedMarkerDrawingOrigin(
@@ -459,10 +707,37 @@ final class EditorLayoutManager: NSLayoutManager {
         markerScale: CGFloat
     ) -> UIFont {
         let ordered = (listContext["ordered"] as? NSNumber)?.boolValue ?? false
+        let isTask = (listContext["kind"] as? String) == "task"
         if ordered {
             return baseFont
         }
+        if isTask {
+            return baseFont.withSize(baseFont.pointSize * 1.35)
+        }
         return baseFont.withSize(baseFont.pointSize * markerScale)
+    }
+
+    private func drawTaskCheckbox(
+        in rect: CGRect,
+        checked: Bool,
+        color: UIColor
+    ) {
+        let path = UIBezierPath(roundedRect: rect, cornerRadius: min(rect.width, rect.height) * 0.22)
+        color.setStroke()
+        path.lineWidth = max(1.8, rect.width * 0.09)
+        path.stroke()
+
+        guard checked else { return }
+
+        let checkPath = UIBezierPath()
+        checkPath.move(to: CGPoint(x: rect.minX + rect.width * 0.22, y: rect.midY + rect.height * 0.04))
+        checkPath.addLine(to: CGPoint(x: rect.minX + rect.width * 0.42, y: rect.maxY - rect.height * 0.24))
+        checkPath.addLine(to: CGPoint(x: rect.maxX - rect.width * 0.18, y: rect.minY + rect.height * 0.24))
+        checkPath.lineCapStyle = .round
+        checkPath.lineJoinStyle = .round
+        checkPath.lineWidth = max(2.1, rect.width * 0.12)
+        color.setStroke()
+        checkPath.stroke()
     }
 
     static func markerBaseFont(

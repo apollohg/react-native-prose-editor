@@ -42,6 +42,20 @@ fn list_item(children: Vec<Node>) -> Node {
     )
 }
 
+fn task_list(children: Vec<Node>) -> Node {
+    Node::element(
+        "taskList".to_string(),
+        HashMap::new(),
+        Fragment::from(children),
+    )
+}
+
+fn task_item(checked: bool, children: Vec<Node>) -> Node {
+    let mut attrs = HashMap::new();
+    attrs.insert("checked".to_string(), serde_json::Value::Bool(checked));
+    Node::element("taskItem".to_string(), attrs, Fragment::from(children))
+}
+
 fn blockquote(children: Vec<Node>) -> Node {
     Node::element(
         "blockquote".to_string(),
@@ -496,6 +510,48 @@ fn test_bullet_list_roundtrip() {
             scalar, doc_pos, canonical_scalar, back
         );
     }
+}
+
+#[test]
+fn test_task_list_build_accounts_for_checkbox_prefixes() {
+    let document = Document::new(doc(vec![task_list(vec![
+        task_item(true, vec![paragraph(vec![text("A")])]),
+        task_item(false, vec![paragraph(vec![text("B")])]),
+    ])]));
+    let map = PositionMap::build(&document);
+
+    assert_eq!(map.block_count(), 2, "two task items should produce two blocks");
+    assert_eq!(map.total_scalars(), 7, "'☑ A\\n☐ B' should be seven scalars");
+
+    let first = map.block(0).unwrap();
+    assert_eq!(first.scalar_prefix_len, 2);
+    assert_eq!(first.scalar_start, 0);
+
+    let second = map.block(1).unwrap();
+    assert_eq!(second.scalar_prefix_len, 2);
+    assert_eq!(second.scalar_start, 4);
+}
+
+#[test]
+fn test_task_list_content_positions_account_for_checkbox_prefixes() {
+    let document = Document::new(doc(vec![task_list(vec![
+        task_item(true, vec![paragraph(vec![text("A")])]),
+        task_item(false, vec![paragraph(vec![text("B")])]),
+    ])]));
+    let map = PositionMap::build(&document);
+
+    let first = map.block(0).unwrap();
+    let second = map.block(1).unwrap();
+
+    assert_eq!(map.doc_to_scalar(first.doc_start, &document), 2);
+    assert_eq!(map.scalar_to_doc(2, &document), first.doc_start);
+    assert_eq!(map.doc_to_scalar(first.doc_end, &document), 3);
+    assert_eq!(map.scalar_to_doc(3, &document), first.doc_end);
+
+    assert_eq!(map.doc_to_scalar(second.doc_start, &document), 6);
+    assert_eq!(map.scalar_to_doc(6, &document), second.doc_start);
+    assert_eq!(map.doc_to_scalar(second.doc_end, &document), 7);
+    assert_eq!(map.scalar_to_doc(7, &document), second.doc_end);
 }
 
 // ===========================================================================

@@ -148,6 +148,8 @@ export interface ListContext {
     start: number;
     isFirst: boolean;
     isLast: boolean;
+    kind?: string | null;
+    checked?: boolean | null;
 }
 
 export interface RenderMarkWithAttrs {

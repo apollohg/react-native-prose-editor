@@ -681,6 +681,22 @@ pub fn editor_outdent_list_item_at_selection_scalar(
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
 
+/// Toggle the checked state of the task item at an explicit scalar selection.
+#[uniffi::export]
+pub fn editor_toggle_task_item_checked_at_selection_scalar(
+    id: u64,
+    scalar_anchor: u32,
+    scalar_head: u32,
+) -> String {
+    with_editor(id, |editor| {
+        match editor.toggle_task_item_checked_at_selection_scalar(scalar_anchor, scalar_head) {
+            Ok(update) => serialize_editor_update(&update),
+            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        }
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
 /// Insert a void node at the current selection. Returns an update JSON string.
 #[uniffi::export]
 pub fn editor_insert_node(id: u64, node_type: String) -> String {
@@ -973,6 +989,12 @@ fn serialize_render_elements(elements: &[render::RenderElement]) -> serde_json::
                         "isFirst": ctx.is_first,
                         "isLast": ctx.is_last,
                     });
+                    if let Some(kind) = &ctx.kind {
+                        obj["listContext"]["kind"] = serde_json::Value::String(kind.clone());
+                    }
+                    if let Some(checked) = ctx.checked {
+                        obj["listContext"]["checked"] = serde_json::Value::Bool(checked);
+                    }
                 }
                 obj
             }

@@ -286,6 +286,42 @@ describe('EditorToolbar', () => {
             );
         });
 
+        it('allows expanded grouped children to override the parent placement', () => {
+            const { getByLabelText, UNSAFE_getAllByType } = renderToolbar({
+                toolbarItems: [
+                    {
+                        type: 'group',
+                        key: 'headings',
+                        label: 'Headings',
+                        icon: { type: 'glyph', text: 'H' },
+                        items: [
+                            {
+                                type: 'heading',
+                                level: 2,
+                                label: 'Pinned Heading',
+                                icon: { type: 'default', id: 'h2' },
+                                placement: 'end',
+                            },
+                        ],
+                    },
+                ],
+                activeState: {
+                    commands: { toggleHeading2: true },
+                },
+            });
+
+            fireEvent.press(getByLabelText('Headings'));
+
+            const scrollButtonLabels = UNSAFE_getAllByType(ScrollView).flatMap((scrollView) =>
+                scrollView
+                    .findAllByProps({ accessibilityRole: 'button' })
+                    .map((button) => button.props.accessibilityLabel)
+            );
+            expect(scrollButtonLabels).toContain('Headings');
+            expect(scrollButtonLabels).not.toContain('Pinned Heading');
+            expect(getByLabelText('Pinned Heading')).toBeTruthy();
+        });
+
         it('renders only the configured toolbar items and preserves order', () => {
             const onToggleMark = jest.fn();
             const onInsertNodeType = jest.fn();
@@ -702,6 +738,30 @@ describe('EditorToolbar', () => {
 
             expect(getByLabelText('Indent List').props.accessibilityState.disabled).toBeFalsy();
             expect(getByLabelText('Outdent List').props.accessibilityState.disabled).toBeFalsy();
+        });
+
+        it('indent and outdent trust command availability for task lists', () => {
+            const { getByLabelText, props } = renderToolbar({
+                activeState: {
+                    marks: {},
+                    nodes: { taskList: true, taskItem: true },
+                    commands: { indentList: true, outdentList: true },
+                    allowedMarks: [],
+                    insertableNodes: [],
+                },
+            });
+
+            const indentButton = getByLabelText('Indent List');
+            const outdentButton = getByLabelText('Outdent List');
+
+            expect(indentButton.props.accessibilityState.disabled).toBeFalsy();
+            expect(outdentButton.props.accessibilityState.disabled).toBeFalsy();
+
+            fireEvent.press(indentButton);
+            fireEvent.press(outdentButton);
+
+            expect(props.onIndentList).toHaveBeenCalledTimes(1);
+            expect(props.onOutdentList).toHaveBeenCalledTimes(1);
         });
     });
 

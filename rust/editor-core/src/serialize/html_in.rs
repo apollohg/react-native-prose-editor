@@ -114,6 +114,15 @@ fn extract_node_attrs(
 }
 
 fn parse_attr_value(key: &str, raw: &str) -> serde_json::Value {
+    if key == "checked" {
+        let normalized = raw.trim().to_ascii_lowercase();
+        if normalized.is_empty() || normalized == "checked" || normalized == "true" {
+            return serde_json::Value::Bool(true);
+        }
+        if normalized == "false" {
+            return serde_json::Value::Bool(false);
+        }
+    }
     if matches!(key, "width" | "height") {
         let trimmed = raw.trim();
         if let Ok(value) = trimmed.parse::<u64>() {
@@ -407,7 +416,11 @@ fn process_schema_node(
         NodeRole::TextBlock => {
             flush_inline_acc(inline_acc, schema, block_acc);
             let children = collect_inline_children(node_ref, schema, options, active_marks)?;
-            let node = Node::element(spec.name.clone(), HashMap::new(), Fragment::from(children));
+            let node = Node::element(
+                spec.name.clone(),
+                extract_node_attrs(_elem, spec),
+                Fragment::from(children),
+            );
             block_acc.push(node);
             Ok(())
         }
@@ -423,7 +436,7 @@ fn process_schema_node(
                     serde_json::Value::Number(start_val.into()),
                 );
             }
-            let list_items = collect_list_items(node_ref, schema, options)?;
+            let list_items = collect_list_items(node_ref, spec, schema, options)?;
             let node = Node::element(spec.name.clone(), attrs, Fragment::from(list_items));
             block_acc.push(node);
             Ok(())
@@ -444,7 +457,11 @@ fn process_schema_node(
             if li_blocks.is_empty() {
                 li_blocks.push(make_paragraph(schema, vec![]));
             }
-            let node = Node::element(spec.name.clone(), HashMap::new(), Fragment::from(li_blocks));
+            let node = Node::element(
+                spec.name.clone(),
+                extract_node_attrs(_elem, spec),
+                Fragment::from(li_blocks),
+            );
             block_acc.push(node);
             Ok(())
         }
@@ -558,10 +575,16 @@ fn collect_inline_children(
 /// Collect list items from a list element's children.
 fn collect_list_items(
     list_ref: SNodeRef<'_>,
+    list_spec: &crate::schema::NodeSpec,
     schema: &Schema,
     options: &FromHtmlOptions,
 ) -> Result<Vec<Node>, ParseError> {
     let mut items = Vec::new();
+    let list_item_name = list_item_type_for_list(schema, &list_spec.name);
+    let fallback_list_item = schema
+        .all_nodes()
+        .find(|node| matches!(node.role, NodeRole::ListItem))
+        .map(|node| node.name.clone());
 
     for child in list_ref.children() {
         let val: &scraper::Node = child.value();
@@ -569,6 +592,11 @@ fn collect_list_items(
             let tag = elem.name();
             if let Some(spec) = schema.node_by_html_tag(tag) {
                 if matches!(spec.role, NodeRole::ListItem) {
+                    let item_type = list_item_name
+                        .as_ref()
+                        .or(fallback_list_item.as_ref())
+                        .cloned()
+                        .unwrap_or_else(|| spec.name.clone());
                     let mut li_blocks = Vec::new();
                     let mut li_inline = Vec::new();
                     process_children(child, schema, options, &[], &mut li_blocks, &mut li_inline)?;
@@ -576,8 +604,12 @@ fn collect_list_items(
                     if li_blocks.is_empty() {
                         li_blocks.push(make_paragraph(schema, vec![]));
                     }
-                    let node =
-                        Node::element(spec.name.clone(), HashMap::new(), Fragment::from(li_blocks));
+                    let item_spec = schema.node(&item_type).unwrap_or(spec);
+                    let node = Node::element(
+                        item_type,
+                        extract_node_attrs(elem, item_spec),
+                        Fragment::from(li_blocks),
+                    );
                     items.push(node);
                 }
             }
@@ -585,13 +617,14 @@ fn collect_list_items(
             let text: &str = &*text_data;
             let text = text.trim();
             if !text.is_empty() {
-                let li_spec = schema
-                    .all_nodes()
-                    .find(|n| matches!(n.role, NodeRole::ListItem));
-                if let Some(spec) = li_spec {
+                if let Some(item_type) = list_item_name
+                    .as_ref()
+                    .or(fallback_list_item.as_ref())
+                    .cloned()
+                {
                     let para = make_paragraph(schema, vec![Node::text(text.to_string(), vec![])]);
                     let li = Node::element(
-                        spec.name.clone(),
+                        item_type,
                         HashMap::new(),
                         Fragment::from(vec![para]),
                     );
@@ -602,6 +635,27 @@ fn collect_list_items(
     }
 
     Ok(items)
+}
+
+fn list_item_type_for_list(schema: &Schema, list_type: &str) -> Option<String> {
+    let list_spec = schema.node(list_type)?;
+    let part = list_spec.content.parts.first()?;
+
+    if let Some(direct) = schema.node(&part.group) {
+        if matches!(direct.role, NodeRole::ListItem) {
+            return Some(direct.name.clone());
+        }
+    }
+
+    let mut candidates: Vec<String> = schema
+        .nodes_in_group(&part.group)
+        .into_iter()
+        .filter(|spec| matches!(spec.role, NodeRole::ListItem))
+        .map(|spec| spec.name.clone())
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    candidates.into_iter().next()
 }
 
 /// Build an opaque node for an unknown HTML tag (non-strict mode).

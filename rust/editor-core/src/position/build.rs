@@ -258,7 +258,7 @@ fn compute_inline_scalars(node: &Node) -> u32 {
 fn is_list_node(node: &Node) -> bool {
     matches!(
         node.node_type(),
-        "bulletList" | "bullet_list" | "orderedList" | "ordered_list"
+        "bulletList" | "bullet_list" | "orderedList" | "ordered_list" | "taskList" | "task_list"
     )
 }
 
@@ -267,10 +267,19 @@ fn is_ordered_list_node(node: &Node) -> bool {
 }
 
 fn is_list_item_node(node: &Node) -> bool {
-    matches!(node.node_type(), "listItem" | "list_item")
+    matches!(node.node_type(), "listItem" | "list_item" | "taskItem" | "task_item")
 }
 
 fn list_marker_len(list_node: &Node, child_index: usize) -> u32 {
+    if is_task_list_node(list_node) {
+        let checked = list_node
+            .child(child_index)
+            .and_then(|item| item.attrs().get("checked"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        return render::task_list_marker_string(checked).chars().count() as u32;
+    }
+
     let ordered = is_ordered_list_node(list_node);
     let start = list_node
         .attrs()
@@ -283,6 +292,10 @@ fn list_marker_len(list_node: &Node, child_index: usize) -> u32 {
         child_index as u32 + 1
     };
     render::list_marker_string(ordered, index).chars().count() as u32
+}
+
+fn is_task_list_node(node: &Node) -> bool {
+    matches!(node.node_type(), "taskList" | "task_list")
 }
 
 fn inline_visible_scalar_len(node: &Node) -> u32 {

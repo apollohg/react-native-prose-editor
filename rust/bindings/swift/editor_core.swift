@@ -1182,6 +1182,18 @@ public func editorToggleMarkAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, 
 })
 }
 /**
+ * Toggle the checked state of the task item at an explicit scalar selection.
+ */
+public func editorToggleTaskItemCheckedAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_toggle_task_item_checked_at_selection_scalar(
+        FfiConverterUInt64.lower(id),
+        FfiConverterUInt32.lower(scalarAnchor),
+        FfiConverterUInt32.lower(scalarHead),$0
+    )
+})
+}
+/**
  * Undo. Returns an update JSON string, or empty string if nothing to undo.
  */
 public func editorUndo(id: UInt64) -> String  {
@@ -1455,6 +1467,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_toggle_mark_at_selection_scalar() != 61751) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_toggle_task_item_checked_at_selection_scalar() != 1217) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_undo() != 28689) {

@@ -324,7 +324,7 @@ int8_t uniffi_editor_core_fn_func_editor_can_undo(uint64_t id, RustCallStatus *_
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_CORE_VERSION
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_CORE_VERSION
 RustBuffer uniffi_editor_core_fn_func_editor_core_version(RustCallStatus *_Nonnull out_status
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_CREATE
@@ -550,6 +550,11 @@ RustBuffer uniffi_editor_core_fn_func_editor_toggle_mark(uint64_t id, RustBuffer
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_TOGGLE_MARK_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_TOGGLE_MARK_AT_SELECTION_SCALAR
 RustBuffer uniffi_editor_core_fn_func_editor_toggle_mark_at_selection_scalar(uint64_t id, uint32_t scalar_anchor, uint32_t scalar_head, RustBuffer mark_name, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_TOGGLE_TASK_ITEM_CHECKED_AT_SELECTION_SCALAR
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_TOGGLE_TASK_ITEM_CHECKED_AT_SELECTION_SCALAR
+RustBuffer uniffi_editor_core_fn_func_editor_toggle_task_item_checked_at_selection_scalar(uint64_t id, uint32_t scalar_anchor, uint32_t scalar_head, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_UNDO
@@ -870,409 +875,415 @@ void ffi_editor_core_rust_future_complete_void(uint64_t handle, RustCallStatus *
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_APPLY_ENCODED_STATE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_APPLY_ENCODED_STATE
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_apply_encoded_state(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_APPLY_LOCAL_DOCUMENT_JSON
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_APPLY_LOCAL_DOCUMENT_JSON
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_apply_local_document_json(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_CLEAR_LOCAL_AWARENESS
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_CLEAR_LOCAL_AWARENESS
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_clear_local_awareness(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_CREATE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_CREATE
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_create(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_DESTROY
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_DESTROY
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_destroy(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_GET_DOCUMENT_JSON
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_GET_DOCUMENT_JSON
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_get_document_json(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_GET_ENCODED_STATE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_GET_ENCODED_STATE
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_get_encoded_state(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_GET_PEERS_JSON
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_GET_PEERS_JSON
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_get_peers_json(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_HANDLE_MESSAGE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_HANDLE_MESSAGE
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_handle_message(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_REPLACE_ENCODED_STATE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_REPLACE_ENCODED_STATE
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_replace_encoded_state(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_SET_LOCAL_AWARENESS
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_SET_LOCAL_AWARENESS
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_set_local_awareness(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_START
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_START
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_start(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_CAN_REDO
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_CAN_REDO
 uint16_t uniffi_editor_core_checksum_func_editor_can_redo(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_CAN_UNDO
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_CAN_UNDO
 uint16_t uniffi_editor_core_checksum_func_editor_can_undo(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_CORE_VERSION
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_CORE_VERSION
 uint16_t uniffi_editor_core_checksum_func_editor_core_version(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_CREATE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_CREATE
 uint16_t uniffi_editor_core_checksum_func_editor_create(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_AND_SPLIT_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_AND_SPLIT_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_delete_and_split_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_BACKWARD_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_BACKWARD_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_delete_backward_at_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_RANGE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_RANGE
 uint16_t uniffi_editor_core_checksum_func_editor_delete_range(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_SCALAR_RANGE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_SCALAR_RANGE
 uint16_t uniffi_editor_core_checksum_func_editor_delete_scalar_range(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DESTROY
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DESTROY
 uint16_t uniffi_editor_core_checksum_func_editor_destroy(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DOC_TO_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DOC_TO_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_doc_to_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_CONTENT_SNAPSHOT
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_CONTENT_SNAPSHOT
 uint16_t uniffi_editor_core_checksum_func_editor_get_content_snapshot(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_CURRENT_STATE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_CURRENT_STATE
 uint16_t uniffi_editor_core_checksum_func_editor_get_current_state(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_HTML
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_HTML
 uint16_t uniffi_editor_core_checksum_func_editor_get_html(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_JSON
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_JSON
 uint16_t uniffi_editor_core_checksum_func_editor_get_json(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_SELECTION
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_SELECTION
 uint16_t uniffi_editor_core_checksum_func_editor_get_selection(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_SELECTION_STATE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_GET_SELECTION_STATE
 uint16_t uniffi_editor_core_checksum_func_editor_get_selection_state(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INDENT_LIST_ITEM
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INDENT_LIST_ITEM
 uint16_t uniffi_editor_core_checksum_func_editor_indent_list_item(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INDENT_LIST_ITEM_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INDENT_LIST_ITEM_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_indent_list_item_at_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_CONTENT_HTML
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_CONTENT_HTML
 uint16_t uniffi_editor_core_checksum_func_editor_insert_content_html(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_CONTENT_JSON
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_CONTENT_JSON
 uint16_t uniffi_editor_core_checksum_func_editor_insert_content_json(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_CONTENT_JSON_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_CONTENT_JSON_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_insert_content_json_at_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_NODE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_NODE
 uint16_t uniffi_editor_core_checksum_func_editor_insert_node(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_NODE_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_NODE_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_insert_node_at_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_TEXT
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_TEXT
 uint16_t uniffi_editor_core_checksum_func_editor_insert_text(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_TEXT_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_INSERT_TEXT_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_insert_text_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_OUTDENT_LIST_ITEM
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_OUTDENT_LIST_ITEM
 uint16_t uniffi_editor_core_checksum_func_editor_outdent_list_item(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_OUTDENT_LIST_ITEM_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_OUTDENT_LIST_ITEM_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_outdent_list_item_at_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REDO
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REDO
 uint16_t uniffi_editor_core_checksum_func_editor_redo(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REPLACE_HTML
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REPLACE_HTML
 uint16_t uniffi_editor_core_checksum_func_editor_replace_html(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REPLACE_JSON
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REPLACE_JSON
 uint16_t uniffi_editor_core_checksum_func_editor_replace_json(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REPLACE_SELECTION_TEXT
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REPLACE_SELECTION_TEXT
 uint16_t uniffi_editor_core_checksum_func_editor_replace_selection_text(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REPLACE_TEXT_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_REPLACE_TEXT_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_replace_text_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_RESIZE_IMAGE_AT_DOC_POS
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_RESIZE_IMAGE_AT_DOC_POS
 uint16_t uniffi_editor_core_checksum_func_editor_resize_image_at_doc_pos(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SCALAR_TO_DOC
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SCALAR_TO_DOC
 uint16_t uniffi_editor_core_checksum_func_editor_scalar_to_doc(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_HTML
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_HTML
 uint16_t uniffi_editor_core_checksum_func_editor_set_html(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_JSON
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_JSON
 uint16_t uniffi_editor_core_checksum_func_editor_set_json(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_MARK
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_MARK
 uint16_t uniffi_editor_core_checksum_func_editor_set_mark(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_MARK_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_MARK_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_set_mark_at_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_SELECTION
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_SELECTION
 uint16_t uniffi_editor_core_checksum_func_editor_set_selection(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SET_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_set_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SPLIT_BLOCK
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SPLIT_BLOCK
 uint16_t uniffi_editor_core_checksum_func_editor_split_block(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SPLIT_BLOCK_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_SPLIT_BLOCK_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_split_block_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_BLOCKQUOTE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_BLOCKQUOTE
 uint16_t uniffi_editor_core_checksum_func_editor_toggle_blockquote(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_BLOCKQUOTE_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_BLOCKQUOTE_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_toggle_blockquote_at_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_HEADING
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_HEADING
 uint16_t uniffi_editor_core_checksum_func_editor_toggle_heading(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_HEADING_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_HEADING_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_toggle_heading_at_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_MARK
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_MARK
 uint16_t uniffi_editor_core_checksum_func_editor_toggle_mark(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_MARK_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_MARK_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_toggle_mark_at_selection_scalar(void
-    
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_TASK_ITEM_CHECKED_AT_SELECTION_SCALAR
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_TOGGLE_TASK_ITEM_CHECKED_AT_SELECTION_SCALAR
+uint16_t uniffi_editor_core_checksum_func_editor_toggle_task_item_checked_at_selection_scalar(void
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_UNDO
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_UNDO
 uint16_t uniffi_editor_core_checksum_func_editor_undo(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_UNSET_MARK
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_UNSET_MARK
 uint16_t uniffi_editor_core_checksum_func_editor_unset_mark(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_UNSET_MARK_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_UNSET_MARK_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_unset_mark_at_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_UNWRAP_FROM_LIST
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_UNWRAP_FROM_LIST
 uint16_t uniffi_editor_core_checksum_func_editor_unwrap_from_list(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_UNWRAP_FROM_LIST_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_UNWRAP_FROM_LIST_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_unwrap_from_list_at_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_WRAP_IN_LIST
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_WRAP_IN_LIST
 uint16_t uniffi_editor_core_checksum_func_editor_wrap_in_list(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_WRAP_IN_LIST_AT_SELECTION_SCALAR
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_WRAP_IN_LIST_AT_SELECTION_SCALAR
 uint16_t uniffi_editor_core_checksum_func_editor_wrap_in_list_at_selection_scalar(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_EDITOR_CORE_UNIFFI_CONTRACT_VERSION
 #define UNIFFI_FFIDEF_FFI_EDITOR_CORE_UNIFFI_CONTRACT_VERSION
 uint32_t ffi_editor_core_uniffi_contract_version(void
-    
+
 );
 #endif
 

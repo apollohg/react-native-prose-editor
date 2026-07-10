@@ -5,6 +5,25 @@ use crate::render::{
 };
 use crate::schema::{NodeRole, Schema};
 
+fn task_list_marker_metadata(list_node_type: &str, item: &Node) -> (Option<String>, Option<bool>) {
+    let is_task = list_node_type.to_ascii_lowercase().contains("task")
+        || item.node_type().to_ascii_lowercase().contains("task")
+        || item.attrs().contains_key("checked");
+    if !is_task {
+        return (None, None);
+    }
+
+    (
+        Some("task".to_string()),
+        Some(
+            item.attrs()
+                .get("checked")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+        ),
+    )
+}
+
 fn render_marks(node: &Node) -> Vec<RenderMark> {
     node.marks()
         .iter()
@@ -34,14 +53,15 @@ pub fn generate(doc: &Document, schema: &Schema) -> Vec<RenderElement> {
 /// Walk the children of `parent`, emitting render elements.
 ///
 /// `depth` is the nesting depth for BlockStart (0 = top-level blocks).
-/// `list_info` is set when `parent` is a list node, carrying (ordered, start, total_items).
+/// `list_info` is set when `parent` is a list node, carrying
+/// (list_node_type, ordered, start, total_items).
 fn walk_children(
     parent: &Node,
     schema: &Schema,
     elements: &mut Vec<RenderElement>,
     pos: &mut u32,
     depth: u8,
-    list_info: Option<(bool, u32, u32)>,
+    list_info: Option<(String, bool, u32, u32)>,
 ) {
     for i in 0..parent.child_count() {
         let child = parent.child(i).expect("child index in bounds");
@@ -83,26 +103,29 @@ fn walk_children(
                     elements,
                     pos,
                     depth,
-                    Some((ordered, start_attr, total)),
+                    Some((child.node_type().to_string(), ordered, start_attr, total)),
                 );
                 *pos += 1; // list close tag
             }
             Some(NodeRole::ListItem) => {
                 // ListItem: emit BlockStart with ListContext, walk children, emit BlockEnd
-                let list_context = list_info.map(|(ordered, start, total)| {
+                let list_context = list_info.as_ref().map(|(list_node_type, ordered, start, total)| {
                     let index_0based = i as u32;
-                    let index = if ordered {
-                        start + index_0based
+                    let index = if *ordered {
+                        *start + index_0based
                     } else {
                         index_0based + 1
                     };
+                    let (kind, checked) = task_list_marker_metadata(list_node_type, child);
                     ListContext {
-                        ordered,
+                        ordered: *ordered,
                         index,
-                        total,
-                        start,
+                        total: *total,
+                        start: *start,
                         is_first: i == 0,
-                        is_last: i == (total as usize - 1),
+                        is_last: i == (*total as usize - 1),
+                        kind,
+                        checked,
                     }
                 });
                 elements.push(RenderElement::BlockStart {

@@ -43,4 +43,21 @@ describe('EditorTheme', () => {
             },
         });
     });
+
+    it('serializes toolbar height overrides', () => {
+        const json = serializeEditorTheme({
+            toolbar: {
+                appearance: 'native',
+                height: 44,
+            },
+        });
+
+        expect(json).toBeTruthy();
+        expect(JSON.parse(json!)).toEqual({
+            toolbar: {
+                appearance: 'native',
+                height: 44,
+            },
+        });
+    });
 });

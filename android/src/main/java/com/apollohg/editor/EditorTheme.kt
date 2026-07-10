@@ -112,6 +112,27 @@ data class EditorBlockquoteTheme(
     }
 }
 
+data class EditorCodeBlockTheme(
+    val text: EditorTextStyle? = null,
+    val backgroundColor: Int? = null,
+    val borderRadius: Float? = null,
+    val paddingHorizontal: Float? = null,
+    val paddingVertical: Float? = null
+) {
+    companion object {
+        fun fromJson(json: JSONObject?): EditorCodeBlockTheme? {
+            json ?: return null
+            return EditorCodeBlockTheme(
+                text = EditorTextStyle.fromJson(json.optJSONObject("text")),
+                backgroundColor = parseColor(json.optNullableString("backgroundColor")),
+                borderRadius = json.optNullableFloat("borderRadius"),
+                paddingHorizontal = json.optNullableFloat("paddingHorizontal"),
+                paddingVertical = json.optNullableFloat("paddingVertical")
+            )
+        }
+    }
+}
+
 data class EditorLinkTheme(
     val fontFamily: String? = null,
     val fontSize: Float? = null,
@@ -226,6 +247,7 @@ enum class EditorToolbarAppearance {
 
 data class EditorToolbarTheme(
     val appearance: EditorToolbarAppearance? = null,
+    val height: Float? = null,
     val backgroundColor: Int? = null,
     val borderColor: Int? = null,
     val borderWidth: Float? = null,
@@ -256,6 +278,7 @@ data class EditorToolbarTheme(
             json ?: return null
             return EditorToolbarTheme(
                 appearance = EditorToolbarAppearance.fromRaw(json.optNullableString("appearance")),
+                height = json.optNullableFloat("height"),
                 backgroundColor = parseColor(json.optNullableString("backgroundColor")),
                 borderColor = parseColor(json.optNullableString("borderColor")),
                 borderWidth = json.optNullableFloat("borderWidth"),
@@ -298,6 +321,7 @@ data class EditorTheme(
     val text: EditorTextStyle? = null,
     val paragraph: EditorTextStyle? = null,
     val blockquote: EditorBlockquoteTheme? = null,
+    val codeBlock: EditorCodeBlockTheme? = null,
     val headings: Map<String, EditorTextStyle> = emptyMap(),
     val list: EditorListTheme? = null,
     val horizontalRule: EditorHorizontalRuleTheme? = null,
@@ -330,6 +354,7 @@ data class EditorTheme(
                 text = EditorTextStyle.fromJson(root.optJSONObject("text")),
                 paragraph = EditorTextStyle.fromJson(root.optJSONObject("paragraph")),
                 blockquote = EditorBlockquoteTheme.fromJson(root.optJSONObject("blockquote")),
+                codeBlock = EditorCodeBlockTheme.fromJson(root.optJSONObject("codeBlock")),
                 headings = headings,
                 list = EditorListTheme.fromJson(root.optJSONObject("list")),
                 horizontalRule = EditorHorizontalRuleTheme.fromJson(root.optJSONObject("horizontalRule")),
@@ -352,6 +377,9 @@ data class EditorTheme(
             if (paragraph?.lineHeight == null) {
                 style = style.copy(lineHeight = null)
             }
+        }
+        if (nodeType == "codeBlock") {
+            style = style.mergedWith(codeBlock?.text)
         }
         style = style.mergedWith(headings[nodeType])
         return style

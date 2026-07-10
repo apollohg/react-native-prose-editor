@@ -885,6 +885,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
 
     fun uniffi_editor_core_checksum_func_editor_toggle_mark_at_selection_scalar(): Short
 
+    fun uniffi_editor_core_checksum_func_editor_toggle_task_item_checked_at_selection_scalar(): Short
+
     fun uniffi_editor_core_checksum_func_editor_undo(): Short
 
     fun uniffi_editor_core_checksum_func_editor_unset_mark(): Short
@@ -1300,6 +1302,13 @@ internal interface UniffiLib : Library {
         `scalarAnchor`: Int,
         `scalarHead`: Int,
         `markName`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_func_editor_toggle_task_item_checked_at_selection_scalar(
+        `id`: Long,
+        `scalarAnchor`: Int,
+        `scalarHead`: Int,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
@@ -1755,6 +1764,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_toggle_mark_at_selection_scalar() != 61751.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_toggle_task_item_checked_at_selection_scalar() != 1217.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_undo() != 28689.toShort()) {
@@ -2922,6 +2934,25 @@ fun `editorToggleMarkAtSelectionScalar`(
                 FfiConverterUInt.lower(`scalarAnchor`),
                 FfiConverterUInt.lower(`scalarHead`),
                 FfiConverterString.lower(`markName`),
+                _status,
+            )
+        },
+    )
+
+/**
+ * Toggle the checked state of the task item at an explicit scalar selection.
+ */
+fun `editorToggleTaskItemCheckedAtSelectionScalar`(
+    `id`: kotlin.ULong,
+    `scalarAnchor`: kotlin.UInt,
+    `scalarHead`: kotlin.UInt,
+): kotlin.String =
+    FfiConverterString.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_toggle_task_item_checked_at_selection_scalar(
+                FfiConverterULong.lower(`id`),
+                FfiConverterUInt.lower(`scalarAnchor`),
+                FfiConverterUInt.lower(`scalarHead`),
                 _status,
             )
         },

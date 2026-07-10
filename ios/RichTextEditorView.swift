@@ -369,6 +369,53 @@ private final class ImageTapOverlayView: UIView {
     }
 }
 
+private final class TaskListMarkerTapOverlayView: UIView {
+    private weak var editorView: RichTextEditorView?
+    private lazy var tapRecognizer: UITapGestureRecognizer = {
+        let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        recognizer.cancelsTouchesInView = true
+        return recognizer
+    }()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        addGestureRecognizer(tapRecognizer)
+    }
+
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    func bind(editorView: RichTextEditorView) {
+        self.editorView = editorView
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard let editorView else { return false }
+        let pointInTextView = convert(point, to: editorView.textView)
+        return editorView.textView.hasTaskListMarker(at: pointInTextView)
+    }
+
+    @objc
+    private func handleTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended, let editorView else { return }
+        let pointInTextView = convert(recognizer.location(in: self), to: editorView.textView)
+        _ = editorView.textView.toggleTaskListMarker(at: pointInTextView)
+    }
+
+    func interceptsPointForTesting(_ point: CGPoint) -> Bool {
+        self.point(inside: point, with: nil)
+    }
+
+    @discardableResult
+    func handleTapForTesting(_ point: CGPoint) -> Bool {
+        guard let editorView else { return false }
+        let pointInTextView = convert(point, to: editorView.textView)
+        return editorView.textView.toggleTaskListMarker(at: pointInTextView)
+    }
+}
+
 private final class ImageResizeHandleView: UIView {
     let corner: ImageResizeOverlayView.Corner
 
@@ -1535,6 +1582,26 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         imageAttachmentRange(at: location) != nil
     }
 
+    func hasTaskListMarker(at location: CGPoint) -> Bool {
+        taskListMarkerParagraphStart(at: location) != nil
+    }
+
+    @discardableResult
+    func toggleTaskListMarker(at location: CGPoint) -> Bool {
+        guard editorId != 0 else { return false }
+        guard prepareForExternalEditorUpdate() else { return false }
+        guard let paragraphStart = taskListMarkerParagraphStart(at: location) else {
+            return false
+        }
+
+        _ = becomeFirstResponder()
+        let scalar = PositionBridge.utf16OffsetToScalar(paragraphStart, in: self)
+        performInterceptedInput {
+            toggleTaskItemCheckedAtSelectionScalarInRust(anchor: scalar, head: scalar)
+        }
+        return true
+    }
+
     @discardableResult
     private func selectImageAttachment(range: NSRange) -> Bool {
         guard isSelectable,
@@ -1703,6 +1770,19 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     @discardableResult
     func selectImageAttachmentForTesting(at location: CGPoint) -> Bool {
         selectImageAttachmentIfNeeded(at: location)
+    }
+
+    private func taskListMarkerParagraphStart(at location: CGPoint) -> Int? {
+        guard let layoutManager = layoutManager as? EditorLayoutManager else { return nil }
+        let origin = CGPoint(
+            x: textContainerInset.left - contentOffset.x,
+            y: textContainerInset.top - contentOffset.y
+        )
+        return layoutManager.taskListMarkerParagraphStart(
+            at: location,
+            in: textStorage,
+            textContainerOrigin: origin
+        )
     }
 
     func imageSelectionTapWouldHandleForTesting(at location: CGPoint) -> Bool {
@@ -3937,6 +4017,18 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         applyUpdateJSON(updateJSON)
     }
 
+    private func toggleTaskItemCheckedAtSelectionScalarInRust(anchor: UInt32, head: UInt32) {
+        Self.inputLog.debug(
+            "[rust.toggleTaskItemCheckedAtSelectionScalar] scalar=\(anchor)-\(head) selection=\(self.selectionSummary(), privacy: .public)"
+        )
+        let updateJSON = editorToggleTaskItemCheckedAtSelectionScalar(
+            id: editorId,
+            scalarAnchor: anchor,
+            scalarHead: head
+        )
+        applyUpdateJSON(updateJSON)
+    }
+
     /// Delete a document-position range via the Rust editor.
     private func deleteRangeInRust(from: UInt32, to: UInt32) {
         guard from < to else { return }
@@ -5497,6 +5589,7 @@ final class RichTextEditorView: UIView {
     /// The editor text view that handles input interception.
     let textView: EditorTextView
     private let remoteSelectionOverlayView = RemoteSelectionOverlayView()
+    private let taskListMarkerTapOverlayView = TaskListMarkerTapOverlayView()
     private let imageTapOverlayView = ImageTapOverlayView()
     private let imageResizeOverlayView = ImageResizeOverlayView()
     var onHeightMayChange: ((CGFloat) -> Void)?
@@ -5595,6 +5688,7 @@ final class RichTextEditorView: UIView {
         // Add the text view as a subview. These views always track the host bounds,
         // so manual layout is cheaper than driving them through Auto Layout.
         remoteSelectionOverlayView.bind(textView: textView)
+        taskListMarkerTapOverlayView.bind(editorView: self)
         imageTapOverlayView.bind(editorView: self)
         imageResizeOverlayView.bind(editorView: self)
         textView.allowImageResizing = allowImageResizing
@@ -5618,6 +5712,7 @@ final class RichTextEditorView: UIView {
         }
         addSubview(textView)
         addSubview(remoteSelectionOverlayView)
+        addSubview(taskListMarkerTapOverlayView)
         addSubview(imageTapOverlayView)
         addSubview(imageResizeOverlayView)
         layoutManagedSubviews()
@@ -5763,6 +5858,19 @@ final class RichTextEditorView: UIView {
         imageTapOverlayView.interceptsPointForTesting(convert(point, to: imageTapOverlayView))
     }
 
+    func taskListMarkerTapOverlayInterceptsPointForTesting(_ point: CGPoint) -> Bool {
+        taskListMarkerTapOverlayView.interceptsPointForTesting(
+            convert(point, to: taskListMarkerTapOverlayView)
+        )
+    }
+
+    @discardableResult
+    func tapTaskListMarkerOverlayForTesting(at point: CGPoint) -> Bool {
+        taskListMarkerTapOverlayView.handleTapForTesting(
+            convert(point, to: taskListMarkerTapOverlayView)
+        )
+    }
+
     @discardableResult
     func tapImageOverlayForTesting(at point: CGPoint) -> Bool {
         imageTapOverlayView.handleTapForTesting(convert(point, to: imageTapOverlayView))
@@ -5851,6 +5959,9 @@ final class RichTextEditorView: UIView {
         }
         if remoteSelectionOverlayView.frame != managedFrame {
             remoteSelectionOverlayView.frame = managedFrame
+        }
+        if taskListMarkerTapOverlayView.frame != managedFrame {
+            taskListMarkerTapOverlayView.frame = managedFrame
         }
         if imageTapOverlayView.frame != managedFrame {
             imageTapOverlayView.frame = managedFrame

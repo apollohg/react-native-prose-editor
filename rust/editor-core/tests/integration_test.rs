@@ -77,6 +77,47 @@ fn title_first_editor() -> Editor {
     Editor::new(title_first_schema(), InterceptorPipeline::new(), false)
 }
 
+fn task_code_schema() -> Schema {
+    Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "blockquote", "content": "block+", "group": "block", "role": "block", "htmlTag": "blockquote" },
+            { "name": "taskList", "content": "taskItem+", "group": "block", "role": "list", "htmlTag": "ul" },
+            { "name": "listItem", "content": "paragraph block*", "role": "listItem", "htmlTag": "li" },
+            { "name": "taskItem", "content": "paragraph block*", "role": "listItem", "htmlTag": "li", "attrs": { "checked": { "default": false } } },
+            { "name": "codeBlock", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "pre" },
+            { "name": "hardBreak", "content": "", "group": "inline", "role": "hardBreak", "htmlTag": "br", "isVoid": true },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": [
+            { "name": "bold" },
+            { "name": "italic" },
+            { "name": "code" }
+        ]
+    }))
+    .expect("task/code schema should parse")
+}
+
+fn task_code_editor() -> Editor {
+    Editor::new(task_code_schema(), InterceptorPipeline::new(), false)
+}
+
+fn grouped_task_item_schema() -> Schema {
+    Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "taskList", "content": "taskItemGroup+", "group": "block", "role": "list", "htmlTag": "ul" },
+            { "name": "listItem", "content": "paragraph block*", "role": "listItem", "htmlTag": "li" },
+            { "name": "taskItem", "content": "paragraph block*", "group": "taskItemGroup", "role": "listItem", "htmlTag": "li", "attrs": { "checked": { "default": false } } },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .expect("grouped task-item schema should parse")
+}
+
 /// Create an editor with a max-length interceptor.
 fn editor_with_max_length(max: u32) -> Editor {
     let mut pipeline = InterceptorPipeline::new();
@@ -2662,4 +2703,145 @@ fn test_split_block_scalar_empty_blockquote_paragraph_exits_quote() {
         "<blockquote><p>Hello</p></blockquote><p></p>",
         "split_block_scalar on empty quoted paragraph should exit the quote"
     );
+}
+
+#[test]
+fn test_apply_task_list_type_uses_declared_task_item_type() {
+    let mut editor = task_code_editor();
+    editor
+        .set_html("<p>Hello</p>")
+        .expect("set_html should succeed");
+
+    editor
+        .apply_list_type("taskList")
+        .expect("applying taskList should wrap the paragraph");
+
+    assert_eq!(
+        editor.get_json(),
+        serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "taskList",
+                "content": [{
+                    "type": "taskItem",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{ "type": "text", "text": "Hello" }]
+                    }]
+                }]
+            }]
+        })
+    );
+}
+
+#[test]
+fn test_apply_task_list_type_resolves_grouped_task_item_type() {
+    let mut editor = Editor::new(grouped_task_item_schema(), InterceptorPipeline::new(), false);
+    editor
+        .set_html("<p>Hello</p>")
+        .expect("set_html should succeed");
+
+    editor
+        .apply_list_type("taskList")
+        .expect("applying grouped taskList should wrap the paragraph");
+
+    assert_eq!(editor.get_json()["content"][0]["content"][0]["type"], "taskItem");
+}
+
+#[test]
+fn test_set_html_resolves_grouped_task_item_type() {
+    let mut editor = Editor::new(grouped_task_item_schema(), InterceptorPipeline::new(), false);
+    editor
+        .set_html("<ul><li checked=\"true\"><p>Done</p></li></ul>")
+        .expect("grouped task list html should parse");
+
+    let json = editor.get_json();
+    let item = &json["content"][0]["content"][0];
+    assert_eq!(item["type"], "taskItem");
+    assert_eq!(item["attrs"]["checked"], true);
+}
+
+#[test]
+fn test_task_list_checked_attrs_roundtrip_from_html() {
+    let mut editor = task_code_editor();
+    editor
+        .set_html("<ul><li checked=\"true\"><p>Done</p></li><li checked=\"false\"><p>Todo</p></li></ul>")
+        .expect("task list html should parse");
+
+    assert_eq!(
+        editor.get_json(),
+        serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "taskList",
+                "content": [
+                    {
+                        "type": "taskItem",
+                        "attrs": { "checked": true },
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{ "type": "text", "text": "Done" }]
+                        }]
+                    },
+                    {
+                        "type": "taskItem",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{ "type": "text", "text": "Todo" }]
+                        }]
+                    }
+                ]
+            }]
+        })
+    );
+}
+
+#[test]
+fn test_toggle_task_item_checked_at_selection_scalar_updates_checked_attr() {
+    let mut editor = task_code_editor();
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "taskList",
+                "content": [{
+                    "type": "taskItem",
+                    "attrs": { "checked": false },
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{ "type": "text", "text": "Todo" }]
+                    }]
+                }]
+            }]
+        }))
+        .expect("task list json should parse");
+
+    editor
+        .toggle_task_item_checked_at_selection_scalar(0, 0)
+        .expect("task item toggle should succeed");
+
+    assert_eq!(
+        editor.get_json()["content"][0]["content"][0]["attrs"]["checked"],
+        serde_json::Value::Bool(true)
+    );
+}
+
+#[test]
+fn test_split_block_scalar_inside_code_block_inserts_newline() {
+    let mut editor = task_code_editor();
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "codeBlock",
+                "content": [{ "type": "text", "text": "ab" }]
+            }]
+        }))
+        .expect("set_json should succeed");
+
+    editor
+        .split_block_scalar(1)
+        .expect("enter inside a code block should insert a newline");
+
+    assert_eq!(editor.get_html(), "<pre>a\nb</pre>");
 }

@@ -104,6 +104,12 @@ enum RenderBridgeAttributes {
     /// Stores the rendered blockquote gap between border and text.
     static let blockquoteMarkerGap = NSAttributedString.Key("com.apollohg.editor.blockquoteMarkerGap")
 
+    /// Marks code-block paragraphs for custom background drawing.
+    static let codeBlockBackgroundColor = NSAttributedString.Key("com.apollohg.editor.codeBlockBackgroundColor")
+    static let codeBlockBorderRadius = NSAttributedString.Key("com.apollohg.editor.codeBlockBorderRadius")
+    static let codeBlockPaddingHorizontal = NSAttributedString.Key("com.apollohg.editor.codeBlockPaddingHorizontal")
+    static let codeBlockPaddingVertical = NSAttributedString.Key("com.apollohg.editor.codeBlockPaddingVertical")
+
     /// Marks synthetic zero-width placeholders used only for UIKit layout.
     static let syntheticPlaceholder = NSAttributedString.Key("com.apollohg.editor.syntheticPlaceholder")
 
@@ -123,7 +129,7 @@ enum LayoutConstants {
     static let indentPerDepth: CGFloat = 24.0
 
     /// Width reserved for the list bullet/number (points).
-    static let listMarkerWidth: CGFloat = 20.0
+    static let listMarkerWidth: CGFloat = 36.0
 
     /// Gap between the list marker and the text that follows (points).
     static let listMarkerTextGap: CGFloat = 8.0
@@ -230,6 +236,7 @@ final class RenderBridge {
             case "textRun":
                 let text = element["text"] as? String ?? ""
                 let marks = element["marks"] as? [Any] ?? []
+                let isCodeBlock = blockStack.last?.nodeType == "codeBlock"
                 let blockFont = resolvedFont(
                     for: blockStack,
                     baseFont: baseFont,
@@ -240,12 +247,18 @@ final class RenderBridge {
                     textColor: textColor,
                     theme: theme
                 )
-                let baseAttrs = attributesForMarks(
+                var baseAttrs = attributesForMarks(
                     marks,
                     baseFont: blockFont,
                     textColor: blockColor,
                     theme: theme
                 )
+                if isCodeBlock {
+                    baseAttrs[.font] = UIFont.monospacedSystemFont(
+                        ofSize: blockFont.pointSize,
+                        weight: .regular
+                    )
+                }
                 let attrs = applyBlockStyle(
                     to: baseAttrs,
                     blockStack: blockStack,
@@ -389,8 +402,8 @@ final class RenderBridge {
                 let nodeType = element["nodeType"] as? String ?? ""
                 let depth = jsonUInt8(element["depth"])
                 let listContext = element["listContext"] as? [String: Any]
-                let isListItemContainer = nodeType == "listItem" && listContext != nil
-                let isTransparentContainer = nodeType == "blockquote"
+                let isListItemContainer = isListItemNodeType(nodeType) && listContext != nil
+                let isTransparentLayoutContainer = isTransparentContainer(nodeType)
                 let ctx = BlockContext(
                     nodeType: nodeType,
                     depth: depth,
@@ -400,9 +413,11 @@ final class RenderBridge {
                 )
                 let nestedListItemContainer =
                     isListItemContainer && (theme?.list?.itemSpacing != nil)
-                    && blockStack.contains(where: { $0.nodeType == "listItem" && $0.listContext != nil })
+                    && blockStack.contains(where: {
+                        isListItemNodeType($0.nodeType) && $0.listContext != nil
+                    })
 
-                if !isListItemContainer && !isTransparentContainer {
+                if !isListItemContainer && !isTransparentLayoutContainer {
                     // Add inter-block newline before non-first rendered blocks.
                     if !isFirstBlock {
                         applyPendingTrailingParagraphSpacing(
@@ -410,7 +425,9 @@ final class RenderBridge {
                             pendingParagraphSpacing: &pendingTrailingParagraphSpacing
                         )
                         let newlineBlockStack: [BlockContext]
-                        if blockquoteDepth(in: blockStack + [ctx]) > 0,
+                        if ctx.nodeType == "codeBlock" {
+                            newlineBlockStack = []
+                        } else if blockquoteDepth(in: blockStack + [ctx]) > 0,
                            !trailingRenderedContentHasBlockquote(in: result)
                         {
                             newlineBlockStack = []
@@ -922,8 +939,10 @@ final class RenderBridge {
         let listBaseIndentAdjustment = context.listContext != nil
             ? ((listBaseIndentMultiplier - 1) * indentPerDepth)
             : 0
+        let columnsDepth = CGFloat(columnContainerDepth(in: blockStack))
         let baseIndent = (CGFloat(context.depth) * indentPerDepth)
             - (quoteDepth * indentPerDepth)
+            - (columnsDepth * indentPerDepth)
             + listBaseIndentAdjustment
             + (quoteDepth * quoteIndent)
 
@@ -935,6 +954,13 @@ final class RenderBridge {
         } else {
             style.firstLineHeadIndent = baseIndent
             style.headIndent = baseIndent
+        }
+
+        if context.nodeType == "codeBlock" {
+            let horizontalPadding = theme?.codeBlock?.paddingHorizontal ?? 12
+            style.firstLineHeadIndent += horizontalPadding
+            style.headIndent += horizontalPadding
+            style.tailIndent = -horizontalPadding
         }
 
         if let lineHeight = blockStyle?.lineHeight {
@@ -949,6 +975,10 @@ final class RenderBridge {
 
     /// Generate the list marker string (bullet or number) from a list context.
     static func listMarkerString(listContext: [String: Any]) -> String {
+        if (listContext["kind"] as? String) == "task" {
+            let checked = (listContext["checked"] as? NSNumber)?.boolValue ?? false
+            return checked ? "\u{2611} " : "\u{2610} "
+        }
         let ordered = (listContext["ordered"] as? NSNumber)?.boolValue ?? false
 
         if ordered {
@@ -1046,6 +1076,16 @@ final class RenderBridge {
                 theme: theme,
                 baseFont: paragraphBaseFont
             )
+        }
+        if currentBlock.nodeType == "codeBlock" {
+            mutableAttrs[RenderBridgeAttributes.codeBlockBackgroundColor] =
+                theme?.codeBlock?.backgroundColor ?? UIColor.secondarySystemBackground
+            mutableAttrs[RenderBridgeAttributes.codeBlockBorderRadius] =
+                theme?.codeBlock?.borderRadius ?? 8
+            mutableAttrs[RenderBridgeAttributes.codeBlockPaddingHorizontal] =
+                theme?.codeBlock?.paddingHorizontal ?? 12
+            mutableAttrs[RenderBridgeAttributes.codeBlockPaddingVertical] =
+                theme?.codeBlock?.paddingVertical ?? 8
         }
         if blockquoteDepth(in: blockStack) > 0 {
             let foreground = mutableAttrs[.foregroundColor] as? UIColor ?? .separator
@@ -1197,6 +1237,10 @@ final class RenderBridge {
             return blockStack[idx].listContext
         }
         return nil
+    }
+
+    private static func isListItemNodeType(_ nodeType: String) -> Bool {
+        nodeType == "listItem" || nodeType == "taskItem"
     }
 
     private static func overrideTrailingParagraphSpacing(
@@ -1356,7 +1400,7 @@ final class RenderBridge {
         theme: EditorTheme?
     ) {
         guard result.length > 0 else { return }
-        guard endedBlock.nodeType != "listItem" else { return }
+        guard !isListItemNodeType(endedBlock.nodeType) else { return }
         guard result.attribute(
             RenderBridgeAttributes.voidNodeType,
             at: result.length - 1,
@@ -1422,6 +1466,18 @@ final class RenderBridge {
                 count += 1
             }
         }
+    }
+
+    private static func columnContainerDepth(in blockStack: [BlockContext]) -> Int {
+        blockStack.reduce(into: 0) { count, context in
+            if context.nodeType == "columns" || context.nodeType == "column" {
+                count += 1
+            }
+        }
+    }
+
+    private static func isTransparentContainer(_ nodeType: String) -> Bool {
+        nodeType == "blockquote" || nodeType == "columns" || nodeType == "column"
     }
 
     private static func resolvedFont(

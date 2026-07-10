@@ -27,6 +27,7 @@ export type EditorToolbarListType = 'bulletList' | 'orderedList';
 export type EditorToolbarHeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
 export type EditorToolbarCommand = 'indentList' | 'outdentList' | 'undo' | 'redo';
 export type EditorToolbarGroupPresentation = 'expand' | 'menu';
+export type EditorToolbarItemPlacement = 'start' | 'scroll' | 'end';
 
 export type EditorToolbarDefaultIconId =
     | 'bold'
@@ -84,18 +85,21 @@ export type EditorToolbarLeafItem =
           label: string;
           icon: EditorToolbarIcon;
           key?: string;
+          placement?: EditorToolbarItemPlacement;
       }
     | {
           type: 'link';
           label: string;
           icon: EditorToolbarIcon;
           key?: string;
+          placement?: EditorToolbarItemPlacement;
       }
     | {
           type: 'image';
           label: string;
           icon: EditorToolbarIcon;
           key?: string;
+          placement?: EditorToolbarItemPlacement;
       }
     | {
           type: 'heading';
@@ -103,12 +107,14 @@ export type EditorToolbarLeafItem =
           label: string;
           icon: EditorToolbarIcon;
           key?: string;
+          placement?: EditorToolbarItemPlacement;
       }
     | {
           type: 'blockquote';
           label: string;
           icon: EditorToolbarIcon;
           key?: string;
+          placement?: EditorToolbarItemPlacement;
       }
     | {
           type: 'list';
@@ -116,6 +122,7 @@ export type EditorToolbarLeafItem =
           label: string;
           icon: EditorToolbarIcon;
           key?: string;
+          placement?: EditorToolbarItemPlacement;
       }
     | {
           type: 'command';
@@ -123,6 +130,7 @@ export type EditorToolbarLeafItem =
           label: string;
           icon: EditorToolbarIcon;
           key?: string;
+          placement?: EditorToolbarItemPlacement;
       }
     | {
           type: 'node';
@@ -130,6 +138,7 @@ export type EditorToolbarLeafItem =
           label: string;
           icon: EditorToolbarIcon;
           key?: string;
+          placement?: EditorToolbarItemPlacement;
       }
     | {
           type: 'action';
@@ -138,6 +147,7 @@ export type EditorToolbarLeafItem =
           icon: EditorToolbarIcon;
           isActive?: boolean;
           isDisabled?: boolean;
+          placement?: EditorToolbarItemPlacement;
       };
 
 export type EditorToolbarGroupChildItem = EditorToolbarLeafItem;
@@ -148,6 +158,7 @@ export interface EditorToolbarGroupItem {
     label: string;
     icon: EditorToolbarIcon;
     presentation?: EditorToolbarGroupPresentation;
+    placement?: EditorToolbarItemPlacement;
     items: readonly EditorToolbarGroupChildItem[];
 }
 
@@ -157,6 +168,7 @@ export type EditorToolbarItem =
     | {
           type: 'separator';
           key?: string;
+          placement?: EditorToolbarItemPlacement;
       };
 
 interface ToolbarButton {
@@ -167,6 +179,7 @@ interface ToolbarButton {
     isActive?: boolean;
     isDisabled?: boolean;
     groupKey?: string;
+    placement: EditorToolbarItemPlacement;
 }
 
 interface ToolbarGroupButton {
@@ -174,6 +187,7 @@ interface ToolbarGroupButton {
     label: string;
     icon: EditorToolbarIcon;
     presentation: EditorToolbarGroupPresentation;
+    placement: EditorToolbarItemPlacement;
     children: readonly ToolbarButton[];
     isActive: boolean;
     isDisabled: boolean;
@@ -412,12 +426,18 @@ export function _endEditorToolbarInteractionForTests() {
 }
 
 type ToolbarRenderedItem =
-    | { type: 'separator'; key: string }
+    | { type: 'separator'; key: string; placement: EditorToolbarItemPlacement }
     | { type: 'button'; button: ToolbarButton }
     | { type: 'group'; group: ToolbarGroupButton };
 
 function defaultIcon(id: EditorToolbarDefaultIconId): EditorToolbarIcon {
     return { type: 'default', id };
+}
+
+function resolveToolbarItemPlacement(
+    placement: EditorToolbarItemPlacement | undefined
+): EditorToolbarItemPlacement {
+    return placement ?? 'scroll';
 }
 
 export const DEFAULT_EDITOR_TOOLBAR_ITEMS: readonly EditorToolbarItem[] = [
@@ -522,6 +542,7 @@ const BUTTON_HIT = 44;
 const BUTTON_VISIBLE = 32;
 const TOOLBAR_PADDING_H = 12;
 const TOOLBAR_PADDING_V = 4;
+const MIN_TOOLBAR_HEIGHT = 40;
 const MENU_MARGIN = 8;
 const MENU_WIDTH = 192;
 const KEYBOARD_FRAME_REMEASURE_DELAYS_MS = [50, 150, 300] as const;
@@ -644,9 +665,8 @@ export function EditorToolbar({
 
     const isMarkActive = useCallback((mark: string) => !!marks[mark], [marks]);
 
-    const isInList = !!nodes['bulletList'] || !!nodes['orderedList'];
-    const canIndentList = isInList && !!commands['indentList'];
-    const canOutdentList = isInList && !!commands['outdentList'];
+    const canIndentList = !!commands['indentList'];
+    const canOutdentList = !!commands['outdentList'];
     const shouldRenderMentionSuggestions =
         preserveEditorFocus && mentionState != null && mentionState.suggestions.length > 0;
 
@@ -768,8 +788,10 @@ export function EditorToolbar({
             item: EditorToolbarLeafItem,
             index: number,
             prefix = '',
-            groupKey?: string
+            groupKey?: string,
+            placement: EditorToolbarItemPlacement = 'scroll'
         ): ToolbarButton | null => {
+            const resolvedPlacement = resolveToolbarItemPlacement(item.placement ?? placement);
             const action = getActionForItem(item);
             if (!action) {
                 return null;
@@ -840,6 +862,7 @@ export function EditorToolbar({
                 isActive,
                 isDisabled,
                 groupKey,
+                placement: resolvedPlacement,
             };
         },
         [
@@ -860,16 +883,38 @@ export function EditorToolbar({
         ]
     );
 
-    const { renderedItems, groupsByKey } = useMemo(() => {
-        const entries: ToolbarRenderedItem[] = [];
+    const compactRenderedItems = (entries: ToolbarRenderedItem[]): ToolbarRenderedItem[] =>
+        entries.filter((entry, index, list) => {
+            if (entry.type !== 'separator') {
+                return true;
+            }
+            const previous = list[index - 1];
+            const next = list[index + 1];
+            return (
+                previous != null &&
+                previous.type !== 'separator' &&
+                next != null &&
+                next.type !== 'separator'
+            );
+        });
+
+    const { startItems, scrollItems, endItems, groupsByKey } = useMemo(() => {
+        const startEntries: ToolbarRenderedItem[] = [];
+        const scrollEntries: ToolbarRenderedItem[] = [];
+        const endEntries: ToolbarRenderedItem[] = [];
         const nextGroups = new Map<string, ToolbarGroupButton>();
+        const entriesForPlacement = (placement: EditorToolbarItemPlacement) =>
+            placement === 'start' ? startEntries : placement === 'end' ? endEntries : scrollEntries;
 
         for (let index = 0; index < toolbarItems.length; index += 1) {
             const item = toolbarItems[index];
+            const placement = resolveToolbarItemPlacement(item.placement);
+            const targetEntries = entriesForPlacement(placement);
             if (item.type === 'separator') {
-                entries.push({
+                targetEntries.push({
                     type: 'separator',
                     key: item.key ?? `separator:${index}`,
+                    placement,
                 });
                 continue;
             }
@@ -877,7 +922,7 @@ export function EditorToolbar({
             if (item.type === 'group') {
                 const children = item.items
                     .map((child, childIndex) =>
-                        resolveButton(child, childIndex, `${item.key}:`, item.key)
+                        resolveButton(child, childIndex, `${item.key}:`, item.key, placement)
                     )
                     .filter((child): child is ToolbarButton => child != null);
                 if (children.length === 0) {
@@ -891,6 +936,7 @@ export function EditorToolbar({
                     label: item.label,
                     icon: item.icon,
                     presentation,
+                    placement,
                     children,
                     isActive: children.some((child) => child.isActive) || isExpanded || isMenuOpen,
                     isDisabled: children.every((child) => child.isDisabled),
@@ -898,37 +944,25 @@ export function EditorToolbar({
                     isOpen: isExpanded || isMenuOpen,
                 };
                 nextGroups.set(group.key, group);
-                entries.push({ type: 'group', group });
+                targetEntries.push({ type: 'group', group });
                 if (group.isExpanded) {
-                    entries.push(
-                        ...children.map(
-                            (child): ToolbarRenderedItem => ({ type: 'button', button: child })
-                        )
-                    );
+                    for (const child of children) {
+                        entriesForPlacement(child.placement).push({ type: 'button', button: child });
+                    }
                 }
                 continue;
             }
 
-            const button = resolveButton(item, index);
+            const button = resolveButton(item, index, '', undefined, placement);
             if (button) {
-                entries.push({ type: 'button', button });
+                targetEntries.push({ type: 'button', button });
             }
         }
 
         return {
-            renderedItems: entries.filter((entry, index, list) => {
-                if (entry.type !== 'separator') {
-                    return true;
-                }
-                const previous = list[index - 1];
-                const next = list[index + 1];
-                return (
-                    previous != null &&
-                    previous.type !== 'separator' &&
-                    next != null &&
-                    next.type !== 'separator'
-                );
-            }),
+            startItems: compactRenderedItems(startEntries),
+            scrollItems: compactRenderedItems(scrollEntries),
+            endItems: compactRenderedItems(endEntries),
             groupsByKey: nextGroups,
         };
     }, [expandedGroupKey, menuState?.groupKey, resolveButton, toolbarItems]);
@@ -994,7 +1028,9 @@ export function EditorToolbar({
         menuState?.groupKey,
         preserveEditorFocus,
         publishToolbarFrame,
-        renderedItems.length,
+        startItems.length,
+        scrollItems.length,
+        endItems.length,
         windowHeight,
         windowWidth,
     ]);
@@ -1104,6 +1140,19 @@ export function EditorToolbar({
 
     const menuGroup = menuState != null ? (groupsByKey.get(menuState.groupKey) ?? null) : null;
     const menuHeight = menuGroup ? menuGroup.children.length * 40 + 16 : 0;
+    const resolvedToolbarHeight = Math.max(
+        theme?.height ?? BUTTON_VISIBLE + TOOLBAR_PADDING_V * 2,
+        MIN_TOOLBAR_HEIGHT
+    );
+    const resolvedButtonHeight =
+        theme?.height == null
+            ? BUTTON_VISIBLE
+            : Math.max(28, Math.min(40, resolvedToolbarHeight - TOOLBAR_PADDING_V * 2));
+    const resolvedToolbarPaddingV =
+        theme?.height == null
+            ? TOOLBAR_PADDING_V
+            : Math.max(4, (resolvedToolbarHeight - resolvedButtonHeight) / 2);
+    const resolvedSeparatorHeight = Math.max(16, resolvedButtonHeight - 12);
     const menuTop =
         menuState == null
             ? 0
@@ -1168,6 +1217,7 @@ export function EditorToolbar({
                     style={[
                         styles.button,
                         {
+                            height: resolvedButtonHeight,
                             borderRadius: theme?.buttonBorderRadius ?? BUTTON_RADIUS,
                         },
                         button.isActive && {
@@ -1198,10 +1248,36 @@ export function EditorToolbar({
             key={key}
             style={[
                 styles.separator,
+                { height: resolvedSeparatorHeight },
                 theme?.separatorColor != null ? { backgroundColor: theme.separatorColor } : null,
             ]}
         />
     );
+
+    const renderToolbarItems = (items: ToolbarRenderedItem[]) =>
+        items.map((item) => {
+            if (item.type === 'separator') {
+                return renderSeparator(item.key);
+            }
+            if (item.type === 'group') {
+                return renderButton(
+                    {
+                        key: item.group.key,
+                        label: item.group.label,
+                        icon: item.group.icon,
+                        isActive: item.group.isActive,
+                        isDisabled: item.group.isDisabled,
+                    },
+                    () => handleGroupPress(item.group),
+                    {
+                        anchorGroupKey: item.group.key,
+                        showsDisclosure: true,
+                        expanded: item.group.isOpen,
+                    }
+                );
+            }
+            return renderButton(item.button, () => handleButtonPress(item.button));
+        });
 
     return (
         <View
@@ -1211,6 +1287,10 @@ export function EditorToolbar({
             style={[
                 styles.container,
                 !resolvedShowTopBorder && styles.containerWithoutTopBorder,
+                {
+                    minHeight: resolvedToolbarHeight,
+                    paddingVertical: resolvedToolbarPaddingV,
+                },
                 theme?.backgroundColor != null ? { backgroundColor: theme.backgroundColor } : null,
                 theme?.borderColor != null
                     ? resolvedShowTopBorder
@@ -1227,141 +1307,138 @@ export function EditorToolbar({
                 },
             ]}>
             {shouldRenderMentionSuggestions && mentionState != null ? (
-                <ScrollView
-                    testID='editor-toolbar-mention-suggestions'
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    style={[
-                        styles.mentionSuggestionsScroll,
-                        {
-                            backgroundColor:
-                                mentionState.theme?.popoverBackgroundColor ??
-                                mentionState.theme?.backgroundColor ??
-                                'transparent',
-                            borderColor:
-                                mentionState.theme?.popoverBorderColor ??
-                                mentionState.theme?.borderColor ??
-                                'transparent',
-                            borderWidth:
-                                mentionState.theme?.popoverBorderWidth ??
-                                mentionState.theme?.borderWidth ??
-                                0,
-                            borderRadius:
-                                mentionState.theme?.popoverBorderRadius ??
-                                mentionState.theme?.borderRadius ??
-                                0,
-                        },
-                        mentionState.theme?.popoverShadowColor != null
-                            ? {
-                                  shadowColor: mentionState.theme.popoverShadowColor,
-                                  shadowOpacity: 0.14,
-                                  shadowRadius: 12,
-                                  shadowOffset: { width: 0, height: 4 },
-                                  elevation: 8,
-                              }
-                            : null,
-                    ]}
-                    contentContainerStyle={styles.mentionSuggestionsContent}
-                    keyboardShouldPersistTaps='always'>
-                    {mentionState.suggestions.map((suggestion) => {
-                        const label = resolveMentionSuggestionDisplayLabel(
-                            suggestion,
-                            mentionState.trigger
-                        );
-                        const suggestionTheme =
-                            mentionState.suggestionThemes?.[suggestion.key] ?? mentionState.theme;
-                        return (
-                            <Pressable
-                                key={suggestion.key}
-                                testID={`editor-toolbar-mention-suggestion-${suggestion.key}`}
-                                accessibilityRole='button'
-                                accessibilityLabel={label}
-                                onPressIn={handleToolbarPressIn}
-                                onPressOut={handleToolbarPressOut}
-                                onPress={() => mentionState.onSelectSuggestion(suggestion)}
-                                style={({ pressed }) => [
-                                    styles.mentionSuggestion,
-                                    {
-                                        backgroundColor: pressed
-                                            ? (suggestionTheme?.optionHighlightedBackgroundColor ??
-                                              'rgba(0, 122, 255, 0.12)')
-                                            : (suggestionTheme?.backgroundColor ?? '#F2F2F7'),
-                                        borderColor: suggestionTheme?.borderColor ?? 'transparent',
-                                        borderWidth: suggestionTheme?.borderWidth ?? 0,
-                                        borderRadius: suggestionTheme?.borderRadius ?? 12,
-                                    },
-                                ]}>
-                                {({ pressed }) => (
-                                    <>
-                                        <Text
-                                            numberOfLines={1}
-                                            style={[
-                                                styles.mentionSuggestionTitle,
-                                                {
-                                                    fontWeight:
-                                                        suggestionTheme?.fontWeight ?? '600',
-                                                    color: pressed
-                                                        ? (suggestionTheme?.optionHighlightedTextColor ??
-                                                          suggestionTheme?.optionTextColor ??
-                                                          '#000000')
-                                                        : (suggestionTheme?.optionTextColor ??
-                                                          suggestionTheme?.textColor ??
-                                                          '#000000'),
-                                                },
-                                            ]}>
-                                            {label}
-                                        </Text>
-                                        {suggestion.subtitle ? (
+                <View style={styles.toolbarRow}>
+                    {startItems.length > 0 ? (
+                        <View style={styles.fixedSection}>{renderToolbarItems(startItems)}</View>
+                    ) : null}
+                    <ScrollView
+                        testID='editor-toolbar-mention-suggestions'
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        style={[
+                            styles.scrollSection,
+                            styles.mentionSuggestionsScroll,
+                            {
+                                backgroundColor:
+                                    mentionState.theme?.popoverBackgroundColor ??
+                                    mentionState.theme?.backgroundColor ??
+                                    'transparent',
+                                borderColor:
+                                    mentionState.theme?.popoverBorderColor ??
+                                    mentionState.theme?.borderColor ??
+                                    'transparent',
+                                borderWidth:
+                                    mentionState.theme?.popoverBorderWidth ??
+                                    mentionState.theme?.borderWidth ??
+                                    0,
+                                borderRadius:
+                                    mentionState.theme?.popoverBorderRadius ??
+                                    mentionState.theme?.borderRadius ??
+                                    0,
+                            },
+                            mentionState.theme?.popoverShadowColor != null
+                                ? {
+                                      shadowColor: mentionState.theme.popoverShadowColor,
+                                      shadowOpacity: 0.14,
+                                      shadowRadius: 12,
+                                      shadowOffset: { width: 0, height: 4 },
+                                      elevation: 8,
+                                  }
+                                : null,
+                        ]}
+                        contentContainerStyle={styles.mentionSuggestionsContent}
+                        keyboardShouldPersistTaps='always'>
+                        {mentionState.suggestions.map((suggestion) => {
+                            const label = resolveMentionSuggestionDisplayLabel(
+                                suggestion,
+                                mentionState.trigger
+                            );
+                            const suggestionTheme =
+                                mentionState.suggestionThemes?.[suggestion.key] ??
+                                mentionState.theme;
+                            return (
+                                <Pressable
+                                    key={suggestion.key}
+                                    testID={`editor-toolbar-mention-suggestion-${suggestion.key}`}
+                                    accessibilityRole='button'
+                                    accessibilityLabel={label}
+                                    onPressIn={handleToolbarPressIn}
+                                    onPressOut={handleToolbarPressOut}
+                                    onPress={() => mentionState.onSelectSuggestion(suggestion)}
+                                    style={({ pressed }) => [
+                                        styles.mentionSuggestion,
+                                        {
+                                            backgroundColor: pressed
+                                                ? (suggestionTheme?.optionHighlightedBackgroundColor ??
+                                                  'rgba(0, 122, 255, 0.12)')
+                                                : (suggestionTheme?.backgroundColor ?? '#F2F2F7'),
+                                            borderColor: suggestionTheme?.borderColor ?? 'transparent',
+                                            borderWidth: suggestionTheme?.borderWidth ?? 0,
+                                            borderRadius: suggestionTheme?.borderRadius ?? 12,
+                                        },
+                                    ]}>
+                                    {({ pressed }) => (
+                                        <>
                                             <Text
                                                 numberOfLines={1}
                                                 style={[
-                                                    styles.mentionSuggestionSubtitle,
+                                                    styles.mentionSuggestionTitle,
                                                     {
-                                                        color:
-                                                            suggestionTheme?.optionSecondaryTextColor ??
-                                                            '#8E8E93',
+                                                        fontWeight:
+                                                            suggestionTheme?.fontWeight ?? '600',
+                                                        color: pressed
+                                                            ? (suggestionTheme?.optionHighlightedTextColor ??
+                                                              suggestionTheme?.optionTextColor ??
+                                                              '#000000')
+                                                            : (suggestionTheme?.optionTextColor ??
+                                                              suggestionTheme?.textColor ??
+                                                              '#000000'),
                                                     },
                                                 ]}>
-                                                {suggestion.subtitle}
+                                                {label}
                                             </Text>
-                                        ) : null}
-                                    </>
-                                )}
-                            </Pressable>
-                        );
-                    })}
-                </ScrollView>
-            ) : (
-                <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.scrollContent}
-                    keyboardShouldPersistTaps='always'
-                    onScrollBeginDrag={() => setMenuState(null)}>
-                    {renderedItems.map((item) => {
-                        if (item.type === 'separator') {
-                            return renderSeparator(item.key);
-                        }
-                        if (item.type === 'group') {
-                            return renderButton(
-                                {
-                                    key: item.group.key,
-                                    label: item.group.label,
-                                    icon: item.group.icon,
-                                    isActive: item.group.isActive,
-                                    isDisabled: item.group.isDisabled,
-                                },
-                                () => handleGroupPress(item.group),
-                                {
-                                    anchorGroupKey: item.group.key,
-                                    showsDisclosure: true,
-                                    expanded: item.group.isOpen,
-                                }
+                                            {suggestion.subtitle ? (
+                                                <Text
+                                                    numberOfLines={1}
+                                                    style={[
+                                                        styles.mentionSuggestionSubtitle,
+                                                        {
+                                                            color:
+                                                                suggestionTheme?.optionSecondaryTextColor ??
+                                                                '#8E8E93',
+                                                        },
+                                                    ]}>
+                                                    {suggestion.subtitle}
+                                                </Text>
+                                            ) : null}
+                                        </>
+                                    )}
+                                </Pressable>
                             );
-                        }
-                        return renderButton(item.button, () => handleButtonPress(item.button));
-                    })}
-                </ScrollView>
+                        })}
+                    </ScrollView>
+                    {endItems.length > 0 ? (
+                        <View style={styles.fixedSection}>{renderToolbarItems(endItems)}</View>
+                    ) : null}
+                </View>
+            ) : (
+                <View style={styles.toolbarRow}>
+                    {startItems.length > 0 ? (
+                        <View style={styles.fixedSection}>{renderToolbarItems(startItems)}</View>
+                    ) : null}
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        style={styles.scrollSection}
+                        contentContainerStyle={styles.scrollContent}
+                        keyboardShouldPersistTaps='always'
+                        onScrollBeginDrag={() => setMenuState(null)}>
+                        {renderToolbarItems(scrollItems)}
+                    </ScrollView>
+                    {endItems.length > 0 ? (
+                        <View style={styles.fixedSection}>{renderToolbarItems(endItems)}</View>
+                    ) : null}
+                </View>
             )}
             {!shouldRenderMentionSuggestions && menuState != null && menuGroup != null ? (
                 <Modal
@@ -1493,6 +1570,19 @@ const styles = StyleSheet.create({
     },
     mentionSuggestionsScroll: {
         overflow: 'hidden',
+    },
+    toolbarRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    fixedSection: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexShrink: 0,
+    },
+    scrollSection: {
+        flex: 1,
+        minWidth: 0,
     },
     mentionSuggestion: {
         minWidth: 88,

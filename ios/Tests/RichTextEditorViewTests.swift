@@ -775,10 +775,12 @@ final class RichTextEditorViewTests: XCTestCase {
         let theme = EditorTheme(dictionary: [
             "toolbar": [
                 "appearance": "native",
+                "height": 44,
             ],
         ])
 
         XCTAssertEqual(theme.toolbar?.appearance, .native)
+        XCTAssertEqual(theme.toolbar?.height ?? 0, 44, accuracy: 0.1)
         XCTAssertEqual(theme.toolbar?.resolvedKeyboardOffset ?? 0, 6, accuracy: 0.1)
         XCTAssertEqual(theme.toolbar?.resolvedHorizontalInset ?? 0, 10, accuracy: 0.1)
     }
@@ -788,6 +790,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         toolbar.apply(theme: EditorToolbarTheme(dictionary: [
             "appearance": "native",
+            "height": 44,
         ]))
 
         XCTAssertTrue(toolbar.usesNativeAppearanceForTesting)
@@ -801,7 +804,7 @@ final class RichTextEditorViewTests: XCTestCase {
         } else {
             XCTAssertEqual(toolbar.chromeBorderWidthForTesting, 1 / UIScreen.main.scale, accuracy: 0.1)
         }
-        XCTAssertEqual(toolbar.intrinsicContentSize.height, 56, accuracy: 0.1)
+        XCTAssertEqual(toolbar.intrinsicContentSize.height, 50, accuracy: 0.1)
     }
 
     func testAccessoryToolbarAppliesSelectedStateForActiveNativeButton() {
@@ -868,6 +871,89 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(toolbar.buttonCountForTesting(), 3)
         XCTAssertEqual(toolbar.buttonLabelForTesting(1), "Heading 1")
         XCTAssertEqual(toolbar.buttonLabelForTesting(2), "Heading 2")
+    }
+
+    func testAccessoryToolbarGroupedChildrenCanOverrideParentPlacement() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        toolbar.setItemsJSONForTesting("""
+        [
+          {
+            "type": "group",
+            "key": "headings",
+            "label": "Headings",
+            "icon": { "type": "glyph", "text": "H" },
+            "presentation": "expand",
+            "placement": "start",
+            "items": [
+              {
+                "type": "action",
+                "key": "inherited",
+                "label": "Inherited",
+                "icon": { "type": "glyph", "text": "I" }
+              },
+              {
+                "type": "action",
+                "key": "pinned",
+                "label": "Pinned",
+                "icon": { "type": "glyph", "text": "P" },
+                "placement": "end"
+              }
+            ]
+          }
+        ]
+        """)
+
+        XCTAssertEqual(toolbar.buttonLabelsForPlacementForTesting("start"), ["Headings"])
+        XCTAssertEqual(toolbar.buttonLabelsForPlacementForTesting("end"), [])
+
+        toolbar.triggerButtonTapForTesting(0)
+
+        XCTAssertEqual(toolbar.buttonLabelsForPlacementForTesting("start"), ["Headings", "Inherited"])
+        XCTAssertEqual(toolbar.buttonLabelsForPlacementForTesting("end"), ["Pinned"])
+    }
+
+    func testAccessoryToolbarEnablesListDepthCommandsForTaskLists() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        toolbar.setItemsJSONForTesting("""
+        [
+          {
+            "type": "command",
+            "command": "indentList",
+            "label": "Indent",
+            "icon": { "type": "default", "id": "indentList" }
+          },
+          {
+            "type": "command",
+            "command": "outdentList",
+            "label": "Outdent",
+            "icon": { "type": "default", "id": "outdentList" }
+          }
+        ]
+        """)
+        toolbar.applyStateJSONForTesting("""
+        {
+          "activeState": {
+            "marks": {},
+            "nodes": {
+              "taskList": true,
+              "taskItem": true
+            },
+            "commands": {
+              "indentList": true,
+              "outdentList": true
+            },
+            "allowedMarks": [],
+            "insertableNodes": []
+          },
+          "historyState": {
+            "canUndo": false,
+            "canRedo": false
+          }
+        }
+        """)
+
+        XCTAssertEqual(toolbar.buttonIsEnabledForTesting(0), true)
+        XCTAssertEqual(toolbar.buttonIsEnabledForTesting(1), true)
     }
 
     func testAccessoryToolbarGroupReflectsActiveChildState() {

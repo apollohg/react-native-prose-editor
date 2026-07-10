@@ -694,8 +694,8 @@ final class RenderBridgeTests: XCTestCase {
         let firstAttrs = result.attributes(at: 0, effectiveRange: nil)
         let firstStyle = firstAttrs[.paragraphStyle] as? NSParagraphStyle
         XCTAssertNotNil(firstAttrs[RenderBridgeAttributes.listContext])
-        XCTAssertEqual(firstStyle?.firstLineHeadIndent, 68.0)
-        XCTAssertEqual(firstStyle?.headIndent, 68.0)
+        XCTAssertEqual(firstStyle?.firstLineHeadIndent, 48.0 + LayoutConstants.listMarkerWidth)
+        XCTAssertEqual(firstStyle?.headIndent, 48.0 + LayoutConstants.listMarkerWidth)
     }
 
     // MARK: - Unordered List
@@ -986,11 +986,11 @@ final class RenderBridgeTests: XCTestCase {
 
         let baseIndent: CGFloat = 1 * 24.0  // depth * indentPerDepth
         XCTAssertEqual(
-            style.firstLineHeadIndent, baseIndent + 20.0,
+            style.firstLineHeadIndent, baseIndent + LayoutConstants.listMarkerWidth,
             "List item first line indent should reserve marker width"
         )
         XCTAssertEqual(
-            style.headIndent, baseIndent + 20.0,  // + listMarkerWidth
+            style.headIndent, baseIndent + LayoutConstants.listMarkerWidth,
             "List item head indent should include marker width"
         )
     }

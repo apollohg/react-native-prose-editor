@@ -233,6 +233,12 @@ private enum ToolbarGroupPresentation: String {
     case menu
 }
 
+private enum ToolbarItemPlacement: String {
+    case start
+    case scroll
+    case end
+}
+
 private struct NativeToolbarIcon {
     let defaultId: ToolbarDefaultIconId?
     let glyphText: String?
@@ -376,9 +382,44 @@ private struct NativeToolbarItem {
     let nodeType: String?
     let isActive: Bool
     let isDisabled: Bool
+    let placement: ToolbarItemPlacement?
     let presentation: ToolbarGroupPresentation?
     let items: [NativeToolbarItem]
     let parentGroupKey: String?
+
+    init(
+        type: ToolbarItemKind,
+        key: String?,
+        label: String?,
+        icon: NativeToolbarIcon?,
+        mark: String?,
+        headingLevel: Int?,
+        listType: ToolbarListType?,
+        command: ToolbarCommand?,
+        nodeType: String?,
+        isActive: Bool,
+        isDisabled: Bool,
+        placement: ToolbarItemPlacement? = nil,
+        presentation: ToolbarGroupPresentation?,
+        items: [NativeToolbarItem],
+        parentGroupKey: String?
+    ) {
+        self.type = type
+        self.key = key
+        self.label = label
+        self.icon = icon
+        self.mark = mark
+        self.headingLevel = headingLevel
+        self.listType = listType
+        self.command = command
+        self.nodeType = nodeType
+        self.isActive = isActive
+        self.isDisabled = isDisabled
+        self.placement = placement
+        self.presentation = presentation
+        self.items = items
+        self.parentGroupKey = parentGroupKey
+    }
 
     static let defaults: [NativeToolbarItem] = [
         NativeToolbarItem(type: .mark, key: nil, label: "Bold", icon: .defaultIcon(.bold), mark: "bold", headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
@@ -410,6 +451,8 @@ private struct NativeToolbarItem {
         }
 
         let key = rawItem["key"] as? String
+        let placement = (rawItem["placement"] as? String)
+            .flatMap(ToolbarItemPlacement.init(rawValue:))
         switch type {
         case .separator:
             guard allowSeparator else { return nil }
@@ -425,6 +468,7 @@ private struct NativeToolbarItem {
                 nodeType: nil,
                 isActive: false,
                 isDisabled: false,
+                placement: placement,
                 presentation: nil,
                 items: [],
                 parentGroupKey: nil
@@ -448,6 +492,7 @@ private struct NativeToolbarItem {
                 nodeType: nil,
                 isActive: false,
                 isDisabled: false,
+                placement: placement,
                 presentation: nil,
                 items: [],
                 parentGroupKey: nil
@@ -472,6 +517,7 @@ private struct NativeToolbarItem {
                 nodeType: nil,
                 isActive: false,
                 isDisabled: false,
+                placement: placement,
                 presentation: nil,
                 items: [],
                 parentGroupKey: nil
@@ -494,6 +540,7 @@ private struct NativeToolbarItem {
                 nodeType: nil,
                 isActive: false,
                 isDisabled: false,
+                placement: placement,
                 presentation: nil,
                 items: [],
                 parentGroupKey: nil
@@ -518,6 +565,7 @@ private struct NativeToolbarItem {
                 nodeType: nil,
                 isActive: false,
                 isDisabled: false,
+                placement: placement,
                 presentation: nil,
                 items: [],
                 parentGroupKey: nil
@@ -542,6 +590,7 @@ private struct NativeToolbarItem {
                 nodeType: nil,
                 isActive: false,
                 isDisabled: false,
+                placement: placement,
                 presentation: nil,
                 items: [],
                 parentGroupKey: nil
@@ -565,6 +614,7 @@ private struct NativeToolbarItem {
                 nodeType: nodeType,
                 isActive: false,
                 isDisabled: false,
+                placement: placement,
                 presentation: nil,
                 items: [],
                 parentGroupKey: nil
@@ -588,6 +638,7 @@ private struct NativeToolbarItem {
                 nodeType: nil,
                 isActive: (rawItem["isActive"] as? Bool) ?? false,
                 isDisabled: (rawItem["isDisabled"] as? Bool) ?? false,
+                placement: placement,
                 presentation: nil,
                 items: [],
                 parentGroupKey: nil
@@ -620,6 +671,7 @@ private struct NativeToolbarItem {
                 nodeType: nil,
                 isActive: false,
                 isDisabled: false,
+                placement: placement,
                 presentation: presentation,
                 items: children,
                 parentGroupKey: nil
@@ -665,7 +717,10 @@ private struct NativeToolbarItem {
         }
     }
 
-    func with(parentGroupKey: String?) -> NativeToolbarItem {
+    func with(
+        parentGroupKey: String?,
+        inheritedPlacement: ToolbarItemPlacement? = nil
+    ) -> NativeToolbarItem {
         NativeToolbarItem(
             type: type,
             key: key,
@@ -678,6 +733,7 @@ private struct NativeToolbarItem {
             nodeType: nodeType,
             isActive: isActive,
             isDisabled: isDisabled,
+            placement: placement ?? inheritedPlacement,
             presentation: presentation,
             items: items,
             parentGroupKey: parentGroupKey
@@ -697,6 +753,8 @@ final class EditorAccessoryToolbarView: UIInputView {
     private struct ButtonBinding {
         let item: NativeToolbarItem
         let button: UIButton
+        let widthConstraint: NSLayoutConstraint
+        let heightConstraint: NSLayoutConstraint
     }
 
     private struct BarButtonBinding {
@@ -704,12 +762,21 @@ final class EditorAccessoryToolbarView: UIInputView {
         let button: UIBarButtonItem
     }
 
+    private struct VisibleToolbarItemsByPlacement {
+        let start: [NativeToolbarItem]
+        let scroll: [NativeToolbarItem]
+        let end: [NativeToolbarItem]
+    }
+
     private let chromeView = UIView()
     private let blurView = UIVisualEffectView(effect: nil)
     private let glassTintView = UIView()
     private let nativeToolbarScrollView = UIScrollView()
     private let nativeToolbarView = UIToolbar()
+    private let bodyStackView = UIStackView()
+    private let startPinnedStackView = UIStackView()
     private let contentStackView = UIStackView()
+    private let endPinnedStackView = UIStackView()
     private let mentionScrollView = UIScrollView()
     private let mentionStackView = UIStackView()
     private let scrollView = UIScrollView()
@@ -719,6 +786,8 @@ final class EditorAccessoryToolbarView: UIInputView {
     private var chromeBottomConstraint: NSLayoutConstraint?
     private var nativeToolbarWidthConstraint: NSLayoutConstraint?
     private var mentionRowHeightConstraint: NSLayoutConstraint?
+    private var nativeToolbarMinHeightConstraint: NSLayoutConstraint?
+    private var scrollViewHeightConstraint: NSLayoutConstraint?
     private var nativeToolbarDidInitializeScrollPosition = false
     private var buttonBindings: [ButtonBinding] = []
     private var barButtonBindings: [BarButtonBinding] = []
@@ -793,13 +862,38 @@ final class EditorAccessoryToolbarView: UIInputView {
     func buttonLabelForTesting(_ index: Int) -> String? {
         buttonBindings.indices.contains(index) ? buttonBindings[index].button.accessibilityLabel : nil
     }
+    func buttonIsEnabledForTesting(_ index: Int) -> Bool? {
+        buttonBindings.indices.contains(index) ? buttonBindings[index].button.isEnabled : nil
+    }
+    func buttonLabelsForPlacementForTesting(_ rawPlacement: String) -> [String] {
+        guard let placement = ToolbarItemPlacement(rawValue: rawPlacement) else { return [] }
+        switch placement {
+        case .start:
+            return startPinnedStackView.arrangedSubviews.compactMap {
+                ($0 as? UIButton)?.accessibilityLabel
+            }
+        case .end:
+            return endPinnedStackView.arrangedSubviews.compactMap {
+                ($0 as? UIButton)?.accessibilityLabel
+            }
+        case .scroll:
+#if compiler(>=6.2)
+            if #available(iOS 26.0, *), usesNativeBarToolbar {
+                return barButtonBindings.compactMap { $0.button.accessibilityLabel }
+            }
+#endif
+            return stackView.arrangedSubviews.compactMap {
+                ($0 as? UIButton)?.accessibilityLabel
+            }
+        }
+    }
     func triggerButtonTapForTesting(_ index: Int) {
         guard buttonBindings.indices.contains(index) else { return }
         buttonBindings[index].button.sendActions(for: .touchUpInside)
     }
 
     override var intrinsicContentSize: CGSize {
-        let contentHeight = mentionButtons.isEmpty ? Self.baseHeight : Self.mentionRowHeight
+        let contentHeight = mentionButtons.isEmpty ? resolvedToolbarHeight : Self.mentionRowHeight
         return CGSize(
             width: UIView.noIntrinsicMetric,
             height: contentHeight + resolvedKeyboardOffset
@@ -984,6 +1078,9 @@ final class EditorAccessoryToolbarView: UIInputView {
         chromeLeadingConstraint?.constant = resolvedHorizontalInset
         chromeTrailingConstraint?.constant = -resolvedHorizontalInset
         chromeBottomConstraint?.constant = -resolvedKeyboardOffset
+        nativeToolbarWidthConstraint?.constant = resolvedToolbarHeight
+        nativeToolbarMinHeightConstraint?.constant = resolvedToolbarHeight
+        scrollViewHeightConstraint?.constant = resolvedToolbarHeight
         nativeToolbarScrollView.isHidden = !(usesBarToolbar && mentionButtons.isEmpty)
         nativeToolbarView.isHidden = !(usesBarToolbar && mentionButtons.isEmpty)
         nativeToolbarView.tintColor = usesNativeAppearance
@@ -999,6 +1096,8 @@ final class EditorAccessoryToolbarView: UIInputView {
         }
         for binding in buttonBindings {
             binding.button.layer.cornerRadius = resolvedButtonBorderRadius
+            binding.widthConstraint.constant = resolvedButtonSize
+            binding.heightConstraint.constant = resolvedButtonSize
         }
         for button in mentionButtons {
             button.apply(theme: mentionTheme, toolbarAppearance: resolvedAppearance)
@@ -1134,10 +1233,34 @@ final class EditorAccessoryToolbarView: UIInputView {
         nativeToolbarView.setContentCompressionResistancePriority(.required, for: .vertical)
         nativeToolbarScrollView.addSubview(nativeToolbarView)
 
+        bodyStackView.translatesAutoresizingMaskIntoConstraints = false
+        bodyStackView.axis = .horizontal
+        bodyStackView.alignment = .fill
+        bodyStackView.spacing = 0
+        chromeView.addSubview(bodyStackView)
+
+        startPinnedStackView.translatesAutoresizingMaskIntoConstraints = false
+        startPinnedStackView.axis = .horizontal
+        startPinnedStackView.alignment = .center
+        startPinnedStackView.spacing = 6
+        startPinnedStackView.setContentHuggingPriority(.required, for: .horizontal)
+        startPinnedStackView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        bodyStackView.addArrangedSubview(startPinnedStackView)
+
         contentStackView.translatesAutoresizingMaskIntoConstraints = false
         contentStackView.axis = .vertical
         contentStackView.spacing = 0
-        chromeView.addSubview(contentStackView)
+        contentStackView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        contentStackView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        bodyStackView.addArrangedSubview(contentStackView)
+
+        endPinnedStackView.translatesAutoresizingMaskIntoConstraints = false
+        endPinnedStackView.axis = .horizontal
+        endPinnedStackView.alignment = .center
+        endPinnedStackView.spacing = 6
+        endPinnedStackView.setContentHuggingPriority(.required, for: .horizontal)
+        endPinnedStackView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        bodyStackView.addArrangedSubview(endPinnedStackView)
 
         mentionScrollView.translatesAutoresizingMaskIntoConstraints = false
         mentionScrollView.showsHorizontalScrollIndicator = false
@@ -1179,8 +1302,12 @@ final class EditorAccessoryToolbarView: UIInputView {
         chromeBottomConstraint = bottom
         let mentionHeight = mentionScrollView.heightAnchor.constraint(equalToConstant: 0)
         mentionRowHeightConstraint = mentionHeight
-        let nativeToolbarWidth = nativeToolbarView.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.baseHeight)
+        let nativeToolbarWidth = nativeToolbarView.widthAnchor.constraint(greaterThanOrEqualToConstant: resolvedToolbarHeight)
         nativeToolbarWidthConstraint = nativeToolbarWidth
+        let nativeToolbarMinHeight = nativeToolbarView.heightAnchor.constraint(greaterThanOrEqualToConstant: resolvedToolbarHeight)
+        nativeToolbarMinHeightConstraint = nativeToolbarMinHeight
+        let scrollViewHeight = scrollView.heightAnchor.constraint(equalToConstant: resolvedToolbarHeight)
+        scrollViewHeightConstraint = scrollViewHeight
 
         NSLayoutConstraint.activate([
             chromeView.topAnchor.constraint(equalTo: topAnchor),
@@ -1208,13 +1335,13 @@ final class EditorAccessoryToolbarView: UIInputView {
             nativeToolbarView.trailingAnchor.constraint(equalTo: nativeToolbarScrollView.contentLayoutGuide.trailingAnchor),
             nativeToolbarView.bottomAnchor.constraint(equalTo: nativeToolbarScrollView.contentLayoutGuide.bottomAnchor),
             nativeToolbarView.heightAnchor.constraint(equalTo: nativeToolbarScrollView.frameLayoutGuide.heightAnchor),
-            nativeToolbarView.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.baseHeight),
+            nativeToolbarMinHeight,
             nativeToolbarWidth,
 
-            contentStackView.topAnchor.constraint(equalTo: chromeView.topAnchor, constant: 6),
-            contentStackView.leadingAnchor.constraint(equalTo: chromeView.leadingAnchor),
-            contentStackView.trailingAnchor.constraint(equalTo: chromeView.trailingAnchor),
-            contentStackView.bottomAnchor.constraint(equalTo: chromeView.safeAreaLayoutGuide.bottomAnchor, constant: -6),
+            bodyStackView.topAnchor.constraint(equalTo: chromeView.topAnchor, constant: 6),
+            bodyStackView.leadingAnchor.constraint(equalTo: chromeView.leadingAnchor),
+            bodyStackView.trailingAnchor.constraint(equalTo: chromeView.trailingAnchor),
+            bodyStackView.bottomAnchor.constraint(equalTo: chromeView.safeAreaLayoutGuide.bottomAnchor, constant: -6),
 
             mentionHeight,
 
@@ -1229,7 +1356,7 @@ final class EditorAccessoryToolbarView: UIInputView {
             stackView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -12),
             stackView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -6),
             stackView.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor, constant: -12),
-            scrollView.heightAnchor.constraint(equalToConstant: Self.baseHeight),
+            scrollViewHeight,
         ])
 
     }
@@ -1239,27 +1366,27 @@ final class EditorAccessoryToolbarView: UIInputView {
         barButtonBindings.removeAll()
         separators.removeAll()
         nativeToolbarDidInitializeScrollPosition = false
+        for arrangedSubview in startPinnedStackView.arrangedSubviews {
+            startPinnedStackView.removeArrangedSubview(arrangedSubview)
+            arrangedSubview.removeFromSuperview()
+        }
         for arrangedSubview in stackView.arrangedSubviews {
             stackView.removeArrangedSubview(arrangedSubview)
             arrangedSubview.removeFromSuperview()
         }
-
-        let visibleItems = visibleToolbarItems()
-
-        for item in visibleItems {
-            if item.type == .separator {
-                stackView.addArrangedSubview(makeSeparator())
-                continue
-            }
-
-            let button = makeButton(item: item)
-            buttonBindings.append(ButtonBinding(item: item, button: button))
-            stackView.addArrangedSubview(button)
+        for arrangedSubview in endPinnedStackView.arrangedSubviews {
+            endPinnedStackView.removeArrangedSubview(arrangedSubview)
+            arrangedSubview.removeFromSuperview()
         }
+
+        let visibleItems = visibleToolbarItemsByPlacement()
+        rebuildButtons(items: visibleItems.start, in: startPinnedStackView)
+        rebuildButtons(items: visibleItems.scroll, in: stackView)
+        rebuildButtons(items: visibleItems.end, in: endPinnedStackView)
 
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
-            nativeToolbarView.setItems(makeNativeToolbarItems(from: visibleItems), animated: false)
+            nativeToolbarView.setItems(makeNativeToolbarItems(from: visibleItems.scroll), animated: false)
         } else {
             nativeToolbarView.setItems([], animated: false)
         }
@@ -1270,6 +1397,17 @@ final class EditorAccessoryToolbarView: UIInputView {
         updateNativeToolbarMetricsIfNeeded()
         apply(theme: theme)
         apply(state: currentState)
+    }
+
+    private func rebuildButtons(items: [NativeToolbarItem], in container: UIStackView) {
+        for item in items {
+            if item.type == .separator {
+                container.addArrangedSubview(makeSeparator())
+                continue
+            }
+
+            container.addArrangedSubview(makeButton(item: item))
+        }
     }
 
     private func compactToolbarItems(_ items: [NativeToolbarItem]) -> [NativeToolbarItem] {
@@ -1288,10 +1426,35 @@ final class EditorAccessoryToolbarView: UIInputView {
                (item.presentation ?? .expand) == .expand,
                expandedGroupKey == item.key
             {
-                visible.append(contentsOf: item.items.map { $0.with(parentGroupKey: item.key) })
+                visible.append(contentsOf: item.items.map {
+                    $0.with(parentGroupKey: item.key, inheritedPlacement: item.placement)
+                })
             }
         }
         return compactToolbarItems(visible)
+    }
+
+    private func visibleToolbarItemsByPlacement() -> VisibleToolbarItemsByPlacement {
+        var start: [NativeToolbarItem] = []
+        var scroll: [NativeToolbarItem] = []
+        var end: [NativeToolbarItem] = []
+
+        for item in visibleToolbarItems() {
+            switch item.placement ?? .scroll {
+            case .start:
+                start.append(item)
+            case .scroll:
+                scroll.append(item)
+            case .end:
+                end.append(item)
+            }
+        }
+
+        return VisibleToolbarItemsByPlacement(
+            start: compactToolbarItems(start),
+            scroll: compactToolbarItems(scroll),
+            end: compactToolbarItems(end)
+        )
     }
 
     private func handleToolbarButtonPress(_ item: NativeToolbarItem) {
@@ -1344,13 +1507,13 @@ final class EditorAccessoryToolbarView: UIInputView {
     private func updateNativeToolbarMetricsIfNeeded() {
 #if compiler(>=6.2)
         guard #available(iOS 26.0, *), usesNativeBarToolbar else {
-            nativeToolbarWidthConstraint?.constant = Self.baseHeight
+            nativeToolbarWidthConstraint?.constant = resolvedToolbarHeight
             nativeToolbarDidInitializeScrollPosition = false
             return
         }
 
         let availableWidth = max(chromeView.bounds.width, bounds.width, 1)
-        let targetHeight = max(chromeView.bounds.height, Self.baseHeight)
+        let targetHeight = max(chromeView.bounds.height, resolvedToolbarHeight)
         nativeToolbarView.layoutIfNeeded()
         let fittingSize = nativeToolbarView.sizeThatFits(
             CGSize(width: CGFloat.greatestFiniteMagnitude, height: targetHeight)
@@ -1395,7 +1558,7 @@ final class EditorAccessoryToolbarView: UIInputView {
             )
         }
 #else
-        nativeToolbarWidthConstraint?.constant = Self.baseHeight
+        nativeToolbarWidthConstraint?.constant = resolvedToolbarHeight
         nativeToolbarDidInitializeScrollPosition = false
 #endif
     }
@@ -1493,8 +1656,11 @@ final class EditorAccessoryToolbarView: UIInputView {
             button.setImage(nil, for: .normal)
             button.setTitle(item.icon?.resolvedGlyphText() ?? "?", for: .normal)
         }
-        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        let buttonSize = resolvedButtonSize
+        let widthConstraint = button.widthAnchor.constraint(greaterThanOrEqualToConstant: buttonSize)
+        let heightConstraint = button.heightAnchor.constraint(equalToConstant: buttonSize)
+        widthConstraint.isActive = true
+        heightConstraint.isActive = true
         if item.type == .group,
            (item.presentation ?? .expand) == .menu,
            #available(iOS 14.0, *)
@@ -1507,6 +1673,14 @@ final class EditorAccessoryToolbarView: UIInputView {
             }, for: .touchUpInside)
         }
         updateButtonAppearance(button, item: item, enabled: true, active: false)
+        buttonBindings.append(
+            ButtonBinding(
+                item: item,
+                button: button,
+                widthConstraint: widthConstraint,
+                heightConstraint: heightConstraint
+            )
+        )
         return button
     }
 
@@ -1524,8 +1698,6 @@ final class EditorAccessoryToolbarView: UIInputView {
         for item: NativeToolbarItem,
         state: NativeToolbarState
     ) -> (enabled: Bool, active: Bool) {
-        let isInList = state.nodes["bulletList"] == true || state.nodes["orderedList"] == true
-
         switch item.type {
         case .mark:
             let mark = item.mark ?? ""
@@ -1564,12 +1736,12 @@ final class EditorAccessoryToolbarView: UIInputView {
             switch item.command {
             case .indentList:
                 return (
-                    enabled: isInList && state.commands["indentList"] == true,
+                    enabled: state.commands["indentList"] == true,
                     active: false
                 )
             case .outdentList:
                 return (
-                    enabled: isInList && state.commands["outdentList"] == true,
+                    enabled: state.commands["outdentList"] == true,
                     active: false
                 )
             case .undo:
@@ -1691,6 +1863,17 @@ final class EditorAccessoryToolbarView: UIInputView {
 
     private var resolvedBorderWidth: CGFloat {
         theme?.resolvedBorderWidth ?? 0.5
+    }
+
+    private var resolvedToolbarHeight: CGFloat {
+        max(theme?.height ?? Self.baseHeight, 1)
+    }
+
+    private var resolvedButtonSize: CGFloat {
+        if theme?.height == nil {
+            return 36
+        }
+        return max(1, min(40, resolvedToolbarHeight - 4))
     }
 
     private var resolvedButtonBorderRadius: CGFloat {

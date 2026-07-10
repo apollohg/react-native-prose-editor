@@ -85,6 +85,16 @@ class RichTextEditorViewTest {
         ]
     """.trimIndent()
 
+    private fun singleTaskListRenderJson(): String = """
+        [
+          {"type":"blockStart","nodeType":"taskItem","depth":0,"listContext":{"ordered":false,"index":1,"total":1,"start":1,"isFirst":true,"isLast":true,"kind":"task","checked":false}},
+          {"type":"blockStart","nodeType":"paragraph","depth":1},
+          {"type":"textRun","text":"Task item","marks":[]},
+          {"type":"blockEnd"},
+          {"type":"blockEnd"}
+        ]
+    """.trimIndent()
+
     private fun emptyParagraphRenderJson(): String = """
         [
           {"type":"blockStart","nodeType":"paragraph","depth":0},
@@ -772,6 +782,69 @@ class RichTextEditorViewTest {
         up.recycle()
 
         assertNull("Tapping an image should not show the resize overlay when disabled", view.imageResizeOverlayRectForTesting())
+    }
+
+    @Test
+    fun `tapping rendered task marker toggles task item`() {
+        val context = RuntimeEnvironment.getApplication()
+        val editText = EditorEditText(context)
+        editText.editorId = 1
+        editText.applyRenderJSON(singleTaskListRenderJson())
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        editText.measure(widthSpec, heightSpec)
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+
+        val textLayout = requireNotNull(editText.layout)
+        val tapX = editText.totalPaddingLeft + 1f
+        val tapY = editText.totalPaddingTop +
+            ((textLayout.getLineTop(0) + textLayout.getLineBottom(0)) / 2f)
+        val toggles = mutableListOf<Pair<Int, Int>>()
+        editText.onToggleTaskItemCheckedAtSelectionScalarInRustForTesting = { anchor, head ->
+            toggles += anchor to head
+        }
+
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, tapX, tapY, 0)
+        editText.onTouchEvent(down)
+        down.recycle()
+
+        val up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, tapX, tapY, 0)
+        editText.onTouchEvent(up)
+        up.recycle()
+
+        assertEquals(listOf(0 to 0), toggles)
+    }
+
+    @Test
+    fun `tapping below rendered task marker does not toggle nearest task item`() {
+        val context = RuntimeEnvironment.getApplication()
+        val editText = EditorEditText(context)
+        editText.editorId = 1
+        editText.applyRenderJSON(singleTaskListRenderJson())
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+        editText.measure(widthSpec, heightSpec)
+        editText.layout(0, 0, editText.measuredWidth, editText.measuredHeight)
+
+        val textLayout = requireNotNull(editText.layout)
+        val tapX = editText.totalPaddingLeft + 1f
+        val tapY = editText.totalPaddingTop + textLayout.getLineBottom(0) + 24f
+        var toggleCount = 0
+        editText.onToggleTaskItemCheckedAtSelectionScalarInRustForTesting = { _, _ ->
+            toggleCount += 1
+        }
+
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, tapX, tapY, 0)
+        editText.onTouchEvent(down)
+        down.recycle()
+
+        val up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, tapX, tapY, 0)
+        editText.onTouchEvent(up)
+        up.recycle()
+
+        assertEquals(0, toggleCount)
     }
 
     @Test

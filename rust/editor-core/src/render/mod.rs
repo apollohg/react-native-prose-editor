@@ -10,6 +10,8 @@ pub struct ListContext {
     pub start: u32,
     pub is_first: bool,
     pub is_last: bool,
+    pub kind: Option<String>,
+    pub checked: Option<bool>,
 }
 
 /// A renderable inline mark for native text builders.
@@ -69,6 +71,15 @@ pub fn list_marker_string(ordered: bool, index: u32) -> String {
         format!("{index}. ")
     } else {
         "\u{2022} ".to_string()
+    }
+}
+
+/// Visible text used for a task-list marker.
+pub fn task_list_marker_string(checked: bool) -> String {
+    if checked {
+        "\u{2611} ".to_string()
+    } else {
+        "\u{2610} ".to_string()
     }
 }
 

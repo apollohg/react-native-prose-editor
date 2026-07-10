@@ -80,6 +80,7 @@ class NativeToolbarTest {
                 "label": "Headings",
                 "icon": { "type": "glyph", "text": "H" },
                 "presentation": "menu",
+                "placement": "start",
                 "items": [
                   {
                     "type": "heading",
@@ -91,7 +92,8 @@ class NativeToolbarTest {
                     "type": "heading",
                     "level": 2,
                     "label": "Heading 2",
-                    "icon": { "type": "default", "id": "h2" }
+                    "icon": { "type": "default", "id": "h2" },
+                    "placement": "end"
                   }
                 ]
               }
@@ -102,8 +104,10 @@ class NativeToolbarTest {
         assertEquals(1, items.size)
         assertEquals(ToolbarItemKind.group, items[0].type)
         assertEquals(ToolbarGroupPresentation.menu, items[0].presentation)
+        assertEquals(ToolbarItemPlacement.start, items[0].placement)
         assertEquals(2, items[0].items.size)
         assertEquals(ToolbarItemKind.heading, items[0].items[0].type)
+        assertEquals(ToolbarItemPlacement.end, items[0].items[1].placement)
     }
 
     @Test
@@ -178,6 +182,42 @@ class NativeToolbarTest {
     }
 
     @Test
+    fun `native toolbar enables list depth commands for task lists`() {
+        val context = RuntimeEnvironment.getApplication()
+        val toolbar = EditorKeyboardToolbarView(context)
+        toolbar.setItems(
+            listOf(
+                NativeToolbarItem(
+                    type = ToolbarItemKind.command,
+                    label = "Indent",
+                    icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.indentList),
+                    command = ToolbarCommand.indentList
+                ),
+                NativeToolbarItem(
+                    type = ToolbarItemKind.command,
+                    label = "Outdent",
+                    icon = NativeToolbarIcon(defaultId = ToolbarDefaultIconId.outdentList),
+                    command = ToolbarCommand.outdentList
+                )
+            )
+        )
+        toolbar.applyState(
+            NativeToolbarState(
+                marks = emptyMap(),
+                nodes = mapOf("taskList" to true, "taskItem" to true),
+                commands = mapOf("indentList" to true, "outdentList" to true),
+                allowedMarks = emptySet(),
+                insertableNodes = emptySet(),
+                canUndo = false,
+                canRedo = false
+            )
+        )
+
+        assertTrue(requireNotNull(toolbar.buttonAtForTesting(0)).isEnabled)
+        assertTrue(requireNotNull(toolbar.buttonAtForTesting(1)).isEnabled)
+    }
+
+    @Test
     fun `native toolbar expands grouped buttons inline`() {
         val context = RuntimeEnvironment.getApplication()
         val toolbar = EditorKeyboardToolbarView(context)
@@ -225,6 +265,50 @@ class NativeToolbarTest {
         assertEquals(3, toolbar.buttonCountForTesting())
         assertEquals("Heading 1", toolbar.buttonAtForTesting(1)?.contentDescription)
         assertEquals("Heading 2", toolbar.buttonAtForTesting(2)?.contentDescription)
+    }
+
+    @Test
+    fun `native toolbar lets grouped children override parent placement`() {
+        val context = RuntimeEnvironment.getApplication()
+        val toolbar = EditorKeyboardToolbarView(context)
+        toolbar.setItems(
+            listOf(
+                NativeToolbarItem(
+                    type = ToolbarItemKind.group,
+                    key = "headings",
+                    label = "Headings",
+                    icon = NativeToolbarIcon(glyphText = "H"),
+                    placement = ToolbarItemPlacement.start,
+                    presentation = ToolbarGroupPresentation.expand,
+                    items = listOf(
+                        NativeToolbarItem(
+                            type = ToolbarItemKind.action,
+                            key = "inherited",
+                            label = "Inherited",
+                            icon = NativeToolbarIcon(glyphText = "I")
+                        ),
+                        NativeToolbarItem(
+                            type = ToolbarItemKind.action,
+                            key = "pinned",
+                            label = "Pinned",
+                            icon = NativeToolbarIcon(glyphText = "P"),
+                            placement = ToolbarItemPlacement.end
+                        )
+                    )
+                )
+            )
+        )
+
+        assertEquals(listOf("Headings"), toolbar.buttonLabelsForPlacementForTesting(ToolbarItemPlacement.start))
+        assertEquals(emptyList<String>(), toolbar.buttonLabelsForPlacementForTesting(ToolbarItemPlacement.end))
+
+        requireNotNull(toolbar.buttonAtForTesting(0)).performClick()
+
+        assertEquals(
+            listOf("Headings", "Inherited"),
+            toolbar.buttonLabelsForPlacementForTesting(ToolbarItemPlacement.start)
+        )
+        assertEquals(listOf("Pinned"), toolbar.buttonLabelsForPlacementForTesting(ToolbarItemPlacement.end))
     }
 
     @Test
@@ -280,13 +364,15 @@ class NativeToolbarTest {
             org.json.JSONObject(
                 """
                 {
-                  "appearance": "native"
+                  "appearance": "native",
+                  "height": 44
                 }
                 """.trimIndent()
             )
         )
 
         assertEquals(EditorToolbarAppearance.NATIVE, theme?.appearance)
+        assertEquals(44f, theme?.height)
         assertEquals(8f, theme?.resolvedKeyboardOffset())
         assertEquals(0f, theme?.resolvedHorizontalInset())
     }

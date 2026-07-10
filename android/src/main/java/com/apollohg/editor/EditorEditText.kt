@@ -303,6 +303,7 @@ class EditorEditText @JvmOverloads constructor(
     private var restartInputSelectionUpdateGeneration: Long = 0L
     internal var onDeleteRangeInRustForTesting: ((Int, Int) -> Unit)? = null
     internal var onDeleteBackwardAtSelectionScalarInRustForTesting: ((Int, Int) -> Unit)? = null
+    internal var onToggleTaskItemCheckedAtSelectionScalarInRustForTesting: ((Int, Int) -> Unit)? = null
     internal var onInsertTextInRustForTesting: ((String, Int) -> Unit)? = null
     internal var onReplaceTextInRustForTesting: ((Int, Int, String) -> Unit)? = null
     internal var onSetSelectionScalarInRustForTesting: ((Int, Int) -> Unit)? = null
@@ -747,6 +748,9 @@ class EditorEditText @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.actionMasked == MotionEvent.ACTION_DOWN && imageSpanHitAt(event.x, event.y) == null) {
             clearExplicitSelectedImageRange()
+        }
+        if (handleTaskListMarkerTap(event)) {
+            return true
         }
         if (handleImageTap(event)) {
             return true
@@ -3290,6 +3294,25 @@ class EditorEditText @JvmOverloads constructor(
         applyRustUpdateJSON(updateJSON)
     }
 
+    private fun toggleTaskItemCheckedAtSelectionScalarInRust(scalarAnchor: Int, scalarHead: Int) {
+        if (!hasLiveEditor()) return
+        onToggleTaskItemCheckedAtSelectionScalarInRustForTesting?.let { callback ->
+            callback(scalarAnchor, scalarHead)
+            return
+        }
+        val startedAt = System.nanoTime()
+        val updateJSON = editorToggleTaskItemCheckedAtSelectionScalar(
+            editorId.toULong(),
+            scalarAnchor.toUInt(),
+            scalarHead.toUInt()
+        )
+        recordImeTraceForTesting(
+            "rustToggleTaskItemChecked",
+            "selection=$scalarAnchor..$scalarHead rustUs=${nanosToMicros(System.nanoTime() - startedAt)} jsonLength=${updateJSON.length}"
+        )
+        applyRustUpdateJSON(updateJSON)
+    }
+
     /**
      * Split a block at a scalar position via the Rust editor.
      */
@@ -3452,6 +3475,9 @@ class EditorEditText @JvmOverloads constructor(
 
     private fun renderedListMarkerEnd(text: String, start: Int, endExclusive: Int): Int? {
         if (start >= endExclusive) return null
+        if (renderedTaskListMarkerEnd(text, start, endExclusive) != null) {
+            return start + 2
+        }
         if (text[start] == LayoutConstants.UNORDERED_LIST_BULLET[0]) {
             return start + 1
         }
@@ -3465,6 +3491,13 @@ class EditorEditText @JvmOverloads constructor(
             '.', ')' -> index + 1
             else -> null
         }
+    }
+
+    private fun renderedTaskListMarkerEnd(text: String, start: Int, endExclusive: Int): Int? {
+        if (start + 1 >= endExclusive) return null
+        val marker = text[start]
+        if (marker != '\u2610' && marker != '\u2611') return null
+        return if (text[start + 1] == ' ') start + 2 else null
     }
 
     private fun normalizedUtf16SelectionRange(currentText: String): Pair<Int, Int>? {
@@ -4188,6 +4221,51 @@ class EditorEditText @JvmOverloads constructor(
             performClick()
         }
         return true
+    }
+
+    private fun handleTaskListMarkerTap(event: MotionEvent): Boolean {
+        if (event.actionMasked != MotionEvent.ACTION_DOWN && event.actionMasked != MotionEvent.ACTION_UP) {
+            return false
+        }
+        val scalarHit = taskListMarkerScalarHitAt(event.x, event.y) ?: return false
+        requestFocus()
+        if (event.actionMasked == MotionEvent.ACTION_UP) {
+            toggleTaskItemCheckedAtSelectionScalarInRust(scalarHit, scalarHit)
+            performClick()
+        }
+        return true
+    }
+
+    private fun taskListMarkerScalarHitAt(x: Float, y: Float): Int? {
+        val currentText = text?.toString() ?: return null
+        val textLayout = layout ?: return null
+        if (currentText.isEmpty()) return null
+
+        val localX = x + scrollX - totalPaddingLeft
+        val localY = y + scrollY - totalPaddingTop
+        if (localY < 0) return null
+
+        val line = textLayout.getLineForVertical(localY.toInt().coerceAtLeast(0))
+        val lineTop = textLayout.getLineTop(line).toFloat()
+        val lineBottom = textLayout.getLineBottom(line).toFloat()
+        if (localY < lineTop || localY > lineBottom) {
+            return null
+        }
+        val lineStart = textLayout.getLineStart(line).coerceIn(0, currentText.length)
+        val lineEnd = textLayout.getLineEnd(line).coerceIn(lineStart, currentText.length)
+        val markerEnd = renderedTaskListMarkerEnd(currentText, lineStart, lineEnd) ?: return null
+        val markerRight = textLayout.getPrimaryHorizontal(markerEnd).coerceAtLeast(
+            textLayout.getPrimaryHorizontal(lineStart)
+        ) + (8f * resources.displayMetrics.density)
+        if (localX > markerRight) {
+            return null
+        }
+        val snappedUtf16 = PositionBridge.snapToScalarBoundary(
+            lineStart,
+            currentText,
+            biasForward = true
+        )
+        return PositionBridge.utf16ToScalar(snappedUtf16, currentText)
     }
 
     private fun imageSpanHitAt(x: Float, y: Float): Pair<Int, Int>? {

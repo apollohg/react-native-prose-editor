@@ -132,6 +132,7 @@ function mapToolbarChildForNative(
             key: LINK_TOOLBAR_ACTION_KEY,
             label: item.label,
             icon: item.icon as EditorToolbarIcon,
+            placement: item.placement,
             isActive: activeState.marks.link === true,
             isDisabled: !editable || !onRequestLink || !activeState.allowedMarks.includes('link'),
         };
@@ -142,6 +143,7 @@ function mapToolbarChildForNative(
             key: IMAGE_TOOLBAR_ACTION_KEY,
             label: item.label,
             icon: item.icon as EditorToolbarIcon,
+            placement: item.placement,
             isActive: false,
             isDisabled:
                 !editable ||
@@ -743,9 +745,11 @@ function computeRenderedTextLength(elements: RenderElement[]): number {
     let blockCount = 0;
     for (const el of elements) {
         if (el.type === 'blockStart' && el.listContext) {
-            len += el.listContext.ordered
-                ? unicodeScalarCount(`${el.listContext.index}. `)
-                : unicodeScalarCount('• ');
+            len += el.listContext.kind === 'task'
+                ? unicodeScalarCount(el.listContext.checked ? '☑ ' : '☐ ')
+                : el.listContext.ordered
+                  ? unicodeScalarCount(`${el.listContext.index}. `)
+                  : unicodeScalarCount('• ');
         } else if (el.type === 'textRun' && el.text) {
             len += unicodeScalarCount(el.text);
         } else if (
@@ -1016,8 +1020,8 @@ export interface NativeRichTextEditorRef {
     toggleBlockquote(): void;
     /** Toggle a heading level on the current block selection. */
     toggleHeading(level: EditorToolbarHeadingLevel): void;
-    /** Toggle a list type (bulletList or orderedList). */
-    toggleList(listType: 'bulletList' | 'orderedList'): void;
+    /** Toggle a list type supported by the active schema. */
+    toggleList(listType: string): void;
     /** Indent the current list item. */
     indentListItem(): void;
     /** Outdent the current list item. */
@@ -3240,7 +3244,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 toggleHeading(level: EditorToolbarHeadingLevel) {
                     runAndApply(() => bridgeRef.current?.toggleHeading(level) ?? null);
                 },
-                toggleList(listType: 'bulletList' | 'orderedList') {
+                toggleList(listType: string) {
                     runAndApply(() => bridgeRef.current?.toggleList(listType) ?? null);
                 },
                 indentListItem() {

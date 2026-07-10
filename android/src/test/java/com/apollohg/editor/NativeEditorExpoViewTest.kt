@@ -2480,7 +2480,14 @@ class NativeEditorExpoViewTest {
 
         worker.start()
         interrupter.start()
-        shadowOf(Looper.getMainLooper()).idle()
+        val mainLooper = shadowOf(Looper.getMainLooper())
+        val deadlineNanos = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2)
+        while (started.count > 0 && worker.isAlive && System.nanoTime() < deadlineNanos) {
+            mainLooper.idle()
+            if (started.count > 0) {
+                Thread.sleep(10)
+            }
+        }
         worker.join(2000)
         interrupter.join(2000)
 

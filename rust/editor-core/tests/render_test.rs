@@ -286,6 +286,8 @@ fn test_bullet_list_two_items() {
                     start: 1,
                     is_first: true,
                     is_last: false,
+                    kind: None,
+                    checked: None,
                 }),
             },
             RenderElement::BlockStart {
@@ -310,6 +312,8 @@ fn test_bullet_list_two_items() {
                     start: 1,
                     is_first: false,
                     is_last: true,
+                    kind: None,
+                    checked: None,
                 }),
             },
             RenderElement::BlockStart {
@@ -359,6 +363,8 @@ fn test_ordered_list_start_3() {
                 start: 3,
                 is_first: true,
                 is_last: false,
+                kind: None,
+                checked: None,
             }),
         },
         "First item in ordered list starting at 3 should have index=3"
@@ -392,6 +398,8 @@ fn test_ordered_list_start_3() {
                 start: 3,
                 is_first: false,
                 is_last: true,
+                kind: None,
+                checked: None,
             }),
         },
         "Second item in ordered list starting at 3 should have index=4"
@@ -645,6 +653,8 @@ fn test_list_item_paragraph_depth() {
                 start: 1,
                 is_first: true,
                 is_last: true,
+                kind: None,
+                checked: None,
             }),
         },
         "listItem should be at depth 0"
@@ -780,6 +790,8 @@ fn test_ordered_list_default_start() {
                 start: 1,
                 is_first: true,
                 is_last: true,
+                kind: None,
+                checked: None,
             }),
         },
         "Ordered list with no start attr should default start to 1"

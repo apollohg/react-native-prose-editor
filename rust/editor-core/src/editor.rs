@@ -387,6 +387,10 @@ impl Editor {
 
     /// Split a block at the given position (e.g. pressing Enter).
     pub fn split_block(&mut self, pos: u32) -> Result<EditorUpdate, EditorError> {
+        if self.is_code_block_at_pos(pos) {
+            return self.insert_text(pos, "\n");
+        }
+
         if let Some(action) = self.empty_split_action(pos) {
             return self.apply_empty_split_action(action);
         }
@@ -415,12 +419,7 @@ impl Editor {
         to: u32,
         list_type: &str,
     ) -> Result<EditorUpdate, EditorError> {
-        // Determine the list item type from the schema.
-        let item_type = self
-            .schema
-            .all_nodes()
-            .find(|n| matches!(n.role, crate::schema::NodeRole::ListItem))
-            .map(|n| n.name.clone())
+        let item_type = list_item_type_for_list(&self.schema, list_type)
             .unwrap_or_else(|| "listItem".to_string());
 
         let mut tx = Transaction::new(Source::Input);
@@ -1097,6 +1096,40 @@ impl Editor {
         Ok(self.build_update_from_current())
     }
 
+    /// Toggle the checked state of the current task item.
+    pub fn toggle_task_item_checked(&mut self) -> Result<EditorUpdate, EditorError> {
+        let doc = self.backend.document();
+        let pos = self.selection.from(doc);
+        let Some(task_item_path) = self.task_item_path_at(pos) else {
+            return Ok(self.build_update_from_current());
+        };
+        let Some(task_item_node) = doc.node_at(&task_item_path) else {
+            return Ok(self.build_update_from_current());
+        };
+
+        let mut attrs = task_item_node.attrs().clone();
+        let checked = attrs
+            .get("checked")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        attrs.insert("checked".to_string(), serde_json::Value::Bool(!checked));
+
+        let Some(task_item_pos) = Self::node_delete_start_pos(doc, &task_item_path) else {
+            return Ok(self.build_update_from_current());
+        };
+
+        let mut tx = Transaction::new(Source::Input);
+        tx.add_step(Step::UpdateNodeAttrs {
+            pos: task_item_pos,
+            attrs,
+        });
+        match self.apply_transaction(tx) {
+            Ok(update) => Ok(update),
+            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Replace a scalar range with text in a single transaction.
     ///
     /// Used when the user types with a range selection — the selection is
@@ -1130,6 +1163,9 @@ impl Editor {
     /// Split a block at a scalar offset.
     pub fn split_block_scalar(&mut self, scalar_pos: u32) -> Result<EditorUpdate, EditorError> {
         let doc_pos = self.scalar_to_doc(scalar_pos);
+        if self.is_code_block_at_pos(doc_pos) {
+            return self.insert_text(doc_pos, "\n");
+        }
         self.split_block(doc_pos)
     }
 
@@ -1144,6 +1180,10 @@ impl Editor {
     ) -> Result<EditorUpdate, EditorError> {
         let doc_from = self.scalar_to_doc(scalar_from);
         let doc_to = self.scalar_to_doc(scalar_to);
+
+        if doc_from == doc_to && self.is_code_block_at_pos(doc_from) {
+            return self.insert_text(doc_from, "\n");
+        }
 
         // Apply the delete as a separate transaction first.
         if doc_from < doc_to {
@@ -1253,6 +1293,16 @@ impl Editor {
     ) -> Result<EditorUpdate, EditorError> {
         self.set_selection_scalar(scalar_anchor, scalar_head);
         self.outdent_list_item()
+    }
+
+    /// Toggle the checked state of the task item at an explicit scalar selection.
+    pub fn toggle_task_item_checked_at_selection_scalar(
+        &mut self,
+        scalar_anchor: u32,
+        scalar_head: u32,
+    ) -> Result<EditorUpdate, EditorError> {
+        self.set_selection_scalar(scalar_anchor, scalar_head);
+        self.toggle_task_item_checked()
     }
 
     /// Insert a node at an explicit scalar selection supplied by the caller.
@@ -1806,6 +1856,15 @@ impl Editor {
         matches!(parent_spec.role, NodeRole::TextBlock)
     }
 
+    fn is_code_block_at_pos(&self, pos: u32) -> bool {
+        let doc = self.backend.document();
+        let resolved = match doc.resolve(pos) {
+            Ok(resolved) => resolved,
+            Err(_) => return false,
+        };
+        resolved.parent(doc).node_type() == "codeBlock"
+    }
+
     fn is_horizontal_rule_node(node_type: &str) -> bool {
         matches!(node_type, "horizontalRule" | "horizontal_rule")
     }
@@ -2150,11 +2209,7 @@ impl Editor {
             return Ok(Some(self.build_update_from_current()));
         }
 
-        let item_type = self
-            .schema
-            .all_nodes()
-            .find(|n| matches!(n.role, crate::schema::NodeRole::ListItem))
-            .map(|n| n.name.clone())
+        let item_type = list_item_type_for_list(&self.schema, list_type)
             .unwrap_or_else(|| "listItem".to_string());
 
         let list_items = range
@@ -2800,6 +2855,20 @@ impl Editor {
         })
     }
 
+    fn task_item_path_at(&self, pos: u32) -> Option<Vec<u16>> {
+        let context = self.list_item_context_at(pos)?;
+        let mut path = context.list_path.clone();
+        path.push(context.list_item_idx as u16);
+        let node = self.backend.document().node_at(&path)?;
+        if matches!(node.node_type(), "taskItem" | "task_item")
+            || node.attrs().contains_key("checked")
+        {
+            Some(path)
+        } else {
+            None
+        }
+    }
+
     fn list_item_context_at(&self, pos: u32) -> Option<ListItemContext> {
         let doc = self.backend.document();
         let resolved = doc.resolve(pos).ok()?;
@@ -2826,7 +2895,8 @@ impl Editor {
         let parent_is_list_item = li_depth > 0
             && doc
                 .node_at(&path[..li_depth - 1])
-                .map(|node| node.node_type() == "listItem")
+                .and_then(|node| self.schema.node(node.node_type()))
+                .map(|spec| matches!(spec.role, NodeRole::ListItem))
                 .unwrap_or(false);
 
         Some(ListItemContext {
@@ -3697,6 +3767,27 @@ fn list_attrs_for_type(
     } else {
         HashMap::new()
     }
+}
+
+fn list_item_type_for_list(schema: &Schema, list_type: &str) -> Option<String> {
+    let list_spec = schema.node(list_type)?;
+    let part = list_spec.content.parts.first()?;
+
+    if let Some(direct) = schema.node(&part.group) {
+        if matches!(direct.role, NodeRole::ListItem) {
+            return Some(direct.name.clone());
+        }
+    }
+
+    let mut candidates: Vec<String> = schema
+        .nodes_in_group(&part.group)
+        .into_iter()
+        .filter(|spec| matches!(spec.role, NodeRole::ListItem))
+        .map(|spec| spec.name.clone())
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    candidates.into_iter().next()
 }
 
 struct ListItemContext {

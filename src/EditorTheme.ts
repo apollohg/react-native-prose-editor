@@ -82,10 +82,19 @@ export interface EditorBlockquoteTheme {
     markerGap?: number;
 }
 
+export interface EditorCodeBlockTheme {
+    text?: EditorTextStyle;
+    backgroundColor?: string;
+    borderRadius?: number;
+    paddingHorizontal?: number;
+    paddingVertical?: number;
+}
+
 export type EditorToolbarAppearance = 'custom' | 'native';
 
 export interface EditorToolbarTheme {
     appearance?: EditorToolbarAppearance;
+    height?: number;
     backgroundColor?: string;
     borderColor?: string;
     borderWidth?: number;
@@ -113,6 +122,7 @@ export interface EditorTheme {
     text?: EditorTextStyle;
     paragraph?: EditorTextStyle;
     blockquote?: EditorBlockquoteTheme;
+    codeBlock?: EditorCodeBlockTheme;
     headings?: EditorHeadingTheme;
     list?: EditorListTheme;
     horizontalRule?: EditorHorizontalRuleTheme;
