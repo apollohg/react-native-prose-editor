@@ -6,6 +6,7 @@ import CoreText
 /// sentence auto-capitalization, working naturally inside list items.
 final class EditorLayoutManager: NSLayoutManager {
     private(set) var blockquoteStripeDrawPassesForTesting: [[CGRect]] = []
+    private(set) var codeBlockDrawPassesForTesting: [[CGRect]] = []
 
     func blockquoteStripeRectsForTesting(
         in textStorage: NSTextStorage,
@@ -52,6 +53,10 @@ final class EditorLayoutManager: NSLayoutManager {
 
     func resetBlockquoteStripeDrawPassesForTesting() {
         blockquoteStripeDrawPassesForTesting.removeAll()
+    }
+
+    func resetCodeBlockDrawPassesForTesting() {
+        codeBlockDrawPassesForTesting.removeAll()
     }
 
     override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
@@ -201,6 +206,7 @@ final class EditorLayoutManager: NSLayoutManager {
         let characterRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
         let nsString = textStorage.string as NSString
         var drawnBlockStarts = Set<Int>()
+        var drawnCodeBlockRects: [CGRect] = []
 
         textStorage.enumerateAttribute(
             RenderBridgeAttributes.codeBlockBackgroundColor,
@@ -233,6 +239,11 @@ final class EditorLayoutManager: NSLayoutManager {
 
             color.setFill()
             UIBezierPath(roundedRect: rect, cornerRadius: radius).fill()
+            drawnCodeBlockRects.append(rect)
+        }
+
+        if !drawnCodeBlockRects.isEmpty {
+            codeBlockDrawPassesForTesting.append(drawnCodeBlockRects)
         }
     }
 

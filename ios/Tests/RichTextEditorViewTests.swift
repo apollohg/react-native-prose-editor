@@ -4287,6 +4287,52 @@ final class RichTextEditorViewTests: XCTestCase {
         }
     }
 
+    /// A single code block spanning multiple visual lines (intra-block hard
+    /// breaks carrying codeBlockBackgroundColor) must be filled with exactly
+    /// one rect per draw pass — one fill for the whole block, not one per
+    /// paragraph. Regression coverage for the group-start dedupe key in
+    /// EditorLayoutManager.drawCodeBlockBackgrounds.
+    func testCodeBlockBackgroundDrawPassDedupesMultiParagraphBlock() {
+        let attributed = RenderBridge.renderElements(
+            fromJSON: """
+            [
+                {"type": "blockStart", "nodeType": "codeBlock", "depth": 0},
+                {"type": "textRun", "text": "line1", "marks": []},
+                {"type": "voidInline", "nodeType": "hardBreak", "docPos": 5},
+                {"type": "textRun", "text": "line2", "marks": []},
+                {"type": "voidInline", "nodeType": "hardBreak", "docPos": 11},
+                {"type": "textRun", "text": "line3", "marks": []},
+                {"type": "blockEnd"}
+            ]
+            """,
+            baseFont: .systemFont(ofSize: 16),
+            textColor: .label
+        )
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 220))
+        textView.attributedText = attributed
+        textView.layoutIfNeeded()
+
+        textView.resetCodeBlockDrawPassesForTesting()
+        forceDraw(textView)
+        let passes = textView.codeBlockDrawPassesForTesting()
+
+        guard let firstPass = passes.first else {
+            XCTFail("expected at least one recorded code-block draw pass")
+            return
+        }
+
+        XCTAssertEqual(
+            firstPass.count,
+            1,
+            """
+            a code block spanning 3 paragraphs must be filled with exactly one \
+            rect per draw pass, not one per paragraph. Got \(firstPass.count) \
+            rects: \(firstPass)
+            """
+        )
+    }
+
     func testReturnInsideBlockquoteAfterPlainParagraphKeepsOneStripeGroup() {
         let editorId = editorCreate(configJson: "{}")
         defer { editorDestroy(id: editorId) }

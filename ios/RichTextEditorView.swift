@@ -1767,6 +1767,14 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         editorLayoutManager.blockquoteStripeDrawPassesForTesting
     }
 
+    func resetCodeBlockDrawPassesForTesting() {
+        editorLayoutManager.resetCodeBlockDrawPassesForTesting()
+    }
+
+    func codeBlockDrawPassesForTesting() -> [[CGRect]] {
+        editorLayoutManager.codeBlockDrawPassesForTesting
+    }
+
     @discardableResult
     func selectImageAttachmentForTesting(at location: CGPoint) -> Bool {
         selectImageAttachmentIfNeeded(at: location)
