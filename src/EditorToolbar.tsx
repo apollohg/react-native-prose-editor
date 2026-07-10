@@ -542,7 +542,8 @@ const BUTTON_HIT = 44;
 const BUTTON_VISIBLE = 32;
 const TOOLBAR_PADDING_H = 12;
 const TOOLBAR_PADDING_V = 4;
-const MIN_TOOLBAR_HEIGHT = 40;
+const MAX_BUTTON_SIZE = 40;
+const BUTTON_HEIGHT_INSET = 4;
 const MENU_MARGIN = 8;
 const MENU_WIDTH = 192;
 const KEYBOARD_FRAME_REMEASURE_DELAYS_MS = [50, 150, 300] as const;
@@ -1140,18 +1141,23 @@ export function EditorToolbar({
 
     const menuGroup = menuState != null ? (groupsByKey.get(menuState.groupKey) ?? null) : null;
     const menuHeight = menuGroup ? menuGroup.children.length * 40 + 16 : 0;
+    // Sizing contract shared with ios/NativeEditorExpoView.swift
+    // (resolvedToolbarHeight/resolvedButtonSize) and
+    // android/NativeToolbar.kt (resolvedToolbarHeightDp/resolvedButtonSizeDp):
+    // an explicit theme height is honored as-is; buttons are
+    // max(1, min(MAX_BUTTON_SIZE, height - BUTTON_HEIGHT_INSET)).
     const resolvedToolbarHeight = Math.max(
         theme?.height ?? BUTTON_VISIBLE + TOOLBAR_PADDING_V * 2,
-        MIN_TOOLBAR_HEIGHT
+        1
     );
     const resolvedButtonHeight =
         theme?.height == null
             ? BUTTON_VISIBLE
-            : Math.max(28, Math.min(40, resolvedToolbarHeight - TOOLBAR_PADDING_V * 2));
+            : Math.max(1, Math.min(MAX_BUTTON_SIZE, resolvedToolbarHeight - BUTTON_HEIGHT_INSET));
     const resolvedToolbarPaddingV =
         theme?.height == null
             ? TOOLBAR_PADDING_V
-            : Math.max(4, (resolvedToolbarHeight - resolvedButtonHeight) / 2);
+            : Math.max(0, (resolvedToolbarHeight - resolvedButtonHeight) / 2);
     const resolvedSeparatorHeight = Math.max(16, resolvedButtonHeight - 12);
     const menuTop =
         menuState == null
@@ -1306,11 +1312,11 @@ export function EditorToolbar({
                     borderRadius: theme?.borderRadius ?? TOOLBAR_RADIUS,
                 },
             ]}>
-            {shouldRenderMentionSuggestions && mentionState != null ? (
-                <View style={styles.toolbarRow}>
-                    {startItems.length > 0 ? (
-                        <View style={styles.fixedSection}>{renderToolbarItems(startItems)}</View>
-                    ) : null}
+            <View style={styles.toolbarRow}>
+                {startItems.length > 0 ? (
+                    <View style={styles.fixedSection}>{renderToolbarItems(startItems)}</View>
+                ) : null}
+                {shouldRenderMentionSuggestions && mentionState != null ? (
                     <ScrollView
                         testID='editor-toolbar-mention-suggestions'
                         horizontal
@@ -1417,15 +1423,7 @@ export function EditorToolbar({
                             );
                         })}
                     </ScrollView>
-                    {endItems.length > 0 ? (
-                        <View style={styles.fixedSection}>{renderToolbarItems(endItems)}</View>
-                    ) : null}
-                </View>
-            ) : (
-                <View style={styles.toolbarRow}>
-                    {startItems.length > 0 ? (
-                        <View style={styles.fixedSection}>{renderToolbarItems(startItems)}</View>
-                    ) : null}
+                ) : (
                     <ScrollView
                         horizontal
                         showsHorizontalScrollIndicator={false}
@@ -1435,11 +1433,11 @@ export function EditorToolbar({
                         onScrollBeginDrag={() => setMenuState(null)}>
                         {renderToolbarItems(scrollItems)}
                     </ScrollView>
-                    {endItems.length > 0 ? (
-                        <View style={styles.fixedSection}>{renderToolbarItems(endItems)}</View>
-                    ) : null}
-                </View>
-            )}
+                )}
+                {endItems.length > 0 ? (
+                    <View style={styles.fixedSection}>{renderToolbarItems(endItems)}</View>
+                ) : null}
+            </View>
             {!shouldRenderMentionSuggestions && menuState != null && menuGroup != null ? (
                 <Modal
                     transparent

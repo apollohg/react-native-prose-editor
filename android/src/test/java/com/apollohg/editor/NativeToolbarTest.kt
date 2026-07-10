@@ -489,6 +489,48 @@ class NativeToolbarTest {
     }
 
     @Test
+    fun `themed button size caps at the native max even in custom appearance`() {
+        val context = RuntimeEnvironment.getApplication()
+        val density = context.resources.displayMetrics.density
+        val toolbar = EditorKeyboardToolbarView(context)
+
+        toolbar.applyTheme(
+            EditorToolbarTheme(
+                appearance = EditorToolbarAppearance.CUSTOM,
+                height = 60f
+            )
+        )
+
+        val button = requireNotNull(toolbar.buttonAtForTesting(0))
+
+        // Sizing contract shared with src/EditorToolbar.tsx (resolvedButtonHeight) and
+        // ios/NativeEditorExpoView.swift (resolvedButtonSize):
+        // max(1, min(40, 60 - 4)) = 40 — previously capped at 36dp for non-native appearance.
+        assertEquals((40f * density).toInt(), button.minimumWidth)
+        assertEquals((40f * density).toInt(), button.minimumHeight)
+    }
+
+    @Test
+    fun `themed button size honors heights below the native default in custom appearance`() {
+        val context = RuntimeEnvironment.getApplication()
+        val density = context.resources.displayMetrics.density
+        val toolbar = EditorKeyboardToolbarView(context)
+
+        toolbar.applyTheme(
+            EditorToolbarTheme(
+                appearance = EditorToolbarAppearance.CUSTOM,
+                height = 32f
+            )
+        )
+
+        val button = requireNotNull(toolbar.buttonAtForTesting(0))
+
+        // max(1, min(40, 32 - 4)) = 28 — matches the JS/iOS formula exactly.
+        assertEquals((28f * density).toInt(), button.minimumWidth)
+        assertEquals((28f * density).toInt(), button.minimumHeight)
+    }
+
+    @Test
     fun `native toolbar appearance uses docked material chrome defaults`() {
         val context = RuntimeEnvironment.getApplication()
         val density = context.resources.displayMetrics.density

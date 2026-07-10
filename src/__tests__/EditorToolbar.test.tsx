@@ -484,6 +484,39 @@ describe('EditorToolbar', () => {
         });
     });
 
+    // ── Theme Sizing (native formula) ───────────────────────────
+    // Sizing contract shared with iOS (resolvedToolbarHeight/resolvedButtonSize)
+    // and Android (resolvedToolbarHeightDp/resolvedButtonSizeDp): an explicit
+    // theme height is honored as-is; buttons are
+    // max(1, min(MAX_BUTTON_SIZE, height - BUTTON_HEIGHT_INSET)).
+
+    describe('theme sizing', () => {
+        it('honors theme heights below 40 instead of flooring them', () => {
+            const { getByLabelText, toJSON } = renderToolbar({
+                theme: { height: 32 },
+            });
+            const rowStyle = StyleSheet.flatten(toJSON()?.props.style);
+            const boldButtonStyle = StyleSheet.flatten(getByLabelText('Bold').props.style);
+
+            // max(H, 1) = 32 — not floored to MIN_TOOLBAR_HEIGHT=40.
+            expect(rowStyle.minHeight).toBe(32);
+            // max(1, min(40, 32 - 4)) = 28 — matches iOS and Android exactly.
+            expect(boldButtonStyle.height).toBe(28);
+        });
+
+        it('derives button size with the native formula for large heights', () => {
+            const { getByLabelText, toJSON } = renderToolbar({
+                theme: { height: 60 },
+            });
+            const rowStyle = StyleSheet.flatten(toJSON()?.props.style);
+            const boldButtonStyle = StyleSheet.flatten(getByLabelText('Bold').props.style);
+
+            expect(rowStyle.minHeight).toBe(60);
+            // max(1, min(40, 60 - 4)) = min(40, 56) = 40.
+            expect(boldButtonStyle.height).toBe(40);
+        });
+    });
+
     // ── Active State (Record<string, boolean>) ─────────────────
 
     describe('active state visual feedback', () => {

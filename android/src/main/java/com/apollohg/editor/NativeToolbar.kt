@@ -1155,11 +1155,14 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
         }
 
     private fun resolvedButtonSizeDp(isNative: Boolean, toolbarHeightDp: Float): Float {
-        val defaultSizeDp = if (isNative) NATIVE_BUTTON_SIZE_DP.toFloat() else 36f
         if (theme?.height == null) {
-            return defaultSizeDp
+            return if (isNative) NATIVE_BUTTON_SIZE_DP.toFloat() else 36f
         }
-        return maxOf(1f, minOf(defaultSizeDp, toolbarHeightDp - 4f))
+        // Sizing contract shared with src/EditorToolbar.tsx (resolvedButtonHeight)
+        // and ios/NativeEditorExpoView.swift (resolvedButtonSize): an explicit
+        // theme height caps buttons at NATIVE_BUTTON_SIZE_DP regardless of
+        // appearance, not the smaller non-native default.
+        return maxOf(1f, minOf(NATIVE_BUTTON_SIZE_DP.toFloat(), toolbarHeightDp - 4f))
     }
 
     private fun resolvedVerticalPaddingDp(
