@@ -372,71 +372,37 @@ private struct NativeToolbarIcon {
 
 private struct NativeToolbarItem {
     let type: ToolbarItemKind
-    let key: String?
-    let label: String?
-    let icon: NativeToolbarIcon?
-    let mark: String?
-    let headingLevel: Int?
-    let listType: ToolbarListType?
-    let command: ToolbarCommand?
-    let nodeType: String?
-    let isActive: Bool
-    let isDisabled: Bool
-    let placement: ToolbarItemPlacement?
-    let presentation: ToolbarGroupPresentation?
-    let items: [NativeToolbarItem]
-    let parentGroupKey: String?
-
-    init(
-        type: ToolbarItemKind,
-        key: String?,
-        label: String?,
-        icon: NativeToolbarIcon?,
-        mark: String?,
-        headingLevel: Int?,
-        listType: ToolbarListType?,
-        command: ToolbarCommand?,
-        nodeType: String?,
-        isActive: Bool,
-        isDisabled: Bool,
-        placement: ToolbarItemPlacement? = nil,
-        presentation: ToolbarGroupPresentation?,
-        items: [NativeToolbarItem],
-        parentGroupKey: String?
-    ) {
-        self.type = type
-        self.key = key
-        self.label = label
-        self.icon = icon
-        self.mark = mark
-        self.headingLevel = headingLevel
-        self.listType = listType
-        self.command = command
-        self.nodeType = nodeType
-        self.isActive = isActive
-        self.isDisabled = isDisabled
-        self.placement = placement
-        self.presentation = presentation
-        self.items = items
-        self.parentGroupKey = parentGroupKey
-    }
+    var key: String? = nil
+    var label: String? = nil
+    var icon: NativeToolbarIcon? = nil
+    var mark: String? = nil
+    var headingLevel: Int? = nil
+    var listType: ToolbarListType? = nil
+    var command: ToolbarCommand? = nil
+    var nodeType: String? = nil
+    var isActive: Bool = false
+    var isDisabled: Bool = false
+    var placement: ToolbarItemPlacement? = nil
+    var presentation: ToolbarGroupPresentation? = nil
+    var items: [NativeToolbarItem] = []
+    var parentGroupKey: String? = nil
 
     static let defaults: [NativeToolbarItem] = [
-        NativeToolbarItem(type: .mark, key: nil, label: "Bold", icon: .defaultIcon(.bold), mark: "bold", headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .mark, key: nil, label: "Italic", icon: .defaultIcon(.italic), mark: "italic", headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .mark, key: nil, label: "Underline", icon: .defaultIcon(.underline), mark: "underline", headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .mark, key: nil, label: "Strikethrough", icon: .defaultIcon(.strike), mark: "strike", headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .blockquote, key: nil, label: "Blockquote", icon: .defaultIcon(.blockquote), mark: nil, headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .separator, key: nil, label: nil, icon: nil, mark: nil, headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .list, key: nil, label: "Bullet List", icon: .defaultIcon(.bulletList), mark: nil, headingLevel: nil, listType: .bulletList, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .list, key: nil, label: "Ordered List", icon: .defaultIcon(.orderedList), mark: nil, headingLevel: nil, listType: .orderedList, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .command, key: nil, label: "Indent List", icon: .defaultIcon(.indentList), mark: nil, headingLevel: nil, listType: nil, command: .indentList, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .command, key: nil, label: "Outdent List", icon: .defaultIcon(.outdentList), mark: nil, headingLevel: nil, listType: nil, command: .outdentList, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .node, key: nil, label: "Line Break", icon: .defaultIcon(.lineBreak), mark: nil, headingLevel: nil, listType: nil, command: nil, nodeType: "hardBreak", isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .node, key: nil, label: "Horizontal Rule", icon: .defaultIcon(.horizontalRule), mark: nil, headingLevel: nil, listType: nil, command: nil, nodeType: "horizontalRule", isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .separator, key: nil, label: nil, icon: nil, mark: nil, headingLevel: nil, listType: nil, command: nil, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .command, key: nil, label: "Undo", icon: .defaultIcon(.undo), mark: nil, headingLevel: nil, listType: nil, command: .undo, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
-        NativeToolbarItem(type: .command, key: nil, label: "Redo", icon: .defaultIcon(.redo), mark: nil, headingLevel: nil, listType: nil, command: .redo, nodeType: nil, isActive: false, isDisabled: false, presentation: nil, items: [], parentGroupKey: nil),
+        NativeToolbarItem(type: .mark, label: "Bold", icon: .defaultIcon(.bold), mark: "bold"),
+        NativeToolbarItem(type: .mark, label: "Italic", icon: .defaultIcon(.italic), mark: "italic"),
+        NativeToolbarItem(type: .mark, label: "Underline", icon: .defaultIcon(.underline), mark: "underline"),
+        NativeToolbarItem(type: .mark, label: "Strikethrough", icon: .defaultIcon(.strike), mark: "strike"),
+        NativeToolbarItem(type: .blockquote, label: "Blockquote", icon: .defaultIcon(.blockquote)),
+        NativeToolbarItem(type: .separator),
+        NativeToolbarItem(type: .list, label: "Bullet List", icon: .defaultIcon(.bulletList), listType: .bulletList),
+        NativeToolbarItem(type: .list, label: "Ordered List", icon: .defaultIcon(.orderedList), listType: .orderedList),
+        NativeToolbarItem(type: .command, label: "Indent List", icon: .defaultIcon(.indentList), command: .indentList),
+        NativeToolbarItem(type: .command, label: "Outdent List", icon: .defaultIcon(.outdentList), command: .outdentList),
+        NativeToolbarItem(type: .node, label: "Line Break", icon: .defaultIcon(.lineBreak), nodeType: "hardBreak"),
+        NativeToolbarItem(type: .node, label: "Horizontal Rule", icon: .defaultIcon(.horizontalRule), nodeType: "horizontalRule"),
+        NativeToolbarItem(type: .separator),
+        NativeToolbarItem(type: .command, label: "Undo", icon: .defaultIcon(.undo), command: .undo),
+        NativeToolbarItem(type: .command, label: "Redo", icon: .defaultIcon(.redo), command: .redo),
     ]
 
     private static func parse(
@@ -459,19 +425,7 @@ private struct NativeToolbarItem {
             return NativeToolbarItem(
                 type: .separator,
                 key: key,
-                label: nil,
-                icon: nil,
-                mark: nil,
-                headingLevel: nil,
-                listType: nil,
-                command: nil,
-                nodeType: nil,
-                isActive: false,
-                isDisabled: false,
-                placement: placement,
-                presentation: nil,
-                items: [],
-                parentGroupKey: nil
+                placement: placement
             )
         case .mark:
             guard let mark = rawItem["mark"] as? String,
@@ -486,16 +440,7 @@ private struct NativeToolbarItem {
                 label: label,
                 icon: icon,
                 mark: mark,
-                headingLevel: nil,
-                listType: nil,
-                command: nil,
-                nodeType: nil,
-                isActive: false,
-                isDisabled: false,
-                placement: placement,
-                presentation: nil,
-                items: [],
-                parentGroupKey: nil
+                placement: placement
             )
         case .heading:
             guard let level = (rawItem["level"] as? NSNumber)?.intValue,
@@ -510,17 +455,8 @@ private struct NativeToolbarItem {
                 key: key,
                 label: label,
                 icon: icon,
-                mark: nil,
                 headingLevel: level,
-                listType: nil,
-                command: nil,
-                nodeType: nil,
-                isActive: false,
-                isDisabled: false,
-                placement: placement,
-                presentation: nil,
-                items: [],
-                parentGroupKey: nil
+                placement: placement
             )
         case .blockquote:
             guard let label = rawItem["label"] as? String,
@@ -533,17 +469,7 @@ private struct NativeToolbarItem {
                 key: key,
                 label: label,
                 icon: icon,
-                mark: nil,
-                headingLevel: nil,
-                listType: nil,
-                command: nil,
-                nodeType: nil,
-                isActive: false,
-                isDisabled: false,
-                placement: placement,
-                presentation: nil,
-                items: [],
-                parentGroupKey: nil
+                placement: placement
             )
         case .list:
             guard let listTypeRaw = rawItem["listType"] as? String,
@@ -558,17 +484,8 @@ private struct NativeToolbarItem {
                 key: key,
                 label: label,
                 icon: icon,
-                mark: nil,
-                headingLevel: nil,
                 listType: listType,
-                command: nil,
-                nodeType: nil,
-                isActive: false,
-                isDisabled: false,
-                placement: placement,
-                presentation: nil,
-                items: [],
-                parentGroupKey: nil
+                placement: placement
             )
         case .command:
             guard let commandRaw = rawItem["command"] as? String,
@@ -583,17 +500,8 @@ private struct NativeToolbarItem {
                 key: key,
                 label: label,
                 icon: icon,
-                mark: nil,
-                headingLevel: nil,
-                listType: nil,
                 command: command,
-                nodeType: nil,
-                isActive: false,
-                isDisabled: false,
-                placement: placement,
-                presentation: nil,
-                items: [],
-                parentGroupKey: nil
+                placement: placement
             )
         case .node:
             guard let nodeType = rawItem["nodeType"] as? String,
@@ -607,17 +515,8 @@ private struct NativeToolbarItem {
                 key: key,
                 label: label,
                 icon: icon,
-                mark: nil,
-                headingLevel: nil,
-                listType: nil,
-                command: nil,
                 nodeType: nodeType,
-                isActive: false,
-                isDisabled: false,
-                placement: placement,
-                presentation: nil,
-                items: [],
-                parentGroupKey: nil
+                placement: placement
             )
         case .action:
             guard let key,
@@ -631,17 +530,9 @@ private struct NativeToolbarItem {
                 key: key,
                 label: label,
                 icon: icon,
-                mark: nil,
-                headingLevel: nil,
-                listType: nil,
-                command: nil,
-                nodeType: nil,
                 isActive: (rawItem["isActive"] as? Bool) ?? false,
                 isDisabled: (rawItem["isDisabled"] as? Bool) ?? false,
-                placement: placement,
-                presentation: nil,
-                items: [],
-                parentGroupKey: nil
+                placement: placement
             )
         case .group:
             guard allowGroup,
@@ -664,17 +555,9 @@ private struct NativeToolbarItem {
                 key: key,
                 label: label,
                 icon: icon,
-                mark: nil,
-                headingLevel: nil,
-                listType: nil,
-                command: nil,
-                nodeType: nil,
-                isActive: false,
-                isDisabled: false,
                 placement: placement,
                 presentation: presentation,
-                items: children,
-                parentGroupKey: nil
+                items: children
             )
         }
     }
@@ -721,23 +604,10 @@ private struct NativeToolbarItem {
         parentGroupKey: String?,
         inheritedPlacement: ToolbarItemPlacement? = nil
     ) -> NativeToolbarItem {
-        NativeToolbarItem(
-            type: type,
-            key: key,
-            label: label,
-            icon: icon,
-            mark: mark,
-            headingLevel: headingLevel,
-            listType: listType,
-            command: command,
-            nodeType: nodeType,
-            isActive: isActive,
-            isDisabled: isDisabled,
-            placement: placement ?? inheritedPlacement,
-            presentation: presentation,
-            items: items,
-            parentGroupKey: parentGroupKey
-        )
+        var copy = self
+        copy.placement = placement ?? inheritedPlacement
+        copy.parentGroupKey = parentGroupKey
+        return copy
     }
 }
 
