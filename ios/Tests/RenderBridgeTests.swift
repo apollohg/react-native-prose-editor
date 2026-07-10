@@ -364,6 +364,92 @@ final class RenderBridgeTests: XCTestCase {
         )
     }
 
+    // MARK: - Code Block
+
+    /// A code block with no marks and no theme override must still render as
+    /// regular-weight monospace (baseline behavior, must not regress).
+    func testRender_codeBlock_plainTextIsRegularMonospace() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "codeBlock", "depth": 0},
+            {"type": "textRun", "text": "let x", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+        let result = RenderBridge.renderElements(fromJSON: json, baseFont: baseFont, textColor: textColor)
+
+        let font = result.attributes(at: 0, effectiveRange: nil)[.font] as? UIFont
+        XCTAssertNotNil(font)
+        XCTAssertTrue(
+            font!.fontDescriptor.symbolicTraits.contains(.traitMonoSpace)
+                || font!.fontName.lowercased().contains("mono"),
+            "Plain code block text should be monospaced. Got font: \(font!.fontName)"
+        )
+        XCTAssertFalse(
+            font!.fontDescriptor.symbolicTraits.contains(.traitBold),
+            "Plain code block text must not be bold. Got font: \(font!.fontName)"
+        )
+    }
+
+    /// Bold marks inside a code block must survive the monospace substitution
+    /// (parity with Android, which layers StyleSpan(BOLD) over the monospace
+    /// typeface).
+    func testRender_codeBlock_preservesBoldTrait() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "codeBlock", "depth": 0},
+            {"type": "textRun", "text": "let x", "marks": [{"type": "bold"}]},
+            {"type": "blockEnd"}
+        ]
+        """
+        let result = RenderBridge.renderElements(fromJSON: json, baseFont: baseFont, textColor: textColor)
+
+        let font = result.attributes(at: 0, effectiveRange: nil)[.font] as? UIFont
+        XCTAssertNotNil(font)
+        XCTAssertTrue(
+            font!.fontDescriptor.symbolicTraits.contains(.traitBold),
+            "Bold trait must survive in code blocks; got \(font!.fontName)"
+        )
+        XCTAssertTrue(
+            font!.fontDescriptor.symbolicTraits.contains(.traitMonoSpace)
+                || font!.fontName.lowercased().contains("mono"),
+            "Code block text should still be monospaced"
+        )
+    }
+
+    /// theme.codeBlock.text.fontFamily must not be silently replaced by the
+    /// system monospace font.
+    func testRender_codeBlock_honorsThemeFontFamily() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "codeBlock", "depth": 0},
+            {"type": "textRun", "text": "let x", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+        let theme = EditorTheme(dictionary: [
+            "codeBlock": [
+                "text": [
+                    "fontFamily": "Courier New",
+                ],
+            ],
+        ])
+        let result = RenderBridge.renderElements(
+            fromJSON: json,
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: theme
+        )
+
+        let font = result.attributes(at: 0, effectiveRange: nil)[.font] as? UIFont
+        XCTAssertNotNil(font)
+        XCTAssertEqual(
+            font!.familyName,
+            "Courier New",
+            "Themed codeBlock.text.fontFamily should be preserved, not overwritten by the system monospace font. Got: \(font!.familyName)"
+        )
+    }
+
     // MARK: - Hard Break (Void Inline)
 
     /// A hardBreak void inline should render as a newline character.

@@ -254,10 +254,24 @@ final class RenderBridge {
                     theme: theme
                 )
                 if isCodeBlock {
-                    baseAttrs[.font] = UIFont.monospacedSystemFont(
-                        ofSize: blockFont.pointSize,
-                        weight: .regular
-                    )
+                    // blockFont already carries theme.codeBlock.text (merged in
+                    // effectiveTextStyle); only substitute the system monospace
+                    // font when the theme did not pick an explicit family, and
+                    // always re-apply the mark-resolved bold/italic traits.
+                    let resolvedFont = baseAttrs[.font] as? UIFont ?? blockFont
+                    let markTraits = resolvedFont.fontDescriptor.symbolicTraits
+                        .intersection([.traitBold, .traitItalic])
+                    let themedFamily = theme?.codeBlock?.text?.fontFamily != nil
+                    var codeFont = themedFamily
+                        ? blockFont
+                        : UIFont.monospacedSystemFont(ofSize: blockFont.pointSize, weight: .regular)
+                    if !markTraits.isEmpty,
+                       let descriptor = codeFont.fontDescriptor.withSymbolicTraits(
+                           codeFont.fontDescriptor.symbolicTraits.union(markTraits)
+                       ) {
+                        codeFont = UIFont(descriptor: descriptor, size: codeFont.pointSize)
+                    }
+                    baseAttrs[.font] = codeFont
                 }
                 let attrs = applyBlockStyle(
                     to: baseAttrs,
