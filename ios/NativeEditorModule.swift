@@ -208,6 +208,10 @@ public class NativeEditorModule: Module {
             guard let editorId = nativeUInt64(id) else { return nativeArgumentError("editor id") }
             return editorToggleBlockquote(id: editorId)
         }
+        Function("editorToggleCodeBlock") { (id: Int) -> String in
+            guard let editorId = nativeUInt64(id) else { return nativeArgumentError("editor id") }
+            return editorToggleCodeBlock(id: editorId)
+        }
         Function("editorToggleHeading") { (id: Int, level: Int) -> String in
             guard let editorId = nativeUInt64(id) else { return nativeArgumentError("editor id") }
             guard (1...6).contains(level) else {
@@ -296,6 +300,21 @@ public class NativeEditorModule: Module {
                 return nativeArgumentError("position")
             }
             return editorToggleBlockquoteAtSelectionScalar(
+                id: editorId,
+                scalarAnchor: scalarAnchor,
+                scalarHead: scalarHead
+            )
+        }
+        Function(
+            "editorToggleCodeBlockAtSelectionScalar"
+        ) { (id: Int, scalarAnchor: Int, scalarHead: Int) -> String in
+            guard let editorId = nativeUInt64(id),
+                  let scalarAnchor = nativeUInt32(scalarAnchor),
+                  let scalarHead = nativeUInt32(scalarHead)
+            else {
+                return nativeArgumentError("position")
+            }
+            return editorToggleCodeBlockAtSelectionScalar(
                 id: editorId,
                 scalarAnchor: scalarAnchor,
                 scalarHead: scalarHead

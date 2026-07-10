@@ -1143,6 +1143,66 @@ fn test_uniffi_editor_toggle_heading_at_selection_scalar() {
     editor_core::editor_destroy(id);
 }
 
+/// Config JSON for `editor_create` with a schema that declares a `codeBlock`
+/// node, mirroring `task_code_schema()` (the default Tiptap preset has no
+/// codeBlock node, so the uniffi toggle_code_block wrapper tests need this).
+fn code_block_schema_config_json() -> String {
+    serde_json::json!({
+        "schema": {
+            "nodes": [
+                { "name": "doc", "content": "block+", "role": "doc" },
+                { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+                { "name": "codeBlock", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "pre" },
+                { "name": "text", "content": "", "group": "inline", "role": "text" }
+            ],
+            "marks": []
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn test_uniffi_editor_toggle_code_block() {
+    let id = editor_core::editor_create(code_block_schema_config_json());
+    editor_core::editor_set_html(id, "<p>Hello</p>".to_string());
+
+    let scalar_pos = editor_core::editor_doc_to_scalar(id, 1);
+    editor_core::editor_set_selection_scalar(id, scalar_pos, scalar_pos);
+
+    let result = editor_core::editor_toggle_code_block(id);
+    assert!(
+        !result.contains("error"),
+        "toggle_code_block should succeed, got: {}",
+        result
+    );
+
+    let html = editor_core::editor_get_html(id);
+    assert_eq!(html, "<pre>Hello</pre>");
+
+    editor_core::editor_destroy(id);
+}
+
+#[test]
+fn test_uniffi_editor_toggle_code_block_at_selection_scalar() {
+    let id = editor_core::editor_create(code_block_schema_config_json());
+    editor_core::editor_set_html(id, "<p>Hello</p>".to_string());
+
+    let scalar_anchor = editor_core::editor_doc_to_scalar(id, 1);
+    let scalar_head = editor_core::editor_doc_to_scalar(id, 1);
+    let result =
+        editor_core::editor_toggle_code_block_at_selection_scalar(id, scalar_anchor, scalar_head);
+    assert!(
+        !result.contains("error"),
+        "toggle_code_block_at_selection_scalar should succeed, got: {}",
+        result
+    );
+
+    let html = editor_core::editor_get_html(id);
+    assert_eq!(html, "<pre>Hello</pre>");
+
+    editor_core::editor_destroy(id);
+}
+
 #[test]
 fn test_uniffi_editor_insert_node_at_selection_scalar() {
     let id = editor_core::editor_create("{}".to_string());
@@ -3057,5 +3117,92 @@ fn delete_and_split_scalar_exits_code_block_on_empty_last_line() {
         editor.selection(),
         &Selection::cursor(8),
         "cursor should land inside the newly created paragraph"
+    );
+}
+
+/// toggle_code_block converts the selected paragraph to a codeBlock and back.
+#[test]
+fn toggle_code_block_round_trips_paragraph() {
+    let mut editor = task_code_editor();
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "hello" }]
+            }]
+        }))
+        .expect("set_json should succeed");
+
+    // Cursor inside the paragraph's text.
+    editor.set_selection(Selection::cursor(3));
+
+    editor
+        .toggle_code_block()
+        .expect("toggle_code_block should convert paragraph to codeBlock");
+    assert_eq!(
+        editor.get_html(),
+        "<pre>hello</pre>",
+        "toggling should convert the paragraph into a codeBlock"
+    );
+
+    editor
+        .toggle_code_block()
+        .expect("toggle_code_block should convert codeBlock back to paragraph");
+    assert_eq!(
+        editor.get_html(),
+        "<p>hello</p>",
+        "toggling again should convert the codeBlock back into a paragraph"
+    );
+}
+
+/// Schemas without a codeBlock node make toggle_code_block a silent no-op,
+/// mirroring how toggle_blockquote behaves when blockquote_node_name() is
+/// None.
+#[test]
+fn toggle_code_block_is_noop_when_schema_has_no_code_block_node() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<p>hello</p>")
+        .expect("set_html should succeed");
+    editor.set_selection(Selection::cursor(3));
+
+    let result = editor.toggle_code_block();
+    assert!(
+        result.is_ok(),
+        "toggle_code_block should silently no-op on a schema with no codeBlock node, got: {:?}",
+        result.err()
+    );
+    assert_eq!(
+        editor.get_html(),
+        "<p>hello</p>",
+        "document should be unchanged when the schema defines no codeBlock node"
+    );
+}
+
+/// toggle_code_block_at_selection_scalar sets the scalar selection before
+/// delegating to toggle_code_block, mirroring
+/// toggle_heading_at_selection_scalar / toggle_blockquote_at_selection_scalar.
+#[test]
+fn toggle_code_block_at_selection_scalar_sets_selection_then_toggles() {
+    let mut editor = task_code_editor();
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "hello" }]
+            }]
+        }))
+        .expect("set_json should succeed");
+
+    editor
+        .toggle_code_block_at_selection_scalar(0, 0)
+        .expect("toggle_code_block_at_selection_scalar should succeed");
+
+    assert_eq!(
+        editor.get_html(),
+        "<pre>hello</pre>",
+        "scalar variant should set the selection and then toggle the code block"
     );
 }

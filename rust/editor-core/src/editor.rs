@@ -555,6 +555,46 @@ impl Editor {
         self.toggle_heading(level)
     }
 
+    /// Toggle the selected text block(s) between `codeBlock` and paragraph.
+    ///
+    /// If the block at the selection is already a codeBlock, converts it to a
+    /// paragraph; otherwise converts it to a codeBlock. No-op update when the
+    /// schema defines no codeBlock node.
+    pub fn toggle_code_block(&mut self) -> Result<EditorUpdate, EditorError> {
+        if self.schema.node("codeBlock").is_none() {
+            return Ok(self.build_update_from_current());
+        }
+
+        let doc = self.backend.document();
+        let pos = self.selection.from(doc);
+        let target_type = if self.is_code_block_at_pos(pos) {
+            let Some(paragraph_type) = self.paragraph_node_name() else {
+                return Ok(self.build_update_from_current());
+            };
+            paragraph_type
+        } else {
+            "codeBlock".to_string()
+        };
+
+        let from = self.selection.from(doc);
+        let to = self.selection.to(doc);
+        let Some(range) = self.selected_text_block_range(from, to) else {
+            return Ok(self.build_update_from_current());
+        };
+
+        self.replace_selected_text_blocks(range, &target_type)
+    }
+
+    /// Toggle a code block at an explicit scalar selection supplied by the caller.
+    pub fn toggle_code_block_at_selection_scalar(
+        &mut self,
+        scalar_anchor: u32,
+        scalar_head: u32,
+    ) -> Result<EditorUpdate, EditorError> {
+        self.set_selection_scalar(scalar_anchor, scalar_head);
+        self.toggle_code_block()
+    }
+
     /// Wrap the selected sibling block range in a blockquote container.
     pub fn wrap_in_blockquote(
         &mut self,

@@ -1134,6 +1134,28 @@ public func editorToggleBlockquoteAtSelectionScalar(id: UInt64, scalarAnchor: UI
 })
 }
 /**
+ * Toggle the selected text block between codeBlock and paragraph. Returns an update JSON string.
+ */
+public func editorToggleCodeBlock(id: UInt64) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_toggle_code_block(
+        FfiConverterUInt64.lower(id),$0
+    )
+})
+}
+/**
+ * Toggle a code block at an explicit scalar selection. Returns an update JSON string.
+ */
+public func editorToggleCodeBlockAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_toggle_code_block_at_selection_scalar(
+        FfiConverterUInt64.lower(id),
+        FfiConverterUInt32.lower(scalarAnchor),
+        FfiConverterUInt32.lower(scalarHead),$0
+    )
+})
+}
+/**
  * Toggle a heading level on the current text-block selection. Returns an update JSON string.
  */
 public func editorToggleHeading(id: UInt64, level: UInt8) -> String  {
@@ -1455,6 +1477,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_toggle_blockquote_at_selection_scalar() != 58523) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_toggle_code_block() != 48266) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_toggle_code_block_at_selection_scalar() != 58552) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_toggle_heading() != 7099) {

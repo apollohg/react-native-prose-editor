@@ -555,6 +555,32 @@ pub fn editor_toggle_blockquote_at_selection_scalar(
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
 
+/// Toggle the selected text block between codeBlock and paragraph. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_toggle_code_block(id: u64) -> String {
+    with_editor(id, |editor| match editor.toggle_code_block() {
+        Ok(update) => serialize_editor_update(&update),
+        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
+/// Toggle a code block at an explicit scalar selection. Returns an update JSON string.
+#[uniffi::export]
+pub fn editor_toggle_code_block_at_selection_scalar(
+    id: u64,
+    scalar_anchor: u32,
+    scalar_head: u32,
+) -> String {
+    with_editor(id, |editor| {
+        match editor.toggle_code_block_at_selection_scalar(scalar_anchor, scalar_head) {
+            Ok(update) => serialize_editor_update(&update),
+            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        }
+    })
+    .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
+}
+
 /// Toggle a heading level on the current text-block selection. Returns an update JSON string.
 #[uniffi::export]
 pub fn editor_toggle_heading(id: u64, level: u8) -> String {

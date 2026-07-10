@@ -215,6 +215,7 @@ function resetMockNativeModule() {
     mockNativeModule.editorSetMark = jest.fn(() => MOCK_TOGGLE_BOLD_UPDATE_JSON);
     mockNativeModule.editorUnsetMark = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorToggleBlockquote = jest.fn(() => MOCK_UPDATE_JSON);
+    mockNativeModule.editorToggleCodeBlock = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorToggleHeading = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorSetSelection = jest.fn();
     mockNativeModule.editorGetSelection = jest.fn(() =>
@@ -241,6 +242,7 @@ function resetMockNativeModule() {
     mockNativeModule.editorSetMarkAtSelectionScalar = jest.fn(() => MOCK_TOGGLE_BOLD_UPDATE_JSON);
     mockNativeModule.editorUnsetMarkAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorToggleBlockquoteAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
+    mockNativeModule.editorToggleCodeBlockAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorToggleHeadingAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorWrapInListAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
     mockNativeModule.editorUnwrapFromListAtSelectionScalar = jest.fn(() => MOCK_UPDATE_JSON);
@@ -1376,6 +1378,49 @@ describe('NativeEditorBridge', () => {
         });
     });
 
+    describe('toggleCodeBlock', () => {
+        it('uses the scalar-selection variant when a scalar selection is available', () => {
+            const bridge = NativeEditorBridge.create();
+
+            const update = bridge.toggleCodeBlock();
+
+            expect(mockNativeModule.editorToggleCodeBlockAtSelectionScalar).toHaveBeenCalledWith(
+                bridge.editorId,
+                0,
+                0
+            );
+            expect(mockNativeModule.editorToggleCodeBlock).not.toHaveBeenCalled();
+            expect(update).not.toBeNull();
+            expect(update!.renderElements).toHaveLength(3);
+
+            bridge.destroy();
+        });
+
+        it('falls back to the non-scalar variant when there is no scalar selection', () => {
+            // An "all" selection has no anchor/head/pos, so
+            // currentScalarSelection() returns null and toggleCodeBlock must
+            // fall back to the plain (non-scalar) native method.
+            const allSelUpdate = JSON.stringify({
+                renderElements: [],
+                selection: { type: 'all' },
+                activeState: { marks: {}, nodes: {}, commands: {} },
+                historyState: { canUndo: false, canRedo: false },
+            });
+            mockNativeModule.editorInsertText.mockReturnValueOnce(allSelUpdate);
+
+            const bridge = NativeEditorBridge.create();
+            bridge.insertText(0, 'x');
+
+            const update = bridge.toggleCodeBlock();
+
+            expect(mockNativeModule.editorToggleCodeBlock).toHaveBeenCalledWith(bridge.editorId);
+            expect(mockNativeModule.editorToggleCodeBlockAtSelectionScalar).not.toHaveBeenCalled();
+            expect(update).not.toBeNull();
+
+            bridge.destroy();
+        });
+    });
+
     describe('toggleHeading', () => {
         it('returns parsed EditorUpdate', () => {
             const bridge = NativeEditorBridge.create();
@@ -1671,6 +1716,10 @@ describe('NativeEditorBridge', () => {
 
         it('toggleBlockquote throws after destroy', () => {
             expect(() => bridge.toggleBlockquote()).toThrow(ERROR_MSG);
+        });
+
+        it('toggleCodeBlock throws after destroy', () => {
+            expect(() => bridge.toggleCodeBlock()).toThrow(ERROR_MSG);
         });
 
         it('unwrapFromList throws after destroy', () => {

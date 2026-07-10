@@ -877,6 +877,10 @@ internal interface IntegrityCheckingUniffiLib : Library {
 
     fun uniffi_editor_core_checksum_func_editor_toggle_blockquote_at_selection_scalar(): Short
 
+    fun uniffi_editor_core_checksum_func_editor_toggle_code_block(): Short
+
+    fun uniffi_editor_core_checksum_func_editor_toggle_code_block_at_selection_scalar(): Short
+
     fun uniffi_editor_core_checksum_func_editor_toggle_heading(): Short
 
     fun uniffi_editor_core_checksum_func_editor_toggle_heading_at_selection_scalar(): Short
@@ -1271,6 +1275,18 @@ internal interface UniffiLib : Library {
     ): RustBuffer.ByValue
 
     fun uniffi_editor_core_fn_func_editor_toggle_blockquote_at_selection_scalar(
+        `id`: Long,
+        `scalarAnchor`: Int,
+        `scalarHead`: Int,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_func_editor_toggle_code_block(
+        `id`: Long,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_func_editor_toggle_code_block_at_selection_scalar(
         `id`: Long,
         `scalarAnchor`: Int,
         `scalarHead`: Int,
@@ -1752,6 +1768,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_toggle_blockquote_at_selection_scalar() != 58523.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_toggle_code_block() != 48266.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_toggle_code_block_at_selection_scalar() != 58552.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_toggle_heading() != 7099.toShort()) {
@@ -2855,6 +2877,35 @@ fun `editorToggleBlockquoteAtSelectionScalar`(
     FfiConverterString.lift(
         uniffiRustCall { _status ->
             UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_toggle_blockquote_at_selection_scalar(
+                FfiConverterULong.lower(`id`),
+                FfiConverterUInt.lower(`scalarAnchor`),
+                FfiConverterUInt.lower(`scalarHead`),
+                _status,
+            )
+        },
+    )
+
+/**
+ * Toggle the selected text block between codeBlock and paragraph. Returns an update JSON string.
+ */
+fun `editorToggleCodeBlock`(`id`: kotlin.ULong): kotlin.String =
+    FfiConverterString.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_toggle_code_block(FfiConverterULong.lower(`id`), _status)
+        },
+    )
+
+/**
+ * Toggle a code block at an explicit scalar selection. Returns an update JSON string.
+ */
+fun `editorToggleCodeBlockAtSelectionScalar`(
+    `id`: kotlin.ULong,
+    `scalarAnchor`: kotlin.UInt,
+    `scalarHead`: kotlin.UInt,
+): kotlin.String =
+    FfiConverterString.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_toggle_code_block_at_selection_scalar(
                 FfiConverterULong.lower(`id`),
                 FfiConverterUInt.lower(`scalarAnchor`),
                 FfiConverterUInt.lower(`scalarHead`),

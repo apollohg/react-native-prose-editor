@@ -251,6 +251,18 @@ class NativeEditorModule : Module() {
             )
         }
         Function(
+            "editorToggleCodeBlockAtSelectionScalar"
+        ) { id: Int, scalarAnchor: Int, scalarHead: Int ->
+            val editorId = nativeULong(id) ?: return@Function nativeArgumentError("editor id")
+            val anchor = nativeUInt(scalarAnchor) ?: return@Function nativeArgumentError("position")
+            val head = nativeUInt(scalarHead) ?: return@Function nativeArgumentError("position")
+            editorToggleCodeBlockAtSelectionScalar(
+                editorId,
+                anchor,
+                head
+            )
+        }
+        Function(
             "editorToggleHeadingAtSelectionScalar"
         ) { id: Int, scalarAnchor: Int, scalarHead: Int, level: Int ->
             val editorId = nativeULong(id) ?: return@Function nativeArgumentError("editor id")
@@ -344,6 +356,10 @@ class NativeEditorModule : Module() {
         Function("editorToggleBlockquote") { id: Int ->
             val editorId = nativeULong(id) ?: return@Function nativeArgumentError("editor id")
             editorToggleBlockquote(editorId)
+        }
+        Function("editorToggleCodeBlock") { id: Int ->
+            val editorId = nativeULong(id) ?: return@Function nativeArgumentError("editor id")
+            editorToggleCodeBlock(editorId)
         }
         Function("editorToggleHeading") { id: Int, level: Int ->
             val editorId = nativeULong(id) ?: return@Function nativeArgumentError("editor id")

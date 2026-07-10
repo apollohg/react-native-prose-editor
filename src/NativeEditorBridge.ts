@@ -47,6 +47,7 @@ export interface NativeEditorModule {
     editorSetMark(editorId: number, markName: string, attrsJson: string): string;
     editorUnsetMark(editorId: number, markName: string): string;
     editorToggleBlockquote(editorId: number): string;
+    editorToggleCodeBlock(editorId: number): string;
     editorToggleHeading(editorId: number, level: number): string;
     editorSetSelection(editorId: number, anchor: number, head: number): void;
     editorGetSelection(editorId: number): string;
@@ -84,6 +85,11 @@ export interface NativeEditorModule {
         markName: string
     ): string;
     editorToggleBlockquoteAtSelectionScalar(
+        editorId: number,
+        scalarAnchor: number,
+        scalarHead: number
+    ): string;
+    editorToggleCodeBlockAtSelectionScalar(
         editorId: number,
         scalarAnchor: number,
         scalarHead: number
@@ -924,6 +930,24 @@ export class NativeEditorBridge {
                           scalarSelection.head
                       )
                     : getNativeModule().editorToggleBlockquote(this._editorId);
+            },
+            { refreshSelectionAfterPreflight: true }
+        );
+    }
+
+    /** Toggle the selected text block between code block and paragraph. */
+    toggleCodeBlock(): EditorUpdate | null {
+        this.assertNotDestroyed();
+        return this.runPreparedCommand(
+            () => {
+                const scalarSelection = this.currentScalarSelection();
+                return scalarSelection
+                    ? getNativeModule().editorToggleCodeBlockAtSelectionScalar(
+                          this._editorId,
+                          scalarSelection.anchor,
+                          scalarSelection.head
+                      )
+                    : getNativeModule().editorToggleCodeBlock(this._editorId);
             },
             { refreshSelectionAfterPreflight: true }
         );
