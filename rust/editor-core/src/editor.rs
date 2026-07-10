@@ -419,7 +419,9 @@ impl Editor {
         to: u32,
         list_type: &str,
     ) -> Result<EditorUpdate, EditorError> {
-        let item_type = list_item_type_for_list(&self.schema, list_type)
+        let item_type = self
+            .schema
+            .list_item_type_for(list_type)
             .unwrap_or_else(|| "listItem".to_string());
 
         let mut tx = Transaction::new(Source::Input);
@@ -2209,7 +2211,9 @@ impl Editor {
             return Ok(Some(self.build_update_from_current()));
         }
 
-        let item_type = list_item_type_for_list(&self.schema, list_type)
+        let item_type = self
+            .schema
+            .list_item_type_for(list_type)
             .unwrap_or_else(|| "listItem".to_string());
 
         let list_items = range
@@ -3767,27 +3771,6 @@ fn list_attrs_for_type(
     } else {
         HashMap::new()
     }
-}
-
-fn list_item_type_for_list(schema: &Schema, list_type: &str) -> Option<String> {
-    let list_spec = schema.node(list_type)?;
-    let part = list_spec.content.parts.first()?;
-
-    if let Some(direct) = schema.node(&part.group) {
-        if matches!(direct.role, NodeRole::ListItem) {
-            return Some(direct.name.clone());
-        }
-    }
-
-    let mut candidates: Vec<String> = schema
-        .nodes_in_group(&part.group)
-        .into_iter()
-        .filter(|spec| matches!(spec.role, NodeRole::ListItem))
-        .map(|spec| spec.name.clone())
-        .collect();
-    candidates.sort();
-    candidates.dedup();
-    candidates.into_iter().next()
 }
 
 struct ListItemContext {

@@ -111,6 +111,38 @@ fn test_from_json_parses_allow_undeclared_attrs_true() {
     );
 }
 
+/// When a task list's content group contains BOTH a generic listItem and a
+/// taskItem, the task list must resolve to the task item type — not the
+/// alphabetically-first candidate.
+#[test]
+fn list_item_type_for_prefers_task_item_for_task_lists() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
+            { "name": "text", "role": "text" },
+            { "name": "bulletList", "content": "itemGroup+", "group": "block", "role": "list" },
+            { "name": "taskList", "content": "itemGroup+", "group": "block", "role": "list" },
+            { "name": "listItem", "content": "paragraph+", "group": "itemGroup", "role": "listItem" },
+            {
+                "name": "taskItem", "content": "paragraph+", "group": "itemGroup", "role": "listItem",
+                "attrs": { "checked": { "default": false } }
+            }
+        ],
+        "marks": []
+    }))
+    .expect("schema");
+
+    assert_eq!(
+        schema.list_item_type_for("taskList").as_deref(),
+        Some("taskItem")
+    );
+    assert_eq!(
+        schema.list_item_type_for("bulletList").as_deref(),
+        Some("listItem")
+    );
+}
+
 #[test]
 fn test_from_json_defaults_allow_undeclared_attrs_to_false_when_absent() {
     let schema = Schema::from_json(&serde_json::json!({

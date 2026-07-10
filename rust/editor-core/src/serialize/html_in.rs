@@ -580,11 +580,13 @@ fn collect_list_items(
     options: &FromHtmlOptions,
 ) -> Result<Vec<Node>, ParseError> {
     let mut items = Vec::new();
-    let list_item_name = list_item_type_for_list(schema, &list_spec.name);
-    let fallback_list_item = schema
-        .all_nodes()
-        .find(|node| matches!(node.role, NodeRole::ListItem))
-        .map(|node| node.name.clone());
+    let list_item_name = schema.list_item_type_for(&list_spec.name);
+    let fallback_list_item = || {
+        schema
+            .all_nodes()
+            .find(|node| matches!(node.role, NodeRole::ListItem))
+            .map(|node| node.name.clone())
+    };
 
     for child in list_ref.children() {
         let val: &scraper::Node = child.value();
@@ -593,9 +595,8 @@ fn collect_list_items(
             if let Some(spec) = schema.node_by_html_tag(tag) {
                 if matches!(spec.role, NodeRole::ListItem) {
                     let item_type = list_item_name
-                        .as_ref()
-                        .or(fallback_list_item.as_ref())
-                        .cloned()
+                        .clone()
+                        .or_else(fallback_list_item)
                         .unwrap_or_else(|| spec.name.clone());
                     let mut li_blocks = Vec::new();
                     let mut li_inline = Vec::new();
@@ -617,11 +618,7 @@ fn collect_list_items(
             let text: &str = &*text_data;
             let text = text.trim();
             if !text.is_empty() {
-                if let Some(item_type) = list_item_name
-                    .as_ref()
-                    .or(fallback_list_item.as_ref())
-                    .cloned()
-                {
+                if let Some(item_type) = list_item_name.clone().or_else(fallback_list_item) {
                     let para = make_paragraph(schema, vec![Node::text(text.to_string(), vec![])]);
                     let li = Node::element(
                         item_type,
@@ -635,27 +632,6 @@ fn collect_list_items(
     }
 
     Ok(items)
-}
-
-fn list_item_type_for_list(schema: &Schema, list_type: &str) -> Option<String> {
-    let list_spec = schema.node(list_type)?;
-    let part = list_spec.content.parts.first()?;
-
-    if let Some(direct) = schema.node(&part.group) {
-        if matches!(direct.role, NodeRole::ListItem) {
-            return Some(direct.name.clone());
-        }
-    }
-
-    let mut candidates: Vec<String> = schema
-        .nodes_in_group(&part.group)
-        .into_iter()
-        .filter(|spec| matches!(spec.role, NodeRole::ListItem))
-        .map(|spec| spec.name.clone())
-        .collect();
-    candidates.sort();
-    candidates.dedup();
-    candidates.into_iter().next()
 }
 
 /// Build an opaque node for an unknown HTML tag (non-strict mode).

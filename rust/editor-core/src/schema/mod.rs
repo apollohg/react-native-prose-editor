@@ -94,6 +94,44 @@ impl Schema {
             .collect()
     }
 
+    /// Resolve the item node type a list of `list_type` should wrap content in.
+    ///
+    /// Resolution: (1) the list's first content part named a node directly;
+    /// (2) group expansion filtered to `NodeRole::ListItem`. Within a group,
+    /// task lists prefer task-item candidates (name contains "task" or the
+    /// spec declares a `checked` attr); non-task lists prefer non-task
+    /// candidates. Ties resolve alphabetically for determinism.
+    pub fn list_item_type_for(&self, list_type: &str) -> Option<String> {
+        let list_spec = self.node(list_type)?;
+        let part = list_spec.content.parts.first()?;
+
+        if let Some(direct) = self.node(&part.group) {
+            if matches!(direct.role, NodeRole::ListItem) {
+                return Some(direct.name.clone());
+            }
+        }
+
+        let mut candidates: Vec<&NodeSpec> = self
+            .nodes_in_group(&part.group)
+            .into_iter()
+            .filter(|spec| matches!(spec.role, NodeRole::ListItem))
+            .collect();
+        candidates.sort_by(|a, b| a.name.cmp(&b.name));
+        candidates.dedup_by(|a, b| a.name == b.name);
+
+        let is_task_list = list_type.to_ascii_lowercase().contains("task");
+        let is_task_item = |spec: &NodeSpec| {
+            spec.name.to_ascii_lowercase().contains("task")
+                || spec.attrs.contains_key("checked")
+        };
+
+        candidates
+            .iter()
+            .find(|spec| is_task_item(spec) == is_task_list)
+            .or_else(|| candidates.first())
+            .map(|spec| spec.name.clone())
+    }
+
     /// Find the first node spec whose `html_tag` matches the given tag name.
     pub fn node_by_html_tag(&self, tag: &str) -> Option<&NodeSpec> {
         self.nodes
