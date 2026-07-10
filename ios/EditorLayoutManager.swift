@@ -139,63 +139,117 @@ final class EditorLayoutManager: NSLayoutManager {
         in textStorage: NSTextStorage,
         textContainerOrigin: CGPoint
     ) -> Int? {
-        guard numberOfGlyphs > 0 else { return nil }
+        guard numberOfGlyphs > 0, let container = textContainers.first else { return nil }
 
-        let nsString = textStorage.string as NSString
-        let fullRange = NSRange(location: 0, length: textStorage.length)
-        var seenStarts = Set<Int>()
-        var matchedParagraphStart: Int?
+        // Resolve the touched line first — O(1) instead of walking every
+        // task item in the document on every touch.
+        let containerPoint = CGPoint(
+            x: point.x - textContainerOrigin.x,
+            y: point.y - textContainerOrigin.y
+        )
+        let glyphIndex = self.glyphIndex(for: containerPoint, in: container)
+        if let hit = taskListMarkerParagraphStart(
+            forParagraphContainingGlyphAt: glyphIndex,
+            tapPoint: point,
+            in: textStorage,
+            textContainerOrigin: textContainerOrigin
+        ) {
+            return hit
+        }
 
-        textStorage.enumerateAttribute(
-            RenderBridgeAttributes.listMarkerContext,
-            in: fullRange,
-            options: [.longestEffectiveRangeNotRequired]
-        ) { value, range, stop in
-            guard range.length > 0,
-                  let listContext = value as? [String: Any],
-                  (listContext["kind"] as? String) == "task"
-            else {
-                return
-            }
+        // The tap-slop inset (dx: -10, dy: -8) below, plus the checkbox
+        // itself already being taller than one line's pitch, means the
+        // marker rect for the PREVIOUS or NEXT line can still contain
+        // `point` even though `point` glyph-resolves to a different line.
+        // Probe both neighboring lines by nudging just past the resolved
+        // line's own fragment bounds — this reaches the adjacent paragraph
+        // regardless of how deep `point` sits within its own line, and it
+        // stays O(1) (two extra glyph lookups).
+        let lineFragmentRect = self.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
 
-            let paragraphRange = nsString.paragraphRange(for: NSRange(location: range.location, length: 0))
-            let paragraphStart = paragraphRange.location
-            guard !Self.isParagraphStartCreatedByHardBreak(paragraphStart, in: textStorage) else {
-                return
-            }
-            guard seenStarts.insert(paragraphStart).inserted else { return }
-            guard paragraphStart < textStorage.length else { return }
-
-            let glyphIndex = self.glyphIndexForCharacter(at: paragraphStart)
-            guard glyphIndex < self.numberOfGlyphs else { return }
-
-            let attrs = textStorage.attributes(at: paragraphStart, effectiveRange: nil)
-            let baseFont = Self.markerBaseFont(from: attrs)
-            let markerWidth = (attrs[RenderBridgeAttributes.listMarkerWidth] as? NSNumber)
-                .map { CGFloat(truncating: $0) }
-                ?? LayoutConstants.listMarkerWidth
-
-            var lineGlyphRange = NSRange()
-            let usedRect = self.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphRange)
-            let lineFragmentRect = self.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
-            let glyphLocation = self.location(forGlyphAt: glyphIndex)
-            let baselineY = lineFragmentRect.minY + glyphLocation.y
-            let markerRect = Self.taskMarkerDrawingRect(
-                usedRect: usedRect,
-                lineFragmentRect: lineFragmentRect,
-                markerWidth: markerWidth,
-                baselineY: baselineY,
-                baseFont: baseFont,
-                origin: textContainerOrigin
-            ).insetBy(dx: -10, dy: -8)
-
-            if markerRect.contains(point) {
-                matchedParagraphStart = paragraphStart
-                stop.pointee = true
+        if lineFragmentRect.minY > 0 {
+            let aboveGlyphIndex = self.glyphIndex(
+                for: CGPoint(x: containerPoint.x, y: lineFragmentRect.minY - 1),
+                in: container
+            )
+            if let hit = taskListMarkerParagraphStart(
+                forParagraphContainingGlyphAt: aboveGlyphIndex,
+                tapPoint: point,
+                in: textStorage,
+                textContainerOrigin: textContainerOrigin
+            ) {
+                return hit
             }
         }
 
-        return matchedParagraphStart
+        let belowGlyphIndex = self.glyphIndex(
+            for: CGPoint(x: containerPoint.x, y: lineFragmentRect.maxY + 1),
+            in: container
+        )
+        if let hit = taskListMarkerParagraphStart(
+            forParagraphContainingGlyphAt: belowGlyphIndex,
+            tapPoint: point,
+            in: textStorage,
+            textContainerOrigin: textContainerOrigin
+        ) {
+            return hit
+        }
+
+        return nil
+    }
+
+    /// Resolves the paragraph containing `glyphIndex` and, if it is a task
+    /// item's paragraph start, checks whether that item's marker rect
+    /// contains `tapPoint`.
+    private func taskListMarkerParagraphStart(
+        forParagraphContainingGlyphAt glyphIndex: Int,
+        tapPoint: CGPoint,
+        in textStorage: NSTextStorage,
+        textContainerOrigin: CGPoint
+    ) -> Int? {
+        let charIndex = characterIndexForGlyph(at: glyphIndex)
+        guard charIndex < textStorage.length else { return nil }
+
+        let nsString = textStorage.string as NSString
+        let paragraphRange = nsString.paragraphRange(for: NSRange(location: charIndex, length: 0))
+        let paragraphStart = paragraphRange.location
+        guard paragraphStart < textStorage.length else { return nil }
+        guard !Self.isParagraphStartCreatedByHardBreak(paragraphStart, in: textStorage) else { return nil }
+
+        // Only a task item's paragraph qualifies.
+        guard let listContext = textStorage.attribute(
+                  RenderBridgeAttributes.listMarkerContext,
+                  at: paragraphStart,
+                  effectiveRange: nil
+              ) as? [String: Any],
+              (listContext["kind"] as? String) == "task"
+        else { return nil }
+
+        // Existing marker-rect math, applied to just this paragraph.
+        let startGlyphIndex = glyphIndexForCharacter(at: paragraphStart)
+        guard startGlyphIndex < numberOfGlyphs else { return nil }
+
+        let attrs = textStorage.attributes(at: paragraphStart, effectiveRange: nil)
+        let baseFont = Self.markerBaseFont(from: attrs)
+        let markerWidth = (attrs[RenderBridgeAttributes.listMarkerWidth] as? NSNumber)
+            .map { CGFloat(truncating: $0) }
+            ?? LayoutConstants.listMarkerWidth
+
+        var lineGlyphRange = NSRange()
+        let usedRect = lineFragmentUsedRect(forGlyphAt: startGlyphIndex, effectiveRange: &lineGlyphRange)
+        let lineFragmentRect = self.lineFragmentRect(forGlyphAt: startGlyphIndex, effectiveRange: nil)
+        let glyphLocation = location(forGlyphAt: startGlyphIndex)
+        let baselineY = lineFragmentRect.minY + glyphLocation.y
+        let markerRect = Self.taskMarkerDrawingRect(
+            usedRect: usedRect,
+            lineFragmentRect: lineFragmentRect,
+            markerWidth: markerWidth,
+            baselineY: baselineY,
+            baseFont: baseFont,
+            origin: textContainerOrigin
+        ).insetBy(dx: -10, dy: -8)
+
+        return markerRect.contains(tapPoint) ? paragraphStart : nil
     }
 
     private func drawCodeBlockBackgrounds(

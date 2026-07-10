@@ -1797,6 +1797,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         imageAttachmentRange(at: location) != nil
     }
 
+    func taskListMarkerParagraphStartForTesting(at location: CGPoint) -> Int? {
+        taskListMarkerParagraphStart(at: location)
+    }
+
     func imageSelectionTapCancelsTouchesForTesting() -> Bool {
         imageSelectionTapRecognizer.cancelsTouchesInView
     }
