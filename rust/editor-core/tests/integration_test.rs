@@ -3008,3 +3008,54 @@ fn undo_after_code_block_exit_restores_pre_enter_state() {
         "undo should restore the pre-Enter cursor position"
     );
 }
+
+/// `delete_and_split_scalar` reroutes its collapsed-cursor case to
+/// `split_block`, so pressing Enter with a collapsed selection on an empty
+/// last line of a code block must exit the block the same way `split_block`
+/// and `split_block_scalar` do (same fixture/assertions as
+/// `enter_on_empty_last_line_exits_code_block`).
+#[test]
+fn delete_and_split_scalar_exits_code_block_on_empty_last_line() {
+    let mut editor = task_code_editor();
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "codeBlock",
+                "content": [{ "type": "text", "text": "line1\n" }]
+            }]
+        }))
+        .expect("set_json should succeed");
+
+    // Position 7 is the end of the codeBlock's content: 1 (open tag) + 6
+    // (chars of "line1\n").
+    let scalar_pos = editor.doc_to_scalar(7);
+    editor.set_selection(Selection::cursor(7));
+    editor
+        .delete_and_split_scalar(scalar_pos, scalar_pos)
+        .expect(
+            "delete_and_split_scalar with a collapsed cursor on an empty last code-block line \
+             should exit the block",
+        );
+
+    assert_eq!(
+        editor.get_json(),
+        serde_json::json!({
+            "type": "doc",
+            "content": [
+                {
+                    "type": "codeBlock",
+                    "content": [{ "type": "text", "text": "line1" }]
+                },
+                { "type": "paragraph" }
+            ]
+        }),
+        "delete_and_split_scalar should exit the code block the same way split_block does"
+    );
+
+    assert_eq!(
+        editor.selection(),
+        &Selection::cursor(8),
+        "cursor should land inside the newly created paragraph"
+    );
+}

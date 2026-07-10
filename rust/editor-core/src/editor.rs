@@ -1858,13 +1858,22 @@ impl Editor {
         matches!(parent_spec.role, NodeRole::TextBlock)
     }
 
+    /// Resolve `pos` and return it together with its parent node, but only
+    /// when that parent is a `codeBlock`. Shared by `is_code_block_at_pos`
+    /// and `try_exit_code_block` so the "is `pos` inside a code block" check
+    /// lives in exactly one place.
+    fn resolve_code_block_parent(doc: &Document, pos: u32) -> Option<(ResolvedPos, &Node)> {
+        let resolved = doc.resolve(pos).ok()?;
+        let parent = resolved.parent(doc);
+        if parent.node_type() != "codeBlock" {
+            return None;
+        }
+        Some((resolved, parent))
+    }
+
     fn is_code_block_at_pos(&self, pos: u32) -> bool {
         let doc = self.backend.document();
-        let resolved = match doc.resolve(pos) {
-            Ok(resolved) => resolved,
-            Err(_) => return false,
-        };
-        resolved.parent(doc).node_type() == "codeBlock"
+        Self::resolve_code_block_parent(doc, pos).is_some()
     }
 
     /// If `pos` sits at the very end of a code block whose text ends with a
@@ -1875,22 +1884,18 @@ impl Editor {
     ///
     /// Callers must already know `pos` resolves inside a code block (see
     /// `is_code_block_at_pos`) — this is the only place that decision is
-    /// re-checked, via `parent.node_type()` below, so a caller passing an
-    /// unrelated position simply gets `None`.
+    /// re-checked, via `resolve_code_block_parent` below, so a caller
+    /// passing an unrelated position simply gets `None`.
     fn try_exit_code_block(&mut self, pos: u32) -> Option<Result<EditorUpdate, EditorError>> {
         {
             let doc = self.backend.document();
-            let resolved = doc.resolve(pos).ok()?;
-            let parent = resolved.parent(doc);
-            if parent.node_type() != "codeBlock" {
-                return None;
-            }
+            let (resolved, parent) = Self::resolve_code_block_parent(doc, pos)?;
             // Caret must be at the end of the block's content.
             if resolved.parent_offset != parent.content_size() {
                 return None;
             }
             // The block's text must end with a newline (empty last line).
-            if pos == 0 || !parent.text_content().ends_with('\n') {
+            if !parent.text_content().ends_with('\n') {
                 return None;
             }
         }
