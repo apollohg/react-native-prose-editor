@@ -2077,7 +2077,7 @@ class RenderBridgeTest {
     @Test
     fun `code block span survives splice into a larger editable at the right offsets`() {
         // Build a fragment containing only the codeBlock (as the incremental
-        // path does via buildSpannableFromBlocks), splice it into a builder
+        // path does via buildSpannable), splice it into a builder
         // that already has "intro\n" via replace(), and assert
         // getSpanStart/getSpanEnd reflect the spliced position — this is what
         // drawBackground must consume.

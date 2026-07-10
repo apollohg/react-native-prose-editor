@@ -893,7 +893,7 @@ class RichTextEditorViewTest {
 
         assertTrue(
             "Rendered text should start with the checkbox glyph. Got: '${editText.text}'",
-            editText.text.toString().startsWith("☐ ")
+            editText.text.toString().startsWith(LayoutConstants.TASK_LIST_MARKER_UNCHECKED)
         )
 
         val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)

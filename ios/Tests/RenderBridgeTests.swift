@@ -417,6 +417,39 @@ final class RenderBridgeTests: XCTestCase {
         )
     }
 
+    /// Combined bold+italic marks inside a code block must not silently lose
+    /// BOTH traits when the mono family lacks a bold-italic face. Bold must
+    /// always survive; italic survives whenever the resolved face supports
+    /// layering it on top of bold. This uses the system-default mono
+    /// substitution path (no theme font family override) so both traits are
+    /// expected to survive deterministically.
+    func testRender_codeBlock_preservesBoldAndItalicTraits() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "codeBlock", "depth": 0},
+            {"type": "textRun", "text": "let x", "marks": [{"type": "bold"}, {"type": "italic"}]},
+            {"type": "blockEnd"}
+        ]
+        """
+        let result = RenderBridge.renderElements(fromJSON: json, baseFont: baseFont, textColor: textColor)
+
+        let font = result.attributes(at: 0, effectiveRange: nil)[.font] as? UIFont
+        XCTAssertNotNil(font)
+        XCTAssertTrue(
+            font!.fontDescriptor.symbolicTraits.contains(.traitBold),
+            "Bold trait must always survive in code blocks, even combined with italic; got \(font!.fontName)"
+        )
+        XCTAssertTrue(
+            font!.fontDescriptor.symbolicTraits.contains(.traitItalic),
+            "Italic trait should survive alongside bold on the system-default monospace path; got \(font!.fontName)"
+        )
+        XCTAssertTrue(
+            font!.fontDescriptor.symbolicTraits.contains(.traitMonoSpace)
+                || font!.fontName.lowercased().contains("mono"),
+            "Code block text should still be monospaced"
+        )
+    }
+
     /// Two adjacent code blocks must produce two separate background groups —
     /// the separator newline between blocks carries no codeBlockBackgroundColor.
     func testCodeBlockGrouping_adjacentBlocksAreSeparate() {

@@ -498,7 +498,7 @@ describe('EditorToolbar', () => {
             const rowStyle = StyleSheet.flatten(toJSON()?.props.style);
             const boldButtonStyle = StyleSheet.flatten(getByLabelText('Bold').props.style);
 
-            // max(H, 1) = 32 — not floored to MIN_TOOLBAR_HEIGHT=40.
+            // max(H, 1) = 32 — not floored to 40.
             expect(rowStyle.minHeight).toBe(32);
             // max(1, min(40, 32 - 4)) = 28 — matches iOS and Android exactly.
             expect(boldButtonStyle.height).toBe(28);

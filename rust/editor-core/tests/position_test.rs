@@ -1379,7 +1379,31 @@ fn test_update_fallback_to_rebuild() {
 /// the position map must reserve the same number of scalars.
 #[test]
 fn checked_attr_in_ordered_list_keeps_positionmap_in_sync_with_render() {
-    let mut editor = Editor::new(tiptap_schema(), InterceptorPipeline::new(), false);
+    // The preset `tiptap_schema()` listItem declares no `checked` attr, so
+    // `set_json` (which strips attrs not declared by the schema) would drop
+    // `checked` on ingestion and this test would trivially pass without
+    // exercising the render/position-map agreement it's meant to guard.
+    // Use a custom schema — mirroring the fixture style of
+    // `custom_named_task_list_positionmap_matches_render` below — whose
+    // listItem explicitly declares `checked` so it survives ingestion.
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
+            { "name": "orderedList", "content": "listItem+", "group": "block", "role": "list" },
+            {
+                "name": "listItem",
+                "content": "paragraph+",
+                "role": "listItem",
+                "attrs": { "checked": { "default": false } }
+            },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .expect("custom ordered-list schema with checked attr should parse");
+
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
     let elements = editor
         .set_json(&serde_json::json!({
             "type": "doc",

@@ -258,18 +258,57 @@ final class RenderBridge {
                     // effectiveTextStyle); only substitute the system monospace
                     // font when the theme did not pick an explicit family, and
                     // always re-apply the mark-resolved bold/italic traits.
+                    //
+                    // A single combined withSymbolicTraits(union(bold, italic))
+                    // call can return nil when the mono family has no
+                    // bold-italic face, which would silently drop BOTH traits.
+                    // Bold must never be silently dropped, so bold is applied
+                    // first via a path that cannot fail, then italic is
+                    // layered on top where the face supports it (mirrors the
+                    // inline-code path below).
                     let resolvedFont = baseAttrs[.font] as? UIFont ?? blockFont
                     let markTraits = resolvedFont.fontDescriptor.symbolicTraits
                         .intersection([.traitBold, .traitItalic])
+                    let wantsBold = markTraits.contains(.traitBold)
+                    let wantsItalic = markTraits.contains(.traitItalic)
                     let themedFamily = theme?.codeBlock?.text?.fontFamily != nil
-                    var codeFont = themedFamily
-                        ? blockFont
-                        : UIFont.monospacedSystemFont(ofSize: blockFont.pointSize, weight: .regular)
-                    if !markTraits.isEmpty,
-                       let descriptor = codeFont.fontDescriptor.withSymbolicTraits(
-                           codeFont.fontDescriptor.symbolicTraits.union(markTraits)
-                       ) {
-                        codeFont = UIFont(descriptor: descriptor, size: codeFont.pointSize)
+                    var codeFont: UIFont
+                    if themedFamily {
+                        codeFont = blockFont
+                        if !markTraits.isEmpty {
+                            if let descriptor = codeFont.fontDescriptor.withSymbolicTraits(
+                                codeFont.fontDescriptor.symbolicTraits.union(markTraits)
+                            ) {
+                                // Themed family supports the full combined trait set.
+                                codeFont = UIFont(descriptor: descriptor, size: codeFont.pointSize)
+                            } else if wantsBold,
+                                      let boldOnlyDescriptor = codeFont.fontDescriptor.withSymbolicTraits(
+                                          codeFont.fontDescriptor.symbolicTraits.union([.traitBold])
+                                      ) {
+                                // No combined bold-italic face in this themed
+                                // family; fall back to bold-only rather than
+                                // dropping both traits.
+                                codeFont = UIFont(descriptor: boldOnlyDescriptor, size: codeFont.pointSize)
+                            }
+                        }
+                    } else if wantsBold {
+                        // System monospace has no combined bold-italic face.
+                        // Apply bold via the weight parameter (cannot fail),
+                        // then try to layer italic on top so bold always
+                        // survives even when italic cannot be layered.
+                        codeFont = UIFont.monospacedSystemFont(ofSize: blockFont.pointSize, weight: .bold)
+                        if wantsItalic,
+                           let descriptor = codeFont.fontDescriptor.withSymbolicTraits(
+                               codeFont.fontDescriptor.symbolicTraits.union([.traitItalic])
+                           ) {
+                            codeFont = UIFont(descriptor: descriptor, size: codeFont.pointSize)
+                        }
+                    } else {
+                        codeFont = UIFont.monospacedSystemFont(ofSize: blockFont.pointSize, weight: .regular)
+                        if wantsItalic,
+                           let descriptor = codeFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
+                            codeFont = UIFont(descriptor: descriptor, size: codeFont.pointSize)
+                        }
                     }
                     baseAttrs[.font] = codeFont
                 }
