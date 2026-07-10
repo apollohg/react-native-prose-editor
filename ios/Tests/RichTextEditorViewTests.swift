@@ -1503,6 +1503,112 @@ final class RichTextEditorViewTests: XCTestCase {
         toolbar.usesNativeBarToolbarOverrideForTesting = nil
     }
 
+    /// Sibling to `testNativeBarToolbarOverrideHidesContentStackAndAvoidsPinnedOverlap`: covers the
+    /// review-flagged combination of "native bar toolbar active" + "mention suggestions shown"
+    /// together. When mentions appear while the bar path is active, `apply(theme:animateChrome:)`'s
+    /// `nativeToolbarScrollView.isHidden = !(usesBarToolbar && mentionButtons.isEmpty)` /
+    /// `contentStackView.isHidden = usesBarToolbar && mentionButtons.isEmpty` pair (lines ~1112-1117)
+    /// swaps the bar back out for the custom content stack (which hosts the mention row), then swaps
+    /// back once suggestions clear. This combination was previously untested: the bar tests never
+    /// called `setMentionSuggestions`, and the mention-chrome tests pinned
+    /// `usesNativeBarToolbarOverrideForTesting = false`.
+    func testNativeBarToolbarSwapsToContentStackWhenMentionSuggestionsAppear() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        let host = Self.attachToFixedWidthHost(toolbar, width: 320)
+        toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+            "appearance": "native",
+        ]))
+        toolbar.setItemsJSONForTesting(Self.nativeBarToolbarFixtureJSON)
+        toolbar.usesNativeBarToolbarOverrideForTesting = true
+        host.setNeedsLayout()
+        host.layoutIfNeeded()
+
+        // Precondition: the bar path is active before mentions appear (same forced-on state as
+        // testNativeBarToolbarOverrideHidesContentStackAndAvoidsPinnedOverlap).
+        XCTAssertFalse(
+            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
+            "precondition: the bar toolbar should be visible before mention suggestions appear"
+        )
+        XCTAssertTrue(
+            toolbar.contentStackViewIsHiddenForTesting,
+            "precondition: the custom content stack should be hidden before mention suggestions appear"
+        )
+
+        let didChange = toolbar.setMentionSuggestions([
+            NativeMentionSuggestion(dictionary: [
+                "key": "alice",
+                "title": "Alice Chen",
+                "subtitle": "Design",
+                "label": "alice",
+                "attrs": ["label": "alice"],
+            ])!,
+        ], trigger: "@")
+        host.setNeedsLayout()
+        host.layoutIfNeeded()
+
+        XCTAssertTrue(didChange, "setMentionSuggestions should report a mode change from empty to non-empty")
+        XCTAssertFalse(
+            toolbar.contentStackViewIsHiddenForTesting,
+            "the custom content stack should reappear to host the mention row once suggestions show, even while the bar toolbar is active"
+        )
+        XCTAssertTrue(
+            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
+            "the bar toolbar scroll view should hide once mention suggestions swap the middle slot back to the content stack"
+        )
+        XCTAssertEqual(
+            toolbar.mentionButtonAtForTesting(0)?.titleTextForTesting(),
+            "@alice",
+            "the mention suggestion chip should render inside the now-visible content stack"
+        )
+
+        // Pinned stacks must still render their bar-path buttons and must not overlap whichever
+        // sibling now occupies the middle slot (contentStackView, not the bar).
+        XCTAssertEqual(
+            toolbar.buttonLabelsForPlacementForTesting("start"),
+            ["Start"],
+            "start-pinned items should keep rendering while mention suggestions are shown on the bar path"
+        )
+        XCTAssertEqual(
+            toolbar.buttonLabelsForPlacementForTesting("end"),
+            ["End"],
+            "end-pinned items should keep rendering while mention suggestions are shown on the bar path"
+        )
+
+        let contentFrame = toolbar.contentStackViewFrameForTesting
+        let startFrame = toolbar.startPinnedStackViewFrameForTesting
+        let endFrame = toolbar.endPinnedStackViewFrameForTesting
+        XCTAssertGreaterThan(
+            contentFrame.width,
+            0,
+            "the content stack must actually claim the middle slot's width while showing mentions, not just avoid overlap by being empty"
+        )
+        XCTAssertFalse(
+            contentFrame.intersects(startFrame),
+            "content stack frame \(contentFrame) must not overlap the start pinned stack frame \(startFrame) while mentions are shown"
+        )
+        XCTAssertFalse(
+            contentFrame.intersects(endFrame),
+            "content stack frame \(contentFrame) must not overlap the end pinned stack frame \(endFrame) while mentions are shown"
+        )
+
+        // Clearing suggestions should restore the bar path.
+        let didChangeBack = toolbar.setMentionSuggestions([], trigger: "@")
+        host.setNeedsLayout()
+        host.layoutIfNeeded()
+
+        XCTAssertTrue(didChangeBack, "setMentionSuggestions should report a mode change back to empty")
+        XCTAssertFalse(
+            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
+            "clearing mention suggestions should restore the bar toolbar scroll view"
+        )
+        XCTAssertTrue(
+            toolbar.contentStackViewIsHiddenForTesting,
+            "clearing mention suggestions should hide the custom content stack again"
+        )
+
+        toolbar.usesNativeBarToolbarOverrideForTesting = nil
+    }
+
     private static let nativeBarToolbarFixtureJSON = """
     [
       {
