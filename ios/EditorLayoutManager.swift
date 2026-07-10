@@ -200,7 +200,7 @@ final class EditorLayoutManager: NSLayoutManager {
     ) {
         let characterRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
         let nsString = textStorage.string as NSString
-        var drawnParagraphStarts = Set<Int>()
+        var drawnBlockStarts = Set<Int>()
 
         textStorage.enumerateAttribute(
             RenderBridgeAttributes.codeBlockBackgroundColor,
@@ -211,13 +211,13 @@ final class EditorLayoutManager: NSLayoutManager {
 
             let paragraphRange = nsString.paragraphRange(for: NSRange(location: range.location, length: 0))
             let paragraphStart = paragraphRange.location
-            guard drawnParagraphStarts.insert(paragraphStart).inserted else { return }
-
             let codeBlockRange = Self.codeBlockCharacterRange(
                 containing: paragraphStart,
                 in: textStorage,
                 nsString: nsString
             )
+            guard drawnBlockStarts.insert(codeBlockRange.location).inserted else { return }
+
             guard let rect = self.codeBlockRect(
                 characterRange: codeBlockRange,
                 textStorage: textStorage,
@@ -387,53 +387,64 @@ final class EditorLayoutManager: NSLayoutManager {
         UIBezierPath(rect: stripeRect).fill()
     }
 
-    private static func blockquoteGroupCharacterRange(
+    /// Walk contiguous paragraphs around `paragraphStart` while
+    /// `paragraphPredicate` holds. When `requireAttributedJoin` is non-nil,
+    /// a neighboring paragraph only joins the group if the newline character
+    /// separating the two paragraphs ALSO carries that attribute — this is
+    /// what distinguishes intra-block newlines (attributed) from the
+    /// separator between two distinct blocks (bare).
+    private static func attributeGroupCharacterRange(
         containing paragraphStart: Int,
         in textStorage: NSTextStorage,
-        nsString: NSString
+        nsString: NSString,
+        paragraphPredicate: (NSRange, NSTextStorage) -> Bool,
+        requireAttributedJoin: NSAttributedString.Key?
     ) -> NSRange {
-        let initialParagraphRange = nsString.paragraphRange(
-            for: NSRange(location: paragraphStart, length: 0)
-        )
+        let initialParagraphRange = nsString.paragraphRange(for: NSRange(location: paragraphStart, length: 0))
         var groupStart = initialParagraphRange.location
         var groupEnd = NSMaxRange(initialParagraphRange)
 
+        func newlineJoins(at separatorIndex: Int) -> Bool {
+            guard let key = requireAttributedJoin else { return true }
+            guard separatorIndex >= 0, separatorIndex < textStorage.length else { return false }
+            return textStorage.attribute(key, at: separatorIndex, effectiveRange: nil) != nil
+        }
+
         var probeStart = groupStart
         while probeStart > 0 {
-            let previousParagraphRange = nsString.paragraphRange(
-                for: NSRange(location: probeStart - 1, length: 0)
-            )
-            let previousStart = previousParagraphRange.location
-            guard paragraphHasBlockquoteBorder(
-                      previousParagraphRange,
-                      in: textStorage
-                  )
-            else {
-                break
-            }
-
-            groupStart = previousStart
-            probeStart = previousStart
+            let previousParagraphRange = nsString.paragraphRange(for: NSRange(location: probeStart - 1, length: 0))
+            guard paragraphPredicate(previousParagraphRange, textStorage),
+                  newlineJoins(at: probeStart - 1)
+            else { break }
+            groupStart = previousParagraphRange.location
+            probeStart = previousParagraphRange.location
         }
 
         var nextParagraphLocation = groupEnd
         while nextParagraphLocation < textStorage.length {
-            let nextParagraphRange = nsString.paragraphRange(
-                for: NSRange(location: nextParagraphLocation, length: 0)
-            )
-            guard paragraphHasBlockquoteBorder(
-                      nextParagraphRange,
-                      in: textStorage
-                  )
-            else {
-                break
-            }
-
+            let nextParagraphRange = nsString.paragraphRange(for: NSRange(location: nextParagraphLocation, length: 0))
+            guard paragraphPredicate(nextParagraphRange, textStorage),
+                  newlineJoins(at: nextParagraphLocation - 1)
+            else { break }
             groupEnd = NSMaxRange(nextParagraphRange)
             nextParagraphLocation = groupEnd
         }
 
         return NSRange(location: groupStart, length: groupEnd - groupStart)
+    }
+
+    private static func blockquoteGroupCharacterRange(
+        containing paragraphStart: Int,
+        in textStorage: NSTextStorage,
+        nsString: NSString
+    ) -> NSRange {
+        attributeGroupCharacterRange(
+            containing: paragraphStart,
+            in: textStorage,
+            nsString: nsString,
+            paragraphPredicate: paragraphHasBlockquoteBorder,
+            requireAttributedJoin: nil  // blockquote merging keeps its existing semantics
+        )
     }
 
     private static func paragraphHasBlockquoteBorder(
@@ -473,42 +484,18 @@ final class EditorLayoutManager: NSLayoutManager {
         return trimmed.isEmpty && sawAnyQuotedCharacter
     }
 
-    private static func codeBlockCharacterRange(
+    static func codeBlockCharacterRange(
         containing paragraphStart: Int,
         in textStorage: NSTextStorage,
         nsString: NSString
     ) -> NSRange {
-        let initialParagraphRange = nsString.paragraphRange(
-            for: NSRange(location: paragraphStart, length: 0)
+        attributeGroupCharacterRange(
+            containing: paragraphStart,
+            in: textStorage,
+            nsString: nsString,
+            paragraphPredicate: paragraphHasCodeBlockBackground,
+            requireAttributedJoin: RenderBridgeAttributes.codeBlockBackgroundColor
         )
-        var groupStart = initialParagraphRange.location
-        var groupEnd = NSMaxRange(initialParagraphRange)
-
-        var probeStart = groupStart
-        while probeStart > 0 {
-            let previousParagraphRange = nsString.paragraphRange(
-                for: NSRange(location: probeStart - 1, length: 0)
-            )
-            guard paragraphHasCodeBlockBackground(previousParagraphRange, in: textStorage) else {
-                break
-            }
-            groupStart = previousParagraphRange.location
-            probeStart = previousParagraphRange.location
-        }
-
-        var nextParagraphLocation = groupEnd
-        while nextParagraphLocation < textStorage.length {
-            let nextParagraphRange = nsString.paragraphRange(
-                for: NSRange(location: nextParagraphLocation, length: 0)
-            )
-            guard paragraphHasCodeBlockBackground(nextParagraphRange, in: textStorage) else {
-                break
-            }
-            groupEnd = NSMaxRange(nextParagraphRange)
-            nextParagraphLocation = groupEnd
-        }
-
-        return NSRange(location: groupStart, length: groupEnd - groupStart)
     }
 
     private static func paragraphHasCodeBlockBackground(

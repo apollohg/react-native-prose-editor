@@ -417,6 +417,35 @@ final class RenderBridgeTests: XCTestCase {
         )
     }
 
+    /// Two adjacent code blocks must produce two separate background groups —
+    /// the separator newline between blocks carries no codeBlockBackgroundColor.
+    func testCodeBlockGrouping_adjacentBlocksAreSeparate() {
+        let json = """
+        [
+            {"type": "blockStart", "nodeType": "codeBlock", "depth": 0},
+            {"type": "textRun", "text": "first", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockStart", "nodeType": "codeBlock", "depth": 0},
+            {"type": "textRun", "text": "second", "marks": []},
+            {"type": "blockEnd"}
+        ]
+        """
+        let rendered = RenderBridge.renderElements(fromJSON: json, baseFont: baseFont, textColor: textColor)
+        let storage = NSTextStorage(attributedString: rendered)
+        let nsString = storage.string as NSString
+        // "first\nsecond" — paragraphStart of "second" is 6.
+        let group = EditorLayoutManager.codeBlockCharacterRange(
+            containing: 6, in: storage, nsString: nsString
+        )
+        XCTAssertEqual(group.location, 6, "Group must not absorb the preceding block")
+        // And the first block's group must stop before the separator:
+        let firstGroup = EditorLayoutManager.codeBlockCharacterRange(
+            containing: 0, in: storage, nsString: nsString
+        )
+        XCTAssertEqual(NSMaxRange(firstGroup), 6, "Group may include its own separator paragraph end at most")
+        XCTAssertNotEqual(firstGroup, group)
+    }
+
     /// theme.codeBlock.text.fontFamily must not be silently replaced by the
     /// system monospace font.
     func testRender_codeBlock_honorsThemeFontFamily() {
