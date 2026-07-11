@@ -2,13 +2,21 @@
 
 use editor_core::editor::Editor;
 use editor_core::intercept::InterceptorPipeline;
-use editor_core::schema::presets::tiptap_schema;
+use editor_core::schema::presets::{prosemirror_schema, tiptap_schema};
 use editor_core::schema::{MarkSpec, NodeRole, Schema};
 use editor_core::selection::Selection;
 use std::collections::HashMap;
 
 fn default_editor() -> Editor {
     Editor::new(tiptap_schema(), InterceptorPipeline::new(), false)
+}
+
+#[test]
+fn literal_list_commands_are_disabled_when_only_snake_case_targets_exist() {
+    let editor = Editor::new(prosemirror_schema(), InterceptorPipeline::new(), false);
+    let commands = editor.get_selection_state().active_state.commands;
+    assert_eq!(commands.get("wrapBulletList"), Some(&false));
+    assert_eq!(commands.get("wrapOrderedList"), Some(&false));
 }
 
 #[test]

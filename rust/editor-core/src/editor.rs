@@ -2164,16 +2164,8 @@ impl Editor {
     }
 
     fn command_list_type(&self, ordered: bool) -> Option<String> {
-        let conventional = if ordered {
-            ["orderedList", "ordered_list"]
-        } else {
-            ["bulletList", "bullet_list"]
-        };
-        conventional.into_iter().find(|name| self.schema.node(name).is_some()).map(str::to_string).or_else(|| {
-            let mut names = self.schema.all_nodes().filter(|spec| matches!(spec.role, NodeRole::List { ordered: value } if value == ordered)).map(|spec| spec.name.clone()).collect::<Vec<_>>();
-            names.sort();
-            names.into_iter().next()
-        })
+        let name = if ordered { "orderedList" } else { "bulletList" };
+        self.schema.node(name).map(|_| name.to_string())
     }
 
     fn can_apply_list_type(&self, selection: &Selection, list_type: &str) -> bool {
