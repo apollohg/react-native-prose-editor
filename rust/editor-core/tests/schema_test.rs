@@ -143,6 +143,66 @@ fn list_item_type_for_prefers_task_item_for_task_lists() {
     );
 }
 
+/// Role helpers answer from NodeRole, not node names — a custom-named task
+/// list/item must classify exactly like the presets do.
+#[test]
+fn schema_role_helpers_classify_by_role_not_name() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
+            { "name": "text", "role": "text" },
+            { "name": "todoList", "content": "todoTask+", "group": "block", "role": "list" },
+            { "name": "todoOrderedList", "content": "todoTask+", "group": "block", "role": "list" },
+            {
+                "name": "todoTask", "content": "paragraph+", "group": "block", "role": "listItem",
+                "attrs": { "checked": { "default": false } }
+            }
+        ],
+        "marks": []
+    }))
+    .expect("schema");
+
+    assert!(schema.is_list("todoList"), "todoList should be a list");
+    assert!(
+        schema.is_list("todoOrderedList"),
+        "todoOrderedList should be a list"
+    );
+
+    assert!(
+        schema.is_ordered_list("todoOrderedList"),
+        "todoOrderedList's name contains 'ordered', so from_json infers ordered=true"
+    );
+    assert!(
+        !schema.is_ordered_list("todoList"),
+        "todoList's name does not contain 'ordered', so it must not be ordered"
+    );
+
+    assert!(
+        schema.is_list_item("todoTask"),
+        "todoTask has role listItem"
+    );
+    assert!(
+        !schema.is_list_item("todoList"),
+        "todoList is a list container, not a list item"
+    );
+
+    for node_type in ["paragraph", "unknownNodeType"] {
+        assert!(
+            !schema.is_list(node_type),
+            "{node_type} must not classify as a list"
+        );
+        assert!(
+            !schema.is_ordered_list(node_type),
+            "{node_type} must not classify as an ordered list"
+        );
+        assert!(
+            !schema.is_list_item(node_type),
+            "{node_type} must not classify as a list item"
+        );
+    }
+}
+
 #[test]
 fn test_from_json_defaults_allow_undeclared_attrs_to_false_when_absent() {
     let schema = Schema::from_json(&serde_json::json!({

@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 use crate::model::node::Node;
 use crate::model::Document;
 use crate::render;
-use crate::schema::{NodeRole, Schema};
+use crate::schema::Schema;
 
 use super::{BlockMapping, PositionMap};
 
@@ -179,7 +179,7 @@ fn walk_node(
         let mut child_prefix_len = pending_prefix_len;
         pending_prefix_len = 0;
 
-        if is_list_node(schema, node) && is_list_item_node(schema, child) {
+        if schema.is_list(node.node_type()) && schema.is_list_item(child.node_type()) {
             child_prefix_len += list_marker_len(schema, node, child_idx);
         }
 
@@ -265,33 +265,6 @@ fn compute_inline_scalars(node: &Node) -> u32 {
     count
 }
 
-/// Whether `node` is a list container, per its schema role — matches how the
-/// renderer walks lists (`NodeRole::List`), not hardcoded preset names, so a
-/// custom-named list (e.g. an app-defined `todoTaskList`) is recognized here
-/// exactly as it is by the renderer.
-fn is_list_node(schema: &Schema, node: &Node) -> bool {
-    schema
-        .node(node.node_type())
-        .map(|spec| matches!(spec.role, NodeRole::List { .. }))
-        .unwrap_or(false)
-}
-
-/// Whether `node` is a list item, per its schema role (`NodeRole::ListItem`).
-fn is_list_item_node(schema: &Schema, node: &Node) -> bool {
-    schema
-        .node(node.node_type())
-        .map(|spec| matches!(spec.role, NodeRole::ListItem))
-        .unwrap_or(false)
-}
-
-/// Whether `node` is an ordered list, per its schema role.
-fn is_ordered_list_node(schema: &Schema, node: &Node) -> bool {
-    schema
-        .node(node.node_type())
-        .map(|spec| matches!(spec.role, NodeRole::List { ordered: true }))
-        .unwrap_or(false)
-}
-
 /// Number of rendered scalars a list item's marker prefix occupies.
 ///
 /// Derives from `render::task_list_marker_metadata` — the same predicate the
@@ -307,7 +280,7 @@ fn list_marker_len(schema: &Schema, list_node: &Node, child_index: usize) -> u32
         }
     }
 
-    let ordered = is_ordered_list_node(schema, list_node);
+    let ordered = schema.is_ordered_list(list_node.node_type());
     let start = list_node
         .attrs()
         .get("start")

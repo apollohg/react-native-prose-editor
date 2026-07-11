@@ -94,6 +94,28 @@ impl Schema {
             .collect()
     }
 
+    /// Node-type classification by schema role. These are the single source
+    /// of truth for "is this a list / list item" — the renderer, position
+    /// map, and undo inverse-step computation must all agree, so none of
+    /// them may match node-type names directly.
+    pub fn is_list(&self, node_type: &str) -> bool {
+        self.node(node_type)
+            .map(|spec| matches!(spec.role, NodeRole::List { .. }))
+            .unwrap_or(false)
+    }
+
+    pub fn is_list_item(&self, node_type: &str) -> bool {
+        self.node(node_type)
+            .map(|spec| matches!(spec.role, NodeRole::ListItem))
+            .unwrap_or(false)
+    }
+
+    pub fn is_ordered_list(&self, node_type: &str) -> bool {
+        self.node(node_type)
+            .map(|spec| matches!(spec.role, NodeRole::List { ordered: true }))
+            .unwrap_or(false)
+    }
+
     /// Resolve the item node type a list of `list_type` should wrap content in.
     ///
     /// Resolution: (1) the list's first content part named a node directly;
