@@ -775,15 +775,12 @@ fn test_undo_restores_pre_transaction_selection() {
         .expect("insert_text should succeed");
 
     // After insert, cursor should be after inserted text.
-    match &update.selection {
-        Selection::Text { anchor, .. } => {
-            assert!(
-                *anchor >= 5,
-                "After inserting 2 chars at pos 3, cursor should be >= 5, got: {}",
-                anchor
-            );
-        }
-        _ => {}
+    if let Selection::Text { anchor, .. } = &update.selection {
+        assert!(
+            *anchor >= 5,
+            "After inserting 2 chars at pos 3, cursor should be >= 5, got: {}",
+            anchor
+        );
     }
 
     // Undo should restore the cursor to position 3 (pre-insert position).
@@ -831,16 +828,13 @@ fn test_redo_restores_post_transaction_selection() {
 
     // Redo should restore to the post-insert selection.
     let redo_update = editor.redo().expect("redo should succeed");
-    match &redo_update.selection {
-        Selection::Text { anchor, .. } => {
-            // The redo selection should be the post-transaction selection.
-            assert!(
-                *anchor >= 5,
-                "Redo cursor should be at or after the inserted text, got: {}",
-                anchor
-            );
-        }
-        _ => {}
+    if let Selection::Text { anchor, .. } = &redo_update.selection {
+        // The redo selection should be the post-transaction selection.
+        assert!(
+            *anchor >= 5,
+            "Redo cursor should be at or after the inserted text, got: {}",
+            anchor
+        );
     }
     // Also verify the stored post_insert_sel was captured correctly.
     let _ = post_insert_sel;
@@ -866,15 +860,12 @@ fn test_undo_redo_selection_does_not_return_none() {
 
     let undo_update = editor.undo().expect("undo should succeed");
     // The selection in the update should be a valid text selection.
-    match &undo_update.selection {
-        Selection::Text { anchor, .. } => {
-            assert!(
-                *anchor <= 5,
-                "Selection should be within document bounds, got: {}",
-                anchor
-            );
-        }
-        _ => {} // All, Node are also valid
+    if let Selection::Text { anchor, .. } = &undo_update.selection {
+        assert!(
+            *anchor <= 5,
+            "Selection should be within document bounds, got: {}",
+            anchor
+        );
     }
 }
 
