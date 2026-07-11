@@ -322,7 +322,7 @@ class RenderImageLoaderPolicyTest {
             RenderImageLoader.globalAdmissionCountForTesting() <=
                 RenderImageLoader.globalAdmissionLimitForTesting()
         )
-        assertTrue(rejected.get() >= 340)
+        assertEquals(RenderImageLoader.rejectionNotificationLimitForTesting(), rejected.get())
         handles.forEach { it.cancel() }
         release.countDown()
     }
@@ -515,6 +515,52 @@ class RenderImageLoaderPolicyTest {
             RenderImageLoader.rejectionNotificationCountForTesting() <=
                 RenderImageLoader.rejectionNotificationLimitForTesting()
         )
+        accepted.forEach { it.cancel() }
+        release.countDown()
+    }
+
+    @Test
+    fun `rejection overflow drops notifications without inline or off-main delivery`() {
+        val release = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            release.await(2, TimeUnit.SECONDS)
+            null
+        }
+        val accepted = (0 until RenderImageLoader.globalAdmissionLimitForTesting()).map { index ->
+            RenderImageLoader.load(
+                "https://example.com/rejection-threading/accepted/$index",
+                ImageLoadingPolicy.DEFAULT.copy(readTimeoutMs = 10_000 + index)
+            ) { }
+        }
+        val overflowCount = RenderImageLoader.rejectionNotificationLimitForTesting() + 128
+        val callbackCount = AtomicInteger(0)
+        val offMainCount = AtomicInteger(0)
+        val handlesFinished = CountDownLatch(overflowCount)
+        val callerFinished = CountDownLatch(1)
+        Thread {
+            repeat(overflowCount) { index ->
+                val handle = RenderImageLoader.load(
+                    "https://example.com/rejection-threading/overflow/$index"
+                ) {
+                    callbackCount.incrementAndGet()
+                    if (Looper.myLooper() != Looper.getMainLooper()) offMainCount.incrementAndGet()
+                }
+                handle.onFinished { handlesFinished.countDown() }
+            }
+            callerFinished.countDown()
+        }.start()
+
+        assertTrue(callerFinished.await(2, TimeUnit.SECONDS))
+        assertEquals(0, callbackCount.get())
+        assertEquals(
+            RenderImageLoader.rejectionNotificationLimitForTesting(),
+            RenderImageLoader.rejectionNotificationCountForTesting()
+        )
+
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(RenderImageLoader.rejectionNotificationLimitForTesting(), callbackCount.get())
+        assertEquals(0, offMainCount.get())
+        assertEquals(0L, handlesFinished.count)
         accepted.forEach { it.cancel() }
         release.countDown()
     }

@@ -918,7 +918,7 @@ internal object RenderImageLoader {
 
     private fun enqueueRejectionNotification(callback: Callback) {
         var postDrain = false
-        val deliverInline = synchronized(rejectionLock) {
+        val dropNotification = synchronized(rejectionLock) {
             if (rejectionNotifications.size >= REJECTION_NOTIFICATION_LIMIT) {
                 true
             } else {
@@ -930,22 +930,30 @@ internal object RenderImageLoader {
                 false
             }
         }
-        if (deliverInline) {
-            deliverCallback(callback, null)
+        if (dropNotification) {
+            // Rejection delivery itself is bounded. Once the retained main-thread batch
+            // is full, shed the notification but always finish the handle. Calling the
+            // consumer inline would violate async/main-thread delivery and enable retry
+            // recursion under sustained overload.
+            callback.handle.finish()
         } else if (postDrain && !mainHandler.post { drainRejectionNotifications() }) {
-            drainRejectionNotifications()
+            // A stopped looper cannot honor the delivery contract; finish without
+            // invoking consumer code on the caller thread.
+            takeRejectionNotifications().forEach { it.handle.finish() }
         }
     }
 
     private fun drainRejectionNotifications() {
-        val callbacks = synchronized(rejectionLock) {
+        takeRejectionNotifications().forEach { deliverCallback(it, null) }
+    }
+
+    private fun takeRejectionNotifications(): List<Callback> =
+        synchronized(rejectionLock) {
             rejectionNotifications.toList().also {
                 rejectionNotifications.clear()
                 rejectionDrainPosted = false
             }
         }
-        callbacks.forEach { deliverCallback(it, null) }
-    }
 
     private fun deliverCallback(callback: Callback, bitmap: Bitmap?) {
         try {
