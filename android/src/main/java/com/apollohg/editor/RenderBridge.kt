@@ -37,6 +37,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.Future
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -439,8 +440,38 @@ internal object RenderImageDecoder {
     @Volatile
     internal var bitmapDecoderOverride: ((ByteArray, ImageLoadingPolicy) -> Bitmap?)? = null
 
-    fun decodeSource(source: String, policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT): Bitmap? {
+    internal class Cancellation {
+        private val cancelled = AtomicBoolean(false)
+        @Volatile private var connection: HttpURLConnection? = null
+        @Volatile private var stream: InputStream? = null
+
+        fun isCancelled(): Boolean = cancelled.get()
+
+        fun bind(connection: HttpURLConnection) {
+            this.connection = connection
+            if (cancelled.get()) connection.disconnect()
+        }
+
+        fun bind(stream: InputStream) {
+            this.stream = stream
+            if (cancelled.get()) runCatching { stream.close() }
+        }
+
+        fun cancel() {
+            if (!cancelled.compareAndSet(false, true)) return
+            connection?.disconnect()
+            runCatching { stream?.close() }
+        }
+    }
+
+    fun decodeSource(
+        source: String,
+        policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT,
+        cancellation: Cancellation? = null
+    ): Bitmap? {
+        if (cancellation?.isCancelled() == true) return null
         decodeDataUrlBytes(source, policy)?.let { bytes ->
+            if (cancellation?.isCancelled() == true) return null
             val decoded = decodeBitmap(bytes, policy)
             if (decoded == null) {
                 Log.w(LOG_TAG, "decodeSource: failed to decode data URL bytes (${sourceSummary(source)})")
@@ -456,6 +487,7 @@ internal object RenderImageDecoder {
             connectionFactoryOverride?.invoke(URL(source))
                 ?: (URL(source).openConnection() as HttpURLConnection)
         }.getOrNull() ?: return null
+        cancellation?.bind(connection)
         val remoteBytes = try {
             connection.connectTimeout = policy.connectTimeoutMs
             connection.readTimeout = policy.readTimeoutMs
@@ -464,7 +496,10 @@ internal object RenderImageDecoder {
             if (status !in 200..299 || connection.contentLengthLong > policy.maxSourceBytes) {
                 null
             } else {
-                connection.inputStream.use { readBounded(it, policy.maxSourceBytes) }
+                connection.inputStream.use { input ->
+                    cancellation?.bind(input)
+                    readBounded(input, policy.maxSourceBytes, cancellation)
+                }
             }
         } catch (_: Exception) {
             null
@@ -474,6 +509,7 @@ internal object RenderImageDecoder {
             Log.w(LOG_TAG, "decodeSource: failed to load remote image (${sourceSummary(source)})")
             return null
         }
+        if (cancellation?.isCancelled() == true) return null
         val decoded = decodeBitmap(remoteBytes, policy)
         if (decoded == null) {
             Log.w(LOG_TAG, "decodeSource: failed to decode remote bytes (${sourceSummary(source)})")
@@ -513,11 +549,16 @@ internal object RenderImageDecoder {
         return null
     }
 
-    fun readBounded(input: InputStream, maxBytes: Int): ByteArray? {
+    fun readBounded(
+        input: InputStream,
+        maxBytes: Int,
+        cancellation: Cancellation? = null
+    ): ByteArray? {
         val output = ByteArrayOutputStream(minOf(maxBytes, 16 * 1024))
         val buffer = ByteArray(8 * 1024)
         var total = 0
         while (true) {
+            if (cancellation?.isCancelled() == true) return null
             val read = input.read(buffer)
             if (read < 0) break
             total += read
@@ -598,12 +639,19 @@ internal object RenderImageLoader {
         val cancelled: AtomicBoolean,
         val deliver: (Bitmap?) -> Unit
     )
+    private class PendingRequest(
+        val callbacks: MutableList<Callback>,
+        val cancellation: RenderImageDecoder.Cancellation,
+        val executor: ThreadPoolExecutor
+    ) {
+        var future: Future<*>? = null
+    }
 
     private val cache = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
     private val lock = Any()
-    private val inFlight = mutableMapOf<RequestKey, MutableList<Callback>>()
+    private val inFlight = mutableMapOf<RequestKey, PendingRequest>()
     private val executors = mutableMapOf<ImageLoadingPolicy, ThreadPoolExecutor>()
     private val nextCallbackId = AtomicLong()
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
@@ -621,12 +669,18 @@ internal object RenderImageLoader {
             cache.evictAll()
         }
         synchronized(lock) {
+            inFlight.values.forEach { pending ->
+                pending.cancellation.cancel()
+                pending.future?.cancel(true)
+            }
             inFlight.clear()
             executors.values.forEach { it.shutdownNow() }
             executors.clear()
         }
         decodeSourceOverride = null
     }
+
+    internal fun activeExecutorCountForTesting(): Int = synchronized(lock) { executors.size }
 
     fun load(
         source: String,
@@ -641,37 +695,72 @@ internal object RenderImageLoader {
             return LoadHandle { cancelled.set(true) }
         }
         var shouldStart = false
+        lateinit var pending: PendingRequest
         synchronized(lock) {
             val existing = inFlight[requestKey]
             if (existing != null) {
-                existing += callback
+                existing.callbacks += callback
+                pending = existing
             } else {
-                inFlight[requestKey] = mutableListOf(callback)
+                pending = PendingRequest(
+                    callbacks = mutableListOf(callback),
+                    cancellation = RenderImageDecoder.Cancellation(),
+                    executor = executor(policy)
+                )
+                inFlight[requestKey] = pending
                 shouldStart = true
             }
         }
         if (shouldStart) try {
-            executor(policy).execute {
-                val bitmap = decode(source, policy)
-                if (bitmap != null) {
+            val future = pending.executor.submit {
+                val bitmap = decode(source, policy, pending.cancellation)
+                if (bitmap != null && !pending.cancellation.isCancelled()) {
                     synchronized(cache) {
                         cache.put(cacheKey(source, policy), bitmap)
                     }
                 }
                 val callbacks = synchronized(lock) {
-                    inFlight.remove(requestKey) ?: mutableListOf()
+                    val current = inFlight[requestKey]
+                    if (current === pending) inFlight.remove(requestKey)
+                    retireExecutorIfUnused(policy)
+                    pending.callbacks.toList()
                 }
                 mainHandler.post {
                     callbacks.forEach { if (!it.cancelled.get()) it.deliver(bitmap) }
                 }
             }
+            synchronized(lock) {
+                pending.future = future
+                if (inFlight[requestKey] !== pending) {
+                    future.cancel(true)
+                    pending.executor.remove(future as Runnable)
+                }
+            }
         } catch (_: RejectedExecutionException) {
-            val callbacks = synchronized(lock) { inFlight.remove(requestKey) ?: mutableListOf() }
+            val callbacks = synchronized(lock) {
+                if (inFlight[requestKey] === pending) inFlight.remove(requestKey)
+                retireExecutorIfUnused(policy)
+                pending.callbacks.toList()
+            }
             mainHandler.post { callbacks.forEach { if (!it.cancelled.get()) it.deliver(null) } }
         }
         return LoadHandle {
             cancelled.set(true)
-            synchronized(lock) { inFlight[requestKey]?.removeAll { it.id == callback.id } }
+            synchronized(lock) {
+                val current = inFlight[requestKey]
+                if (current === pending) {
+                    current.callbacks.removeAll { it.id == callback.id }
+                    if (current.callbacks.isEmpty()) {
+                        inFlight.remove(requestKey)
+                        current.cancellation.cancel()
+                        current.future?.let { future ->
+                            future.cancel(true)
+                            current.executor.remove(future as Runnable)
+                        }
+                        retireExecutorIfUnused(policy)
+                    }
+                }
+            }
         }
     }
 
@@ -683,12 +772,21 @@ internal object RenderImageLoader {
                 30L,
                 TimeUnit.SECONDS,
                 ArrayBlockingQueue(policy.maxPendingRequests)
-            )
+            ).apply { allowCoreThreadTimeOut(true) }
         }
     }
 
-    private fun decode(source: String, policy: ImageLoadingPolicy): Bitmap? =
-        decodeSourceOverride?.invoke(source, policy) ?: RenderImageDecoder.decodeSource(source, policy)
+    private fun retireExecutorIfUnused(policy: ImageLoadingPolicy) {
+        if (inFlight.keys.any { it.policy == policy }) return
+        executors.remove(policy)?.shutdown()
+    }
+
+    private fun decode(
+        source: String,
+        policy: ImageLoadingPolicy,
+        cancellation: RenderImageDecoder.Cancellation
+    ): Bitmap? = decodeSourceOverride?.invoke(source, policy)
+        ?: RenderImageDecoder.decodeSource(source, policy, cancellation)
 
     private fun cacheKey(source: String, policy: ImageLoadingPolicy) = "$policy\n$source"
 }

@@ -53,6 +53,77 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class RenderBridgeTest {
+    @Test
+    fun `initial render policy change reloads images preserving selection and scroll`() {
+        RenderImageLoader.resetForTesting()
+        val decodeCount = AtomicInteger(0)
+        val decodeStarted = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            decodeCount.incrementAndGet()
+            decodeStarted.countDown()
+            release.await(2, TimeUnit.SECONDS)
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val editor = EditorEditText(org.robolectric.RuntimeEnvironment.getApplication())
+        val json = """
+            [
+              {"type":"blockStart","nodeType":"paragraph","depth":0},
+              {"type":"textRun","text":"hello","marks":[]},
+              {"type":"blockEnd"},
+              {"type":"voidBlock","nodeType":"image","docPos":7,"attrs":{"src":"https://example.com/policy.png"}}
+            ]
+        """.trimIndent()
+        try {
+            editor.applyRenderJSON(json)
+            editor.setSelection(2)
+            editor.scrollTo(0, 7)
+
+            editor.setImageLoadingPolicyJson("""{"maxSourceBytes":1234}""")
+
+            assertTrue(decodeStarted.await(2, TimeUnit.SECONDS))
+            assertEquals(2, decodeCount.get())
+            assertEquals(2, editor.selectionStart)
+            assertEquals(2, editor.selectionEnd)
+            assertEquals(7, editor.scrollY)
+        } finally {
+            release.countDown()
+            RenderImageLoader.resetForTesting()
+        }
+    }
+
+    @Test
+    fun `detach and reattach restarts existing image loads`() {
+        RenderImageLoader.resetForTesting()
+        val decodeCount = AtomicInteger(0)
+        val decodeStarted = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            decodeCount.incrementAndGet()
+            decodeStarted.countDown()
+            release.await(2, TimeUnit.SECONDS)
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val editor = EditorEditText(org.robolectric.RuntimeEnvironment.getApplication())
+        val json = """[{"type":"voidBlock","nodeType":"image","docPos":1,"attrs":{"src":"https://example.com/attach.png"}}]"""
+        try {
+            editor.applyRenderJSON(json)
+            invokeLifecycle(editor, "onDetachedFromWindow")
+            invokeLifecycle(editor, "onAttachedToWindow")
+
+            assertTrue(decodeStarted.await(2, TimeUnit.SECONDS))
+            assertEquals(2, decodeCount.get())
+        } finally {
+            release.countDown()
+            RenderImageLoader.resetForTesting()
+        }
+    }
+
+    private fun invokeLifecycle(editor: EditorEditText, name: String) {
+        val method = EditorEditText::class.java.getDeclaredMethod(name)
+        method.isAccessible = true
+        method.invoke(editor)
+    }
 
     // ── Test Fixtures ───────────────────────────────────────────────────
 

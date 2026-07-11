@@ -303,6 +303,8 @@ class EditorEditText @JvmOverloads constructor(
     private var imeTraceSequence: Long = 0L
     private var lastImeTraceUptimeMs: Long = 0L
     private var currentRenderBlocksJson: org.json.JSONArray? = null
+    private var latestInitialRenderJson: String? = null
+    private var restartImageLoadsOnAttach = false
     private var renderAppearanceRevision: Long = 1L
     private var lastAppliedRenderAppearanceRevision: Long = 0L
     private var pendingOptimisticRenderText: String? = null
@@ -982,18 +984,8 @@ class EditorEditText @JvmOverloads constructor(
     fun setImageLoadingPolicyJson(policyJson: String?) {
         val nextPolicy = ImageLoadingPolicy.fromJson(policyJson)
         if (nextPolicy == imageLoadingPolicy) return
-        cancelPendingImageLoads()
         imageLoadingPolicy = nextPolicy
-        val renderBlocks = currentRenderBlocksJson ?: return
-        val spannable = RenderBridge.buildSpannableFromBlocks(
-            renderBlocks,
-            baseFontSize = baseFontSize,
-            textColor = baseTextColor,
-            theme = theme,
-            density = resources.displayMetrics.density,
-            hostView = this
-        )
-        applyRenderedSpannable(spannable, usedPatch = false)
+        if (!rebuildLatestRenderForImages()) cancelPendingImageLoads()
     }
 
     internal fun currentImageLoadGeneration(): Long = imageLoadGeneration
@@ -1006,6 +998,56 @@ class EditorEditText @JvmOverloads constructor(
         imageLoadGeneration += 1L
         imageLoadHandles.forEach { it.cancel() }
         imageLoadHandles.clear()
+    }
+
+    private fun rebuildLatestRenderForImages(): Boolean {
+        val initialRenderJson = latestInitialRenderJson
+        val renderBlocks = currentRenderBlocksJson
+        if ((initialRenderJson == null && renderBlocks == null) || !hasRenderedImageSpans()) return false
+
+        val previousSelectionStart = selectionStart
+        val previousSelectionEnd = selectionEnd
+        val previousScrollX = scrollX
+        val previousScrollY = scrollY
+        cancelPendingImageLoads()
+        val spannable = if (initialRenderJson != null) {
+            RenderBridge.buildSpannable(
+                initialRenderJson,
+                baseFontSize,
+                baseTextColor,
+                theme,
+                resources.displayMetrics.density,
+                this
+            )
+        } else {
+            RenderBridge.buildSpannableFromBlocks(
+                requireNotNull(renderBlocks),
+                baseFontSize = baseFontSize,
+                textColor = baseTextColor,
+                theme = theme,
+                density = resources.displayMetrics.density,
+                hostView = this
+            )
+        }
+        applyRenderedSpannable(spannable, usedPatch = false)
+        if (previousSelectionStart >= 0 && previousSelectionEnd >= 0) {
+            val length = text?.length ?: 0
+            setSelection(
+                previousSelectionStart.coerceIn(0, length),
+                previousSelectionEnd.coerceIn(0, length)
+            )
+        }
+        scrollTo(previousScrollX, previousScrollY)
+        post { scrollTo(previousScrollX, previousScrollY) }
+        requestLayout()
+        invalidate()
+        onSelectionOrContentMayChange?.invoke()
+        return true
+    }
+
+    private fun hasRenderedImageSpans(): Boolean {
+        val content = text as? Spanned ?: return false
+        return content.getSpans(0, content.length, BlockImageSpan::class.java).isNotEmpty()
     }
 
     fun resolveAutoGrowHeight(): Int {
@@ -4028,6 +4070,7 @@ class EditorEditText @JvmOverloads constructor(
             applyRenderNanos = 0L
         } else {
             cancelPendingImageLoads()
+            latestInitialRenderJson = null
             // Android's Editable.replace(...) path benchmarks substantially slower than
             // rebuilding from merged render blocks, so patch payloads are treated as a
             // transport optimization only. We still resolve the merged block state above,
@@ -4156,6 +4199,8 @@ class EditorEditText @JvmOverloads constructor(
      */
     fun applyRenderJSON(renderJSON: String) {
         cancelPendingImageLoads()
+        latestInitialRenderJson = renderJSON
+        restartImageLoadsOnAttach = false
         val startedAt = System.nanoTime()
         val spannable = RenderBridge.buildSpannable(
             renderJSON,
@@ -4401,9 +4446,14 @@ class EditorEditText @JvmOverloads constructor(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         restartCaretBlink()
+        if (restartImageLoadsOnAttach) {
+            restartImageLoadsOnAttach = false
+            rebuildLatestRenderForImages()
+        }
     }
 
     override fun onDetachedFromWindow() {
+        restartImageLoadsOnAttach = hasRenderedImageSpans()
         cancelPendingImageLoads()
         removeCallbacks(caretBlinkRunnable)
         super.onDetachedFromWindow()
