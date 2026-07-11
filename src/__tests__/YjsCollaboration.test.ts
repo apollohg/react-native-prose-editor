@@ -49,6 +49,20 @@ const TITLE_EMPTY_DOC = {
     content: [{ type: 'title' }],
 };
 
+const ARTICLE_SCHEMA = {
+    nodes: [
+        { name: 'article', content: 'title+', role: 'doc' },
+        { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
+        { name: 'text', content: '', group: 'inline', role: 'text' },
+    ],
+    marks: [],
+};
+
+const ARTICLE_EMPTY_DOC = {
+    type: 'article',
+    content: [{ type: 'title' }],
+};
+
 const GROUPED_RANGE_SCHEMA = {
     nodes: [
         { name: 'doc', content: '(title | image){1}', role: 'doc' },
@@ -1059,6 +1073,29 @@ describe('YjsCollaboration', () => {
         expect(controller.state.documentJson).toEqual(TITLE_EMPTY_DOC);
 
         controller.destroy();
+    });
+
+    it('uses the custom doc-role default when native returns an empty custom root', () => {
+        let latest: ReturnType<typeof useYjsCollaboration> | null = null;
+        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValue(
+            JSON.stringify({ type: 'article', content: [] })
+        );
+
+        function Harness() {
+            latest = useYjsCollaboration({
+                documentId: 'article-empty-native',
+                connect: false,
+                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+                schema: ARTICLE_SCHEMA,
+                localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
+            });
+            return null;
+        }
+
+        render(React.createElement(Harness));
+
+        expect(latest?.state.documentJson).toEqual(ARTICLE_EMPTY_DOC);
+        expect(latest?.editorBindings.valueJSON).toEqual(ARTICLE_EMPTY_DOC);
     });
 
     it('uses grouped alternatives and ranges for the empty-document fallback', () => {

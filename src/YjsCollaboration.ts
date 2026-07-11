@@ -150,7 +150,8 @@ function shouldUseFallbackForNativeDocument(
     if (options.initialDocumentJson != null || options.initialEncodedState != null) {
         return false;
     }
-    if (doc.type !== 'doc') {
+    const docNode = resolveDocumentSchema(options.schema).nodes.find((node) => node.role === 'doc');
+    if (doc.type !== docNode?.name) {
         return false;
     }
     return !Array.isArray(doc.content) || doc.content.length === 0;
