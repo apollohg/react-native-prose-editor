@@ -39,6 +39,8 @@ validate_archive_architectures() {
   local architecture
   local thin_archive
   local archive_members
+  local extracted_objects_dir
+  local unexpected_members
 
   [[ -s "$archive_path" ]] || fail "$label archive is missing or empty"
   architecture_info="$(lipo -info "$archive_path" 2>&1)" || fail "$label is not a valid Mach-O archive: $architecture_info"
@@ -60,6 +62,16 @@ validate_archive_architectures() {
     archive_members="$(ar -t "$thin_archive" 2>&1)" || \
       fail "$label $architecture static archive is corrupt: $archive_members"
     [[ -n "$archive_members" ]] || fail "$label $architecture static archive contains no members"
+    unexpected_members="$(printf '%s\n' "$archive_members" | sed -e '/^__.SYMDEF/d' -e '/\.o$/d')"
+    [[ -z "$unexpected_members" ]] || \
+      fail "$label $architecture static archive contains unexpected members: $unexpected_members"
+    extracted_objects_dir="$work_dir/${label//[^[:alnum:]]/_}-$architecture-objects"
+    mkdir -p "$extracted_objects_dir"
+    (
+      cd "$extracted_objects_dir"
+      ar -x "$thin_archive"
+      nm -gU ./*.o >/dev/null 2>&1
+    ) || fail "$label $architecture archive contains an unreadable Mach-O object member"
   done
 }
 
@@ -89,6 +101,9 @@ validate_xcframework() {
         "SupportedPlatformVariant" => "simulator",
       },
     ]
+    by_identifier = ->(library) { library.fetch("LibraryIdentifier") }
+    actual = actual.sort_by(&by_identifier)
+    expected = expected.sort_by(&by_identifier)
     abort "XCFramework AvailableLibraries must exactly describe the device and simulator slices" unless actual == expected
   ' "$plist_json" || fail "XCFramework slice metadata does not match the packaged libraries"
 
@@ -110,6 +125,7 @@ require_command plutil
 require_command lipo
 require_command file
 require_command ar
+require_command nm
 
 if [[ "${1:-}" == "--validate-xcframework" ]]; then
   [[ "$#" == "2" ]] || fail "usage: $0 --validate-xcframework PATH"
