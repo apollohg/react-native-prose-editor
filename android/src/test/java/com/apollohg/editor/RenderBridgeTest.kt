@@ -119,6 +119,62 @@ class RenderBridgeTest {
         }
     }
 
+    @Test
+    fun `policy reload and reattach preserve live edits after initial render`() {
+        RenderImageLoader.resetForTesting()
+        val release = CountDownLatch(1)
+        val decodeStarted = CountDownLatch(3)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            decodeStarted.countDown()
+            release.await(2, TimeUnit.SECONDS)
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val editor = EditorEditText(org.robolectric.RuntimeEnvironment.getApplication())
+        val json = """
+            [
+              {"type":"blockStart","nodeType":"paragraph","depth":0},
+              {"type":"textRun","text":"initial","marks":[]},
+              {"type":"blockEnd"},
+              {"type":"voidBlock","nodeType":"image","docPos":9,"attrs":{"src":"https://example.com/live.png"}}
+            ]
+        """.trimIndent()
+        try {
+            editor.applyRenderJSON(json)
+            editor.editableText.insert(0, "live ")
+
+            editor.setImageLoadingPolicyJson("""{"readTimeoutMs":123}""")
+            assertTrue(editor.text.toString().startsWith("live initial"))
+            invokeLifecycle(editor, "onDetachedFromWindow")
+            invokeLifecycle(editor, "onAttachedToWindow")
+
+            assertTrue(decodeStarted.await(2, TimeUnit.SECONDS))
+            assertTrue(editor.text.toString().startsWith("live initial"))
+        } finally {
+            release.countDown()
+            RenderImageLoader.resetForTesting()
+        }
+    }
+
+    @Test
+    fun `completed image load handles are released from editor`() {
+        RenderImageLoader.resetForTesting()
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val editor = EditorEditText(org.robolectric.RuntimeEnvironment.getApplication())
+        editor.applyRenderJSON(
+            """[{"type":"voidBlock","nodeType":"image","docPos":1,"attrs":{"src":"https://example.com/done.png"}}]"""
+        )
+
+        repeat(100) {
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            if (editor.activeImageLoadHandleCountForTesting() > 0) Thread.sleep(10)
+        }
+
+        assertEquals(0, editor.activeImageLoadHandleCountForTesting())
+        RenderImageLoader.resetForTesting()
+    }
+
     private fun invokeLifecycle(editor: EditorEditText, name: String) {
         val method = EditorEditText::class.java.getDeclaredMethod(name)
         method.isAccessible = true

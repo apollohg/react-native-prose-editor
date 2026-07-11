@@ -199,17 +199,96 @@ class RenderImageLoaderPolicyTest {
     }
 
     @Test
-    fun `idle policy executors are retired`() {
-        val completed = CountDownLatch(1)
+    fun `policy churn uses one global bounded execution resource`() {
+        val releases = mutableListOf<CountDownLatch>()
+        val handles = (1..20).map { index ->
+            val release = CountDownLatch(1)
+            releases += release
+            RenderImageLoader.decodeSourceOverride = { _, _ ->
+                release.await(2, TimeUnit.SECONDS)
+                Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+            }
+            RenderImageLoader.load(
+                "https://example.com/churn/$index",
+                ImageLoadingPolicy.DEFAULT.copy(
+                    maxConcurrentRequests = 1,
+                    maxPendingRequests = 1,
+                    readTimeoutMs = 1_000 + index
+                )
+            ) { }
+        }
+
+        handles.forEach { it.cancel() }
+        releases.forEach { it.countDown() }
+
+        assertEquals(1, RenderImageLoader.executionResourceCountForTesting())
+        assertTrue(
+            RenderImageLoader.globalQueuedTaskCountForTesting() <=
+                RenderImageLoader.globalQueueLimitForTesting()
+        )
+    }
+
+    @Test
+    fun `policy concurrency above global workers is admitted under global ceiling`() {
+        val release = CountDownLatch(1)
+        val started = CountDownLatch(4)
+        val callbacks = CountDownLatch(10)
+        val rejected = AtomicBoolean(false)
         RenderImageLoader.decodeSourceOverride = { _, _ ->
+            started.countDown()
+            release.await(2, TimeUnit.SECONDS)
             Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
         }
-        RenderImageLoader.load("data:image/png;base64,AQ==", ImageLoadingPolicy.DEFAULT) {
+        val policy = ImageLoadingPolicy.DEFAULT.copy(
+            maxConcurrentRequests = 10,
+            maxPendingRequests = 20
+        )
+
+        repeat(10) { index ->
+            RenderImageLoader.load("https://example.com/high/$index", policy) {
+                if (it == null) rejected.set(true)
+                callbacks.countDown()
+            }
+        }
+        assertTrue(started.await(2, TimeUnit.SECONDS))
+        assertTrue(
+            RenderImageLoader.globalActiveWorkerCountForTesting() <=
+                RenderImageLoader.globalWorkerLimitForTesting()
+        )
+        release.countDown()
+        drainMainUntil(callbacks)
+
+        assertEquals(0L, callbacks.count)
+        assertFalse(rejected.get())
+    }
+
+    @Test
+    fun `throwing decoder completes callback and permits retry`() {
+        val completed = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ -> error("decoder failure") }
+        var firstResult: Bitmap? = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val source = "https://example.com/retry.png"
+        RenderImageLoader.load(source, ImageLoadingPolicy.DEFAULT) {
+            firstResult = it
             completed.countDown()
         }
         drainMainUntil(completed)
+        assertEquals(0L, completed.count)
+        assertNull(firstResult)
 
-        assertEquals(0, RenderImageLoader.activeExecutorCountForTesting())
+        val retried = CountDownLatch(1)
+        var retryResult: Bitmap? = null
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        RenderImageLoader.load(source, ImageLoadingPolicy.DEFAULT) {
+            retryResult = it
+            retried.countDown()
+        }
+        drainMainUntil(retried)
+
+        assertEquals(0L, retried.count)
+        assertTrue(retryResult != null)
     }
 
     private fun drainMainUntil(latch: CountDownLatch) {

@@ -303,7 +303,6 @@ class EditorEditText @JvmOverloads constructor(
     private var imeTraceSequence: Long = 0L
     private var lastImeTraceUptimeMs: Long = 0L
     private var currentRenderBlocksJson: org.json.JSONArray? = null
-    private var latestInitialRenderJson: String? = null
     private var restartImageLoadsOnAttach = false
     private var renderAppearanceRevision: Long = 1L
     private var lastAppliedRenderAppearanceRevision: Long = 0L
@@ -991,43 +990,51 @@ class EditorEditText @JvmOverloads constructor(
     internal fun currentImageLoadGeneration(): Long = imageLoadGeneration
 
     internal fun registerImageLoad(handle: RenderImageLoader.LoadHandle) {
-        imageLoadHandles += handle
+        synchronized(imageLoadHandles) {
+            imageLoadHandles += handle
+        }
+        handle.onFinished {
+            synchronized(imageLoadHandles) {
+                imageLoadHandles.remove(handle)
+            }
+        }
+    }
+
+    internal fun activeImageLoadHandleCountForTesting(): Int = synchronized(imageLoadHandles) {
+        imageLoadHandles.size
     }
 
     private fun cancelPendingImageLoads() {
         imageLoadGeneration += 1L
-        imageLoadHandles.forEach { it.cancel() }
-        imageLoadHandles.clear()
+        val handles = synchronized(imageLoadHandles) {
+            imageLoadHandles.toList().also { imageLoadHandles.clear() }
+        }
+        handles.forEach { it.cancel() }
     }
 
     private fun rebuildLatestRenderForImages(): Boolean {
-        val initialRenderJson = latestInitialRenderJson
-        val renderBlocks = currentRenderBlocksJson
-        if ((initialRenderJson == null && renderBlocks == null) || !hasRenderedImageSpans()) return false
+        val currentContent = text as? Spanned ?: return false
+        val imageSpans = currentContent.getSpans(
+            0,
+            currentContent.length,
+            BlockImageSpan::class.java
+        )
+        if (imageSpans.isEmpty()) return false
 
         val previousSelectionStart = selectionStart
         val previousSelectionEnd = selectionEnd
         val previousScrollX = scrollX
         val previousScrollY = scrollY
         cancelPendingImageLoads()
-        val spannable = if (initialRenderJson != null) {
-            RenderBridge.buildSpannable(
-                initialRenderJson,
-                baseFontSize,
-                baseTextColor,
-                theme,
-                resources.displayMetrics.density,
-                this
-            )
-        } else {
-            RenderBridge.buildSpannableFromBlocks(
-                requireNotNull(renderBlocks),
-                baseFontSize = baseFontSize,
-                textColor = baseTextColor,
-                theme = theme,
-                density = resources.displayMetrics.density,
-                hostView = this
-            )
+        val spannable = SpannableStringBuilder(currentContent)
+        imageSpans.forEach { span ->
+            val start = currentContent.getSpanStart(span)
+            val end = currentContent.getSpanEnd(span)
+            val flags = currentContent.getSpanFlags(span)
+            spannable.removeSpan(span)
+            if (start >= 0 && end > start) {
+                spannable.setSpan(span.reloadedFor(this), start, end, flags)
+            }
         }
         applyRenderedSpannable(spannable, usedPatch = false)
         if (previousSelectionStart >= 0 && previousSelectionEnd >= 0) {
@@ -4070,7 +4077,6 @@ class EditorEditText @JvmOverloads constructor(
             applyRenderNanos = 0L
         } else {
             cancelPendingImageLoads()
-            latestInitialRenderJson = null
             // Android's Editable.replace(...) path benchmarks substantially slower than
             // rebuilding from merged render blocks, so patch payloads are treated as a
             // transport optimization only. We still resolve the merged block state above,
@@ -4199,7 +4205,6 @@ class EditorEditText @JvmOverloads constructor(
      */
     fun applyRenderJSON(renderJSON: String) {
         cancelPendingImageLoads()
-        latestInitialRenderJson = renderJSON
         restartImageLoadsOnAttach = false
         val startedAt = System.nanoTime()
         val spannable = RenderBridge.buildSpannable(
