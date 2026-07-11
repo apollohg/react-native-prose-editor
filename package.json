@@ -29,7 +29,7 @@
         "access": "public"
     },
     "scripts": {
-        "build": "tsc -p tsconfig.build.json",
+        "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json",
         "prepack": "npm run build",
         "test": "jest --runInBand --watchman=false",
         "bench:rust": "cargo bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite --",
@@ -82,8 +82,6 @@
         "android/consumer-rules.pro",
         "android/src/main",
         "ios/*.swift",
-        "ios/*.h",
-        "ios/*.modulemap",
         "ios/*.podspec",
         "ios/editor_coreFFI",
         "ios/EditorCore.xcframework",

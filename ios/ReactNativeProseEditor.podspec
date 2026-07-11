@@ -7,7 +7,7 @@ Pod::Spec.new do |s|
   s.version        = package['version']
   s.summary        = package['description']
   s.description    = package['description']
-  s.license        = { :type => 'MIT' }
+  s.license        = { :type => 'Apache-2.0', :file => '../LICENSE' }
   s.author         = 'Apollo HG'
   s.homepage       = 'https://github.com/apollohg/react-native-prose-editor'
   s.platforms      = { :ios => '15.1' }
@@ -22,8 +22,7 @@ Pod::Spec.new do |s|
   s.dependency 'ExpoModulesCore'
 
   # Swift source files (including generated UniFFI bindings)
-  s.source_files = '**/*.{h,m,swift}'
-  s.exclude_files = 'Tests/**/*'
+  s.source_files = '*.swift'
 
   # Prebuilt Rust static library as XCFramework. CocoaPods only reliably
   # picks up vendored binaries that live under the pod root, so build-ios.sh
