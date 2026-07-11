@@ -632,7 +632,7 @@ impl Editor {
         };
         let insertable = self
             .schema
-            .insertable_nodes_at(parent_spec, parent.child_count());
+            .insertable_nodes_at(parent_spec, &child_node_types(parent));
         if !insertable.iter().any(|name| name == blockquote_type) {
             return Ok(self.build_update_from_current());
         }
@@ -1736,7 +1736,9 @@ impl Editor {
                 }
                 // Found the block-level parent. Count its existing children
                 // to determine the content rule slot.
-                let insertable = self.schema.insertable_nodes_at(spec, node.child_count());
+                let insertable = self
+                    .schema
+                    .insertable_nodes_at(spec, &child_node_types(node));
                 return self.filter_insertable_nodes_for_parent(node, insertable);
             }
         }
@@ -2198,7 +2200,9 @@ impl Editor {
                     continue;
                 }
                 // Check if this parent's content rule accepts list nodes.
-                let insertable = self.schema.insertable_nodes_at(spec, node.child_count());
+                let insertable = self
+                    .schema
+                    .insertable_nodes_at(spec, &child_node_types(node));
                 return insertable.iter().any(|name| {
                     self.schema
                         .node(name)
@@ -2243,7 +2247,9 @@ impl Editor {
             if matches!(spec.role, NodeRole::TextBlock) {
                 continue;
             }
-            let insertable = self.schema.insertable_nodes_at(spec, node.child_count());
+            let insertable = self
+                .schema
+                .insertable_nodes_at(spec, &child_node_types(node));
             return insertable.iter().any(|name| name == &blockquote_type);
         }
 
@@ -2301,7 +2307,7 @@ impl Editor {
         };
         let insertable = self
             .schema
-            .insertable_nodes_at(parent_spec, parent.child_count());
+            .insertable_nodes_at(parent_spec, &child_node_types(parent));
         if !insertable.iter().any(|name| name == list_type) {
             return Ok(Some(self.build_update_from_current()));
         }
@@ -3541,7 +3547,16 @@ impl Editor {
             let candidates = preferred_text_block_node_names_for_parent(
                 &self.schema,
                 parent_spec,
-                usize::from(block_index),
+                &parent
+                    .content()
+                    .map(|content| {
+                        content
+                            .iter()
+                            .take(usize::from(block_index))
+                            .map(Node::node_type)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
             );
             if matches!(candidates.first(), Some(candidate) if candidate == block.node_type()) {
                 return Ok(None);
@@ -3695,9 +3710,16 @@ impl Editor {
 fn preferred_text_block_node_names_for_parent(
     schema: &Schema,
     parent_spec: &NodeSpec,
-    existing_child_count: usize,
+    existing_child_types: &[&str],
 ) -> Vec<String> {
-    let accepting_groups = accepting_groups_for_child_count(parent_spec, existing_child_count);
+    let accepting_groups =
+        parent_spec
+            .content
+            .accepting_symbols_after(existing_child_types, |child_type, symbol| {
+                schema
+                    .node(child_type)
+                    .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+            });
     if accepting_groups.is_empty() {
         return Vec::new();
     }
@@ -3737,20 +3759,17 @@ fn preferred_text_block_node_names_for_parent(
     candidates
 }
 
-fn accepting_groups_for_child_count(
-    parent_spec: &NodeSpec,
-    existing_child_count: usize,
-) -> Vec<&str> {
-    parent_spec
-        .content
-        .accepting_symbols_after_count(existing_child_count)
+fn child_node_types(node: &Node) -> Vec<&str> {
+    node.content()
+        .map(|content| content.iter().map(Node::node_type).collect())
+        .unwrap_or_default()
 }
 
 /// Create an empty document with a single schema-valid empty text block.
 fn make_empty_doc(schema: &Schema) -> Document {
     let empty_text_block_name = schema
         .node("doc")
-        .map(|doc_spec| preferred_text_block_node_names_for_parent(schema, doc_spec, 0))
+        .map(|doc_spec| preferred_text_block_node_names_for_parent(schema, doc_spec, &[]))
         .and_then(|mut candidates| candidates.drain(..).next())
         .or_else(|| {
             schema

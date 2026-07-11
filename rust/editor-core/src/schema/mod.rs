@@ -129,29 +129,37 @@ impl Schema {
             }
         }
 
-        let mut constructible = HashSet::new();
+        let mut generatable = HashSet::new();
         loop {
-            let before = constructible.len();
+            let before = generatable.len();
             for node in &nodes {
-                if node.content.is_constructible_with(|symbol| {
-                    nodes.iter().any(|candidate| {
-                        constructible.contains(&candidate.name)
-                            && node_spec_matches_symbol(candidate, symbol)
+                let has_required_attrs = node.attrs.values().any(|attr| attr.default.is_none());
+                if !matches!(node.role, NodeRole::Text)
+                    && !has_required_attrs
+                    && node.content.is_constructible_with(|symbol| {
+                        nodes.iter().any(|candidate| {
+                            generatable.contains(&candidate.name)
+                                && node_spec_matches_symbol(candidate, symbol)
+                        })
                     })
-                }) {
-                    constructible.insert(node.name.clone());
+                {
+                    generatable.insert(node.name.clone());
                 }
             }
-            if constructible.len() == before {
+            if generatable.len() == before {
                 break;
             }
         }
-        if let Some(node) = nodes
-            .iter()
-            .find(|node| !constructible.contains(&node.name))
-        {
+        if let Some(node) = nodes.iter().find(|node| {
+            !node.content.is_constructible_with(|symbol| {
+                nodes.iter().any(|candidate| {
+                    generatable.contains(&candidate.name)
+                        && node_spec_matches_symbol(candidate, symbol)
+                })
+            })
+        }) {
             return Err(format!(
-                "content rule for '{}' is unconstructible because its required content is cyclic",
+                "content rule for '{}' has required content that cannot be auto-created",
                 node.name
             ));
         }
@@ -226,7 +234,7 @@ impl Schema {
     /// candidates. Ties resolve alphabetically for determinism.
     pub fn list_item_type_for(&self, list_type: &str) -> Option<String> {
         let list_spec = self.node(list_type)?;
-        let initial_symbols = list_spec.content.accepting_symbols_after_count(0);
+        let initial_symbols = list_spec.content.initial_symbols();
         let mut candidates: Vec<&NodeSpec> = self
             .all_nodes()
             .filter(|spec| {
@@ -332,12 +340,16 @@ impl Schema {
     pub fn insertable_nodes_at(
         &self,
         parent_spec: &NodeSpec,
-        existing_child_count: usize,
+        existing_child_types: &[&str],
     ) -> Vec<String> {
         let mut result = Vec::new();
-        let accepting_groups = parent_spec
-            .content
-            .accepting_symbols_after_count(existing_child_count);
+        let accepting_groups = parent_spec.content.accepting_symbols_after(
+            existing_child_types,
+            |child_type, symbol| {
+                self.node(child_type)
+                    .is_some_and(|spec| node_spec_matches_symbol(spec, symbol))
+            },
+        );
 
         let excluded_roles = |role: &NodeRole| -> bool {
             matches!(

@@ -49,6 +49,17 @@ const TITLE_EMPTY_DOC = {
     content: [{ type: 'title' }],
 };
 
+const GROUPED_RANGE_SCHEMA = {
+    nodes: [
+        { name: 'doc', content: '(title | image){1}', role: 'doc' },
+        { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
+        { name: 'paragraph', content: 'inline*', group: 'block', role: 'textBlock' },
+        { name: 'image', content: '', group: 'block', role: 'block', isVoid: true },
+        { name: 'text', content: '', group: 'inline', role: 'text' },
+    ],
+    marks: [],
+};
+
 const REMOTE_PEERS = [
     {
         clientId: 2,
@@ -1047,6 +1058,26 @@ describe('YjsCollaboration', () => {
 
         expect(controller.state.documentJson).toEqual(TITLE_EMPTY_DOC);
 
+        controller.destroy();
+    });
+
+    it('uses grouped alternatives and ranges for the empty-document fallback', () => {
+        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValue(
+            JSON.stringify({ type: 'doc', content: [] })
+        );
+
+        const controller = createYjsCollaborationController({
+            documentId: 'doc-grouped-empty',
+            connect: false,
+            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            schema: GROUPED_RANGE_SCHEMA,
+            localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
+        });
+
+        expect(controller.state.documentJson).toEqual({
+            type: 'doc',
+            content: [{ type: 'title' }],
+        });
         controller.destroy();
     });
 

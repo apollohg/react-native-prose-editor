@@ -10,7 +10,7 @@ import {
     encodeCollaborationStateBase64,
 } from './NativeEditorBridge';
 import type { RemoteSelectionDecoration } from './NativeRichTextEditor';
-import type { SchemaDefinition } from './schemas';
+import { defaultEmptyDocument, type SchemaDefinition } from './schemas';
 
 export type YjsTransportStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -117,14 +117,6 @@ interface MutableCallbacks {
 
 const Y_WEBSOCKET_MESSAGE_QUERY_AWARENESS = 3;
 const DEFAULT_YJS_FRAGMENT_NAME = 'default';
-const EMPTY_DOCUMENT: DocumentJSON = {
-    type: 'doc',
-    content: [
-        {
-            type: 'paragraph',
-        },
-    ],
-};
 const SELECTION_AWARENESS_DEBOUNCE_MS = 40;
 
 function cloneJsonValue<T>(value: T): T {
@@ -139,82 +131,6 @@ function cloneJsonValue<T>(value: T): T {
         return clone as T;
     }
     return value;
-}
-
-function acceptingGroupsForContent(content: string, existingChildCount: number): string[] {
-    const tokens = content
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((token) => {
-            const quantifier = token[token.length - 1];
-            if (quantifier === '+' || quantifier === '*' || quantifier === '?') {
-                return {
-                    group: token.slice(0, -1),
-                    min: quantifier === '+' ? 1 : 0,
-                    max: quantifier === '?' ? 1 : null,
-                };
-            }
-            return {
-                group: token,
-                min: 1,
-                max: 1,
-            };
-        });
-
-    let remaining = existingChildCount;
-    const acceptingGroups: string[] = [];
-    for (const token of tokens) {
-        if (remaining >= token.min) {
-            const consumed = token.max == null ? remaining : Math.min(remaining, token.max);
-            remaining = Math.max(0, remaining - consumed);
-            const atMax = token.max != null && consumed >= token.max;
-            if (!atMax) {
-                acceptingGroups.push(token.group);
-            }
-            continue;
-        }
-
-        acceptingGroups.push(token.group);
-        break;
-    }
-
-    return acceptingGroups;
-}
-
-function defaultEmptyDocument(schema?: SchemaDefinition): DocumentJSON {
-    if (!schema) {
-        return {
-            type: 'doc',
-            content: [{ type: 'paragraph' }],
-        };
-    }
-
-    const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
-    const acceptingGroups =
-        docNode == null ? [] : acceptingGroupsForContent(docNode.content ?? '', 0);
-    const matchingTextBlocks = schema.nodes.filter(
-        (node) =>
-            node.role === 'textBlock' &&
-            acceptingGroups.some((group) => node.name === group || node.group === group)
-    );
-    const preferredTextBlock =
-        matchingTextBlocks.find((node) => node.htmlTag === 'p' || node.name === 'paragraph') ??
-        matchingTextBlocks[0] ??
-        schema.nodes.find((node) => node.htmlTag === 'p' || node.name === 'paragraph') ??
-        schema.nodes.find((node) => node.role === 'textBlock');
-
-    if (!preferredTextBlock) {
-        return {
-            type: 'doc',
-            content: [{ type: 'paragraph' }],
-        };
-    }
-
-    return {
-        type: 'doc',
-        content: [{ type: preferredTextBlock.name }],
-    };
 }
 
 function initialFallbackDocument(options: YjsCollaborationOptions): DocumentJSON {

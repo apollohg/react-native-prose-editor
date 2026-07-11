@@ -1,4 +1,5 @@
 import type { DocumentJSON } from './NativeEditorBridge';
+import { acceptingContentSymbols } from './contentExpression';
 
 export interface AttrSpec {
     default?: unknown;
@@ -182,55 +183,17 @@ export const tiptapSchema: SchemaDefinition = {
     marks: MARKS,
 };
 
-function acceptingGroupsForChildCount(content: string, existingChildCount: number): string[] {
-    const tokens = content
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((token) => {
-            const quantifier = token[token.length - 1];
-            if (quantifier === '+' || quantifier === '*' || quantifier === '?') {
-                return {
-                    group: token.slice(0, -1),
-                    min: quantifier === '+' ? 1 : 0,
-                    max: quantifier === '?' ? 1 : null,
-                };
-            }
-            return {
-                group: token,
-                min: 1,
-                max: 1,
-            };
-        });
-
-    let remaining = existingChildCount;
-    const acceptingGroups: string[] = [];
-    for (const token of tokens) {
-        if (remaining >= token.min) {
-            const consumed = token.max == null ? remaining : Math.min(remaining, token.max);
-            remaining = Math.max(0, remaining - consumed);
-            const atMax = token.max != null && consumed >= token.max;
-            if (!atMax) {
-                acceptingGroups.push(token.group);
-            }
-            continue;
-        }
-
-        acceptingGroups.push(token.group);
-        break;
-    }
-
-    return acceptingGroups;
-}
-
 export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): DocumentJSON {
     const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
-    const acceptingGroups =
-        docNode == null ? [] : acceptingGroupsForChildCount(docNode.content ?? '', 0);
+    const acceptingGroups = docNode == null ? [] : acceptingContentSymbols(docNode.content ?? '');
     const matchingTextBlocks = schema.nodes.filter(
         (node) =>
             node.role === 'textBlock' &&
-            acceptingGroups.some((group) => node.name === group || node.group === group)
+            acceptingGroups.some(
+                (group) =>
+                    node.name === group ||
+                    node.group?.split(/\s+/).some((nodeGroup) => nodeGroup === group)
+            )
     );
     const preferredTextBlock =
         matchingTextBlocks.find((node) => node.htmlTag === 'p' || node.name === 'paragraph') ??

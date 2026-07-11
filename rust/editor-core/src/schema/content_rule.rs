@@ -1,5 +1,8 @@
 use std::collections::{BTreeSet, HashSet};
 
+const MAX_NESTING_DEPTH: usize = 128;
+const MAX_AUTOMATON_STATES: usize = 10_000;
+
 /// A parsed ProseMirror-style content expression.
 ///
 /// The expression is compiled to a small nondeterministic automaton so all
@@ -94,28 +97,11 @@ impl ContentRule {
         symbols.into_iter().collect()
     }
 
-    /// Return all symbols that could follow some valid prefix of `count`
-    /// children. This is used by count-only insertion APIs that do not have the
-    /// actual children available.
-    pub fn accepting_symbols_after_count(&self, count: usize) -> Vec<&str> {
-        let mut current = self.epsilon_closure([self.start]);
-        for _ in 0..count {
-            let next = current
-                .iter()
-                .flat_map(|state| {
-                    self.states[*state]
-                        .transitions
-                        .iter()
-                        .map(|(_, target)| *target)
-                })
-                .collect::<HashSet<_>>();
-            if next.is_empty() {
-                return Vec::new();
-            }
-            current = self.epsilon_closure(next);
-        }
+    /// Return every symbol accepted at the start of the expression.
+    pub fn initial_symbols(&self) -> Vec<&str> {
+        let states = self.epsilon_closure([self.start]);
         let mut symbols = BTreeSet::new();
-        for state in current {
+        for state in states {
             symbols.extend(
                 self.states[state]
                     .transitions
@@ -193,6 +179,7 @@ struct Parser<'a> {
     source: &'a str,
     pos: usize,
     symbols: BTreeSet<String>,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -201,6 +188,7 @@ impl<'a> Parser<'a> {
             source,
             pos: 0,
             symbols: BTreeSet::new(),
+            depth: 0,
         }
     }
 
@@ -284,11 +272,20 @@ impl<'a> Parser<'a> {
     fn parse_atom(&mut self) -> Result<Expr, String> {
         self.skip_whitespace();
         if self.consume('(') {
+            if self.depth >= MAX_NESTING_DEPTH {
+                return Err(format!(
+                    "content expression nesting exceeds {MAX_NESTING_DEPTH}"
+                ));
+            }
+            self.depth += 1;
             self.skip_whitespace();
             if self.peek() == Some(')') {
+                self.depth -= 1;
                 return Err(format!("empty group at byte {}", self.pos));
             }
-            let expression = self.parse_alternation()?;
+            let expression_result = self.parse_alternation();
+            self.depth -= 1;
+            let expression = expression_result?;
             self.skip_whitespace();
             if !self.consume(')') {
                 return Err(format!("missing ')' at byte {}", self.pos));
@@ -381,47 +378,66 @@ struct Compiler {
 }
 
 impl Compiler {
-    fn state(&mut self) -> usize {
+    fn state(&mut self) -> Result<usize, String> {
+        if self.states.len() >= MAX_AUTOMATON_STATES {
+            return Err(format!(
+                "content expression exceeds {MAX_AUTOMATON_STATES} automaton states"
+            ));
+        }
         let index = self.states.len();
         self.states.push(State::default());
-        index
+        Ok(index)
     }
 
     fn compile(&mut self, expression: &Expr) -> Result<(usize, usize), String> {
+        self.compile_at_depth(expression, 0)
+    }
+
+    fn compile_at_depth(
+        &mut self,
+        expression: &Expr,
+        depth: usize,
+    ) -> Result<(usize, usize), String> {
+        if depth > MAX_NESTING_DEPTH {
+            return Err(format!(
+                "content expression nesting exceeds {MAX_NESTING_DEPTH}"
+            ));
+        }
         match expression {
             Expr::Empty => {
-                let start = self.state();
-                let end = self.state();
+                let start = self.state()?;
+                let end = self.state()?;
                 self.states[start].epsilon.push(end);
                 Ok((start, end))
             }
             Expr::Symbol(symbol) => {
-                let start = self.state();
-                let end = self.state();
+                let start = self.state()?;
+                let end = self.state()?;
                 self.states[start].transitions.push((symbol.clone(), end));
                 Ok((start, end))
             }
             Expr::Sequence(expressions) => {
-                let start = self.state();
+                let start = self.state()?;
                 let mut tail = start;
                 for expression in expressions {
-                    let (next_start, next_end) = self.compile(expression)?;
+                    let (next_start, next_end) = self.compile_at_depth(expression, depth + 1)?;
                     self.states[tail].epsilon.push(next_start);
                     tail = next_end;
                 }
                 Ok((start, tail))
             }
             Expr::Alternation(expressions) => {
-                let start = self.state();
-                let end = self.state();
+                let start = self.state()?;
+                let end = self.state()?;
                 for expression in expressions {
-                    let (branch_start, branch_end) = self.compile(expression)?;
+                    let (branch_start, branch_end) =
+                        self.compile_at_depth(expression, depth + 1)?;
                     self.states[start].epsilon.push(branch_start);
                     self.states[branch_end].epsilon.push(end);
                 }
                 Ok((start, end))
             }
-            Expr::Repeat { expr, min, max } => self.compile_repeat(expr, *min, *max),
+            Expr::Repeat { expr, min, max } => self.compile_repeat(expr, *min, *max, depth + 1),
         }
     }
 
@@ -430,17 +446,18 @@ impl Compiler {
         expression: &Expr,
         min: u32,
         max: Option<u32>,
+        depth: usize,
     ) -> Result<(usize, usize), String> {
         // Bounds are expanded into automaton states. This generous cap prevents
         // hostile schemas from forcing impractical allocations.
         if max.unwrap_or(min) > 10_000 {
             return Err("content repetition bound exceeds 10000".to_string());
         }
-        let start = self.state();
-        let end = self.state();
+        let start = self.state()?;
+        let end = self.state()?;
         let mut tail = start;
         for _ in 0..min {
-            let (item_start, item_end) = self.compile(expression)?;
+            let (item_start, item_end) = self.compile_at_depth(expression, depth)?;
             self.states[tail].epsilon.push(item_start);
             tail = item_end;
         }
@@ -448,7 +465,7 @@ impl Compiler {
             Some(max) => {
                 for _ in min..max {
                     self.states[tail].epsilon.push(end);
-                    let (item_start, item_end) = self.compile(expression)?;
+                    let (item_start, item_end) = self.compile_at_depth(expression, depth)?;
                     self.states[tail].epsilon.push(item_start);
                     tail = item_end;
                 }
@@ -456,7 +473,7 @@ impl Compiler {
             }
             None => {
                 self.states[tail].epsilon.push(end);
-                let (item_start, item_end) = self.compile(expression)?;
+                let (item_start, item_end) = self.compile_at_depth(expression, depth)?;
                 self.states[tail].epsilon.push(item_start);
                 self.states[item_end].epsilon.push(tail);
             }
@@ -507,5 +524,12 @@ mod tests {
             rule.accepting_symbols_after(&[] as &[&str], |child, symbol| *child == symbol),
             vec!["a", "d", "e"]
         );
+    }
+
+    #[test]
+    fn rejects_excessive_parser_and_compiler_complexity() {
+        let deeply_nested = format!("{}a{}", "(".repeat(129), ")".repeat(129));
+        assert!(ContentRule::parse(&deeply_nested).is_err());
+        assert!(ContentRule::parse("(a{101}){101}").is_err());
     }
 }

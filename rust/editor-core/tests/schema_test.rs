@@ -162,6 +162,51 @@ fn schema_accepts_cycles_when_the_cycle_is_optional() {
 }
 
 #[test]
+fn schema_rejects_required_text_content_because_text_cannot_be_auto_created() {
+    let result = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "text", "role": "doc" },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn schema_rejects_required_nodes_with_attributes_without_defaults() {
+    let result = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "media", "role": "doc" },
+            { "name": "media", "attrs": { "src": {} }, "isVoid": true },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn insertable_nodes_follow_the_actual_alternative_prefix() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "(title paragraph | image caption)", "role": "doc" },
+            { "name": "title", "group": "block", "role": "textBlock" },
+            { "name": "paragraph", "group": "block", "role": "block" },
+            { "name": "image", "group": "block", "role": "block", "isVoid": true },
+            { "name": "caption", "group": "block", "role": "block" },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .expect("schema");
+    let doc = schema.node("doc").unwrap();
+
+    let result = schema.insertable_nodes_at(doc, &["title"]);
+    assert_eq!(result, vec!["paragraph"]);
+}
+
+#[test]
 fn test_void_node_detection() {
     let schema = tiptap_schema();
     assert!(schema.node("horizontalRule").unwrap().is_void);

@@ -104,7 +104,7 @@ fn test_allowed_marks_bidirectional_excludes() {
 fn test_insertable_nodes_doc_level() {
     let schema = tiptap_schema();
     let doc_spec = schema.node("doc").unwrap();
-    let result = schema.insertable_nodes_at(doc_spec, 1);
+    let result = schema.insertable_nodes_at(doc_spec, &["paragraph"]);
     assert!(
         result.contains(&"horizontalRule".to_string()),
         "horizontalRule should be insertable at doc level, got: {:?}",
@@ -121,14 +121,14 @@ fn test_insertable_nodes_list_item_first_child() {
     let li_spec = schema.node("listItem").unwrap();
     // listItem content: "paragraph block*"
     // With 0 children, the mandatory paragraph slot is unfilled.
-    let result_empty = schema.insertable_nodes_at(li_spec, 0);
+    let result_empty = schema.insertable_nodes_at(li_spec, &[]);
     assert!(
         !result_empty.contains(&"horizontalRule".to_string()),
         "horizontalRule should NOT be insertable when mandatory paragraph is unfilled, got: {:?}",
         result_empty
     );
 
-    let result_with_para = schema.insertable_nodes_at(li_spec, 1);
+    let result_with_para = schema.insertable_nodes_at(li_spec, &["paragraph"]);
     assert!(
         result_with_para.contains(&"horizontalRule".to_string()),
         "horizontalRule should be insertable after first paragraph in listItem, got: {:?}",
@@ -140,7 +140,7 @@ fn test_insertable_nodes_list_item_first_child() {
 fn test_insertable_nodes_filters_by_role() {
     let schema = tiptap_schema();
     let doc_spec = schema.node("doc").unwrap();
-    let result = schema.insertable_nodes_at(doc_spec, 1);
+    let result = schema.insertable_nodes_at(doc_spec, &["paragraph"]);
     assert!(
         !result.iter().any(|n| {
             schema
@@ -553,7 +553,7 @@ fn test_insertable_nodes_list_item_multiple_children() {
     let li_spec = schema.node("listItem").unwrap();
     // listItem content: "paragraph block*" with 2 existing children (paragraph + one block)
     // The block* part is unbounded, so more blocks should still be insertable
-    let result = schema.insertable_nodes_at(li_spec, 2);
+    let result = schema.insertable_nodes_at(li_spec, &["paragraph", "horizontalRule"]);
     assert!(result.contains(&"horizontalRule".to_string()),
         "horizontalRule should still be insertable with 2 children in listItem (unbounded block*), got: {:?}", result);
 }
