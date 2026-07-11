@@ -434,6 +434,7 @@ final class RenderImageLoadOwner {
     private let transport: ImageLoadingTransport
     private let decoder: ImageDataDecoding
     private let deliver: Delivery
+    private let deliveryLock = NSRecursiveLock()
     private var storedPolicy: ImageLoadingPolicy
     private var generation: UInt64 = 0
     private var pending: [Request] = []
@@ -462,6 +463,7 @@ final class RenderImageLoadOwner {
             cancelAllLocked()
             storedPolicy = policy
         }
+        waitForDeliveries()
     }
 
     @discardableResult
@@ -497,6 +499,7 @@ final class RenderImageLoadOwner {
 
     func cancelAll() {
         stateQueue.sync { cancelAllLocked() }
+        waitForDeliveries()
     }
 
     func withCurrent<T>(_ body: () throws -> T) rethrows -> T {
@@ -623,6 +626,8 @@ final class RenderImageLoadOwner {
         }
         deliver { [weak self] in
             guard let self else { return }
+            self.deliveryLock.lock()
+            defer { self.deliveryLock.unlock() }
             let shouldDeliver = stateQueue.sync {
                 guard request.generation == self.generation,
                       self.active.removeValue(forKey: request.id) != nil,
@@ -669,6 +674,12 @@ final class RenderImageLoadOwner {
             activeRequest.task?.cancel()
             drainLocked()
         }
+        waitForDeliveries()
+    }
+
+    private func waitForDeliveries() {
+        deliveryLock.lock()
+        deliveryLock.unlock()
     }
 
     private static func isDataURL(_ source: String) -> Bool {
@@ -678,6 +689,7 @@ final class RenderImageLoadOwner {
 
     static func decodedDataURLByteCount(_ source: String, maxBytes: Int) -> Int? {
         guard maxBytes >= 0, let comma = source.firstIndex(of: ",") else { return nil }
+        guard source[..<comma].utf8.count <= 256 else { return nil }
         let completeGroups = maxBytes / 3
         let maxSymbols: Int
         let (groupSymbols, overflow) = completeGroups.multipliedReportingOverflow(by: 4)
@@ -690,17 +702,32 @@ final class RenderImageLoadOwner {
             maxSymbols = additionOverflow ? Int.max : symbols
         }
 
+        let (encodedLimit, encodedLimitOverflow) = maxSymbols.addingReportingOverflow(4_096)
+        let maxEncodedBytes = encodedLimitOverflow ? Int.max : encodedLimit
+        var encodedByteCount = 0
         var symbolCount = 0
         var trailingPadding = 0
-        for character in source[source.index(after: comma)...] {
-            guard !character.isWhitespace else { continue }
+        var sawPadding = false
+        for byte in source[source.index(after: comma)...].utf8 {
+            let (nextEncodedCount, encodedCountOverflow) = encodedByteCount.addingReportingOverflow(1)
+            guard !encodedCountOverflow, nextEncodedCount <= maxEncodedBytes else { return nil }
+            encodedByteCount = nextEncodedCount
+            if byte == 9 || byte == 10 || byte == 13 || byte == 32 { continue }
+            let isBase64Symbol = (65...90).contains(byte)
+                || (97...122).contains(byte)
+                || (48...57).contains(byte)
+                || byte == 43
+                || byte == 47
+            guard isBase64Symbol || byte == 61 else { return nil }
             let (nextCount, countOverflow) = symbolCount.addingReportingOverflow(1)
             guard !countOverflow, nextCount <= maxSymbols else { return nil }
             symbolCount = nextCount
-            if character == "=" {
+            if byte == 61 {
                 guard trailingPadding < 2 else { return nil }
                 trailingPadding += 1
+                sawPadding = true
             } else {
+                guard !sawPadding else { return nil }
                 trailingPadding = 0
             }
         }
@@ -717,7 +744,7 @@ final class RenderImageLoadOwner {
     }
 
     private static func decodeDataURL(_ source: String, maxBytes: Int) -> Data? {
-        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = source.drop(while: { $0.isWhitespace })
         guard let comma = trimmed.firstIndex(of: ","),
               trimmed[..<comma].lowercased().contains(";base64")
         else {

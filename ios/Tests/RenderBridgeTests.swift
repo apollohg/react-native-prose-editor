@@ -289,6 +289,37 @@ final class RenderBridgeTests: XCTestCase {
         wait(for: [completion], timeout: 0.05)
     }
 
+    func testCancelAllWaitsForValidatedCompletionBeforeReturning() {
+        let delivery = ManualImageDeliveryScheduler()
+        let gate = BlockingCompletionGate()
+        let cancelReturned = LockedBoolean()
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(),
+            transport: ImmediateImageTransport(result: .success(Data([1]))),
+            decoder: RecordingImageDecoder(image: onePixelImage()),
+            deliver: delivery.schedule
+        )
+
+        XCTAssertTrue(owner.loadImage(source: "https://example.com/interleaving.png") { _ in
+            gate.beginAndWait()
+        })
+        XCTAssertTrue(delivery.waitUntilScheduled(timeout: 1))
+        DispatchQueue.global(qos: .userInitiated).async {
+            delivery.runAll()
+        }
+        XCTAssertTrue(gate.waitUntilStarted(timeout: 1))
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            owner.cancelAll()
+            cancelReturned.value = true
+        }
+        Thread.sleep(forTimeInterval: 0.05)
+        XCTAssertFalse(cancelReturned.value)
+
+        gate.release()
+        XCTAssertTrue(cancelReturned.waitForTrue(timeout: 1))
+    }
+
     func testCancelledDecodeStillOccupiesConcurrencyUntilClosureExits() {
         let decoder = BlockingImageDecoder(image: onePixelImage())
         let owner = RenderImageLoadOwner(
@@ -328,6 +359,12 @@ final class RenderBridgeTests: XCTestCase {
             RenderImageLoadOwner.decodedDataURLByteCount(
                 "data:image/png;base64,AQ==",
                 maxBytes: -1
+            )
+        )
+        XCTAssertNil(
+            RenderImageLoadOwner.decodedDataURLByteCount(
+                "data:image/png;base64," + String(repeating: " ", count: 5_000) + "AQ==",
+                maxBytes: 1
             )
         )
     }
@@ -2882,6 +2919,70 @@ private final class ManualImageDeliveryScheduler {
         actions.removeAll()
         condition.unlock()
         pending.forEach { $0() }
+    }
+}
+
+private final class BlockingCompletionGate {
+    private let condition = NSCondition()
+    private var started = false
+    private var released = false
+
+    func beginAndWait() {
+        condition.lock()
+        started = true
+        condition.broadcast()
+        while !released {
+            condition.unlock()
+            Thread.sleep(forTimeInterval: 0.001)
+            condition.lock()
+        }
+        condition.unlock()
+    }
+
+    func waitUntilStarted(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !started {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+private final class LockedBoolean {
+    private let condition = NSCondition()
+    private var storedValue = false
+
+    var value: Bool {
+        get {
+            condition.lock()
+            defer { condition.unlock() }
+            return storedValue
+        }
+        set {
+            condition.lock()
+            storedValue = newValue
+            condition.broadcast()
+            condition.unlock()
+        }
+    }
+
+    func waitForTrue(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !storedValue {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
     }
 }
 
