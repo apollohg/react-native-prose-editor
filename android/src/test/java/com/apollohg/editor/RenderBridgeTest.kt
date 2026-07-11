@@ -441,9 +441,17 @@ class RenderBridgeTest {
     }
 
     @Test
-    fun `render - data url image span is ready on first render`() {
+    fun `render - data url image span decodes off main without measurement side effects`() {
+        RenderImageLoader.resetForTesting()
         val dataUrl =
             "data:image/gif;base64,R0lGODdhAQABAIAAAP///////ywAAAAAAQABAAACAkQBADs="
+        val decodeStarted = CountDownLatch(1)
+        val releaseDecode = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            decodeStarted.countDown()
+            releaseDecode.await(2, TimeUnit.SECONDS)
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
         val hostView = TextView(org.robolectric.RuntimeEnvironment.getApplication()).apply {
             measure(
                 View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
@@ -459,18 +467,30 @@ class RenderBridgeTest {
         ]
         """.trimIndent()
 
-        val result = RenderBridge.buildSpannable(
-            json,
-            baseFontSize,
-            textColor,
-            density = 1f,
-            hostView = hostView
-        )
+        try {
+            val result = RenderBridge.buildSpannable(
+                json,
+                baseFontSize,
+                textColor,
+                density = 1f,
+                hostView = hostView
+            )
+            assertTrue(decodeStarted.await(2, TimeUnit.SECONDS))
+            val imageSpan = result.getSpans(0, result.length, BlockImageSpan::class.java).single()
+            val beforeMeasure = imageSpan.currentSizePx()
+            imageSpan.getSize(Paint(), result, 0, 1, null)
+            assertEquals(beforeMeasure, imageSpan.currentSizePx())
 
-        val imageSpan = result.getSpans(0, result.length, BlockImageSpan::class.java).single()
-        val (widthPx, heightPx) = imageSpan.currentSizePx()
-        assertEquals(1, widthPx)
-        assertEquals(1, heightPx)
+            releaseDecode.countDown()
+            repeat(20) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                if (imageSpan.currentSizePx().first != 1) Thread.sleep(10)
+            }
+            assertEquals(1 to 1, imageSpan.currentSizePx())
+        } finally {
+            releaseDecode.countDown()
+            RenderImageLoader.resetForTesting()
+        }
     }
 
     @Test
@@ -483,7 +503,7 @@ class RenderBridgeTest {
         val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
         val loaded = mutableListOf<Bitmap?>()
 
-        RenderImageLoader.decodeSourceOverride = {
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
             decodeCount.incrementAndGet()
             decodeStarted.countDown()
             assertTrue(releaseDecode.await(2, TimeUnit.SECONDS))
@@ -506,7 +526,11 @@ class RenderBridgeTest {
             }
 
             releaseDecode.countDown()
-            assertTrue(callbacks.await(2, TimeUnit.SECONDS))
+            repeat(20) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                if (callbacks.count > 0L) Thread.sleep(10)
+            }
+            assertEquals(0L, callbacks.count)
             assertEquals(1, decodeCount.get())
             assertEquals(2, loaded.size)
             assertTrue(loaded.all { loadedBitmap -> loadedBitmap === bitmap })

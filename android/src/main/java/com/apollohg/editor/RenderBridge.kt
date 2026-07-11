@@ -7,6 +7,8 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.util.Log
 import android.util.LruCache
@@ -29,10 +31,16 @@ import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
 import java.lang.ref.WeakReference
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 object LayoutConstants {
     /** Base indentation per depth level (pixels at base scale). */
@@ -383,13 +391,57 @@ class HorizontalRuleSpan(
     }
 }
 
+internal data class ImageLoadingPolicy(
+    val maxSourceBytes: Int,
+    val connectTimeoutMs: Int,
+    val readTimeoutMs: Int,
+    val maxConcurrentRequests: Int,
+    val maxPendingRequests: Int,
+    val maxDecodeDimensionPx: Int
+) {
+    companion object {
+        val DEFAULT = ImageLoadingPolicy(
+            maxSourceBytes = 10 * 1024 * 1024,
+            connectTimeoutMs = 10_000,
+            readTimeoutMs = 20_000,
+            maxConcurrentRequests = 2,
+            maxPendingRequests = 64,
+            maxDecodeDimensionPx = 2_048
+        )
+
+        fun fromJson(json: String?): ImageLoadingPolicy {
+            val values = runCatching { json?.let(::JSONObject) }.getOrNull() ?: return DEFAULT
+            fun positiveInt(key: String, fallback: Int): Int {
+                val value = values.opt(key) as? Number ?: return fallback
+                val doubleValue = value.toDouble()
+                if (!doubleValue.isFinite() || doubleValue % 1.0 != 0.0 || doubleValue <= 0.0 ||
+                    doubleValue > Int.MAX_VALUE.toDouble()
+                ) return fallback
+                return doubleValue.toInt()
+            }
+            return ImageLoadingPolicy(
+                positiveInt("maxSourceBytes", DEFAULT.maxSourceBytes),
+                positiveInt("connectTimeoutMs", DEFAULT.connectTimeoutMs),
+                positiveInt("readTimeoutMs", DEFAULT.readTimeoutMs),
+                positiveInt("maxConcurrentRequests", DEFAULT.maxConcurrentRequests),
+                positiveInt("maxPendingRequests", DEFAULT.maxPendingRequests),
+                positiveInt("maxDecodeDimensionPx", DEFAULT.maxDecodeDimensionPx)
+            )
+        }
+    }
+}
+
 internal object RenderImageDecoder {
-    private const val MAX_DECODE_DIMENSION_PX = 2048
     internal const val LOG_TAG = "NativeEditorImage"
 
-    fun decodeSource(source: String): Bitmap? {
-        decodeDataUrlBytes(source)?.let { bytes ->
-            val decoded = decodeBitmap(bytes)
+    @Volatile
+    internal var connectionFactoryOverride: ((URL) -> HttpURLConnection)? = null
+    @Volatile
+    internal var bitmapDecoderOverride: ((ByteArray, ImageLoadingPolicy) -> Bitmap?)? = null
+
+    fun decodeSource(source: String, policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT): Bitmap? {
+        decodeDataUrlBytes(source, policy)?.let { bytes ->
+            val decoded = decodeBitmap(bytes, policy)
             if (decoded == null) {
                 Log.w(LOG_TAG, "decodeSource: failed to decode data URL bytes (${sourceSummary(source)})")
             } else {
@@ -400,30 +452,50 @@ internal object RenderImageDecoder {
             }
             return decoded
         }
-        val remoteBytes = runCatching {
-            URL(source).openStream().use { input ->
-                input.readBytes()
+        val connection = runCatching {
+            connectionFactoryOverride?.invoke(URL(source))
+                ?: (URL(source).openConnection() as HttpURLConnection)
+        }.getOrNull() ?: return null
+        val remoteBytes = try {
+            connection.connectTimeout = policy.connectTimeoutMs
+            connection.readTimeout = policy.readTimeoutMs
+            connection.instanceFollowRedirects = true
+            val status = connection.responseCode
+            if (status !in 200..299 || connection.contentLengthLong > policy.maxSourceBytes) {
+                null
+            } else {
+                connection.inputStream.use { readBounded(it, policy.maxSourceBytes) }
             }
-        }.getOrNull() ?: run {
+        } catch (_: Exception) {
+            null
+        } finally {
+            connection.disconnect()
+        } ?: run {
             Log.w(LOG_TAG, "decodeSource: failed to load remote image (${sourceSummary(source)})")
             return null
         }
-        val decoded = decodeBitmap(remoteBytes)
+        val decoded = decodeBitmap(remoteBytes, policy)
         if (decoded == null) {
             Log.w(LOG_TAG, "decodeSource: failed to decode remote bytes (${sourceSummary(source)})")
         }
         return decoded
     }
 
-    fun decodeDataUrlBytes(source: String): ByteArray? {
+    fun decodeDataUrlBytes(
+        source: String,
+        policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT
+    ): ByteArray? {
         val trimmed = source.trim()
         if (!trimmed.startsWith("data:image/", ignoreCase = true)) return null
         val commaIndex = trimmed.indexOf(',')
         if (commaIndex <= 0) return null
         val metadata = trimmed.substring(0, commaIndex).lowercase()
         if (!metadata.contains(";base64")) return null
-        val payload = trimmed.substring(commaIndex + 1)
-            .filterNot(Char::isWhitespace)
+        val rawPayload = trimmed.substring(commaIndex + 1)
+        val payloadCharacters = rawPayload.count { !it.isWhitespace() }
+        val maximumEncodedCharacters = ((policy.maxSourceBytes.toLong() + 2L) / 3L) * 4L
+        if (payloadCharacters.toLong() > maximumEncodedCharacters) return null
+        val payload = rawPayload.filterNot(Char::isWhitespace)
 
         val decodeFlags = intArrayOf(
             Base64.DEFAULT,
@@ -433,7 +505,7 @@ internal object RenderImageDecoder {
         )
         for (flags in decodeFlags) {
             val bytes = runCatching { Base64.decode(payload, flags) }.getOrNull()
-            if (bytes != null) {
+            if (bytes != null && bytes.size <= policy.maxSourceBytes) {
                 return bytes
             }
         }
@@ -441,11 +513,25 @@ internal object RenderImageDecoder {
         return null
     }
 
+    fun readBounded(input: InputStream, maxBytes: Int): ByteArray? {
+        val output = ByteArrayOutputStream(minOf(maxBytes, 16 * 1024))
+        val buffer = ByteArray(8 * 1024)
+        var total = 0
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            total += read
+            if (total > maxBytes) return null
+            output.write(buffer, 0, read)
+        }
+        return output.toByteArray()
+    }
+
     fun calculateInSampleSize(
         width: Int,
         height: Int,
-        maxWidth: Int = MAX_DECODE_DIMENSION_PX,
-        maxHeight: Int = MAX_DECODE_DIMENSION_PX
+        maxWidth: Int = ImageLoadingPolicy.DEFAULT.maxDecodeDimensionPx,
+        maxHeight: Int = ImageLoadingPolicy.DEFAULT.maxDecodeDimensionPx
     ): Int {
         if (width <= 0 || height <= 0) return 1
 
@@ -460,7 +546,8 @@ internal object RenderImageDecoder {
         return sampleSize.coerceAtLeast(1)
     }
 
-    private fun decodeBitmap(bytes: ByteArray): Bitmap? {
+    private fun decodeBitmap(bytes: ByteArray, policy: ImageLoadingPolicy): Bitmap? {
+        bitmapDecoderOverride?.let { return it(bytes, policy) }
         val bounds = BitmapFactory.Options().apply {
             inJustDecodeBounds = true
         }
@@ -471,9 +558,19 @@ internal object RenderImageDecoder {
         }
 
         val options = BitmapFactory.Options().apply {
-            inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight)
+            inSampleSize = calculateInSampleSize(
+                bounds.outWidth,
+                bounds.outHeight,
+                policy.maxDecodeDimensionPx,
+                policy.maxDecodeDimensionPx
+            )
         }
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+    }
+
+    internal fun resetForTesting() {
+        connectionFactoryOverride = null
+        bitmapDecoderOverride = null
     }
 
     private fun sourceSummary(source: String): String {
@@ -492,24 +589,32 @@ internal object RenderImageDecoder {
 }
 
 internal object RenderImageLoader {
+    private data class RequestKey(val source: String, val policy: ImageLoadingPolicy)
+    internal class LoadHandle(private val cancelAction: () -> Unit) {
+        fun cancel() = cancelAction()
+    }
+    private data class Callback(
+        val id: Long,
+        val cancelled: AtomicBoolean,
+        val deliver: (Bitmap?) -> Unit
+    )
+
     private val cache = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
-    private val executor =
-        ThreadPoolExecutor(
-            2,
-            2,
-            30L,
-            TimeUnit.SECONDS,
-            LinkedBlockingQueue()
-        )
     private val lock = Any()
-    private val inFlight = mutableMapOf<String, MutableList<(Bitmap?) -> Unit>>()
+    private val inFlight = mutableMapOf<RequestKey, MutableList<Callback>>()
+    private val executors = mutableMapOf<ImageLoadingPolicy, ThreadPoolExecutor>()
+    private val nextCallbackId = AtomicLong()
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
 
     @Volatile
-    internal var decodeSourceOverride: ((String) -> Bitmap?)? = null
+    internal var decodeSourceOverride: ((String, ImageLoadingPolicy) -> Bitmap?)? = null
 
-    fun cached(source: String): Bitmap? = synchronized(cache) { cache.get(source) }
+    fun cached(
+        source: String,
+        policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT
+    ): Bitmap? = synchronized(cache) { cache.get(cacheKey(source, policy)) }
 
     internal fun resetForTesting() {
         synchronized(cache) {
@@ -517,53 +622,75 @@ internal object RenderImageLoader {
         }
         synchronized(lock) {
             inFlight.clear()
+            executors.values.forEach { it.shutdownNow() }
+            executors.clear()
         }
         decodeSourceOverride = null
     }
 
-    fun load(source: String, onLoaded: (Bitmap?) -> Unit) {
-        cached(source)?.let {
-            onLoaded(it)
-            return
+    fun load(
+        source: String,
+        policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT,
+        onLoaded: (Bitmap?) -> Unit
+    ): LoadHandle {
+        val cancelled = AtomicBoolean(false)
+        val callback = Callback(nextCallbackId.incrementAndGet(), cancelled, onLoaded)
+        val requestKey = RequestKey(source, policy)
+        cached(source, policy)?.let { bitmap ->
+            mainHandler.post { if (!cancelled.get()) onLoaded(bitmap) }
+            return LoadHandle { cancelled.set(true) }
         }
-
-        if (source.trim().startsWith("data:image/", ignoreCase = true)) {
-            val bitmap = decode(source)
-            if (bitmap != null) {
-                synchronized(cache) {
-                    cache.put(source, bitmap)
-                }
-            }
-            onLoaded(bitmap)
-            return
-        }
-
+        var shouldStart = false
         synchronized(lock) {
-            val existing = inFlight[source]
+            val existing = inFlight[requestKey]
             if (existing != null) {
-                existing += onLoaded
-                return
+                existing += callback
+            } else {
+                inFlight[requestKey] = mutableListOf(callback)
+                shouldStart = true
             }
-            inFlight[source] = mutableListOf(onLoaded)
         }
-
-        executor.execute {
-            val bitmap = decode(source)
-            if (bitmap != null) {
-                synchronized(cache) {
-                    cache.put(source, bitmap)
+        if (shouldStart) try {
+            executor(policy).execute {
+                val bitmap = decode(source, policy)
+                if (bitmap != null) {
+                    synchronized(cache) {
+                        cache.put(cacheKey(source, policy), bitmap)
+                    }
+                }
+                val callbacks = synchronized(lock) {
+                    inFlight.remove(requestKey) ?: mutableListOf()
+                }
+                mainHandler.post {
+                    callbacks.forEach { if (!it.cancelled.get()) it.deliver(bitmap) }
                 }
             }
-            val callbacks = synchronized(lock) {
-                inFlight.remove(source) ?: mutableListOf()
-            }
-            callbacks.forEach { it(bitmap) }
+        } catch (_: RejectedExecutionException) {
+            val callbacks = synchronized(lock) { inFlight.remove(requestKey) ?: mutableListOf() }
+            mainHandler.post { callbacks.forEach { if (!it.cancelled.get()) it.deliver(null) } }
+        }
+        return LoadHandle {
+            cancelled.set(true)
+            synchronized(lock) { inFlight[requestKey]?.removeAll { it.id == callback.id } }
         }
     }
 
-    private fun decode(source: String): Bitmap? {
-        return decodeSourceOverride?.invoke(source) ?: RenderImageDecoder.decodeSource(source)
+    private fun executor(policy: ImageLoadingPolicy): ThreadPoolExecutor = synchronized(lock) {
+        executors.getOrPut(policy) {
+            ThreadPoolExecutor(
+                policy.maxConcurrentRequests,
+                policy.maxConcurrentRequests,
+                30L,
+                TimeUnit.SECONDS,
+                ArrayBlockingQueue(policy.maxPendingRequests)
+            )
+        }
     }
+
+    private fun decode(source: String, policy: ImageLoadingPolicy): Bitmap? =
+        decodeSourceOverride?.invoke(source, policy) ?: RenderImageDecoder.decodeSource(source, policy)
+
+    private fun cacheKey(source: String, policy: ImageLoadingPolicy) = "$policy\n$source"
 }
 
 internal class BlockImageSpan(
@@ -574,15 +701,25 @@ internal class BlockImageSpan(
     private val preferredHeightDp: Float?
 ) : ReplacementSpan() {
     private val hostRef = WeakReference(hostView)
+    private val policy = (hostView as? EditorEditText)?.imageLoadingPolicy
+        ?: ImageLoadingPolicy.DEFAULT
+    private val generation = (hostView as? EditorEditText)?.currentImageLoadGeneration()
 
     @Volatile
-    private var bitmap: Bitmap? = RenderImageLoader.cached(source)
+    private var bitmap: Bitmap? = RenderImageLoader.cached(source, policy)
     @Volatile
     private var lastDrawRect: RectF? = null
 
     init {
         if (bitmap == null) {
-            RenderImageLoader.load(source) { loaded ->
+            val handle = RenderImageLoader.load(source, policy) { loaded ->
+                val currentHost = hostRef.get()
+                if (
+                    currentHost is EditorEditText &&
+                    generation != currentHost.currentImageLoadGeneration()
+                ) {
+                    return@load
+                }
                 if (loaded == null) {
                     Log.w(
                         RenderImageDecoder.LOG_TAG,
@@ -591,12 +728,17 @@ internal class BlockImageSpan(
                     return@load
                 }
                 bitmap = loaded
-                hostRef.get()?.post {
-                    hostRef.get()?.requestLayout()
-                    hostRef.get()?.invalidate()
-                    (hostRef.get() as? EditorEditText)?.onSelectionOrContentMayChange?.invoke()
+                currentHost?.post {
+                    if (
+                        currentHost is EditorEditText &&
+                        generation != currentHost.currentImageLoadGeneration()
+                    ) return@post
+                    currentHost.requestLayout()
+                    currentHost.invalidate()
+                    (currentHost as? EditorEditText)?.onSelectionOrContentMayChange?.invoke()
                 }
             }
+            (hostView as? EditorEditText)?.registerImageLoad(handle)
         }
     }
 

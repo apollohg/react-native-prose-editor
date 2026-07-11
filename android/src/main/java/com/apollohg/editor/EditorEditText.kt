@@ -257,6 +257,10 @@ class EditorEditText @JvmOverloads constructor(
         android.view.ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     }
     private var imageResizingEnabled = true
+    internal var imageLoadingPolicy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT
+        private set
+    private var imageLoadGeneration: Long = 0L
+    private val imageLoadHandles = mutableListOf<RenderImageLoader.LoadHandle>()
     private var nativeAutoCapitalize = DEFAULT_AUTO_CAPITALIZE
     private var nativeAutoCorrect = DEFAULT_AUTO_CORRECT
     private var nativeKeyboardType = DEFAULT_KEYBOARD_TYPE
@@ -973,6 +977,35 @@ class EditorEditText @JvmOverloads constructor(
         } else {
             onSelectionOrContentMayChange?.invoke()
         }
+    }
+
+    fun setImageLoadingPolicyJson(policyJson: String?) {
+        val nextPolicy = ImageLoadingPolicy.fromJson(policyJson)
+        if (nextPolicy == imageLoadingPolicy) return
+        cancelPendingImageLoads()
+        imageLoadingPolicy = nextPolicy
+        val renderBlocks = currentRenderBlocksJson ?: return
+        val spannable = RenderBridge.buildSpannableFromBlocks(
+            renderBlocks,
+            baseFontSize = baseFontSize,
+            textColor = baseTextColor,
+            theme = theme,
+            density = resources.displayMetrics.density,
+            hostView = this
+        )
+        applyRenderedSpannable(spannable, usedPatch = false)
+    }
+
+    internal fun currentImageLoadGeneration(): Long = imageLoadGeneration
+
+    internal fun registerImageLoad(handle: RenderImageLoader.LoadHandle) {
+        imageLoadHandles += handle
+    }
+
+    private fun cancelPendingImageLoads() {
+        imageLoadGeneration += 1L
+        imageLoadHandles.forEach { it.cancel() }
+        imageLoadHandles.clear()
     }
 
     fun resolveAutoGrowHeight(): Int {
@@ -3994,6 +4027,7 @@ class EditorEditText @JvmOverloads constructor(
             buildRenderNanos = 0L
             applyRenderNanos = 0L
         } else {
+            cancelPendingImageLoads()
             // Android's Editable.replace(...) path benchmarks substantially slower than
             // rebuilding from merged render blocks, so patch payloads are treated as a
             // transport optimization only. We still resolve the merged block state above,
@@ -4121,6 +4155,7 @@ class EditorEditText @JvmOverloads constructor(
      * @param renderJSON The JSON array string of render elements.
      */
     fun applyRenderJSON(renderJSON: String) {
+        cancelPendingImageLoads()
         val startedAt = System.nanoTime()
         val spannable = RenderBridge.buildSpannable(
             renderJSON,
@@ -4369,6 +4404,7 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        cancelPendingImageLoads()
         removeCallbacks(caretBlinkRunnable)
         super.onDetachedFromWindow()
     }

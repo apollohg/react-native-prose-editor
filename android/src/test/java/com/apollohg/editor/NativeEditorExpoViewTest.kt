@@ -37,6 +37,16 @@ import java.util.concurrent.atomic.AtomicReference
 @Config(sdk = [34])
 class NativeEditorExpoViewTest {
     @Test
+    fun `editor image policy prop reaches editor text view`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+
+        view.setImageLoadingPolicyJson("""{"readTimeoutMs":321}""")
+
+        assertEquals(321, view.richTextView.editorEditText.imageLoadingPolicy.readTimeoutMs)
+    }
+
+    @Test
     fun `standalone toolbar hit testing uses normalized window coordinates only`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)

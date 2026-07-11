@@ -25,6 +25,17 @@ import java.lang.ref.WeakReference
 @Config(sdk = [34])
 class NativeProseViewerExpoViewTest {
     @Test
+    fun `viewer image policy prop reaches prose view`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeProseViewerExpoView(expoContext.context, expoContext.appContext)
+
+        view.setImageLoadingPolicyJson("""{"maxSourceBytes":123}""")
+
+        val proseView = view.getChildAt(0) as EditorEditText
+        assertEquals(123, proseView.imageLoadingPolicy.maxSourceBytes)
+    }
+
+    @Test
     fun `drag ending over a link does not open it`() {
         val (viewer, proseView) = laidOutInteractiveViewer(TargetKind.LINK)
         var activations = 0

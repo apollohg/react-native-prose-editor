@@ -866,6 +866,10 @@ class NativeEditorExpoView(
         applyPendingThemeIfNeeded()
     }
 
+    fun setImageLoadingPolicyJson(policyJson: String?) {
+        richTextView.editorEditText.setImageLoadingPolicyJson(policyJson)
+    }
+
     private fun applyThemeJson(themeJson: String?) {
         if (lastThemeJson == themeJson) return
         lastThemeJson = themeJson

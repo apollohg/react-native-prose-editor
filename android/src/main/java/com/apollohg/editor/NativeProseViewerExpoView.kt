@@ -92,6 +92,12 @@ class NativeProseViewerExpoView(
         requestLayout()
     }
 
+    fun setImageLoadingPolicyJson(policyJson: String?) {
+        proseView.setImageLoadingPolicyJson(policyJson)
+        applyRenderJson()
+        requestLayout()
+    }
+
     fun setCollapsesWhenEmpty(collapsesWhenEmpty: Boolean?) {
         val nextValue = collapsesWhenEmpty ?: true
         if (this.collapsesWhenEmpty == nextValue) return

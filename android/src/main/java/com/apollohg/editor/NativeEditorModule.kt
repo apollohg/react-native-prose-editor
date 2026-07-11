@@ -492,6 +492,9 @@ class NativeEditorModule : Module() {
             Prop("allowImageResizing") { view: NativeEditorExpoView, allowImageResizing: Boolean ->
                 view.setAllowImageResizing(allowImageResizing)
             }
+            Prop("imageLoadingPolicyJson") { view: NativeEditorExpoView, policyJson: String? ->
+                view.setImageLoadingPolicyJson(policyJson)
+            }
             Prop("themeJson") { view: NativeEditorExpoView, themeJson: String? ->
                 view.setThemeJson(themeJson)
             }
@@ -560,6 +563,9 @@ class NativeEditorModule : Module() {
             }
             Prop("themeJson") { view: NativeProseViewerExpoView, themeJson: String? ->
                 view.setThemeJson(themeJson)
+            }
+            Prop("imageLoadingPolicyJson") { view: NativeProseViewerExpoView, policyJson: String? ->
+                view.setImageLoadingPolicyJson(policyJson)
             }
             Prop("collapsesWhenEmpty") {
                 view: NativeProseViewerExpoView,
