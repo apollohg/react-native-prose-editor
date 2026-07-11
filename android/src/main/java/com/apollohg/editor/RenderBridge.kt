@@ -636,6 +636,7 @@ internal object RenderImageLoader {
     private const val GLOBAL_WORKERS = 4
     private const val GLOBAL_QUEUE_CAPACITY = 256
     private const val GLOBAL_ADMISSION_LIMIT = GLOBAL_WORKERS + GLOBAL_QUEUE_CAPACITY
+    private const val REJECTION_NOTIFICATION_LIMIT = 64
 
     private data class RequestKey(val source: String, val policy: ImageLoadingPolicy)
     internal class LoadHandle(private val cancelAction: () -> Unit) {
@@ -696,13 +697,20 @@ internal object RenderImageLoader {
     private val inFlight = mutableMapOf<RequestKey, PendingRequest>()
     private val policyStates = mutableMapOf<ImageLoadingPolicy, PolicyState>()
     private val readyToSubmit = java.util.ArrayDeque<PendingRequest>()
+    private val rejectionLock = Any()
+    private val rejectionNotifications = java.util.ArrayDeque<Callback>()
+    private var rejectionDrainPosted = false
     private var admissionCount = 0
     private val nextCallbackId = AtomicLong()
+    private val submissionRejectionCount = AtomicLong()
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private var globalExecutor = createGlobalExecutor()
 
     @Volatile
     internal var decodeSourceOverride: ((String, ImageLoadingPolicy) -> Bitmap?)? = null
+
+    @Volatile
+    internal var beforeWorkerReturnOverride: ((String) -> Unit)? = null
 
     fun cached(
         source: String,
@@ -729,7 +737,16 @@ internal object RenderImageLoader {
             runCatching { request.future?.cancel(true) }
         }
         executor.shutdownNow()
+        val rejected = synchronized(rejectionLock) {
+            rejectionNotifications.toList().also {
+                rejectionNotifications.clear()
+                rejectionDrainPosted = false
+            }
+        }
+        rejected.forEach { it.handle.finish() }
+        submissionRejectionCount.set(0)
         decodeSourceOverride = null
+        beforeWorkerReturnOverride = null
     }
 
     internal fun executionResourceCountForTesting(): Int = 1
@@ -745,6 +762,13 @@ internal object RenderImageLoader {
     internal fun globalAdmissionCountForTesting(): Int = synchronized(lock) { admissionCount }
 
     internal fun globalAdmissionLimitForTesting(): Int = GLOBAL_ADMISSION_LIMIT
+
+    internal fun rejectionNotificationCountForTesting(): Int =
+        synchronized(rejectionLock) { rejectionNotifications.size }
+
+    internal fun rejectionNotificationLimitForTesting(): Int = REJECTION_NOTIFICATION_LIMIT
+
+    internal fun submissionRejectionCountForTesting(): Long = submissionRejectionCount.get()
 
     fun load(
         source: String,
@@ -765,13 +789,7 @@ internal object RenderImageLoader {
             }
         }
         if (!admitted) {
-            mainHandler.post {
-                try {
-                    if (!callback.cancelled.get()) callback.deliver(null)
-                } finally {
-                    callback.handle.finish()
-                }
-            }
+            enqueueRejectionNotification(callback)
             return handle
         }
         handle.onFinished {
@@ -780,13 +798,7 @@ internal object RenderImageLoader {
             }
         }
         cached(source, policy)?.let { bitmap ->
-            mainHandler.post {
-                try {
-                    if (!cancelled.get()) onLoaded(bitmap)
-                } finally {
-                    handle.finish()
-                }
-            }
+            mainHandler.post { deliverCallback(callback, bitmap) }
             return handle
         }
         var drain = false
@@ -819,13 +831,7 @@ internal object RenderImageLoader {
             }
         }
         if (reject) {
-            mainHandler.post {
-                try {
-                    if (!callback.cancelled.get()) callback.deliver(null)
-                } finally {
-                    callback.handle.finish()
-                }
-            }
+            enqueueRejectionNotification(callback)
         } else if (drain) {
             drainSubmissions()
         }
@@ -867,6 +873,7 @@ internal object RenderImageLoader {
                     bitmap = null
                 } finally {
                     completeRequest(request, bitmap)
+                    beforeWorkerReturnOverride?.invoke(request.key.source)
                 }
             }
             var orphaned = false
@@ -878,6 +885,7 @@ internal object RenderImageLoader {
             if (orphaned) cancelOrphanedSubmission(request, future)
             return true
         } catch (_: RejectedExecutionException) {
+            submissionRejectionCount.incrementAndGet()
             return false
         }
     }
@@ -903,17 +911,49 @@ internal object RenderImageLoader {
             releaseSubmittedSlotLocked(request.key.policy)
         }
         mainHandler.post {
-            callbacks.forEach { callback ->
-                try {
-                    if (!callback.cancelled.get()) callback.deliver(bitmap)
-                } catch (_: Exception) {
-                    // One consumer must not prevent other deduped consumers
-                    // from receiving completion or releasing their handles.
-                } finally {
-                    callback.handle.finish()
-                }
-            }
+            callbacks.forEach { callback -> deliverCallback(callback, bitmap) }
             drainSubmissions()
+        }
+    }
+
+    private fun enqueueRejectionNotification(callback: Callback) {
+        var postDrain = false
+        val deliverInline = synchronized(rejectionLock) {
+            if (rejectionNotifications.size >= REJECTION_NOTIFICATION_LIMIT) {
+                true
+            } else {
+                rejectionNotifications.addLast(callback)
+                if (!rejectionDrainPosted) {
+                    rejectionDrainPosted = true
+                    postDrain = true
+                }
+                false
+            }
+        }
+        if (deliverInline) {
+            deliverCallback(callback, null)
+        } else if (postDrain && !mainHandler.post { drainRejectionNotifications() }) {
+            drainRejectionNotifications()
+        }
+    }
+
+    private fun drainRejectionNotifications() {
+        val callbacks = synchronized(rejectionLock) {
+            rejectionNotifications.toList().also {
+                rejectionNotifications.clear()
+                rejectionDrainPosted = false
+            }
+        }
+        callbacks.forEach { deliverCallback(it, null) }
+    }
+
+    private fun deliverCallback(callback: Callback, bitmap: Bitmap?) {
+        try {
+            if (!callback.cancelled.get()) callback.deliver(bitmap)
+        } catch (_: Exception) {
+            // Consumer failures must not crash the delivery runnable or retain admission.
+        } finally {
+            callback.handle.finish()
         }
     }
 
@@ -976,13 +1016,20 @@ internal object RenderImageLoader {
         if (state.submittedCount == 0 && state.pending.isEmpty()) policyStates.remove(policy)
     }
 
-    private fun createGlobalExecutor() = ThreadPoolExecutor(
+    private fun createGlobalExecutor() = object : ThreadPoolExecutor(
         GLOBAL_WORKERS,
         GLOBAL_WORKERS,
         30L,
         TimeUnit.SECONDS,
         ArrayBlockingQueue(GLOBAL_QUEUE_CAPACITY)
-    ).apply { allowCoreThreadTimeOut(true) }
+    ) {
+        override fun afterExecute(runnable: Runnable?, throwable: Throwable?) {
+            super.afterExecute(runnable, throwable)
+            // A transient rejection is requeued. Signal again only after a worker task
+            // has returned; posting to main lets the worker dequeue its next task first.
+            mainHandler.post { drainSubmissions() }
+        }
+    }.apply { allowCoreThreadTimeOut(true) }
 
     private fun decode(
         source: String,

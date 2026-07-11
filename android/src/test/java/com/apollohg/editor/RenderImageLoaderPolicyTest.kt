@@ -357,6 +357,206 @@ class RenderImageLoaderPolicyTest {
     }
 
     @Test
+    fun `throwing cached callback still finishes handle and releases admission`() {
+        val source = "https://example.com/cached-callback.png"
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val warmed = CountDownLatch(1)
+        RenderImageLoader.load(source, ImageLoadingPolicy.DEFAULT) { warmed.countDown() }
+        drainMainUntil(warmed)
+
+        val handle = RenderImageLoader.load(source, ImageLoadingPolicy.DEFAULT) {
+            error("cached callback failure")
+        }
+        val finished = CountDownLatch(1)
+        handle.onFinished { finished.countDown() }
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(0L, finished.count)
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+    }
+
+    @Test
+    fun `throwing global rejection callback still finishes handle`() {
+        val release = CountDownLatch(1)
+        val started = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            started.countDown()
+            release.await(2, TimeUnit.SECONDS)
+            null
+        }
+        val accepted = (0 until RenderImageLoader.globalAdmissionLimitForTesting()).map { index ->
+            RenderImageLoader.load(
+                "https://example.com/global-rejection/$index",
+                ImageLoadingPolicy.DEFAULT.copy(readTimeoutMs = 10_000 + index)
+            ) { }
+        }
+        assertTrue(started.await(2, TimeUnit.SECONDS))
+        val rejected = RenderImageLoader.load("https://example.com/global-rejection/overflow") {
+            error("global rejection callback failure")
+        }
+        val finished = CountDownLatch(1)
+        rejected.onFinished { finished.countDown() }
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(0L, finished.count)
+        accepted.forEach { it.cancel() }
+        release.countDown()
+    }
+
+    @Test
+    fun `throwing policy rejection callback still finishes handle`() {
+        val release = CountDownLatch(1)
+        val started = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            started.countDown()
+            release.await(2, TimeUnit.SECONDS)
+            null
+        }
+        val policy = ImageLoadingPolicy.DEFAULT.copy(maxConcurrentRequests = 1, maxPendingRequests = 1)
+        val accepted = listOf(
+            RenderImageLoader.load("https://example.com/policy-rejection/active", policy) { },
+            RenderImageLoader.load("https://example.com/policy-rejection/pending", policy) { }
+        )
+        assertTrue(started.await(2, TimeUnit.SECONDS))
+        val rejected = RenderImageLoader.load(
+            "https://example.com/policy-rejection/overflow",
+            policy
+        ) { error("policy rejection callback failure") }
+        val finished = CountDownLatch(1)
+        rejected.onFinished { finished.countDown() }
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(0L, finished.count)
+        accepted.forEach { it.cancel() }
+        release.countDown()
+    }
+
+    @Test
+    fun `transient full executor rejection is retried after worker return`() {
+        val firstSource = "https://example.com/retry-capacity/first"
+        val firstRelease = CountDownLatch(1)
+        val otherRelease = CountDownLatch(1)
+        val beforeFirstReturn = CountDownLatch(1)
+        val allowFirstReturn = CountDownLatch(1)
+        val firstStarted = CountDownLatch(1)
+        val secondDelivered = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { source, _ ->
+            if (source == firstSource) {
+                firstStarted.countDown()
+                while (firstRelease.count > 0) {
+                    try {
+                        firstRelease.await(2, TimeUnit.SECONDS)
+                    } catch (_: InterruptedException) {
+                        // Cancellation frees admission while this test worker remains active.
+                    }
+                }
+            } else {
+                otherRelease.await(2, TimeUnit.SECONDS)
+            }
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        RenderImageLoader.beforeWorkerReturnOverride = { source ->
+            if (source == firstSource) {
+                beforeFirstReturn.countDown()
+                allowFirstReturn.await(2, TimeUnit.SECONDS)
+            }
+        }
+        val policy = ImageLoadingPolicy.DEFAULT.copy(maxConcurrentRequests = 1, maxPendingRequests = 1)
+        val first = RenderImageLoader.load(firstSource, policy) { }
+        assertTrue(firstStarted.await(2, TimeUnit.SECONDS))
+        val fillers = (0 until RenderImageLoader.globalAdmissionLimitForTesting() - 1).map { index ->
+            RenderImageLoader.load(
+                "https://example.com/retry-capacity/filler/$index",
+                ImageLoadingPolicy.DEFAULT.copy(readTimeoutMs = 10_000 + index)
+            ) { }
+        }
+        assertEquals(
+            RenderImageLoader.globalQueueLimitForTesting(),
+            RenderImageLoader.globalQueuedTaskCountForTesting()
+        )
+        first.cancel()
+        RenderImageLoader.load("https://example.com/retry-capacity/second", policy) {
+            secondDelivered.countDown()
+        }
+
+        firstRelease.countDown()
+        assertTrue(beforeFirstReturn.await(2, TimeUnit.SECONDS))
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(RenderImageLoader.submissionRejectionCountForTesting() > 0)
+
+        allowFirstReturn.countDown()
+        otherRelease.countDown()
+        drainMainUntil(secondDelivered)
+
+        assertEquals(0L, secondDelivered.count)
+        fillers.forEach { it.cancel() }
+    }
+
+    @Test
+    fun `rejection notifications retain only a bounded batch`() {
+        val release = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            release.await(2, TimeUnit.SECONDS)
+            null
+        }
+        val accepted = (0 until RenderImageLoader.globalAdmissionLimitForTesting()).map { index ->
+            RenderImageLoader.load(
+                "https://example.com/rejection-retention/$index",
+                ImageLoadingPolicy.DEFAULT.copy(readTimeoutMs = 10_000 + index)
+            ) { }
+        }
+        repeat(1_000) { index ->
+            RenderImageLoader.load("https://example.com/rejection-retention/overflow/$index") { }
+        }
+
+        assertTrue(
+            RenderImageLoader.rejectionNotificationCountForTesting() <=
+                RenderImageLoader.rejectionNotificationLimitForTesting()
+        )
+        accepted.forEach { it.cancel() }
+        release.countDown()
+    }
+
+    @Test
+    fun `mixed cached deduped and policy pending handles all finish`() {
+        val cachedSource = "https://example.com/mixed/cached"
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val warmed = CountDownLatch(1)
+        RenderImageLoader.load(cachedSource) { warmed.countDown() }
+        drainMainUntil(warmed)
+
+        val release = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            release.await(2, TimeUnit.SECONDS)
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val policy = ImageLoadingPolicy.DEFAULT.copy(maxConcurrentRequests = 1, maxPendingRequests = 16)
+        val handles = mutableListOf<RenderImageLoader.LoadHandle>()
+        handles += RenderImageLoader.load("https://example.com/mixed/deduped", policy) { }
+        repeat(10) {
+            handles += RenderImageLoader.load("https://example.com/mixed/deduped", policy) { }
+        }
+        repeat(10) { index ->
+            handles += RenderImageLoader.load("https://example.com/mixed/pending/$index", policy) { }
+        }
+        repeat(10) {
+            handles += RenderImageLoader.load(cachedSource) { }
+        }
+        val finished = CountDownLatch(handles.size)
+        handles.forEach { it.onFinished { finished.countDown() } }
+
+        release.countDown()
+        drainMainUntil(finished)
+
+        assertEquals(0L, finished.count)
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+    }
+
+    @Test
     fun `throwing disconnect cannot strand admission or handle completion`() {
         val stream = BlockingInputStream()
         val connection = FakeConnection(
