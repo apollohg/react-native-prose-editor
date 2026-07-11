@@ -177,6 +177,7 @@ impl Editor {
             },
         )
         .map_err(|e| EditorError::Parse(e.to_string()))?;
+        crate::transform::validate_document(&doc, &self.schema)?;
         self.backend = StandaloneBackend::new(doc, &self.schema);
         self.selection = Selection::cursor(1);
         self.stored_marks = None;
@@ -196,6 +197,17 @@ impl Editor {
             serialize::UnknownTypeMode::Preserve,
         )
         .map_err(|e| EditorError::Parse(e.to_string()))?;
+        let root_spec = self.schema.node(doc.root().node_type());
+        if !root_spec
+            .map(|spec| matches!(spec.role, NodeRole::Doc))
+            .unwrap_or(false)
+        {
+            return Err(EditorError::Parse(format!(
+                "document root '{}' does not have the doc role",
+                doc.root().node_type()
+            )));
+        }
+        crate::transform::validate_document(&doc, &self.schema)?;
         self.backend = StandaloneBackend::new(doc, &self.schema);
         self.selection = Selection::cursor(1);
         self.stored_marks = None;

@@ -16,6 +16,10 @@ pub use schema::presets::{prosemirror_schema, tiptap_schema};
 
 uniffi::setup_scaffolding!();
 
+fn error_json(error: impl std::fmt::Display) -> String {
+    serde_json::json!({ "error": error.to_string() }).to_string()
+}
+
 // ---------------------------------------------------------------------------
 // UniFFI-exported free functions
 // ---------------------------------------------------------------------------
@@ -50,7 +54,9 @@ pub fn editor_create(config_json: String) -> u64 {
     let mut interceptors = intercept::InterceptorPipeline::new();
 
     if let Some(max_length) = config.get("maxLength").and_then(|v| v.as_u64()) {
-        interceptors.add(Box::new(intercept::MaxLength::new(max_length as u32)));
+        interceptors.add(Box::new(intercept::MaxLength::new(
+            u32::try_from(max_length).unwrap_or(u32::MAX),
+        )));
     }
     if let Some(true) = config.get("readOnly").and_then(|v| v.as_bool()) {
         interceptors.add(Box::new(intercept::ReadOnly::new(true)));
@@ -129,7 +135,7 @@ pub fn collaboration_session_apply_local_document_json(id: u64, json: String) ->
     with_collaboration_session(id, |session| {
         let value: serde_json::Value = match serde_json::from_str(&json) {
             Ok(value) => value,
-            Err(error) => return format!("{{\"error\":\"invalid json: {}\"}}", error),
+            Err(error) => return error_json(format!("invalid json: {error}")),
         };
         serde_json::to_string(&session.apply_local_document(value))
             .unwrap_or_else(|_| "{}".to_string())
@@ -144,12 +150,12 @@ pub fn collaboration_session_apply_encoded_state(id: u64, encoded_state_json: St
         let encoded_state: Vec<u8> = match serde_json::from_str(&encoded_state_json) {
             Ok(bytes) => bytes,
             Err(error) => {
-                return format!("{{\"error\":\"invalid encoded state json: {}\"}}", error)
+                return error_json(format!("invalid encoded state json: {error}"))
             }
         };
         match session.apply_encoded_state(encoded_state) {
             Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
-            Err(error) => format!("{{\"error\":\"{}\"}}", error),
+            Err(error) => error_json(error),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
@@ -162,12 +168,12 @@ pub fn collaboration_session_replace_encoded_state(id: u64, encoded_state_json: 
         let encoded_state: Vec<u8> = match serde_json::from_str(&encoded_state_json) {
             Ok(bytes) => bytes,
             Err(error) => {
-                return format!("{{\"error\":\"invalid encoded state json: {}\"}}", error)
+                return error_json(format!("invalid encoded state json: {error}"))
             }
         };
         match session.replace_encoded_state(encoded_state) {
             Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
-            Err(error) => format!("{{\"error\":\"{}\"}}", error),
+            Err(error) => error_json(error),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
@@ -179,11 +185,11 @@ pub fn collaboration_session_handle_message(id: u64, message_json: String) -> St
     with_collaboration_session(id, |session| {
         let message: Vec<u8> = match serde_json::from_str(&message_json) {
             Ok(bytes) => bytes,
-            Err(error) => return format!("{{\"error\":\"invalid message json: {}\"}}", error),
+            Err(error) => return error_json(format!("invalid message json: {error}")),
         };
         match session.handle_message(message) {
             Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
-            Err(error) => format!("{{\"error\":\"{}\"}}", error),
+            Err(error) => error_json(error),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
@@ -195,7 +201,7 @@ pub fn collaboration_session_set_local_awareness(id: u64, awareness_json: String
     with_collaboration_session(id, |session| {
         let value: serde_json::Value = match serde_json::from_str(&awareness_json) {
             Ok(value) => value,
-            Err(error) => return format!("{{\"error\":\"invalid awareness json: {}\"}}", error),
+            Err(error) => return error_json(format!("invalid awareness json: {error}")),
         };
         serde_json::to_string(&session.set_local_awareness(value))
             .unwrap_or_else(|_| "{}".to_string())
@@ -218,7 +224,7 @@ pub fn editor_set_html(id: u64, html: String) -> String {
     with_editor(id, |editor| match editor.set_html(&html) {
         Ok(elements) => serde_json::to_string(&serialize_render_elements(&elements))
             .unwrap_or_else(|_| "[]".to_string()),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -235,12 +241,12 @@ pub fn editor_set_json(id: u64, json: String) -> String {
     with_editor(id, |editor| {
         let value: serde_json::Value = match serde_json::from_str(&json) {
             Ok(v) => v,
-            Err(e) => return format!("{{\"error\":\"invalid json: {}\"}}", e),
+            Err(e) => return error_json(format!("invalid json: {e}")),
         };
         match editor.set_json(&value) {
             Ok(elements) => serde_json::to_string(&serialize_render_elements(&elements))
                 .unwrap_or_else(|_| "[]".to_string()),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -274,7 +280,7 @@ pub fn editor_get_content_snapshot(id: u64) -> String {
 pub fn editor_insert_text(id: u64, pos: u32, text: String) -> String {
     with_editor(id, |editor| match editor.insert_text(pos, &text) {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -284,7 +290,7 @@ pub fn editor_insert_text(id: u64, pos: u32, text: String) -> String {
 pub fn editor_replace_selection_text(id: u64, text: String) -> String {
     with_editor(id, |editor| match editor.replace_selection_text(&text) {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -294,7 +300,7 @@ pub fn editor_replace_selection_text(id: u64, text: String) -> String {
 pub fn editor_delete_range(id: u64, from: u32, to: u32) -> String {
     with_editor(id, |editor| match editor.delete_range(from, to) {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -304,7 +310,7 @@ pub fn editor_delete_range(id: u64, from: u32, to: u32) -> String {
 pub fn editor_toggle_mark(id: u64, mark_name: String) -> String {
     with_editor(id, |editor| match editor.toggle_mark(&mark_name) {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -320,7 +326,7 @@ pub fn editor_toggle_mark_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.toggle_mark_at_selection_scalar(scalar_anchor, scalar_head, &mark_name) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -332,11 +338,11 @@ pub fn editor_set_mark(id: u64, mark_name: String, attrs_json: String) -> String
     with_editor(id, |editor| {
         let attrs = match parse_mark_attrs_json(&attrs_json) {
             Ok(attrs) => attrs,
-            Err(error) => return format!("{{\"error\":\"{}\"}}", error),
+            Err(error) => return error_json(error),
         };
         match editor.set_mark(&mark_name, attrs) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -347,7 +353,7 @@ pub fn editor_set_mark(id: u64, mark_name: String, attrs_json: String) -> String
 pub fn editor_unset_mark(id: u64, mark_name: String) -> String {
     with_editor(id, |editor| match editor.unset_mark(&mark_name) {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -364,11 +370,11 @@ pub fn editor_set_mark_at_selection_scalar(
     with_editor(id, |editor| {
         let attrs = match parse_mark_attrs_json(&attrs_json) {
             Ok(attrs) => attrs,
-            Err(error) => return format!("{{\"error\":\"{}\"}}", error),
+            Err(error) => return error_json(error),
         };
         match editor.set_mark_at_selection_scalar(scalar_anchor, scalar_head, &mark_name, attrs) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -385,7 +391,7 @@ pub fn editor_unset_mark_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.unset_mark_at_selection_scalar(scalar_anchor, scalar_head, &mark_name) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -441,7 +447,7 @@ pub fn editor_can_redo(id: u64) -> bool {
 pub fn editor_split_block(id: u64, pos: u32) -> String {
     with_editor(id, |editor| match editor.split_block(pos) {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -451,7 +457,7 @@ pub fn editor_split_block(id: u64, pos: u32) -> String {
 pub fn editor_insert_content_html(id: u64, html: String) -> String {
     with_editor(id, |editor| match editor.insert_content_html(&html) {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -461,7 +467,7 @@ pub fn editor_insert_content_html(id: u64, html: String) -> String {
 pub fn editor_replace_html(id: u64, html: String) -> String {
     with_editor(id, |editor| match editor.replace_html(&html) {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -472,11 +478,11 @@ pub fn editor_insert_content_json(id: u64, json: String) -> String {
     with_editor(id, |editor| {
         let value: serde_json::Value = match serde_json::from_str(&json) {
             Ok(v) => v,
-            Err(e) => return format!("{{\"error\":\"invalid json: {}\"}}", e),
+            Err(e) => return error_json(format!("invalid json: {e}")),
         };
         match editor.insert_content_json(&value) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -493,11 +499,11 @@ pub fn editor_insert_content_json_at_selection_scalar(
     with_editor(id, |editor| {
         let value: serde_json::Value = match serde_json::from_str(&json) {
             Ok(v) => v,
-            Err(e) => return format!("{{\"error\":\"invalid json: {}\"}}", e),
+            Err(e) => return error_json(format!("invalid json: {e}")),
         };
         match editor.insert_content_json_at_selection_scalar(scalar_anchor, scalar_head, &value) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -509,11 +515,11 @@ pub fn editor_replace_json(id: u64, json: String) -> String {
     with_editor(id, |editor| {
         let value: serde_json::Value = match serde_json::from_str(&json) {
             Ok(v) => v,
-            Err(e) => return format!("{{\"error\":\"invalid json: {}\"}}", e),
+            Err(e) => return error_json(format!("invalid json: {e}")),
         };
         match editor.replace_json(&value) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -524,7 +530,7 @@ pub fn editor_replace_json(id: u64, json: String) -> String {
 pub fn editor_wrap_in_list(id: u64, list_type: String) -> String {
     with_editor(id, |editor| match editor.apply_list_type(&list_type) {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -534,7 +540,7 @@ pub fn editor_wrap_in_list(id: u64, list_type: String) -> String {
 pub fn editor_toggle_blockquote(id: u64) -> String {
     with_editor(id, |editor| match editor.toggle_blockquote() {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -549,7 +555,7 @@ pub fn editor_toggle_blockquote_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.toggle_blockquote_at_selection_scalar(scalar_anchor, scalar_head) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -560,7 +566,7 @@ pub fn editor_toggle_blockquote_at_selection_scalar(
 pub fn editor_toggle_code_block(id: u64) -> String {
     with_editor(id, |editor| match editor.toggle_code_block() {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -575,7 +581,7 @@ pub fn editor_toggle_code_block_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.toggle_code_block_at_selection_scalar(scalar_anchor, scalar_head) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -586,7 +592,7 @@ pub fn editor_toggle_code_block_at_selection_scalar(
 pub fn editor_toggle_heading(id: u64, level: u8) -> String {
     with_editor(id, |editor| match editor.toggle_heading(level) {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -602,7 +608,7 @@ pub fn editor_toggle_heading_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.toggle_heading_at_selection_scalar(scalar_anchor, scalar_head, level) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -619,7 +625,7 @@ pub fn editor_wrap_in_list_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.apply_list_type_at_selection_scalar(scalar_anchor, scalar_head, &list_type) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -633,7 +639,7 @@ pub fn editor_unwrap_from_list(id: u64) -> String {
         let pos = editor.selection().from(doc);
         match editor.unwrap_from_list(pos) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -649,7 +655,7 @@ pub fn editor_unwrap_from_list_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.unwrap_from_list_at_selection_scalar(scalar_anchor, scalar_head) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -660,7 +666,7 @@ pub fn editor_unwrap_from_list_at_selection_scalar(
 pub fn editor_indent_list_item(id: u64) -> String {
     with_editor(id, |editor| match editor.indent_list_item() {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -675,7 +681,7 @@ pub fn editor_indent_list_item_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.indent_list_item_at_selection_scalar(scalar_anchor, scalar_head) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -686,7 +692,7 @@ pub fn editor_indent_list_item_at_selection_scalar(
 pub fn editor_outdent_list_item(id: u64) -> String {
     with_editor(id, |editor| match editor.outdent_list_item() {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -701,7 +707,7 @@ pub fn editor_outdent_list_item_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.outdent_list_item_at_selection_scalar(scalar_anchor, scalar_head) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -717,7 +723,7 @@ pub fn editor_toggle_task_item_checked_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.toggle_task_item_checked_at_selection_scalar(scalar_anchor, scalar_head) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -729,7 +735,7 @@ pub fn editor_insert_node(id: u64, node_type: String) -> String {
     with_editor(id, |editor| {
         match editor.insert_node_at_selection(&node_type) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -746,7 +752,7 @@ pub fn editor_insert_node_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.insert_node_at_selection_scalar(scalar_anchor, scalar_head, &node_type) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -758,7 +764,7 @@ pub fn editor_resize_image_at_doc_pos(id: u64, doc_pos: u32, width: u32, height:
     with_editor(id, |editor| {
         match editor.resize_image_at_doc_pos(doc_pos, width, height) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -808,7 +814,7 @@ pub fn editor_insert_text_scalar(id: u64, scalar_pos: u32, text: String) -> Stri
     with_editor(id, |editor| {
         match editor.insert_text_scalar(scalar_pos, &text) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -820,7 +826,7 @@ pub fn editor_delete_scalar_range(id: u64, scalar_from: u32, scalar_to: u32) -> 
     with_editor(id, |editor| {
         match editor.delete_scalar_range(scalar_from, scalar_to) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -836,7 +842,7 @@ pub fn editor_delete_backward_at_selection_scalar(
     with_editor(id, |editor| {
         match editor.delete_backward_at_selection_scalar(scalar_anchor, scalar_head) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -853,7 +859,7 @@ pub fn editor_replace_text_scalar(
     with_editor(id, |editor| {
         match editor.replace_text_scalar(scalar_from, scalar_to, &text) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
@@ -864,7 +870,7 @@ pub fn editor_replace_text_scalar(
 pub fn editor_split_block_scalar(id: u64, scalar_pos: u32) -> String {
     with_editor(id, |editor| match editor.split_block_scalar(scalar_pos) {
         Ok(update) => serialize_editor_update(&update),
-        Err(e) => format!("{{\"error\":\"{}\"}}", e),
+        Err(e) => error_json(e),
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())
 }
@@ -875,7 +881,7 @@ pub fn editor_delete_and_split_scalar(id: u64, scalar_from: u32, scalar_to: u32)
     with_editor(id, |editor| {
         match editor.delete_and_split_scalar(scalar_from, scalar_to) {
             Ok(update) => serialize_editor_update(&update),
-            Err(e) => format!("{{\"error\":\"{}\"}}", e),
+            Err(e) => error_json(e),
         }
     })
     .unwrap_or_else(|| "{\"error\":\"editor not found\"}".to_string())

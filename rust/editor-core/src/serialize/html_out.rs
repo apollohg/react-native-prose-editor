@@ -172,7 +172,7 @@ fn serialize_opaque_node(node: &Node, buf: &mut String) {
                     buf.push(' ');
                     buf.push_str(key);
                     buf.push_str("=\"");
-                    buf.push_str(val_str);
+                    escape_html(val_str, buf);
                     buf.push('"');
                 }
             }

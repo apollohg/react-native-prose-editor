@@ -509,6 +509,34 @@ fn test_set_json_get_json_roundtrip() {
     );
 }
 
+#[test]
+fn set_json_rejects_invalid_root_and_leaves_existing_document_unchanged() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<p>keep me</p>")
+        .expect("initial document should load");
+    let before = editor.get_json();
+
+    let result = editor.set_json(&serde_json::json!({
+        "type": "text",
+        "text": "invalid root"
+    }));
+
+    assert!(result.is_err(), "a text node cannot be the document root");
+    assert_eq!(editor.get_json(), before, "failed set_json must be atomic");
+}
+
+#[test]
+fn set_json_rejects_children_that_violate_the_schema() {
+    let mut editor = default_editor();
+    let result = editor.set_json(&serde_json::json!({
+        "type": "doc",
+        "content": [{ "type": "text", "text": "direct text" }]
+    }));
+
+    assert!(result.is_err(), "doc content must match the block expression");
+}
+
 // ===========================================================================
 // Active state
 // ===========================================================================
@@ -1251,6 +1279,33 @@ fn test_uniffi_editor_json_roundtrip() {
     );
 
     // Cleanup.
+    editor_core::editor_destroy(id);
+}
+
+#[test]
+fn uniffi_editor_errors_are_always_valid_json() {
+    let id = editor_core::editor_create("{}".to_string());
+    let response = editor_core::editor_set_json(
+        id,
+        r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text"}]}]}"#
+            .to_string(),
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&response).expect("error response must be valid JSON");
+    assert!(parsed.get("error").and_then(serde_json::Value::as_str).is_some());
+    editor_core::editor_destroy(id);
+}
+
+#[test]
+fn oversized_max_length_does_not_truncate_to_zero() {
+    let id = editor_core::editor_create(r#"{"maxLength":4294967296}"#.to_string());
+    let response = editor_core::editor_set_html(id, "<p>x</p>".to_string());
+
+    assert!(
+        !response.contains("error"),
+        "oversized maxLength must not wrap to a zero-length limit: {response}"
+    );
     editor_core::editor_destroy(id);
 }
 

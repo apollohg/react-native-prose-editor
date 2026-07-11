@@ -927,6 +927,21 @@ fn test_from_html_unknown_inline_tag_preserved_as_opaque() {
 }
 
 #[test]
+fn opaque_html_attribute_values_are_escaped_on_output() {
+    let s = schema();
+    let doc = from_html(
+        r#"<p>before <widget title="&quot; onmouseover=&quot;x">inside</widget></p>"#,
+        &s,
+        &FromHtmlOptions::default(),
+    )
+    .expect("opaque HTML should parse");
+
+    let output = to_html(&doc, &s);
+    assert!(output.contains("title=\"&quot; onmouseover=&quot;x\""));
+    assert!(!output.contains("title=\"\" onmouseover=\"x\""));
+}
+
+#[test]
 fn test_from_html_unknown_block_tag_preserved_as_opaque() {
     let d = from_html("<div>content</div>", &schema(), &default_opts()).unwrap();
     let root = d.root();
