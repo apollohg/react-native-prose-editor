@@ -115,6 +115,19 @@ describe('NativeProseViewer', () => {
         expect(mockRenderDocumentJson.mock.calls[0]?.[1]).toBe(contentJSON);
     });
 
+    it('uses the Tiptap normalization fallback for an invalid schema', () => {
+        render(
+            <NativeProseViewer
+                contentJSON={{ type: 'doc', content: [] }}
+                schema={{ nodes: [], marks: [] }}
+            />
+        );
+
+        expect(mockRenderDocumentJson.mock.calls[0]?.[1]).toBe(
+            JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] })
+        );
+    });
+
     it('renders native view from HTML input', () => {
         const contentHTML = '<p>Hello from HTML</p>';
 

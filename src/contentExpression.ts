@@ -15,6 +15,29 @@ interface State {
     transitions: Array<{ symbol: string; target: number }>;
 }
 
+function collectExpressionSymbols(expression: Expression, symbols: Set<string>): void {
+    if (expression.kind === 'symbol') {
+        symbols.add(expression.symbol);
+    } else if (expression.kind !== 'empty') {
+        if (expression.kind === 'repeat') collectExpressionSymbols(expression.expression, symbols);
+        else for (const nested of expression.expressions) collectExpressionSymbols(nested, symbols);
+    }
+}
+
+/** Return every referenced node/group symbol, or null for an invalid expression. */
+export function contentExpressionSymbols(content: string): string[] | null {
+    try {
+        const expression = new ContentExpressionParser(content).parse();
+        const compiler = new ContentExpressionCompiler();
+        compiler.compile(expression);
+        const symbols = new Set<string>();
+        collectExpressionSymbols(expression, symbols);
+        return [...symbols];
+    } catch {
+        return null;
+    }
+}
+
 class ContentExpressionParser {
     private position = 0;
     private depth = 0;

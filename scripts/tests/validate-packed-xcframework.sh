@@ -18,6 +18,26 @@ assert_rejected() {
   fi
 }
 
+assert_package_entries_rejected() {
+  local fixture="$1"
+  local description="$2"
+  if "$validator" --validate-package-entries "$fixture" > /dev/null 2>&1; then
+    echo "ERROR: validator accepted $description" >&2
+    exit 1
+  fi
+}
+
+package_fixture="$fixture_root/package entries"
+mkdir -p "$package_fixture/dist"
+printf 'module.exports = {};' > "$package_fixture/dist/index.js"
+printf 'export {};' > "$package_fixture/dist/index.d.ts"
+"$validator" --validate-package-entries "$package_fixture"
+: > "$package_fixture/dist/index.js"
+assert_package_entries_rejected "$package_fixture" "an empty dist/index.js"
+printf 'module.exports = {};' > "$package_fixture/dist/index.js"
+rm "$package_fixture/dist/index.d.ts"
+assert_package_entries_rejected "$package_fixture" "a missing dist/index.d.ts"
+
 "$validator" --validate-xcframework "$repo_root/ios/EditorCore.xcframework"
 
 reordered_fixture="$fixture_root/reordered valid metadata.xcframework"

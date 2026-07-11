@@ -107,6 +107,7 @@ pub struct CollaborationSession {
     doc: Doc,
     awareness: Awareness,
     fragment_name: String,
+    document_root_type: String,
     void_element_tags: HashSet<String>,
     cached_document_json: Value,
     document_revision: u64,
@@ -116,9 +117,9 @@ pub struct CollaborationSession {
     local_awareness_state: Option<Value>,
 }
 
-fn empty_document_json() -> Value {
+fn empty_document_json(document_root_type: &str) -> Value {
     json!({
-        "type": "doc",
+        "type": document_root_type,
         "content": [],
     })
 }
@@ -139,13 +140,15 @@ impl CollaborationSession {
             .unwrap_or("prosemirror")
             .to_string();
         let void_element_tags = void_element_tags_from_config(&config);
+        let document_root_type = document_root_type_from_config(&config);
 
         let mut session = Self {
             doc,
             awareness,
             fragment_name,
+            cached_document_json: empty_document_json(&document_root_type),
+            document_root_type,
             void_element_tags,
-            cached_document_json: empty_document_json(),
             document_revision: 0,
             cached_peers: Vec::new(),
             cached_peer_states: HashMap::new(),
@@ -420,8 +423,10 @@ impl CollaborationSession {
         let txn = self.doc.transact();
         let next_document_json = txn
             .get_xml_fragment(self.fragment_name.as_str())
-            .map(|fragment| xml_fragment_to_document_json(&fragment, &txn))
-            .unwrap_or_else(empty_document_json);
+            .map(|fragment| {
+                xml_fragment_to_document_json(&fragment, &txn, &self.document_root_type)
+            })
+            .unwrap_or_else(|| empty_document_json(&self.document_root_type));
         if next_document_json == self.cached_document_json {
             return false;
         }
@@ -878,6 +883,14 @@ fn void_element_tags_from_config(config: &Value) -> HashSet<String> {
     default_void_element_tags()
 }
 
+fn document_root_type_from_config(config: &Value) -> String {
+    config
+        .get("schema")
+        .and_then(|schema_json| Schema::from_json(schema_json).ok())
+        .map(|schema| schema.doc_node_type().to_string())
+        .unwrap_or_else(|| "doc".to_string())
+}
+
 fn is_void_element_tag(tag: &str, void_element_tags: &HashSet<String>) -> bool {
     void_element_tags.contains(tag)
 }
@@ -980,13 +993,17 @@ fn encode_message(message: Message) -> Vec<u8> {
     encoder.to_vec()
 }
 
-fn xml_fragment_to_document_json<T: ReadTxn>(fragment: &XmlFragmentRef, txn: &T) -> Value {
+fn xml_fragment_to_document_json<T: ReadTxn>(
+    fragment: &XmlFragmentRef,
+    txn: &T,
+    document_root_type: &str,
+) -> Value {
     let content = fragment
         .children(txn)
         .flat_map(|child| xml_out_to_json(child, txn))
         .collect::<Vec<_>>();
     json!({
-        "type": "doc",
+        "type": document_root_type,
         "content": content,
     })
 }
@@ -1478,13 +1495,51 @@ mod tests {
             .to_string(),
         );
 
-        assert_eq!(session.document_json(), empty_document_json());
+        assert_eq!(session.document_json(), empty_document_json("doc"));
+    }
+
+    #[test]
+    fn collaboration_session_preserves_custom_doc_role_through_encoded_state() {
+        let schema = json!({
+            "nodes": [
+                { "name": "article", "content": "title+", "role": "doc" },
+                { "name": "title", "content": "inline*", "group": "block", "role": "textBlock" },
+                { "name": "text", "content": "", "group": "inline", "role": "text" }
+            ],
+            "marks": []
+        });
+        let initial = json!({
+            "type": "article",
+            "content": [{ "type": "title", "content": [{ "type": "text", "text": "Hello" }] }]
+        });
+        let source = CollaborationSession::new(&json!({
+            "clientId": 41,
+            "schema": schema.clone(),
+            "initialDocumentJson": initial.clone(),
+        }).to_string());
+        assert_eq!(source.document_json(), initial);
+
+        let mut restored = CollaborationSession::new(&json!({
+            "clientId": 42,
+            "schema": schema.clone(),
+        }).to_string());
+        restored.apply_encoded_state(source.encoded_state()).unwrap();
+        assert_eq!(restored.document_json(), initial);
+
+        let parsed_schema = Schema::from_json(&schema).unwrap();
+        let mut editor = crate::editor::Editor::new(
+            parsed_schema,
+            crate::intercept::InterceptorPipeline::new(),
+            false,
+        );
+        assert!(editor.set_json(&restored.document_json()).is_ok());
+        assert_eq!(editor.get_json(), initial);
     }
 
     fn peer_document_json(peer: &Awareness) -> Value {
         let txn = peer.doc().transact();
         txn.get_xml_fragment("prosemirror")
-            .map(|fragment| xml_fragment_to_document_json(&fragment, &txn))
+            .map(|fragment| xml_fragment_to_document_json(&fragment, &txn, "doc"))
             .unwrap_or_else(|| {
                 json!({
                     "type": "doc",

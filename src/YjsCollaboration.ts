@@ -10,7 +10,11 @@ import {
     encodeCollaborationStateBase64,
 } from './NativeEditorBridge';
 import type { RemoteSelectionDecoration } from './NativeRichTextEditor';
-import { defaultEmptyDocument, type SchemaDefinition } from './schemas';
+import {
+    defaultEmptyDocument,
+    resolveDocumentSchema,
+    type SchemaDefinition,
+} from './schemas';
 
 export type YjsTransportStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -136,7 +140,7 @@ function cloneJsonValue<T>(value: T): T {
 function initialFallbackDocument(options: YjsCollaborationOptions): DocumentJSON {
     return options.initialDocumentJson
         ? cloneJsonValue(options.initialDocumentJson)
-        : defaultEmptyDocument(options.schema);
+        : defaultEmptyDocument(resolveDocumentSchema(options.schema));
 }
 
 function shouldUseFallbackForNativeDocument(
@@ -332,7 +336,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this._peers = this.bridge.getPeers();
         let initialDocumentJson: DocumentJSON;
         if (shouldUseFallbackForNativeDocument(nativeDocumentJson, options)) {
-            initialDocumentJson = defaultEmptyDocument(options.schema);
+            initialDocumentJson = defaultEmptyDocument(resolveDocumentSchema(options.schema));
         } else {
             initialDocumentJson = nativeDocumentJson;
         }

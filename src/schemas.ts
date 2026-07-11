@@ -2,6 +2,7 @@ import type { DocumentJSON } from './NativeEditorBridge';
 import {
     CONTENT_EXPRESSION_MAX_DEPTH,
     DEFAULT_CONTENT_MAX_NODES,
+    contentExpressionSymbols,
     minimalContentMatch,
 } from './contentExpression';
 
@@ -187,6 +188,89 @@ export const tiptapSchema: SchemaDefinition = {
     marks: MARKS,
 };
 
+/** Mirror native's invalid-schema fallback before constructing an empty doc. */
+export function resolveDocumentSchema(schema?: SchemaDefinition): SchemaDefinition {
+    if (schema == null) return tiptapSchema;
+    if (!Array.isArray(schema.nodes) || !Array.isArray(schema.marks)) return tiptapSchema;
+
+    const nodeNames = new Set<string>();
+    const markNames = new Set<string>();
+    let docRoles = 0;
+    let textRoles = 0;
+    for (const node of schema.nodes) {
+        if (
+            node == null ||
+            typeof node.name !== 'string' ||
+            node.name.length === 0 ||
+            typeof node.content !== 'string' ||
+            typeof node.role !== 'string' ||
+            nodeNames.has(node.name)
+        ) {
+            return tiptapSchema;
+        }
+        nodeNames.add(node.name);
+        if (node.role === 'doc') docRoles += 1;
+        if (node.role === 'text') textRoles += 1;
+    }
+    for (const mark of schema.marks) {
+        if (
+            mark == null ||
+            typeof mark.name !== 'string' ||
+            mark.name.length === 0 ||
+            markNames.has(mark.name)
+        ) {
+            return tiptapSchema;
+        }
+        markNames.add(mark.name);
+    }
+    if (docRoles !== 1 || textRoles !== 1) return tiptapSchema;
+
+    const groups = new Set(
+        schema.nodes.flatMap((node) => node.group?.split(/\s+/).filter(Boolean) ?? [])
+    );
+    for (const node of schema.nodes) {
+        const symbols = contentExpressionSymbols(node.content);
+        if (
+            symbols == null ||
+            symbols.some((symbol) => !nodeNames.has(symbol) && !groups.has(symbol))
+        ) {
+            return tiptapSchema;
+        }
+    }
+
+    const matchesSymbol = (candidate: NodeSpec, symbol: string): boolean =>
+        candidate.name === symbol ||
+        candidate.group?.split(/\s+/).some((group) => group === symbol) === true;
+    const generatable = new Set<string>();
+    const contentIsConstructible = (node: NodeSpec): boolean =>
+        minimalContentMatch(node.content, (symbol) => {
+            const candidate = schema.nodes.find(
+                (next) => generatable.has(next.name) && matchesSymbol(next, symbol)
+            );
+            return candidate == null ? undefined : { type: candidate.name };
+        }) != null;
+    while (true) {
+        const before = generatable.size;
+        for (const node of schema.nodes) {
+            const hasRequiredAttrs = Object.values(node.attrs ?? {}).some(
+                (attr) => attr.default === undefined
+            );
+            if (node.role !== 'text' && !hasRequiredAttrs && contentIsConstructible(node)) {
+                generatable.add(node.name);
+            }
+        }
+        if (generatable.size === before) break;
+    }
+    if (schema.nodes.some((node) => !contentIsConstructible(node))) return tiptapSchema;
+
+    try {
+        defaultEmptyDocument(schema);
+        return schema;
+    } catch {
+        return tiptapSchema;
+    }
+}
+
 export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): DocumentJSON {
     const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
     if (!docNode) throw new Error('schema cannot construct a default document: missing doc role');
@@ -269,14 +353,17 @@ export function normalizeDocumentJson(
     doc: DocumentJSON,
     schema: SchemaDefinition = tiptapSchema
 ): DocumentJSON {
+    const resolvedSchema = resolveDocumentSchema(schema);
+    const docNode = resolvedSchema.nodes.find((node) => node.role === 'doc');
     const root = doc as { type?: unknown; content?: unknown } | null;
-    if (root?.type !== 'doc') {
+    if (root?.type !== docNode?.name) {
         return doc;
     }
-    if (Array.isArray(root.content) && root.content.length > 0) {
+    const content = root?.content;
+    if (Array.isArray(content) && content.length > 0) {
         return doc;
     }
-    return defaultEmptyDocument(schema);
+    return defaultEmptyDocument(resolvedSchema);
 }
 
 export const prosemirrorSchema: SchemaDefinition = {

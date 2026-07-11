@@ -489,6 +489,19 @@ describe('NativeRichTextEditor', () => {
             );
         });
 
+        it('uses the native Tiptap fallback when an invalid schema cannot construct a document', () => {
+            render(
+                <NativeRichTextEditor
+                    initialJSON={{ type: 'doc', content: [] }}
+                    schema={{ nodes: [], marks: [] }}
+                />
+            );
+            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify(NORMALIZED_EMPTY_DOC)
+            );
+        });
+
         it('does not call setHtml when no initialContent is provided', () => {
             render(<NativeRichTextEditor />);
             expect(mockNativeModule.editorSetHtml).not.toHaveBeenCalled();

@@ -127,7 +127,14 @@ require_command file
 require_command ar
 require_command nm
 
-if [[ "${1:-}" == "--validate-xcframework" ]]; then
+if [[ "${1:-}" == "--validate-package-entries" ]]; then
+  [[ "$#" == "2" ]] || fail "usage: $0 --validate-package-entries PATH"
+  package_dir="$2"
+  require_file "dist/index.js"
+  require_file "dist/index.d.ts"
+  echo "Packed JavaScript entry-point validation passed."
+  exit 0
+elif [[ "${1:-}" == "--validate-xcframework" ]]; then
   [[ "$#" == "2" ]] || fail "usage: $0 --validate-xcframework PATH"
   validate_xcframework "$2"
   echo "XCFramework metadata and static archive validation passed."
@@ -156,6 +163,8 @@ tar -xzf "$tarball_path" -C "$work_dir"
 [[ -d "$package_dir" ]] || fail "npm tarball does not contain the canonical package/ root"
 
 require_file "ios/editor_coreFFI/editor_coreFFI.h"
+require_file "dist/index.js"
+require_file "dist/index.d.ts"
 require_file "ios/editor_coreFFI/module.modulemap"
 require_file "LICENSE"
 require_file "ios/EditorCore.xcframework/Info.plist"

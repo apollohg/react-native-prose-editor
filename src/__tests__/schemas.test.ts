@@ -1,5 +1,11 @@
 import { acceptingContentSymbols } from '../contentExpression';
-import { defaultEmptyDocument, type SchemaDefinition } from '../schemas';
+import {
+    defaultEmptyDocument,
+    normalizeDocumentJson,
+    resolveDocumentSchema,
+    tiptapSchema,
+    type SchemaDefinition,
+} from '../schemas';
 
 const GROUPED_RANGE_SCHEMA: SchemaDefinition = {
     nodes: [
@@ -108,5 +114,71 @@ describe('defaultEmptyDocument', () => {
             marks: [],
         };
         expect(() => defaultEmptyDocument(schema)).toThrow();
+    });
+});
+
+describe('schema-aware document normalization', () => {
+    const articleSchema: SchemaDefinition = {
+        nodes: [
+            { name: 'article', content: 'title+', role: 'doc' },
+            { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
+            { name: 'words', content: '', group: 'inline', role: 'text' },
+        ],
+        marks: [],
+    };
+
+    it('normalizes an empty custom doc-role root without changing its type', () => {
+        expect(normalizeDocumentJson({ type: 'article', content: [] }, articleSchema)).toEqual({
+            type: 'article',
+            content: [{ type: 'title' }],
+        });
+    });
+
+    it('does not treat a literal doc node as the root of a custom schema', () => {
+        const foreign = { type: 'doc', content: [] };
+        expect(normalizeDocumentJson(foreign, articleSchema)).toBe(foreign);
+    });
+
+    it('falls back to Tiptap for schemas native would reject', () => {
+        const empty = { nodes: [], marks: [] } as SchemaDefinition;
+        const unconstructible: SchemaDefinition = {
+            nodes: [
+                { name: 'article', content: 'image', role: 'doc' },
+                { name: 'image', content: '', attrs: { src: {} }, role: 'block' },
+                { name: 'text', content: '', role: 'text' },
+            ],
+            marks: [],
+        };
+        expect(resolveDocumentSchema(empty)).toBe(tiptapSchema);
+        expect(resolveDocumentSchema(unconstructible)).toBe(tiptapSchema);
+        expect(
+            resolveDocumentSchema({
+                nodes: [
+                    { name: 'doc', content: 'paragraph missing?', role: 'doc' },
+                    { name: 'paragraph', content: '', role: 'textBlock' },
+                    { name: 'text', content: '', role: 'text' },
+                ],
+                marks: [],
+            })
+        ).toBe(tiptapSchema);
+        expect(
+            resolveDocumentSchema({
+                nodes: [
+                    { name: 'doc', content: 'paragraph', role: 'doc' },
+                    { name: 'paragraph', content: '', role: 'textBlock' },
+                    { name: 'caption', content: 'text+', role: 'block' },
+                    { name: 'text', content: '', role: 'text' },
+                ],
+                marks: [],
+            })
+        ).toBe(tiptapSchema);
+        expect(normalizeDocumentJson({ type: 'doc', content: [] }, empty)).toEqual({
+            type: 'doc',
+            content: [{ type: 'paragraph' }],
+        });
+    });
+
+    it('retains a valid custom schema', () => {
+        expect(resolveDocumentSchema(articleSchema)).toBe(articleSchema);
     });
 });

@@ -928,6 +928,26 @@ fn test_from_html_unknown_inline_tag_preserved_as_opaque() {
 }
 
 #[test]
+fn test_opaque_nested_attributes_are_safely_serialized() {
+    let s = schema();
+    let input = r#"<mystery><nested title='quoted &amp; &quot;value&quot;' data-break='&quot; onmouseover=&quot;alert(1)'>safe &amp; sound</nested></mystery>"#;
+    let doc = from_html(input, &s, &default_opts()).unwrap();
+    let output = to_html(&doc, &s);
+
+    assert!(output.contains("title=\"quoted &amp; &quot;value&quot;\""));
+    assert!(output.contains("data-break=\"&quot; onmouseover=&quot;alert(1)\""));
+    assert!(!output.contains("data-break=\"\" onmouseover="));
+    assert!(output.contains("safe &amp; sound"));
+
+    let reparsed = from_html(&output, &s, &default_opts()).unwrap();
+    let second_output = to_html(&reparsed, &s);
+    assert!(second_output.contains("title=\"quoted &amp; &quot;value&quot;\""));
+    assert!(second_output.contains("data-break=\"&quot; onmouseover=&quot;alert(1)\""));
+    assert!(!second_output.contains("data-break=\"\" onmouseover="));
+    assert!(second_output.contains("safe &amp; sound"));
+}
+
+#[test]
 fn opaque_html_attribute_values_are_escaped_on_output() {
     let s = schema();
     let doc = from_html(

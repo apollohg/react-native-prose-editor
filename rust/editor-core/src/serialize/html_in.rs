@@ -708,7 +708,7 @@ fn collect_inner_html(node_ref: SNodeRef<'_>) -> String {
                 buf.push(' ');
                 buf.push_str(key);
                 buf.push_str("=\"");
-                buf.push_str(val);
+                escape_html_to(val, &mut buf);
                 buf.push('"');
             }
             buf.push('>');
