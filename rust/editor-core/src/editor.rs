@@ -2684,70 +2684,17 @@ impl Editor {
         parent_spec: &NodeSpec,
         child_types: &[&str],
     ) -> bool {
-        fn child_matches_part(schema: &Schema, child_type: &str, group: &str) -> bool {
+        fn child_matches_symbol(schema: &Schema, child_type: &str, symbol: &str) -> bool {
             schema
                 .node(child_type)
-                .map(|spec| spec.name == group || spec.group.as_deref() == Some(group))
+                .map(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
                 .unwrap_or(false)
         }
-
-        fn matches_from(
-            schema: &Schema,
-            parts: &[crate::schema::content_rule::ContentPart],
-            child_types: &[&str],
-            part_index: usize,
-            child_index: usize,
-            memo: &mut HashMap<(usize, usize), bool>,
-        ) -> bool {
-            if let Some(result) = memo.get(&(part_index, child_index)) {
-                return *result;
-            }
-
-            let result = if part_index == parts.len() {
-                child_index == child_types.len()
-            } else {
-                let part = &parts[part_index];
-                let max_allowed = part
-                    .max
-                    .map(|max| max as usize)
-                    .unwrap_or_else(|| child_types.len().saturating_sub(child_index));
-                let max_matching = (child_index..child_types.len())
-                    .take_while(|index| {
-                        child_matches_part(schema, child_types[*index], &part.group)
-                    })
-                    .count()
-                    .min(max_allowed);
-                let min_required = part.min as usize;
-
-                if max_matching < min_required {
-                    false
-                } else {
-                    (min_required..=max_matching).any(|consumed| {
-                        matches_from(
-                            schema,
-                            parts,
-                            child_types,
-                            part_index + 1,
-                            child_index + consumed,
-                            memo,
-                        )
-                    })
-                }
-            };
-
-            memo.insert((part_index, child_index), result);
-            result
-        }
-
-        let mut memo = HashMap::new();
-        matches_from(
-            &self.schema,
-            &parent_spec.content.parts,
-            child_types,
-            0,
-            0,
-            &mut memo,
-        )
+        parent_spec
+            .content
+            .matches(child_types, |child_type, symbol| {
+                child_matches_symbol(&self.schema, child_type, symbol)
+            })
     }
 
     fn replace_selected_text_blocks(
@@ -3754,7 +3701,7 @@ fn preferred_text_block_node_names_for_parent(
         .filter(|spec| {
             accepting_groups
                 .iter()
-                .any(|group| spec.name == *group || spec.group.as_deref() == Some(*group))
+                .any(|group| crate::schema::node_spec_matches_symbol(spec, group))
         })
         .map(|spec| spec.name.clone())
         .collect();
@@ -3782,31 +3729,9 @@ fn accepting_groups_for_child_count(
     parent_spec: &NodeSpec,
     existing_child_count: usize,
 ) -> Vec<&str> {
-    let mut remaining = existing_child_count;
-    let mut accepting_groups = Vec::new();
-
-    for part in &parent_spec.content.parts {
-        let min = part.min as usize;
-        let max = part.max.map(|value| value as usize);
-
-        if remaining >= min {
-            let consumed = match max {
-                Some(limit) => remaining.min(limit),
-                None => remaining,
-            };
-            remaining = remaining.saturating_sub(consumed);
-
-            let at_max = max.map(|limit| consumed >= limit).unwrap_or(false);
-            if !at_max {
-                accepting_groups.push(part.group.as_str());
-            }
-        } else {
-            accepting_groups.push(part.group.as_str());
-            break;
-        }
-    }
-
-    accepting_groups
+    parent_spec
+        .content
+        .accepting_symbols_after_count(existing_child_count)
 }
 
 /// Create an empty document with a single schema-valid empty text block.

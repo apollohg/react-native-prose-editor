@@ -2154,46 +2154,19 @@ fn validate_node(node: &Node, schema: &Schema) -> Result<(), TransformError> {
 
     let content = node.content().expect("element node should have content");
 
-    // Validate each content rule part sequentially.
-    let mut child_idx = 0;
-    for part in &spec.content.parts {
-        let mut count = 0u32;
-
-        while child_idx < content.child_count() {
-            let child = content.child(child_idx).unwrap();
-            if child_matches_group(child, &part.group, schema) {
-                count += 1;
-                child_idx += 1;
-
-                if let Some(max) = part.max {
-                    if count >= max {
-                        break;
-                    }
-                }
-            } else {
-                break;
-            }
-        }
-
-        if count < part.min {
-            return Err(TransformError::ContentViolation(format!(
-                "node '{}' requires at least {} child(ren) matching '{}', found {}",
-                node.node_type(),
-                part.min,
-                part.group,
-                count
-            )));
-        }
-    }
-
-    // If there are remaining children not matched by any rule, that's an error.
-    if child_idx < content.child_count() {
-        let remaining = content.child(child_idx).unwrap();
+    let children = content.iter().collect::<Vec<_>>();
+    if !spec.content.matches(&children, |child, symbol| {
+        child_matches_group(child, symbol, schema)
+    }) {
+        let child_types = children
+            .iter()
+            .map(|child| child.node_type())
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(TransformError::ContentViolation(format!(
-            "node '{}' has unexpected child '{}' at index {}",
+            "node '{}' content [{}] does not match its content expression",
             node.node_type(),
-            remaining.node_type(),
-            child_idx
+            child_types
         )));
     }
 
@@ -2209,19 +2182,9 @@ fn validate_node(node: &Node, schema: &Schema) -> Result<(), TransformError> {
 ///
 /// A child matches if:
 /// - Its node_type equals the group name exactly, OR
-/// - Its schema spec has `group == Some(group_name)`
+/// - Its schema spec belongs to the named group
 fn child_matches_group(child: &Node, group: &str, schema: &Schema) -> bool {
-    // Direct name match.
-    if child.node_type() == group {
-        return true;
-    }
-
-    // Group membership match.
-    if let Some(child_spec) = schema.node(child.node_type()) {
-        if child_spec.group.as_deref() == Some(group) {
-            return true;
-        }
-    }
-
-    false
+    schema
+        .node(child.node_type())
+        .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, group))
 }

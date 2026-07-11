@@ -47,21 +47,118 @@ fn test_prosemirror_schema_uses_snake_case() {
 #[test]
 fn test_content_rule_parsing() {
     let rule = ContentRule::parse("block+").unwrap();
-    assert_eq!(rule.parts.len(), 1);
-    assert_eq!(rule.parts[0].group, "block");
-    assert_eq!(rule.parts[0].min, 1);
-    assert_eq!(rule.parts[0].max, None);
+    assert!(rule.matches(&["block"], |child, symbol| *child == symbol));
+    assert!(rule.matches(&["block", "block"], |child, symbol| *child == symbol));
+    assert!(!rule.matches(&[] as &[&str], |child, symbol| *child == symbol));
 
     let rule = ContentRule::parse("inline*").unwrap();
-    assert_eq!(rule.parts[0].min, 0);
-    assert_eq!(rule.parts[0].max, None);
+    assert!(rule.matches(&[] as &[&str], |child, symbol| *child == symbol));
+    assert!(rule.matches(&["inline", "inline"], |child, symbol| *child == symbol));
 
     let rule = ContentRule::parse("paragraph block*").unwrap();
-    assert_eq!(rule.parts.len(), 2);
-    assert_eq!(rule.parts[0].group, "paragraph");
-    assert_eq!(rule.parts[0].min, 1);
-    assert_eq!(rule.parts[1].group, "block");
-    assert_eq!(rule.parts[1].min, 0);
+    assert!(rule.matches(&["paragraph"], |child, symbol| *child == symbol));
+    assert!(rule.matches(&["paragraph", "block"], |child, symbol| *child == symbol));
+    assert!(!rule.matches(&["block"], |child, symbol| *child == symbol));
+}
+
+#[test]
+fn content_rule_rejects_malformed_ranges_and_syntax() {
+    for expression in [
+        "block{2,1}",
+        "block{,2}",
+        "block{}",
+        "block{2",
+        "block|",
+        "(block",
+        "block)",
+        "block**",
+    ] {
+        assert!(
+            ContentRule::parse(expression).is_err(),
+            "expected {expression:?} to be rejected"
+        );
+    }
+}
+
+#[test]
+fn schema_rejects_duplicate_node_and_mark_names() {
+    let duplicate_nodes = serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "text*", "role": "doc" },
+            { "name": "text", "role": "text" },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    });
+    assert!(Schema::from_json(&duplicate_nodes).is_err());
+
+    let duplicate_marks = serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "text*", "role": "doc" },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": [{ "name": "bold" }, { "name": "bold" }]
+    });
+    assert!(Schema::from_json(&duplicate_marks).is_err());
+}
+
+#[test]
+fn schema_rejects_missing_or_duplicate_doc_and_text_roles() {
+    for nodes in [
+        serde_json::json!([{ "name": "text", "role": "text" }]),
+        serde_json::json!([{ "name": "doc", "role": "doc" }]),
+        serde_json::json!([
+            { "name": "doc", "role": "doc" },
+            { "name": "otherDoc", "role": "doc" },
+            { "name": "text", "role": "text" }
+        ]),
+        serde_json::json!([
+            { "name": "doc", "role": "doc" },
+            { "name": "text", "role": "text" },
+            { "name": "otherText", "role": "text" }
+        ]),
+    ] {
+        assert!(Schema::from_json(&serde_json::json!({ "nodes": nodes, "marks": [] })).is_err());
+    }
+}
+
+#[test]
+fn schema_rejects_unresolved_content_symbols() {
+    let result = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "missing+", "role": "doc" },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn schema_rejects_required_only_unconstructible_cycles() {
+    let result = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "a", "role": "doc" },
+            { "name": "a", "content": "b", "group": "block" },
+            { "name": "b", "content": "a", "group": "block" },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn schema_accepts_cycles_when_the_cycle_is_optional() {
+    let result = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "recursive?", "role": "doc" },
+            { "name": "recursive", "content": "recursive?", "group": "block" },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    }));
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -90,6 +187,8 @@ fn test_from_json_parses_allow_undeclared_attrs_true() {
     let schema = Schema::from_json(&serde_json::json!({
         "nodes": [
             { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
+            { "name": "text", "group": "inline", "role": "text" },
             {
                 "name": "mention",
                 "content": "",
@@ -120,7 +219,7 @@ fn list_item_type_for_prefers_task_item_for_task_lists() {
         "nodes": [
             { "name": "doc", "content": "block+", "role": "doc" },
             { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
-            { "name": "text", "role": "text" },
+            { "name": "text", "group": "inline", "role": "text" },
             { "name": "bulletList", "content": "itemGroup+", "group": "block", "role": "list" },
             { "name": "taskList", "content": "itemGroup+", "group": "block", "role": "list" },
             { "name": "listItem", "content": "paragraph+", "group": "itemGroup", "role": "listItem" },
@@ -143,6 +242,27 @@ fn list_item_type_for_prefers_task_item_for_task_lists() {
     );
 }
 
+#[test]
+fn list_item_type_for_considers_every_initial_alternative() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
+            { "name": "text", "group": "inline", "role": "text" },
+            { "name": "taskList", "content": "(decoration | taskGroup)+", "group": "block", "role": "list" },
+            { "name": "decoration", "group": "block", "isVoid": true },
+            { "name": "taskItem", "content": "paragraph+", "group": "taskGroup", "role": "listItem", "attrs": { "checked": { "default": false } } }
+        ],
+        "marks": []
+    }))
+    .expect("schema");
+
+    assert_eq!(
+        schema.list_item_type_for("taskList").as_deref(),
+        Some("taskItem")
+    );
+}
+
 /// Role helpers answer from NodeRole, not node names — a custom-named task
 /// list/item must classify exactly like the presets do.
 #[test]
@@ -151,7 +271,7 @@ fn schema_role_helpers_classify_by_role_not_name() {
         "nodes": [
             { "name": "doc", "content": "block+", "role": "doc" },
             { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
-            { "name": "text", "role": "text" },
+            { "name": "text", "group": "inline", "role": "text" },
             { "name": "todoList", "content": "todoTask+", "group": "block", "role": "list" },
             { "name": "todoOrderedList", "content": "todoTask+", "group": "block", "role": "list" },
             {
@@ -207,7 +327,8 @@ fn schema_role_helpers_classify_by_role_not_name() {
 fn test_from_json_parses_mark_allow_undeclared_attrs_true() {
     let schema = Schema::from_json(&serde_json::json!({
         "nodes": [
-            { "name": "doc", "content": "block+", "role": "doc" }
+            { "name": "doc", "content": "text*", "role": "doc" },
+            { "name": "text", "group": "inline", "role": "text" }
         ],
         "marks": [
             { "name": "comment", "allowUndeclaredAttrs": true }
@@ -226,7 +347,8 @@ fn test_from_json_parses_mark_allow_undeclared_attrs_true() {
 fn test_from_json_defaults_mark_allow_undeclared_attrs_to_false_when_absent() {
     let schema = Schema::from_json(&serde_json::json!({
         "nodes": [
-            { "name": "doc", "content": "block+", "role": "doc" }
+            { "name": "doc", "content": "text*", "role": "doc" },
+            { "name": "text", "group": "inline", "role": "text" }
         ],
         "marks": [
             { "name": "bold" }
@@ -246,7 +368,8 @@ fn test_from_json_defaults_allow_undeclared_attrs_to_false_when_absent() {
     let schema = Schema::from_json(&serde_json::json!({
         "nodes": [
             { "name": "doc", "content": "block+", "role": "doc" },
-            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" }
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "text", "group": "inline", "role": "text" }
         ],
         "marks": []
     }))

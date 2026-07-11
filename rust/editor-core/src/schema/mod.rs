@@ -1,7 +1,7 @@
 pub mod content_rule;
 pub mod presets;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::schema::content_rule::ContentRule;
 
@@ -77,10 +77,95 @@ pub struct AttrSpec {
 impl Schema {
     /// Create a schema from lists of node and mark specs.
     pub fn new(nodes: Vec<NodeSpec>, marks: Vec<MarkSpec>) -> Self {
-        Self {
-            nodes: nodes.into_iter().map(|n| (n.name.clone(), n)).collect(),
-            marks: marks.into_iter().map(|m| (m.name.clone(), m)).collect(),
+        Self::try_new(nodes, marks).expect("invalid schema")
+    }
+
+    /// Create and validate a schema, returning a descriptive error for invalid
+    /// role, name, content-symbol, or constructibility definitions.
+    pub fn try_new(nodes: Vec<NodeSpec>, marks: Vec<MarkSpec>) -> Result<Self, String> {
+        let mut node_names = HashSet::new();
+        for node in &nodes {
+            if !node_names.insert(node.name.clone()) {
+                return Err(format!("duplicate node name '{}'", node.name));
+            }
         }
+        let mut mark_names = HashSet::new();
+        for mark in &marks {
+            if !mark_names.insert(mark.name.clone()) {
+                return Err(format!("duplicate mark name '{}'", mark.name));
+            }
+        }
+
+        let doc_count = nodes
+            .iter()
+            .filter(|node| matches!(node.role, NodeRole::Doc))
+            .count();
+        let text_count = nodes
+            .iter()
+            .filter(|node| matches!(node.role, NodeRole::Text))
+            .count();
+        if doc_count != 1 {
+            return Err(format!(
+                "schema must define exactly one doc role, found {doc_count}"
+            ));
+        }
+        if text_count != 1 {
+            return Err(format!(
+                "schema must define exactly one text role, found {text_count}"
+            ));
+        }
+
+        for node in &nodes {
+            for symbol in node.content.symbols() {
+                if !nodes
+                    .iter()
+                    .any(|candidate| node_spec_matches_symbol(candidate, symbol))
+                {
+                    return Err(format!(
+                        "content rule for '{}' references unresolved node or group '{}'",
+                        node.name, symbol
+                    ));
+                }
+            }
+        }
+
+        let mut constructible = HashSet::new();
+        loop {
+            let before = constructible.len();
+            for node in &nodes {
+                if node.content.is_constructible_with(|symbol| {
+                    nodes.iter().any(|candidate| {
+                        constructible.contains(&candidate.name)
+                            && node_spec_matches_symbol(candidate, symbol)
+                    })
+                }) {
+                    constructible.insert(node.name.clone());
+                }
+            }
+            if constructible.len() == before {
+                break;
+            }
+        }
+        if let Some(node) = nodes
+            .iter()
+            .find(|node| !constructible.contains(&node.name))
+        {
+            return Err(format!(
+                "content rule for '{}' is unconstructible because its required content is cyclic",
+                node.name
+            ));
+        }
+
+        Ok(Self {
+            nodes: nodes
+                .into_iter()
+                .map(|node| (node.name.clone(), node))
+                .collect(),
+            marks: marks
+                .into_iter()
+                .map(|mark| (mark.name.clone(), mark))
+                .collect(),
+        })
     }
 
     /// Look up a node spec by name.
@@ -97,7 +182,7 @@ impl Schema {
     pub fn nodes_in_group(&self, group: &str) -> Vec<&NodeSpec> {
         self.nodes
             .values()
-            .filter(|n| n.group.as_deref() == Some(group))
+            .filter(|node| node_spec_matches_symbol(node, group) && node.name != group)
             .collect()
     }
 
@@ -132,17 +217,14 @@ impl Schema {
     /// candidates. Ties resolve alphabetically for determinism.
     pub fn list_item_type_for(&self, list_type: &str) -> Option<String> {
         let list_spec = self.node(list_type)?;
-        let part = list_spec.content.parts.first()?;
-
-        if let Some(direct) = self.node(&part.group) {
-            if matches!(direct.role, NodeRole::ListItem) {
-                return Some(direct.name.clone());
-            }
-        }
-
+        let initial_symbols = list_spec.content.accepting_symbols_after_count(0);
         let mut candidates: Vec<&NodeSpec> = self
-            .nodes_in_group(&part.group)
-            .into_iter()
+            .all_nodes()
+            .filter(|spec| {
+                initial_symbols
+                    .iter()
+                    .any(|symbol| node_spec_matches_symbol(spec, symbol))
+            })
             .filter(|spec| matches!(spec.role, NodeRole::ListItem))
             .collect();
         candidates.sort_by(|a, b| a.name.cmp(&b.name));
@@ -150,8 +232,7 @@ impl Schema {
 
         let is_task_list = list_type.to_ascii_lowercase().contains("task");
         let is_task_item = |spec: &NodeSpec| {
-            spec.name.to_ascii_lowercase().contains("task")
-                || spec.attrs.contains_key("checked")
+            spec.name.to_ascii_lowercase().contains("task") || spec.attrs.contains_key("checked")
         };
 
         candidates
@@ -195,9 +276,8 @@ impl Schema {
         let mut result = Vec::new();
         let allows_inline = node_spec
             .content
-            .parts
-            .iter()
-            .any(|p| p.group == "inline" || p.group == "text");
+            .symbols()
+            .any(|symbol| symbol == "inline" || symbol == "text");
 
         for mark_spec in self.all_marks() {
             let is_active = active_mark_names.contains(&mark_spec.name.as_str());
@@ -246,31 +326,9 @@ impl Schema {
         existing_child_count: usize,
     ) -> Vec<String> {
         let mut result = Vec::new();
-        let mut remaining = existing_child_count;
-
-        let mut accepting_groups: Vec<&str> = Vec::new();
-
-        for part in &parent_spec.content.parts {
-            let min = part.min as usize;
-            let max = part.max.map(|m| m as usize);
-
-            if remaining >= min {
-                let consumed = match max {
-                    Some(m) => remaining.min(m),
-                    None => remaining,
-                };
-                remaining = remaining.saturating_sub(consumed);
-
-                let at_max = max.map(|m| consumed >= m).unwrap_or(false);
-                if !at_max {
-                    accepting_groups.push(&part.group);
-                }
-            } else {
-                // Mandatory part unsatisfied — only it is accepting, stop here
-                accepting_groups.push(&part.group);
-                break;
-            }
-        }
+        let accepting_groups = parent_spec
+            .content
+            .accepting_symbols_after_count(existing_child_count);
 
         let excluded_roles = |role: &NodeRole| -> bool {
             matches!(
@@ -290,7 +348,7 @@ impl Schema {
             }
             let matches = accepting_groups
                 .iter()
-                .any(|&group| node_spec.name == group || node_spec.group.as_deref() == Some(group));
+                .any(|group| node_spec_matches_symbol(node_spec, group));
             if matches {
                 result.push(node_spec.name.clone());
             }
@@ -434,8 +492,16 @@ impl Schema {
             });
         }
 
-        Ok(Schema::new(nodes, marks))
+        Schema::try_new(nodes, marks)
     }
+}
+
+pub(crate) fn node_spec_matches_symbol(node: &NodeSpec, symbol: &str) -> bool {
+    node.name == symbol
+        || node
+            .group
+            .as_deref()
+            .is_some_and(|groups| groups.split_whitespace().any(|group| group == symbol))
 }
 
 /// Check whether an `excludes` field covers a given mark name.
