@@ -230,6 +230,29 @@ fn editor_builds_the_complete_minimal_default_document() {
 }
 
 #[test]
+fn list_and_blockquote_capabilities_validate_constructed_children_by_type() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "title", "content": "inline*", "group": "block", "role": "textBlock" },
+            { "name": "bulletList", "content": "badItem+", "group": "block", "role": "list" },
+            { "name": "orderedList", "content": "goodItem+", "group": "block", "role": "list" },
+            { "name": "badItem", "content": "title", "role": "listItem" },
+            { "name": "goodItem", "content": "paragraph", "role": "listItem" },
+            { "name": "blockquote", "content": "title+", "group": "block", "role": "block", "htmlTag": "blockquote" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    })).unwrap();
+    let editor = Editor::new(schema, InterceptorPipeline::new(), false);
+    let commands = editor.get_selection_state().active_state.commands;
+    assert_eq!(commands.get("wrapBulletList"), Some(&false));
+    assert_eq!(commands.get("wrapOrderedList"), Some(&true));
+    assert_eq!(commands.get("toggleBlockquote"), Some(&false));
+}
+
+#[test]
 fn test_full_lifecycle_set_html_insert_toggle_undo_redo() {
     let mut editor = default_editor();
 

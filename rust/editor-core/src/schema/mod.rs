@@ -1,6 +1,7 @@
 pub mod content_rule;
 pub mod presets;
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use crate::model::{Document, Fragment, Node};
@@ -78,6 +79,22 @@ pub struct AttrSpec {
 
 const DEFAULT_DOCUMENT_MAX_DEPTH: usize = 128;
 const DEFAULT_DOCUMENT_MAX_NODES: usize = 10_000;
+const DEFAULT_DOCUMENT_MAX_WORK: usize = 10_000;
+
+struct DefaultConstructionBudget {
+    work: Cell<usize>,
+    nodes: Cell<usize>,
+}
+
+impl DefaultConstructionBudget {
+    fn consume_work(&self) -> bool {
+        if self.work.get() >= DEFAULT_DOCUMENT_MAX_WORK {
+            return false;
+        }
+        self.work.set(self.work.get() + 1);
+        true
+    }
+}
 
 impl Schema {
     /// Create a schema from lists of node and mark specs.
@@ -90,12 +107,32 @@ impl Schema {
     pub fn try_new(nodes: Vec<NodeSpec>, marks: Vec<MarkSpec>) -> Result<Self, String> {
         let mut node_names = HashSet::new();
         for node in &nodes {
+            if node
+                .attrs
+                .values()
+                .any(|attr| attr.has_default != attr.default.is_some())
+            {
+                return Err(format!(
+                    "node '{}' has an inconsistent attribute default",
+                    node.name
+                ));
+            }
             if !node_names.insert(node.name.clone()) {
                 return Err(format!("duplicate node name '{}'", node.name));
             }
         }
         let mut mark_names = HashSet::new();
         for mark in &marks {
+            if mark
+                .attrs
+                .values()
+                .any(|attr| attr.has_default != attr.default.is_some())
+            {
+                return Err(format!(
+                    "mark '{}' has an inconsistent attribute default",
+                    mark.name
+                ));
+            }
             if !mark_names.insert(mark.name.clone()) {
                 return Err(format!("duplicate mark name '{}'", mark.name));
             }
@@ -397,7 +434,15 @@ impl Schema {
             .find(|node| matches!(node.role, NodeRole::Doc))
             .ok_or_else(|| "schema has no doc role".to_string())?;
         let root = self
-            .construct_default_node(doc_spec, &mut HashSet::new(), 0, &mut 0)
+            .construct_default_node(
+                doc_spec,
+                &mut HashSet::new(),
+                0,
+                &DefaultConstructionBudget {
+                    work: Cell::new(0),
+                    nodes: Cell::new(0),
+                },
+            )
             .ok_or_else(|| {
                 format!(
                     "schema cannot construct a default document for '{}'",
@@ -412,9 +457,9 @@ impl Schema {
         spec: &NodeSpec,
         visiting: &mut HashSet<String>,
         depth: usize,
-        node_count: &mut usize,
+        budget: &DefaultConstructionBudget,
     ) -> Option<Node> {
-        if depth > DEFAULT_DOCUMENT_MAX_DEPTH || *node_count >= DEFAULT_DOCUMENT_MAX_NODES {
+        if depth > DEFAULT_DOCUMENT_MAX_DEPTH || !budget.consume_work() {
             return None;
         }
         if matches!(spec.role, NodeRole::Text)
@@ -424,19 +469,25 @@ impl Schema {
             return None;
         }
 
-        let children = spec.content.minimal_match_with(|symbol| {
-            let mut candidates = self
-                .all_nodes()
-                .filter(|candidate| node_spec_matches_symbol(candidate, symbol))
-                .collect::<Vec<_>>();
-            candidates.sort_by_key(|candidate| default_node_priority(candidate));
-            candidates.into_iter().find_map(|candidate| {
-                self.construct_default_node(candidate, visiting, depth + 1, node_count)
-            })
-        });
+        let children = spec.content.minimal_match_with(
+            |symbol| {
+                let mut candidates = self
+                    .all_nodes()
+                    .filter(|candidate| node_spec_matches_symbol(candidate, symbol))
+                    .collect::<Vec<_>>();
+                candidates.sort_by_key(|candidate| default_node_priority(candidate));
+                candidates.into_iter().find_map(|candidate| {
+                    self.construct_default_node(candidate, visiting, depth + 1, budget)
+                })
+            },
+            || budget.consume_work(),
+        );
         visiting.remove(&spec.name);
         let children = children?;
-        *node_count += 1;
+        if budget.nodes.get() >= DEFAULT_DOCUMENT_MAX_NODES {
+            return None;
+        }
+        budget.nodes.set(budget.nodes.get() + 1);
         let attrs = spec
             .attrs
             .iter()
@@ -444,7 +495,7 @@ impl Schema {
                 attr.has_default.then(|| {
                     (
                         name.clone(),
-                        attr.default.clone().unwrap_or(serde_json::Value::Null),
+                        attr.default.clone().expect("validated explicit default"),
                     )
                 })
             })

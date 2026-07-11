@@ -92,4 +92,21 @@ describe('defaultEmptyDocument', () => {
             "schema cannot construct a default document for 'doc'"
         );
     });
+
+    it('treats an explicit undefined default as missing like serialized JSON', () => {
+        const schema: SchemaDefinition = {
+            nodes: [
+                { name: 'doc', content: 'image', role: 'doc' },
+                {
+                    name: 'image',
+                    content: '',
+                    attrs: { src: { default: undefined } },
+                    role: 'block',
+                },
+                { name: 'text', content: '', role: 'text' },
+            ],
+            marks: [],
+        };
+        expect(() => defaultEmptyDocument(schema)).toThrow();
+    });
 });

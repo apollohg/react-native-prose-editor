@@ -115,14 +115,18 @@ impl ContentRule {
     /// Find a shortest accepted sequence, choosing one concrete value for
     /// each traversed symbol. Returns `None` when no accepted path can be
     /// constructed from the choices supplied by the caller.
-    pub fn minimal_match_with<T, F>(&self, mut choose: F) -> Option<Vec<T>>
+    pub fn minimal_match_with<T, F, C>(&self, mut choose: F, consume_work: C) -> Option<Vec<T>>
     where
         T: Clone,
         F: FnMut(&str) -> Option<T>,
+        C: Fn() -> bool,
     {
         let mut pending = VecDeque::from([(self.start, Vec::new())]);
         let mut visited = HashSet::new();
         while let Some((state, values)) = pending.pop_front() {
+            if !consume_work() {
+                return None;
+            }
             if !visited.insert(state) {
                 continue;
             }
@@ -133,6 +137,9 @@ impl ContentRule {
                 pending.push_front((*target, values.clone()));
             }
             for (symbol, target) in &self.states[state].transitions {
+                if !consume_work() {
+                    return None;
+                }
                 if let Some(value) = choose(symbol) {
                     let mut next_values = values.clone();
                     next_values.push(value);

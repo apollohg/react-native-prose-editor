@@ -191,49 +191,61 @@ export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): D
     const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
     if (!docNode) throw new Error('schema cannot construct a default document: missing doc role');
 
-    const budget = { nodes: 0 };
+    const budget = { nodes: 0, work: 0 };
+    const consumeWork = (): boolean => {
+        if (budget.work >= DEFAULT_CONTENT_MAX_NODES) return false;
+        budget.work += 1;
+        return true;
+    };
     const constructNode = (
         node: NodeSpec,
         visiting: Set<string>,
         depth: number
     ): DocumentJSON | undefined => {
-        if (depth > CONTENT_EXPRESSION_MAX_DEPTH || budget.nodes >= DEFAULT_CONTENT_MAX_NODES) {
+        if (depth > CONTENT_EXPRESSION_MAX_DEPTH || !consumeWork()) {
             return undefined;
         }
         if (node.role === 'text' || visiting.has(node.name)) return undefined;
         const attrs = Object.entries(node.attrs ?? {});
-        if (attrs.some(([, spec]) => !Object.prototype.hasOwnProperty.call(spec, 'default'))) {
+        if (attrs.some(([, spec]) => spec.default === undefined)) {
             return undefined;
         }
 
         visiting.add(node.name);
-        const children = minimalContentMatch(node.content ?? '', (symbol) => {
-            const candidates = schema.nodes
-                .filter(
-                    (candidate) =>
-                        candidate.name === symbol ||
-                        candidate.group?.split(/\s+/).some((group) => group === symbol)
-                )
-                .sort((left, right) => {
-                    const priority = (candidate: NodeSpec): number => {
-                        if (
-                            candidate.role === 'textBlock' &&
-                            (candidate.htmlTag === 'p' || candidate.name === 'paragraph')
-                        ) {
-                            return 0;
-                        }
-                        return candidate.role === 'textBlock' ? 1 : 2;
-                    };
-                    return priority(left) - priority(right) || left.name.localeCompare(right.name);
-                });
-            for (const candidate of candidates) {
-                const constructed = constructNode(candidate, visiting, depth + 1);
-                if (constructed) return constructed;
-            }
-            return undefined;
-        });
+        const children = minimalContentMatch(
+            node.content ?? '',
+            (symbol) => {
+                const candidates = schema.nodes
+                    .filter(
+                        (candidate) =>
+                            candidate.name === symbol ||
+                            candidate.group?.split(/\s+/).some((group) => group === symbol)
+                    )
+                    .sort((left, right) => {
+                        const priority = (candidate: NodeSpec): number => {
+                            if (
+                                candidate.role === 'textBlock' &&
+                                (candidate.htmlTag === 'p' || candidate.name === 'paragraph')
+                            ) {
+                                return 0;
+                            }
+                            return candidate.role === 'textBlock' ? 1 : 2;
+                        };
+                        return (
+                            priority(left) - priority(right) || left.name.localeCompare(right.name)
+                        );
+                    });
+                for (const candidate of candidates) {
+                    const constructed = constructNode(candidate, visiting, depth + 1);
+                    if (constructed) return constructed;
+                }
+                return undefined;
+            },
+            consumeWork
+        );
         visiting.delete(node.name);
         if (!children) return undefined;
+        if (budget.nodes >= DEFAULT_CONTENT_MAX_NODES) return undefined;
         budget.nodes += 1;
 
         const result: DocumentJSON = { type: node.name };

@@ -265,33 +265,48 @@ export function acceptingContentSymbols(
 
 export function minimalContentMatch<T>(
     content: string,
-    choose: (symbol: string) => T | undefined
+    choose: (symbol: string) => T | undefined,
+    consumeWork: () => boolean = () => true
 ): T[] | undefined {
     try {
         const expression = new ContentExpressionParser(content).parse();
         const compiler = new ContentExpressionCompiler();
         const [start, accept] = compiler.compile(expression);
-        const pending: Array<{ state: number; values: T[] }> = [{ state: start, values: [] }];
+        interface Path {
+            value: T;
+            previous?: Path;
+        }
+        let current = new Map<number, Path | undefined>([[start, undefined]]);
         const visited = new Set<number>();
-        while (pending.length > 0) {
-            const current = pending.shift()!;
-            if (visited.has(current.state)) continue;
-            visited.add(current.state);
-            if (current.state === accept) return current.values;
-
-            const state = compiler.states[current.state];
-            for (let index = state.epsilon.length - 1; index >= 0; index -= 1) {
-                pending.unshift({ state: state.epsilon[index], values: current.values });
+        while (current.size > 0) {
+            const closure = new Map<number, Path | undefined>();
+            const pending = [...current.entries()];
+            while (pending.length > 0) {
+                if (!consumeWork()) return undefined;
+                const [state, path] = pending.pop()!;
+                if (closure.has(state)) continue;
+                closure.set(state, path);
+                for (const target of compiler.states[state].epsilon) pending.push([target, path]);
             }
-            for (const transition of state.transitions) {
-                const value = choose(transition.symbol);
-                if (value !== undefined) {
-                    pending.push({
-                        state: transition.target,
-                        values: [...current.values, value],
-                    });
+            const accepted = closure.get(accept);
+            if (closure.has(accept)) {
+                const result: T[] = [];
+                for (let path = accepted; path; path = path.previous) result.push(path.value);
+                return result.reverse();
+            }
+            const next = new Map<number, Path | undefined>();
+            for (const [state, path] of closure) {
+                if (visited.has(state)) continue;
+                visited.add(state);
+                for (const transition of compiler.states[state].transitions) {
+                    if (!consumeWork()) return undefined;
+                    const value = choose(transition.symbol);
+                    if (value !== undefined && !next.has(transition.target)) {
+                        next.set(transition.target, { value, previous: path });
+                    }
                 }
             }
+            current = next;
         }
         return undefined;
     } catch {

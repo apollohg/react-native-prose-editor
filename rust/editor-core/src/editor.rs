@@ -1663,8 +1663,28 @@ impl Editor {
 
         // List wrap commands: true if already in a list (toggle/switch) or if
         // the parent context allows list nodes.
-        commands.insert("wrapBulletList".to_string(), self.can_wrap_in_list_at(pos));
-        commands.insert("wrapOrderedList".to_string(), self.can_wrap_in_list_at(pos));
+        let bullet_list = self
+            .schema
+            .all_nodes()
+            .find(|spec| matches!(spec.role, NodeRole::List { ordered: false }))
+            .map(|spec| spec.name.clone());
+        let ordered_list = self
+            .schema
+            .all_nodes()
+            .find(|spec| matches!(spec.role, NodeRole::List { ordered: true }))
+            .map(|spec| spec.name.clone());
+        commands.insert(
+            "wrapBulletList".to_string(),
+            bullet_list
+                .as_deref()
+                .is_some_and(|name| self.can_wrap_in_list_at(pos, name)),
+        );
+        commands.insert(
+            "wrapOrderedList".to_string(),
+            ordered_list
+                .as_deref()
+                .is_some_and(|name| self.can_wrap_in_list_at(pos, name)),
+        );
 
         ActiveState {
             marks,
@@ -2156,10 +2176,21 @@ impl Editor {
     /// Returns `true` if:
     /// - The cursor is already inside a list (toggle off / switch type), or
     /// - The parent context at doc level allows list nodes.
-    fn can_wrap_in_list_at(&self, pos: u32) -> bool {
+    fn can_wrap_in_list_at(&self, pos: u32, list_type: &str) -> bool {
         // If already in a list, wrapping is possible (toggle/switch).
-        if self.containing_list_node_at(pos).is_some() {
-            return true;
+        if let Some((_, list)) = self.containing_list_node_at(pos) {
+            let Some(target) = self.schema.node(list_type) else {
+                return false;
+            };
+            let types = list
+                .content()
+                .map(|c| c.iter().map(Node::node_type).collect::<Vec<_>>())
+                .unwrap_or_default();
+            return target.content.matches(&types, |child, symbol| {
+                self.schema
+                    .node(child)
+                    .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+            });
         }
 
         // Otherwise, check if the doc-level context accepts list nodes.
@@ -2178,15 +2209,37 @@ impl Editor {
         let Some(spec) = self.schema.node(parent.node_type()) else {
             return false;
         };
-        self.schema.all_nodes().any(|candidate| {
-            matches!(candidate.role, NodeRole::List { .. })
-                && self.parent_accepts_range_replacement(
-                    parent,
-                    spec,
-                    &range,
-                    &[candidate.name.as_str()],
-                )
-        })
+        let Some(list_spec) = self.schema.node(list_type) else {
+            return false;
+        };
+        let Some(item_type) = self.schema.list_item_type_for(list_type) else {
+            return false;
+        };
+        let Some(item_spec) = self.schema.node(&item_type) else {
+            return false;
+        };
+        if list_spec.attrs.values().any(|attr| !attr.has_default)
+            || item_spec.attrs.values().any(|attr| !attr.has_default)
+        {
+            return false;
+        }
+        if range.selected_blocks.iter().any(|block| {
+            !item_spec
+                .content
+                .matches(&[block.node_type()], |child, symbol| {
+                    self.schema
+                        .node(child)
+                        .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+                })
+        }) {
+            return false;
+        }
+        let items = vec![item_type.as_str(); range.selected_blocks.len()];
+        list_spec.content.matches(&items, |child, symbol| {
+            self.schema
+                .node(child)
+                .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+        }) && self.parent_accepts_range_replacement(parent, spec, &range, &[list_type])
     }
 
     fn can_toggle_blockquote_at(&self, pos: u32) -> bool {
@@ -2212,7 +2265,24 @@ impl Editor {
         let Some(spec) = self.schema.node(parent.node_type()) else {
             return false;
         };
-        self.parent_accepts_range_replacement(parent, spec, &range, &[blockquote_type.as_str()])
+        let Some(quote_spec) = self.schema.node(&blockquote_type) else {
+            return false;
+        };
+        let selected = range
+            .selected_blocks
+            .iter()
+            .map(Node::node_type)
+            .collect::<Vec<_>>();
+        quote_spec.content.matches(&selected, |child, symbol| {
+            self.schema
+                .node(child)
+                .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+        }) && self.parent_accepts_range_replacement(
+            parent,
+            spec,
+            &range,
+            &[blockquote_type.as_str()],
+        )
     }
 
     fn can_toggle_heading(&self, level: u8) -> bool {
