@@ -382,6 +382,26 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertLessThanOrEqual(missingCommaScan.scannedByteCount, 257)
     }
 
+    func testDataURLHeaderScanDetectsCommaBeforeUnboundedCombiningGrapheme() {
+        let adversarial = "data:image/png;base64,"
+            + String(repeating: "\u{0301}\u{200D}", count: 2_000)
+            + "AQ=="
+        let prefix = "data:image/png;base64"
+        let boundaryHeader = prefix
+            + String(repeating: "A", count: 256 - prefix.utf8.count)
+            + ",AQ=="
+
+        let adversarialScan = RenderImageLoadOwner.scanDataURLHeader(adversarial)
+        let boundaryScan = RenderImageLoadOwner.scanDataURLHeader(boundaryHeader)
+
+        XCTAssertNotNil(adversarialScan.commaIndex)
+        XCTAssertFalse(adversarialScan.exceededLimit)
+        XCTAssertEqual(adversarialScan.scannedByteCount, "data:image/png;base64,".utf8.count)
+        XCTAssertNotNil(boundaryScan.commaIndex)
+        XCTAssertFalse(boundaryScan.exceededLimit)
+        XCTAssertEqual(boundaryScan.scannedByteCount, 257)
+    }
+
     func testDataURLDecodeRunsOffMainAndDeliversOnMain() {
         let decoder = RecordingImageDecoder(image: onePixelImage())
         let owner = RenderImageLoadOwner(

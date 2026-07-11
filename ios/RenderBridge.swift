@@ -715,27 +715,26 @@ final class RenderImageLoadOwner {
 
     static func scanDataURLHeader(_ source: String) -> DataURLHeaderScan {
         var scannedBytes = 0
-        var index = source.startIndex
-        while index < source.endIndex {
-            let nextIndex = source.index(after: index)
-            let characterBytes = source[index..<nextIndex].utf8.count
-            let (nextBytes, overflow) = scannedBytes.addingReportingOverflow(characterBytes)
-            guard !overflow, nextBytes <= dataURLHeaderByteLimit else {
+        let bytes = source.utf8
+        var index = bytes.startIndex
+        while index < bytes.endIndex {
+            let byte = bytes[index]
+            if byte == 44 {
+                return DataURLHeaderScan(
+                    commaIndex: index,
+                    scannedByteCount: scannedBytes + 1,
+                    exceededLimit: false
+                )
+            }
+            guard scannedBytes < dataURLHeaderByteLimit else {
                 return DataURLHeaderScan(
                     commaIndex: nil,
                     scannedByteCount: scannedBytes,
                     exceededLimit: true
                 )
             }
-            scannedBytes = nextBytes
-            if source[index] == "," {
-                return DataURLHeaderScan(
-                    commaIndex: index,
-                    scannedByteCount: scannedBytes,
-                    exceededLimit: false
-                )
-            }
-            index = nextIndex
+            scannedBytes += 1
+            index = bytes.index(after: index)
         }
         return DataURLHeaderScan(
             commaIndex: nil,
