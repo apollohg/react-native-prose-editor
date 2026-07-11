@@ -47,6 +47,10 @@ import {
 } from './EditorToolbar';
 import { serializeEditorTheme, type EditorMentionTheme, type EditorTheme } from './EditorTheme';
 import {
+    serializeEditorImageLoadingPolicy,
+    type EditorImageLoadingPolicy,
+} from './ImageLoadingPolicy';
+import {
     TASK_LIST_MARKER_CHECKED,
     TASK_LIST_MARKER_UNCHECKED,
     UNORDERED_LIST_MARKER,
@@ -92,6 +96,7 @@ interface NativeEditorViewProps {
     toolbarPlacement: NativeRichTextEditorToolbarPlacement;
     heightBehavior: NativeRichTextEditorHeightBehavior;
     allowImageResizing: boolean;
+    imageLoadingPolicyJson?: string;
     themeJson?: string;
     addonsJson?: string;
     toolbarItemsJson?: string;
@@ -985,6 +990,8 @@ export interface NativeRichTextEditorProps {
     autoDetectLinks?: boolean;
     /** Whether `data:image/...` sources are accepted for image insertion and HTML parsing. */
     allowBase64Images?: boolean;
+    /** Bounds native data-URL and remote image loading. */
+    imageLoadingPolicy?: EditorImageLoadingPolicy;
     /** Whether selected images show native resize handles. */
     allowImageResizing?: boolean;
     /** Called when content changes with the current HTML. */
@@ -1183,6 +1190,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             addons,
             remoteSelections,
             allowBase64Images = false,
+            imageLoadingPolicy,
             allowImageResizing = true,
         },
         ref
@@ -1355,6 +1363,10 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             valueJSONRevision
         );
         const themeJson = useSerializedValue(theme, serializeEditorTheme);
+        const imageLoadingPolicyJson = useMemo(
+            () => serializeEditorImageLoadingPolicy(imageLoadingPolicy),
+            [imageLoadingPolicy]
+        );
         const addonsJson = useSerializedValue(addons, serializeEditorAddons);
         const remoteSelectionsJson = useSerializedValue(remoteSelections, (selections) =>
             serializeRemoteSelections(selections)
@@ -3754,6 +3766,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     toolbarPlacement={toolbarPlacement}
                     heightBehavior={heightBehavior}
                     allowImageResizing={allowImageResizing}
+                    imageLoadingPolicyJson={imageLoadingPolicyJson}
                     themeJson={themeJson}
                     addonsJson={addonsJson}
                     toolbarItemsJson={toolbarItemsJson}

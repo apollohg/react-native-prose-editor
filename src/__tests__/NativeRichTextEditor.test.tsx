@@ -442,6 +442,26 @@ describe('NativeRichTextEditor', () => {
             );
         });
 
+        it('normalizes and passes a configurable image loading policy to native', () => {
+            const { getByTestId } = render(
+                <NativeRichTextEditor
+                    imageLoadingPolicy={{
+                        maxSourceBytes: 1024,
+                        connectTimeoutMs: 2500,
+                    }}
+                />
+            );
+
+            expect(JSON.parse(getByTestId('native-editor-view').props.imageLoadingPolicyJson)).toEqual({
+                maxSourceBytes: 1024,
+                connectTimeoutMs: 2500,
+                readTimeoutMs: 20000,
+                maxConcurrentRequests: 2,
+                maxPendingRequests: 64,
+                maxDecodeDimensionPx: 2048,
+            });
+        });
+
         it('sets initial content via setHtml when initialContent is provided', () => {
             render(<NativeRichTextEditor initialContent='<p>hello</p>' />);
             expect(mockNativeModule.editorSetHtml).toHaveBeenCalledWith(1, '<p>hello</p>');

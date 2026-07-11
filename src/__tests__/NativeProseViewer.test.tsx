@@ -129,6 +129,27 @@ describe('NativeProseViewer', () => {
         expect(nativeView.props.renderJson).toContain('Hello from HTML');
     });
 
+    it('normalizes and passes a configurable image loading policy to native', () => {
+        const { getByTestId } = render(
+            <NativeProseViewer
+                contentHTML='<p>Hello</p>'
+                imageLoadingPolicy={{
+                    readTimeoutMs: 3000,
+                    maxPendingRequests: 8,
+                }}
+            />
+        );
+
+        expect(JSON.parse(getByTestId('native-prose-viewer').props.imageLoadingPolicyJson)).toEqual({
+            maxSourceBytes: 10485760,
+            connectTimeoutMs: 10000,
+            readTimeoutMs: 3000,
+            maxConcurrentRequests: 2,
+            maxPendingRequests: 8,
+            maxDecodeDimensionPx: 2048,
+        });
+    });
+
     it('includes mention schema support in the native render config', () => {
         render(
             <NativeProseViewer

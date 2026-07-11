@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { requireNativeModule, requireNativeViewManager } from 'expo-modules-core';
 import {
+    serializeEditorImageLoadingPolicy,
+    type EditorImageLoadingPolicy,
+} from './ImageLoadingPolicy';
+import {
     type NativeSyntheticEvent,
     PixelRatio,
     Platform,
@@ -37,6 +41,7 @@ interface NativeProseViewerViewProps {
     style?: StyleProp<ViewStyle>;
     renderJson: string;
     themeJson?: string;
+    imageLoadingPolicyJson?: string;
     collapsesWhenEmpty?: boolean;
     enableLinkTaps?: boolean;
     interceptLinkTaps?: boolean;
@@ -105,6 +110,7 @@ interface NativeProseViewerBaseProps {
     theme?: EditorTheme;
     style?: StyleProp<ViewStyle>;
     allowBase64Images?: boolean;
+    imageLoadingPolicy?: EditorImageLoadingPolicy;
     collapseTrailingEmptyParagraphs?: boolean;
     enableLinkTaps?: boolean;
     addons?: NativeProseViewerAddons;
@@ -585,6 +591,7 @@ export function NativeProseViewer({
         theme,
         style,
         allowBase64Images = false,
+        imageLoadingPolicy,
         collapseTrailingEmptyParagraphs = true,
         enableLinkTaps = true,
         addons,
@@ -610,6 +617,10 @@ export function NativeProseViewer({
         return serializeDocumentInput(contentJSON, documentSchema);
     }, [contentJSON, resolvedContentRevision, documentSchema]);
     const themeJson = useMemo(() => serializeEditorTheme(theme), [theme]);
+    const imageLoadingPolicyJson = useMemo(
+        () => serializeEditorImageLoadingPolicy(imageLoadingPolicy),
+        [imageLoadingPolicy]
+    );
     const mentionPayloadsByDocPos = useMemo(
         () =>
             normalizedDocument == null
@@ -775,6 +786,7 @@ export function NativeProseViewer({
             style={nativeStyle}
             renderJson={renderJson}
             themeJson={themeJson}
+            imageLoadingPolicyJson={imageLoadingPolicyJson}
             collapsesWhenEmpty={collapseTrailingEmptyParagraphs}
             enableLinkTaps={enableLinkTaps}
             interceptLinkTaps={typeof onPressLink === 'function'}

@@ -114,3 +114,9 @@ export {
 } from './NativeEditorBridge';
 
 export { clearHeightCache } from './heightCache';
+
+export {
+    DEFAULT_EDITOR_IMAGE_LOADING_POLICY,
+    type EditorImageLoadingPolicy,
+    type ResolvedEditorImageLoadingPolicy,
+} from './ImageLoadingPolicy';
