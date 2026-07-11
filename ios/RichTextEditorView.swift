@@ -3800,6 +3800,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     func discardTransientNativeInputForEditorRebind() {
         resetPendingNativeTextMutationState()
         lastAuthorizedSelectedUtf16Range = nil
+        logicalSelectionScalarRange = nil
         clearPendingInputTraitRetry()
         markedTextReplacementScalarRange = nil
         markedTextReplacementUtf16Range = nil
@@ -5451,6 +5452,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             let targetRange = NSRange(location: startUtf16, length: 1)
             let resolveNanos = DispatchTime.now().uptimeNanoseconds - resolveStartedAt
             let assignmentStartedAt = DispatchTime.now().uptimeNanoseconds
+            logicalSelectionScalarRange = nil
             if selectedRange != targetRange {
                 selectedRange = targetRange
                 noteSelectionDidChange()
@@ -5471,6 +5473,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
         case "all":
             let assignmentStartedAt = DispatchTime.now().uptimeNanoseconds
+            logicalSelectionScalarRange = nil
             selectedTextRange = textRange(from: beginningOfDocument, to: endOfDocument)
             noteSelectionDidChange()
             let assignmentNanos = DispatchTime.now().uptimeNanoseconds - assignmentStartedAt

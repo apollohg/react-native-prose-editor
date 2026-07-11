@@ -1,6 +1,55 @@
 import XCTest
 
 final class RichTextEditorViewTests: XCTestCase {
+    func testNonTextSelectionApplicationsClearBackwardTextDirection() throws {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(id: editorId, initialHTML: "<p>ab</p>")
+
+        func applyBackwardTextSelection(anchor: UInt32, head: UInt32) {
+            editorSetSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
+            textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+            XCTAssertEqual(PositionBridge.cursorScalarOffset(in: textView), head)
+        }
+
+        func applySelection(_ selection: [String: Any]) throws {
+            var update = parseJSONObject(editorGetCurrentState(id: editorId))
+            update["selection"] = selection
+            let data = try JSONSerialization.data(withJSONObject: update)
+            let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+            textView.applyUpdateJSON(json, notifyDelegate: false)
+        }
+
+        applyBackwardTextSelection(anchor: 2, head: 1)
+        try applySelection([
+            "type": "node",
+            "pos": editorScalarToDoc(id: editorId, scalar: 1),
+            "posScalar": 1,
+        ])
+        XCTAssertEqual(PositionBridge.cursorScalarOffset(in: textView), 2)
+
+        applyBackwardTextSelection(anchor: 2, head: 0)
+        try applySelection(["type": "all"])
+        XCTAssertEqual(PositionBridge.cursorScalarOffset(in: textView), 2)
+    }
+
+    func testUnbindClearsBackwardTextDirection() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(id: editorId, initialHTML: "<p>ab</p>")
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 2, scalarHead: 1)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        XCTAssertEqual(PositionBridge.cursorScalarOffset(in: textView), 1)
+
+        textView.unbindEditor()
+
+        XCTAssertEqual(PositionBridge.cursorScalarOffset(in: textView), 2)
+    }
+
     func testBackwardSelectionRoundTripsLogicalAnchorHeadAndUsesHeadAsCaretEdge() {
         let editorId = editorCreate(configJson: "{}")
         defer { editorDestroy(id: editorId) }
