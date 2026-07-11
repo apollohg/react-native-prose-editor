@@ -11,7 +11,9 @@ trap 'rm -rf "$work_dir"' EXIT
 package_dir="$work_dir/package"
 consumer_dir="$work_dir/consumer"
 pack_cache_dir="$work_dir/npm-cache"
-cocoapods_cache_dir="${CP_CACHE_DIR:-$work_dir/cocoapods-cache}"
+cocoapods_cache_dir="$work_dir/cocoapods-cache"
+cocoapods_home_dir="$work_dir/cocoapods-home"
+export NODE_COMPILE_CACHE="$work_dir/node-compile-cache"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -27,10 +29,96 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command '$1' is not installed"
 }
 
+validate_archive_architectures() {
+  local archive_path="$1"
+  local expected_architectures="$2"
+  local label="$3"
+  local architecture_info
+  local actual_architectures
+  local normalized_architectures
+  local architecture
+  local thin_archive
+  local archive_members
+
+  [[ -s "$archive_path" ]] || fail "$label archive is missing or empty"
+  architecture_info="$(lipo -info "$archive_path" 2>&1)" || fail "$label is not a valid Mach-O archive: $architecture_info"
+  actual_architectures="$(lipo -archs "$archive_path" 2>&1)" || fail "$label architectures cannot be read: $actual_architectures"
+  normalized_architectures="$(printf '%s\n' "$actual_architectures" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ' | sed 's/ $//')"
+  [[ "$normalized_architectures" == "$expected_architectures" ]] || \
+    fail "$label must contain exactly [$expected_architectures], found [$normalized_architectures] ($architecture_info)"
+
+  for architecture in $actual_architectures; do
+    thin_archive="$work_dir/${label//[^[:alnum:]]/_}-$architecture.a"
+    if [[ "$actual_architectures" == *" "* ]]; then
+      lipo "$archive_path" -thin "$architecture" -output "$thin_archive" >/dev/null 2>&1 || \
+        fail "$label cannot extract its $architecture archive"
+    else
+      cp "$archive_path" "$thin_archive"
+    fi
+    file "$thin_archive" | grep -Fq 'current ar archive' || \
+      fail "$label $architecture slice is not a static archive"
+    archive_members="$(ar -t "$thin_archive" 2>&1)" || \
+      fail "$label $architecture static archive is corrupt: $archive_members"
+    [[ -n "$archive_members" ]] || fail "$label $architecture static archive contains no members"
+  done
+}
+
+validate_xcframework() {
+  local xcframework_dir="$1"
+  local plist_path="$xcframework_dir/Info.plist"
+  local plist_json="$work_dir/xcframework-info.json"
+
+  [[ -s "$plist_path" ]] || fail "XCFramework Info.plist is missing or empty"
+  plutil -convert json -o "$plist_json" "$plist_path" || fail "XCFramework Info.plist is invalid"
+  ruby -rjson -e '
+    actual = JSON.parse(File.read(ARGV.fetch(0))).fetch("AvailableLibraries")
+    expected = [
+      {
+        "BinaryPath" => "libeditor_core.a",
+        "LibraryIdentifier" => "ios-arm64",
+        "LibraryPath" => "libeditor_core.a",
+        "SupportedArchitectures" => ["arm64"],
+        "SupportedPlatform" => "ios",
+      },
+      {
+        "BinaryPath" => "libeditor_core.a",
+        "LibraryIdentifier" => "ios-arm64_x86_64-simulator",
+        "LibraryPath" => "libeditor_core.a",
+        "SupportedArchitectures" => ["arm64", "x86_64"],
+        "SupportedPlatform" => "ios",
+        "SupportedPlatformVariant" => "simulator",
+      },
+    ]
+    abort "XCFramework AvailableLibraries must exactly describe the device and simulator slices" unless actual == expected
+  ' "$plist_json" || fail "XCFramework slice metadata does not match the packaged libraries"
+
+  validate_archive_architectures \
+    "$xcframework_dir/ios-arm64/libeditor_core.a" \
+    "arm64" \
+    "iOS device"
+  validate_archive_architectures \
+    "$xcframework_dir/ios-arm64_x86_64-simulator/libeditor_core.a" \
+    "arm64 x86_64" \
+    "iOS simulator"
+}
+
 require_command npm
 require_command tar
 require_command pod
 require_command ruby
+require_command plutil
+require_command lipo
+require_command file
+require_command ar
+
+if [[ "${1:-}" == "--validate-xcframework" ]]; then
+  [[ "$#" == "2" ]] || fail "usage: $0 --validate-xcframework PATH"
+  validate_xcframework "$2"
+  echo "XCFramework metadata and static archive validation passed."
+  exit 0
+elif [[ "$#" != "0" ]]; then
+  fail "unknown argument: $1"
+fi
 
 mkdir -p "$pack_cache_dir"
 
@@ -53,9 +141,11 @@ tar -xzf "$tarball_path" -C "$work_dir"
 
 require_file "ios/editor_coreFFI/editor_coreFFI.h"
 require_file "ios/editor_coreFFI/module.modulemap"
+require_file "LICENSE"
 require_file "ios/EditorCore.xcframework/Info.plist"
 require_file "ios/EditorCore.xcframework/ios-arm64/libeditor_core.a"
 require_file "ios/EditorCore.xcframework/ios-arm64_x86_64-simulator/libeditor_core.a"
+validate_xcframework "$package_dir/ios/EditorCore.xcframework"
 
 for abi in arm64-v8a armeabi-v7a x86 x86_64; do
   require_file "rust/android/$abi/libeditor_core.so"
@@ -125,6 +215,7 @@ RUBY
   PACKED_EXPO_MODULES_CORE_DIR="$expo_modules_core_dir" \
   PACKED_REACT_NATIVE_DIR="$react_native_dir" \
   CP_CACHE_DIR="$cocoapods_cache_dir" \
+  CP_HOME_DIR="$cocoapods_home_dir" \
     pod install --no-repo-update
 )
 
