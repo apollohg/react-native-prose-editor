@@ -128,10 +128,35 @@ The main extension points today are:
 - `onRequestLink`: collect or edit hyperlink URLs when a toolbar link item is pressed
 - `addons`: configure optional features like @-mentions
 - `heightBehavior`: switch between internal scrolling and auto-grow
+- `imageLoadingPolicy`: bound native image bytes, timeouts, concurrency, queue depth, and decode dimensions
 
 For setup and customization details, start with the [Documentation Index](https://github.com/apollohg/react-native-prose-editor/wiki).
 
 For realtime collaboration, including the correct `useYjsCollaboration()` wiring, encoded-state persistence, remote cursors, and automatic reconnect behavior, see the [Collaboration Guide](https://github.com/apollohg/react-native-prose-editor/wiki/Collaboration).
+
+Custom schema content expressions support ProseMirror-style sequences,
+parentheses, alternation, `?`, `*`, `+`, and bounded/unbounded ranges such as
+`{2}`, `{1,3}`, and `{1,}`. Invalid, unresolved, or non-constructible schemas
+fall back to the default schema during native editor creation.
+
+Image loading is bounded on both native platforms. Override the defaults on an
+editor or viewer when needed:
+
+```tsx
+<NativeRichTextEditor
+  imageLoadingPolicy={{
+    maxSourceBytes: 5 * 1024 * 1024,
+    connectTimeoutMs: 8_000,
+    readTimeoutMs: 15_000,
+    maxConcurrentRequests: 2,
+    maxPendingRequests: 32,
+    maxDecodeDimensionPx: 1_536,
+  }}
+/>
+```
+
+`getHtml()` preserves opaque HTML and is a serializer, not a sanitizer. Sanitize
+untrusted HTML before displaying it in an HTML-capable environment.
 
 For whole-document JSON loads, `initialJSON`, controlled `valueJSON`, and `setContentJson()` will normalize an empty root document like `{ type: 'doc', content: [] }` to the active schema's empty text block so block-constrained schemas still load a valid empty document. For chat composer or draft-reset flows, prefer the ref method `clearContent()`.
 
