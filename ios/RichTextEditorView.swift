@@ -807,6 +807,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private static let emptyBlockPlaceholderScalar = UnicodeScalar(0x200B)!
 
     private lazy var internalTextViewDelegate = EditorTextViewInternalDelegate(editor: self)
+    var imageLoadOwner: RenderImageLoadOwner?
+
+    private func withImageLoadOwner<T>(_ body: () -> T) -> T {
+        guard let imageLoadOwner else { return body() }
+        return imageLoadOwner.withCurrent(body)
+    }
 
     override var undoManager: UndoManager? { nil }
 
@@ -5020,14 +5026,16 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
 
         let buildStartedAt = DispatchTime.now().uptimeNanoseconds
-        let attrStr = RenderBridge.renderBlocks(
-            fromArray: patch.renderBlocks,
-            startIndex: patch.startIndex,
-            includeLeadingInterBlockSeparator: patch.startIndex > 0,
-            baseFont: baseFont,
-            textColor: baseTextColor,
-            theme: theme
-        )
+        let attrStr = withImageLoadOwner {
+            RenderBridge.renderBlocks(
+                fromArray: patch.renderBlocks,
+                startIndex: patch.startIndex,
+                includeLeadingInterBlockSeparator: patch.startIndex > 0,
+                baseFont: baseFont,
+                textColor: baseTextColor,
+                theme: theme
+            )
+        }
         let buildRenderNanos = DispatchTime.now().uptimeNanoseconds - buildStartedAt
         let renderedPatchMetadata = topLevelChildMetadataSlice(from: attrStr)
         let renderedPatchContainsAttachment =
@@ -5216,20 +5224,24 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             let buildStartedAt = DispatchTime.now().uptimeNanoseconds
             let attrStr: NSAttributedString
             if let resolvedRenderBlocks {
-                attrStr = RenderBridge.renderBlocks(
-                    fromArray: resolvedRenderBlocks,
-                    baseFont: baseFont,
-                    textColor: baseTextColor,
-                    theme: theme
-                )
+                attrStr = withImageLoadOwner {
+                    RenderBridge.renderBlocks(
+                        fromArray: resolvedRenderBlocks,
+                        baseFont: baseFont,
+                        textColor: baseTextColor,
+                        theme: theme
+                    )
+                }
                 currentRenderBlocks = resolvedRenderBlocks
             } else if let renderElements {
-                attrStr = RenderBridge.renderElements(
-                    fromArray: renderElements,
-                    baseFont: baseFont,
-                    textColor: baseTextColor,
-                    theme: theme
-                )
+                attrStr = withImageLoadOwner {
+                    RenderBridge.renderElements(
+                        fromArray: renderElements,
+                        baseFont: baseFont,
+                        textColor: baseTextColor,
+                        theme: theme
+                    )
+                }
                 currentRenderBlocks = nil
             } else {
                 return
@@ -5338,12 +5350,14 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         Self.updateLog.debug(
             "[applyRenderJSON.begin] before=\(self.textSnapshotSummary(), privacy: .public)"
         )
-        let attrStr = RenderBridge.renderElements(
-            fromJSON: renderJSON,
-            baseFont: baseFont,
-            textColor: baseTextColor,
-            theme: theme
-        )
+        let attrStr = withImageLoadOwner {
+            RenderBridge.renderElements(
+                fromJSON: renderJSON,
+                baseFont: baseFont,
+                textColor: baseTextColor,
+                theme: theme
+            )
+        }
         _ = applyAttributedRender(attrStr, usedPatch: false)
         currentRenderBlocks = nil
         lastAppliedRenderAppearanceRevision = renderAppearanceRevision
@@ -5632,6 +5646,15 @@ final class RichTextEditorView: UIView {
 
     /// The editor text view that handles input interception.
     let textView: EditorTextView
+    private let defaultImageLoadOwner = RenderImageLoadOwner(policy: .default)
+    var imageLoadOwner: RenderImageLoadOwner {
+        get { textView.imageLoadOwner ?? defaultImageLoadOwner }
+        set {
+            guard textView.imageLoadOwner !== newValue else { return }
+            textView.imageLoadOwner?.cancelAll()
+            textView.imageLoadOwner = newValue
+        }
+    }
     private let remoteSelectionOverlayView = RemoteSelectionOverlayView()
     private let taskListMarkerTapOverlayView = TaskListMarkerTapOverlayView()
     private let imageTapOverlayView = ImageTapOverlayView()
@@ -5731,6 +5754,7 @@ final class RichTextEditorView: UIView {
     private func setupView() {
         // Add the text view as a subview. These views always track the host bounds,
         // so manual layout is cheaper than driving them through Auto Layout.
+        textView.imageLoadOwner = defaultImageLoadOwner
         remoteSelectionOverlayView.bind(textView: textView)
         taskListMarkerTapOverlayView.bind(editorView: self)
         imageTapOverlayView.bind(editorView: self)
@@ -6142,6 +6166,7 @@ final class RichTextEditorView: UIView {
     // MARK: - Cleanup
 
     deinit {
+        textView.imageLoadOwner?.cancelAll()
         if editorId != 0 {
             textView.unbindEditor()
         }

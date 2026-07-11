@@ -2064,6 +2064,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     required init(appContext: AppContext? = nil) {
         richTextView = RichTextEditorView(frame: .zero)
         super.init(appContext: appContext)
+        richTextView.imageLoadOwner = imageLoadOwner
         richTextView.onHeightMayChange = { [weak self] measuredHeight in
             guard let self, self.heightBehavior == .autoGrow else { return }
             self.cachedAutoGrowContentHeight = measuredHeight

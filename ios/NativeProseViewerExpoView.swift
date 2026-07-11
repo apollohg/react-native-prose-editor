@@ -47,6 +47,7 @@ final class NativeProseViewerExpoView: ExpoView {
     }
 
     private func setupView() {
+        textView.imageLoadOwner = imageLoadOwner
         textView.baseBackgroundColor = .clear
         textView.backgroundColor = .clear
         textView.isEditable = false

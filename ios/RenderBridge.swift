@@ -68,11 +68,75 @@ extension Notification.Name {
     )
 }
 
-private enum RenderImageCache {
-    static let cache = NSCache<NSString, UIImage>()
+final class RenderImageCostCache {
+    private struct Entry {
+        let image: UIImage
+        let cost: Int
+        var access: UInt64
+    }
 
-    static func key(source: String, maxDimension: Int) -> NSString {
-        "\(maxDimension):\(source)" as NSString
+    private let lock = NSLock()
+    private let costLimit: Int
+    private var entries: [String: Entry] = [:]
+    private var access: UInt64 = 0
+    private(set) var totalCost = 0
+
+    init(costLimit: Int) {
+        self.costLimit = max(0, costLimit)
+    }
+
+    func image(forKey key: String) -> UIImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var entry = entries[key] else { return nil }
+        access &+= 1
+        entry.access = access
+        entries[key] = entry
+        return entry.image
+    }
+
+    func insert(_ image: UIImage, forKey key: String, cost: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let boundedCost = max(0, cost)
+        if let previous = entries.removeValue(forKey: key) {
+            totalCost -= previous.cost
+        }
+        guard boundedCost <= costLimit else { return }
+        access &+= 1
+        entries[key] = Entry(image: image, cost: boundedCost, access: access)
+        totalCost += boundedCost
+        while totalCost > costLimit,
+              let oldest = entries.min(by: { $0.value.access < $1.value.access })
+        {
+            entries.removeValue(forKey: oldest.key)
+            totalCost -= oldest.value.cost
+        }
+    }
+}
+
+enum RenderImageCache {
+    static let cache = RenderImageCostCache(costLimit: 64 * 1024 * 1024)
+
+    static func key(source: String, policy: ImageLoadingPolicy) -> String {
+        [
+            source,
+            String(policy.maxSourceBytes),
+            String(policy.connectTimeout.bitPattern),
+            String(policy.readTimeout.bitPattern),
+            String(policy.maxConcurrentRequests),
+            String(policy.maxPendingRequests),
+            String(policy.maxDecodeDimension),
+        ].joined(separator: "|")
+    }
+
+    static func decodedCost(_ image: UIImage) -> Int {
+        let width = image.cgImage?.width ?? Int(image.size.width * image.scale)
+        let height = image.cgImage?.height ?? Int(image.size.height * image.scale)
+        let (pixels, pixelOverflow) = width.multipliedReportingOverflow(by: height)
+        guard !pixelOverflow else { return Int.max }
+        let (bytes, byteOverflow) = pixels.multipliedReportingOverflow(by: 4)
+        return byteOverflow ? Int.max : bytes
     }
 }
 
@@ -92,6 +156,87 @@ protocol ImageDataDecoding: AnyObject {
     func decode(_ data: Data, maxDimension: Int) -> UIImage?
 }
 
+final class ImageRequestTimeoutController {
+    typealias Schedule = (TimeInterval, @escaping () -> Void) -> ImageLoadingTask
+
+    private let connectTimeout: TimeInterval
+    private let readTimeout: TimeInterval
+    private let schedule: Schedule
+    private let onTimeout: () -> Void
+    private let lock = NSLock()
+    private var timer: ImageLoadingTask?
+    private var finished = false
+
+    init(
+        connectTimeout: TimeInterval,
+        readTimeout: TimeInterval,
+        schedule: @escaping Schedule,
+        onTimeout: @escaping () -> Void
+    ) {
+        self.connectTimeout = connectTimeout
+        self.readTimeout = readTimeout
+        self.schedule = schedule
+        self.onTimeout = onTimeout
+    }
+
+    func start() {
+        arm(after: connectTimeout)
+    }
+
+    func receivedResponse() {
+        arm(after: readTimeout)
+    }
+
+    func receivedData() {
+        arm(after: readTimeout)
+    }
+
+    func cancel() {
+        lock.lock()
+        finished = true
+        let timer = self.timer
+        self.timer = nil
+        lock.unlock()
+        timer?.cancel()
+    }
+
+    private func arm(after delay: TimeInterval) {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        timer?.cancel()
+        timer = schedule(delay) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            guard !self.finished else {
+                self.lock.unlock()
+                return
+            }
+            self.finished = true
+            self.timer = nil
+            self.lock.unlock()
+            self.onTimeout()
+        }
+        lock.unlock()
+    }
+}
+
+private final class DispatchImageTimeoutTask: ImageLoadingTask {
+    private let workItem: DispatchWorkItem
+
+    init(delay: TimeInterval, action: @escaping () -> Void) {
+        let item = DispatchWorkItem(block: action)
+        workItem = item
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    func cancel() {
+        workItem.cancel()
+    }
+}
+
 private final class DefaultImageDataDecoder: ImageDataDecoding {
     func decode(_ data: Data, maxDimension: Int) -> UIImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
@@ -109,14 +254,14 @@ private final class DefaultImageDataDecoder: ImageDataDecoding {
     }
 }
 
-private final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionDataDelegate {
+final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionDataDelegate {
     private let policy: ImageLoadingPolicy
     private let completion: (Result<Data, Error>) -> Void
     private let lock = NSLock()
     private var buffer = Data()
     private var session: URLSession?
     private var task: URLSessionDataTask?
-    private var readTimeoutWorkItem: DispatchWorkItem?
+    private var timeoutController: ImageRequestTimeoutController?
     private var finished = false
 
     init(url: URL, policy: ImageLoadingPolicy, completion: @escaping (Result<Data, Error>) -> Void) {
@@ -124,14 +269,26 @@ private final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionD
         self.completion = completion
         super.init()
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = policy.readTimeout
-        configuration.timeoutIntervalForResource = policy.connectTimeout + policy.readTimeout
+        let fallbackTimeout = max(policy.connectTimeout, policy.readTimeout) * 1_000
+        configuration.timeoutIntervalForRequest = fallbackTimeout
+        configuration.timeoutIntervalForResource = fallbackTimeout
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         self.session = session
-        var request = URLRequest(url: url)
-        request.timeoutInterval = policy.connectTimeout
+        let request = URLRequest(url: url)
         let task = session.dataTask(with: request)
         self.task = task
+        let timeoutController = ImageRequestTimeoutController(
+            connectTimeout: policy.connectTimeout,
+            readTimeout: policy.readTimeout,
+            schedule: { delay, action in
+                DispatchImageTimeoutTask(delay: delay, action: action)
+            },
+            onTimeout: { [weak self] in
+                self?.finish(.failure(URLError(.timedOut)))
+            }
+        )
+        self.timeoutController = timeoutController
+        timeoutController.start()
         task.resume()
     }
 
@@ -150,13 +307,17 @@ private final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionD
             finish(.failure(URLError(.dataLengthExceedsMaximum)))
             return
         }
-        resetReadTimeout()
+        timeoutController?.receivedResponse()
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         lock.lock()
-        let exceedsLimit = buffer.count > policy.maxSourceBytes - data.count
+        let exceedsLimit = Self.wouldExceedLimit(
+            currentCount: buffer.count,
+            incomingCount: data.count,
+            maxBytes: policy.maxSourceBytes
+        )
         if !exceedsLimit {
             buffer.append(data)
         }
@@ -165,7 +326,7 @@ private final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionD
             finish(.failure(URLError(.dataLengthExceedsMaximum)))
             return
         }
-        resetReadTimeout()
+        timeoutController?.receivedData()
     }
 
     func urlSession(
@@ -183,15 +344,14 @@ private final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionD
         }
     }
 
-    private func resetReadTimeout() {
-        lock.lock()
-        readTimeoutWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            self?.finish(.failure(URLError(.timedOut)))
-        }
-        readTimeoutWorkItem = item
-        lock.unlock()
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + policy.readTimeout, execute: item)
+    static func wouldExceedLimit(
+        currentCount: Int,
+        incomingCount: Int,
+        maxBytes: Int
+    ) -> Bool {
+        guard currentCount >= 0, incomingCount >= 0, maxBytes >= 0 else { return true }
+        guard incomingCount <= maxBytes else { return true }
+        return currentCount > maxBytes - incomingCount
     }
 
     private func finish(_ result: Result<Data, Error>, deliver: Bool = true) {
@@ -201,12 +361,14 @@ private final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionD
             return
         }
         finished = true
-        readTimeoutWorkItem?.cancel()
+        let timeoutController = self.timeoutController
         let task = self.task
         let session = self.session
         self.task = nil
         self.session = nil
+        self.timeoutController = nil
         lock.unlock()
+        timeoutController?.cancel()
         task?.cancel()
         session?.invalidateAndCancel()
         if deliver {
@@ -261,7 +423,6 @@ final class RenderImageLoadOwner {
 
     private static let contextKey = "com.apollohg.editor.image-load-owner"
     private static let suppressKey = "com.apollohg.editor.suppress-image-loads"
-    static let shared = RenderImageLoadOwner(policy: .default)
 
     private let stateQueue = DispatchQueue(label: "com.apollohg.editor.image-owner-state")
     private let decodeQueue = DispatchQueue(
@@ -362,15 +523,15 @@ final class RenderImageLoadOwner {
 
     static var current: RenderImageLoadOwner? {
         guard Thread.current.threadDictionary[suppressKey] == nil else { return nil }
-        return (Thread.current.threadDictionary[contextKey] as? RenderImageLoadOwner) ?? .shared
+        return Thread.current.threadDictionary[contextKey] as? RenderImageLoadOwner
     }
 
     private func startLocked(_ request: Request) {
         let activeRequest = ActiveRequest(request: request)
         active[request.id] = activeRequest
         let policy = storedPolicy
-        let cacheKey = RenderImageCache.key(source: request.source, maxDimension: policy.maxDecodeDimension)
-        if let cached = RenderImageCache.cache.object(forKey: cacheKey) {
+        let cacheKey = RenderImageCache.key(source: request.source, policy: policy)
+        if let cached = RenderImageCache.cache.image(forKey: cacheKey) {
             finishLocked(request, image: cached)
             return
         }
@@ -420,7 +581,7 @@ final class RenderImageLoadOwner {
         }
     }
 
-    private func finish(_ request: Request, image: UIImage?, cacheKey: NSString) {
+    private func finish(_ request: Request, image: UIImage?, cacheKey: String) {
         stateQueue.async { [weak self] in
             guard let self,
                   request.generation == generation,
@@ -429,7 +590,11 @@ final class RenderImageLoadOwner {
                 return
             }
             if let image {
-                RenderImageCache.cache.setObject(image, forKey: cacheKey)
+                RenderImageCache.cache.insert(
+                    image,
+                    forKey: cacheKey,
+                    cost: RenderImageCache.decodedCost(image)
+                )
             }
             finishLocked(request, image: image)
         }
@@ -2181,11 +2346,8 @@ final class BlockImageAttachment: NSTextAttachment {
 
     private func loadImageIfNeeded() {
         guard let loadOwner else { return }
-        let cacheKey = RenderImageCache.key(
-            source: source,
-            maxDimension: loadOwner.policy.maxDecodeDimension
-        )
-        if let cached = RenderImageCache.cache.object(forKey: cacheKey) {
+        let cacheKey = RenderImageCache.key(source: source, policy: loadOwner.policy)
+        if let cached = RenderImageCache.cache.image(forKey: cacheKey) {
             loadedImage = cached
             image = cached
             return

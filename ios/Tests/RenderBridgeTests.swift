@@ -128,6 +128,122 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(transport.cancelCount, 1)
     }
 
+    func testStreamingLimitRejectsSingleChunkLargerThanMaximumWithoutUnderflow() {
+        XCTAssertTrue(
+            URLSessionImageTask.wouldExceedLimit(
+                currentCount: 0,
+                incomingCount: Int.max,
+                maxBytes: 10 * 1024 * 1024
+            )
+        )
+        XCTAssertFalse(
+            URLSessionImageTask.wouldExceedLimit(
+                currentCount: 4,
+                incomingCount: 6,
+                maxBytes: 10
+            )
+        )
+    }
+
+    func testImageTimeoutControllerSeparatesConnectAndReadIdleTimeouts() {
+        let scheduler = ManualImageTimeoutScheduler()
+        var timeoutCount = 0
+        let controller = ImageRequestTimeoutController(
+            connectTimeout: 10,
+            readTimeout: 20,
+            schedule: scheduler.schedule,
+            onTimeout: { timeoutCount += 1 }
+        )
+
+        controller.start()
+        XCTAssertEqual(scheduler.pendingDelays, [10])
+
+        controller.receivedResponse()
+        XCTAssertEqual(scheduler.pendingDelays, [20])
+        scheduler.fireCancelledTasks()
+        XCTAssertEqual(timeoutCount, 0)
+
+        controller.receivedData()
+        XCTAssertEqual(scheduler.pendingDelays, [20])
+        scheduler.fireNext()
+        XCTAssertEqual(timeoutCount, 1)
+    }
+
+    func testImageCacheEvictsLeastRecentlyUsedEntriesByDecodedCost() {
+        let cache = RenderImageCostCache(costLimit: 10)
+        let image = onePixelImage()
+
+        cache.insert(image, forKey: "one", cost: 6)
+        cache.insert(image, forKey: "two", cost: 3)
+        XCTAssertNotNil(cache.image(forKey: "one"))
+        cache.insert(image, forKey: "three", cost: 6)
+
+        XCTAssertNil(cache.image(forKey: "one"))
+        XCTAssertNil(cache.image(forKey: "two"))
+        XCTAssertNotNil(cache.image(forKey: "three"))
+        XCTAssertLessThanOrEqual(cache.totalCost, 10)
+    }
+
+    func testImageCacheKeyIncludesEveryPolicyLimit() {
+        let source = "https://example.com/image.png"
+        let baseline = imagePolicy()
+        let baselineKey = RenderImageCache.key(source: source, policy: baseline)
+        let variants = [
+            imagePolicy(maxSourceBytes: baseline.maxSourceBytes + 1),
+            imagePolicy(connectTimeout: baseline.connectTimeout + 1),
+            imagePolicy(readTimeout: baseline.readTimeout + 1),
+            imagePolicy(maxConcurrentRequests: baseline.maxConcurrentRequests + 1),
+            imagePolicy(maxPendingRequests: baseline.maxPendingRequests + 1),
+            imagePolicy(maxDecodeDimension: baseline.maxDecodeDimension + 1),
+        ]
+
+        for variant in variants {
+            XCTAssertNotEqual(RenderImageCache.key(source: source, policy: variant), baselineKey)
+        }
+    }
+
+    func testEditorTextViewsKeepConfiguredImageOwnersAcrossInternalRenders() {
+        let firstTransport = HoldingImageTransport()
+        let secondTransport = HoldingImageTransport()
+        let firstOwner = RenderImageLoadOwner(
+            policy: imagePolicy(maxSourceBytes: 111),
+            transport: firstTransport
+        )
+        let secondOwner = RenderImageLoadOwner(
+            policy: imagePolicy(maxSourceBytes: 222),
+            transport: secondTransport
+        )
+        let first = EditorTextView(frame: .zero, textContainer: nil)
+        let second = EditorTextView(frame: .zero, textContainer: nil)
+        first.imageLoadOwner = firstOwner
+        second.imageLoadOwner = secondOwner
+
+        first.applyRenderJSON(imageRenderJSON(source: "https://example.com/first.png"))
+        second.applyRenderJSON(imageRenderJSON(source: "https://example.com/second.png"))
+
+        XCTAssertEqual(firstTransport.receivedPolicies.map(\.maxSourceBytes), [111])
+        XCTAssertEqual(secondTransport.receivedPolicies.map(\.maxSourceBytes), [222])
+    }
+
+    func testNativeEditKeepsUsingConfiguredImagePolicyForLaterInternalRenders() {
+        let transport = HoldingImageTransport()
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(maxSourceBytes: 333),
+            transport: transport
+        )
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+        let textView = EditorTextView(frame: .zero, textContainer: nil)
+        textView.imageLoadOwner = owner
+        textView.bindEditor(id: editorId)
+
+        textView.insertText("A")
+        textView.applyRenderJSON(imageRenderJSON(source: "https://example.com/after-edit.png"))
+
+        XCTAssertTrue(textView.imageLoadOwner === owner)
+        XCTAssertEqual(transport.receivedPolicies.map(\.maxSourceBytes), [333])
+    }
+
     func testDataURLDecodeRunsOffMainAndDeliversOnMain() {
         let decoder = RecordingImageDecoder(image: onePixelImage())
         let owner = RenderImageLoadOwner(
@@ -2600,6 +2716,56 @@ private func onePixelImage() -> UIImage {
     }
 }
 
+private func imageRenderJSON(source: String) -> String {
+    """
+    [{"type":"voidBlock","nodeType":"image","docPos":1,"attrs":{"src":"\(source)"}}]
+    """
+}
+
+private final class ManualImageTimeoutScheduler {
+    private final class ScheduledTask: ImageLoadingTask {
+        let delay: TimeInterval
+        let action: () -> Void
+        var cancelled = false
+
+        init(delay: TimeInterval, action: @escaping () -> Void) {
+            self.delay = delay
+            self.action = action
+        }
+
+        func cancel() {
+            cancelled = true
+        }
+    }
+
+    private var tasks: [ScheduledTask] = []
+
+    var pendingDelays: [TimeInterval] {
+        tasks.filter { !$0.cancelled }.map(\.delay)
+    }
+
+    lazy var schedule: (TimeInterval, @escaping () -> Void) -> ImageLoadingTask = {
+        [weak self] delay, action in
+        let task = ScheduledTask(delay: delay, action: action)
+        self?.tasks.append(task)
+        return task
+    }
+
+    func fireCancelledTasks() {
+        let cancelled = tasks.filter(\.cancelled)
+        tasks.removeAll(where: \.cancelled)
+        cancelled.forEach { task in
+            if !task.cancelled { task.action() }
+        }
+    }
+
+    func fireNext() {
+        guard let index = tasks.firstIndex(where: { !$0.cancelled }) else { return }
+        let task = tasks.remove(at: index)
+        task.action()
+    }
+}
+
 private final class RecordingImageDecoder: ImageDataDecoding {
     private let lock = NSLock()
     private let result: UIImage?
@@ -2655,6 +2821,7 @@ private final class HoldingImageTransport: ImageLoadingTransport {
     private var completions: [(Result<Data, Error>) -> Void] = []
     private(set) var requestCount = 0
     private(set) var cancelCount = 0
+    private(set) var receivedPolicies: [ImageLoadingPolicy] = []
 
     func load(
         _ url: URL,
@@ -2663,6 +2830,7 @@ private final class HoldingImageTransport: ImageLoadingTransport {
     ) -> ImageLoadingTask {
         lock.lock()
         requestCount += 1
+        receivedPolicies.append(policy)
         completions.append(completion)
         lock.unlock()
         return TestImageLoadingTask { [weak self] in
