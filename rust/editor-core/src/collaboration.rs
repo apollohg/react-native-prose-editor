@@ -17,8 +17,8 @@ use yrs::types::{Attrs, ToJson};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
 use yrs::{
-    Assoc, Doc, GetString, ReadTxn, StateVector, StickyIndex, Transact, TransactionMut, Update,
-    WriteTxn,
+    Assoc, Doc, GetString, OffsetKind, Options, ReadTxn, StateVector, StickyIndex, Transact,
+    TransactionMut, Update, WriteTxn,
 };
 
 use crate::schema::presets::{prosemirror_schema, tiptap_schema};
@@ -127,11 +127,11 @@ impl CollaborationSession {
     pub fn new(config_json: &str) -> Self {
         let config: Value = serde_json::from_str(config_json).unwrap_or_else(|_| json!({}));
         let client_id = config.get("clientId").and_then(Value::as_u64);
-        let doc = if let Some(client_id) = client_id {
-            Doc::with_client_id(client_id)
-        } else {
-            Doc::new()
-        };
+        let mut doc_options = client_id
+            .map(Options::with_client_id)
+            .unwrap_or_default();
+        doc_options.offset_kind = OffsetKind::Utf16;
+        let doc = Doc::with_options(doc_options);
         let awareness = Awareness::new(doc.clone());
         let fragment_name = config
             .get("fragmentName")
@@ -394,7 +394,9 @@ impl CollaborationSession {
 
     fn reset_shared_state(&mut self) {
         let client_id = self.doc.client_id();
-        self.doc = Doc::with_client_id(client_id);
+        let mut options = Options::with_client_id(client_id);
+        options.offset_kind = OffsetKind::Utf16;
+        self.doc = Doc::with_options(options);
         self.awareness = Awareness::new(self.doc.clone());
         if let Some(local_awareness_state) = self.local_awareness_state.clone() {
             let _ = self.awareness.set_local_state(&local_awareness_state);
@@ -608,10 +610,9 @@ fn sticky_index_to_doc_pos_in_node<T: ReadTxn>(
         XmlOut::Text(text) => {
             let text_branch = BranchPtr::from(<XmlTextRef as AsRef<Branch>>::as_ref(text));
             if text_branch == target_branch {
-                let text_len = text.get_string(txn).chars().count() as u32;
-                if target_index <= text_len {
-                    return Some(node_start + target_index);
-                }
+                let text_value = text.get_string(txn);
+                let scalar_offset = utf16_offset_to_scalar(&text_value, target_index)?;
+                return Some(node_start + scalar_offset);
             }
             None
         }
@@ -688,12 +689,16 @@ fn sequence_branch_index_to_doc_pos<'a, T: ReadTxn>(
     for child in children {
         match &child {
             XmlOut::Text(text) => {
-                let text_len = text.get_string(txn).chars().count() as u32;
-                if target_index <= branch_index + text_len {
-                    return Some(doc_pos + (target_index - branch_index));
+                let text_value = text.get_string(txn);
+                let text_utf16_len = utf16_len(&text_value);
+                let text_scalar_len = scalar_len(&text_value);
+                if target_index <= branch_index + text_utf16_len {
+                    let scalar_offset =
+                        utf16_offset_to_scalar(&text_value, target_index - branch_index)?;
+                    return Some(doc_pos + scalar_offset);
                 }
-                branch_index += text_len;
-                doc_pos += text_len;
+                branch_index += text_utf16_len;
+                doc_pos += text_scalar_len;
             }
             XmlOut::Element(_) | XmlOut::Fragment(_) => {
                 if target_index == branch_index {
@@ -766,17 +771,20 @@ fn doc_pos_to_sticky_index_in_sequence<'a, T: ReadTxn>(
     for child in children {
         match &child {
             XmlOut::Text(text) => {
-                let text_len = text.get_string(txn).chars().count() as u32;
-                if doc_pos <= consumed_pm + text_len {
+                let text_value = text.get_string(txn);
+                let text_scalar_len = scalar_len(&text_value);
+                if doc_pos <= consumed_pm + text_scalar_len {
+                    let utf16_offset =
+                        scalar_offset_to_utf16(&text_value, doc_pos - consumed_pm)?;
                     return StickyIndex::at(
                         txn,
                         BranchPtr::from(<XmlTextRef as AsRef<Branch>>::as_ref(text)),
-                        doc_pos - consumed_pm,
+                        utf16_offset,
                         assoc,
                     );
                 }
-                branch_index += text_len;
-                consumed_pm += text_len;
+                branch_index += utf16_len(&text_value);
+                consumed_pm += text_scalar_len;
             }
             XmlOut::Element(element) => {
                 let child_size = xml_out_pm_size(txn, &child, void_element_tags);
@@ -892,6 +900,49 @@ fn xml_out_pm_size<T: ReadTxn>(txn: &T, node: &XmlOut, void_element_tags: &HashS
             .map(|child| xml_out_pm_size(txn, &child, void_element_tags))
             .sum(),
     }
+}
+
+fn scalar_len(value: &str) -> u32 {
+    value.chars().count() as u32
+}
+
+fn utf16_len(value: &str) -> u32 {
+    value.encode_utf16().count() as u32
+}
+
+fn scalar_offset_to_utf16(value: &str, scalar_offset: u32) -> Option<u32> {
+    let mut scalar_count = 0u32;
+    let mut utf16_count = 0u32;
+    if scalar_offset == 0 {
+        return Some(0);
+    }
+    for character in value.chars() {
+        scalar_count += 1;
+        utf16_count += character.len_utf16() as u32;
+        if scalar_count == scalar_offset {
+            return Some(utf16_count);
+        }
+    }
+    None
+}
+
+fn utf16_offset_to_scalar(value: &str, utf16_offset: u32) -> Option<u32> {
+    let mut scalar_count = 0u32;
+    let mut utf16_count = 0u32;
+    if utf16_offset == 0 {
+        return Some(0);
+    }
+    for character in value.chars() {
+        scalar_count += 1;
+        utf16_count += character.len_utf16() as u32;
+        if utf16_count == utf16_offset {
+            return Some(scalar_count);
+        }
+        if utf16_count > utf16_offset {
+            return None;
+        }
+    }
+    None
 }
 
 #[derive(Clone, Copy)]
@@ -1150,14 +1201,15 @@ fn apply_text_node(
     }
 
     let (prefix, old_suffix, new_suffix) = shared_text_bounds(old_text, new_text);
-    let remove_len = old_text[prefix..old_suffix].len() as u32;
+    let prefix_utf16 = utf16_len(&old_text[..prefix]);
+    let remove_len = utf16_len(&old_text[prefix..old_suffix]);
     if remove_len > 0 {
-        text.remove_range(txn, prefix as u32, remove_len);
+        text.remove_range(txn, prefix_utf16, remove_len);
     }
 
     let insert_text = &new_text[prefix..new_suffix];
     if !insert_text.is_empty() {
-        text.insert_with_attributes(txn, prefix as u32, insert_text, marks_to_attrs(&new_marks));
+        text.insert_with_attributes(txn, prefix_utf16, insert_text, marks_to_attrs(&new_marks));
     }
 }
 
@@ -2146,6 +2198,79 @@ mod tests {
                 "anchor": 2,
                 "head": 4
             }))
+        );
+    }
+
+    #[test]
+    fn collaboration_session_maps_standard_utf16_cursor_after_emoji_to_scalar_position() {
+        let mut session = CollaborationSession::new(
+            &json!({
+                "clientId": 1,
+                "fragmentName": "default"
+            })
+            .to_string(),
+        );
+        let mut peer_options = yrs::Options::with_client_id(2);
+        peer_options.offset_kind = yrs::OffsetKind::Utf16;
+        let mut peer = Awareness::new(Doc::with_options(peer_options));
+
+        let update = {
+            let mut txn = peer.doc_mut().transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("default");
+            insert_json_node(
+                &fragment,
+                &mut txn,
+                0,
+                &json!({
+                    "type": "paragraph",
+                    "content": [{ "type": "text", "text": "a😀b" }]
+                }),
+            );
+            txn.encode_update_v1()
+        };
+        session
+            .handle_message(encode_message(Message::Sync(SyncMessage::Update(update))))
+            .expect("session should accept UTF-16 peer document");
+
+        let cursor = {
+            let txn = peer.doc().transact();
+            let fragment = txn
+                .get_xml_fragment("default")
+                .expect("peer fragment should exist");
+            let XmlOut::Element(paragraph) = fragment.get(&txn, 0).expect("paragraph should exist")
+            else {
+                panic!("expected paragraph element");
+            };
+            let XmlOut::Text(text) = paragraph.get(&txn, 0).expect("text node should exist") else {
+                panic!("expected paragraph text");
+            };
+            json!({
+                "anchor": text.sticky_index(&txn, 3, Assoc::Before).expect("anchor sticky index"),
+                "head": text.sticky_index(&txn, 3, Assoc::Before).expect("head sticky index"),
+            })
+        };
+        peer.set_local_state(json!({
+            "user": { "name": "Peer" },
+            "cursor": cursor,
+            "focused": true
+        }))
+        .expect("peer awareness should update");
+
+        let result = session
+            .handle_message(encode_message(Message::Awareness(
+                peer.update().expect("peer awareness update"),
+            )))
+            .expect("session should accept peer awareness");
+        let remote_peer = result
+            .peers
+            .expect("peer update should include peers")
+            .into_iter()
+            .find(|peer| peer.client_id == 2)
+            .expect("remote peer should exist");
+
+        assert_eq!(
+            remote_peer.state.get("selection"),
+            Some(&json!({ "anchor": 3, "head": 3 }))
         );
     }
 

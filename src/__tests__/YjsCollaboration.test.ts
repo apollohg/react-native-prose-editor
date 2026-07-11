@@ -1168,12 +1168,9 @@ describe('YjsCollaboration', () => {
         );
     });
 
-    it('uses initial document JSON as a local fallback without seeding the Yjs session', () => {
+    it('seeds the native Yjs session from initial document JSON', () => {
         mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValue(
-            JSON.stringify({
-                type: 'doc',
-                content: [{ type: 'paragraph' }],
-            })
+            JSON.stringify(INITIAL_DOC)
         );
 
         const controller = createYjsCollaborationController({
@@ -1191,6 +1188,7 @@ describe('YjsCollaboration', () => {
         expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
             JSON.stringify({
                 fragmentName: 'default',
+                initialDocumentJson: INITIAL_DOC,
                 localAwareness: {
                     user: {
                         userId: '1',
@@ -1202,6 +1200,77 @@ describe('YjsCollaboration', () => {
             })
         );
         expect(controller.state.documentJson).toEqual(INITIAL_DOC);
+
+        controller.destroy();
+    });
+
+    it('uses the native encoded-state document when both initial sources are provided', () => {
+        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValue(
+            JSON.stringify(REMOTE_DOC)
+        );
+
+        const controller = createYjsCollaborationController({
+            documentId: 'doc-encoded-wins',
+            connect: false,
+            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            initialDocumentJson: INITIAL_DOC,
+            initialEncodedState: Uint8Array.from([4, 5, 6]),
+            localAwareness: {
+                userId: '1',
+                name: 'Alice',
+                color: '#f00',
+            },
+        });
+
+        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
+            JSON.stringify({
+                fragmentName: 'default',
+                initialDocumentJson: INITIAL_DOC,
+                localAwareness: {
+                    user: {
+                        userId: '1',
+                        name: 'Alice',
+                        color: '#f00',
+                    },
+                    focused: false,
+                },
+            })
+        );
+        expect(controller.state.documentJson).toEqual(REMOTE_DOC);
+
+        controller.destroy();
+    });
+
+    it('turns native start failures into transport errors instead of throwing from onopen', () => {
+        const sockets: MockWebSocket[] = [];
+        const onError = jest.fn();
+        mockNativeModule.collaborationSessionStart.mockReturnValueOnce(
+            JSON.stringify({ error: 'start failed' })
+        );
+        const controller = createYjsCollaborationController({
+            documentId: 'doc-start-failure',
+            connect: false,
+            retryIntervalMs: false,
+            createWebSocket: () => {
+                const socket = new MockWebSocket();
+                sockets.push(socket);
+                return socket as unknown as WebSocket;
+            },
+            initialDocumentJson: INITIAL_DOC,
+            localAwareness: {
+                userId: '1',
+                name: 'Alice',
+                color: '#f00',
+            },
+            onError,
+        });
+
+        controller.connect();
+        expect(() => sockets[0].open()).not.toThrow();
+        expect(controller.state.status).toBe('error');
+        expect(controller.state.isConnected).toBe(false);
+        expect(controller.state.lastError?.message).toBe('NativeEditorBridge: start failed');
+        expect(onError).toHaveBeenCalledTimes(1);
 
         controller.destroy();
     });

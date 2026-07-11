@@ -408,15 +408,14 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.bridge = NativeCollaborationBridge.create({
             fragmentName: options.fragmentName ?? DEFAULT_YJS_FRAGMENT_NAME,
             schema: options.schema,
+            initialDocumentJson: options.initialDocumentJson,
             initialEncodedState: options.initialEncodedState,
             localAwareness: awarenessToRecord(this.localAwarenessState),
         });
         const nativeDocumentJson = this.bridge.getDocumentJson();
         this._peers = this.bridge.getPeers();
         let initialDocumentJson: DocumentJSON;
-        if (options.initialDocumentJson != null) {
-            initialDocumentJson = cloneJsonValue(options.initialDocumentJson);
-        } else if (shouldUseFallbackForNativeDocument(nativeDocumentJson, options)) {
+        if (shouldUseFallbackForNativeDocument(nativeDocumentJson, options)) {
             initialDocumentJson = defaultEmptyDocument(options.schema);
         } else {
             initialDocumentJson = nativeDocumentJson;
@@ -486,16 +485,25 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
 
         socket.onopen = () => {
             if (this.destroyed || this.socket !== socket) return;
-            this.retryAttempt = 0;
-            this.cancelRetry();
-            this.setState({
-                status: 'connected',
-                isConnected: true,
-                lastError: undefined,
-            });
-            const result = this.bridge.start();
-            this.applyResult(result);
-            sendBinaryMessages(socket, result.messages);
+            try {
+                const result = this.bridge.start();
+                this.retryAttempt = 0;
+                this.cancelRetry();
+                this.applyResult(result);
+                this.setState({
+                    status: 'connected',
+                    isConnected: true,
+                    lastError: undefined,
+                });
+                sendBinaryMessages(socket, result.messages);
+            } catch (error) {
+                this.handleTransportFailure(
+                    error instanceof Error
+                        ? error
+                        : new Error('Yjs collaboration protocol error'),
+                    socket
+                );
+            }
         };
 
         socket.onmessage = (event) => {
