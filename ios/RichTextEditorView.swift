@@ -814,6 +814,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         return imageLoadOwner.withCurrent(body)
     }
 
+    func imageLoadingPolicyDidChange() {
+        renderAppearanceRevision &+= 1
+    }
+
     override var undoManager: UndoManager? { nil }
 
     struct ApplyUpdateTrace {
@@ -5653,6 +5657,7 @@ final class RichTextEditorView: UIView {
             guard textView.imageLoadOwner !== newValue else { return }
             textView.imageLoadOwner?.cancelAll()
             textView.imageLoadOwner = newValue
+            textView.imageLoadingPolicyDidChange()
         }
     }
     private let remoteSelectionOverlayView = RemoteSelectionOverlayView()

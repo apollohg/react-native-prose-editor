@@ -244,6 +244,94 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(transport.receivedPolicies.map(\.maxSourceBytes), [333])
     }
 
+    func testPolicyChangeForcesUnchangedEditorStateToRebuildImageAttachments() {
+        let transport = HoldingImageTransport()
+        let owner = RenderImageLoadOwner(policy: imagePolicy(maxDecodeDimension: 2_048), transport: transport)
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+        _ = editorSetJson(
+            id: editorId,
+            json: #"{"type":"doc","content":[{"type":"image","attrs":{"src":"https://example.com/policy.png"}}]}"#
+        )
+        let state = editorGetCurrentState(id: editorId)
+        let textView = EditorTextView(frame: .zero, textContainer: nil)
+        textView.imageLoadOwner = owner
+        textView.applyUpdateJSON(state, notifyDelegate: false)
+        XCTAssertEqual(transport.requestCount, 1)
+
+        owner.updatePolicy(imagePolicy(maxDecodeDimension: 512))
+        textView.imageLoadingPolicyDidChange()
+        textView.applyUpdateJSON(state, notifyDelegate: false)
+
+        XCTAssertEqual(transport.requestCount, 2)
+        XCTAssertEqual(transport.receivedPolicies.map(\.maxDecodeDimension), [2_048, 512])
+    }
+
+    func testQueuedDeliveryRevalidatesGenerationAfterCancellation() {
+        let delivery = ManualImageDeliveryScheduler()
+        let transport = ImmediateImageTransport(result: .success(Data([1])))
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(),
+            transport: transport,
+            decoder: RecordingImageDecoder(image: onePixelImage()),
+            deliver: delivery.schedule
+        )
+        let completion = expectation(description: "stale delivery")
+        completion.isInverted = true
+
+        XCTAssertTrue(owner.loadImage(source: "https://example.com/stale.png") { _ in
+            completion.fulfill()
+        })
+        XCTAssertTrue(delivery.waitUntilScheduled(timeout: 1))
+        owner.cancelAll()
+        delivery.runAll()
+
+        wait(for: [completion], timeout: 0.05)
+    }
+
+    func testCancelledDecodeStillOccupiesConcurrencyUntilClosureExits() {
+        let decoder = BlockingImageDecoder(image: onePixelImage())
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(maxConcurrentRequests: 1, maxPendingRequests: 4),
+            transport: HoldingImageTransport(),
+            decoder: decoder
+        )
+
+        XCTAssertTrue(owner.loadImage(source: "data:image/png;base64,AQ==") { _ in })
+        XCTAssertTrue(decoder.waitForDecodeCount(1, timeout: 1))
+        owner.cancelAll()
+        XCTAssertTrue(owner.loadImage(source: "data:image/png;base64,Ag==") { _ in })
+
+        XCTAssertEqual(decoder.decodeCount, 1)
+        XCTAssertEqual(decoder.maximumConcurrentDecodes, 1)
+        decoder.releaseNext()
+        XCTAssertTrue(decoder.waitForDecodeCount(2, timeout: 1))
+        XCTAssertEqual(decoder.maximumConcurrentDecodes, 1)
+        decoder.releaseNext()
+    }
+
+    func testDataURLSizeScanAvoidsAllocationAndOverflowArithmetic() {
+        XCTAssertEqual(
+            RenderImageLoadOwner.decodedDataURLByteCount(
+                "data:image/png;base64, A Q I D \n",
+                maxBytes: 3
+            ),
+            3
+        )
+        XCTAssertNil(
+            RenderImageLoadOwner.decodedDataURLByteCount(
+                "data:image/png;base64,AQIDBA==",
+                maxBytes: 3
+            )
+        )
+        XCTAssertNil(
+            RenderImageLoadOwner.decodedDataURLByteCount(
+                "data:image/png;base64,AQ==",
+                maxBytes: -1
+            )
+        )
+    }
+
     func testDataURLDecodeRunsOffMainAndDeliversOnMain() {
         let decoder = RecordingImageDecoder(image: onePixelImage())
         let owner = RenderImageLoadOwner(
@@ -2763,6 +2851,84 @@ private final class ManualImageTimeoutScheduler {
         guard let index = tasks.firstIndex(where: { !$0.cancelled }) else { return }
         let task = tasks.remove(at: index)
         task.action()
+    }
+}
+
+private final class ManualImageDeliveryScheduler {
+    private let condition = NSCondition()
+    private var actions: [() -> Void] = []
+
+    lazy var schedule: (@escaping () -> Void) -> Void = { [weak self] action in
+        guard let self else { return }
+        condition.lock()
+        actions.append(action)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func waitUntilScheduled(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while actions.isEmpty {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
+    }
+
+    func runAll() {
+        condition.lock()
+        let pending = actions
+        actions.removeAll()
+        condition.unlock()
+        pending.forEach { $0() }
+    }
+}
+
+private final class BlockingImageDecoder: ImageDataDecoding {
+    private let condition = NSCondition()
+    private let result: UIImage?
+    private var permits = 0
+    private var concurrentDecodes = 0
+    private(set) var decodeCount = 0
+    private(set) var maximumConcurrentDecodes = 0
+
+    init(image: UIImage?) {
+        result = image
+    }
+
+    func decode(_ data: Data, maxDimension: Int) -> UIImage? {
+        condition.lock()
+        decodeCount += 1
+        concurrentDecodes += 1
+        maximumConcurrentDecodes = max(maximumConcurrentDecodes, concurrentDecodes)
+        condition.broadcast()
+        while permits == 0 {
+            condition.unlock()
+            Thread.sleep(forTimeInterval: 0.001)
+            condition.lock()
+        }
+        permits -= 1
+        concurrentDecodes -= 1
+        condition.unlock()
+        return result
+    }
+
+    func waitForDecodeCount(_ expected: Int, timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while decodeCount < expected {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
+    }
+
+    func releaseNext() {
+        condition.lock()
+        permits += 1
+        condition.broadcast()
+        condition.unlock()
     }
 }
 

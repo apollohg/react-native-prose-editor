@@ -2441,6 +2441,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         let policy = ImageLoadingPolicy.from(json: json)
         guard policy != imageLoadOwner.policy else { return }
         imageLoadOwner.updatePolicy(policy)
+        richTextView.textView.imageLoadingPolicyDidChange()
         guard richTextView.editorId != 0 else { return }
         imageLoadOwner.withCurrent {
             richTextView.textView.applyUpdateJSON(

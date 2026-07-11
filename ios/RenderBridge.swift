@@ -388,6 +388,7 @@ private final class URLSessionImageTransport: ImageLoadingTransport {
 }
 
 final class RenderImageLoadOwner {
+    typealias Delivery = (@escaping () -> Void) -> Void
     final class ImageLoadReceipt {
         private let lock = NSLock()
         private var cancellation: (() -> Void)?
@@ -432,19 +433,24 @@ final class RenderImageLoadOwner {
     )
     private let transport: ImageLoadingTransport
     private let decoder: ImageDataDecoding
+    private let deliver: Delivery
     private var storedPolicy: ImageLoadingPolicy
     private var generation: UInt64 = 0
     private var pending: [Request] = []
     private var active: [UUID: ActiveRequest] = [:]
+    private var decodeWorkIds = Set<UUID>()
+    private var deliveryQueuedIds = Set<UUID>()
 
     init(
         policy: ImageLoadingPolicy,
         transport: ImageLoadingTransport = URLSessionImageTransport(),
-        decoder: ImageDataDecoding = DefaultImageDataDecoder()
+        decoder: ImageDataDecoding = DefaultImageDataDecoder(),
+        deliver: @escaping Delivery = { action in DispatchQueue.main.async(execute: action) }
     ) {
         storedPolicy = policy
         self.transport = transport
         self.decoder = decoder
+        self.deliver = deliver
     }
 
     var policy: ImageLoadingPolicy {
@@ -475,7 +481,7 @@ final class RenderImageLoadOwner {
                 generation: generation,
                 completion: completion
             )
-            if active.count >= storedPolicy.maxConcurrentRequests {
+            if occupiedWorkCountLocked >= storedPolicy.maxConcurrentRequests {
                 guard pending.count < storedPolicy.maxPendingRequests else { return nil }
                 pending.append(request)
                 return request
@@ -537,17 +543,21 @@ final class RenderImageLoadOwner {
         }
 
         if Self.isDataURL(request.source) {
-            guard Self.estimatedDecodedByteCount(request.source) <= policy.maxSourceBytes else {
+            guard Self.decodedDataURLByteCount(
+                request.source,
+                maxBytes: policy.maxSourceBytes
+            ) != nil else {
                 finishLocked(request, image: nil)
                 return
             }
+            decodeWorkIds.insert(request.id)
             decodeQueue.async { [weak self] in
                 guard let self else { return }
                 let data = Self.decodeDataURL(request.source, maxBytes: policy.maxSourceBytes)
                 let image = data.flatMap {
                     self.decoder.decode($0, maxDimension: policy.maxDecodeDimension)
                 }
-                self.finish(request, image: image, cacheKey: cacheKey)
+                self.finishDecode(request, image: image, cacheKey: cacheKey)
             }
             return
         }
@@ -567,6 +577,7 @@ final class RenderImageLoadOwner {
                 else {
                     return
                 }
+                self.decodeWorkIds.insert(request.id)
                 self.decodeQueue.async {
                     let image: UIImage?
                     switch result {
@@ -575,43 +586,66 @@ final class RenderImageLoadOwner {
                     default:
                         image = nil
                     }
-                    self.finish(request, image: image, cacheKey: cacheKey)
+                    self.finishDecode(request, image: image, cacheKey: cacheKey)
                 }
             }
         }
     }
 
-    private func finish(_ request: Request, image: UIImage?, cacheKey: String) {
+    private func finishDecode(_ request: Request, image: UIImage?, cacheKey: String) {
         stateQueue.async { [weak self] in
-            guard let self,
-                  request.generation == generation,
-                  active[request.id] != nil
-            else {
-                return
-            }
-            if let image {
+            guard let self else { return }
+            decodeWorkIds.remove(request.id)
+            if request.generation == generation,
+               active[request.id] != nil,
+               let image
+            {
                 RenderImageCache.cache.insert(
                     image,
                     forKey: cacheKey,
                     cost: RenderImageCache.decodedCost(image)
                 )
             }
-            finishLocked(request, image: image)
+            if request.generation == generation, active[request.id] != nil {
+                finishLocked(request, image: image)
+            } else {
+                drainLocked()
+            }
         }
     }
 
     private func finishLocked(_ request: Request, image: UIImage?) {
-        guard request.generation == generation, active.removeValue(forKey: request.id) != nil else {
+        guard request.generation == generation,
+              active[request.id] != nil,
+              deliveryQueuedIds.insert(request.id).inserted
+        else {
             return
         }
-        DispatchQueue.main.async { request.completion(image) }
-        drainLocked()
+        deliver { [weak self] in
+            guard let self else { return }
+            let shouldDeliver = stateQueue.sync {
+                guard request.generation == self.generation,
+                      self.active.removeValue(forKey: request.id) != nil,
+                      self.deliveryQueuedIds.remove(request.id) != nil
+                else {
+                    return false
+                }
+                self.drainLocked()
+                return true
+            }
+            guard shouldDeliver else { return }
+            request.completion(image)
+        }
     }
 
     private func drainLocked() {
-        while active.count < storedPolicy.maxConcurrentRequests, !pending.isEmpty {
+        while occupiedWorkCountLocked < storedPolicy.maxConcurrentRequests, !pending.isEmpty {
             startLocked(pending.removeFirst())
         }
+    }
+
+    private var occupiedWorkCountLocked: Int {
+        Set(active.keys).union(decodeWorkIds).count
     }
 
     private func cancelAllLocked() {
@@ -619,6 +653,7 @@ final class RenderImageLoadOwner {
         let tasks = active.values.compactMap(\.task)
         active.removeAll()
         pending.removeAll()
+        deliveryQueuedIds.removeAll()
         tasks.forEach { $0.cancel() }
     }
 
@@ -630,25 +665,55 @@ final class RenderImageLoadOwner {
                 return
             }
             guard let activeRequest = active.removeValue(forKey: request.id) else { return }
+            deliveryQueuedIds.remove(request.id)
             activeRequest.task?.cancel()
             drainLocked()
         }
     }
 
     private static func isDataURL(_ source: String) -> Bool {
-        source.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased().hasPrefix("data:image/")
+        let trimmed = source.drop(while: { $0.isWhitespace })
+        return trimmed.prefix("data:image/".count).lowercased() == "data:image/"
     }
 
-    private static func estimatedDecodedByteCount(_ source: String) -> Int {
-        guard let comma = source.firstIndex(of: ",") else { return .max }
-        let payload = source[source.index(after: comma)...]
-        let characters = payload.filter { !$0.isWhitespace }
-        guard !characters.isEmpty else { return 0 }
-        let padding = characters.suffix(2).reduce(into: 0) { count, character in
-            if character == "=" { count += 1 }
+    static func decodedDataURLByteCount(_ source: String, maxBytes: Int) -> Int? {
+        guard maxBytes >= 0, let comma = source.firstIndex(of: ",") else { return nil }
+        let completeGroups = maxBytes / 3
+        let maxSymbols: Int
+        let (groupSymbols, overflow) = completeGroups.multipliedReportingOverflow(by: 4)
+        if overflow {
+            maxSymbols = Int.max
+        } else if maxBytes % 3 == 0 {
+            maxSymbols = groupSymbols
+        } else {
+            let (symbols, additionOverflow) = groupSymbols.addingReportingOverflow(4)
+            maxSymbols = additionOverflow ? Int.max : symbols
         }
-        return ((characters.count + 3) / 4) * 3 - padding
+
+        var symbolCount = 0
+        var trailingPadding = 0
+        for character in source[source.index(after: comma)...] {
+            guard !character.isWhitespace else { continue }
+            let (nextCount, countOverflow) = symbolCount.addingReportingOverflow(1)
+            guard !countOverflow, nextCount <= maxSymbols else { return nil }
+            symbolCount = nextCount
+            if character == "=" {
+                guard trailingPadding < 2 else { return nil }
+                trailingPadding += 1
+            } else {
+                trailingPadding = 0
+            }
+        }
+        guard trailingPadding <= 2 else { return nil }
+        let groups = symbolCount / 4
+        let remainder = symbolCount % 4
+        let (groupBytes, byteOverflow) = groups.multipliedReportingOverflow(by: 3)
+        guard !byteOverflow else { return nil }
+        let remainderBytes = remainder == 0 ? 0 : max(0, remainder - 1)
+        let (bytesBeforePadding, additionOverflow) = groupBytes.addingReportingOverflow(remainderBytes)
+        guard !additionOverflow, trailingPadding <= bytesBeforePadding else { return nil }
+        let bytes = bytesBeforePadding - trailingPadding
+        return bytes <= maxBytes ? bytes : nil
     }
 
     private static func decodeDataURL(_ source: String, maxBytes: Int) -> Data? {
