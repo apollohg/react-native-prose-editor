@@ -289,35 +289,34 @@ final class RenderBridgeTests: XCTestCase {
         wait(for: [completion], timeout: 0.05)
     }
 
-    func testCancelAllWaitsForValidatedCompletionBeforeReturning() {
-        let delivery = ManualImageDeliveryScheduler()
-        let gate = BlockingCompletionGate()
-        let cancelReturned = LockedBoolean()
-        let owner = RenderImageLoadOwner(
-            policy: imagePolicy(),
-            transport: ImmediateImageTransport(result: .success(Data([1]))),
-            decoder: RecordingImageDecoder(image: onePixelImage()),
-            deliver: delivery.schedule
-        )
+    func testCompletionCanSynchronouslyWaitForCrossThreadCancellationOperations() {
+        enum Operation: CaseIterable { case cancelAll, updatePolicy, cancelReceipt }
 
-        XCTAssertTrue(owner.loadImage(source: "https://example.com/interleaving.png") { _ in
-            gate.beginAndWait()
-        })
-        XCTAssertTrue(delivery.waitUntilScheduled(timeout: 1))
-        DispatchQueue.global(qos: .userInitiated).async {
+        for operation in Operation.allCases {
+            let delivery = ManualImageDeliveryScheduler()
+            var owner: RenderImageLoadOwner!
+            var receipt: RenderImageLoadOwner.ImageLoadReceipt?
+            owner = RenderImageLoadOwner(
+                policy: imagePolicy(),
+                transport: ImmediateImageTransport(result: .success(Data([1]))),
+                decoder: RecordingImageDecoder(image: onePixelImage()),
+                deliver: delivery.schedule
+            )
+            receipt = owner.startImageLoad(source: "https://example.com/interleaving-\(operation).png") { _ in
+                let finished = DispatchSemaphore(value: 0)
+                DispatchQueue.global(qos: .userInitiated).async {
+                    switch operation {
+                    case .cancelAll: owner.cancelAll()
+                    case .updatePolicy: owner.updatePolicy(imagePolicy(maxDecodeDimension: 512))
+                    case .cancelReceipt: receipt?.cancel()
+                    }
+                    finished.signal()
+                }
+                XCTAssertEqual(finished.wait(timeout: .now() + 0.5), .success)
+            }
+            XCTAssertTrue(delivery.waitUntilScheduled(timeout: 1))
             delivery.runAll()
         }
-        XCTAssertTrue(gate.waitUntilStarted(timeout: 1))
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            owner.cancelAll()
-            cancelReturned.value = true
-        }
-        Thread.sleep(forTimeInterval: 0.05)
-        XCTAssertFalse(cancelReturned.value)
-
-        gate.release()
-        XCTAssertTrue(cancelReturned.waitForTrue(timeout: 1))
     }
 
     func testCancelledDecodeStillOccupiesConcurrencyUntilClosureExits() {
@@ -367,6 +366,20 @@ final class RenderBridgeTests: XCTestCase {
                 maxBytes: 1
             )
         )
+    }
+
+    func testDataURLHeaderScanStopsAtFixedLimitBeforeCommaOrLeadingTrim() {
+        let leadingWhitespace = String(repeating: " ", count: 5_000)
+            + "data:image/png;base64,AQ=="
+        let missingComma = "data:image/png;base64" + String(repeating: "A", count: 5_000)
+
+        let whitespaceScan = RenderImageLoadOwner.scanDataURLHeader(leadingWhitespace)
+        let missingCommaScan = RenderImageLoadOwner.scanDataURLHeader(missingComma)
+
+        XCTAssertTrue(whitespaceScan.exceededLimit)
+        XCTAssertLessThanOrEqual(whitespaceScan.scannedByteCount, 257)
+        XCTAssertTrue(missingCommaScan.exceededLimit)
+        XCTAssertLessThanOrEqual(missingCommaScan.scannedByteCount, 257)
     }
 
     func testDataURLDecodeRunsOffMainAndDeliversOnMain() {
@@ -2919,70 +2932,6 @@ private final class ManualImageDeliveryScheduler {
         actions.removeAll()
         condition.unlock()
         pending.forEach { $0() }
-    }
-}
-
-private final class BlockingCompletionGate {
-    private let condition = NSCondition()
-    private var started = false
-    private var released = false
-
-    func beginAndWait() {
-        condition.lock()
-        started = true
-        condition.broadcast()
-        while !released {
-            condition.unlock()
-            Thread.sleep(forTimeInterval: 0.001)
-            condition.lock()
-        }
-        condition.unlock()
-    }
-
-    func waitUntilStarted(timeout: TimeInterval) -> Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        let deadline = Date().addingTimeInterval(timeout)
-        while !started {
-            guard condition.wait(until: deadline) else { return false }
-        }
-        return true
-    }
-
-    func release() {
-        condition.lock()
-        released = true
-        condition.broadcast()
-        condition.unlock()
-    }
-}
-
-private final class LockedBoolean {
-    private let condition = NSCondition()
-    private var storedValue = false
-
-    var value: Bool {
-        get {
-            condition.lock()
-            defer { condition.unlock() }
-            return storedValue
-        }
-        set {
-            condition.lock()
-            storedValue = newValue
-            condition.broadcast()
-            condition.unlock()
-        }
-    }
-
-    func waitForTrue(timeout: TimeInterval) -> Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        let deadline = Date().addingTimeInterval(timeout)
-        while !storedValue {
-            guard condition.wait(until: deadline) else { return false }
-        }
-        return true
     }
 }
 

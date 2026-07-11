@@ -422,8 +422,38 @@ final class RenderImageLoadOwner {
         }
     }
 
+    private final class DeliveryTicket {
+        // All transitions happen on stateQueue. Once a ticket is running, the
+        // callback owns delivery; cancellation suppresses pending tickets but
+        // never waits on arbitrary user code.
+        private enum State { case pending, running, cancelled, finished }
+        private var state: State = .pending
+
+        func begin() -> Bool {
+            guard state == .pending else { return false }
+            state = .running
+            return true
+        }
+
+        func cancel() {
+            if state == .pending { state = .cancelled }
+        }
+
+        func finish() {
+            if state == .running { state = .finished }
+        }
+    }
+
+    struct DataURLHeaderScan {
+        let commaIndex: String.Index?
+        let scannedByteCount: Int
+        let exceededLimit: Bool
+    }
+
     private static let contextKey = "com.apollohg.editor.image-load-owner"
     private static let suppressKey = "com.apollohg.editor.suppress-image-loads"
+    private static let dataURLHeaderByteLimit = 256
+    private static let dataURLEncodedOverheadByteLimit = 4_096
 
     private let stateQueue = DispatchQueue(label: "com.apollohg.editor.image-owner-state")
     private let decodeQueue = DispatchQueue(
@@ -434,13 +464,12 @@ final class RenderImageLoadOwner {
     private let transport: ImageLoadingTransport
     private let decoder: ImageDataDecoding
     private let deliver: Delivery
-    private let deliveryLock = NSRecursiveLock()
     private var storedPolicy: ImageLoadingPolicy
     private var generation: UInt64 = 0
     private var pending: [Request] = []
     private var active: [UUID: ActiveRequest] = [:]
     private var decodeWorkIds = Set<UUID>()
-    private var deliveryQueuedIds = Set<UUID>()
+    private var deliveryTickets: [UUID: DeliveryTicket] = [:]
 
     init(
         policy: ImageLoadingPolicy,
@@ -463,7 +492,6 @@ final class RenderImageLoadOwner {
             cancelAllLocked()
             storedPolicy = policy
         }
-        waitForDeliveries()
     }
 
     @discardableResult
@@ -499,7 +527,6 @@ final class RenderImageLoadOwner {
 
     func cancelAll() {
         stateQueue.sync { cancelAllLocked() }
-        waitForDeliveries()
     }
 
     func withCurrent<T>(_ body: () throws -> T) rethrows -> T {
@@ -620,18 +647,19 @@ final class RenderImageLoadOwner {
     private func finishLocked(_ request: Request, image: UIImage?) {
         guard request.generation == generation,
               active[request.id] != nil,
-              deliveryQueuedIds.insert(request.id).inserted
+              deliveryTickets[request.id] == nil
         else {
             return
         }
+        let ticket = DeliveryTicket()
+        deliveryTickets[request.id] = ticket
         deliver { [weak self] in
             guard let self else { return }
-            self.deliveryLock.lock()
-            defer { self.deliveryLock.unlock() }
             let shouldDeliver = stateQueue.sync {
                 guard request.generation == self.generation,
                       self.active.removeValue(forKey: request.id) != nil,
-                      self.deliveryQueuedIds.remove(request.id) != nil
+                      self.deliveryTickets.removeValue(forKey: request.id) === ticket,
+                      ticket.begin()
                 else {
                     return false
                 }
@@ -640,6 +668,7 @@ final class RenderImageLoadOwner {
             }
             guard shouldDeliver else { return }
             request.completion(image)
+            ticket.finish()
         }
     }
 
@@ -656,9 +685,10 @@ final class RenderImageLoadOwner {
     private func cancelAllLocked() {
         generation &+= 1
         let tasks = active.values.compactMap(\.task)
+        deliveryTickets.values.forEach { $0.cancel() }
         active.removeAll()
         pending.removeAll()
-        deliveryQueuedIds.removeAll()
+        deliveryTickets.removeAll()
         tasks.forEach { $0.cancel() }
     }
 
@@ -670,26 +700,58 @@ final class RenderImageLoadOwner {
                 return
             }
             guard let activeRequest = active.removeValue(forKey: request.id) else { return }
-            deliveryQueuedIds.remove(request.id)
+            deliveryTickets.removeValue(forKey: request.id)?.cancel()
             activeRequest.task?.cancel()
             drainLocked()
         }
-        waitForDeliveries()
-    }
-
-    private func waitForDeliveries() {
-        deliveryLock.lock()
-        deliveryLock.unlock()
     }
 
     private static func isDataURL(_ source: String) -> Bool {
-        let trimmed = source.drop(while: { $0.isWhitespace })
+        let scan = scanDataURLHeader(source)
+        guard let comma = scan.commaIndex, !scan.exceededLimit else { return false }
+        let trimmed = source[..<comma].drop(while: { $0.isWhitespace })
         return trimmed.prefix("data:image/".count).lowercased() == "data:image/"
     }
 
+    static func scanDataURLHeader(_ source: String) -> DataURLHeaderScan {
+        var scannedBytes = 0
+        var index = source.startIndex
+        while index < source.endIndex {
+            let nextIndex = source.index(after: index)
+            let characterBytes = source[index..<nextIndex].utf8.count
+            let (nextBytes, overflow) = scannedBytes.addingReportingOverflow(characterBytes)
+            guard !overflow, nextBytes <= dataURLHeaderByteLimit else {
+                return DataURLHeaderScan(
+                    commaIndex: nil,
+                    scannedByteCount: scannedBytes,
+                    exceededLimit: true
+                )
+            }
+            scannedBytes = nextBytes
+            if source[index] == "," {
+                return DataURLHeaderScan(
+                    commaIndex: index,
+                    scannedByteCount: scannedBytes,
+                    exceededLimit: false
+                )
+            }
+            index = nextIndex
+        }
+        return DataURLHeaderScan(
+            commaIndex: nil,
+            scannedByteCount: scannedBytes,
+            exceededLimit: false
+        )
+    }
+
     static func decodedDataURLByteCount(_ source: String, maxBytes: Int) -> Int? {
-        guard maxBytes >= 0, let comma = source.firstIndex(of: ",") else { return nil }
-        guard source[..<comma].utf8.count <= 256 else { return nil }
+        let scan = scanDataURLHeader(source)
+        guard maxBytes >= 0,
+              let comma = scan.commaIndex,
+              !scan.exceededLimit
+        else {
+            return nil
+        }
         let completeGroups = maxBytes / 3
         let maxSymbols: Int
         let (groupSymbols, overflow) = completeGroups.multipliedReportingOverflow(by: 4)
@@ -702,7 +764,9 @@ final class RenderImageLoadOwner {
             maxSymbols = additionOverflow ? Int.max : symbols
         }
 
-        let (encodedLimit, encodedLimitOverflow) = maxSymbols.addingReportingOverflow(4_096)
+        let (encodedLimit, encodedLimitOverflow) = maxSymbols.addingReportingOverflow(
+            dataURLEncodedOverheadByteLimit
+        )
         let maxEncodedBytes = encodedLimitOverflow ? Int.max : encodedLimit
         var encodedByteCount = 0
         var symbolCount = 0
@@ -744,8 +808,11 @@ final class RenderImageLoadOwner {
     }
 
     private static func decodeDataURL(_ source: String, maxBytes: Int) -> Data? {
-        let trimmed = source.drop(while: { $0.isWhitespace })
-        guard let comma = trimmed.firstIndex(of: ","),
+        let scan = scanDataURLHeader(source)
+        guard let comma = scan.commaIndex,
+              !scan.exceededLimit else { return nil }
+        let trimmed = source[...].drop(while: { $0.isWhitespace })
+        guard trimmed.indices.contains(comma),
               trimmed[..<comma].lowercased().contains(";base64")
         else {
             return nil
