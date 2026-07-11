@@ -3206,3 +3206,112 @@ fn toggle_code_block_at_selection_scalar_sets_selection_then_toggles() {
         "scalar variant should set the selection and then toggle the code block"
     );
 }
+
+// ===========================================================================
+// Undo of UnwrapFromList: role-driven list-context resolution
+// ===========================================================================
+
+/// Undo of unwrap_from_list must restore the original tree for task lists,
+/// not only for lists whose item is literally named "listItem" — the
+/// inverse-step computation used to hardcode that name, so it silently
+/// dropped taskList/taskItem context and rebuilt the wrong wrapper.
+#[test]
+fn undo_unwrap_restores_task_list() {
+    let mut editor = task_code_editor();
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "taskList",
+                "content": [{
+                    "type": "taskItem",
+                    // Non-default value: get_json omits default-valued attrs
+                    // (checked defaults to false), so checked=true is what
+                    // proves the attr survives the undo round-trip.
+                    "attrs": { "checked": true },
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{ "type": "text", "text": "todo one" }]
+                    }]
+                }]
+            }]
+        }))
+        .expect("set_json should succeed");
+    let original = editor.get_json();
+    assert_eq!(
+        original["content"][0]["content"][0]["attrs"]["checked"],
+        serde_json::Value::Bool(true),
+        "fixture guard: canonical JSON must carry the non-default checked attr"
+    );
+
+    // doc(0) > taskList(0) > taskItem(1) > paragraph(2) > "todo one"(3)
+    editor.set_selection(Selection::cursor(3));
+    editor
+        .unwrap_from_list(3)
+        .expect("unwrap_from_list should succeed");
+    assert_eq!(
+        editor.get_json(),
+        serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "todo one" }]
+            }]
+        }),
+        "unwrap_from_list should lift the paragraph out of the taskList/taskItem"
+    );
+
+    editor
+        .undo()
+        .expect("undo should restore the pre-unwrap taskList/taskItem");
+
+    assert_eq!(
+        editor.get_json(),
+        original,
+        "undo of unwrap_from_list must restore the original taskList/taskItem wrapper \
+         (including the checked attr), not fall back to a bulletList/listItem guess"
+    );
+    assert_eq!(
+        editor.selection(),
+        &Selection::cursor(3),
+        "undo should restore the cursor inside the re-wrapped paragraph"
+    );
+}
+
+/// No-regression pin: the same round-trip on a preset bulletList/listItem
+/// must keep working before and after switching resolve_list_context_at to
+/// schema-role lookups.
+#[test]
+fn undo_unwrap_restores_bullet_list() {
+    let mut editor = default_editor();
+    editor
+        .set_html("<ul><li><p>Item</p></li></ul>")
+        .expect("set_html should succeed");
+    let original = editor.get_json();
+
+    // doc(0) > bulletList(0) > listItem(1) > paragraph(2) > "Item"(3)
+    editor.set_selection(Selection::cursor(3));
+    editor
+        .unwrap_from_list(3)
+        .expect("unwrap_from_list should succeed");
+    assert_eq!(
+        editor.get_html(),
+        "<p>Item</p>",
+        "unwrap_from_list should lift the paragraph out of the bulletList/listItem"
+    );
+
+    editor
+        .undo()
+        .expect("undo should restore the pre-unwrap bulletList/listItem");
+
+    assert_eq!(
+        editor.get_json(),
+        original,
+        "undo of unwrap_from_list must restore the original bulletList/listItem wrapper"
+    );
+    assert_eq!(
+        editor.selection(),
+        &Selection::cursor(3),
+        "undo should restore the cursor inside the re-wrapped paragraph"
+    );
+}

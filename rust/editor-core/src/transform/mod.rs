@@ -117,6 +117,11 @@ pub enum Step {
         list_type: String,
         item_type: String,
         attrs: HashMap<String, serde_json::Value>,
+        /// Attrs applied to each list item this step creates. User-facing
+        /// wraps pass an empty map (items get their schema defaults); the
+        /// inverse of UnwrapFromList carries the unwrapped item's original
+        /// attrs here so undo restores them (e.g. taskItem's `checked`).
+        item_attrs: HashMap<String, serde_json::Value>,
     },
 
     /// Unwrap a list item, lifting its content out of the list.

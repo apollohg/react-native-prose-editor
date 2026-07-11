@@ -50,7 +50,10 @@ pub fn apply_step(
             list_type,
             item_type,
             attrs,
-        } => apply_wrap_in_list(doc, *from, *to, list_type, item_type, attrs, schema),
+            item_attrs,
+        } => apply_wrap_in_list(
+            doc, *from, *to, list_type, item_type, attrs, item_attrs, schema,
+        ),
         Step::UnwrapFromList { pos } => apply_unwrap_from_list(doc, *pos, schema),
 
         Step::IndentListItem { pos } => apply_indent_list_item(doc, *pos, schema),
@@ -807,6 +810,7 @@ fn apply_join_blocks(doc: &Document, pos: u32) -> Result<(Document, StepMap), Tr
 // WrapInList
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn apply_wrap_in_list(
     doc: &Document,
     from: u32,
@@ -814,6 +818,7 @@ fn apply_wrap_in_list(
     list_type: &str,
     item_type: &str,
     list_attrs: &HashMap<String, serde_json::Value>,
+    item_attrs: &HashMap<String, serde_json::Value>,
     schema: &Schema,
 ) -> Result<(Document, StepMap), TransformError> {
     if from > to {
@@ -893,7 +898,7 @@ fn apply_wrap_in_list(
         let block = doc_content.child(i).unwrap();
         let li = Node::element(
             item_type.to_string(),
-            HashMap::new(),
+            item_attrs.clone(),
             Fragment::from(vec![block.clone()]),
         );
         list_items.push(li);

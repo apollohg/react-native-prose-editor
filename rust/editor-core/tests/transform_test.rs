@@ -1333,6 +1333,7 @@ fn test_wrap_single_paragraph_in_bullet_list() {
         list_type: "bulletList".to_string(),
         item_type: "listItem".to_string(),
         attrs: HashMap::new(),
+        item_attrs: HashMap::new(),
     });
 
     let (new_doc, _map) = tx
@@ -1379,6 +1380,7 @@ fn test_wrap_two_paragraphs_in_bullet_list() {
         list_type: "bulletList".to_string(),
         item_type: "listItem".to_string(),
         attrs: HashMap::new(),
+        item_attrs: HashMap::new(),
     });
 
     let (new_doc, _map) = tx
@@ -1414,6 +1416,7 @@ fn test_wrap_in_ordered_list_with_start_attr() {
         list_type: "orderedList".to_string(),
         item_type: "listItem".to_string(),
         attrs,
+        item_attrs: HashMap::new(),
     });
 
     let (new_doc, _map) = tx
@@ -1431,6 +1434,41 @@ fn test_wrap_in_ordered_list_with_start_attr() {
     assert_eq!(
         ol.child(0).unwrap().child(0).unwrap().text_content(),
         "Item"
+    );
+}
+
+#[test]
+fn test_wrap_in_list_applies_item_attrs_to_created_items() {
+    // <doc><p>Todo</p></doc>
+    // Wrap with item_attrs carrying checked=true. Every created list item
+    // must receive those attrs — this is what lets the inverse of
+    // UnwrapFromList restore a taskItem's `checked` state on undo.
+    let (d, schema) = doc_and_schema(doc(vec![paragraph(vec![text("Todo")])]));
+    let mut item_attrs = HashMap::new();
+    item_attrs.insert("checked".to_string(), serde_json::Value::Bool(true));
+    let mut tx = Transaction::new(Source::Input);
+    tx.add_step(Step::WrapInList {
+        from: 0,
+        to: 6,
+        list_type: "bulletList".to_string(),
+        item_type: "listItem".to_string(),
+        attrs: HashMap::new(),
+        item_attrs,
+    });
+
+    let (new_doc, _map) = tx
+        .apply(&d, &schema)
+        .expect("wrap with item attrs should succeed");
+
+    let list = new_doc.root().child(0).unwrap();
+    assert_eq!(list.node_type(), "bulletList");
+    let li = list.child(0).unwrap();
+    assert_eq!(li.node_type(), "listItem");
+    assert_eq!(
+        li.attrs().get("checked"),
+        Some(&serde_json::Value::Bool(true)),
+        "created list item should carry the step's item_attrs, got: {:?}",
+        li.attrs()
     );
 }
 
@@ -1453,6 +1491,7 @@ fn test_wrap_already_listed_content_errors() {
         list_type: "bulletList".to_string(),
         item_type: "listItem".to_string(),
         attrs: HashMap::new(),
+        item_attrs: HashMap::new(),
     });
 
     let result = tx.apply(&d, &schema);
@@ -1491,6 +1530,7 @@ fn test_wrap_middle_paragraphs_preserves_surrounding() {
         list_type: "bulletList".to_string(),
         item_type: "listItem".to_string(),
         attrs: HashMap::new(),
+        item_attrs: HashMap::new(),
     });
 
     let (new_doc, _map) = tx
@@ -1531,6 +1571,7 @@ fn test_wrap_invalid_list_type_errors() {
         list_type: "paragraph".to_string(),
         item_type: "listItem".to_string(),
         attrs: HashMap::new(),
+        item_attrs: HashMap::new(),
     });
 
     let result = tx.apply(&d, &schema);
@@ -1876,6 +1917,7 @@ fn test_wrap_then_unwrap_round_trip_single_paragraph() {
         list_type: "bulletList".to_string(),
         item_type: "listItem".to_string(),
         attrs: HashMap::new(),
+        item_attrs: HashMap::new(),
     });
     let (wrapped_doc, _) = tx_wrap.apply(&d, &schema).expect("wrap should succeed");
     assert_eq!(
@@ -1927,6 +1969,7 @@ fn test_wrap_then_unwrap_round_trip_two_paragraphs() {
         list_type: "bulletList".to_string(),
         item_type: "listItem".to_string(),
         attrs: HashMap::new(),
+        item_attrs: HashMap::new(),
     });
     let (wrapped_doc, _) = tx_wrap.apply(&d, &schema).expect("wrap should succeed");
 
@@ -1980,6 +2023,7 @@ fn test_step_map_wrap_in_list() {
         list_type: "bulletList".to_string(),
         item_type: "listItem".to_string(),
         attrs: HashMap::new(),
+        item_attrs: HashMap::new(),
     });
 
     let (_new_doc, map) = tx.apply(&d, &schema).expect("wrap should succeed");

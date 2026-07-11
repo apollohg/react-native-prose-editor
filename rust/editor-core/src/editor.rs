@@ -434,6 +434,7 @@ impl Editor {
             list_type: list_type.to_string(),
             item_type,
             attrs: HashMap::new(),
+            item_attrs: HashMap::new(),
         });
         match self.apply_transaction(tx) {
             Ok(update) => Ok(update),
@@ -1588,11 +1589,7 @@ impl Editor {
             .map(|(_, node)| node.node_type().to_string());
         let mut nodes = HashMap::new();
         for node_name in &nodes_at {
-            let is_list_node = self
-                .schema
-                .node(node_name)
-                .map(|spec| matches!(spec.role, NodeRole::List { .. }))
-                .unwrap_or(false);
+            let is_list_node = self.schema.is_list(node_name);
             if is_list_node {
                 if active_list_type.as_deref() == Some(node_name.as_str()) {
                     nodes.insert(node_name.clone(), true);

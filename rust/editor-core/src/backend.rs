@@ -153,7 +153,7 @@ impl StandaloneBackend {
         let mut current_doc = self.doc.clone();
 
         for step in &tx.steps {
-            let inv = self.invert_step(step, &current_doc);
+            let inv = self.invert_step(step, &current_doc, schema);
             inverse_steps.push(inv);
 
             // Apply the step to advance current_doc for the next inverse computation.
@@ -170,7 +170,7 @@ impl StandaloneBackend {
     }
 
     /// Compute the inverse of a single step given the current document state.
-    fn invert_step(&self, step: &Step, doc: &Document) -> Step {
+    fn invert_step(&self, step: &Step, doc: &Document, schema: &Schema) -> Step {
         match step {
             Step::InsertText { pos, text, .. } => {
                 let len = text.chars().count() as u32;
@@ -232,13 +232,7 @@ impl StandaloneBackend {
                     attrs,
                 }
             }
-            Step::WrapInList {
-                from,
-                to: _,
-                list_type: _,
-                item_type: _,
-                attrs: _,
-            } => {
+            Step::WrapInList { from, .. } => {
                 // Inverse of wrapping is unwrapping. We need a position inside
                 // the first list item. The first list item's content starts at
                 // from + 2 (after list_open + li_open).
@@ -247,14 +241,14 @@ impl StandaloneBackend {
             Step::UnwrapFromList { pos } => {
                 // Resolve the containing list node from the pre-step document
                 // to get its type, attrs, and the range of content being unwrapped.
-                let (list_type, item_type, list_attrs, wrap_from, wrap_to) =
-                    resolve_list_context_at(doc, *pos);
+                let list_context = resolve_list_context_at(schema, doc, *pos);
                 Step::WrapInList {
-                    from: wrap_from,
-                    to: wrap_to,
-                    list_type,
-                    item_type,
-                    attrs: list_attrs,
+                    from: list_context.wrap_from,
+                    to: list_context.wrap_to,
+                    list_type: list_context.list_type,
+                    item_type: list_context.item_type,
+                    attrs: list_context.list_attrs,
+                    item_attrs: list_context.item_attrs,
                 }
             }
             Step::IndentListItem { .. } | Step::OutdentListItem { .. } => {
@@ -646,14 +640,23 @@ fn resolve_second_block_at(
     ("paragraph".to_string(), HashMap::new())
 }
 
+/// The list context resolved at a position inside a list item, used to build
+/// the inverse of UnwrapFromList. `wrap_from..wrap_to` covers the content
+/// that was inside the list item being unwrapped.
+struct ListContext {
+    list_type: String,
+    item_type: String,
+    list_attrs: HashMap<String, serde_json::Value>,
+    item_attrs: HashMap<String, serde_json::Value>,
+    wrap_from: u32,
+    wrap_to: u32,
+}
+
 /// Resolve the list context at a position inside a list item for building
-/// the inverse of UnwrapFromList. Returns (list_type, item_type, list_attrs,
-/// wrap_from, wrap_to) where wrap_from..wrap_to covers the content that was
-/// inside the list item being unwrapped.
-fn resolve_list_context_at(
-    doc: &Document,
-    pos: u32,
-) -> (String, String, HashMap<String, serde_json::Value>, u32, u32) {
+/// the inverse of UnwrapFromList. List and item nodes are recognized by
+/// their schema role (`Schema::is_list` / `Schema::is_list_item`), never by
+/// node-type name.
+fn resolve_list_context_at(schema: &Schema, doc: &Document, pos: u32) -> ListContext {
     // Walk the resolved path to find the list item and its parent list.
     if let Ok(resolved) = doc.resolve(pos) {
         let path = &resolved.node_path;
@@ -680,16 +683,15 @@ fn resolve_list_context_at(
             };
 
             // Check if this child is a list item and its parent is a list.
-            if child.node_type() == "listItem" {
-                let parent_is_list = current_node.node_type() == "bulletList"
-                    || current_node.node_type() == "orderedList"
-                    || current_node.node_type().ends_with("List");
+            if schema.is_list_item(child.node_type()) {
+                let parent_is_list = schema.is_list(current_node.node_type());
 
                 if parent_is_list {
                     let li_content_size = child.content_size();
                     let list_type = current_node.node_type().to_string();
                     let item_type = child.node_type().to_string();
                     let list_attrs = current_node.attrs().clone();
+                    let item_attrs = child.attrs().clone();
 
                     // Compute the absolute position of the list node in doc
                     // content. The list is `current_node`, and its content
@@ -720,7 +722,14 @@ fn resolve_list_context_at(
                     let wrap_from = list_start;
                     let wrap_to = list_start + li_content_size;
 
-                    return (list_type, item_type, list_attrs, wrap_from, wrap_to);
+                    return ListContext {
+                        list_type,
+                        item_type,
+                        list_attrs,
+                        item_attrs,
+                        wrap_from,
+                        wrap_to,
+                    };
                 }
             }
 
@@ -729,12 +738,15 @@ fn resolve_list_context_at(
         }
     }
 
-    // Fallback
-    (
-        "bulletList".to_string(),
-        "listItem".to_string(),
-        HashMap::new(),
-        pos,
-        pos,
-    )
+    // Fallback for unresolvable positions (no list-role node found on the
+    // path): an empty wrap range with preset names. Not list detection —
+    // detection above is role-driven; this is a last-resort default.
+    ListContext {
+        list_type: "bulletList".to_string(),
+        item_type: "listItem".to_string(),
+        list_attrs: HashMap::new(),
+        item_attrs: HashMap::new(),
+        wrap_from: pos,
+        wrap_to: pos,
+    }
 }
