@@ -690,15 +690,15 @@ fn sequence_branch_index_to_doc_pos<'a, T: ReadTxn>(
         match &child {
             XmlOut::Text(text) => {
                 let text_value = text.get_string(txn);
-                let text_utf16_len = utf16_len(&text_value);
                 let text_scalar_len = scalar_len(&text_value);
-                if target_index <= branch_index + text_utf16_len {
-                    let scalar_offset =
-                        utf16_offset_to_scalar(&text_value, target_index - branch_index)?;
-                    return Some(doc_pos + scalar_offset);
+                if target_index == branch_index {
+                    return Some(doc_pos);
                 }
-                branch_index += text_utf16_len;
+                branch_index += 1;
                 doc_pos += text_scalar_len;
+                if target_index == branch_index {
+                    return Some(doc_pos);
+                }
             }
             XmlOut::Element(_) | XmlOut::Fragment(_) => {
                 if target_index == branch_index {
@@ -783,7 +783,7 @@ fn doc_pos_to_sticky_index_in_sequence<'a, T: ReadTxn>(
                         assoc,
                     );
                 }
-                branch_index += utf16_len(&text_value);
+                branch_index += 1;
                 consumed_pm += text_scalar_len;
             }
             XmlOut::Element(element) => {
@@ -2271,6 +2271,50 @@ mod tests {
         assert_eq!(
             remote_peer.state.get("selection"),
             Some(&json!({ "anchor": 3, "head": 3 }))
+        );
+    }
+
+    #[test]
+    fn collaboration_session_counts_xml_text_as_one_parent_sequence_item() {
+        let session = CollaborationSession::new(
+            &json!({
+                "clientId": 1,
+                "fragmentName": "default",
+                "initialDocumentJson": {
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [
+                            { "type": "text", "text": "a😀b" },
+                            { "type": "hardBreak" },
+                            { "type": "text", "text": "c" }
+                        ]
+                    }]
+                }
+            })
+            .to_string(),
+        );
+        let txn = session.doc.transact();
+        let fragment = txn
+            .get_xml_fragment("default")
+            .expect("fragment should exist");
+        let XmlOut::Element(paragraph) = fragment.get(&txn, 0).expect("paragraph should exist")
+        else {
+            panic!("expected paragraph element");
+        };
+        let boundary = paragraph
+            .sticky_index(&txn, 1, Assoc::Before)
+            .expect("parent boundary should produce sticky index");
+
+        assert_eq!(
+            sticky_index_to_doc_pos(
+                &txn,
+                &fragment,
+                &boundary,
+                &session.void_element_tags,
+            ),
+            Some(4),
+            "parent index 1 is after the entire three-scalar XmlText child"
         );
     }
 
