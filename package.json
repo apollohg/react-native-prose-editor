@@ -36,6 +36,7 @@
         "bench:rust:quick": "cargo bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --quick",
         "typecheck": "tsc --noEmit",
         "sync:version": "node scripts/sync-version.mjs",
+        "package:validate": "bash ./scripts/validate-packed-package.sh",
         "publish:prepare": "bash ./scripts/prepare-publish.sh",
         "version": "node scripts/sync-version.mjs",
         "android:compile": "cd example/android && ./gradlew :apollohg-react-native-prose-editor:compileDebugKotlin",
