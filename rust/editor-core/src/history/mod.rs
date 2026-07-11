@@ -139,7 +139,7 @@ impl UndoHistory {
                 // undoing applies them in the correct (reverse chronological)
                 // order. The most recent inverse steps go to the front.
                 let mut merged_inverse = inverse_steps;
-                merged_inverse.extend(prev.inverse_steps.drain(..));
+                merged_inverse.append(&mut prev.inverse_steps);
                 prev.inverse_steps = merged_inverse;
                 prev.timestamp = timestamp;
                 // Keep the original selection_before from the first entry

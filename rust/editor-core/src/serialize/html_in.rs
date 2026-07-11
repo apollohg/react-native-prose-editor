@@ -83,7 +83,7 @@ fn is_void_html_element(tag: &str) -> bool {
 
 fn element_attr<'a>(elem: &'a scraper::node::Element, key: &str) -> Option<&'a str> {
     elem.attrs().find_map(|(attr_key, value)| {
-        if attr_key.to_string() == key {
+        if attr_key == key {
             Some(value)
         } else {
             None
@@ -243,7 +243,7 @@ fn process_children(
     for child in parent.children() {
         let val: &scraper::Node = child.value();
         if let Some(text_data) = val.as_text() {
-            let text: &str = &*text_data;
+            let text: &str = text_data;
             if !text.is_empty() {
                 inline_acc.push(Node::text(text.to_string(), active_marks.to_vec()));
             }
@@ -266,6 +266,7 @@ fn process_children(
 }
 
 /// Process a single HTML element node.
+#[allow(clippy::too_many_arguments)]
 fn process_element(
     node_ref: SNodeRef<'_>,
     tag: &str,
@@ -351,9 +352,7 @@ fn build_mention_node(
     _elem: &scraper::node::Element,
     schema: &Schema,
 ) -> Option<Node> {
-    if schema.node("mention").is_none() {
-        return None;
-    }
+    schema.node("mention")?;
 
     let is_mention = element_attr(_elem, "data-native-editor-mention")
         .map(|value| value == "true")
@@ -387,6 +386,7 @@ fn build_mention_node(
 }
 
 /// Process an element that maps to a known schema node spec.
+#[allow(clippy::too_many_arguments)]
 fn process_schema_node(
     node_ref: SNodeRef<'_>,
     _elem: &scraper::node::Element,
@@ -515,7 +515,7 @@ fn collect_inline_children(
     for child in parent.children() {
         let val: &scraper::Node = child.value();
         if let Some(text_data) = val.as_text() {
-            let text: &str = &*text_data;
+            let text: &str = text_data;
             if !text.is_empty() {
                 inline_nodes.push(Node::text(text.to_string(), active_marks.to_vec()));
             }
@@ -615,7 +615,7 @@ fn collect_list_items(
                 }
             }
         } else if let Some(text_data) = val.as_text() {
-            let text: &str = &*text_data;
+            let text: &str = text_data;
             let text = text.trim();
             if !text.is_empty() {
                 if let Some(item_type) = list_item_name.clone().or_else(fallback_list_item) {
@@ -685,7 +685,7 @@ fn collect_text_content(node_ref: SNodeRef<'_>) -> String {
     for child in node_ref.children() {
         let val: &scraper::Node = child.value();
         if let Some(text_data) = val.as_text() {
-            buf.push_str(&*text_data);
+            buf.push_str(text_data);
         } else if val.is_element() {
             buf.push_str(&collect_text_content(child));
         }
@@ -699,7 +699,7 @@ fn collect_inner_html(node_ref: SNodeRef<'_>) -> String {
     for child in node_ref.children() {
         let val: &scraper::Node = child.value();
         if let Some(text_data) = val.as_text() {
-            escape_html_to(&*text_data, &mut buf);
+            escape_html_to(text_data, &mut buf);
         } else if let Some(elem) = val.as_element() {
             let tag = elem.name();
             buf.push('<');
@@ -745,7 +745,7 @@ fn flush_inline_acc(inline_acc: &mut Vec<Node>, schema: &Schema, block_acc: &mut
     if inline_acc.is_empty() {
         return;
     }
-    let children: Vec<Node> = inline_acc.drain(..).collect();
+    let children = std::mem::take(inline_acc);
     block_acc.push(make_paragraph(schema, children));
 }
 

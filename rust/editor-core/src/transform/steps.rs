@@ -50,7 +50,7 @@ pub(crate) fn merge_adjacent_text_nodes(nodes: Vec<Node>) -> Vec<Node> {
         }
 
         // Skip empty text nodes.
-        if node.text_str().map_or(false, |s| s.is_empty()) {
+        if node.text_str().is_some_and(|s| s.is_empty()) {
             continue;
         }
 

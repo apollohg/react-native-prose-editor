@@ -283,7 +283,7 @@ impl CollaborationSession {
                 .unwrap_or(&[]);
             let mut txn = self.doc.transact_mut();
             let fragment = txn.get_or_insert_xml_fragment(self.fragment_name.as_str());
-            apply_children(&fragment, &mut txn, &current_children, &next_children);
+            apply_children(&fragment, &mut txn, current_children, next_children);
         }
 
         self.refresh_cached_document_json();
@@ -1175,7 +1175,7 @@ fn apply_element_node(
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    apply_children(element, txn, &old_children, &new_children);
+    apply_children(element, txn, old_children, new_children);
 }
 
 fn apply_text_node(

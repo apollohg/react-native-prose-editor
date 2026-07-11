@@ -80,7 +80,7 @@ fn apply_insert_text(
 ) -> Result<(Document, StepMap), TransformError> {
     let resolved = doc
         .resolve(pos)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
     let parent = resolved.parent(doc);
 
     // The parent must be a text block (e.g. paragraph). Check via schema.
@@ -222,10 +222,10 @@ fn apply_delete_range(
 
     let resolved_from = doc
         .resolve(from)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
     let resolved_to = doc
         .resolve(to)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
 
     // If both endpoints are in the same parent, do the simple in-parent delete.
     if resolved_from.node_path == resolved_to.node_path {
@@ -332,10 +332,10 @@ fn apply_add_mark(
 
     let resolved_from = doc
         .resolve(from)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
     let resolved_to = doc
         .resolve(to)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
 
     if resolved_from.node_path != resolved_to.node_path {
         return Err(TransformError::InvalidRange(
@@ -432,10 +432,10 @@ fn apply_remove_mark(
 
     let resolved_from = doc
         .resolve(from)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
     let resolved_to = doc
         .resolve(to)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
 
     if resolved_from.node_path != resolved_to.node_path {
         return Err(TransformError::InvalidRange(
@@ -528,7 +528,7 @@ fn apply_split_block(
 ) -> Result<(Document, StepMap), TransformError> {
     let resolved = doc
         .resolve(pos)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
 
     // The resolved position should be inside a text block (e.g. paragraph).
     // We need to find the text block in the path and determine what to split.
@@ -712,7 +712,7 @@ fn split_children_at(parent: &Node, offset: u32) -> (Vec<Node>, Vec<Node>) {
 fn apply_join_blocks(doc: &Document, pos: u32) -> Result<(Document, StepMap), TransformError> {
     let resolved = doc
         .resolve(pos)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
 
     // The position should be at a block boundary in the parent.
     // That means it should resolve to a parent (e.g. doc or list) and the
@@ -951,7 +951,7 @@ fn apply_unwrap_from_list(
     // Resolve the position to find which list item we're in.
     let resolved = doc
         .resolve(pos)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
 
     // Walk up the path to find the list item and the list.
     // The node_path gives us indices from root. We need to find a node in the
@@ -1216,7 +1216,7 @@ fn apply_insert_node(
 ) -> Result<(Document, StepMap), TransformError> {
     let resolved = doc
         .resolve(pos)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
     let parent = resolved.parent(doc);
 
     // insert_node_in_children handles both block-level (between element
@@ -1239,7 +1239,7 @@ fn apply_update_node_attrs(
 ) -> Result<(Document, StepMap), TransformError> {
     let resolved = doc
         .resolve(pos)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
     let parent = resolved.parent(doc);
     let content = parent
         .content()
@@ -1249,13 +1249,7 @@ fn apply_update_node_attrs(
     let mut target_index = None;
     for (index, child) in content.iter().enumerate() {
         let child_size = child.node_size();
-        let matches = if child.is_text() {
-            false
-        } else if child.is_void() {
-            resolved.parent_offset == offset
-        } else {
-            resolved.parent_offset == offset
-        };
+        let matches = !child.is_text() && resolved.parent_offset == offset;
         if matches {
             target_index = Some(index);
             break;
@@ -1501,7 +1495,7 @@ fn resolve_list_item_context<'a>(
 ) -> Result<ListItemContext<'a>, TransformError> {
     let resolved = doc
         .resolve(pos)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
     let path = &resolved.node_path;
 
     let mut current_node = doc.root();
@@ -1699,7 +1693,7 @@ fn apply_replace_range(
 
     let resolved_from = doc
         .resolve(from)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
 
     if from == to && content.size() == 0 {
         // No-op: empty range and empty content.
@@ -1710,7 +1704,7 @@ fn apply_replace_range(
     if from != to {
         let resolved_to = doc
             .resolve(to)
-            .map_err(|e| TransformError::OutOfBounds(e))?;
+            .map_err(TransformError::OutOfBounds)?;
 
         if resolved_from.node_path != resolved_to.node_path {
             // Cross-parent replace: delete across parents first, then insert.
@@ -1985,7 +1979,7 @@ fn apply_cross_parent_replace(
     // Resolve `from` in the post-delete doc and insert content there.
     let resolved_insert = after_delete
         .resolve(from)
-        .map_err(|e| TransformError::OutOfBounds(e))?;
+        .map_err(TransformError::OutOfBounds)?;
 
     let parent = resolved_insert.parent(&after_delete);
     let insert_offset = resolved_insert.parent_offset;

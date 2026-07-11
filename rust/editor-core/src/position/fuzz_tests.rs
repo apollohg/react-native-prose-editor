@@ -287,11 +287,7 @@ mod tests {
                 // Verify the result is at most 1 away from the original offset
                 // (i.e. it maps to the end of the preceding block or the start
                 // of the following block).
-                let diff = if roundtrip > offset {
-                    roundtrip - offset
-                } else {
-                    offset - roundtrip
-                };
+                let diff = roundtrip.abs_diff(offset);
                 assert!(
                     diff <= 1,
                     "[{}] INVARIANT B (break): scalar={} -> doc={} -> scalar={}, diff={}",
