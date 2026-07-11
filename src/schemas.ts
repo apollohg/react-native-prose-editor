@@ -1,5 +1,5 @@
 import type { DocumentJSON } from './NativeEditorBridge';
-import { acceptingContentSymbols } from './contentExpression';
+import { minimalContentMatch } from './contentExpression';
 
 export interface AttrSpec {
     default?: unknown;
@@ -185,26 +185,57 @@ export const tiptapSchema: SchemaDefinition = {
 
 export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): DocumentJSON {
     const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
-    const acceptingGroups = docNode == null ? [] : acceptingContentSymbols(docNode.content ?? '');
-    const matchingTextBlocks = schema.nodes.filter(
-        (node) =>
-            node.role === 'textBlock' &&
-            acceptingGroups.some(
-                (group) =>
-                    node.name === group ||
-                    node.group?.split(/\s+/).some((nodeGroup) => nodeGroup === group)
-            )
-    );
-    const preferredTextBlock =
-        matchingTextBlocks.find((node) => node.htmlTag === 'p' || node.name === 'paragraph') ??
-        matchingTextBlocks[0] ??
-        schema.nodes.find((node) => node.htmlTag === 'p' || node.name === 'paragraph') ??
-        schema.nodes.find((node) => node.role === 'textBlock');
+    if (!docNode) throw new Error('schema cannot construct a default document: missing doc role');
 
-    return {
-        type: 'doc',
-        content: [{ type: preferredTextBlock?.name ?? 'paragraph' }],
+    const constructNode = (node: NodeSpec, visiting: Set<string>): DocumentJSON | undefined => {
+        if (node.role === 'text' || visiting.has(node.name)) return undefined;
+        const attrs = Object.entries(node.attrs ?? {});
+        if (attrs.some(([, spec]) => !Object.prototype.hasOwnProperty.call(spec, 'default'))) {
+            return undefined;
+        }
+
+        visiting.add(node.name);
+        const children = minimalContentMatch(node.content ?? '', (symbol) => {
+            const candidates = schema.nodes
+                .filter(
+                    (candidate) =>
+                        candidate.name === symbol ||
+                        candidate.group?.split(/\s+/).some((group) => group === symbol)
+                )
+                .sort((left, right) => {
+                    const priority = (candidate: NodeSpec): number => {
+                        if (
+                            candidate.role === 'textBlock' &&
+                            (candidate.htmlTag === 'p' || candidate.name === 'paragraph')
+                        ) {
+                            return 0;
+                        }
+                        return candidate.role === 'textBlock' ? 1 : 2;
+                    };
+                    return priority(left) - priority(right) || left.name.localeCompare(right.name);
+                });
+            for (const candidate of candidates) {
+                const constructed = constructNode(candidate, visiting);
+                if (constructed) return constructed;
+            }
+            return undefined;
+        });
+        visiting.delete(node.name);
+        if (!children) return undefined;
+
+        const result: DocumentJSON = { type: node.name };
+        if (children.length > 0) result.content = children;
+        if (attrs.length > 0) {
+            result.attrs = Object.fromEntries(attrs.map(([name, spec]) => [name, spec.default]));
+        }
+        return result;
     };
+
+    const document = constructNode(docNode, new Set());
+    if (!document) {
+        throw new Error(`schema cannot construct a default document for '${docNode.name}'`);
+    }
+    return document;
 }
 
 export function normalizeDocumentJson(

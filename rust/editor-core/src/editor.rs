@@ -630,10 +630,7 @@ impl Editor {
         let Some(parent_spec) = self.schema.node(parent.node_type()) else {
             return Ok(self.build_update_from_current());
         };
-        let insertable = self
-            .schema
-            .insertable_nodes_at(parent_spec, &child_node_types(parent));
-        if !insertable.iter().any(|name| name == blockquote_type) {
+        if !self.parent_accepts_range_replacement(parent, parent_spec, &range, &[blockquote_type]) {
             return Ok(self.build_update_from_current());
         }
 
@@ -1726,24 +1723,14 @@ impl Editor {
             }
         }
 
-        // Walk backwards to find the first non-TextBlock node.
-        // That's the block-level parent where we'd insert new block nodes.
-        for i in (0..nodes_in_path.len()).rev() {
-            let node = nodes_in_path[i];
-            if let Some(spec) = self.schema.node(node.node_type()) {
-                if matches!(spec.role, NodeRole::TextBlock) {
-                    continue;
-                }
-                // Found the block-level parent. Count its existing children
-                // to determine the content rule slot.
-                let insertable = self
-                    .schema
-                    .insertable_nodes_at(spec, &child_node_types(node));
-                return self.filter_insertable_nodes_for_parent(node, insertable);
-            }
-        }
-
-        Vec::new()
+        let Some((parent, prefix)) = self.block_parent_and_prefix(doc, resolved) else {
+            return Vec::new();
+        };
+        let Some(spec) = self.schema.node(parent.node_type()) else {
+            return Vec::new();
+        };
+        let insertable = self.schema.insertable_nodes_at(spec, &prefix);
+        self.filter_insertable_nodes_for_parent(parent, insertable)
     }
 
     fn inline_insertable_nodes_from_resolved(
@@ -2182,37 +2169,20 @@ impl Editor {
             Err(_) => return false,
         };
 
-        // Walk up past TextBlock to find the block-level parent.
-        let path = &resolved.node_path;
-        let mut nodes_in_path: Vec<&Node> = vec![doc.root()];
-        let mut current = doc.root();
-        for &idx in path.iter() {
-            if let Some(child) = current.child(idx as usize) {
-                nodes_in_path.push(child);
-                current = child;
-            }
-        }
-
-        for i in (0..nodes_in_path.len()).rev() {
-            let node = nodes_in_path[i];
-            if let Some(spec) = self.schema.node(node.node_type()) {
-                if matches!(spec.role, NodeRole::TextBlock) {
-                    continue;
-                }
-                // Check if this parent's content rule accepts list nodes.
-                let insertable = self
-                    .schema
-                    .insertable_nodes_at(spec, &child_node_types(node));
-                return insertable.iter().any(|name| {
-                    self.schema
-                        .node(name)
-                        .map(|s| matches!(s.role, NodeRole::List { .. }))
-                        .unwrap_or(false)
-                });
-            }
-        }
-
-        false
+        let Some((parent, prefix)) = self.block_parent_and_prefix(doc, &resolved) else {
+            return false;
+        };
+        let Some(spec) = self.schema.node(parent.node_type()) else {
+            return false;
+        };
+        self.schema
+            .insertable_nodes_at(spec, &prefix)
+            .iter()
+            .any(|name| {
+                self.schema
+                    .node(name)
+                    .is_some_and(|spec| matches!(spec.role, NodeRole::List { .. }))
+            })
     }
 
     fn can_toggle_blockquote_at(&self, pos: u32) -> bool {
@@ -2229,31 +2199,16 @@ impl Editor {
             Err(_) => return false,
         };
 
-        let path = &resolved.node_path;
-        let mut nodes_in_path: Vec<&Node> = vec![doc.root()];
-        let mut current = doc.root();
-        for &idx in path.iter() {
-            if let Some(child) = current.child(idx as usize) {
-                nodes_in_path.push(child);
-                current = child;
-            }
-        }
-
-        for i in (0..nodes_in_path.len()).rev() {
-            let node = nodes_in_path[i];
-            let Some(spec) = self.schema.node(node.node_type()) else {
-                continue;
-            };
-            if matches!(spec.role, NodeRole::TextBlock) {
-                continue;
-            }
-            let insertable = self
-                .schema
-                .insertable_nodes_at(spec, &child_node_types(node));
-            return insertable.iter().any(|name| name == &blockquote_type);
-        }
-
-        false
+        let Some((parent, prefix)) = self.block_parent_and_prefix(doc, &resolved) else {
+            return false;
+        };
+        let Some(spec) = self.schema.node(parent.node_type()) else {
+            return false;
+        };
+        self.schema
+            .insertable_nodes_at(spec, &prefix)
+            .iter()
+            .any(|name| name == &blockquote_type)
     }
 
     fn can_toggle_heading(&self, level: u8) -> bool {
@@ -2305,10 +2260,7 @@ impl Editor {
         let Some(parent_spec) = self.schema.node(parent.node_type()) else {
             return Ok(None);
         };
-        let insertable = self
-            .schema
-            .insertable_nodes_at(parent_spec, &child_node_types(parent));
-        if !insertable.iter().any(|name| name == list_type) {
+        if !self.parent_accepts_range_replacement(parent, parent_spec, &range, &[list_type]) {
             return Ok(Some(self.build_update_from_current()));
         }
 
@@ -2366,10 +2318,8 @@ impl Editor {
 
         for child in content.iter() {
             let child_size = child.node_size();
-            if child.is_text() {
-                if offset <= parent_offset && parent_offset <= offset + child_size {
-                    return child.marks().to_vec();
-                }
+            if child.is_text() && offset <= parent_offset && parent_offset <= offset + child_size {
+                return child.marks().to_vec();
             }
             offset += child_size;
         }
@@ -2713,6 +2663,73 @@ impl Editor {
             .matches(child_types, |child_type, symbol| {
                 child_matches_symbol(&self.schema, child_type, symbol)
             })
+    }
+
+    fn parent_accepts_range_replacement(
+        &self,
+        parent: &Node,
+        parent_spec: &NodeSpec,
+        range: &BlockSelectionRange,
+        replacement_types: &[&str],
+    ) -> bool {
+        let replaced_end = range.first_child_index + range.selected_blocks.len();
+        let child_types = parent
+            .content()
+            .map(|content| {
+                content
+                    .iter()
+                    .take(range.first_child_index)
+                    .map(Node::node_type)
+                    .chain(replacement_types.iter().copied())
+                    .chain(content.iter().skip(replaced_end).map(Node::node_type))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.parent_content_rule_matches_child_types(parent_spec, &child_types)
+    }
+
+    fn block_parent_and_prefix<'a>(
+        &self,
+        doc: &'a Document,
+        resolved: &ResolvedPos,
+    ) -> Option<(&'a Node, Vec<&'a str>)> {
+        let mut nodes_in_path = vec![doc.root()];
+        let mut current = doc.root();
+        for &index in &resolved.node_path {
+            current = current.child(index as usize)?;
+            nodes_in_path.push(current);
+        }
+
+        for depth in (0..nodes_in_path.len()).rev() {
+            let node = nodes_in_path[depth];
+            let spec = self.schema.node(node.node_type())?;
+            if matches!(spec.role, NodeRole::TextBlock) {
+                continue;
+            }
+            let insertion_index = if let Some(index) = resolved.node_path.get(depth) {
+                usize::from(*index) + 1
+            } else {
+                let mut consumed = 0u32;
+                node.content()?
+                    .iter()
+                    .take_while(|child| {
+                        let before_or_at = consumed + child.node_size() <= resolved.parent_offset;
+                        if before_or_at {
+                            consumed += child.node_size();
+                        }
+                        before_or_at
+                    })
+                    .count()
+            };
+            let prefix = node
+                .content()?
+                .iter()
+                .take(insertion_index)
+                .map(Node::node_type)
+                .collect();
+            return Some((node, prefix));
+        }
+        None
     }
 
     fn replace_selected_text_blocks(
@@ -3759,42 +3776,11 @@ fn preferred_text_block_node_names_for_parent(
     candidates
 }
 
-fn child_node_types(node: &Node) -> Vec<&str> {
-    node.content()
-        .map(|content| content.iter().map(Node::node_type).collect())
-        .unwrap_or_default()
-}
-
-/// Create an empty document with a single schema-valid empty text block.
+/// Create the complete shortest schema-valid document using defaultable nodes.
 fn make_empty_doc(schema: &Schema) -> Document {
-    let empty_text_block_name = schema
-        .node("doc")
-        .map(|doc_spec| preferred_text_block_node_names_for_parent(schema, doc_spec, &[]))
-        .and_then(|mut candidates| candidates.drain(..).next())
-        .or_else(|| {
-            schema
-                .node_by_html_tag("p")
-                .or_else(|| schema.node("paragraph"))
-                .map(|n| n.name.clone())
-        })
-        .or_else(|| {
-            let mut candidates: Vec<String> = schema
-                .all_nodes()
-                .filter(|n| matches!(n.role, crate::schema::NodeRole::TextBlock))
-                .map(|n| n.name.clone())
-                .collect();
-            candidates.sort();
-            candidates.into_iter().next()
-        })
-        .unwrap_or_else(|| "paragraph".to_string());
-
-    let para = Node::element(empty_text_block_name, HashMap::new(), Fragment::empty());
-    let doc_node = Node::element(
-        "doc".to_string(),
-        HashMap::new(),
-        Fragment::from(vec![para]),
-    );
-    Document::new(doc_node)
+    schema
+        .default_document()
+        .expect("validated schema must have a constructible default document")
 }
 
 fn list_attrs_for_type(

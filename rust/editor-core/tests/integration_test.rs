@@ -150,6 +150,84 @@ fn test_editor_initializes_custom_empty_doc_with_required_title_block() {
     );
 }
 
+fn positional_schema(content: &str) -> Schema {
+    Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": content, "role": "doc" },
+            { "name": "title", "content": "inline*", "group": "block", "role": "textBlock" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "blockquote", "content": "block+", "group": "block", "role": "block", "htmlTag": "blockquote" },
+            { "name": "image", "content": "", "group": "block", "role": "block", "isVoid": true },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .expect("positional schema")
+}
+
+#[test]
+fn insert_node_uses_children_before_the_middle_position() {
+    let mut editor = Editor::new(
+        positional_schema("title image? paragraph"),
+        InterceptorPipeline::new(),
+        false,
+    );
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{ "type": "title" }, { "type": "paragraph" }]
+        }))
+        .unwrap();
+
+    editor.insert_node(1, "image").unwrap();
+    assert_eq!(
+        editor.get_json()["content"],
+        serde_json::json!([{ "type": "title" }, { "type": "image" }, { "type": "paragraph" }])
+    );
+}
+
+#[test]
+fn wrapping_replaces_one_child_without_violating_an_exact_count() {
+    let mut editor = Editor::new(
+        positional_schema("block{2}"),
+        InterceptorPipeline::new(),
+        false,
+    );
+    editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph" }, { "type": "paragraph" }]
+        }))
+        .unwrap();
+
+    editor.wrap_in_blockquote(1, 1, "blockquote").unwrap();
+    assert_eq!(editor.get_json()["content"][0]["type"], "blockquote");
+    assert_eq!(editor.get_json()["content"][1]["type"], "paragraph");
+}
+
+#[test]
+fn editor_builds_the_complete_minimal_default_document() {
+    let editor = Editor::new(
+        positional_schema("title image"),
+        InterceptorPipeline::new(),
+        false,
+    );
+    assert_eq!(
+        editor.get_json()["content"],
+        serde_json::json!([{ "type": "title" }, { "type": "image" }])
+    );
+
+    let editor = Editor::new(
+        positional_schema("image"),
+        InterceptorPipeline::new(),
+        false,
+    );
+    assert_eq!(
+        editor.get_json()["content"],
+        serde_json::json!([{ "type": "image" }])
+    );
+}
+
 #[test]
 fn test_full_lifecycle_set_html_insert_toggle_undo_redo() {
     let mut editor = default_editor();
@@ -534,7 +612,10 @@ fn set_json_rejects_children_that_violate_the_schema() {
         "content": [{ "type": "text", "text": "direct text" }]
     }));
 
-    assert!(result.is_err(), "doc content must match the block expression");
+    assert!(
+        result.is_err(),
+        "doc content must match the block expression"
+    );
 }
 
 // ===========================================================================
@@ -982,14 +1063,11 @@ fn test_editor_update_contains_all_fields() {
         "EditorUpdate should contain render elements"
     );
     // Selection should be valid.
-    match &update.selection {
-        Selection::Text { anchor, head } => {
-            assert!(
-                *anchor > 0 && *head > 0,
-                "Selection positions should be positive after insert"
-            );
-        }
-        _ => {} // other selection types are also valid
+    if let Selection::Text { anchor, head } = &update.selection {
+        assert!(
+            *anchor > 0 && *head > 0,
+            "Selection positions should be positive after insert"
+        );
     }
     // History state should reflect that we can undo.
     assert!(
@@ -1293,14 +1371,20 @@ fn uniffi_editor_errors_are_always_valid_json() {
 
     let parsed: serde_json::Value =
         serde_json::from_str(&response).expect("error response must be valid JSON");
-    assert!(parsed.get("error").and_then(serde_json::Value::as_str).is_some());
+    assert!(parsed
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
     editor_core::editor_destroy(id);
 }
 
 #[test]
 fn oversized_max_length_is_rejected() {
     let id = editor_core::editor_create(r#"{"maxLength":4294967296}"#.to_string());
-    assert_eq!(id, 0, "invalid editor configuration must not create an editor");
+    assert_eq!(
+        id, 0,
+        "invalid editor configuration must not create an editor"
+    );
 }
 
 #[test]
@@ -1474,16 +1558,13 @@ fn test_selection_updates_after_insert() {
 
     let update = editor.insert_text(2, "X").expect("insert X");
     // After inserting 'X' at position 2, the cursor should have advanced.
-    match &update.selection {
-        Selection::Text { anchor, head } => {
-            assert!(
-                *anchor >= 3 || *head >= 3,
-                "Cursor should advance past inserted text, got anchor={}, head={}",
-                anchor,
-                head
-            );
-        }
-        _ => {} // other selection types acceptable
+    if let Selection::Text { anchor, head } = &update.selection {
+        assert!(
+            *anchor >= 3 || *head >= 3,
+            "Cursor should advance past inserted text, got anchor={}, head={}",
+            anchor,
+            head
+        );
     }
 }
 
@@ -2871,7 +2952,11 @@ fn test_apply_task_list_type_uses_declared_task_item_type() {
 
 #[test]
 fn test_apply_task_list_type_resolves_grouped_task_item_type() {
-    let mut editor = Editor::new(grouped_task_item_schema(), InterceptorPipeline::new(), false);
+    let mut editor = Editor::new(
+        grouped_task_item_schema(),
+        InterceptorPipeline::new(),
+        false,
+    );
     editor
         .set_html("<p>Hello</p>")
         .expect("set_html should succeed");
@@ -2880,12 +2965,19 @@ fn test_apply_task_list_type_resolves_grouped_task_item_type() {
         .apply_list_type("taskList")
         .expect("applying grouped taskList should wrap the paragraph");
 
-    assert_eq!(editor.get_json()["content"][0]["content"][0]["type"], "taskItem");
+    assert_eq!(
+        editor.get_json()["content"][0]["content"][0]["type"],
+        "taskItem"
+    );
 }
 
 #[test]
 fn test_set_html_resolves_grouped_task_item_type() {
-    let mut editor = Editor::new(grouped_task_item_schema(), InterceptorPipeline::new(), false);
+    let mut editor = Editor::new(
+        grouped_task_item_schema(),
+        InterceptorPipeline::new(),
+        false,
+    );
     editor
         .set_html("<ul><li checked=\"true\"><p>Done</p></li></ul>")
         .expect("grouped task list html should parse");
@@ -2900,7 +2992,9 @@ fn test_set_html_resolves_grouped_task_item_type() {
 fn test_task_list_checked_attrs_roundtrip_from_html() {
     let mut editor = task_code_editor();
     editor
-        .set_html("<ul><li checked=\"true\"><p>Done</p></li><li checked=\"false\"><p>Todo</p></li></ul>")
+        .set_html(
+            "<ul><li checked=\"true\"><p>Done</p></li><li checked=\"false\"><p>Todo</p></li></ul>",
+        )
         .expect("task list html should parse");
 
     assert_eq!(

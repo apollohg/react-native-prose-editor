@@ -32,4 +32,49 @@ describe('defaultEmptyDocument', () => {
         expect(acceptingContentSymbols(deeplyNested)).toEqual([]);
         expect(acceptingContentSymbols('(a{101}){101}')).toEqual([]);
     });
+
+    it('constructs every node in the minimal accepted document sequence', () => {
+        const schema: SchemaDefinition = {
+            nodes: [
+                { name: 'doc', content: 'title image', role: 'doc' },
+                { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
+                { name: 'image', content: '', group: 'block', role: 'block', isVoid: true },
+                { name: 'text', content: '', group: 'inline', role: 'text' },
+            ],
+            marks: [],
+        };
+        expect(defaultEmptyDocument(schema)).toEqual({
+            type: 'doc',
+            content: [{ type: 'title' }, { type: 'image' }],
+        });
+    });
+
+    it('uses a valid non-text default instead of an unaccepted paragraph fallback', () => {
+        const schema: SchemaDefinition = {
+            nodes: [
+                { name: 'doc', content: 'image', role: 'doc' },
+                { name: 'image', content: '', group: 'block', role: 'block', isVoid: true },
+                { name: 'text', content: '', group: 'inline', role: 'text' },
+            ],
+            marks: [],
+        };
+        expect(defaultEmptyDocument(schema)).toEqual({
+            type: 'doc',
+            content: [{ type: 'image' }],
+        });
+    });
+
+    it('throws a clear error when required content cannot be default-constructed', () => {
+        const schema: SchemaDefinition = {
+            nodes: [
+                { name: 'doc', content: 'image', role: 'doc' },
+                { name: 'image', content: '', attrs: { src: {} }, role: 'block', isVoid: true },
+                { name: 'text', content: '', role: 'text' },
+            ],
+            marks: [],
+        };
+        expect(() => defaultEmptyDocument(schema)).toThrow(
+            "schema cannot construct a default document for 'doc'"
+        );
+    });
 });

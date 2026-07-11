@@ -3,6 +3,7 @@ pub mod presets;
 
 use std::collections::{HashMap, HashSet};
 
+use crate::model::{Document, Fragment, Node};
 use crate::schema::content_rule::ContentRule;
 
 /// A schema defines the set of node types and mark types available in a document.
@@ -336,7 +337,7 @@ impl Schema {
     }
 
     /// Return node type names that can be inserted at the given parent, assuming
-    /// `existing_child_count` children already exist.
+    /// `existing_child_types` is the actual prefix before the insertion point.
     pub fn insertable_nodes_at(
         &self,
         parent_spec: &NodeSpec,
@@ -376,6 +377,61 @@ impl Schema {
         }
 
         result
+    }
+
+    /// Construct the shortest complete document accepted by the schema using
+    /// only nodes whose attributes have defaults. Text nodes are never created
+    /// implicitly because they require text content.
+    pub fn default_document(&self) -> Result<Document, String> {
+        let doc_spec = self
+            .all_nodes()
+            .find(|node| matches!(node.role, NodeRole::Doc))
+            .ok_or_else(|| "schema has no doc role".to_string())?;
+        let root = self
+            .construct_default_node(doc_spec, &mut HashSet::new())
+            .ok_or_else(|| {
+                format!(
+                    "schema cannot construct a default document for '{}'",
+                    doc_spec.name
+                )
+            })?;
+        Ok(Document::new(root))
+    }
+
+    fn construct_default_node(
+        &self,
+        spec: &NodeSpec,
+        visiting: &mut HashSet<String>,
+    ) -> Option<Node> {
+        if matches!(spec.role, NodeRole::Text)
+            || spec.attrs.values().any(|attr| attr.default.is_none())
+            || !visiting.insert(spec.name.clone())
+        {
+            return None;
+        }
+
+        let children = spec.content.minimal_match_with(|symbol| {
+            let mut candidates = self
+                .all_nodes()
+                .filter(|candidate| node_spec_matches_symbol(candidate, symbol))
+                .collect::<Vec<_>>();
+            candidates.sort_by_key(|candidate| default_node_priority(candidate));
+            candidates
+                .into_iter()
+                .find_map(|candidate| self.construct_default_node(candidate, visiting))
+        });
+        visiting.remove(&spec.name);
+        let children = children?;
+        let attrs = spec
+            .attrs
+            .iter()
+            .filter_map(|(name, attr)| attr.default.clone().map(|value| (name.clone(), value)))
+            .collect();
+        Some(if spec.is_void {
+            Node::void(spec.name.clone(), attrs)
+        } else {
+            Node::element(spec.name.clone(), attrs, Fragment::from(children))
+        })
     }
 
     /// Build a schema from a JSON object.
@@ -523,6 +579,19 @@ pub(crate) fn node_spec_matches_symbol(node: &NodeSpec, symbol: &str) -> bool {
             .group
             .as_deref()
             .is_some_and(|groups| groups.split_whitespace().any(|group| group == symbol))
+}
+
+fn default_node_priority(node: &NodeSpec) -> (u8, &str) {
+    let priority = match node.role {
+        NodeRole::TextBlock
+            if node.html_tag.as_deref() == Some("p") || node.name == "paragraph" =>
+        {
+            0
+        }
+        NodeRole::TextBlock => 1,
+        _ => 2,
+    };
+    (priority, node.name.as_str())
 }
 
 /// Check whether an `excludes` field covers a given mark name.

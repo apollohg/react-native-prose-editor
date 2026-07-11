@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet, VecDeque};
 
 const MAX_NESTING_DEPTH: usize = 128;
 const MAX_AUTOMATON_STATES: usize = 10_000;
@@ -110,6 +110,37 @@ impl ContentRule {
             );
         }
         symbols.into_iter().collect()
+    }
+
+    /// Find a shortest accepted sequence, choosing one concrete value for
+    /// each traversed symbol. Returns `None` when no accepted path can be
+    /// constructed from the choices supplied by the caller.
+    pub fn minimal_match_with<T, F>(&self, mut choose: F) -> Option<Vec<T>>
+    where
+        T: Clone,
+        F: FnMut(&str) -> Option<T>,
+    {
+        let mut pending = VecDeque::from([(self.start, Vec::new())]);
+        let mut visited = HashSet::new();
+        while let Some((state, values)) = pending.pop_front() {
+            if !visited.insert(state) {
+                continue;
+            }
+            if state == self.accept {
+                return Some(values);
+            }
+            for target in self.states[state].epsilon.iter().rev() {
+                pending.push_front((*target, values.clone()));
+            }
+            for (symbol, target) in &self.states[state].transitions {
+                if let Some(value) = choose(symbol) {
+                    let mut next_values = values.clone();
+                    next_values.push(value);
+                    pending.push_back((*target, next_values));
+                }
+            }
+        }
+        None
     }
 
     /// Whether some accepted sequence can be built using only allowed symbols.

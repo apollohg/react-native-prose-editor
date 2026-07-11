@@ -260,3 +260,39 @@ export function acceptingContentSymbols(
         return [];
     }
 }
+
+export function minimalContentMatch<T>(
+    content: string,
+    choose: (symbol: string) => T | undefined
+): T[] | undefined {
+    try {
+        const expression = new ContentExpressionParser(content).parse();
+        const compiler = new ContentExpressionCompiler();
+        const [start, accept] = compiler.compile(expression);
+        const pending: Array<{ state: number; values: T[] }> = [{ state: start, values: [] }];
+        const visited = new Set<number>();
+        while (pending.length > 0) {
+            const current = pending.shift()!;
+            if (visited.has(current.state)) continue;
+            visited.add(current.state);
+            if (current.state === accept) return current.values;
+
+            const state = compiler.states[current.state];
+            for (let index = state.epsilon.length - 1; index >= 0; index -= 1) {
+                pending.unshift({ state: state.epsilon[index], values: current.values });
+            }
+            for (const transition of state.transitions) {
+                const value = choose(transition.symbol);
+                if (value !== undefined) {
+                    pending.push({
+                        state: transition.target,
+                        values: [...current.values, value],
+                    });
+                }
+            }
+        }
+        return undefined;
+    } catch {
+        return undefined;
+    }
+}
