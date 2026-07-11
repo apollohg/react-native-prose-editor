@@ -5,14 +5,15 @@
 # Targets:
 #   - aarch64-linux-android     -> arm64-v8a   (most modern devices)
 #   - armv7-linux-androideabi   -> armeabi-v7a  (older 32-bit devices)
+#   - i686-linux-android        -> x86           (32-bit emulators)
 #   - x86_64-linux-android      -> x86_64       (emulators)
 #
-# Output: rust/out/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}/libeditor_core.so
+# Output: rust/android/{arm64-v8a,armeabi-v7a,x86,x86_64}/libeditor_core.so
 #
 # Prerequisites:
 #   - cargo-ndk: cargo install cargo-ndk
 #   - Rust toolchain with Android targets installed:
-#       rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+#       rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 #   - Android NDK (set ANDROID_NDK_HOME or let cargo-ndk auto-detect from ANDROID_HOME)
 
 set -euo pipefail
@@ -43,6 +44,7 @@ fi
 TARGET_ABI_PAIRS=(
     "aarch64-linux-android arm64-v8a"
     "armv7-linux-androideabi armeabi-v7a"
+    "i686-linux-android x86"
     "x86_64-linux-android x86_64"
 )
 
@@ -63,6 +65,7 @@ for pair in "${TARGET_ABI_PAIRS[@]}"; do
     # Copy .so to jniLibs layout
     mkdir -p "$OUT_DIR/$abi"
     cp "$CRATE_DIR/target/$target/release/$LIB_NAME" "$OUT_DIR/$abi/$LIB_NAME"
+    test -s "$OUT_DIR/$abi/$LIB_NAME"
 done
 
 echo "==> Android build complete: $OUT_DIR/"

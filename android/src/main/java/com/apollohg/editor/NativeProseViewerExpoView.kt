@@ -6,12 +6,18 @@ import android.graphics.Color
 import android.net.Uri
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 import kotlin.math.abs
 import org.json.JSONArray
+
+private sealed interface TapTarget {
+    data class Mention(val docPos: Int, val label: String) : TapTarget
+    data class Link(val href: String, val text: String) : TapTarget
+}
 
 class NativeProseViewerExpoView(
     context: Context,
@@ -32,7 +38,13 @@ class NativeProseViewerExpoView(
     private var isCollapsedEmptyContent = false
     private var enableLinkTaps = true
     private var interceptLinkTaps = false
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+    private var pendingTapTarget: TapTarget? = null
+    private var tapDownX = 0f
+    private var tapDownY = 0f
     internal var suppressContentHeightEventsForTesting = false
+    internal var onLinkTapForTesting: (() -> Unit)? = null
+    internal var onMentionTapForTesting: (() -> Unit)? = null
 
     init {
         proseView.setBaseStyle(
@@ -53,31 +65,7 @@ class NativeProseViewerExpoView(
         proseView.setTextIsSelectable(false)
         proseView.showSoftInputOnFocus = false
         proseView.setOnTouchListener { _, event ->
-            if (event.actionMasked != MotionEvent.ACTION_UP) {
-                return@setOnTouchListener false
-            }
-
-            proseView.mentionHitAt(event.x, event.y)?.let { mention ->
-                onPressMention(mapOf("docPos" to mention.docPos, "label" to mention.label))
-                return@setOnTouchListener true
-            }
-
-            if (!enableLinkTaps) {
-                return@setOnTouchListener false
-            }
-
-            val link = proseView.linkHitAt(event.x, event.y) ?: return@setOnTouchListener false
-            if (interceptLinkTaps) {
-                onPressLink(
-                    mapOf(
-                        "href" to link.href,
-                        "text" to link.text
-                    )
-                )
-                return@setOnTouchListener true
-            }
-
-            return@setOnTouchListener openLink(link.href)
+            handleProseTouch(event)
         }
 
         addView(
@@ -119,6 +107,78 @@ class NativeProseViewerExpoView(
 
     fun setInterceptLinkTaps(interceptLinkTaps: Boolean?) {
         this.interceptLinkTaps = interceptLinkTaps ?: false
+    }
+
+    private fun handleProseTouch(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                pendingTapTarget = if (event.pointerCount == 1) {
+                    tapTargetAt(event.x, event.y)
+                } else {
+                    null
+                }
+                tapDownX = event.x
+                tapDownY = event.y
+                return pendingTapTarget != null
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val deltaX = event.x - tapDownX
+                val deltaY = event.y - tapDownY
+                val movedBeyondSlop = deltaX * deltaX + deltaY * deltaY > touchSlop * touchSlop
+                if (event.pointerCount != 1 || movedBeyondSlop) {
+                    pendingTapTarget = null
+                }
+                return pendingTapTarget != null
+            }
+            MotionEvent.ACTION_POINTER_DOWN,
+            MotionEvent.ACTION_POINTER_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                pendingTapTarget = null
+                return false
+            }
+            MotionEvent.ACTION_UP -> {
+                val target = pendingTapTarget
+                pendingTapTarget = null
+                if (event.pointerCount != 1 || target == null || target != tapTargetAt(event.x, event.y)) {
+                    return false
+                }
+                return activateTapTarget(target)
+            }
+            else -> return pendingTapTarget != null
+        }
+    }
+
+    private fun tapTargetAt(x: Float, y: Float): TapTarget? {
+        proseView.mentionHitAt(x, y)?.let { mention ->
+            return TapTarget.Mention(mention.docPos, mention.label)
+        }
+        if (!enableLinkTaps) return null
+        return proseView.linkHitAt(x, y)?.let { link ->
+            TapTarget.Link(link.href, link.text)
+        }
+    }
+
+    private fun activateTapTarget(target: TapTarget): Boolean {
+        return when (target) {
+            is TapTarget.Mention -> {
+                onMentionTapForTesting?.invoke() ?: onPressMention(
+                    mapOf("docPos" to target.docPos, "label" to target.label)
+                )
+                true
+            }
+            is TapTarget.Link -> {
+                onLinkTapForTesting?.let {
+                    it()
+                    return true
+                }
+                if (interceptLinkTaps) {
+                    onPressLink(mapOf("href" to target.href, "text" to target.text))
+                    true
+                } else {
+                    openLink(target.href)
+                }
+            }
+        }
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
