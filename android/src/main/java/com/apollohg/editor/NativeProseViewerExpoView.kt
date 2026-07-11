@@ -119,16 +119,13 @@ class NativeProseViewerExpoView(
                 }
                 tapDownX = event.x
                 tapDownY = event.y
-                return pendingTapTarget != null
+                return false
             }
             MotionEvent.ACTION_MOVE -> {
-                val deltaX = event.x - tapDownX
-                val deltaY = event.y - tapDownY
-                val movedBeyondSlop = deltaX * deltaX + deltaY * deltaY > touchSlop * touchSlop
-                if (event.pointerCount != 1 || movedBeyondSlop) {
+                if (event.pointerCount != 1 || movedBeyondTouchSlop(event)) {
                     pendingTapTarget = null
                 }
-                return pendingTapTarget != null
+                return false
             }
             MotionEvent.ACTION_POINTER_DOWN,
             MotionEvent.ACTION_POINTER_UP,
@@ -139,13 +136,24 @@ class NativeProseViewerExpoView(
             MotionEvent.ACTION_UP -> {
                 val target = pendingTapTarget
                 pendingTapTarget = null
-                if (event.pointerCount != 1 || target == null || target != tapTargetAt(event.x, event.y)) {
+                if (
+                    event.pointerCount != 1 ||
+                    target == null ||
+                    movedBeyondTouchSlop(event) ||
+                    target != tapTargetAt(event.x, event.y)
+                ) {
                     return false
                 }
                 return activateTapTarget(target)
             }
-            else -> return pendingTapTarget != null
+            else -> return false
         }
+    }
+
+    private fun movedBeyondTouchSlop(event: MotionEvent): Boolean {
+        val deltaX = event.x - tapDownX
+        val deltaY = event.y - tapDownY
+        return deltaX * deltaX + deltaY * deltaY > touchSlop * touchSlop
     }
 
     private fun tapTargetAt(x: Float, y: Float): TapTarget? {

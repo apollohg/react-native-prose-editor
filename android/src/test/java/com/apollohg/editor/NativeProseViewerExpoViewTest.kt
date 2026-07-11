@@ -6,11 +6,13 @@ import android.text.Annotation
 import android.text.Spanned
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import expo.modules.core.ModuleRegistry
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.ModulesProvider
 import expo.modules.kotlin.modules.Module
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -88,6 +90,38 @@ class NativeProseViewerExpoViewTest {
         )
 
         assertEquals(0, activations)
+    }
+
+    @Test
+    fun `distant up without a move does not activate the same link`() {
+        val (viewer, proseView) = laidOutInteractiveViewer(TargetKind.LINK)
+        var activations = 0
+        viewer.onLinkTapForTesting = { activations += 1 }
+        val (down, up) = distantLinkPoints(proseView)
+
+        handleProseTouch(viewer, motion(MotionEvent.ACTION_DOWN, down))
+        val consumed = handleProseTouch(viewer, motion(MotionEvent.ACTION_UP, up))
+
+        assertFalse(consumed)
+        assertEquals(0, activations)
+    }
+
+    @Test
+    fun `targeted down and in slop move pass through until matched up`() {
+        val (viewer, proseView) = laidOutInteractiveViewer(TargetKind.LINK)
+        var activations = 0
+        viewer.onLinkTapForTesting = { activations += 1 }
+        val link = pointForAnnotation(proseView, RenderBridge.NATIVE_LINK_HREF_ANNOTATION)
+        val inSlop = link
+
+        val downConsumed = handleProseTouch(viewer, motion(MotionEvent.ACTION_DOWN, link))
+        val moveConsumed = handleProseTouch(viewer, motion(MotionEvent.ACTION_MOVE, inSlop))
+        val upConsumed = handleProseTouch(viewer, motion(MotionEvent.ACTION_UP, inSlop))
+
+        assertFalse(downConsumed)
+        assertFalse(moveConsumed)
+        assertTrue(upConsumed)
+        assertEquals(1, activations)
     }
 
     @Test
@@ -204,7 +238,7 @@ class NativeProseViewerExpoViewTest {
         view.suppressContentHeightEventsForTesting = true
         val targetJson = when (targetKind) {
             TargetKind.LINK ->
-                """{"type":"textRun","text":"link target","marks":[{"type":"link","href":"https://example.com/viewer"}]}"""
+                """{"type":"textRun","text":"link target with plenty of width","marks":[{"type":"link","href":"https://example.com/viewer"}]}"""
             TargetKind.MENTION ->
                 """{"type":"opaqueInlineAtom","nodeType":"mention","label":"@Alice","docPos":31}"""
         }
@@ -246,6 +280,28 @@ class NativeProseViewerExpoViewTest {
         )
     }
 
+    private fun distantLinkPoints(view: EditorEditText): Pair<TouchPoint, TouchPoint> {
+        val hits = mutableListOf<TouchPoint>()
+        for (y in 0 until view.height step 2) {
+            for (x in 0 until view.width step 2) {
+                if (view.linkHitAt(x.toFloat(), y.toFloat()) != null) {
+                    hits += TouchPoint(x.toFloat(), y.toFloat())
+                }
+            }
+        }
+        val down = hits.first()
+        val up = hits.maxBy { point ->
+            val deltaX = point.x - down.x
+            val deltaY = point.y - down.y
+            deltaX * deltaX + deltaY * deltaY
+        }
+        val deltaX = up.x - down.x
+        val deltaY = up.y - down.y
+        val touchSlop = ViewConfiguration.get(view.context).scaledTouchSlop.toFloat()
+        assertTrue(deltaX * deltaX + deltaY * deltaY > touchSlop * touchSlop)
+        return down to up
+    }
+
     private fun motion(action: Int, point: TouchPoint): MotionEvent {
         val now = SystemClock.uptimeMillis()
         return MotionEvent.obtain(now, now, action, point.x, point.y, 0)
@@ -254,6 +310,22 @@ class NativeProseViewerExpoViewTest {
     private fun dispatchGesture(view: View, vararg events: MotionEvent) {
         events.forEach { event ->
             view.dispatchTouchEvent(event)
+            event.recycle()
+        }
+    }
+
+    private fun handleProseTouch(
+        viewer: NativeProseViewerExpoView,
+        event: MotionEvent
+    ): Boolean {
+        val method = NativeProseViewerExpoView::class.java.getDeclaredMethod(
+            "handleProseTouch",
+            MotionEvent::class.java
+        )
+        method.isAccessible = true
+        return try {
+            method.invoke(viewer, event) as Boolean
+        } finally {
             event.recycle()
         }
     }
