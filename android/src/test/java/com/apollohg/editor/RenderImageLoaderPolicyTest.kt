@@ -291,6 +291,95 @@ class RenderImageLoaderPolicyTest {
         assertTrue(retryResult != null)
     }
 
+    @Test
+    fun `global admission bounds unique policies and deduped callbacks`() {
+        val release = CountDownLatch(1)
+        val started = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            started.countDown()
+            release.await(2, TimeUnit.SECONDS)
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val rejected = AtomicInteger(0)
+        val handles = mutableListOf<RenderImageLoader.LoadHandle>()
+
+        repeat(300) { index ->
+            handles += RenderImageLoader.load(
+                "https://example.com/unique/$index",
+                ImageLoadingPolicy.DEFAULT.copy(readTimeoutMs = 10_000 + index)
+            ) { if (it == null) rejected.incrementAndGet() }
+        }
+        repeat(300) {
+            handles += RenderImageLoader.load(
+                "https://example.com/deduped",
+                ImageLoadingPolicy.DEFAULT
+            ) { if (it == null) rejected.incrementAndGet() }
+        }
+        assertTrue(started.await(2, TimeUnit.SECONDS))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertTrue(
+            RenderImageLoader.globalAdmissionCountForTesting() <=
+                RenderImageLoader.globalAdmissionLimitForTesting()
+        )
+        assertTrue(rejected.get() >= 340)
+        handles.forEach { it.cancel() }
+        release.countDown()
+    }
+
+    @Test
+    fun `throwing callback does not block deduped callback or handle completion`() {
+        val release = CountDownLatch(1)
+        val started = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            started.countDown()
+            release.await(2, TimeUnit.SECONDS)
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val source = "https://example.com/callbacks.png"
+        val first = RenderImageLoader.load(source, ImageLoadingPolicy.DEFAULT) {
+            error("callback failure")
+        }
+        assertTrue(started.await(2, TimeUnit.SECONDS))
+        val secondDelivered = CountDownLatch(1)
+        val second = RenderImageLoader.load(source, ImageLoadingPolicy.DEFAULT) {
+            secondDelivered.countDown()
+        }
+        val handlesFinished = CountDownLatch(2)
+        first.onFinished { handlesFinished.countDown() }
+        second.onFinished { handlesFinished.countDown() }
+
+        release.countDown()
+        drainMainUntil(secondDelivered)
+
+        assertEquals(0L, secondDelivered.count)
+        assertEquals(0L, handlesFinished.count)
+    }
+
+    @Test
+    fun `throwing disconnect cannot strand admission or handle completion`() {
+        val stream = BlockingInputStream()
+        val connection = FakeConnection(
+            URL("https://example.com/throw-disconnect.png"),
+            stream = stream,
+            throwOnDisconnect = true
+        )
+        RenderImageDecoder.connectionFactoryOverride = { connection }
+        val handle = RenderImageLoader.load(
+            "https://example.com/throw-disconnect.png",
+            ImageLoadingPolicy.DEFAULT
+        ) { }
+        val finished = CountDownLatch(1)
+        handle.onFinished { finished.countDown() }
+        assertTrue(stream.readStarted.await(2, TimeUnit.SECONDS))
+
+        handle.cancel()
+
+        assertEquals(0L, finished.count)
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+        stream.close()
+    }
+
     private fun drainMainUntil(latch: CountDownLatch) {
         repeat(100) {
             shadowOf(Looper.getMainLooper()).idle()
@@ -303,13 +392,17 @@ class RenderImageLoaderPolicyTest {
         private val bytes: ByteArray = byteArrayOf(),
         private val status: Int = 200,
         private val declaredLength: Long = bytes.size.toLong(),
-        private val stream: InputStream = ByteArrayInputStream(bytes)
+        private val stream: InputStream = ByteArrayInputStream(bytes),
+        private val throwOnDisconnect: Boolean = false
     ) : HttpURLConnection(url) {
         var disconnected = false
         override fun getResponseCode(): Int = status
         override fun getContentLengthLong(): Long = declaredLength
         override fun getInputStream() = stream
-        override fun disconnect() { disconnected = true }
+        override fun disconnect() {
+            disconnected = true
+            if (throwOnDisconnect) error("disconnect failure")
+        }
         override fun usingProxy(): Boolean = false
         override fun connect() = Unit
     }

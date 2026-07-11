@@ -449,7 +449,7 @@ internal object RenderImageDecoder {
 
         fun bind(connection: HttpURLConnection) {
             this.connection = connection
-            if (cancelled.get()) connection.disconnect()
+            if (cancelled.get()) runCatching { connection.disconnect() }
         }
 
         fun bind(stream: InputStream) {
@@ -459,7 +459,7 @@ internal object RenderImageDecoder {
 
         fun cancel() {
             if (!cancelled.compareAndSet(false, true)) return
-            connection?.disconnect()
+            runCatching { connection?.disconnect() }
             runCatching { stream?.close() }
         }
     }
@@ -635,6 +635,7 @@ internal object RenderImageLoader {
     // editor/viewer instances coexist; contention may yield lower concurrency.
     private const val GLOBAL_WORKERS = 4
     private const val GLOBAL_QUEUE_CAPACITY = 256
+    private const val GLOBAL_ADMISSION_LIMIT = GLOBAL_WORKERS + GLOBAL_QUEUE_CAPACITY
 
     private data class RequestKey(val source: String, val policy: ImageLoadingPolicy)
     internal class LoadHandle(private val cancelAction: () -> Unit) {
@@ -642,8 +643,11 @@ internal object RenderImageLoader {
         private val finishListeners = mutableListOf<() -> Unit>()
 
         fun cancel() {
-            cancelAction()
-            finish()
+            try {
+                runCatching { cancelAction() }
+            } finally {
+                finish()
+            }
         }
 
         fun onFinished(listener: () -> Unit) {
@@ -661,7 +665,7 @@ internal object RenderImageLoader {
             val listeners = synchronized(finishListeners) {
                 finishListeners.toList().also { finishListeners.clear() }
             }
-            listeners.forEach { it() }
+            listeners.forEach { runCatching { it() } }
         }
     }
     private data class Callback(
@@ -677,6 +681,7 @@ internal object RenderImageLoader {
     ) {
         var future: Future<*>? = null
         var submitted = false
+        var dispatching = false
         val started = AtomicBoolean(false)
     }
     private data class PolicyState(
@@ -690,6 +695,8 @@ internal object RenderImageLoader {
     private val lock = Any()
     private val inFlight = mutableMapOf<RequestKey, PendingRequest>()
     private val policyStates = mutableMapOf<ImageLoadingPolicy, PolicyState>()
+    private val readyToSubmit = java.util.ArrayDeque<PendingRequest>()
+    private var admissionCount = 0
     private val nextCallbackId = AtomicLong()
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private var globalExecutor = createGlobalExecutor()
@@ -706,16 +713,22 @@ internal object RenderImageLoader {
         synchronized(cache) {
             cache.evictAll()
         }
+        val pending: List<PendingRequest>
+        val executor: ThreadPoolExecutor
         synchronized(lock) {
-            inFlight.values.forEach { pending ->
-                pending.cancellation.cancel()
-                pending.future?.cancel(true)
-            }
+            pending = inFlight.values.toList()
             inFlight.clear()
             policyStates.clear()
-            globalExecutor.shutdownNow()
+            readyToSubmit.clear()
+            admissionCount = 0
+            executor = globalExecutor
             globalExecutor = createGlobalExecutor()
         }
+        pending.forEach { request ->
+            runCatching { request.cancellation.cancel() }
+            runCatching { request.future?.cancel(true) }
+        }
+        executor.shutdownNow()
         decodeSourceOverride = null
     }
 
@@ -729,6 +742,10 @@ internal object RenderImageLoader {
 
     internal fun globalWorkerLimitForTesting(): Int = GLOBAL_WORKERS
 
+    internal fun globalAdmissionCountForTesting(): Int = synchronized(lock) { admissionCount }
+
+    internal fun globalAdmissionLimitForTesting(): Int = GLOBAL_ADMISSION_LIMIT
+
     fun load(
         source: String,
         policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT,
@@ -739,6 +756,29 @@ internal object RenderImageLoader {
         lateinit var callback: Callback
         val handle = LoadHandle { cancelCallback(requestKey, callback) }
         callback = Callback(nextCallbackId.incrementAndGet(), cancelled, handle, onLoaded)
+        val admitted = synchronized(lock) {
+            if (admissionCount >= GLOBAL_ADMISSION_LIMIT) {
+                false
+            } else {
+                admissionCount += 1
+                true
+            }
+        }
+        if (!admitted) {
+            mainHandler.post {
+                try {
+                    if (!callback.cancelled.get()) callback.deliver(null)
+                } finally {
+                    callback.handle.finish()
+                }
+            }
+            return handle
+        }
+        handle.onFinished {
+            synchronized(lock) {
+                admissionCount = (admissionCount - 1).coerceAtLeast(0)
+            }
+        }
         cached(source, policy)?.let { bitmap ->
             mainHandler.post {
                 try {
@@ -749,7 +789,7 @@ internal object RenderImageLoader {
             }
             return handle
         }
-        var submit: PendingRequest? = null
+        var drain = false
         var reject = false
         synchronized(lock) {
             val existing = inFlight[requestKey]
@@ -767,7 +807,8 @@ internal object RenderImageLoader {
                         inFlight[requestKey] = pending
                         state.submittedCount += 1
                         pending.submitted = true
-                        submit = pending
+                        readyToSubmit.addLast(pending)
+                        drain = true
                     }
                     state.pending.size < policy.maxPendingRequests -> {
                         inFlight[requestKey] = pending
@@ -785,13 +826,32 @@ internal object RenderImageLoader {
                     callback.handle.finish()
                 }
             }
-        } else {
-            submit?.let(::submitRequest)
+        } else if (drain) {
+            drainSubmissions()
         }
         return handle
     }
 
-    private fun submitRequest(request: PendingRequest) {
+    private fun drainSubmissions() {
+        while (true) {
+            val request = synchronized(lock) {
+                readyToSubmit.pollFirst()?.also { it.dispatching = true }
+            } ?: return
+            if (!submitRequest(request)) {
+                synchronized(lock) {
+                    request.dispatching = false
+                    if (inFlight[request.key] === request) {
+                        readyToSubmit.addFirst(request)
+                    } else {
+                        releaseSubmittedSlotLocked(request.key.policy)
+                    }
+                }
+                return
+            }
+        }
+    }
+
+    private fun submitRequest(request: PendingRequest): Boolean {
         try {
             val future = globalExecutor.submit {
                 request.started.set(true)
@@ -809,78 +869,106 @@ internal object RenderImageLoader {
                     completeRequest(request, bitmap)
                 }
             }
+            var orphaned = false
             synchronized(lock) {
+                request.dispatching = false
                 request.future = future
-                if (inFlight[request.key] !== request) {
-                    if (!request.started.get() && globalExecutor.remove(future as Runnable)) {
-                        future.cancel(false)
-                        releaseSubmittedSlotLocked(request.key.policy)
-                    } else if (request.started.get()) {
-                        future.cancel(true)
-                    }
-                }
+                orphaned = inFlight[request.key] !== request
             }
+            if (orphaned) cancelOrphanedSubmission(request, future)
+            return true
         } catch (_: RejectedExecutionException) {
-            completeRequest(request, null)
+            return false
+        }
+    }
+
+    private fun cancelOrphanedSubmission(request: PendingRequest, future: Future<*>) {
+        runCatching { request.cancellation.cancel() }
+        val removed = !request.started.get() &&
+            runCatching { globalExecutor.remove(future as Runnable) }.getOrDefault(false)
+        if (removed) {
+            runCatching { future.cancel(false) }
+            synchronized(lock) { releaseSubmittedSlotLocked(request.key.policy) }
+            mainHandler.post { drainSubmissions() }
+        } else if (request.started.get()) {
+            runCatching { future.cancel(true) }
         }
     }
 
     private fun completeRequest(request: PendingRequest, bitmap: Bitmap?) {
         val callbacks: List<Callback>
-        val next: PendingRequest?
         synchronized(lock) {
             if (inFlight[request.key] === request) inFlight.remove(request.key)
             callbacks = request.callbacks.toList()
-            next = releaseSubmittedSlotLocked(request.key.policy)
+            releaseSubmittedSlotLocked(request.key.policy)
         }
         mainHandler.post {
             callbacks.forEach { callback ->
                 try {
                     if (!callback.cancelled.get()) callback.deliver(bitmap)
+                } catch (_: Exception) {
+                    // One consumer must not prevent other deduped consumers
+                    // from receiving completion or releasing their handles.
                 } finally {
                     callback.handle.finish()
                 }
             }
+            drainSubmissions()
         }
-        next?.let(::submitRequest)
     }
 
     private fun cancelCallback(key: RequestKey, callback: Callback) {
         callback.cancelled.set(true)
-        var next: PendingRequest? = null
+        var requestToCancel: PendingRequest? = null
+        var futureToCancel: Future<*>? = null
+        var releasedReadySlot = false
         synchronized(lock) {
             val request = inFlight[key] ?: return@synchronized
             request.callbacks.removeAll { it.id == callback.id }
             if (request.callbacks.isNotEmpty()) return@synchronized
             inFlight.remove(key)
-            request.cancellation.cancel()
+            requestToCancel = request
             val state = policyStates[key.policy]
             if (!request.submitted) {
                 state?.pending?.remove(request)
                 removePolicyStateIfEmptyLocked(key.policy)
             } else {
                 val future = request.future
-                if (future != null && !request.started.get() && globalExecutor.remove(future as Runnable)) {
-                    future.cancel(false)
-                    next = releaseSubmittedSlotLocked(key.policy)
-                } else if (future != null && request.started.get()) {
-                    future.cancel(true)
+                if (future == null && readyToSubmit.remove(request)) {
+                    releaseSubmittedSlotLocked(key.policy)
+                    releasedReadySlot = true
+                } else {
+                    futureToCancel = future
                 }
             }
         }
-        next?.let(::submitRequest)
+        val request = requestToCancel ?: return
+        runCatching { request.cancellation.cancel() }
+        val future = futureToCancel
+        if (future != null) {
+            val removed = !request.started.get() &&
+                runCatching { globalExecutor.remove(future as Runnable) }.getOrDefault(false)
+            if (removed) {
+                runCatching { future.cancel(false) }
+                synchronized(lock) { releaseSubmittedSlotLocked(key.policy) }
+                releasedReadySlot = true
+            } else if (request.started.get()) {
+                runCatching { future.cancel(true) }
+            }
+        }
+        if (releasedReadySlot) drainSubmissions()
     }
 
-    private fun releaseSubmittedSlotLocked(policy: ImageLoadingPolicy): PendingRequest? {
-        val state = policyStates[policy] ?: return null
+    private fun releaseSubmittedSlotLocked(policy: ImageLoadingPolicy) {
+        val state = policyStates[policy] ?: return
         state.submittedCount = (state.submittedCount - 1).coerceAtLeast(0)
         val next = state.pending.pollFirst()
         if (next != null) {
             state.submittedCount += 1
             next.submitted = true
+            readyToSubmit.addLast(next)
         }
         removePolicyStateIfEmptyLocked(policy)
-        return next
     }
 
     private fun removePolicyStateIfEmptyLocked(policy: ImageLoadingPolicy) {
