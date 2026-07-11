@@ -471,10 +471,20 @@ impl Schema {
 
         let children = spec.content.minimal_match_with(
             |symbol| {
-                let mut candidates = self
-                    .all_nodes()
-                    .filter(|candidate| node_spec_matches_symbol(candidate, symbol))
-                    .collect::<Vec<_>>();
+                let mut candidates = Vec::new();
+                for candidate in self.all_nodes() {
+                    if !budget.consume_work() {
+                        return None;
+                    }
+                    if node_spec_matches_symbol(candidate, symbol) {
+                        candidates.push(candidate);
+                    }
+                }
+                for _ in &candidates {
+                    if !budget.consume_work() {
+                        return None;
+                    }
+                }
                 candidates.sort_by_key(|candidate| default_node_priority(candidate));
                 candidates.into_iter().find_map(|candidate| {
                     self.construct_default_node(candidate, visiting, depth + 1, budget)
@@ -491,13 +501,12 @@ impl Schema {
         let attrs = spec
             .attrs
             .iter()
-            .filter_map(|(name, attr)| {
-                attr.has_default.then(|| {
-                    (
-                        name.clone(),
-                        attr.default.clone().expect("validated explicit default"),
-                    )
-                })
+            .filter(|(_, attr)| attr.has_default)
+            .map(|(name, attr)| {
+                (
+                    name.clone(),
+                    attr.default.clone().expect("validated explicit default"),
+                )
             })
             .collect();
         Some(if spec.is_void {

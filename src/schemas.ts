@@ -215,26 +215,28 @@ export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): D
         const children = minimalContentMatch(
             node.content ?? '',
             (symbol) => {
-                const candidates = schema.nodes
-                    .filter(
-                        (candidate) =>
-                            candidate.name === symbol ||
-                            candidate.group?.split(/\s+/).some((group) => group === symbol)
+                const candidates: NodeSpec[] = [];
+                for (const candidate of schema.nodes) {
+                    if (!consumeWork()) return undefined;
+                    if (
+                        candidate.name === symbol ||
+                        candidate.group?.split(/\s+/).some((group) => group === symbol)
                     )
-                    .sort((left, right) => {
-                        const priority = (candidate: NodeSpec): number => {
-                            if (
-                                candidate.role === 'textBlock' &&
-                                (candidate.htmlTag === 'p' || candidate.name === 'paragraph')
-                            ) {
-                                return 0;
-                            }
-                            return candidate.role === 'textBlock' ? 1 : 2;
-                        };
-                        return (
-                            priority(left) - priority(right) || left.name.localeCompare(right.name)
-                        );
-                    });
+                        candidates.push(candidate);
+                }
+                for (const _candidate of candidates) if (!consumeWork()) return undefined;
+                candidates.sort((left, right) => {
+                    const priority = (candidate: NodeSpec): number => {
+                        if (
+                            candidate.role === 'textBlock' &&
+                            (candidate.htmlTag === 'p' || candidate.name === 'paragraph')
+                        ) {
+                            return 0;
+                        }
+                        return candidate.role === 'textBlock' ? 1 : 2;
+                    };
+                    return priority(left) - priority(right) || left.name.localeCompare(right.name);
+                });
                 for (const candidate of candidates) {
                     const constructed = constructNode(candidate, visiting, depth + 1);
                     if (constructed) return constructed;

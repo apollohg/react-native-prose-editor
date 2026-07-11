@@ -1613,7 +1613,7 @@ impl Editor {
         commands.insert("outdentList".to_string(), self.can_outdent_list_item(pos));
         commands.insert(
             "toggleBlockquote".to_string(),
-            self.can_toggle_blockquote_at(pos),
+            self.can_toggle_blockquote_at(&self.selection),
         );
         for level in 1..=6 {
             commands.insert(
@@ -1663,27 +1663,19 @@ impl Editor {
 
         // List wrap commands: true if already in a list (toggle/switch) or if
         // the parent context allows list nodes.
-        let bullet_list = self
-            .schema
-            .all_nodes()
-            .find(|spec| matches!(spec.role, NodeRole::List { ordered: false }))
-            .map(|spec| spec.name.clone());
-        let ordered_list = self
-            .schema
-            .all_nodes()
-            .find(|spec| matches!(spec.role, NodeRole::List { ordered: true }))
-            .map(|spec| spec.name.clone());
+        let bullet_list = self.command_list_type(false);
+        let ordered_list = self.command_list_type(true);
         commands.insert(
             "wrapBulletList".to_string(),
             bullet_list
                 .as_deref()
-                .is_some_and(|name| self.can_wrap_in_list_at(pos, name)),
+                .is_some_and(|name| self.can_apply_list_type(&self.selection, name)),
         );
         commands.insert(
             "wrapOrderedList".to_string(),
             ordered_list
                 .as_deref()
-                .is_some_and(|name| self.can_wrap_in_list_at(pos, name)),
+                .is_some_and(|name| self.can_apply_list_type(&self.selection, name)),
         );
 
         ActiveState {
@@ -2171,98 +2163,100 @@ impl Editor {
         text_block_start + node.node_size()
     }
 
-    /// Check if the current position can be wrapped in a list.
-    ///
-    /// Returns `true` if:
-    /// - The cursor is already inside a list (toggle off / switch type), or
-    /// - The parent context at doc level allows list nodes.
-    fn can_wrap_in_list_at(&self, pos: u32, list_type: &str) -> bool {
-        // If already in a list, wrapping is possible (toggle/switch).
-        if let Some((_, list)) = self.containing_list_node_at(pos) {
-            let Some(target) = self.schema.node(list_type) else {
-                return false;
-            };
-            let types = list
-                .content()
-                .map(|c| c.iter().map(Node::node_type).collect::<Vec<_>>())
-                .unwrap_or_default();
-            return target.content.matches(&types, |child, symbol| {
-                self.schema
-                    .node(child)
-                    .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
-            });
-        }
-
-        // Otherwise, check if the doc-level context accepts list nodes.
-        let Some(range) = self.selected_block_range(pos, pos) else {
-            return false;
-        };
-        let doc = self.backend.document();
-        let parent = if range.parent_path.is_empty() {
-            doc.root()
+    fn command_list_type(&self, ordered: bool) -> Option<String> {
+        let conventional = if ordered {
+            ["orderedList", "ordered_list"]
         } else {
-            let Some(parent) = doc.node_at(&range.parent_path) else {
-                return false;
-            };
-            parent
+            ["bulletList", "bullet_list"]
         };
-        let Some(spec) = self.schema.node(parent.node_type()) else {
-            return false;
-        };
-        let Some(list_spec) = self.schema.node(list_type) else {
-            return false;
-        };
-        let Some(item_type) = self.schema.list_item_type_for(list_type) else {
-            return false;
-        };
-        let Some(item_spec) = self.schema.node(&item_type) else {
-            return false;
-        };
-        if list_spec.attrs.values().any(|attr| !attr.has_default)
-            || item_spec.attrs.values().any(|attr| !attr.has_default)
-        {
-            return false;
-        }
-        if range.selected_blocks.iter().any(|block| {
-            !item_spec
-                .content
-                .matches(&[block.node_type()], |child, symbol| {
-                    self.schema
-                        .node(child)
-                        .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
-                })
-        }) {
-            return false;
-        }
-        let items = vec![item_type.as_str(); range.selected_blocks.len()];
-        list_spec.content.matches(&items, |child, symbol| {
-            self.schema
-                .node(child)
-                .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
-        }) && self.parent_accepts_range_replacement(parent, spec, &range, &[list_type])
+        conventional.into_iter().find(|name| self.schema.node(name).is_some()).map(str::to_string).or_else(|| {
+            let mut names = self.schema.all_nodes().filter(|spec| matches!(spec.role, NodeRole::List { ordered: value } if value == ordered)).map(|spec| spec.name.clone()).collect::<Vec<_>>();
+            names.sort();
+            names.into_iter().next()
+        })
     }
 
-    fn can_toggle_blockquote_at(&self, pos: u32) -> bool {
+    fn can_apply_list_type(&self, selection: &Selection, list_type: &str) -> bool {
+        let doc = self.backend.document();
+        let pos = selection.from(doc);
+        let mut tx = Transaction::new(Source::Format);
+        if let Some((start, list)) = self.containing_list_node_at(pos) {
+            if list.node_type() == list_type {
+                tx.add_step(Step::UnwrapFromList { pos });
+            } else {
+                tx.add_step(Step::ReplaceRange {
+                    from: start,
+                    to: start + list.node_size(),
+                    content: Fragment::from(vec![Node::element(
+                        list_type.to_string(),
+                        list_attrs_for_type(list_type, list.attrs()),
+                        list.content().cloned().unwrap_or_else(Fragment::empty),
+                    )]),
+                });
+            }
+        } else {
+            let Some(item_type) = self.schema.list_item_type_for(list_type) else {
+                return false;
+            };
+            let range = self.selected_block_range(selection.from(doc), selection.to(doc));
+            let in_quote = range
+                .as_ref()
+                .and_then(|range| doc.node_at(&range.parent_path))
+                .and_then(|parent| self.schema.node(parent.node_type()))
+                .is_some_and(|spec| spec.html_tag.as_deref() == Some("blockquote"));
+            if let Some(range) = range.filter(|_| in_quote) {
+                let items = range
+                    .selected_blocks
+                    .into_iter()
+                    .map(|block| {
+                        Node::element(
+                            item_type.clone(),
+                            HashMap::new(),
+                            Fragment::from(vec![block]),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let list =
+                    Node::element(list_type.to_string(), HashMap::new(), Fragment::from(items));
+                tx.add_step(Step::ReplaceRange {
+                    from: range.replace_from,
+                    to: range.replace_to,
+                    content: Fragment::from(vec![list]),
+                });
+            } else {
+                tx.add_step(Step::WrapInList {
+                    from: selection.from(doc),
+                    to: selection.to(doc),
+                    list_type: list_type.to_string(),
+                    item_type,
+                    attrs: HashMap::new(),
+                    item_attrs: HashMap::new(),
+                });
+            }
+        }
+        tx.apply(doc, &self.schema).is_ok()
+    }
+
+    fn can_toggle_blockquote_at(&self, selection: &Selection) -> bool {
+        let doc = self.backend.document();
+        let pos = selection.from(doc);
         let Some(blockquote_type) = self.blockquote_node_name() else {
             return false;
         };
-        if self.containing_blockquote_node_at(pos).is_some() {
-            return true;
-        }
-
-        let Some(range) = self.selected_block_range(pos, pos) else {
-            return false;
-        };
-        let doc = self.backend.document();
-        let parent = if range.parent_path.is_empty() {
-            doc.root()
-        } else {
-            let Some(parent) = doc.node_at(&range.parent_path) else {
+        if let Some((start, _, quote)) = self.containing_blockquote_node_at(pos) {
+            let Some(content) = quote.content() else {
                 return false;
             };
-            parent
-        };
-        let Some(spec) = self.schema.node(parent.node_type()) else {
+            let mut tx = Transaction::new(Source::Format);
+            tx.add_step(Step::ReplaceRange {
+                from: start,
+                to: start + quote.node_size(),
+                content: Fragment::from(content.iter().cloned().collect::<Vec<_>>()),
+            });
+            return tx.apply(doc, &self.schema).is_ok();
+        }
+
+        let Some(range) = self.selected_block_range(selection.from(doc), selection.to(doc)) else {
             return false;
         };
         let Some(quote_spec) = self.schema.node(&blockquote_type) else {
@@ -2273,16 +2267,25 @@ impl Editor {
             .iter()
             .map(Node::node_type)
             .collect::<Vec<_>>();
-        quote_spec.content.matches(&selected, |child, symbol| {
+        if !quote_spec.content.matches(&selected, |child, symbol| {
             self.schema
                 .node(child)
                 .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
-        }) && self.parent_accepts_range_replacement(
-            parent,
-            spec,
-            &range,
-            &[blockquote_type.as_str()],
-        )
+        }) {
+            return false;
+        }
+        let quote = Node::element(
+            blockquote_type,
+            HashMap::new(),
+            Fragment::from(range.selected_blocks.clone()),
+        );
+        let mut tx = Transaction::new(Source::Format);
+        tx.add_step(Step::ReplaceRange {
+            from: range.replace_from,
+            to: range.replace_to,
+            content: Fragment::from(vec![quote]),
+        });
+        tx.apply(doc, &self.schema).is_ok()
     }
 
     fn can_toggle_heading(&self, level: u8) -> bool {
@@ -2327,7 +2330,11 @@ impl Editor {
         let Some(parent) = self.backend.document().node_at(&range.parent_path) else {
             return Ok(None);
         };
-        if parent.node_type() != "blockquote" {
+        let is_quote = self
+            .schema
+            .node(parent.node_type())
+            .is_some_and(|spec| spec.html_tag.as_deref() == Some("blockquote"));
+        if !is_quote {
             return Ok(None);
         }
 
