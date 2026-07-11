@@ -10,6 +10,171 @@ final class RenderBridgeTests: XCTestCase {
     private let baseFont = UIFont.systemFont(ofSize: 16)
     private let textColor = UIColor.black
 
+    func testImageLoadingPolicyDefaultsMatchPublicContract() {
+        let policy = ImageLoadingPolicy.from(json: nil)
+
+        XCTAssertEqual(policy.maxSourceBytes, 10 * 1024 * 1024)
+        XCTAssertEqual(policy.connectTimeout, 10)
+        XCTAssertEqual(policy.readTimeout, 20)
+        XCTAssertEqual(policy.maxConcurrentRequests, 2)
+        XCTAssertEqual(policy.maxPendingRequests, 64)
+        XCTAssertEqual(policy.maxDecodeDimension, 2_048)
+    }
+
+    func testImageLoadingPolicyParsesPositiveIntegersAndDefaultsInvalidValues() {
+        let policy = ImageLoadingPolicy.from(json: """
+        {
+          "maxSourceBytes": 4096,
+          "connectTimeoutMs": 1500,
+          "readTimeoutMs": 2750,
+          "maxConcurrentRequests": 3,
+          "maxPendingRequests": 7,
+          "maxDecodeDimensionPx": 512
+        }
+        """)
+
+        XCTAssertEqual(policy.maxSourceBytes, 4096)
+        XCTAssertEqual(policy.connectTimeout, 1.5)
+        XCTAssertEqual(policy.readTimeout, 2.75)
+        XCTAssertEqual(policy.maxConcurrentRequests, 3)
+        XCTAssertEqual(policy.maxPendingRequests, 7)
+        XCTAssertEqual(policy.maxDecodeDimension, 512)
+
+        let invalid = ImageLoadingPolicy.from(json: """
+        {"maxSourceBytes":0,"connectTimeoutMs":-1,"readTimeoutMs":"20","maxConcurrentRequests":1.5,"maxPendingRequests":null,"maxDecodeDimensionPx":0}
+        """)
+        XCTAssertEqual(invalid, .default)
+    }
+
+    func testImageLoaderRejectsOversizedDataURLWithoutDecoding() {
+        let decoder = RecordingImageDecoder()
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(maxSourceBytes: 3),
+            transport: HoldingImageTransport(),
+            decoder: decoder
+        )
+        let completion = expectation(description: "oversized source rejected")
+
+        XCTAssertTrue(owner.loadImage(source: "data:image/png;base64,AQIDBA==") { image in
+            XCTAssertNil(image)
+            completion.fulfill()
+        })
+
+        wait(for: [completion], timeout: 1)
+        XCTAssertEqual(decoder.decodeCount, 0)
+    }
+
+    func testImageLoaderRejectsTimeoutAndOversizedRemoteResponses() {
+        let timeoutTransport = ImmediateImageTransport(result: .failure(URLError(.timedOut)))
+        let timeoutOwner = RenderImageLoadOwner(
+            policy: imagePolicy(maxSourceBytes: 4, connectTimeout: 1.5, readTimeout: 2.75),
+            transport: timeoutTransport
+        )
+        let timeout = expectation(description: "timeout")
+        XCTAssertTrue(timeoutOwner.loadImage(source: "https://example.com/timeout.png") { image in
+            XCTAssertNil(image)
+            timeout.fulfill()
+        })
+
+        let oversizedTransport = ImmediateImageTransport(result: .success(Data(repeating: 1, count: 5)))
+        let oversizedOwner = RenderImageLoadOwner(
+            policy: imagePolicy(maxSourceBytes: 4),
+            transport: oversizedTransport
+        )
+        let oversized = expectation(description: "oversized response")
+        XCTAssertTrue(oversizedOwner.loadImage(source: "https://example.com/large.png") { image in
+            XCTAssertNil(image)
+            oversized.fulfill()
+        })
+
+        wait(for: [timeout, oversized], timeout: 1)
+        XCTAssertEqual(timeoutTransport.receivedPolicy?.connectTimeout, 1.5)
+        XCTAssertEqual(timeoutTransport.receivedPolicy?.readTimeout, 2.75)
+    }
+
+    func testImageLoaderBoundsPendingWorkAndCancelsOwnerGeneration() {
+        let transport = HoldingImageTransport()
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(maxConcurrentRequests: 1, maxPendingRequests: 1),
+            transport: transport
+        )
+        let cancelled = expectation(description: "cancelled work does not complete")
+        cancelled.isInverted = true
+
+        XCTAssertTrue(owner.loadImage(source: "https://example.com/one.png") { _ in cancelled.fulfill() })
+        XCTAssertTrue(owner.loadImage(source: "https://example.com/two.png") { _ in cancelled.fulfill() })
+        XCTAssertFalse(owner.loadImage(source: "https://example.com/three.png") { _ in cancelled.fulfill() })
+        XCTAssertEqual(transport.requestCount, 1)
+
+        owner.cancelAll()
+
+        XCTAssertEqual(transport.cancelCount, 1)
+        transport.completeAll(with: .success(Data()))
+        wait(for: [cancelled], timeout: 0.1)
+    }
+
+    func testImageLoadReceiptCancelsOnlyItsRequest() {
+        let transport = HoldingImageTransport()
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(maxConcurrentRequests: 2),
+            transport: transport
+        )
+
+        let first = owner.startImageLoad(source: "https://example.com/one.png") { _ in }
+        _ = owner.startImageLoad(source: "https://example.com/two.png") { _ in }
+        first?.cancel()
+
+        XCTAssertEqual(transport.requestCount, 2)
+        XCTAssertEqual(transport.cancelCount, 1)
+    }
+
+    func testDataURLDecodeRunsOffMainAndDeliversOnMain() {
+        let decoder = RecordingImageDecoder(image: onePixelImage())
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(),
+            transport: HoldingImageTransport(),
+            decoder: decoder
+        )
+        let completion = expectation(description: "decoded")
+
+        XCTAssertTrue(owner.loadImage(source: "data:image/png;base64,AQID") { image in
+            XCTAssertTrue(Thread.isMainThread)
+            XCTAssertNotNil(image)
+            completion.fulfill()
+        })
+
+        wait(for: [completion], timeout: 1)
+        XCTAssertEqual(decoder.calledOnMainThread, false)
+    }
+
+    func testMeasureHeightDoesNotStartImageLoads() {
+        let transport = HoldingImageTransport()
+        let owner = RenderImageLoadOwner(policy: imagePolicy(), transport: transport)
+        let json = """
+        [{"type":"voidBlock","nodeType":"image","docPos":1,"attrs":{"src":"https://example.com/image.png"}}]
+        """
+
+        _ = owner.withCurrent {
+            RenderBridge.measureHeight(forRenderJSON: json, themeJSON: nil, width: 320)
+        }
+
+        XCTAssertEqual(transport.requestCount, 0)
+    }
+
+    func testEditorAndViewerApplyImageLoadingPolicyJson() {
+        let json = """
+        {"maxSourceBytes":1234,"connectTimeoutMs":2500,"readTimeoutMs":3500,"maxConcurrentRequests":4,"maxPendingRequests":8,"maxDecodeDimensionPx":640}
+        """
+        let editor = NativeEditorExpoView()
+        let viewer = NativeProseViewerExpoView()
+
+        editor.setImageLoadingPolicyJson(json)
+        viewer.setImageLoadingPolicyJson(json)
+
+        XCTAssertEqual(editor.imageLoadingPolicy.maxSourceBytes, 1234)
+        XCTAssertEqual(viewer.imageLoadingPolicy.maxDecodeDimension, 640)
+    }
+
     func testViewerEmptyCollapseDetectsDocumentsWithOnlyEmptyTopLevelParagraphs() {
         let json = """
         [
@@ -2406,5 +2571,112 @@ final class RenderBridgeTests: XCTestCase {
 
         XCTAssertEqual(bounds?.width ?? 0, 140, accuracy: 0.1)
         XCTAssertEqual(bounds?.height ?? 0, 80, accuracy: 0.1)
+    }
+}
+
+private func imagePolicy(
+    maxSourceBytes: Int = 10 * 1024 * 1024,
+    connectTimeout: TimeInterval = 10,
+    readTimeout: TimeInterval = 20,
+    maxConcurrentRequests: Int = 2,
+    maxPendingRequests: Int = 64,
+    maxDecodeDimension: Int = 2_048
+) -> ImageLoadingPolicy {
+    ImageLoadingPolicy(
+        maxSourceBytes: maxSourceBytes,
+        connectTimeout: connectTimeout,
+        readTimeout: readTimeout,
+        maxConcurrentRequests: maxConcurrentRequests,
+        maxPendingRequests: maxPendingRequests,
+        maxDecodeDimension: maxDecodeDimension
+    )
+}
+
+private func onePixelImage() -> UIImage {
+    let renderer = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1))
+    return renderer.image { context in
+        UIColor.red.setFill()
+        context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+}
+
+private final class RecordingImageDecoder: ImageDataDecoding {
+    private let lock = NSLock()
+    private let result: UIImage?
+    private(set) var decodeCount = 0
+    private(set) var calledOnMainThread: Bool?
+
+    init(image: UIImage? = nil) {
+        result = image
+    }
+
+    func decode(_ data: Data, maxDimension: Int) -> UIImage? {
+        lock.lock()
+        decodeCount += 1
+        calledOnMainThread = Thread.isMainThread
+        lock.unlock()
+        return result
+    }
+}
+
+private final class TestImageLoadingTask: ImageLoadingTask {
+    private let onCancel: () -> Void
+
+    init(onCancel: @escaping () -> Void = {}) {
+        self.onCancel = onCancel
+    }
+
+    func cancel() {
+        onCancel()
+    }
+}
+
+private final class ImmediateImageTransport: ImageLoadingTransport {
+    let result: Result<Data, Error>
+    private(set) var receivedPolicy: ImageLoadingPolicy?
+
+    init(result: Result<Data, Error>) {
+        self.result = result
+    }
+
+    func load(
+        _ url: URL,
+        policy: ImageLoadingPolicy,
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) -> ImageLoadingTask {
+        receivedPolicy = policy
+        completion(result)
+        return TestImageLoadingTask()
+    }
+}
+
+private final class HoldingImageTransport: ImageLoadingTransport {
+    private let lock = NSLock()
+    private var completions: [(Result<Data, Error>) -> Void] = []
+    private(set) var requestCount = 0
+    private(set) var cancelCount = 0
+
+    func load(
+        _ url: URL,
+        policy: ImageLoadingPolicy,
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) -> ImageLoadingTask {
+        lock.lock()
+        requestCount += 1
+        completions.append(completion)
+        lock.unlock()
+        return TestImageLoadingTask { [weak self] in
+            self?.lock.lock()
+            self?.cancelCount += 1
+            self?.lock.unlock()
+        }
+    }
+
+    func completeAll(with result: Result<Data, Error>) {
+        lock.lock()
+        let callbacks = completions
+        completions.removeAll()
+        lock.unlock()
+        callbacks.forEach { $0(result) }
     }
 }

@@ -7,6 +7,7 @@ final class NativeProseViewerExpoView: ExpoView {
     let onPressMention = EventDispatcher()
 
     private let textView = EditorTextView(frame: .zero, textContainer: nil)
+    private let imageLoadOwner = RenderImageLoadOwner(policy: .default)
     private var lastRenderJSON: String?
     private var lastThemeJSON: String?
     private var lastEmittedContentHeight: CGFloat = 0
@@ -28,6 +29,21 @@ final class NativeProseViewerExpoView: ExpoView {
     required init(appContext: AppContext? = nil) {
         super.init(appContext: appContext)
         setupView()
+    }
+
+    deinit {
+        imageLoadOwner.cancelAll()
+    }
+
+    var imageLoadingPolicy: ImageLoadingPolicy {
+        imageLoadOwner.policy
+    }
+
+    func setImageLoadingPolicyJson(_ json: String?) {
+        let policy = ImageLoadingPolicy.from(json: json)
+        guard policy != imageLoadOwner.policy else { return }
+        imageLoadOwner.updatePolicy(policy)
+        applyRenderJSON()
     }
 
     private func setupView() {
@@ -106,7 +122,9 @@ final class NativeProseViewerExpoView: ExpoView {
 
     private func applyRenderJSON() {
         updateCollapsedEmptyState()
-        textView.applyRenderJSON(lastRenderJSON ?? "[]")
+        imageLoadOwner.withCurrent {
+            textView.applyRenderJSON(lastRenderJSON ?? "[]")
+        }
         textView.isHidden = isCollapsedEmptyContent
         lastMeasuredWidth = 0
         invalidateIntrinsicContentSize()

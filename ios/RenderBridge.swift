@@ -1,4 +1,66 @@
 import UIKit
+import ImageIO
+
+struct ImageLoadingPolicy: Equatable {
+    static let `default` = ImageLoadingPolicy(
+        maxSourceBytes: 10 * 1024 * 1024,
+        connectTimeout: 10,
+        readTimeout: 20,
+        maxConcurrentRequests: 2,
+        maxPendingRequests: 64,
+        maxDecodeDimension: 2_048
+    )
+
+    let maxSourceBytes: Int
+    let connectTimeout: TimeInterval
+    let readTimeout: TimeInterval
+    let maxConcurrentRequests: Int
+    let maxPendingRequests: Int
+    let maxDecodeDimension: Int
+
+    static func from(json: String?) -> ImageLoadingPolicy {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let values = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return .default
+        }
+        let defaults = ImageLoadingPolicy.default
+        func positiveInteger(_ key: String, fallback: Int) -> Int {
+            guard let number = values[key] as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite,
+                  number.doubleValue.rounded(.towardZero) == number.doubleValue,
+                  number.int64Value > 0,
+                  number.int64Value <= Int64(Int.max)
+            else {
+                return fallback
+            }
+            return number.intValue
+        }
+        return ImageLoadingPolicy(
+            maxSourceBytes: positiveInteger("maxSourceBytes", fallback: defaults.maxSourceBytes),
+            connectTimeout: TimeInterval(
+                positiveInteger("connectTimeoutMs", fallback: Int(defaults.connectTimeout * 1_000))
+            ) / 1_000,
+            readTimeout: TimeInterval(
+                positiveInteger("readTimeoutMs", fallback: Int(defaults.readTimeout * 1_000))
+            ) / 1_000,
+            maxConcurrentRequests: positiveInteger(
+                "maxConcurrentRequests",
+                fallback: defaults.maxConcurrentRequests
+            ),
+            maxPendingRequests: positiveInteger(
+                "maxPendingRequests",
+                fallback: defaults.maxPendingRequests
+            ),
+            maxDecodeDimension: positiveInteger(
+                "maxDecodeDimensionPx",
+                fallback: defaults.maxDecodeDimension
+            )
+        )
+    }
+}
 
 extension Notification.Name {
     static let editorImageAttachmentDidLoad = Notification.Name(
@@ -8,52 +70,436 @@ extension Notification.Name {
 
 private enum RenderImageCache {
     static let cache = NSCache<NSString, UIImage>()
-    static let stateQueue = DispatchQueue(label: "com.apollohg.editor.image-loader-state")
-    static let queue: OperationQueue = {
-        let queue = OperationQueue()
-        queue.name = "com.apollohg.editor.image-loader"
-        queue.qualityOfService = .userInitiated
-        queue.maxConcurrentOperationCount = 2
-        return queue
-    }()
-    private static var inFlight: [String: [(UIImage?) -> Void]] = [:]
 
-    static func load(
-        source: String,
-        url: URL,
-        completion: @escaping (UIImage?) -> Void
+    static func key(source: String, maxDimension: Int) -> NSString {
+        "\(maxDimension):\(source)" as NSString
+    }
+}
+
+protocol ImageLoadingTask: AnyObject {
+    func cancel()
+}
+
+protocol ImageLoadingTransport: AnyObject {
+    func load(
+        _ url: URL,
+        policy: ImageLoadingPolicy,
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) -> ImageLoadingTask
+}
+
+protocol ImageDataDecoding: AnyObject {
+    func decode(_ data: Data, maxDimension: Int) -> UIImage?
+}
+
+private final class DefaultImageDataDecoder: ImageDataDecoding {
+    func decode(_ data: Data, maxDimension: Int) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxDimension,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else {
+            return nil
+        }
+        return UIImage(cgImage: image)
+    }
+}
+
+private final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionDataDelegate {
+    private let policy: ImageLoadingPolicy
+    private let completion: (Result<Data, Error>) -> Void
+    private let lock = NSLock()
+    private var buffer = Data()
+    private var session: URLSession?
+    private var task: URLSessionDataTask?
+    private var readTimeoutWorkItem: DispatchWorkItem?
+    private var finished = false
+
+    init(url: URL, policy: ImageLoadingPolicy, completion: @escaping (Result<Data, Error>) -> Void) {
+        self.policy = policy
+        self.completion = completion
+        super.init()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = policy.readTimeout
+        configuration.timeoutIntervalForResource = policy.connectTimeout + policy.readTimeout
+        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        self.session = session
+        var request = URLRequest(url: url)
+        request.timeoutInterval = policy.connectTimeout
+        let task = session.dataTask(with: request)
+        self.task = task
+        task.resume()
+    }
+
+    func cancel() {
+        finish(.failure(URLError(.cancelled)), deliver: false)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
-        if let cached = cache.object(forKey: source as NSString) {
-            completion(cached)
+        if response.expectedContentLength > Int64(policy.maxSourceBytes) {
+            completionHandler(.cancel)
+            finish(.failure(URLError(.dataLengthExceedsMaximum)))
+            return
+        }
+        resetReadTimeout()
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        let exceedsLimit = buffer.count > policy.maxSourceBytes - data.count
+        if !exceedsLimit {
+            buffer.append(data)
+        }
+        lock.unlock()
+        guard !exceedsLimit else {
+            finish(.failure(URLError(.dataLengthExceedsMaximum)))
+            return
+        }
+        resetReadTimeout()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        if let error {
+            finish(.failure(error))
+        } else {
+            lock.lock()
+            let data = buffer
+            lock.unlock()
+            finish(.success(data))
+        }
+    }
+
+    private func resetReadTimeout() {
+        lock.lock()
+        readTimeoutWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.finish(.failure(URLError(.timedOut)))
+        }
+        readTimeoutWorkItem = item
+        lock.unlock()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + policy.readTimeout, execute: item)
+    }
+
+    private func finish(_ result: Result<Data, Error>, deliver: Bool = true) {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        readTimeoutWorkItem?.cancel()
+        let task = self.task
+        let session = self.session
+        self.task = nil
+        self.session = nil
+        lock.unlock()
+        task?.cancel()
+        session?.invalidateAndCancel()
+        if deliver {
+            completion(result)
+        }
+    }
+}
+
+private final class URLSessionImageTransport: ImageLoadingTransport {
+    func load(
+        _ url: URL,
+        policy: ImageLoadingPolicy,
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) -> ImageLoadingTask {
+        URLSessionImageTask(url: url, policy: policy, completion: completion)
+    }
+}
+
+final class RenderImageLoadOwner {
+    final class ImageLoadReceipt {
+        private let lock = NSLock()
+        private var cancellation: (() -> Void)?
+
+        fileprivate init(cancellation: @escaping () -> Void) {
+            self.cancellation = cancellation
+        }
+
+        func cancel() {
+            lock.lock()
+            let cancellation = self.cancellation
+            self.cancellation = nil
+            lock.unlock()
+            cancellation?()
+        }
+    }
+
+    private struct Request {
+        let id: UUID
+        let source: String
+        let generation: UInt64
+        let completion: (UIImage?) -> Void
+    }
+
+    private final class ActiveRequest {
+        let request: Request
+        var task: ImageLoadingTask?
+
+        init(request: Request) {
+            self.request = request
+        }
+    }
+
+    private static let contextKey = "com.apollohg.editor.image-load-owner"
+    private static let suppressKey = "com.apollohg.editor.suppress-image-loads"
+    static let shared = RenderImageLoadOwner(policy: .default)
+
+    private let stateQueue = DispatchQueue(label: "com.apollohg.editor.image-owner-state")
+    private let decodeQueue = DispatchQueue(
+        label: "com.apollohg.editor.image-decode",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+    private let transport: ImageLoadingTransport
+    private let decoder: ImageDataDecoding
+    private var storedPolicy: ImageLoadingPolicy
+    private var generation: UInt64 = 0
+    private var pending: [Request] = []
+    private var active: [UUID: ActiveRequest] = [:]
+
+    init(
+        policy: ImageLoadingPolicy,
+        transport: ImageLoadingTransport = URLSessionImageTransport(),
+        decoder: ImageDataDecoding = DefaultImageDataDecoder()
+    ) {
+        storedPolicy = policy
+        self.transport = transport
+        self.decoder = decoder
+    }
+
+    var policy: ImageLoadingPolicy {
+        stateQueue.sync { storedPolicy }
+    }
+
+    func updatePolicy(_ policy: ImageLoadingPolicy) {
+        stateQueue.sync {
+            cancelAllLocked()
+            storedPolicy = policy
+        }
+    }
+
+    @discardableResult
+    func loadImage(source: String, completion: @escaping (UIImage?) -> Void) -> Bool {
+        startImageLoad(source: source, completion: completion) != nil
+    }
+
+    @discardableResult
+    func startImageLoad(
+        source: String,
+        completion: @escaping (UIImage?) -> Void
+    ) -> ImageLoadReceipt? {
+        let request: Request? = stateQueue.sync {
+            let request = Request(
+                id: UUID(),
+                source: source,
+                generation: generation,
+                completion: completion
+            )
+            if active.count >= storedPolicy.maxConcurrentRequests {
+                guard pending.count < storedPolicy.maxPendingRequests else { return nil }
+                pending.append(request)
+                return request
+            }
+            startLocked(request)
+            return request
+        }
+        guard let request else { return nil }
+        return ImageLoadReceipt { [weak self] in
+            self?.cancel(request)
+        }
+    }
+
+    func cancelAll() {
+        stateQueue.sync { cancelAllLocked() }
+    }
+
+    func withCurrent<T>(_ body: () throws -> T) rethrows -> T {
+        let dictionary = Thread.current.threadDictionary
+        let previous = dictionary[Self.contextKey]
+        dictionary[Self.contextKey] = self
+        defer {
+            if let previous {
+                dictionary[Self.contextKey] = previous
+            } else {
+                dictionary.removeObject(forKey: Self.contextKey)
+            }
+        }
+        return try body()
+    }
+
+    static func withoutLoading<T>(_ body: () throws -> T) rethrows -> T {
+        let dictionary = Thread.current.threadDictionary
+        let previous = dictionary[suppressKey]
+        dictionary[suppressKey] = true
+        defer {
+            if let previous {
+                dictionary[suppressKey] = previous
+            } else {
+                dictionary.removeObject(forKey: suppressKey)
+            }
+        }
+        return try body()
+    }
+
+    static var current: RenderImageLoadOwner? {
+        guard Thread.current.threadDictionary[suppressKey] == nil else { return nil }
+        return (Thread.current.threadDictionary[contextKey] as? RenderImageLoadOwner) ?? .shared
+    }
+
+    private func startLocked(_ request: Request) {
+        let activeRequest = ActiveRequest(request: request)
+        active[request.id] = activeRequest
+        let policy = storedPolicy
+        let cacheKey = RenderImageCache.key(source: request.source, maxDimension: policy.maxDecodeDimension)
+        if let cached = RenderImageCache.cache.object(forKey: cacheKey) {
+            finishLocked(request, image: cached)
             return
         }
 
-        var shouldStartLoad = false
-        stateQueue.sync {
-            if inFlight[source] != nil {
-                inFlight[source]?.append(completion)
-            } else {
-                inFlight[source] = [completion]
-                shouldStartLoad = true
+        if Self.isDataURL(request.source) {
+            guard Self.estimatedDecodedByteCount(request.source) <= policy.maxSourceBytes else {
+                finishLocked(request, image: nil)
+                return
+            }
+            decodeQueue.async { [weak self] in
+                guard let self else { return }
+                let data = Self.decodeDataURL(request.source, maxBytes: policy.maxSourceBytes)
+                let image = data.flatMap {
+                    self.decoder.decode($0, maxDimension: policy.maxDecodeDimension)
+                }
+                self.finish(request, image: image, cacheKey: cacheKey)
+            }
+            return
+        }
+
+        guard let url = URL(string: request.source),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http"
+        else {
+            finishLocked(request, image: nil)
+            return
+        }
+        activeRequest.task = transport.load(url, policy: policy) { [weak self] result in
+            guard let self else { return }
+            self.stateQueue.async {
+                guard request.generation == self.generation,
+                      self.active[request.id] != nil
+                else {
+                    return
+                }
+                self.decodeQueue.async {
+                    let image: UIImage?
+                    switch result {
+                    case let .success(data) where data.count <= policy.maxSourceBytes:
+                        image = self.decoder.decode(data, maxDimension: policy.maxDecodeDimension)
+                    default:
+                        image = nil
+                    }
+                    self.finish(request, image: image, cacheKey: cacheKey)
+                }
             }
         }
-        guard shouldStartLoad else { return }
+    }
 
-        queue.addOperation {
-            let data = try? Data(contentsOf: url)
-            let image = data.flatMap(UIImage.init(data:))
+    private func finish(_ request: Request, image: UIImage?, cacheKey: NSString) {
+        stateQueue.async { [weak self] in
+            guard let self,
+                  request.generation == generation,
+                  active[request.id] != nil
+            else {
+                return
+            }
             if let image {
-                cache.setObject(image, forKey: source as NSString)
+                RenderImageCache.cache.setObject(image, forKey: cacheKey)
             }
-
-            let callbacks: [(UIImage?) -> Void] = stateQueue.sync {
-                let callbacks = inFlight.removeValue(forKey: source) ?? []
-                return callbacks
-            }
-            DispatchQueue.main.async {
-                callbacks.forEach { $0(image) }
-            }
+            finishLocked(request, image: image)
         }
+    }
+
+    private func finishLocked(_ request: Request, image: UIImage?) {
+        guard request.generation == generation, active.removeValue(forKey: request.id) != nil else {
+            return
+        }
+        DispatchQueue.main.async { request.completion(image) }
+        drainLocked()
+    }
+
+    private func drainLocked() {
+        while active.count < storedPolicy.maxConcurrentRequests, !pending.isEmpty {
+            startLocked(pending.removeFirst())
+        }
+    }
+
+    private func cancelAllLocked() {
+        generation &+= 1
+        let tasks = active.values.compactMap(\.task)
+        active.removeAll()
+        pending.removeAll()
+        tasks.forEach { $0.cancel() }
+    }
+
+    private func cancel(_ request: Request) {
+        stateQueue.sync {
+            guard request.generation == generation else { return }
+            if let index = pending.firstIndex(where: { $0.id == request.id }) {
+                pending.remove(at: index)
+                return
+            }
+            guard let activeRequest = active.removeValue(forKey: request.id) else { return }
+            activeRequest.task?.cancel()
+            drainLocked()
+        }
+    }
+
+    private static func isDataURL(_ source: String) -> Bool {
+        source.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().hasPrefix("data:image/")
+    }
+
+    private static func estimatedDecodedByteCount(_ source: String) -> Int {
+        guard let comma = source.firstIndex(of: ",") else { return .max }
+        let payload = source[source.index(after: comma)...]
+        let characters = payload.filter { !$0.isWhitespace }
+        guard !characters.isEmpty else { return 0 }
+        let padding = characters.suffix(2).reduce(into: 0) { count, character in
+            if character == "=" { count += 1 }
+        }
+        return ((characters.count + 3) / 4) * 3 - padding
+    }
+
+    private static func decodeDataURL(_ source: String, maxBytes: Int) -> Data? {
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let comma = trimmed.firstIndex(of: ","),
+              trimmed[..<comma].lowercased().contains(";base64")
+        else {
+            return nil
+        }
+        let payload = trimmed[trimmed.index(after: comma)...]
+        guard let data = Data(base64Encoded: String(payload), options: [.ignoreUnknownCharacters]),
+              data.count <= maxBytes
+        else {
+            return nil
+        }
+        return data
     }
 }
 
@@ -635,12 +1081,14 @@ final class RenderBridge {
         let baseFont = UIFont.systemFont(ofSize: baseFontSize)
         let textColor = theme?.text?.color ?? UIColor.label
 
-        let attributedString = renderElements(
-            fromJSON: renderJSON,
-            baseFont: baseFont,
-            textColor: textColor,
-            theme: theme
-        )
+        let attributedString = RenderImageLoadOwner.withoutLoading {
+            renderElements(
+                fromJSON: renderJSON,
+                baseFont: baseFont,
+                textColor: textColor,
+                theme: theme
+            )
+        }
 
         guard attributedString.length > 0 else { return 0 }
 
@@ -1623,6 +2071,8 @@ final class HorizontalRuleAttachment: NSTextAttachment {
 final class BlockImageAttachment: NSTextAttachment {
     private let source: String
     private let placeholderTint: UIColor
+    private weak var loadOwner: RenderImageLoadOwner?
+    private var loadReceipt: RenderImageLoadOwner.ImageLoadReceipt?
     private var preferredWidth: CGFloat?
     private var preferredHeight: CGFloat?
     private var loadedImage: UIImage?
@@ -1637,12 +2087,17 @@ final class BlockImageAttachment: NSTextAttachment {
         self.placeholderTint = placeholderTint
         self.preferredWidth = preferredWidth
         self.preferredHeight = preferredHeight
+        self.loadOwner = RenderImageLoadOwner.current
         super.init(data: nil, ofType: nil)
         loadImageIfNeeded()
     }
 
     required init?(coder: NSCoder) {
         return nil
+    }
+
+    deinit {
+        loadReceipt?.cancel()
     }
 
     func setPreferredSize(width: CGFloat, height: CGFloat) {
@@ -1725,23 +2180,17 @@ final class BlockImageAttachment: NSTextAttachment {
     }
 
     private func loadImageIfNeeded() {
-        if let cached = RenderImageCache.cache.object(forKey: source as NSString) {
+        guard let loadOwner else { return }
+        let cacheKey = RenderImageCache.key(
+            source: source,
+            maxDimension: loadOwner.policy.maxDecodeDimension
+        )
+        if let cached = RenderImageCache.cache.object(forKey: cacheKey) {
             loadedImage = cached
             image = cached
             return
         }
-
-        if let inlineData = Self.decodeDataURL(source),
-           let image = UIImage(data: inlineData)
-        {
-            RenderImageCache.cache.setObject(image, forKey: source as NSString)
-            loadedImage = image
-            self.image = image
-            return
-        }
-
-        guard let url = URL(string: source) else { return }
-        RenderImageCache.load(source: source, url: url) { [weak self] image in
+        loadReceipt = loadOwner.startImageLoad(source: source) { [weak self] image in
             guard let self,
                   let image
             else {
@@ -1749,20 +2198,8 @@ final class BlockImageAttachment: NSTextAttachment {
             }
             self.loadedImage = image
             self.image = image
+            self.loadReceipt = nil
             NotificationCenter.default.post(name: .editorImageAttachmentDidLoad, object: self)
         }
-    }
-
-    private static func decodeDataURL(_ source: String) -> Data? {
-        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.lowercased().hasPrefix("data:image/"),
-              let commaIndex = trimmed.firstIndex(of: ",")
-        else {
-            return nil
-        }
-        let metadata = String(trimmed[..<commaIndex]).lowercased()
-        let payload = String(trimmed[trimmed.index(after: commaIndex)...])
-        guard metadata.contains(";base64") else { return nil }
-        return Data(base64Encoded: payload, options: [.ignoreUnknownCharacters])
     }
 }

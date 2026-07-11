@@ -1975,6 +1975,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var mentionQueryState: MentionQueryState?
     private var lastMentionEventJSON: String?
     private var desiredThemeJSON: String?
+    private let imageLoadOwner = RenderImageLoadOwner(policy: .default)
     private var lastThemeJSON: String?
     private var lastAddonsJSON: String?
     private var lastRemoteSelectionsJSON: String?
@@ -2091,6 +2092,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     deinit {
         NativeEditorViewRegistry.shared.unregister(editorId: richTextView.editorId, view: self)
+        imageLoadOwner.cancelAll()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -2181,7 +2183,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             clearPendingAccessoryRetry()
             clearPendingMentionSuggestionRetry()
         }
-        richTextView.editorId = id
+        imageLoadOwner.withCurrent {
+            richTextView.editorId = id
+        }
         if id != 0 {
             guard NativeEditorViewRegistry.shared.register(editorId: id, view: self) else {
                 handleEditorDestroyed(id)
@@ -2215,7 +2219,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             return
         }
         let theme = EditorTheme.from(json: themeJson)
-        guard richTextView.applyTheme(theme) else {
+        guard imageLoadOwner.withCurrent({ richTextView.applyTheme(theme) }) else {
             scheduleThemeRetry(themeJson)
             return
         }
@@ -2428,6 +2432,23 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         refreshMentionQuery()
     }
 
+    var imageLoadingPolicy: ImageLoadingPolicy {
+        imageLoadOwner.policy
+    }
+
+    func setImageLoadingPolicyJson(_ json: String?) {
+        let policy = ImageLoadingPolicy.from(json: json)
+        guard policy != imageLoadOwner.policy else { return }
+        imageLoadOwner.updatePolicy(policy)
+        guard richTextView.editorId != 0 else { return }
+        imageLoadOwner.withCurrent {
+            richTextView.textView.applyUpdateJSON(
+                editorGetCurrentState(id: richTextView.editorId),
+                notifyDelegate: false
+            )
+        }
+    }
+
     func setRemoteSelectionsJson(_ remoteSelectionsJson: String?) {
         guard lastRemoteSelectionsJSON != remoteSelectionsJson else { return }
         lastRemoteSelectionsJSON = remoteSelectionsJson
@@ -2628,7 +2649,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         }
         isApplyingJSUpdate = true
         defer { isApplyingJSUpdate = false }
-        richTextView.textView.applyUpdateJSON(updateJson)
+        imageLoadOwner.withCurrent {
+            richTextView.textView.applyUpdateJSON(updateJson)
+        }
         return true
     }
 
@@ -3250,7 +3273,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             scalarHead: queryState.head,
             json: json
         )
-        richTextView.textView.applyUpdateJSON(updateJSON)
+        imageLoadOwner.withCurrent {
+            richTextView.textView.applyUpdateJSON(updateJSON)
+        }
         emitMentionSelect(trigger: mentions.trigger, suggestion: currentSuggestion, attrs: attrs)
         lastMentionEventJSON = nil
         clearMentionQueryStateAndHidePopover()
