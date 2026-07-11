@@ -107,6 +107,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
                     "start".to_string(),
                     AttrSpec {
                         default: Some(serde_json::Value::Number(1.into())),
+                        has_default: true,
                     },
                 );
                 attrs
@@ -152,11 +153,41 @@ fn build_schema(convention: NamingConvention) -> Schema {
             group: Some("block".to_string()),
             attrs: {
                 let mut attrs = HashMap::new();
-                attrs.insert("src".to_string(), AttrSpec { default: None });
-                attrs.insert("alt".to_string(), AttrSpec { default: None });
-                attrs.insert("title".to_string(), AttrSpec { default: None });
-                attrs.insert("width".to_string(), AttrSpec { default: None });
-                attrs.insert("height".to_string(), AttrSpec { default: None });
+                attrs.insert(
+                    "src".to_string(),
+                    AttrSpec {
+                        default: None,
+                        has_default: false,
+                    },
+                );
+                attrs.insert(
+                    "alt".to_string(),
+                    AttrSpec {
+                        default: Some(serde_json::Value::Null),
+                        has_default: true,
+                    },
+                );
+                attrs.insert(
+                    "title".to_string(),
+                    AttrSpec {
+                        default: Some(serde_json::Value::Null),
+                        has_default: true,
+                    },
+                );
+                attrs.insert(
+                    "width".to_string(),
+                    AttrSpec {
+                        default: Some(serde_json::Value::Null),
+                        has_default: true,
+                    },
+                );
+                attrs.insert(
+                    "height".to_string(),
+                    AttrSpec {
+                        default: Some(serde_json::Value::Null),
+                        has_default: true,
+                    },
+                );
                 attrs
             },
             role: NodeRole::Block,
@@ -205,7 +236,13 @@ fn build_schema(convention: NamingConvention) -> Schema {
             name: "link".to_string(),
             attrs: {
                 let mut attrs = HashMap::new();
-                attrs.insert("href".to_string(), AttrSpec { default: None });
+                attrs.insert(
+                    "href".to_string(),
+                    AttrSpec {
+                        default: None,
+                        has_default: false,
+                    },
+                );
                 attrs
             },
             excludes: None,

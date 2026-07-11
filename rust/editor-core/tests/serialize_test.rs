@@ -24,6 +24,7 @@ fn mention_schema() -> Schema {
             "label".to_string(),
             AttrSpec {
                 default: Some(serde_json::Value::Null),
+                has_default: true,
             },
         );
         nodes.push(NodeSpec {

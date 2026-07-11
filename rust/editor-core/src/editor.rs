@@ -1723,13 +1723,13 @@ impl Editor {
             }
         }
 
-        let Some((parent, prefix)) = self.block_parent_and_prefix(doc, resolved) else {
+        let Some((parent, prefix, suffix)) = self.block_parent_and_siblings(doc, resolved) else {
             return Vec::new();
         };
         let Some(spec) = self.schema.node(parent.node_type()) else {
             return Vec::new();
         };
-        let insertable = self.schema.insertable_nodes_at(spec, &prefix);
+        let insertable = self.schema.insertable_nodes_at(spec, &prefix, &suffix);
         self.filter_insertable_nodes_for_parent(parent, insertable)
     }
 
@@ -2163,26 +2163,30 @@ impl Editor {
         }
 
         // Otherwise, check if the doc-level context accepts list nodes.
-        let doc = self.backend.document();
-        let resolved = match doc.resolve(pos) {
-            Ok(r) => r,
-            Err(_) => return false,
-        };
-
-        let Some((parent, prefix)) = self.block_parent_and_prefix(doc, &resolved) else {
+        let Some(range) = self.selected_block_range(pos, pos) else {
             return false;
+        };
+        let doc = self.backend.document();
+        let parent = if range.parent_path.is_empty() {
+            doc.root()
+        } else {
+            let Some(parent) = doc.node_at(&range.parent_path) else {
+                return false;
+            };
+            parent
         };
         let Some(spec) = self.schema.node(parent.node_type()) else {
             return false;
         };
-        self.schema
-            .insertable_nodes_at(spec, &prefix)
-            .iter()
-            .any(|name| {
-                self.schema
-                    .node(name)
-                    .is_some_and(|spec| matches!(spec.role, NodeRole::List { .. }))
-            })
+        self.schema.all_nodes().any(|candidate| {
+            matches!(candidate.role, NodeRole::List { .. })
+                && self.parent_accepts_range_replacement(
+                    parent,
+                    spec,
+                    &range,
+                    &[candidate.name.as_str()],
+                )
+        })
     }
 
     fn can_toggle_blockquote_at(&self, pos: u32) -> bool {
@@ -2193,22 +2197,22 @@ impl Editor {
             return true;
         }
 
-        let doc = self.backend.document();
-        let resolved = match doc.resolve(pos) {
-            Ok(r) => r,
-            Err(_) => return false,
-        };
-
-        let Some((parent, prefix)) = self.block_parent_and_prefix(doc, &resolved) else {
+        let Some(range) = self.selected_block_range(pos, pos) else {
             return false;
+        };
+        let doc = self.backend.document();
+        let parent = if range.parent_path.is_empty() {
+            doc.root()
+        } else {
+            let Some(parent) = doc.node_at(&range.parent_path) else {
+                return false;
+            };
+            parent
         };
         let Some(spec) = self.schema.node(parent.node_type()) else {
             return false;
         };
-        self.schema
-            .insertable_nodes_at(spec, &prefix)
-            .iter()
-            .any(|name| name == &blockquote_type)
+        self.parent_accepts_range_replacement(parent, spec, &range, &[blockquote_type.as_str()])
     }
 
     fn can_toggle_heading(&self, level: u8) -> bool {
@@ -2688,11 +2692,11 @@ impl Editor {
         self.parent_content_rule_matches_child_types(parent_spec, &child_types)
     }
 
-    fn block_parent_and_prefix<'a>(
+    fn block_parent_and_siblings<'a>(
         &self,
         doc: &'a Document,
         resolved: &ResolvedPos,
-    ) -> Option<(&'a Node, Vec<&'a str>)> {
+    ) -> Option<(&'a Node, Vec<&'a str>, Vec<&'a str>)> {
         let mut nodes_in_path = vec![doc.root()];
         let mut current = doc.root();
         for &index in &resolved.node_path {
@@ -2727,7 +2731,13 @@ impl Editor {
                 .take(insertion_index)
                 .map(Node::node_type)
                 .collect();
-            return Some((node, prefix));
+            let suffix = node
+                .content()?
+                .iter()
+                .skip(insertion_index)
+                .map(Node::node_type)
+                .collect();
+            return Some((node, prefix, suffix));
         }
         None
     }

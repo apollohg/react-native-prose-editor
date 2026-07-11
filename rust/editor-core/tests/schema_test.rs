@@ -202,8 +202,50 @@ fn insertable_nodes_follow_the_actual_alternative_prefix() {
     .expect("schema");
     let doc = schema.node("doc").unwrap();
 
-    let result = schema.insertable_nodes_at(doc, &["title"]);
+    let result = schema.insertable_nodes_at(doc, &["title"], &[]);
     assert_eq!(result, vec!["paragraph"]);
+}
+
+#[test]
+fn insertable_nodes_validate_the_untouched_suffix() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "title (image title | paragraph)", "role": "doc" },
+            { "name": "title", "group": "block", "role": "textBlock" },
+            { "name": "paragraph", "group": "block", "role": "block" },
+            { "name": "image", "group": "block", "role": "block", "isVoid": true },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .expect("schema");
+    let result =
+        schema.insertable_nodes_at(schema.node("doc").unwrap(), &["title"], &["paragraph"]);
+    assert!(!result.contains(&"image".to_string()));
+}
+
+#[test]
+fn preset_null_attribute_defaults_are_explicit_defaults() {
+    let schema = tiptap_schema();
+    let alt = &schema.node("image").unwrap().attrs["alt"];
+    assert_eq!(alt.default, Some(serde_json::Value::Null));
+}
+
+#[test]
+fn schema_rejects_default_construction_deeper_than_the_limit() {
+    let mut nodes = vec![serde_json::json!({
+        "name": "doc", "content": "n0", "role": "doc"
+    })];
+    for index in 0..129 {
+        let content = if index == 128 {
+            "".to_string()
+        } else {
+            format!("n{}", index + 1)
+        };
+        nodes.push(serde_json::json!({ "name": format!("n{index}"), "content": content }));
+    }
+    nodes.push(serde_json::json!({ "name": "text", "role": "text" }));
+    assert!(Schema::from_json(&serde_json::json!({ "nodes": nodes, "marks": [] })).is_err());
 }
 
 #[test]

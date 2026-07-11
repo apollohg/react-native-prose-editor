@@ -1,4 +1,5 @@
-const MAX_NESTING_DEPTH = 128;
+export const CONTENT_EXPRESSION_MAX_DEPTH = 128;
+export const DEFAULT_CONTENT_MAX_NODES = 10_000;
 const MAX_AUTOMATON_STATES = 10_000;
 const MAX_REPETITION_BOUND = 10_000;
 
@@ -73,7 +74,8 @@ class ContentExpressionParser {
     private parseAtom(): Expression {
         this.skipWhitespace();
         if (this.consume('(')) {
-            if (this.depth >= MAX_NESTING_DEPTH) throw new Error('expression nesting too deep');
+            if (this.depth >= CONTENT_EXPRESSION_MAX_DEPTH)
+                throw new Error('expression nesting too deep');
             this.depth += 1;
             try {
                 this.skipWhitespace();
@@ -142,7 +144,7 @@ class ContentExpressionCompiler {
     readonly states: State[] = [];
 
     compile(expression: Expression, depth = 0): [number, number] {
-        if (depth > MAX_NESTING_DEPTH) throw new Error('expression nesting too deep');
+        if (depth > CONTENT_EXPRESSION_MAX_DEPTH) throw new Error('expression nesting too deep');
         if (expression.kind === 'empty') {
             const start = this.state();
             const end = this.state();

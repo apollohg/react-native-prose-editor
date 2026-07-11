@@ -1,5 +1,9 @@
 import type { DocumentJSON } from './NativeEditorBridge';
-import { minimalContentMatch } from './contentExpression';
+import {
+    CONTENT_EXPRESSION_MAX_DEPTH,
+    DEFAULT_CONTENT_MAX_NODES,
+    minimalContentMatch,
+} from './contentExpression';
 
 export interface AttrSpec {
     default?: unknown;
@@ -187,7 +191,15 @@ export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): D
     const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
     if (!docNode) throw new Error('schema cannot construct a default document: missing doc role');
 
-    const constructNode = (node: NodeSpec, visiting: Set<string>): DocumentJSON | undefined => {
+    const budget = { nodes: 0 };
+    const constructNode = (
+        node: NodeSpec,
+        visiting: Set<string>,
+        depth: number
+    ): DocumentJSON | undefined => {
+        if (depth > CONTENT_EXPRESSION_MAX_DEPTH || budget.nodes >= DEFAULT_CONTENT_MAX_NODES) {
+            return undefined;
+        }
         if (node.role === 'text' || visiting.has(node.name)) return undefined;
         const attrs = Object.entries(node.attrs ?? {});
         if (attrs.some(([, spec]) => !Object.prototype.hasOwnProperty.call(spec, 'default'))) {
@@ -215,13 +227,14 @@ export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): D
                     return priority(left) - priority(right) || left.name.localeCompare(right.name);
                 });
             for (const candidate of candidates) {
-                const constructed = constructNode(candidate, visiting);
+                const constructed = constructNode(candidate, visiting, depth + 1);
                 if (constructed) return constructed;
             }
             return undefined;
         });
         visiting.delete(node.name);
         if (!children) return undefined;
+        budget.nodes += 1;
 
         const result: DocumentJSON = { type: node.name };
         if (children.length > 0) result.content = children;
@@ -231,7 +244,7 @@ export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): D
         return result;
     };
 
-    const document = constructNode(docNode, new Set());
+    const document = constructNode(docNode, new Set(), 0);
     if (!document) {
         throw new Error(`schema cannot construct a default document for '${docNode.name}'`);
     }

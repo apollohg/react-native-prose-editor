@@ -73,7 +73,11 @@ pub struct MarkSpec {
 #[derive(Debug, Clone)]
 pub struct AttrSpec {
     pub default: Option<serde_json::Value>,
+    pub has_default: bool,
 }
+
+const DEFAULT_DOCUMENT_MAX_DEPTH: usize = 128;
+const DEFAULT_DOCUMENT_MAX_NODES: usize = 10_000;
 
 impl Schema {
     /// Create a schema from lists of node and mark specs.
@@ -134,7 +138,7 @@ impl Schema {
         loop {
             let before = generatable.len();
             for node in &nodes {
-                let has_required_attrs = node.attrs.values().any(|attr| attr.default.is_none());
+                let has_required_attrs = node.attrs.values().any(|attr| !attr.has_default);
                 if !matches!(node.role, NodeRole::Text)
                     && !has_required_attrs
                     && node.content.is_constructible_with(|symbol| {
@@ -165,7 +169,7 @@ impl Schema {
             ));
         }
 
-        Ok(Self {
+        let schema = Self {
             nodes: nodes
                 .into_iter()
                 .map(|node| (node.name.clone(), node))
@@ -174,7 +178,9 @@ impl Schema {
                 .into_iter()
                 .map(|mark| (mark.name.clone(), mark))
                 .collect(),
-        })
+        };
+        schema.default_document()?;
+        Ok(schema)
     }
 
     /// Look up a node spec by name.
@@ -341,16 +347,10 @@ impl Schema {
     pub fn insertable_nodes_at(
         &self,
         parent_spec: &NodeSpec,
-        existing_child_types: &[&str],
+        prefix_child_types: &[&str],
+        suffix_child_types: &[&str],
     ) -> Vec<String> {
         let mut result = Vec::new();
-        let accepting_groups = parent_spec.content.accepting_symbols_after(
-            existing_child_types,
-            |child_type, symbol| {
-                self.node(child_type)
-                    .is_some_and(|spec| node_spec_matches_symbol(spec, symbol))
-            },
-        );
 
         let excluded_roles = |role: &NodeRole| -> bool {
             matches!(
@@ -368,10 +368,19 @@ impl Schema {
             if excluded_roles(&node_spec.role) {
                 continue;
             }
-            let matches = accepting_groups
+            let candidate_types = prefix_child_types
                 .iter()
-                .any(|group| node_spec_matches_symbol(node_spec, group));
-            if matches {
+                .copied()
+                .chain(std::iter::once(node_spec.name.as_str()))
+                .chain(suffix_child_types.iter().copied())
+                .collect::<Vec<_>>();
+            if parent_spec
+                .content
+                .matches(&candidate_types, |child_type, symbol| {
+                    self.node(child_type)
+                        .is_some_and(|spec| node_spec_matches_symbol(spec, symbol))
+                })
+            {
                 result.push(node_spec.name.clone());
             }
         }
@@ -388,7 +397,7 @@ impl Schema {
             .find(|node| matches!(node.role, NodeRole::Doc))
             .ok_or_else(|| "schema has no doc role".to_string())?;
         let root = self
-            .construct_default_node(doc_spec, &mut HashSet::new())
+            .construct_default_node(doc_spec, &mut HashSet::new(), 0, &mut 0)
             .ok_or_else(|| {
                 format!(
                     "schema cannot construct a default document for '{}'",
@@ -402,9 +411,14 @@ impl Schema {
         &self,
         spec: &NodeSpec,
         visiting: &mut HashSet<String>,
+        depth: usize,
+        node_count: &mut usize,
     ) -> Option<Node> {
+        if depth > DEFAULT_DOCUMENT_MAX_DEPTH || *node_count >= DEFAULT_DOCUMENT_MAX_NODES {
+            return None;
+        }
         if matches!(spec.role, NodeRole::Text)
-            || spec.attrs.values().any(|attr| attr.default.is_none())
+            || spec.attrs.values().any(|attr| !attr.has_default)
             || !visiting.insert(spec.name.clone())
         {
             return None;
@@ -416,16 +430,24 @@ impl Schema {
                 .filter(|candidate| node_spec_matches_symbol(candidate, symbol))
                 .collect::<Vec<_>>();
             candidates.sort_by_key(|candidate| default_node_priority(candidate));
-            candidates
-                .into_iter()
-                .find_map(|candidate| self.construct_default_node(candidate, visiting))
+            candidates.into_iter().find_map(|candidate| {
+                self.construct_default_node(candidate, visiting, depth + 1, node_count)
+            })
         });
         visiting.remove(&spec.name);
         let children = children?;
+        *node_count += 1;
         let attrs = spec
             .attrs
             .iter()
-            .filter_map(|(name, attr)| attr.default.clone().map(|value| (name.clone(), value)))
+            .filter_map(|(name, attr)| {
+                attr.has_default.then(|| {
+                    (
+                        name.clone(),
+                        attr.default.clone().unwrap_or(serde_json::Value::Null),
+                    )
+                })
+            })
             .collect();
         Some(if spec.is_void {
             Node::void(spec.name.clone(), attrs)
@@ -514,6 +536,7 @@ impl Schema {
                         attr_name.clone(),
                         AttrSpec {
                             default: attr_val.get("default").cloned(),
+                            has_default: attr_val.get("default").is_some(),
                         },
                     );
                 }
@@ -546,6 +569,7 @@ impl Schema {
                         attr_name.clone(),
                         AttrSpec {
                             default: attr_val.get("default").cloned(),
+                            has_default: attr_val.get("default").is_some(),
                         },
                     );
                 }

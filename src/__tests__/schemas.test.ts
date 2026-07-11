@@ -77,4 +77,19 @@ describe('defaultEmptyDocument', () => {
             "schema cannot construct a default document for 'doc'"
         );
     });
+
+    it('rejects default construction deeper than the shared limit', () => {
+        const nodes: SchemaDefinition['nodes'] = [
+            { name: 'doc', content: 'n0', role: 'doc' },
+            ...Array.from({ length: 129 }, (_, index) => ({
+                name: `n${index}`,
+                content: index === 128 ? '' : `n${index + 1}`,
+                role: 'block',
+            })),
+            { name: 'text', content: '', role: 'text' },
+        ];
+        expect(() => defaultEmptyDocument({ nodes, marks: [] })).toThrow(
+            "schema cannot construct a default document for 'doc'"
+        );
+    });
 });
