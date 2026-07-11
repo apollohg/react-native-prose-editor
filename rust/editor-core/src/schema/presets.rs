@@ -181,21 +181,25 @@ fn build_schema(convention: NamingConvention) -> Schema {
             name: "bold".to_string(),
             attrs: HashMap::new(),
             excludes: None,
+            allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "italic".to_string(),
             attrs: HashMap::new(),
             excludes: None,
+            allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "underline".to_string(),
             attrs: HashMap::new(),
             excludes: None,
+            allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "strike".to_string(),
             attrs: HashMap::new(),
             excludes: None,
+            allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "link".to_string(),
@@ -205,6 +209,7 @@ fn build_schema(convention: NamingConvention) -> Schema {
                 attrs
             },
             excludes: None,
+            allow_undeclared_attrs: false,
         },
     ];
 

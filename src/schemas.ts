@@ -26,6 +26,14 @@ export interface MarkSpec {
     name: string;
     attrs?: Record<string, AttrSpec>;
     excludes?: string;
+    /**
+     * Opt-in escape hatch: when `true`, JSON ingestion (`set_json` /
+     * `insert_content_json`) admits attrs on this mark that are not declared
+     * in `attrs`, instead of filtering them out. Default `false`. Mirrors
+     * `NodeSpec.allowUndeclaredAttrs` for mark types with an intentional
+     * pass-through-metadata contract.
+     */
+    allowUndeclaredAttrs?: boolean;
 }
 
 export interface SchemaDefinition {

@@ -59,6 +59,13 @@ pub struct MarkSpec {
     /// Marks in the `excludes` set cannot coexist with this mark on the same
     /// text range. `None` means no exclusions.
     pub excludes: Option<String>,
+    /// If `true`, JSON ingestion (`set_json`/`insert_content_json`) admits attrs
+    /// on this mark that are not declared in `attrs`, instead of filtering them
+    /// out. Default `false`. This is an opt-in escape hatch mirroring
+    /// `NodeSpec::allow_undeclared_attrs` for mark types with an intentional
+    /// pass-through-metadata contract. Every other mark type is filtered to
+    /// its schema-declared attrs.
+    pub allow_undeclared_attrs: bool,
 }
 
 /// Specification for a single attribute on a node or mark type.
@@ -414,10 +421,16 @@ impl Schema {
                 .and_then(|v| v.as_str())
                 .map(String::from);
 
+            let allow_undeclared_attrs = mark_val
+                .get("allowUndeclaredAttrs")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
             marks.push(MarkSpec {
                 name,
                 attrs,
                 excludes,
+                allow_undeclared_attrs,
             });
         }
 

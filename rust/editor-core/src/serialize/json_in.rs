@@ -188,18 +188,28 @@ fn parse_marks(
             }
         }
 
-        let attrs = parse_mark_attrs(mark_obj);
+        let attrs = parse_mark_attrs(mark_obj, schema.mark(mark_type));
         marks.push(Mark::new(mark_type.to_string(), attrs));
     }
 
     Ok(marks)
 }
 
-/// Parse mark attributes from a mark JSON object.
-fn parse_mark_attrs(mark_obj: &serde_json::Map<String, Value>) -> HashMap<String, Value> {
+/// Parse mark attributes from a mark JSON object — only attrs the schema
+/// declares for this mark, unless the spec opts into undeclared attrs
+/// (parity with the node path's parse_attrs). Marks whose type is unknown
+/// to the schema get no attrs at all.
+fn parse_mark_attrs(
+    mark_obj: &serde_json::Map<String, Value>,
+    spec: Option<&crate::schema::MarkSpec>,
+) -> HashMap<String, Value> {
+    let Some(spec) = spec else {
+        return HashMap::new();
+    };
     match mark_obj.get("attrs") {
         Some(Value::Object(attrs_obj)) => attrs_obj
             .iter()
+            .filter(|(k, _)| spec.allow_undeclared_attrs || spec.attrs.contains_key(*k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
         _ => HashMap::new(),

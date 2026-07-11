@@ -45,11 +45,13 @@ fn test_allowed_marks_active_mark_always_toggleable() {
             name: "bold".to_string(),
             attrs: HashMap::new(),
             excludes: None,
+            allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "code".to_string(),
             attrs: HashMap::new(),
             excludes: Some("_".to_string()),
+            allow_undeclared_attrs: false,
         },
     ];
     let nodes = tiptap_schema().all_nodes().cloned().collect::<Vec<_>>();
@@ -74,11 +76,13 @@ fn test_allowed_marks_bidirectional_excludes() {
             name: "bold".to_string(),
             attrs: HashMap::new(),
             excludes: Some("code".to_string()),
+            allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "code".to_string(),
             attrs: HashMap::new(),
             excludes: None,
+            allow_undeclared_attrs: false,
         },
     ];
     let nodes = tiptap_schema().all_nodes().cloned().collect::<Vec<_>>();

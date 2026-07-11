@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use editor_core::model::{Document, Fragment, Mark, Node};
-use editor_core::schema::{AttrSpec, NodeRole, NodeSpec, Schema};
+use editor_core::schema::{AttrSpec, MarkSpec, NodeRole, NodeSpec, Schema};
 use editor_core::serialize::{
     from_html, from_prosemirror_json, to_html, to_prosemirror_json, FromHtmlOptions,
     JsonParseError, UnknownTypeMode,
@@ -41,6 +41,23 @@ fn mention_schema() -> Schema {
         });
     }
     let marks = base.all_marks().cloned().collect();
+    Schema::new(nodes, marks)
+}
+
+/// A mark spec with `allow_undeclared_attrs: true` (mirrors `mention_schema`'s
+/// node-side opt-in) for exercising the mark-attr escape hatch.
+fn comment_schema() -> Schema {
+    let base = editor_core::tiptap_schema();
+    let nodes: Vec<NodeSpec> = base.all_nodes().cloned().collect();
+    let mut marks: Vec<MarkSpec> = base.all_marks().cloned().collect();
+    if !marks.iter().any(|mark| mark.name == "comment") {
+        marks.push(MarkSpec {
+            name: "comment".to_string(),
+            attrs: HashMap::new(),
+            excludes: None,
+            allow_undeclared_attrs: true,
+        });
+    }
     Schema::new(nodes, marks)
 }
 
@@ -2041,6 +2058,110 @@ fn set_json_keeps_undeclared_attrs_when_spec_opts_in() {
     );
 }
 
+/// Undeclared mark attrs are dropped; declared ones survive; opted-in mark
+/// specs keep arbitrary attrs — parity with the node-attr design.
+#[test]
+fn set_json_filters_mark_attrs_against_schema() {
+    let json = serde_json::json!({
+        "type": "doc",
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "x",
+                        "marks": [
+                            {
+                                "type": "bold",
+                                "attrs": { "weight": 900 }
+                            },
+                            {
+                                "type": "link",
+                                "attrs": { "href": "https://e.x", "target": "_blank" }
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    });
+
+    let d = from_prosemirror_json(&json, &schema(), UnknownTypeMode::Error)
+        .expect("paragraph > text with bold+link marks should parse");
+
+    let text_node = d.root().child(0).unwrap().child(0).unwrap();
+    let marks = text_node.marks();
+    assert_eq!(marks.len(), 2, "both marks should still be attached");
+
+    let bold = marks
+        .iter()
+        .find(|m| m.mark_type() == "bold")
+        .expect("bold mark should survive");
+    assert!(
+        bold.attrs().get("weight").is_none(),
+        "bold's schema spec declares no 'weight' attr — it must be dropped, got attrs: {:?}",
+        bold.attrs()
+    );
+
+    let link = marks
+        .iter()
+        .find(|m| m.mark_type() == "link")
+        .expect("link mark should survive");
+    assert_eq!(
+        link.attrs().get("href"),
+        Some(&serde_json::Value::String("https://e.x".to_string())),
+        "link declares 'href' — it must survive"
+    );
+    assert!(
+        link.attrs().get("target").is_none(),
+        "link's schema spec declares no 'target' attr — it must be dropped, got attrs: {:?}",
+        link.attrs()
+    );
+}
+
+/// A mark spec with `allow_undeclared_attrs: true` (mirrors the node-side
+/// `mention` escape hatch) must keep attrs the schema does not declare.
+#[test]
+fn set_json_keeps_mark_attrs_when_spec_opts_in() {
+    let json = serde_json::json!({
+        "type": "doc",
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "x",
+                        "marks": [
+                            {
+                                "type": "comment",
+                                "attrs": { "threadId": "t1" }
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    });
+
+    let d = from_prosemirror_json(&json, &comment_schema(), UnknownTypeMode::Error)
+        .expect("paragraph > text with comment mark should parse");
+
+    let text_node = d.root().child(0).unwrap().child(0).unwrap();
+    let comment = text_node
+        .marks()
+        .iter()
+        .find(|m| m.mark_type() == "comment")
+        .expect("comment mark should survive")
+        .clone();
+    assert_eq!(
+        comment.attrs().get("threadId"),
+        Some(&serde_json::Value::String("t1".to_string())),
+        "comment opts into allow_undeclared_attrs — 'threadId' must survive"
+    );
+}
+
 #[test]
 fn test_from_json_text_node_missing_text_field() {
     let json = serde_json::json!({
@@ -2064,6 +2185,9 @@ fn test_from_json_text_node_missing_text_field() {
     }
 }
 
+/// Uses `link`'s declared `href` attr (not an arbitrary/undeclared one —
+/// see `set_json_filters_mark_attrs_against_schema` for the filtering
+/// behavior) since schema-declared mark attrs are what actually round-trip.
 #[test]
 fn test_from_json_mark_attrs_preserved() {
     let json = serde_json::json!({
@@ -2074,8 +2198,8 @@ fn test_from_json_mark_attrs_preserved() {
                 "type": "text",
                 "text": "link text",
                 "marks": [{
-                    "type": "bold",
-                    "attrs": { "weight": 700 }
+                    "type": "link",
+                    "attrs": { "href": "https://example.com" }
                 }]
             }]
         }]
@@ -2083,9 +2207,12 @@ fn test_from_json_mark_attrs_preserved() {
     let d = from_prosemirror_json(&json, &schema(), UnknownTypeMode::Error).unwrap();
     let t = d.root().child(0).unwrap().child(0).unwrap();
     assert_eq!(t.marks().len(), 1);
-    assert_eq!(t.marks()[0].mark_type(), "bold");
-    let weight = t.marks()[0].attrs().get("weight").unwrap();
-    assert_eq!(*weight, serde_json::Value::Number(700.into()));
+    assert_eq!(t.marks()[0].mark_type(), "link");
+    let href = t.marks()[0].attrs().get("href").unwrap();
+    assert_eq!(
+        *href,
+        serde_json::Value::String("https://example.com".to_string())
+    );
 }
 
 // ===========================================================================

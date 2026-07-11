@@ -204,6 +204,44 @@ fn schema_role_helpers_classify_by_role_not_name() {
 }
 
 #[test]
+fn test_from_json_parses_mark_allow_undeclared_attrs_true() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" }
+        ],
+        "marks": [
+            { "name": "comment", "allowUndeclaredAttrs": true }
+        ]
+    }))
+    .expect("schema JSON should parse");
+
+    let comment = schema.mark("comment").expect("comment mark should exist");
+    assert!(
+        comment.allow_undeclared_attrs,
+        "'allowUndeclaredAttrs: true' in mark spec JSON must set the flag"
+    );
+}
+
+#[test]
+fn test_from_json_defaults_mark_allow_undeclared_attrs_to_false_when_absent() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" }
+        ],
+        "marks": [
+            { "name": "bold" }
+        ]
+    }))
+    .expect("schema JSON should parse");
+
+    let bold = schema.mark("bold").expect("bold mark should exist");
+    assert!(
+        !bold.allow_undeclared_attrs,
+        "absent 'allowUndeclaredAttrs' key on a mark spec must default to false"
+    );
+}
+
+#[test]
 fn test_from_json_defaults_allow_undeclared_attrs_to_false_when_absent() {
     let schema = Schema::from_json(&serde_json::json!({
         "nodes": [
