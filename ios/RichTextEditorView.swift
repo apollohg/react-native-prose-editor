@@ -1088,6 +1088,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private let nativeTextMutationAfterBlurGraceInterval: TimeInterval = 1.0
     /// Last selection known to match `lastAuthorizedText`, stored in that text's UTF-16 coordinates.
     private var lastAuthorizedSelectedUtf16Range: NSRange?
+    private var logicalSelectionScalarRange: (anchor: UInt32, head: UInt32)?
     private var selectionRevision: UInt64 = 0
     private var desiredInputTraitState = InputTraitState()
     private var appliedInputTraitState = InputTraitState()
@@ -1401,8 +1402,23 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
     @objc
     private func handleImageAttachmentDidLoad(_ notification: Notification) {
-        guard notification.object is NSTextAttachment else { return }
+        guard let attachment = notification.object as? NSTextAttachment else { return }
         guard textStorage.length > 0 else { return }
+        var ownsAttachment = false
+        textStorage.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: textStorage.length),
+            options: [.longestEffectiveRangeNotRequired]
+        ) { value, _, stop in
+            guard let candidate = value as? NSTextAttachment,
+                  candidate === attachment
+            else {
+                return
+            }
+            ownsAttachment = true
+            stop.pointee = true
+        }
+        guard ownsAttachment else { return }
 
         textStorage.beginEditing()
         textStorage.edited(.editedAttributes, range: NSRange(location: 0, length: textStorage.length), changeInLength: 0)
@@ -2874,10 +2890,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         else {
             return
         }
-        guard let range = selectedTextRange else { return }
+        guard let selection = currentLogicalScalarSelection() else { return }
 
-        let anchor = PositionBridge.textViewToScalar(range.start, in: self)
-        let head = PositionBridge.textViewToScalar(range.end, in: self)
+        let anchor = selection.anchor
+        let head = selection.head
         let docAnchor = editorScalarToDoc(id: editorId, scalar: anchor)
         let docHead = editorScalarToDoc(id: editorId, scalar: head)
         Self.selectionLog.debug(
@@ -3981,6 +3997,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         let startUtf16 = PositionBridge.scalarToUtf16Offset(min(anchor, head), in: self)
         let endUtf16 = PositionBridge.scalarToUtf16Offset(max(anchor, head), in: self)
         let targetRange = NSRange(location: startUtf16, length: max(0, endUtf16 - startUtf16))
+        logicalSelectionScalarRange = (anchor: anchor, head: head)
         if selectedRange != targetRange {
             selectedRange = targetRange
             noteSelectionDidChange()
@@ -4051,10 +4068,21 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         applyUpdateJSON(updateJSON)
     }
 
-    private func currentScalarSelection() -> (anchor: UInt32, head: UInt32)? {
+    func currentLogicalScalarSelection() -> (anchor: UInt32, head: UInt32)? {
         guard let range = selectedTextRange else { return nil }
         let scalarRange = PositionBridge.textRangeToScalarRange(range, in: self)
+        if let logicalSelectionScalarRange,
+           min(logicalSelectionScalarRange.anchor, logicalSelectionScalarRange.head) == scalarRange.from,
+           max(logicalSelectionScalarRange.anchor, logicalSelectionScalarRange.head) == scalarRange.to
+        {
+            return logicalSelectionScalarRange
+        }
+        logicalSelectionScalarRange = nil
         return (anchor: scalarRange.from, head: scalarRange.to)
+    }
+
+    private func currentScalarSelection() -> (anchor: UInt32, head: UInt32)? {
+        currentLogicalScalarSelection()
     }
 
     private func selectedImageSelectionState() -> (docPos: UInt32, utf16Offset: Int)? {
@@ -5372,6 +5400,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             let resolveNanos = DispatchTime.now().uptimeNanoseconds - resolveStartedAt
 
             let assignmentStartedAt = DispatchTime.now().uptimeNanoseconds
+            logicalSelectionScalarRange = (anchor: anchorScalar, head: headScalar)
             if anchorScalar == headScalar {
                 let endPos = position(from: beginningOfDocument, offset: endUtf16) ?? endOfDocument
                 if let adjustedPosition = autocapitalizationFriendlyEmptyBlockPosition(for: endPos) {

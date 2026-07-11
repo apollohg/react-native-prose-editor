@@ -2260,6 +2260,38 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertGreaterThan(height, 0, "Single paragraph should have positive height")
     }
 
+    func testMeasureHeightFromBackgroundWaitsForMainThreadMeasurement() {
+        let finished = expectation(description: "background measurement finished")
+        let started = DispatchSemaphore(value: 0)
+        let completion = DispatchSemaphore(value: 0)
+        let renderJSON = """
+        [
+            {"type":"blockStart","nodeType":"paragraph","depth":0},
+            {"type":"textRun","text":"Measured on main"},
+            {"type":"blockEnd"}
+        ]
+        """
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            started.signal()
+            _ = RenderBridge.measureHeight(
+                forRenderJSON: renderJSON,
+                themeJSON: nil,
+                width: 320
+            )
+            completion.signal()
+            finished.fulfill()
+        }
+
+        XCTAssertEqual(started.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(
+            completion.wait(timeout: .now() + 0.1),
+            .timedOut,
+            "background callers must synchronously marshal UIKit measurement to the main thread"
+        )
+        wait(for: [finished], timeout: 1)
+    }
+
     func testMeasureHeightForEmptyContent() {
         let renderJSON = "[]"
         let height = RenderBridge.measureHeight(

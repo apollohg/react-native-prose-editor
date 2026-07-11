@@ -1,6 +1,78 @@
 import XCTest
 
 final class RichTextEditorViewTests: XCTestCase {
+    func testBackwardSelectionRoundTripsLogicalAnchorHeadAndUsesHeadAsCaretEdge() {
+        let editorId = editorCreate(configJson: "{}")
+        defer { editorDestroy(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        let delegate = EditorTextViewDelegateSpy()
+        textView.editorDelegate = delegate
+        textView.bindEditor(id: editorId, initialHTML: "<p>abcdef</p>")
+        delegate.selectionChanges.removeAll()
+
+        editorSetSelectionScalar(id: editorId, scalarAnchor: 5, scalarHead: 1)
+        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+
+        XCTAssertEqual(PositionBridge.cursorScalarOffset(in: textView), 1)
+        textView.delegate?.textViewDidChangeSelection?(textView)
+        flushMainQueue()
+
+        XCTAssertEqual(delegate.selectionChanges.last?.anchor, editorScalarToDoc(id: editorId, scalar: 5))
+        XCTAssertEqual(delegate.selectionChanges.last?.head, editorScalarToDoc(id: editorId, scalar: 1))
+        let selection = currentSelection(in: editorId)
+        XCTAssertEqual((selection["anchor"] as? NSNumber)?.uint32Value, editorScalarToDoc(id: editorId, scalar: 5))
+        XCTAssertEqual((selection["head"] as? NSNumber)?.uint32Value, editorScalarToDoc(id: editorId, scalar: 1))
+    }
+
+    func testImageAttachmentLoadNotificationOnlyInvalidatesOwningEditor() {
+        let first = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        let second = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        let firstAttachment = NSTextAttachment()
+        let secondAttachment = NSTextAttachment()
+        first.attributedText = NSAttributedString(attachment: firstAttachment)
+        second.attributedText = NSAttributedString(attachment: secondAttachment)
+        var firstInvalidations = 0
+        var secondInvalidations = 0
+        first.onSelectionOrContentMayChange = { firstInvalidations += 1 }
+        second.onSelectionOrContentMayChange = { secondInvalidations += 1 }
+
+        NotificationCenter.default.post(
+            name: .editorImageAttachmentDidLoad,
+            object: firstAttachment
+        )
+
+        XCTAssertEqual(firstInvalidations, 1)
+        XCTAssertEqual(secondInvalidations, 0)
+    }
+
+    func testRegistryLifecycleStateContainsOnlyLiveEditors() {
+        let registry = NativeEditorViewRegistry.shared
+        let stateBefore = Mirror(reflecting: registry).children.first {
+            $0.label == "activeEditorIds"
+        }?.value as? Set<UInt64>
+        XCTAssertNotNil(stateBefore, "registry should track active editors instead of destroyed-ID tombstones")
+
+        let destroyedEditorIds = (0..<128).map { UInt64(9_000_000_000 + $0) }
+        for editorId in destroyedEditorIds {
+            registry.markEditorCreated(editorId: editorId)
+            registry.invalidateDestroyedEditor(editorId: editorId)
+        }
+        let stateAfterDestroyedEditors = Mirror(reflecting: registry).children.first {
+            $0.label == "activeEditorIds"
+        }?.value as? Set<UInt64>
+        XCTAssertEqual(stateAfterDestroyedEditors, stateBefore)
+
+        let liveEditorId: UInt64 = 9_000_001_000
+        registry.markEditorCreated(editorId: liveEditorId)
+        defer { registry.invalidateDestroyedEditor(editorId: liveEditorId) }
+        let stateWithLiveEditor = Mirror(reflecting: registry).children.first {
+            $0.label == "activeEditorIds"
+        }?.value as? Set<UInt64>
+
+        XCTAssertTrue(stateWithLiveEditor?.contains(liveEditorId) ?? false)
+    }
+
     func testEditorTextViewDisablesNativeUndoManager() {
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
 
@@ -3531,7 +3603,6 @@ final class RichTextEditorViewTests: XCTestCase {
 
     func testDestroyedEditorInvalidatesRegistryAndUnbindsView() {
         let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
 
         let view = NativeEditorExpoView()
@@ -3547,6 +3618,7 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(view.richTextView.textView.editorId, editorId)
 
         NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: editorId)
+        editorDestroy(id: editorId)
         let preparation = parseJSONObject(
             NativeEditorViewRegistry.shared.prepareForCommandJSON(editorId: editorId)
         )
@@ -3559,9 +3631,9 @@ final class RichTextEditorViewTests: XCTestCase {
 
     func testDestroyedEditorIdCannotRegisterNewView() {
         let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
         NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: editorId)
+        editorDestroy(id: editorId)
 
         let view = NativeEditorExpoView()
         view.setEditorId(editorId)

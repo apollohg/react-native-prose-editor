@@ -248,6 +248,11 @@ final class PositionBridge {
     /// - Parameter textView: The text view.
     /// - Returns: The scalar offset of the cursor, or 0 if no selection exists.
     static func cursorScalarOffset(in textView: UITextView) -> UInt32 {
+        if let editorTextView = textView as? EditorTextView,
+           let selection = editorTextView.currentLogicalScalarSelection()
+        {
+            return selection.head
+        }
         guard let selectedRange = textView.selectedTextRange else { return 0 }
         return textViewToScalar(selectedRange.end, in: textView)
     }

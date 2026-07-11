@@ -13,21 +13,24 @@ final class NativeEditorViewRegistry {
     static let shared = NativeEditorViewRegistry()
 
     private var viewsByEditorId: [UInt64: WeakNativeEditorExpoView] = [:]
-    private var destroyedEditorIds: Set<UInt64> = []
+    private var activeEditorIds: Set<UInt64> = []
 
     private init() {}
 
     func markEditorCreated(editorId: UInt64) {
         guard editorId != 0 else { return }
         performOnMain {
-            destroyedEditorIds.remove(editorId)
+            activeEditorIds.insert(editorId)
         }
     }
 
     func isDestroyed(editorId: UInt64) -> Bool {
         guard editorId != 0 else { return false }
         return performOnMain {
-            destroyedEditorIds.contains(editorId)
+            if activeEditorIds.contains(editorId) {
+                return false
+            }
+            return editorGetCurrentState(id: editorId).contains("\"error\":\"editor not found\"")
         }
     }
 
@@ -35,7 +38,12 @@ final class NativeEditorViewRegistry {
     func register(editorId: UInt64, view: NativeEditorExpoView) -> Bool {
         guard editorId != 0 else { return false }
         return performOnMain {
-            guard !destroyedEditorIds.contains(editorId) else { return false }
+            if !activeEditorIds.contains(editorId) {
+                guard !editorGetCurrentState(id: editorId).contains("\"error\":\"editor not found\"") else {
+                    return false
+                }
+                activeEditorIds.insert(editorId)
+            }
             viewsByEditorId[editorId] = WeakNativeEditorExpoView(view)
             return true
         }
@@ -52,7 +60,7 @@ final class NativeEditorViewRegistry {
     func invalidateDestroyedEditor(editorId: UInt64) {
         guard editorId != 0 else { return }
         performOnMain {
-            destroyedEditorIds.insert(editorId)
+            activeEditorIds.remove(editorId)
             guard let view = viewsByEditorId.removeValue(forKey: editorId)?.view else {
                 return
             }
@@ -62,7 +70,9 @@ final class NativeEditorViewRegistry {
 
     func prepareForCommandJSON(editorId: UInt64) -> String {
         let prepare = { () -> String in
-            if self.destroyedEditorIds.contains(editorId) {
+            if !self.activeEditorIds.contains(editorId),
+               editorGetCurrentState(id: editorId).contains("\"error\":\"editor not found\"")
+            {
                 return Self.commandPreparationJSON(ready: false, blockedReason: "destroyed")
             }
             guard let view = self.viewsByEditorId[editorId]?.view else {

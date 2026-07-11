@@ -619,6 +619,15 @@ final class RenderBridge {
         themeJSON: String?,
         width: CGFloat
     ) -> CGFloat {
+        if !Thread.isMainThread {
+            return DispatchQueue.main.sync {
+                measureHeight(
+                    forRenderJSON: renderJSON,
+                    themeJSON: themeJSON,
+                    width: width
+                )
+            }
+        }
         guard width > 0 else { return 0 }
 
         let theme = EditorTheme.from(json: themeJSON)
