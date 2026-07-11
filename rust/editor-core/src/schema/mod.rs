@@ -178,6 +178,15 @@ impl Schema {
         self.marks.get(name)
     }
 
+    pub fn doc_node_type(&self) -> &str {
+        self.nodes
+            .values()
+            .find(|node| matches!(node.role, NodeRole::Doc))
+            .expect("validated schemas always contain one doc role")
+            .name
+            .as_str()
+    }
+
     /// Return all node specs belonging to the given group.
     pub fn nodes_in_group(&self, group: &str) -> Vec<&NodeSpec> {
         self.nodes

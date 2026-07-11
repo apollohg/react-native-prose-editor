@@ -7,6 +7,7 @@ const ERR_DESTROYED = 'NativeEditorBridge: editor has been destroyed';
 const ERR_NATIVE_RESPONSE = 'NativeEditorBridge: invalid JSON response from native module';
 const ERR_INVALID_ENCODED_STATE = 'NativeEditorBridge: invalid encoded collaboration state';
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const MAX_NATIVE_LENGTH = 0xffff_ffff;
 
 export interface NativeEditorModule {
     editorCreate(configJson: string): number;
@@ -630,7 +631,16 @@ export class NativeEditorBridge {
     }): NativeEditorBridge {
         const configObj: Record<string, unknown> = {};
         let parsedSchema: SchemaDefinition | undefined;
-        if (config?.maxLength != null) configObj.maxLength = config.maxLength;
+        if (config?.maxLength != null) {
+            if (
+                !Number.isInteger(config.maxLength) ||
+                config.maxLength < 0 ||
+                config.maxLength > MAX_NATIVE_LENGTH
+            ) {
+                throw new Error('NativeEditorBridge: invalid maxLength');
+            }
+            configObj.maxLength = config.maxLength;
+        }
         if (config?.allowBase64Images != null) {
             configObj.allowBase64Images = config.allowBase64Images;
         }
@@ -643,6 +653,9 @@ export class NativeEditorBridge {
             }
         }
         const id = getNativeModule().editorCreate(JSON.stringify(configObj));
+        if (!Number.isSafeInteger(id) || id <= 0) {
+            throw new Error('NativeEditorBridge: native editor creation failed');
+        }
         return new NativeEditorBridge(id, parsedSchema);
     }
 

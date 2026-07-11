@@ -1298,15 +1298,29 @@ fn uniffi_editor_errors_are_always_valid_json() {
 }
 
 #[test]
-fn oversized_max_length_does_not_truncate_to_zero() {
+fn oversized_max_length_is_rejected() {
     let id = editor_core::editor_create(r#"{"maxLength":4294967296}"#.to_string());
-    let response = editor_core::editor_set_html(id, "<p>x</p>".to_string());
+    assert_eq!(id, 0, "invalid editor configuration must not create an editor");
+}
 
-    assert!(
-        !response.contains("error"),
-        "oversized maxLength must not wrap to a zero-length limit: {response}"
-    );
-    editor_core::editor_destroy(id);
+#[test]
+fn set_html_uses_the_custom_schema_doc_role_name() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "document", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .expect("custom schema should be valid");
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+
+    editor
+        .set_html("<p>custom root</p>")
+        .expect("HTML should use the schema doc role name");
+
+    assert_eq!(editor.get_json()["type"], "document");
 }
 
 #[test]

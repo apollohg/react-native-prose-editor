@@ -220,7 +220,7 @@ pub fn from_html(
     }
 
     let doc_node = Node::element(
-        "doc".to_string(),
+        schema.doc_node_type().to_string(),
         HashMap::new(),
         Fragment::from(block_children),
     );

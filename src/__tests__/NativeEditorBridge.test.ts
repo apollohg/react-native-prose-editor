@@ -312,6 +312,20 @@ describe('NativeEditorBridge', () => {
             bridge.destroy();
         });
 
+        it('rejects maxLength values outside the native u32 range', () => {
+            expect(() => NativeEditorBridge.create({ maxLength: 4_294_967_296 })).toThrow(
+                'NativeEditorBridge: invalid maxLength'
+            );
+            expect(mockNativeModule.editorCreate).not.toHaveBeenCalled();
+        });
+
+        it('rejects an invalid editor ID returned for bad native configuration', () => {
+            mockNativeModule.editorCreate.mockReturnValueOnce(0);
+            expect(() => NativeEditorBridge.create()).toThrow(
+                'NativeEditorBridge: native editor creation failed'
+            );
+        });
+
         it('creates a bridge with schemaJson in config', () => {
             const schemaJson = JSON.stringify({ nodes: { doc: {} } });
             const bridge = NativeEditorBridge.create({ schemaJson });

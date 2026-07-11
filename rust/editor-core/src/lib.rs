@@ -16,6 +16,8 @@ pub use schema::presets::{prosemirror_schema, tiptap_schema};
 
 uniffi::setup_scaffolding!();
 
+const INVALID_EDITOR_ID: u64 = 0;
+
 fn error_json(error: impl std::fmt::Display) -> String {
     serde_json::json!({ "error": error.to_string() }).to_string()
 }
@@ -53,10 +55,12 @@ pub fn editor_create(config_json: String) -> u64 {
 
     let mut interceptors = intercept::InterceptorPipeline::new();
 
-    if let Some(max_length) = config.get("maxLength").and_then(|v| v.as_u64()) {
-        interceptors.add(Box::new(intercept::MaxLength::new(
-            u32::try_from(max_length).unwrap_or(u32::MAX),
-        )));
+    if let Some(max_length) = config.get("maxLength") {
+        let Some(max_length) = max_length.as_u64().and_then(|value| u32::try_from(value).ok())
+        else {
+            return INVALID_EDITOR_ID;
+        };
+        interceptors.add(Box::new(intercept::MaxLength::new(max_length)));
     }
     if let Some(true) = config.get("readOnly").and_then(|v| v.as_bool()) {
         interceptors.add(Box::new(intercept::ReadOnly::new(true)));
