@@ -40,9 +40,13 @@ pub struct Schema {
     nodes: HashMap<String, NodeSpec>,
     marks: HashMap<String, MarkSpec>,
     groups: HashMap<String, Vec<String>>,
+    symbol_role_masks: HashMap<String, u8>,
     doc_node_name: String,
     text_node_name: String,
 }
+
+const OPAQUE_INLINE_ROLE: u8 = 1;
+const OPAQUE_BLOCK_ROLE: u8 = 2;
 
 /// Specification for a node type within a schema.
 #[derive(Debug, Clone)]
@@ -231,6 +235,21 @@ impl Schema {
             names.dedup();
         }
 
+        let mut symbol_role_masks = HashMap::new();
+        for node in &nodes {
+            let mask = match node.role {
+                NodeRole::Text | NodeRole::Inline | NodeRole::HardBreak => OPAQUE_INLINE_ROLE,
+                NodeRole::Doc => 0,
+                _ => OPAQUE_BLOCK_ROLE,
+            };
+            *symbol_role_masks.entry(node.name.clone()).or_insert(0) |= mask;
+            if let Some(node_groups) = &node.group {
+                for group in node_groups.split_whitespace() {
+                    *symbol_role_masks.entry(group.to_string()).or_insert(0) |= mask;
+                }
+            }
+        }
+
         let schema = Self {
             nodes: nodes
                 .into_iter()
@@ -241,6 +260,7 @@ impl Schema {
                 .map(|mark| (mark.name.clone(), mark))
                 .collect(),
             groups,
+            symbol_role_masks,
             doc_node_name: doc_names.into_iter().next().expect("one doc role"),
             text_node_name: text_names.into_iter().next().expect("one text role"),
         };
@@ -381,6 +401,15 @@ impl Schema {
     /// Look up a mark spec by name.
     pub fn mark(&self, name: &str) -> Option<&MarkSpec> {
         self.marks.get(name)
+    }
+
+    pub fn symbol_accepts_opaque_placement(&self, symbol: &str, placement: &str) -> bool {
+        let mask = self.symbol_role_masks.get(symbol).copied().unwrap_or(0);
+        match placement {
+            "inline" => mask & OPAQUE_INLINE_ROLE != 0,
+            "block" => mask & OPAQUE_BLOCK_ROLE != 0,
+            _ => false,
+        }
     }
 
     pub fn doc_node_type(&self) -> &str {

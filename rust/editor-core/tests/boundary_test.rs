@@ -441,6 +441,51 @@ fn many_opaque_siblings_exhaust_parse_budget_before_placement_work() {
     ));
 }
 
+#[test]
+fn many_admitted_opaque_siblings_match_against_near_ceiling_schema() {
+    let mut nodes = vec![
+        serde_json::json!({ "name": "doc", "content": "wide*", "role": "doc" }),
+        serde_json::json!({ "name": "text", "content": "", "role": "text" }),
+    ];
+    for index in 0..1_000 {
+        nodes.push(serde_json::json!({
+            "name": format!("inline{index}"),
+            "content": "",
+            "group": "wide",
+            "role": "inline",
+            "isVoid": true
+        }));
+    }
+    let limits = ResourceLimits {
+        max_document_nodes: 600,
+        max_schema_nodes: 1_024,
+        ..ResourceLimits::default()
+    };
+    let schema = Schema::from_json_with_limits(
+        &serde_json::json!({ "nodes": nodes, "marks": [] }),
+        &limits,
+    )
+    .unwrap();
+    assert!(schema.symbol_accepts_opaque_placement("wide", "inline"));
+    assert!(!schema.symbol_accepts_opaque_placement("wide", "block"));
+    let content = (0..500)
+        .map(|index| serde_json::json!({ "type": format!("future{index}") }))
+        .collect::<Vec<_>>();
+    let json = serde_json::json!({ "type": "doc", "content": content });
+
+    let document = from_prosemirror_json_with_limits(
+        &json,
+        &schema,
+        UnknownTypeMode::Preserve,
+        &limits,
+    )
+    .unwrap();
+    assert_eq!(document.root().child_count(), 500);
+    assert!(document.root().content().unwrap().iter().all(|node| {
+        node.attrs()["opaque_placement"] == serde_json::Value::String("inline".to_string())
+    }));
+}
+
 fn schema_with_required_image_src() -> Schema {
     let base = tiptap_schema();
     let mut nodes: Vec<NodeSpec> = base.all_nodes().cloned().collect();

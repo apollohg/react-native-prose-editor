@@ -379,20 +379,8 @@ fn placement_choice(
             .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
             .then_some(PlacementChoice::Known);
     }
-    let mut inline = false;
-    let mut block = false;
-    for spec in schema
-        .all_nodes()
-        .filter(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
-    {
-        match spec.role {
-            crate::schema::NodeRole::Text
-            | crate::schema::NodeRole::Inline
-            | crate::schema::NodeRole::HardBreak => inline = true,
-            crate::schema::NodeRole::Doc => {}
-            _ => block = true,
-        }
-    }
+    let inline = schema.symbol_accepts_opaque_placement(symbol, "inline");
+    let block = schema.symbol_accepts_opaque_placement(symbol, "block");
     if block {
         Some(PlacementChoice::Block)
     } else if inline {
