@@ -80,7 +80,7 @@ pub struct CollaborationPeer {
     pub state: Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct CachedPeerState {
     raw_json: Option<String>,
     parsed_state: Value,
@@ -277,15 +277,15 @@ impl CollaborationSession {
             previous_peers_revision.wrapping_add(1)
         };
 
-        *self = candidate;
-
         let messages = if encoded_state.is_empty() {
             Vec::new()
         } else {
-            vec![encode_message(Message::Sync(SyncMessage::Update(
-                encoded_state,
-            )))]
+            vec![encode_message_bounded(
+                Message::Sync(SyncMessage::Update(encoded_state)),
+                &candidate.resource_limits,
+            )?]
         };
+        *self = candidate;
         Ok(self.finish_result(
             previous_document_revision,
             previous_peers_revision,
@@ -384,7 +384,7 @@ impl CollaborationSession {
 
     pub fn start(&mut self) -> BoundaryResult<CollaborationResult> {
         let mut result = CollaborationResult::empty();
-        result.messages.push(self.encode_sync_step_1());
+        result.messages.push(self.encode_sync_step_1()?);
         if let Some(message) = self.encode_local_awareness_message()? {
             result.messages.push(message);
         }
@@ -459,7 +459,10 @@ impl CollaborationSession {
         let messages = if update.is_empty() {
             Vec::new()
         } else {
-            vec![encode_message(Message::Sync(SyncMessage::Update(update)))]
+            vec![encode_message_bounded(
+                Message::Sync(SyncMessage::Update(update)),
+                &candidate.resource_limits,
+            )?]
         };
         candidate.document_revision = if candidate.cached_document_json == previous_document_json {
             previous_document_revision
@@ -497,7 +500,7 @@ impl CollaborationSession {
             .handle(&candidate.awareness, &message)
             .map_err(|error| BoundaryError::parse("COLLABORATION_DECODE_FAILED", error))?;
         for reply in replies {
-            responses.push(encode_message(reply));
+            responses.push(encode_message_bounded(reply, &candidate.resource_limits)?);
         }
 
         if refresh_scope.document {
@@ -608,7 +611,10 @@ impl CollaborationSession {
                 .awareness
                 .update_with_clients([candidate.doc.client_id()])
                 .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
-            vec![encode_message(Message::Awareness(update))]
+            vec![encode_message_bounded(
+                Message::Awareness(update),
+                &candidate.resource_limits,
+            )?]
         } else {
             Vec::new()
         };
@@ -647,9 +653,12 @@ impl CollaborationSession {
         Ok(())
     }
 
-    fn encode_sync_step_1(&self) -> Vec<u8> {
+    fn encode_sync_step_1(&self) -> BoundaryResult<Vec<u8>> {
         let state_vector = self.doc.transact().state_vector();
-        encode_message(Message::Sync(SyncMessage::SyncStep1(state_vector)))
+        encode_message_bounded(
+            Message::Sync(SyncMessage::SyncStep1(state_vector)),
+            &self.resource_limits,
+        )
     }
 
     fn encode_local_awareness_message(&self) -> BoundaryResult<Option<Vec<u8>>> {
@@ -660,7 +669,10 @@ impl CollaborationSession {
             .awareness
             .update()
             .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
-        Ok(Some(encode_message(Message::Awareness(update))))
+        Ok(Some(encode_message_bounded(
+            Message::Awareness(update),
+            &self.resource_limits,
+        )?))
     }
 
     fn refresh_cached_document_json(&mut self) -> BoundaryResult<bool> {
@@ -1215,6 +1227,12 @@ fn encode_message(message: Message) -> Vec<u8> {
     let mut encoder = EncoderV1::new();
     message.encode(&mut encoder);
     encoder.to_vec()
+}
+
+fn encode_message_bounded(message: Message, limits: &ResourceLimits) -> BoundaryResult<Vec<u8>> {
+    let encoded = encode_message(message);
+    check_binary_input(encoded.len(), limits.max_collaboration_message_bytes)?;
+    Ok(encoded)
 }
 
 #[derive(Debug)]
@@ -3581,5 +3599,116 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), "COLLABORATION_APPLY_FAILED");
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct CompleteSessionSnapshot {
+        document_json: Value,
+        encoded_state: Vec<u8>,
+        peers: Vec<CollaborationPeer>,
+        peer_states: HashMap<u64, CachedPeerState>,
+        document_revision: u64,
+        peers_revision: u64,
+        local_awareness: Option<Value>,
+        fragment_name: String,
+        document_root_type: String,
+    }
+
+    fn complete_snapshot(session: &CollaborationSession) -> CompleteSessionSnapshot {
+        CompleteSessionSnapshot {
+            document_json: session.document_json(),
+            encoded_state: session.encoded_state(),
+            peers: session.peers(),
+            peer_states: session.cached_peer_states.clone(),
+            document_revision: session.document_revision,
+            peers_revision: session.peers_revision,
+            local_awareness: session.local_awareness_state.clone(),
+            fragment_name: session.fragment_name.clone(),
+            document_root_type: session.document_root_type.clone(),
+        }
+    }
+
+    fn session_with_local_and_remote_awareness(client_id: u64) -> CollaborationSession {
+        let mut session = CollaborationSession::try_new(
+            &json!({
+                "clientId": client_id,
+                "localAwareness": { "user": { "name": "Local" } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let remote = Awareness::new(Doc::with_client_id(client_id + 100));
+        remote
+            .set_local_state(json!({ "user": { "name": "Remote" } }))
+            .unwrap();
+        session
+            .handle_message(encode_message(Message::Awareness(remote.update().unwrap())))
+            .unwrap();
+        assert_eq!(session.peers().len(), 2);
+        session
+    }
+
+    #[test]
+    fn outbound_durable_and_local_update_limits_are_atomic() {
+        let mut source = CollaborationSession::try_new(r#"{"clientId":31}"#).unwrap();
+        let document = json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "outbound limit" }] }]
+        });
+        source.apply_local_document(document.clone()).unwrap();
+        let state = source.encoded_state();
+        let echo_size = encode_message(Message::Sync(SyncMessage::Update(state.clone()))).len();
+
+        for replace in [false, true] {
+            let mut session = session_with_local_and_remote_awareness(if replace { 32 } else { 33 });
+            session.resource_limits.max_collaboration_message_bytes = echo_size - 1;
+            assert!(state.len() <= session.resource_limits.max_encoded_state_bytes);
+            let before = complete_snapshot(&session);
+            let error = if replace {
+                session.replace_encoded_state(state.clone()).unwrap_err()
+            } else {
+                session.apply_encoded_state(state.clone()).unwrap_err()
+            };
+            assert_eq!(error.code(), "INPUT_LIMIT_EXCEEDED");
+            assert_eq!(complete_snapshot(&session), before);
+        }
+
+        let mut local = session_with_local_and_remote_awareness(34);
+        let before = complete_snapshot(&local);
+        local.resource_limits.max_collaboration_message_bytes = 1;
+        let error = local.apply_local_document(document).unwrap_err();
+        assert_eq!(error.code(), "INPUT_LIMIT_EXCEEDED");
+        assert_eq!(complete_snapshot(&local), before);
+    }
+
+    #[test]
+    fn outbound_sync_start_and_awareness_limits_are_bounded_and_atomic() {
+        let mut session = session_with_local_and_remote_awareness(41);
+        session.apply_local_document(json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "full state response" }] }]
+        })).unwrap();
+        let sync_step_1 = encode_message(Message::Sync(SyncMessage::SyncStep1(
+            StateVector::default(),
+        )));
+        let before = complete_snapshot(&session);
+        session.resource_limits.max_collaboration_message_bytes = sync_step_1.len();
+        let error = session.handle_message(sync_step_1).unwrap_err();
+        assert_eq!(error.code(), "INPUT_LIMIT_EXCEEDED");
+        assert_eq!(complete_snapshot(&session), before);
+
+        session.resource_limits.max_collaboration_message_bytes = 1;
+        assert_eq!(session.start().unwrap_err().code(), "INPUT_LIMIT_EXCEEDED");
+        assert_eq!(complete_snapshot(&session), before);
+
+        let error = session
+            .set_local_awareness(json!({ "user": { "name": "Changed" } }))
+            .unwrap_err();
+        assert_eq!(error.code(), "INPUT_LIMIT_EXCEEDED");
+        assert_eq!(complete_snapshot(&session), before);
+
+        let error = session.clear_local_awareness().unwrap_err();
+        assert_eq!(error.code(), "INPUT_LIMIT_EXCEEDED");
+        assert_eq!(complete_snapshot(&session), before);
     }
 }
