@@ -71,6 +71,59 @@ fn collaboration_ffi_rejects_state_and_messages_before_json_decode() {
 }
 
 #[test]
+fn collaboration_creation_and_missing_sessions_return_structured_errors() {
+    for (config, code) in [
+        ("{".to_string(), "CONFIG_PARSE_FAILED"),
+        (
+            serde_json::json!({ "resourceLimits": { "maxInputBytes": 0 } }).to_string(),
+            "INVALID_RESOURCE_LIMIT",
+        ),
+        (serde_json::json!({ "maxLength": -1 }).to_string(), "CONFIG_INVALID"),
+        (
+            serde_json::json!({ "schema": { "nodes": [], "marks": [] } }).to_string(),
+            "SCHEMA_INVALID",
+        ),
+        (
+            serde_json::json!({
+                "maxLength": 1,
+                "initialDocumentJson": {
+                    "type": "doc",
+                    "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "😀x" }] }]
+                }
+            })
+            .to_string(),
+            "MAX_LENGTH_EXCEEDED",
+        ),
+    ] {
+        let response: serde_json::Value = serde_json::from_str(
+            &editor_core::collaboration_session_create_result(config),
+        )
+        .unwrap();
+        assert_eq!(response["error"]["code"], code);
+        assert!(response.get("sessionId").is_none());
+    }
+
+    for response in [
+        editor_core::collaboration_session_get_document_json(u64::MAX),
+        editor_core::collaboration_session_get_encoded_state(u64::MAX),
+        editor_core::collaboration_session_get_peers_json(u64::MAX),
+        editor_core::collaboration_session_start(u64::MAX),
+        editor_core::collaboration_session_clear_local_awareness(u64::MAX),
+        editor_core::collaboration_session_apply_local_document_json(
+            u64::MAX,
+            "{}".to_string(),
+        ),
+        editor_core::collaboration_session_apply_encoded_state(u64::MAX, "[]".to_string()),
+        editor_core::collaboration_session_replace_encoded_state(u64::MAX, "[]".to_string()),
+        editor_core::collaboration_session_handle_message(u64::MAX, "[]".to_string()),
+        editor_core::collaboration_session_set_local_awareness(u64::MAX, "{}".to_string()),
+    ] {
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["error"]["code"], "SESSION_NOT_FOUND");
+    }
+}
+
+#[test]
 fn resource_limits_use_canonical_defaults_and_camel_case_fields() {
     let limits = ResourceLimits::try_from_config(Some(&serde_json::json!({
         "maxDocumentNodes": 12_345
@@ -102,7 +155,7 @@ fn resource_limits_reject_invalid_values_and_exact_ceiling_overrides() {
             ResourceLimits::try_from_config(Some(&invalid))
                 .unwrap_err()
                 .code(),
-            "RESOURCE_LIMIT_INVALID"
+            "INVALID_RESOURCE_LIMIT"
         );
     }
 
@@ -128,7 +181,7 @@ fn editor_create_result_returns_structured_errors_and_success_ids() {
         r#"{"resourceLimits":{"maxInputBytes":0}}"#.to_string(),
     ))
     .unwrap();
-    assert_eq!(limit_error["error"]["code"], "RESOURCE_LIMIT_INVALID");
+    assert_eq!(limit_error["error"]["code"], "INVALID_RESOURCE_LIMIT");
     assert!(limit_error.get("editorId").is_none());
 
     let success: serde_json::Value =

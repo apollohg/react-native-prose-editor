@@ -44,7 +44,7 @@ impl ResourceLimits {
     pub fn try_from_config(value: Option<&serde_json::Value>) -> BoundaryResult<Self> {
         let overrides = match value {
             Some(value) => serde_json::from_value::<ResourceLimitOverrides>(value.clone())
-                .map_err(|error| BoundaryError::parse("RESOURCE_LIMIT_INVALID", error))?,
+                .map_err(|error| BoundaryError::parse("INVALID_RESOURCE_LIMIT", error))?,
             None => ResourceLimitOverrides::default(),
         };
         let defaults = Self::default();
@@ -95,7 +95,7 @@ impl ResourceLimits {
         ] {
             if actual == 0 || actual > ceiling {
                 return Err(BoundaryError {
-                    code: "RESOURCE_LIMIT_INVALID",
+                    code: "INVALID_RESOURCE_LIMIT",
                     message: format!("{name} must be a positive integer no greater than {ceiling}"),
                     limit: Some(ceiling),
                     actual: Some(actual),

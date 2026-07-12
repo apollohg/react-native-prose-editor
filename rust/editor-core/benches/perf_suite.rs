@@ -418,7 +418,11 @@ fn main() {
                 )
             },
             |(session, next_doc)| {
-                black_box(session.apply_local_document(next_doc.clone()));
+                black_box(
+                    session
+                        .apply_local_document(next_doc.clone())
+                        .expect("benchmark collaboration document should be valid"),
+                );
             },
         ),
     );
@@ -437,6 +441,7 @@ fn main() {
                 let receiver = collaboration_session_with_document(&article_doc);
                 let message = sender
                     .apply_local_document(edited_article_doc.clone())
+                    .expect("benchmark collaboration document should be valid")
                     .messages
                     .into_iter()
                     .next()
@@ -510,6 +515,7 @@ fn main() {
                         },
                         "focused": true
                     }))
+                    .expect("benchmark awareness should be valid")
                     .messages
                     .into_iter()
                     .next()
@@ -795,6 +801,7 @@ fn awareness_messages_for_document(
                     },
                     "focused": true
                 }))
+                .expect("benchmark awareness should be valid")
                 .messages
                 .into_iter()
                 .next()

@@ -150,6 +150,21 @@ pub fn collaboration_session_create(config_json: String) -> u64 {
     collaboration::CollaborationSessionRegistry::create(&config_json)
 }
 
+#[uniffi::export]
+pub fn collaboration_session_create_result(config_json: String) -> String {
+    match collaboration::CollaborationSessionRegistry::create_result(&config_json) {
+        Ok(session_id) => serde_json::json!({ "sessionId": session_id }).to_string(),
+        Err(error) => error_envelope(&error),
+    }
+}
+
+fn collaboration_session_not_found() -> String {
+    error_envelope(&BoundaryError::new(
+        "SESSION_NOT_FOUND",
+        "collaboration session not found",
+    ))
+}
+
 /// Destroy a collaboration session and free its resources.
 #[uniffi::export]
 pub fn collaboration_session_destroy(id: u64) {
@@ -162,7 +177,7 @@ pub fn collaboration_session_get_document_json(id: u64) -> String {
     with_collaboration_session(id, |session| {
         serde_json::to_string(&session.document_json()).unwrap_or_else(|_| "{}".to_string())
     })
-    .unwrap_or_else(|| "{}".to_string())
+    .unwrap_or_else(collaboration_session_not_found)
 }
 
 /// Return the current shared Yjs document state as a JSON byte array.
@@ -171,7 +186,7 @@ pub fn collaboration_session_get_encoded_state(id: u64) -> String {
     with_collaboration_session(id, |session| {
         serde_json::to_string(&session.encoded_state()).unwrap_or_else(|_| "[]".to_string())
     })
-    .unwrap_or_else(|| "[]".to_string())
+    .unwrap_or_else(collaboration_session_not_found)
 }
 
 /// Return the current awareness peers for a collaboration session.
@@ -180,16 +195,19 @@ pub fn collaboration_session_get_peers_json(id: u64) -> String {
     with_collaboration_session(id, |session| {
         serde_json::to_string(&session.peers()).unwrap_or_else(|_| "[]".to_string())
     })
-    .unwrap_or_else(|| "[]".to_string())
+    .unwrap_or_else(collaboration_session_not_found)
 }
 
 /// Start the sync handshake for a collaboration session.
 #[uniffi::export]
 pub fn collaboration_session_start(id: u64) -> String {
     with_collaboration_session(id, |session| {
-        serde_json::to_string(&session.start()).unwrap_or_else(|_| "{}".to_string())
+        match session.start() {
+            Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
+            Err(error) => error_envelope(&error),
+        }
     })
-    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+    .unwrap_or_else(collaboration_session_not_found)
 }
 
 /// Apply a local ProseMirror JSON snapshot to the collaboration session.
@@ -210,10 +228,12 @@ pub fn collaboration_session_apply_local_document_json(id: u64, json: String) ->
         if let Err(error) = session.validate_document_json(&value) {
             return error_envelope(&error);
         }
-        serde_json::to_string(&session.apply_local_document(value))
-            .unwrap_or_else(|_| "{}".to_string())
+        match session.apply_local_document(value) {
+            Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
+            Err(error) => error_envelope(&error),
+        }
     })
-    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+    .unwrap_or_else(collaboration_session_not_found)
 }
 
 /// Apply a durable Yjs encoded state/update represented as a JSON byte array.
@@ -239,7 +259,7 @@ pub fn collaboration_session_apply_encoded_state(id: u64, encoded_state_json: St
             Err(error) => error_json(error),
         }
     })
-    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+    .unwrap_or_else(collaboration_session_not_found)
 }
 
 /// Replace the collaboration document with a durable Yjs encoded state/update.
@@ -265,7 +285,7 @@ pub fn collaboration_session_replace_encoded_state(id: u64, encoded_state_json: 
             Err(error) => error_json(error),
         }
     })
-    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+    .unwrap_or_else(collaboration_session_not_found)
 }
 
 /// Apply an incoming y-sync binary message encoded as a JSON byte array.
@@ -291,7 +311,7 @@ pub fn collaboration_session_handle_message(id: u64, message_json: String) -> St
             Err(error) => error_json(error),
         }
     })
-    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+    .unwrap_or_else(collaboration_session_not_found)
 }
 
 /// Update the local awareness payload for a collaboration session.
@@ -312,19 +332,24 @@ pub fn collaboration_session_set_local_awareness(id: u64, awareness_json: String
                 return error_envelope(&BoundaryError::parse("COLLABORATION_DECODE_FAILED", error))
             }
         };
-        serde_json::to_string(&session.set_local_awareness(value))
-            .unwrap_or_else(|_| "{}".to_string())
+        match session.set_local_awareness(value) {
+            Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
+            Err(error) => error_envelope(&error),
+        }
     })
-    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+    .unwrap_or_else(collaboration_session_not_found)
 }
 
 /// Clear the local awareness payload for a collaboration session.
 #[uniffi::export]
 pub fn collaboration_session_clear_local_awareness(id: u64) -> String {
     with_collaboration_session(id, |session| {
-        serde_json::to_string(&session.clear_local_awareness()).unwrap_or_else(|_| "{}".to_string())
+        match session.clear_local_awareness() {
+            Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
+            Err(error) => error_envelope(&error),
+        }
     })
-    .unwrap_or_else(|| "{\"error\":\"session not found\"}".to_string())
+    .unwrap_or_else(collaboration_session_not_found)
 }
 
 /// Set the editor's content from an HTML string. Returns render elements as JSON.

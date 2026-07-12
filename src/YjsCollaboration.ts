@@ -66,6 +66,7 @@ export interface YjsCollaborationOptions {
     schema?: SchemaDefinition;
     initialDocumentJson?: DocumentJSON;
     initialEncodedState?: EncodedCollaborationStateInput;
+    maxLength?: number;
     resourceLimits?: EditorResourceLimits;
     localAwareness: LocalAwarenessUser;
     onPeersChange?: (peers: CollaborationPeer[]) => void;
@@ -333,6 +334,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             schema: options.schema,
             initialDocumentJson: options.initialDocumentJson,
             initialEncodedState: options.initialEncodedState,
+            maxLength: options.maxLength,
             localAwareness: awarenessToRecord(this.localAwarenessState),
             resourceLimits: options.resourceLimits,
         });
@@ -819,6 +821,7 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
     }, [
         options.documentId,
         options.fragmentName,
+        options.maxLength,
         schemaKey,
         resourceLimitsKey,
         initialEncodedStateKey,

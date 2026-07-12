@@ -22,6 +22,7 @@ export interface NativeEditorModule {
     editorDestroy(editorId: number): void;
     editorPrepareForCommand?(editorId: number): string;
     collaborationSessionCreate(configJson: string): number;
+    collaborationSessionCreateResult?(configJson: string): string;
     collaborationSessionDestroy(sessionId: number): void;
     collaborationSessionGetDocumentJson(sessionId: number): string;
     collaborationSessionGetEncodedState(sessionId: number): string;
@@ -599,6 +600,32 @@ export function parseCollaborationResultJson(json: string): CollaborationResult 
             throw e;
         }
         throw new Error(ERR_NATIVE_RESPONSE);
+    }
+}
+
+function parseCollaborationSessionId(json: string): number {
+    try {
+        const parsed = JSON.parse(json) as Record<string, unknown>;
+        const boundaryError = parseNativeBoundaryError(parsed);
+        if (boundaryError) throw boundaryError;
+        const sessionId = parsed.sessionId;
+        if (!Number.isSafeInteger(sessionId) || (sessionId as number) <= 0) {
+            throw new Error(ERR_NATIVE_RESPONSE);
+        }
+        return sessionId as number;
+    } catch (error) {
+        if (error instanceof NativeEditorBoundaryError) throw error;
+        throw new Error(ERR_NATIVE_RESPONSE);
+    }
+}
+
+function throwIfNativeBoundaryError(json: string): void {
+    try {
+        const parsed = JSON.parse(json) as unknown;
+        const boundaryError = parseNativeBoundaryError(parsed);
+        if (boundaryError) throw boundaryError;
+    } catch (error) {
+        if (error instanceof NativeEditorBoundaryError) throw error;
     }
 }
 
@@ -1424,11 +1451,20 @@ export class NativeCollaborationBridge {
         clientId?: number;
         fragmentName?: string;
         schema?: SchemaDefinition;
+        maxLength?: number;
         initialDocumentJson?: DocumentJSON;
         initialEncodedState?: EncodedCollaborationStateInput;
         localAwareness?: Record<string, unknown>;
         resourceLimits?: EditorResourceLimits;
     }): NativeCollaborationBridge {
+        if (
+            config?.maxLength != null &&
+            (!Number.isInteger(config.maxLength) ||
+                config.maxLength < 0 ||
+                config.maxLength > MAX_NATIVE_LENGTH)
+        ) {
+            throw new Error('NativeEditorBridge: invalid maxLength');
+        }
         const { initialEncodedState, resourceLimits, ...normalizedConfig } = config ?? {};
         const resolvedConfig =
             resourceLimits == null
@@ -1437,7 +1473,16 @@ export class NativeCollaborationBridge {
                       ...normalizedConfig,
                       resourceLimits: resolveEditorResourceLimits(resourceLimits),
                   };
-        const id = getNativeModule().collaborationSessionCreate(JSON.stringify(resolvedConfig));
+        const nativeModule = getNativeModule();
+        const configJson = JSON.stringify(resolvedConfig);
+        const id = nativeModule.collaborationSessionCreateResult
+            ? parseCollaborationSessionId(
+                  nativeModule.collaborationSessionCreateResult(configJson)
+              )
+            : nativeModule.collaborationSessionCreate(configJson);
+        if (!Number.isSafeInteger(id) || id <= 0) {
+            throw new Error('NativeEditorBridge: native collaboration creation failed');
+        }
         const bridge = new NativeCollaborationBridge(id);
         if (initialEncodedState != null) {
             try {
@@ -1466,16 +1511,16 @@ export class NativeCollaborationBridge {
 
     getDocumentJson(): DocumentJSON {
         this.assertNotDestroyed();
-        return parseDocumentJSON(
-            getNativeModule().collaborationSessionGetDocumentJson(this._sessionId)
-        );
+        const json = getNativeModule().collaborationSessionGetDocumentJson(this._sessionId);
+        throwIfNativeBoundaryError(json);
+        return parseDocumentJSON(json);
     }
 
     getEncodedState(): Uint8Array {
         this.assertNotDestroyed();
-        return parseByteArrayJson(
-            getNativeModule().collaborationSessionGetEncodedState(this._sessionId)
-        );
+        const json = getNativeModule().collaborationSessionGetEncodedState(this._sessionId);
+        throwIfNativeBoundaryError(json);
+        return parseByteArrayJson(json);
     }
 
     getEncodedStateBase64(): string {
@@ -1484,9 +1529,9 @@ export class NativeCollaborationBridge {
 
     getPeers(): CollaborationPeer[] {
         this.assertNotDestroyed();
-        return parseCollaborationPeersJson(
-            getNativeModule().collaborationSessionGetPeersJson(this._sessionId)
-        );
+        const json = getNativeModule().collaborationSessionGetPeersJson(this._sessionId);
+        throwIfNativeBoundaryError(json);
+        return parseCollaborationPeersJson(json);
     }
 
     start(): CollaborationResult {

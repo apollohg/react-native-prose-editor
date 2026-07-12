@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use yrs::any::Any;
 use yrs::branch::{Branch, BranchPtr};
-use yrs::sync::awareness::Awareness;
+use yrs::sync::awareness::{Awareness, AwarenessUpdate};
 use yrs::sync::protocol::{DefaultProtocol, Message, Protocol, SyncMessage};
 use yrs::types::text::{Text, YChange};
 use yrs::types::xml::{
@@ -44,13 +44,17 @@ pub struct CollaborationSessionRegistry;
 
 impl CollaborationSessionRegistry {
     pub fn create(config_json: &str) -> CollaborationSessionId {
+        Self::create_result(config_json).unwrap_or(0)
+    }
+
+    pub fn create_result(config_json: &str) -> BoundaryResult<CollaborationSessionId> {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let session = CollaborationSession::new(config_json);
+        let session = CollaborationSession::try_new(config_json)?;
         let mut map = global_registry()
             .lock()
             .expect("collaboration registry lock poisoned");
         map.insert(id, Arc::new(Mutex::new(session)));
-        id
+        Ok(id)
     }
 
     pub fn get(id: CollaborationSessionId) -> Option<Arc<Mutex<CollaborationSession>>> {
@@ -137,22 +141,32 @@ fn check_binary_input(actual: usize, limit: usize) -> BoundaryResult<()> {
     Ok(())
 }
 
+fn apply_awareness_snapshot(
+    target: &Awareness,
+    update: Result<AwarenessUpdate, yrs::sync::awareness::Error>,
+) -> BoundaryResult<()> {
+    let update = update
+        .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
+    target
+        .apply_update(update)
+        .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))
+}
+
 impl CollaborationSession {
     pub fn new(config_json: &str) -> Self {
-        Self::try_new(config_json)
-            .unwrap_or_else(|_| Self::from_config(&json!({}), ResourceLimits::default()))
+        Self::try_new(config_json).expect("invalid collaboration session configuration")
     }
 
-    fn try_new(config_json: &str) -> BoundaryResult<Self> {
-        let defaults = ResourceLimits::default();
-        let admitted = BoundedInput::new(config_json, InputKind::Config, &defaults)?;
-        let config: Value = serde_json::from_str(admitted.as_str())
+    pub fn try_new(config_json: &str) -> BoundaryResult<Self> {
+        check_binary_input(config_json.len(), 64 * 1024 * 1024)?;
+        let config: Value = serde_json::from_str(config_json)
             .map_err(|error| BoundaryError::parse("CONFIG_PARSE_FAILED", error))?;
         let limits = ResourceLimits::try_from_config(config.get("resourceLimits"))?;
-        Ok(Self::from_config(&config, limits))
+        BoundedInput::new(config_json, InputKind::Config, &limits)?;
+        Self::from_config(&config, limits)
     }
 
-    fn from_config(config: &Value, resource_limits: ResourceLimits) -> Self {
+    fn from_config(config: &Value, resource_limits: ResourceLimits) -> BoundaryResult<Self> {
         let client_id = config.get("clientId").and_then(Value::as_u64);
         let mut doc_options = client_id.map(Options::with_client_id).unwrap_or_default();
         doc_options.offset_kind = OffsetKind::Utf16;
@@ -163,13 +177,26 @@ impl CollaborationSession {
             .and_then(Value::as_str)
             .unwrap_or("prosemirror")
             .to_string();
-        let schema = schema_from_config(config, &resource_limits);
+        let schema = match config.get("schema") {
+            Some(schema_json) => Schema::from_json_with_limits(schema_json, &resource_limits)?,
+            None => tiptap_schema(),
+        };
         let void_element_tags = void_element_tags_from_schema_with_opaque(&schema);
         let document_root_type = schema.doc_node_type().to_string();
-        let max_length = config
-            .get("maxLength")
-            .and_then(Value::as_u64)
-            .and_then(|value| u32::try_from(value).ok());
+        let max_length = match config.get("maxLength") {
+            Some(value) => Some(
+                value
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        BoundaryError::new(
+                            "CONFIG_INVALID",
+                            "maxLength must be an unsigned 32-bit integer",
+                        )
+                    })?,
+            ),
+            None => None,
+        };
 
         let mut session = Self {
             doc,
@@ -189,18 +216,19 @@ impl CollaborationSession {
         };
 
         if let Some(initial_json) = config.get("initialDocumentJson") {
-            session.replace_document(initial_json.clone());
+            session.validate_document_json(initial_json)?;
+            session.replace_document(initial_json.clone())?;
         } else {
-            session.refresh_cached_document_json();
+            session.refresh_cached_document_json()?;
         }
 
         if let Some(local_awareness) = config.get("localAwareness") {
-            session.set_local_awareness(local_awareness.clone());
+            session.set_local_awareness(local_awareness.clone())?;
         }
 
         session.refresh_cached_peers();
 
-        session
+        Ok(session)
     }
 
     pub fn resource_limits(&self) -> &ResourceLimits {
@@ -291,11 +319,7 @@ impl CollaborationSession {
 
         let awareness = Awareness::new(doc.clone());
         if !replace {
-            if let Ok(update) = self.awareness.update() {
-                awareness
-                    .apply_update(update)
-                    .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
-            }
+            apply_awareness_snapshot(&awareness, self.awareness.update())?;
         } else if let Some(local_state) = self.local_awareness_state.as_ref() {
             awareness
                 .set_local_state(local_state)
@@ -318,14 +342,22 @@ impl CollaborationSession {
             resource_limits: self.resource_limits.clone(),
             max_length: self.max_length,
         };
-        candidate.refresh_cached_document_json();
+        candidate.refresh_cached_document_json()?;
         candidate.refresh_cached_peers();
         candidate.validate_cached_document()?;
+        candidate.validate_encoded_state_size()?;
         Ok(candidate)
     }
 
     fn validate_cached_document(&self) -> BoundaryResult<()> {
         self.validate_document_json(&self.cached_document_json)
+    }
+
+    fn validate_encoded_state_size(&self) -> BoundaryResult<()> {
+        check_binary_input(
+            self.encoded_state().len(),
+            self.resource_limits.max_encoded_state_bytes,
+        )
     }
 
     pub(crate) fn validate_document_json(&self, json: &Value) -> BoundaryResult<()> {
@@ -350,15 +382,15 @@ impl CollaborationSession {
         Ok(())
     }
 
-    pub fn start(&mut self) -> CollaborationResult {
+    pub fn start(&mut self) -> BoundaryResult<CollaborationResult> {
         let mut result = CollaborationResult::empty();
         result.messages.push(self.encode_sync_step_1());
-        if let Some(message) = self.encode_local_awareness_message() {
+        if let Some(message) = self.encode_local_awareness_message()? {
             result.messages.push(message);
         }
         result.peers_changed = true;
         result.peers = Some(self.cached_peers.clone());
-        result
+        Ok(result)
     }
 
     pub fn document_json(&self) -> Value {
@@ -394,13 +426,16 @@ impl CollaborationSession {
         peers
     }
 
-    pub fn apply_local_document(&mut self, next_json: Value) -> CollaborationResult {
+    pub fn apply_local_document(&mut self, next_json: Value) -> BoundaryResult<CollaborationResult> {
         let previous_peers_revision = self.peers_revision;
         let previous_document_revision = self.document_revision;
-        let previous_state_vector = self.doc.transact().state_vector();
+        let previous_document_json = self.cached_document_json.clone();
+        let previous_peers = self.cached_peers.clone();
+        let mut candidate = self.clone_candidate()?;
+        let previous_state_vector = candidate.doc.transact().state_vector();
 
         {
-            let current_children = self
+            let current_children = candidate
                 .cached_document_json
                 .get("content")
                 .and_then(Value::as_array)
@@ -411,24 +446,37 @@ impl CollaborationSession {
                 .and_then(Value::as_array)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let mut txn = self.doc.transact_mut();
-            let fragment = txn.get_or_insert_xml_fragment(self.fragment_name.as_str());
+            let mut txn = candidate.doc.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment(candidate.fragment_name.as_str());
             apply_children(&fragment, &mut txn, current_children, next_children);
         }
 
-        self.refresh_cached_document_json();
-        self.refresh_cached_peers();
-        let update = self.doc.transact().encode_diff_v1(&previous_state_vector);
+        candidate.refresh_cached_document_json()?;
+        candidate.refresh_cached_peers();
+        candidate.validate_cached_document()?;
+        candidate.validate_encoded_state_size()?;
+        let update = candidate.doc.transact().encode_diff_v1(&previous_state_vector);
         let messages = if update.is_empty() {
             Vec::new()
         } else {
             vec![encode_message(Message::Sync(SyncMessage::Update(update)))]
         };
-        self.finish_result(
+        candidate.document_revision = if candidate.cached_document_json == previous_document_json {
+            previous_document_revision
+        } else {
+            previous_document_revision.wrapping_add(1)
+        };
+        candidate.peers_revision = if candidate.cached_peers == previous_peers {
+            previous_peers_revision
+        } else {
+            previous_peers_revision.wrapping_add(1)
+        };
+        *self = candidate;
+        Ok(self.finish_result(
             previous_document_revision,
             previous_peers_revision,
             messages,
-        )
+        ))
     }
 
     pub fn handle_message(&mut self, message: Vec<u8>) -> BoundaryResult<CollaborationResult> {
@@ -453,8 +501,9 @@ impl CollaborationSession {
         }
 
         if refresh_scope.document {
-            candidate.refresh_cached_document_json();
+            candidate.refresh_cached_document_json()?;
             candidate.validate_cached_document()?;
+            candidate.validate_encoded_state_size()?;
         }
         if refresh_scope.peers || refresh_scope.document {
             candidate.refresh_cached_peers();
@@ -491,11 +540,7 @@ impl CollaborationSession {
             .apply_update(current_update)
             .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
         let awareness = Awareness::new(doc.clone());
-        if let Ok(update) = self.awareness.update() {
-            awareness
-                .apply_update(update)
-                .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
-        }
+        apply_awareness_snapshot(&awareness, self.awareness.update())?;
 
         let mut candidate = Self {
             doc,
@@ -513,57 +558,75 @@ impl CollaborationSession {
             resource_limits: self.resource_limits.clone(),
             max_length: self.max_length,
         };
-        candidate.refresh_cached_document_json();
+        candidate.refresh_cached_document_json()?;
         candidate.refresh_cached_peers();
         Ok(candidate)
     }
 
-    pub fn set_local_awareness(&mut self, next_state: Value) -> CollaborationResult {
+    pub fn set_local_awareness(
+        &mut self,
+        next_state: Value,
+    ) -> BoundaryResult<CollaborationResult> {
         let previous_document_revision = self.document_revision;
         let previous_peers_revision = self.peers_revision;
+        let mut candidate = self.clone_candidate()?;
         let next_state = self.normalize_awareness_state(next_state);
-        self.local_awareness_state = Some(next_state.clone());
-        if self.awareness.set_local_state(&next_state).is_err() {
-            return CollaborationResult::empty();
-        }
-        self.refresh_cached_peers();
+        candidate.local_awareness_state = Some(next_state.clone());
+        candidate
+            .awareness
+            .set_local_state(&next_state)
+            .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
+        candidate.refresh_cached_peers();
 
-        let messages = self
-            .encode_local_awareness_message()
+        let messages = candidate
+            .encode_local_awareness_message()?
             .into_iter()
             .collect::<Vec<_>>();
-        self.finish_result(
+        candidate.peers_revision = if candidate.cached_peers == self.cached_peers {
+            previous_peers_revision
+        } else {
+            previous_peers_revision.wrapping_add(1)
+        };
+        *self = candidate;
+        Ok(self.finish_result(
             previous_document_revision,
             previous_peers_revision,
             messages,
-        )
+        ))
     }
 
-    pub fn clear_local_awareness(&mut self) -> CollaborationResult {
+    pub fn clear_local_awareness(&mut self) -> BoundaryResult<CollaborationResult> {
         let previous_document_revision = self.document_revision;
         let previous_peers_revision = self.peers_revision;
-        let had_local_awareness = self.awareness.local_state_raw().is_some();
-        self.local_awareness_state = None;
-        self.awareness.remove_state(self.doc.client_id());
-        self.refresh_cached_peers();
+        let mut candidate = self.clone_candidate()?;
+        let had_local_awareness = candidate.awareness.local_state_raw().is_some();
+        candidate.local_awareness_state = None;
+        candidate.awareness.remove_state(candidate.doc.client_id());
+        candidate.refresh_cached_peers();
         let messages = if had_local_awareness {
-            self.awareness
-                .update_with_clients([self.doc.client_id()])
-                .ok()
-                .map(|update| vec![encode_message(Message::Awareness(update))])
-                .unwrap_or_default()
+            let update = candidate
+                .awareness
+                .update_with_clients([candidate.doc.client_id()])
+                .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
+            vec![encode_message(Message::Awareness(update))]
         } else {
             Vec::new()
         };
 
-        self.finish_result(
+        candidate.peers_revision = if candidate.cached_peers == self.cached_peers {
+            previous_peers_revision
+        } else {
+            previous_peers_revision.wrapping_add(1)
+        };
+        *self = candidate;
+        Ok(self.finish_result(
             previous_document_revision,
             previous_peers_revision,
             messages,
-        )
+        ))
     }
 
-    fn replace_document(&mut self, next_json: Value) {
+    fn replace_document(&mut self, next_json: Value) -> BoundaryResult<()> {
         let mut txn = self.doc.transact_mut();
         let fragment = txn.get_or_insert_xml_fragment(self.fragment_name.as_str());
         let len = fragment.len(&txn);
@@ -577,8 +640,11 @@ impl CollaborationSession {
             }
         }
         drop(txn);
-        self.refresh_cached_document_json();
+        self.refresh_cached_document_json()?;
         self.refresh_cached_peers();
+        self.validate_cached_document()?;
+        self.validate_encoded_state_size()?;
+        Ok(())
     }
 
     fn encode_sync_step_1(&self) -> Vec<u8> {
@@ -586,26 +652,37 @@ impl CollaborationSession {
         encode_message(Message::Sync(SyncMessage::SyncStep1(state_vector)))
     }
 
-    fn encode_local_awareness_message(&self) -> Option<Vec<u8>> {
-        self.local_awareness_state.as_ref()?;
-        let update = self.awareness.update().ok()?;
-        Some(encode_message(Message::Awareness(update)))
+    fn encode_local_awareness_message(&self) -> BoundaryResult<Option<Vec<u8>>> {
+        if self.local_awareness_state.is_none() {
+            return Ok(None);
+        }
+        let update = self
+            .awareness
+            .update()
+            .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
+        Ok(Some(encode_message(Message::Awareness(update))))
     }
 
-    fn refresh_cached_document_json(&mut self) -> bool {
+    fn refresh_cached_document_json(&mut self) -> BoundaryResult<bool> {
         let txn = self.doc.transact();
         let next_document_json = txn
             .get_xml_fragment(self.fragment_name.as_str())
             .map(|fragment| {
-                xml_fragment_to_document_json(&fragment, &txn, &self.document_root_type)
+                xml_fragment_to_document_json_with_limits(
+                    &fragment,
+                    &txn,
+                    &self.document_root_type,
+                    &self.resource_limits,
+                )
             })
+            .transpose()?
             .unwrap_or_else(|| empty_document_json(&self.document_root_type));
         if next_document_json == self.cached_document_json {
-            return false;
+            return Ok(false);
         }
         self.cached_document_json = next_document_json;
         self.document_revision = self.document_revision.wrapping_add(1);
-        true
+        Ok(true)
     }
 
     fn refresh_cached_peers(&mut self) -> bool {
@@ -1038,13 +1115,6 @@ fn void_element_tags_from_schema_with_opaque(schema: &Schema) -> HashSet<String>
     tags
 }
 
-fn schema_from_config(config: &Value, limits: &ResourceLimits) -> Schema {
-    config
-        .get("schema")
-        .and_then(|schema_json| Schema::from_json_with_limits(schema_json, limits).ok())
-        .unwrap_or_else(tiptap_schema)
-}
-
 fn is_void_element_tag(tag: &str, void_element_tags: &HashSet<String>) -> bool {
     void_element_tags.contains(tag)
 }
@@ -1147,33 +1217,110 @@ fn encode_message(message: Message) -> Vec<u8> {
     encoder.to_vec()
 }
 
+#[derive(Debug)]
+struct CollaborationConversionBudget<'a> {
+    limits: &'a ResourceLimits,
+    nodes: usize,
+}
+
+impl<'a> CollaborationConversionBudget<'a> {
+    fn new(limits: &'a ResourceLimits) -> Self {
+        Self { limits, nodes: 0 }
+    }
+
+    fn admit_node(&mut self, depth: usize) -> BoundaryResult<()> {
+        self.nodes = self.nodes.saturating_add(1);
+        if self.nodes > self.limits.max_document_nodes {
+            return Err(BoundaryError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.limits.max_document_nodes,
+                self.nodes,
+            ));
+        }
+        if depth > self.limits.max_document_depth {
+            return Err(BoundaryError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.limits.max_document_depth,
+                depth,
+            ));
+        }
+        Ok(())
+    }
+
+    fn admit_traversal_depth(&self, depth: usize) -> BoundaryResult<()> {
+        if depth > self.limits.max_document_depth {
+            return Err(BoundaryError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.limits.max_document_depth,
+                depth,
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 fn xml_fragment_to_document_json<T: ReadTxn>(
     fragment: &XmlFragmentRef,
     txn: &T,
     document_root_type: &str,
 ) -> Value {
-    let content = fragment
-        .children(txn)
-        .flat_map(|child| xml_out_to_json(child, txn))
-        .collect::<Vec<_>>();
-    json!({
+    xml_fragment_to_document_json_with_limits(
+        fragment,
+        txn,
+        document_root_type,
+        &ResourceLimits::default(),
+    )
+    .expect("test collaboration document should be within default limits")
+}
+
+fn xml_fragment_to_document_json_with_limits<T: ReadTxn>(
+    fragment: &XmlFragmentRef,
+    txn: &T,
+    document_root_type: &str,
+    limits: &ResourceLimits,
+) -> BoundaryResult<Value> {
+    let mut budget = CollaborationConversionBudget::new(limits);
+    budget.admit_node(1)?;
+    let mut content = Vec::new();
+    for child in fragment.children(txn) {
+        append_xml_out_json(child, txn, 2, &mut budget, &mut content)?;
+    }
+    Ok(json!({
         "type": document_root_type,
         "content": content,
-    })
+    }))
 }
 
-fn xml_out_to_json<T: ReadTxn>(node: XmlOut, txn: &T) -> Vec<Value> {
+fn append_xml_out_json<T: ReadTxn>(
+    node: XmlOut,
+    txn: &T,
+    depth: usize,
+    budget: &mut CollaborationConversionBudget<'_>,
+    output: &mut Vec<Value>,
+) -> BoundaryResult<()> {
     match node {
-        XmlOut::Element(element) => vec![xml_element_to_json(&element, txn)],
-        XmlOut::Text(text) => xml_text_to_json(&text, txn),
-        XmlOut::Fragment(fragment) => fragment
-            .children(txn)
-            .flat_map(|child| xml_out_to_json(child, txn))
-            .collect(),
+        XmlOut::Element(element) => output.push(xml_element_to_json(
+            &element, txn, depth, budget,
+        )?),
+        XmlOut::Text(text) => append_xml_text_json(&text, txn, depth, budget, output)?,
+        XmlOut::Fragment(fragment) => {
+            budget.admit_traversal_depth(depth)?;
+            for child in fragment.children(txn) {
+                append_xml_out_json(child, txn, depth + 1, budget, output)?;
+            }
+        }
     }
+    Ok(())
 }
 
-fn xml_element_to_json<T: ReadTxn>(element: &XmlElementRef, txn: &T) -> Value {
+fn xml_element_to_json<T: ReadTxn>(
+    element: &XmlElementRef,
+    txn: &T,
+    depth: usize,
+    budget: &mut CollaborationConversionBudget<'_>,
+) -> BoundaryResult<Value> {
+    budget.admit_node(depth)?;
     let mut object = Map::new();
     let mut attrs = element
         .attributes(txn)
@@ -1185,19 +1332,24 @@ fn xml_element_to_json<T: ReadTxn>(element: &XmlElementRef, txn: &T) -> Value {
         object.insert("attrs".to_string(), Value::Object(attrs));
     }
 
-    let children = element
-        .children(txn)
-        .flat_map(|child| xml_out_to_json(child, txn))
-        .collect::<Vec<_>>();
+    let mut children = Vec::new();
+    for child in element.children(txn) {
+        append_xml_out_json(child, txn, depth + 1, budget, &mut children)?;
+    }
     if !children.is_empty() {
         object.insert("content".to_string(), Value::Array(children));
     }
 
-    Value::Object(object)
+    Ok(Value::Object(object))
 }
 
-fn xml_text_to_json<T: ReadTxn>(text: &XmlTextRef, txn: &T) -> Vec<Value> {
-    let mut nodes = Vec::new();
+fn append_xml_text_json<T: ReadTxn>(
+    text: &XmlTextRef,
+    txn: &T,
+    depth: usize,
+    budget: &mut CollaborationConversionBudget<'_>,
+    output: &mut Vec<Value>,
+) -> BoundaryResult<()> {
     for diff in text.diff(txn, YChange::identity) {
         let yrs::Out::Any(any) = diff.insert else {
             continue;
@@ -1208,6 +1360,7 @@ fn xml_text_to_json<T: ReadTxn>(text: &XmlTextRef, txn: &T) -> Vec<Value> {
         if text_value.is_empty() {
             continue;
         }
+        budget.admit_node(depth)?;
         let mut object = Map::new();
         object.insert("type".to_string(), Value::String("text".to_string()));
         object.insert("text".to_string(), Value::String(text_value));
@@ -1215,9 +1368,9 @@ fn xml_text_to_json<T: ReadTxn>(text: &XmlTextRef, txn: &T) -> Vec<Value> {
         if !marks.is_empty() {
             object.insert("marks".to_string(), Value::Array(marks));
         }
-        nodes.push(Value::Object(object));
+        output.push(Value::Object(object));
     }
-    nodes
+    Ok(())
 }
 
 fn attrs_to_marks(attrs: Option<Box<Attrs>>) -> Vec<Value> {
@@ -1870,7 +2023,7 @@ mod tests {
                     "marks": [{ "type": "bold" }]
                 }]
             }]
-        }));
+        })).unwrap();
         let _ = apply_messages_to_peer(&peer, result.messages);
 
         let txn = peer.doc().transact();
@@ -1897,13 +2050,13 @@ mod tests {
         );
         let mut right = CollaborationSession::new(r#"{"clientId":2}"#);
 
-        for message in left.start().messages {
+        for message in left.start().unwrap().messages {
             let reply = right.handle_message(message).unwrap();
             for response in reply.messages {
                 let _ = left.handle_message(response).unwrap();
             }
         }
-        for message in right.start().messages {
+        for message in right.start().unwrap().messages {
             let reply = left.handle_message(message).unwrap();
             for response in reply.messages {
                 let _ = right.handle_message(response).unwrap();
@@ -1936,7 +2089,7 @@ mod tests {
                 }
             ]
         });
-        let apply = left.apply_local_document(local.clone());
+        let apply = left.apply_local_document(local.clone()).unwrap();
         for message in apply.messages {
             let _ = right.handle_message(message).unwrap();
         }
@@ -1975,7 +2128,7 @@ mod tests {
             peer.doc().transact().state_vector(),
         )));
         let session_responses = session.handle_message(peer_sync_step_1).unwrap();
-        let peer_replies = apply_messages_to_peer(&peer, session.start().messages);
+        let peer_replies = apply_messages_to_peer(&peer, session.start().unwrap().messages);
         for message in peer_replies {
             let _ = session.handle_message(message).unwrap();
         }
@@ -2049,7 +2202,7 @@ mod tests {
                 "anchor": 2,
                 "head": 4
             }
-        }));
+        })).unwrap();
         let _ = apply_messages_to_peer(&peer, session_awareness.messages);
 
         let peer_states: HashMap<_, _> = peer
@@ -2104,7 +2257,7 @@ mod tests {
                 "anchor": 2,
                 "head": 4
             }
-        }));
+        })).unwrap();
         let _ = apply_messages_to_peer(&peer, awareness.messages);
         let peer_states: HashMap<_, _> = peer
             .iter()
@@ -2112,7 +2265,7 @@ mod tests {
             .collect();
         assert!(peer_states.contains_key(&1));
 
-        let cleared = session.clear_local_awareness();
+        let cleared = session.clear_local_awareness().unwrap();
         assert_eq!(cleared.messages.len(), 1);
         let _ = apply_messages_to_peer(&peer, cleared.messages);
 
@@ -2148,7 +2301,7 @@ mod tests {
                 "head": 4
             },
             "focused": true
-        }));
+        })).unwrap();
         let _ = apply_messages_to_peer(&peer, awareness.messages);
 
         let peer_states: HashMap<_, _> = peer
@@ -2228,7 +2381,7 @@ mod tests {
                 "head": 4
             },
             "focused": true
-        }));
+        })).unwrap();
 
         let remote_insert_update = {
             let mut txn = peer.doc_mut().transact_mut();
@@ -2302,7 +2455,7 @@ mod tests {
                 "head": 5
             },
             "focused": true
-        }));
+        })).unwrap();
 
         let result = session.apply_local_document(json!({
             "type": "doc",
@@ -2314,6 +2467,7 @@ mod tests {
             ]
         }));
 
+        let result = result.unwrap();
         assert_eq!(
             result.document_json,
             Some(json!({
@@ -2656,6 +2810,7 @@ mod tests {
         }));
 
         let message = result
+            .unwrap()
             .messages
             .into_iter()
             .next()
@@ -2830,7 +2985,7 @@ mod tests {
             },
             "focused": true
         }));
-        let _ = apply_messages_to_peer(&peer, awareness.messages);
+        let _ = apply_messages_to_peer(&peer, awareness.unwrap().messages);
 
         let peer_states: HashMap<_, _> = peer
             .iter()
@@ -2899,7 +3054,7 @@ mod tests {
             },
             "focused": true
         }));
-        let _ = apply_messages_to_peer(&peer, awareness.messages);
+        let _ = apply_messages_to_peer(&peer, awareness.unwrap().messages);
 
         let peer_states: HashMap<_, _> = peer
             .iter()
@@ -3155,7 +3310,9 @@ mod tests {
             .apply_encoded_state(sender.encoded_state())
             .expect("receiver should sync base document");
 
-        let document_update = sender.apply_local_document(document_with_horizontal_rule.clone());
+        let document_update = sender
+            .apply_local_document(document_with_horizontal_rule.clone())
+            .unwrap();
         for message in document_update.messages {
             receiver
                 .handle_message(message)
@@ -3280,7 +3437,7 @@ mod tests {
                 "content": [{ "type": "text", "text": "too long" }]
             }]
         }));
-        let message = update.messages.into_iter().next().unwrap();
+        let message = update.unwrap().messages.into_iter().next().unwrap();
 
         let mut session = CollaborationSession::new(
             r#"{"clientId":2,"maxLength":3,"localAwareness":{"user":{"name":"Ada"}}}"#,
@@ -3299,5 +3456,130 @@ mod tests {
         assert_eq!(session.peers(), before_peers);
         assert_eq!(session.document_revision, before_document_revision);
         assert_eq!(session.peers_revision, before_peers_revision);
+    }
+
+    #[test]
+    fn invalid_local_snapshot_preserves_all_collaboration_state_and_counts_scalars() {
+        let mut session = CollaborationSession::try_new(
+            r#"{"clientId":2,"maxLength":1,"localAwareness":{"user":{"name":"Ada"}}}"#,
+        )
+        .unwrap();
+        let before_json = session.document_json();
+        let before_encoded = session.encoded_state();
+        let before_peers = session.peers();
+
+        let one_scalar = session.apply_local_document(json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "😀" }] }]
+        }));
+        assert!(one_scalar.is_ok());
+        let accepted_json = session.document_json();
+        let accepted_encoded = session.encoded_state();
+        let accepted_peers = session.peers();
+
+        let error = session.apply_local_document(json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "😀x" }] }]
+        })).unwrap_err();
+        assert_eq!(error.code(), "MAX_LENGTH_EXCEEDED");
+        assert_ne!(accepted_json, before_json);
+        assert_ne!(accepted_encoded, before_encoded);
+        assert_eq!(accepted_peers, before_peers);
+        assert_eq!(session.document_json(), accepted_json);
+        assert_eq!(session.encoded_state(), accepted_encoded);
+        assert_eq!(session.peers(), accepted_peers);
+    }
+
+    #[test]
+    fn deep_and_wide_encoded_states_are_rejected_atomically() {
+        let mut deep_child = json!({ "type": "paragraph" });
+        for _ in 0..32 {
+            deep_child = json!({ "type": "blockquote", "content": [deep_child] });
+        }
+        let mut deep_source = CollaborationSession::try_new(
+            r#"{"clientId":1,"resourceLimits":{"maxDocumentDepth":64}}"#,
+        )
+        .unwrap();
+        deep_source.apply_local_document(json!({ "type": "doc", "content": [deep_child] })).unwrap();
+
+        let wide_content = (0..32)
+            .map(|_| json!({ "type": "paragraph" }))
+            .collect::<Vec<_>>();
+        let mut wide_source = CollaborationSession::try_new(r#"{"clientId":3}"#).unwrap();
+        wide_source.apply_local_document(json!({ "type": "doc", "content": wide_content })).unwrap();
+
+        for (config, state) in [
+            (r#"{"clientId":2,"resourceLimits":{"maxDocumentDepth":8}}"#, deep_source.encoded_state()),
+            (r#"{"clientId":4,"resourceLimits":{"maxDocumentNodes":10}}"#, wide_source.encoded_state()),
+        ] {
+            let mut target = CollaborationSession::try_new(config).unwrap();
+            let before_json = target.document_json();
+            let before_state = target.encoded_state();
+            let error = target.replace_encoded_state(state).unwrap_err();
+            assert_eq!(error.code(), "DOCUMENT_LIMIT_EXCEEDED");
+            assert_eq!(target.document_json(), before_json);
+            assert_eq!(target.encoded_state(), before_state);
+        }
+    }
+
+    #[test]
+    fn cumulative_encoded_state_growth_is_rejected_atomically() {
+        let mut target = CollaborationSession::try_new(r#"{"clientId":11}"#).unwrap();
+        target.apply_local_document(json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "local" }] }]
+        })).unwrap();
+        let mut source = CollaborationSession::try_new(r#"{"clientId":12}"#).unwrap();
+        source.apply_local_document(json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "remote" }] }]
+        })).unwrap();
+        let incoming = source.encoded_state();
+        let before_json = target.document_json();
+        let before_state = target.encoded_state();
+        target.resource_limits.max_encoded_state_bytes = before_state.len().max(incoming.len());
+
+        let error = target.apply_encoded_state(incoming.clone()).unwrap_err();
+        assert_eq!(error.code(), "INPUT_LIMIT_EXCEEDED");
+        assert_eq!(target.document_json(), before_json);
+        assert_eq!(target.encoded_state(), before_state);
+
+        let message = encode_message(Message::Sync(SyncMessage::Update(incoming)));
+        let error = target.handle_message(message).unwrap_err();
+        assert_eq!(error.code(), "INPUT_LIMIT_EXCEEDED");
+        assert_eq!(target.document_json(), before_json);
+        assert_eq!(target.encoded_state(), before_state);
+    }
+
+    #[test]
+    fn merge_and_sync_preserve_awareness_and_awareness_failures_are_structured() {
+        let mut target = CollaborationSession::try_new(
+            r#"{"clientId":21,"localAwareness":{"user":{"name":"Ada"}}}"#,
+        )
+        .unwrap();
+        let before_peers = target.peers();
+        let before_local = target.local_awareness_state.clone();
+        let mut source = CollaborationSession::try_new(r#"{"clientId":22}"#).unwrap();
+        source.apply_local_document(json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "remote" }] }]
+        })).unwrap();
+
+        target.apply_encoded_state(source.encoded_state()).unwrap();
+        assert_eq!(target.peers(), before_peers);
+        assert_eq!(target.local_awareness_state, before_local);
+
+        let message = encode_message(Message::Sync(SyncMessage::Update(source.encoded_state())));
+        target.handle_message(message).unwrap();
+        assert_eq!(target.peers(), before_peers);
+        assert_eq!(target.local_awareness_state, before_local);
+
+        let empty = Awareness::new(Doc::with_client_id(99));
+        let error = apply_awareness_snapshot(
+            &empty,
+            Err(yrs::sync::awareness::Error::ClientNotFound(99)),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "COLLABORATION_APPLY_FAILED");
     }
 }

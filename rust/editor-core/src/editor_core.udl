@@ -8,6 +8,7 @@ namespace editor_core {
 
     // Collaboration lifecycle
     u64 collaboration_session_create(string config_json);
+    string collaboration_session_create_result(string config_json);
     void collaboration_session_destroy(u64 id);
     string collaboration_session_get_document_json(u64 id);
     string collaboration_session_get_encoded_state(u64 id);

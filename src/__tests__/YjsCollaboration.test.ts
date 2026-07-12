@@ -88,6 +88,9 @@ const REMOTE_PEERS = [
 
 const mockNativeModule = {
     collaborationSessionCreate: jest.fn(() => 1),
+    collaborationSessionCreateResult: jest.fn((configJson: string) =>
+        JSON.stringify({ sessionId: mockNativeModule.collaborationSessionCreate(configJson) })
+    ),
     collaborationSessionDestroy: jest.fn(),
     collaborationSessionGetDocumentJson: jest.fn(() => JSON.stringify(INITIAL_DOC)),
     collaborationSessionGetEncodedState: jest.fn(() => JSON.stringify([9, 8, 7])),
@@ -1517,6 +1520,40 @@ describe('YjsCollaboration', () => {
             })
         );
 
+        bridge.destroy();
+    });
+
+    it('uses structured collaboration creation and session errors', () => {
+        mockNativeModule.collaborationSessionCreateResult.mockReturnValueOnce(
+            JSON.stringify({
+                error: {
+                    code: 'CONFIG_INVALID',
+                    message: 'invalid collaboration config',
+                },
+            })
+        );
+        expect(() => NativeCollaborationBridge.create()).toThrow(
+            expect.objectContaining({
+                name: 'NativeEditorBoundaryError',
+                code: 'CONFIG_INVALID',
+            })
+        );
+
+        const bridge = NativeCollaborationBridge.create({ maxLength: 7 });
+        expect(mockNativeModule.collaborationSessionCreateResult).toHaveBeenLastCalledWith(
+            expect.stringContaining('"maxLength":7')
+        );
+        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValueOnce(
+            JSON.stringify({
+                error: {
+                    code: 'SESSION_NOT_FOUND',
+                    message: 'collaboration session not found',
+                },
+            })
+        );
+        expect(() => bridge.getDocumentJson()).toThrow(
+            expect.objectContaining({ code: 'SESSION_NOT_FOUND' })
+        );
         bridge.destroy();
     });
 
