@@ -2,6 +2,7 @@ package com.apollohg.editor
 
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import org.json.JSONObject
 import uniffi.editor_core.*
 
 internal fun nativeULong(value: Int): ULong? =
@@ -12,6 +13,26 @@ internal fun nativeUInt(value: Int): UInt? =
 
 internal fun nativeArgumentError(field: String): String =
     "{\"error\":\"invalid $field\"}"
+
+internal fun createdEditorId(resultJson: String): ULong? {
+    val result = runCatching { JSONObject(resultJson) }.getOrNull() ?: return null
+    if (result.has("error")) return null
+    val value = result.opt("editorId") as? Number ?: return null
+    val doubleValue = value.toDouble()
+    if (!doubleValue.isFinite() || doubleValue % 1.0 != 0.0 || doubleValue <= 0.0 ||
+        doubleValue > Long.MAX_VALUE.toDouble()
+    ) return null
+    return value.toLong().toULong()
+}
+
+internal fun registerCreatedEditorResult(
+    resultJson: String,
+    markCreated: (Long) -> Unit = NativeEditorViewRegistry::markEditorCreated
+): String {
+    val editorId = createdEditorId(resultJson) ?: return resultJson
+    markCreated(editorId.toLong())
+    return resultJson
+}
 
 internal fun destroyEditorThenInvalidate(
     editorId: ULong,
@@ -32,10 +53,8 @@ class NativeEditorModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("NativeEditor")
 
-        Function("editorCreate") { configJson: String ->
-            editorCreate(configJson).toLong().also { id ->
-                NativeEditorViewRegistry.markEditorCreated(id)
-            }
+        Function("editorCreateResult") { configJson: String ->
+            registerCreatedEditorResult(editorCreateResult(configJson))
         }
         Function("editorDestroy") { id: Int ->
             val editorId = nativeULong(id) ?: return@Function
@@ -436,7 +455,8 @@ class NativeEditorModule : Module() {
             editorCanRedo(editorId)
         }
         Function("renderDocumentJson") { configJson: String, json: String ->
-            val editorId = editorCreate(configJson)
+            val creation = editorCreateResult(configJson)
+            val editorId = createdEditorId(creation) ?: return@Function creation
             try {
                 editorSetJson(editorId, json)
             } finally {
@@ -454,7 +474,8 @@ class NativeEditorModule : Module() {
             height.toDouble()
         }
         Function("renderDocumentHtml") { configJson: String, html: String ->
-            val editorId = editorCreate(configJson)
+            val creation = editorCreateResult(configJson)
+            val editorId = createdEditorId(creation) ?: return@Function creation
             try {
                 editorSetHtml(editorId, html)
             } finally {

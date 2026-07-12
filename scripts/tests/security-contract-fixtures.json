@@ -1,0 +1,45 @@
+{
+    "unknownScriptMark": {
+        "document": {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        { "type": "text", "text": "unsafe", "marks": [{ "type": "script" }] }
+                    ]
+                }
+            ]
+        },
+        "expectedErrorCode": "UNKNOWN_MARK"
+    },
+    "missingImageSource": {
+        "document": { "type": "doc", "content": [{ "type": "image" }] },
+        "expectedErrorCode": "REQUIRED_ATTRIBUTE_MISSING"
+    },
+    "oversizedSchema": {
+        "nodeCount": 1025,
+        "expectedErrorCode": "SCHEMA_LIMIT_EXCEEDED"
+    },
+    "customArticleRoot": {
+        "schema": {
+            "nodes": [
+                { "name": "article", "content": "title+", "role": "doc" },
+                { "name": "title", "content": "text*", "group": "block" },
+                { "name": "text", "group": "inline" }
+            ]
+        },
+        "document": { "type": "article", "content": [{ "type": "title" }] },
+        "expectedRoot": "article"
+    },
+    "whitespaceBase64": {
+        "source": "data:image/png;base64, A Q = = \n",
+        "whitespaceCountsTowardAdmission": true
+    },
+    "trickleDeadline": {
+        "requestTimeoutMs": 60,
+        "byteArrivalMs": [0, 20, 40, 60, 80],
+        "expectedTerminalMs": 60,
+        "expectedOutcome": "timeout"
+    }
+}

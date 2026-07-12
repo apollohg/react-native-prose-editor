@@ -11,6 +11,9 @@ cd "$repo_root"
 echo "==> Syncing versioned files..."
 npm run sync:version
 
+echo "==> Validating source security contracts..."
+npm run security:validate
+
 echo "==> Rebuilding Rust artifacts and generated bindings..."
 npm run build:rust
 

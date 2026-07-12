@@ -551,6 +551,13 @@ public func collaborationSessionCreate(configJson: String) -> UInt64  {
     )
 })
 }
+public func collaborationSessionCreateResult(configJson: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_collaboration_session_create_result(
+        FfiConverterString.lower(configJson),$0
+    )
+})
+}
 /**
  * Destroy a collaboration session and free its resources.
  */
@@ -678,6 +685,13 @@ public func editorCoreVersion() -> String  {
 public func editorCreate(configJson: String) -> UInt64  {
     return try!  FfiConverterUInt64.lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_create(
+        FfiConverterString.lower(configJson),$0
+    )
+})
+}
+public func editorCreateResult(configJson: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_create_result(
         FfiConverterString.lower(configJson),$0
     )
 })
@@ -1323,6 +1337,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_collaboration_session_create() != 60237) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_editor_core_checksum_func_collaboration_session_create_result() != 18589) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_editor_core_checksum_func_collaboration_session_destroy() != 56261) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1357,6 +1374,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_create() != 19812) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_create_result() != 5778) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_delete_and_split_scalar() != 13764) {

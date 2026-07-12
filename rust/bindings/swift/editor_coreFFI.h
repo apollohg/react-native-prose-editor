@@ -271,6 +271,11 @@ RustBuffer uniffi_editor_core_fn_func_collaboration_session_clear_local_awarenes
 uint64_t uniffi_editor_core_fn_func_collaboration_session_create(RustBuffer config_json, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_COLLABORATION_SESSION_CREATE_RESULT
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_COLLABORATION_SESSION_CREATE_RESULT
+RustBuffer uniffi_editor_core_fn_func_collaboration_session_create_result(RustBuffer config_json, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_COLLABORATION_SESSION_DESTROY
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_COLLABORATION_SESSION_DESTROY
 void uniffi_editor_core_fn_func_collaboration_session_destroy(uint64_t id, RustCallStatus *_Nonnull out_status
@@ -330,6 +335,11 @@ RustBuffer uniffi_editor_core_fn_func_editor_core_version(RustCallStatus *_Nonnu
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_CREATE
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_CREATE
 uint64_t uniffi_editor_core_fn_func_editor_create(RustBuffer config_json, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_CREATE_RESULT
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_CREATE_RESULT
+RustBuffer uniffi_editor_core_fn_func_editor_create_result(RustBuffer config_json, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_FN_FUNC_EDITOR_DELETE_AND_SPLIT_SCALAR
@@ -906,6 +916,12 @@ uint16_t uniffi_editor_core_checksum_func_collaboration_session_create(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_CREATE_RESULT
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_CREATE_RESULT
+uint16_t uniffi_editor_core_checksum_func_collaboration_session_create_result(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_DESTROY
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_COLLABORATION_SESSION_DESTROY
 uint16_t uniffi_editor_core_checksum_func_collaboration_session_destroy(void
@@ -976,6 +992,12 @@ uint16_t uniffi_editor_core_checksum_func_editor_core_version(void
 #define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_CREATE
 uint16_t uniffi_editor_core_checksum_func_editor_create(void
     
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_CREATE_RESULT
+#define UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_CREATE_RESULT
+uint16_t uniffi_editor_core_checksum_func_editor_create_result(void
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_EDITOR_CORE_CHECKSUM_FUNC_EDITOR_DELETE_AND_SPLIT_SCALAR
@@ -1308,4 +1330,3 @@ uint32_t ffi_editor_core_uniffi_contract_version(void
     
 );
 #endif
-

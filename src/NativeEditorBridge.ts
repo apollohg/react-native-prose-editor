@@ -17,8 +17,7 @@ const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 const MAX_NATIVE_LENGTH = 0xffff_ffff;
 
 export interface NativeEditorModule {
-    editorCreate(configJson: string): number;
-    editorCreateResult?(configJson: string): string;
+    editorCreateResult(configJson: string): string;
     editorDestroy(editorId: number): void;
     editorPrepareForCommand?(editorId: number): string;
     collaborationSessionCreate(configJson: string): number;
@@ -732,9 +731,7 @@ export class NativeEditorBridge {
             resolveDocumentDescriptor(parsedSchema, config?.resourceLimits);
         const nativeModule = getNativeModule();
         const configJson = JSON.stringify(configObj);
-        const id = nativeModule.editorCreateResult
-            ? parseEditorId(nativeModule.editorCreateResult(configJson))
-            : nativeModule.editorCreate(configJson);
+        const id = parseEditorId(nativeModule.editorCreateResult(configJson));
         if (!Number.isSafeInteger(id) || id <= 0) {
             throw new Error('NativeEditorBridge: native editor creation failed');
         }

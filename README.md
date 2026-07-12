@@ -129,6 +129,7 @@ The main extension points today are:
 - `addons`: configure optional features like @-mentions
 - `heightBehavior`: switch between internal scrolling and auto-grow
 - `imageLoadingPolicy`: bound native image bytes, timeouts, concurrency, queue depth, and decode dimensions
+- `resourceLimits`: bound schema, document, HTML/JSON, and collaboration admission
 
 For setup and customization details, start with the [Documentation Index](https://github.com/apollohg/react-native-prose-editor/wiki).
 
@@ -148,12 +149,35 @@ editor or viewer when needed:
     maxSourceBytes: 5 * 1024 * 1024,
     connectTimeoutMs: 8_000,
     readTimeoutMs: 15_000,
+    requestTimeoutMs: 45_000,
     maxConcurrentRequests: 2,
     maxPendingRequests: 32,
     maxDecodeDimensionPx: 1_536,
   }}
 />
 ```
+
+### Security and resource limits
+
+All document, schema, collaboration, and image inputs are admitted through configurable limits with safe defaults and non-configurable hard ceilings. Resource limits can be set on editors, viewers, and collaboration controllers:
+
+```tsx
+<NativeRichTextEditor
+  resourceLimits={{
+    maxInputBytes: 20 * 1024 * 1024,
+    maxDocumentNodes: 100_000,
+    maxDocumentDepth: 256,
+    maxSchemaNodes: 1_024,
+    maxSchemaExpressionBytes: 64 * 1024,
+    maxCollaborationMessageBytes: 10 * 1024 * 1024,
+    maxEncodedStateBytes: 50 * 1024 * 1024,
+  }}
+/>
+```
+
+Invalid boundary input throws `NativeEditorBoundaryError`, whose stable `code`, `limit`, `actual`, and `details` fields allow callers to distinguish configuration, size, schema, document, collaboration, and image-policy failures.
+
+Unknown nodes remain opaque and round-trip through JSON or HTML. Unknown marks and missing required attributes are rejected, and failed mutations do not partially update editor or collaboration state. These preservation rules are a compatibility mechanism, not an HTML trust boundary.
 
 `getHtml()` preserves opaque HTML and is a serializer, not a sanitizer. Sanitize
 untrusted HTML before displaying it in an HTML-capable environment.

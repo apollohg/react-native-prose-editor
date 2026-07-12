@@ -14,14 +14,42 @@ private func nativeArgumentError(_ field: String) -> String {
     "{\"error\":\"invalid \(field)\"}"
 }
 
+private func createdEditorId(_ resultJson: String) -> UInt64? {
+    guard let data = resultJson.data(using: .utf8),
+          let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          result["error"] == nil,
+          let number = result["editorId"] as? NSNumber,
+          CFGetTypeID(number) != CFBooleanGetTypeID(),
+          number.doubleValue.isFinite,
+          number.doubleValue.rounded(.towardZero) == number.doubleValue,
+          number.doubleValue > 0,
+          number.doubleValue <= Double(UInt64.max)
+    else {
+        return nil
+    }
+    return number.uint64Value
+}
+
+@discardableResult
+private func registerCreatedEditorResult(
+    _ resultJson: String,
+    markCreated: (UInt64) -> Void = { editorId in
+        NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
+    }
+) -> String {
+    guard let editorId = createdEditorId(resultJson) else {
+        return resultJson
+    }
+    markCreated(editorId)
+    return resultJson
+}
+
 public class NativeEditorModule: Module {
     public func definition() -> ModuleDefinition {
         Name("NativeEditor")
 
-        Function("editorCreate") { (configJson: String) -> Int in
-            let editorId = editorCreate(configJson: configJson)
-            NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
-            return Int(editorId)
+        Function("editorCreateResult") { (configJson: String) -> String in
+            registerCreatedEditorResult(editorCreateResult(configJson: configJson))
         }
         Function("editorDestroy") { (id: Int) in
             guard let editorId = nativeUInt64(id) else { return }
@@ -464,7 +492,8 @@ public class NativeEditorModule: Module {
             return editorCanRedo(id: editorId)
         }
         Function("renderDocumentJson") { (configJson: String, json: String) -> String in
-            let editorId = editorCreate(configJson: configJson)
+            let creation = editorCreateResult(configJson: configJson)
+            guard let editorId = createdEditorId(creation) else { return creation }
             defer {
                 editorDestroy(id: editorId)
             }
@@ -479,7 +508,8 @@ public class NativeEditorModule: Module {
             return Double(height)
         }
         Function("renderDocumentHtml") { (configJson: String, html: String) -> String in
-            let editorId = editorCreate(configJson: configJson)
+            let creation = editorCreateResult(configJson: configJson)
+            guard let editorId = createdEditorId(creation) else { return creation }
             defer {
                 editorDestroy(id: editorId)
             }

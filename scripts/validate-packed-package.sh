@@ -172,6 +172,19 @@ require_file "ios/EditorCore.xcframework/ios-arm64/libeditor_core.a"
 require_file "ios/EditorCore.xcframework/ios-arm64_x86_64-simulator/libeditor_core.a"
 validate_xcframework "$package_dir/ios/EditorCore.xcframework"
 
+grep -RFq "NativeEditorBoundaryError" "$package_dir/dist" || \
+  fail "packed TypeScript declarations are missing NativeEditorBoundaryError"
+grep -RFq "resourceLimits" "$package_dir/dist" || \
+  fail "packed TypeScript declarations are missing resourceLimits"
+grep -RFq "requestTimeoutMs" "$package_dir/dist" || \
+  fail "packed TypeScript declarations are missing requestTimeoutMs"
+grep -Fq "uniffi_editor_core_fn_func_editor_create_result" "$package_dir/ios/editor_coreFFI/editor_coreFFI.h" || \
+  fail "packed generated FFI header is missing editor_create_result"
+grep -Fq 'Function("editorCreateResult")' "$package_dir/android/src/main/java/com/apollohg/editor/NativeEditorModule.kt" || \
+  fail "packed Android Expo module is not using structured editor creation"
+grep -Fq 'Function("editorCreateResult")' "$package_dir/ios/NativeEditorModule.swift" || \
+  fail "packed iOS Expo module is not using structured editor creation"
+
 for abi in arm64-v8a armeabi-v7a x86 x86_64; do
   require_file "rust/android/$abi/libeditor_core.so"
 done

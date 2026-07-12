@@ -239,7 +239,9 @@ const mockNativeBlur = jest.fn();
 const mockNativeGetCaretRect = jest.fn();
 
 const mockNativeModule = {
-    editorCreate: jest.fn((_configJson: string) => ++mockEditorIdCounter),
+    editorCreateResult: jest.fn((_configJson: string) =>
+        JSON.stringify({ editorId: ++mockEditorIdCounter })
+    ),
     editorDestroy: jest.fn(),
     editorPrepareForCommand: jest.fn(() => '{"ready":true}'),
     editorSetHtml: jest.fn(() => '[]'),
@@ -359,8 +361,8 @@ describe('NativeRichTextEditor', () => {
         }
 
         // Re-establish default return values
-        mockNativeModule.editorCreate.mockImplementation(
-            (_configJson: string) => ++mockEditorIdCounter
+        mockNativeModule.editorCreateResult.mockImplementation((_configJson: string) =>
+            JSON.stringify({ editorId: ++mockEditorIdCounter })
         );
         mockNativeModule.editorPrepareForCommand.mockReturnValue('{"ready":true}');
         mockNativeModule.editorSetHtml.mockReturnValue('[]');
@@ -438,20 +440,20 @@ describe('NativeRichTextEditor', () => {
 
         it('creates bridge with config on mount', () => {
             render(<NativeRichTextEditor />);
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledTimes(1);
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith('{}');
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledTimes(1);
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith('{}');
         });
 
         it('creates bridge with maxLength config when provided', () => {
             render(<NativeRichTextEditor maxLength={200} />);
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith(
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith(
                 JSON.stringify({ maxLength: 200, allowBase64Images: false })
             );
         });
 
         it('creates bridge with allowBase64Images config when provided', () => {
             render(<NativeRichTextEditor allowBase64Images />);
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith(
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith(
                 JSON.stringify({ allowBase64Images: true })
             );
         });
@@ -482,7 +484,9 @@ describe('NativeRichTextEditor', () => {
         it('passes resolved resource limits into editor creation', () => {
             render(<NativeRichTextEditor resourceLimits={{ maxDocumentDepth: 128 }} />);
 
-            const config = JSON.parse(mockNativeModule.editorCreate.mock.calls[0]?.[0] as string);
+            const config = JSON.parse(
+                mockNativeModule.editorCreateResult.mock.calls[0]?.[0] as string
+            );
             expect(config.resourceLimits).toMatchObject({
                 maxInputBytes: 20 * 1024 * 1024,
                 maxDocumentDepth: 128,
@@ -497,7 +501,7 @@ describe('NativeRichTextEditor', () => {
 
             rerender(<NativeRichTextEditor resourceLimits={{ maxDocumentDepth: 128 }} />);
 
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledTimes(1);
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledTimes(1);
             expect(mockNativeModule.editorDestroy).not.toHaveBeenCalled();
         });
 
@@ -508,7 +512,7 @@ describe('NativeRichTextEditor', () => {
 
             rerender(<NativeRichTextEditor resourceLimits={{ maxDocumentDepth: 129 }} />);
 
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledTimes(2);
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledTimes(2);
             expect(mockNativeModule.editorDestroy).toHaveBeenCalledTimes(1);
         });
 
@@ -795,7 +799,7 @@ describe('NativeRichTextEditor', () => {
             } as const;
 
             const { getByTestId } = render(<NativeRichTextEditor addons={addons} />);
-            const createArg = mockNativeModule.editorCreate.mock.calls[0]?.[0];
+            const createArg = mockNativeModule.editorCreateResult.mock.calls[0]?.[0];
             const config = JSON.parse(createArg);
             const mentionNode = config.schema.nodes.find(
                 (node: { name: string }) => node.name === 'mention'
@@ -861,7 +865,7 @@ describe('NativeRichTextEditor', () => {
                 />
             );
 
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledTimes(2);
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledTimes(2);
             expect(getByTestId('native-editor-view').props.editorId).toBe(2);
             expect(getByTestId('native-editor-view').props.addonsJson).toBe(
                 JSON.stringify({

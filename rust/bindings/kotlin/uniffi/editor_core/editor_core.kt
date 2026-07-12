@@ -773,6 +773,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
 
     fun uniffi_editor_core_checksum_func_collaboration_session_create(): Short
 
+    fun uniffi_editor_core_checksum_func_collaboration_session_create_result(): Short
+
     fun uniffi_editor_core_checksum_func_collaboration_session_destroy(): Short
 
     fun uniffi_editor_core_checksum_func_collaboration_session_get_document_json(): Short
@@ -796,6 +798,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
     fun uniffi_editor_core_checksum_func_editor_core_version(): Short
 
     fun uniffi_editor_core_checksum_func_editor_create(): Short
+
+    fun uniffi_editor_core_checksum_func_editor_create_result(): Short
 
     fun uniffi_editor_core_checksum_func_editor_delete_and_split_scalar(): Short
 
@@ -969,6 +973,11 @@ internal interface UniffiLib : Library {
         uniffi_out_err: UniffiRustCallStatus,
     ): Long
 
+    fun uniffi_editor_core_fn_func_collaboration_session_create_result(
+        `configJson`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
     fun uniffi_editor_core_fn_func_collaboration_session_destroy(
         `id`: Long,
         uniffi_out_err: UniffiRustCallStatus,
@@ -1028,6 +1037,11 @@ internal interface UniffiLib : Library {
         `configJson`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): Long
+
+    fun uniffi_editor_core_fn_func_editor_create_result(
+        `configJson`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
 
     fun uniffi_editor_core_fn_func_editor_delete_and_split_scalar(
         `id`: Long,
@@ -1614,6 +1628,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_collaboration_session_create() != 60237.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_editor_core_checksum_func_collaboration_session_create_result() != 18589.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_editor_core_checksum_func_collaboration_session_destroy() != 56261.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1648,6 +1665,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_create() != 19812.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_create_result() != 5778.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_delete_and_split_scalar() != 13764.toShort()) {
@@ -2093,6 +2113,16 @@ fun `collaborationSessionCreate`(`configJson`: kotlin.String): kotlin.ULong =
         },
     )
 
+fun `collaborationSessionCreateResult`(`configJson`: kotlin.String): kotlin.String =
+    FfiConverterString.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_collaboration_session_create_result(
+                FfiConverterString.lower(`configJson`),
+                _status,
+            )
+        },
+    )
+
 /**
  * Destroy a collaboration session and free its resources.
  */
@@ -2239,6 +2269,13 @@ fun `editorCreate`(`configJson`: kotlin.String): kotlin.ULong =
     FfiConverterULong.lift(
         uniffiRustCall { _status ->
             UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_create(FfiConverterString.lower(`configJson`), _status)
+        },
+    )
+
+fun `editorCreateResult`(`configJson`: kotlin.String): kotlin.String =
+    FfiConverterString.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_create_result(FfiConverterString.lower(`configJson`), _status)
         },
     )
 

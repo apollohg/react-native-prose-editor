@@ -164,9 +164,10 @@ let mockEditorIdCounter = 0;
 const mockNativeModule: Record<string, jest.Mock> = {};
 
 function resetMockNativeModule() {
-    delete mockNativeModule.editorCreateResult;
     mockEditorIdCounter = 0;
-    mockNativeModule.editorCreate = jest.fn((_configJson: string) => ++mockEditorIdCounter);
+    mockNativeModule.editorCreateResult = jest.fn((_configJson: string) =>
+        JSON.stringify({ editorId: ++mockEditorIdCounter })
+    );
     mockNativeModule.editorDestroy = jest.fn();
     mockNativeModule.editorPrepareForCommand = jest.fn(() => '{"ready":true}');
     mockNativeModule.collaborationSessionCreate = jest.fn(
@@ -367,7 +368,7 @@ describe('NativeEditorBridge', () => {
             );
         });
 
-        it('uses the structured editor creation result when the native module exposes it', () => {
+        it('surfaces a structured editor creation error', () => {
             mockNativeModule.editorCreateResult = jest.fn(() =>
                 JSON.stringify({
                     error: {
@@ -384,7 +385,7 @@ describe('NativeEditorBridge', () => {
                     message: 'invalid editor config',
                 })
             );
-            expect(mockNativeModule.editorCreate).not.toHaveBeenCalled();
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith('{}');
         });
 
         it('accepts image policy values at their exact hard ceilings', () => {
@@ -408,7 +409,7 @@ describe('NativeEditorBridge', () => {
                 resourceLimits: { maxDocumentNodes: 12_345 },
             });
 
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith(
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith(
                 JSON.stringify({
                     resourceLimits: {
                         ...DEFAULT_EDITOR_RESOURCE_LIMITS,
@@ -422,8 +423,8 @@ describe('NativeEditorBridge', () => {
         it('creates a bridge with empty config (no options)', () => {
             const bridge = NativeEditorBridge.create();
 
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledTimes(1);
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith('{}');
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledTimes(1);
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith('{}');
             expect(bridge.editorId).toBe(1);
             expect(bridge.isDestroyed).toBe(false);
 
@@ -433,7 +434,7 @@ describe('NativeEditorBridge', () => {
         it('creates a bridge with maxLength in config', () => {
             const bridge = NativeEditorBridge.create({ maxLength: 500 });
 
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith(
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith(
                 JSON.stringify({ maxLength: 500 })
             );
             expect(bridge.editorId).toBe(1);
@@ -445,13 +446,13 @@ describe('NativeEditorBridge', () => {
             expect(() => NativeEditorBridge.create({ maxLength: 4_294_967_296 })).toThrow(
                 'NativeEditorBridge: invalid maxLength'
             );
-            expect(mockNativeModule.editorCreate).not.toHaveBeenCalled();
+            expect(mockNativeModule.editorCreateResult).not.toHaveBeenCalled();
         });
 
         it('rejects an invalid editor ID returned for bad native configuration', () => {
-            mockNativeModule.editorCreate.mockReturnValueOnce(0);
+            mockNativeModule.editorCreateResult.mockReturnValueOnce('{"editorId":0}');
             expect(() => NativeEditorBridge.create()).toThrow(
-                'NativeEditorBridge: native editor creation failed'
+                'NativeEditorBridge: invalid JSON response from native module'
             );
         });
 
@@ -459,7 +460,7 @@ describe('NativeEditorBridge', () => {
             const schemaJson = JSON.stringify({ nodes: { doc: {} } });
             const bridge = NativeEditorBridge.create({ schemaJson });
 
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith(
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith(
                 JSON.stringify({ schema: { nodes: { doc: {} } } })
             );
             expect(bridge.editorId).toBe(1);
@@ -471,7 +472,7 @@ describe('NativeEditorBridge', () => {
             const schemaJson = JSON.stringify({ nodes: { doc: {} } });
             const bridge = NativeEditorBridge.create({ maxLength: 200, schemaJson });
 
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith(
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith(
                 JSON.stringify({ maxLength: 200, schema: { nodes: { doc: {} } } })
             );
             expect(bridge.editorId).toBe(1);
@@ -482,7 +483,7 @@ describe('NativeEditorBridge', () => {
         it('creates a bridge with allowBase64Images in config', () => {
             const bridge = NativeEditorBridge.create({ allowBase64Images: true });
 
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith(
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith(
                 JSON.stringify({ allowBase64Images: true })
             );
             expect(bridge.editorId).toBe(1);
@@ -494,7 +495,7 @@ describe('NativeEditorBridge', () => {
             const bridge = NativeEditorBridge.create({ schemaJson: 'not valid json' });
 
             // Should still create with empty config (schema parse failed)
-            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith('{}');
+            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith('{}');
             expect(bridge.editorId).toBe(1);
 
             bridge.destroy();
