@@ -1,18 +1,10 @@
 import ExpoModulesCore
 import UIKit
 
-private final class WeakNativeEditorExpoView {
-    weak var view: NativeEditorExpoView?
-
-    init(_ view: NativeEditorExpoView) {
-        self.view = view
-    }
-}
-
 final class NativeEditorViewRegistry {
     static let shared = NativeEditorViewRegistry()
 
-    private var viewsByEditorId: [UInt64: WeakNativeEditorExpoView] = [:]
+    private var viewsByEditorId: [UInt64: NSHashTable<NativeEditorExpoView>] = [:]
     private var activeEditorIds: Set<UInt64> = []
 
     private init() {}
@@ -44,7 +36,9 @@ final class NativeEditorViewRegistry {
                 }
                 activeEditorIds.insert(editorId)
             }
-            viewsByEditorId[editorId] = WeakNativeEditorExpoView(view)
+            let views = viewsByEditorId[editorId] ?? NSHashTable<NativeEditorExpoView>.weakObjects()
+            views.add(view)
+            viewsByEditorId[editorId] = views
             return true
         }
     }
@@ -52,8 +46,11 @@ final class NativeEditorViewRegistry {
     func unregister(editorId: UInt64, view: NativeEditorExpoView) {
         guard editorId != 0 else { return }
         performOnMain {
-            guard viewsByEditorId[editorId]?.view === view else { return }
-            viewsByEditorId.removeValue(forKey: editorId)
+            guard let views = viewsByEditorId[editorId] else { return }
+            views.remove(view)
+            if views.allObjects.isEmpty {
+                viewsByEditorId.removeValue(forKey: editorId)
+            }
         }
     }
 
@@ -61,10 +58,8 @@ final class NativeEditorViewRegistry {
         guard editorId != 0 else { return }
         performOnMain {
             activeEditorIds.remove(editorId)
-            guard let view = viewsByEditorId.removeValue(forKey: editorId)?.view else {
-                return
-            }
-            view.handleEditorDestroyed(editorId)
+            let views = viewsByEditorId.removeValue(forKey: editorId)?.allObjects ?? []
+            views.forEach { $0.handleEditorDestroyed(editorId) }
         }
     }
 
@@ -75,7 +70,7 @@ final class NativeEditorViewRegistry {
             {
                 return Self.commandPreparationJSON(ready: false, blockedReason: "destroyed")
             }
-            guard let view = self.viewsByEditorId[editorId]?.view else {
+            guard let view = self.viewsByEditorId[editorId]?.allObjects.first else {
                 self.viewsByEditorId.removeValue(forKey: editorId)
                 return Self.commandPreparationJSON(ready: true)
             }

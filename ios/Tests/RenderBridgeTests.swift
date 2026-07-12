@@ -16,6 +16,7 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(policy.maxSourceBytes, 10 * 1024 * 1024)
         XCTAssertEqual(policy.connectTimeout, 10)
         XCTAssertEqual(policy.readTimeout, 20)
+        XCTAssertEqual(policy.requestTimeout, 60)
         XCTAssertEqual(policy.maxConcurrentRequests, 2)
         XCTAssertEqual(policy.maxPendingRequests, 64)
         XCTAssertEqual(policy.maxDecodeDimension, 2_048)
@@ -27,6 +28,7 @@ final class RenderBridgeTests: XCTestCase {
           "maxSourceBytes": 4096,
           "connectTimeoutMs": 1500,
           "readTimeoutMs": 2750,
+          "requestTimeoutMs": 4500,
           "maxConcurrentRequests": 3,
           "maxPendingRequests": 7,
           "maxDecodeDimensionPx": 512
@@ -36,14 +38,37 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(policy.maxSourceBytes, 4096)
         XCTAssertEqual(policy.connectTimeout, 1.5)
         XCTAssertEqual(policy.readTimeout, 2.75)
+        XCTAssertEqual(policy.requestTimeout, 4.5)
         XCTAssertEqual(policy.maxConcurrentRequests, 3)
         XCTAssertEqual(policy.maxPendingRequests, 7)
         XCTAssertEqual(policy.maxDecodeDimension, 512)
 
         let invalid = ImageLoadingPolicy.from(json: """
-        {"maxSourceBytes":0,"connectTimeoutMs":-1,"readTimeoutMs":"20","maxConcurrentRequests":1.5,"maxPendingRequests":null,"maxDecodeDimensionPx":0}
+        {"maxSourceBytes":0,"connectTimeoutMs":-1,"readTimeoutMs":"20","requestTimeoutMs":600001,"maxConcurrentRequests":17,"maxPendingRequests":513,"maxDecodeDimensionPx":8193}
         """)
         XCTAssertEqual(invalid, .default)
+    }
+
+    func testImageLoadingPolicyAcceptsExactHardCeilings() {
+        let policy = ImageLoadingPolicy.from(json: """
+        {
+          "maxSourceBytes": 67108864,
+          "connectTimeoutMs": 600000,
+          "readTimeoutMs": 600000,
+          "requestTimeoutMs": 600000,
+          "maxConcurrentRequests": 16,
+          "maxPendingRequests": 512,
+          "maxDecodeDimensionPx": 8192
+        }
+        """)
+
+        XCTAssertEqual(policy.maxSourceBytes, 64 * 1024 * 1024)
+        XCTAssertEqual(policy.connectTimeout, 600)
+        XCTAssertEqual(policy.readTimeout, 600)
+        XCTAssertEqual(policy.requestTimeout, 600)
+        XCTAssertEqual(policy.maxConcurrentRequests, 16)
+        XCTAssertEqual(policy.maxPendingRequests, 512)
+        XCTAssertEqual(policy.maxDecodeDimension, 8_192)
     }
 
     func testImageLoaderRejectsOversizedDataURLWithoutDecoding() {
@@ -151,22 +176,61 @@ final class RenderBridgeTests: XCTestCase {
         let controller = ImageRequestTimeoutController(
             connectTimeout: 10,
             readTimeout: 20,
+            requestTimeout: 60,
             schedule: scheduler.schedule,
             onTimeout: { timeoutCount += 1 }
         )
 
         controller.start()
-        XCTAssertEqual(scheduler.pendingDelays, [10])
+        XCTAssertEqual(scheduler.pendingDelays, [10, 60])
 
         controller.receivedResponse()
-        XCTAssertEqual(scheduler.pendingDelays, [20])
+        XCTAssertEqual(scheduler.pendingDelays, [60, 20])
         scheduler.fireCancelledTasks()
         XCTAssertEqual(timeoutCount, 0)
 
         controller.receivedData()
-        XCTAssertEqual(scheduler.pendingDelays, [20])
+        XCTAssertEqual(scheduler.pendingDelays, [60, 20])
         scheduler.fireNext()
         XCTAssertEqual(timeoutCount, 1)
+        XCTAssertEqual(scheduler.pendingDelays, [])
+    }
+
+    func testImageTimeoutControllerTotalDeadlineDoesNotResetAndCancelsAllTimersOnce() {
+        let scheduler = ManualImageTimeoutScheduler()
+        var timeoutCount = 0
+        let controller = ImageRequestTimeoutController(
+            connectTimeout: 10,
+            readTimeout: 20,
+            requestTimeout: 60,
+            schedule: scheduler.schedule,
+            onTimeout: { timeoutCount += 1 }
+        )
+
+        controller.start()
+        controller.receivedResponse()
+        controller.receivedData()
+        XCTAssertEqual(scheduler.allDelays, [10, 60, 20, 20])
+        XCTAssertEqual(scheduler.pendingDelays, [60, 20])
+
+        scheduler.fire(delay: 60)
+        XCTAssertEqual(timeoutCount, 1)
+        XCTAssertEqual(scheduler.pendingDelays, [])
+        XCTAssertTrue(scheduler.allCancelCounts.allSatisfy { $0 == 1 })
+
+        controller.cancel()
+        scheduler.fireAllIncludingCancelled()
+        XCTAssertEqual(timeoutCount, 1)
+        XCTAssertTrue(scheduler.allCancelCounts.allSatisfy { $0 == 1 })
+    }
+
+    func testURLSessionUsesPolicySecondsAndTotalResourceDeadline() {
+        let configuration = URLSessionImageTask.configuration(
+            policy: imagePolicy(connectTimeout: 10, readTimeout: 20, requestTimeout: 60)
+        )
+
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, 20)
+        XCTAssertEqual(configuration.timeoutIntervalForResource, 60)
     }
 
     func testImageCacheEvictsLeastRecentlyUsedEntriesByDecodedCost() {
@@ -192,6 +256,7 @@ final class RenderBridgeTests: XCTestCase {
             imagePolicy(maxSourceBytes: baseline.maxSourceBytes + 1),
             imagePolicy(connectTimeout: baseline.connectTimeout + 1),
             imagePolicy(readTimeout: baseline.readTimeout + 1),
+            imagePolicy(requestTimeout: baseline.requestTimeout + 1),
             imagePolicy(maxConcurrentRequests: baseline.maxConcurrentRequests + 1),
             imagePolicy(maxPendingRequests: baseline.maxPendingRequests + 1),
             imagePolicy(maxDecodeDimension: baseline.maxDecodeDimension + 1),
@@ -200,6 +265,25 @@ final class RenderBridgeTests: XCTestCase {
         for variant in variants {
             XCTAssertNotEqual(RenderImageCache.key(source: source, policy: variant), baselineKey)
         }
+    }
+
+    func testImageCacheUsesFixedDigestWithoutRetainingSource() {
+        let source = "data:image/png;base64," + String(repeating: "A", count: 1_000_000)
+        let key = RenderImageCache.key(source: source, policy: imagePolicy())
+
+        XCTAssertEqual(key.utf8.count, 64)
+        XCTAssertFalse(key.contains("data:image"))
+        XCTAssertTrue(key.allSatisfy { $0.isHexDigit && !$0.isUppercase })
+    }
+
+    func testImageCacheRetainedCostIncludesDigestMetadataAndEntryOverhead() {
+        let image = onePixelImage()
+        let decoded = RenderImageCache.decodedCost(image)
+
+        XCTAssertEqual(
+            RenderImageCache.retainedCost(image),
+            decoded + 64 + RenderImageCache.cacheEntryOverhead
+        )
     }
 
     func testEditorTextViewsKeepConfiguredImageOwnersAcrossInternalRenders() {
@@ -2852,6 +2936,7 @@ private func imagePolicy(
     maxSourceBytes: Int = 10 * 1024 * 1024,
     connectTimeout: TimeInterval = 10,
     readTimeout: TimeInterval = 20,
+    requestTimeout: TimeInterval = 60,
     maxConcurrentRequests: Int = 2,
     maxPendingRequests: Int = 64,
     maxDecodeDimension: Int = 2_048
@@ -2860,6 +2945,7 @@ private func imagePolicy(
         maxSourceBytes: maxSourceBytes,
         connectTimeout: connectTimeout,
         readTimeout: readTimeout,
+        requestTimeout: requestTimeout,
         maxConcurrentRequests: maxConcurrentRequests,
         maxPendingRequests: maxPendingRequests,
         maxDecodeDimension: maxDecodeDimension
@@ -2884,7 +2970,9 @@ private final class ManualImageTimeoutScheduler {
     private final class ScheduledTask: ImageLoadingTask {
         let delay: TimeInterval
         let action: () -> Void
-        var cancelled = false
+        var cancelCount = 0
+
+        var cancelled: Bool { cancelCount > 0 }
 
         init(delay: TimeInterval, action: @escaping () -> Void) {
             self.delay = delay
@@ -2892,7 +2980,7 @@ private final class ManualImageTimeoutScheduler {
         }
 
         func cancel() {
-            cancelled = true
+            cancelCount += 1
         }
     }
 
@@ -2901,6 +2989,9 @@ private final class ManualImageTimeoutScheduler {
     var pendingDelays: [TimeInterval] {
         tasks.filter { !$0.cancelled }.map(\.delay)
     }
+
+    var allDelays: [TimeInterval] { tasks.map(\.delay) }
+    var allCancelCounts: [Int] { tasks.map(\.cancelCount) }
 
     lazy var schedule: (TimeInterval, @escaping () -> Void) -> ImageLoadingTask = {
         [weak self] delay, action in
@@ -2921,6 +3012,18 @@ private final class ManualImageTimeoutScheduler {
         guard let index = tasks.firstIndex(where: { !$0.cancelled }) else { return }
         let task = tasks.remove(at: index)
         task.action()
+    }
+
+    func fire(delay: TimeInterval) {
+        guard let index = tasks.firstIndex(where: { !$0.cancelled && $0.delay == delay }) else {
+            return
+        }
+        let task = tasks[index]
+        task.action()
+    }
+
+    func fireAllIncludingCancelled() {
+        tasks.forEach { $0.action() }
     }
 }
 

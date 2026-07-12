@@ -1,11 +1,13 @@
 import UIKit
 import ImageIO
+import CryptoKit
 
 struct ImageLoadingPolicy: Equatable {
     static let `default` = ImageLoadingPolicy(
         maxSourceBytes: 10 * 1024 * 1024,
         connectTimeout: 10,
         readTimeout: 20,
+        requestTimeout: 60,
         maxConcurrentRequests: 2,
         maxPendingRequests: 64,
         maxDecodeDimension: 2_048
@@ -14,6 +16,7 @@ struct ImageLoadingPolicy: Equatable {
     let maxSourceBytes: Int
     let connectTimeout: TimeInterval
     let readTimeout: TimeInterval
+    let requestTimeout: TimeInterval
     let maxConcurrentRequests: Int
     let maxPendingRequests: Int
     let maxDecodeDimension: Int
@@ -26,37 +29,59 @@ struct ImageLoadingPolicy: Equatable {
             return .default
         }
         let defaults = ImageLoadingPolicy.default
-        func positiveInteger(_ key: String, fallback: Int) -> Int {
+        func positiveInteger(_ key: String, fallback: Int, ceiling: Int) -> Int {
             guard let number = values[key] as? NSNumber,
                   CFGetTypeID(number) != CFBooleanGetTypeID(),
                   number.doubleValue.isFinite,
                   number.doubleValue.rounded(.towardZero) == number.doubleValue,
                   number.int64Value > 0,
-                  number.int64Value <= Int64(Int.max)
+                  number.int64Value <= Int64(ceiling)
             else {
                 return fallback
             }
             return number.intValue
         }
         return ImageLoadingPolicy(
-            maxSourceBytes: positiveInteger("maxSourceBytes", fallback: defaults.maxSourceBytes),
+            maxSourceBytes: positiveInteger(
+                "maxSourceBytes",
+                fallback: defaults.maxSourceBytes,
+                ceiling: 64 * 1024 * 1024
+            ),
             connectTimeout: TimeInterval(
-                positiveInteger("connectTimeoutMs", fallback: Int(defaults.connectTimeout * 1_000))
+                positiveInteger(
+                    "connectTimeoutMs",
+                    fallback: Int(defaults.connectTimeout * 1_000),
+                    ceiling: 600_000
+                )
             ) / 1_000,
             readTimeout: TimeInterval(
-                positiveInteger("readTimeoutMs", fallback: Int(defaults.readTimeout * 1_000))
+                positiveInteger(
+                    "readTimeoutMs",
+                    fallback: Int(defaults.readTimeout * 1_000),
+                    ceiling: 600_000
+                )
+            ) / 1_000,
+            requestTimeout: TimeInterval(
+                positiveInteger(
+                    "requestTimeoutMs",
+                    fallback: Int(defaults.requestTimeout * 1_000),
+                    ceiling: 600_000
+                )
             ) / 1_000,
             maxConcurrentRequests: positiveInteger(
                 "maxConcurrentRequests",
-                fallback: defaults.maxConcurrentRequests
+                fallback: defaults.maxConcurrentRequests,
+                ceiling: 16
             ),
             maxPendingRequests: positiveInteger(
                 "maxPendingRequests",
-                fallback: defaults.maxPendingRequests
+                fallback: defaults.maxPendingRequests,
+                ceiling: 512
             ),
             maxDecodeDimension: positiveInteger(
                 "maxDecodeDimensionPx",
-                fallback: defaults.maxDecodeDimension
+                fallback: defaults.maxDecodeDimension,
+                ceiling: 8_192
             )
         )
     }
@@ -117,17 +142,22 @@ final class RenderImageCostCache {
 
 enum RenderImageCache {
     static let cache = RenderImageCostCache(costLimit: 64 * 1024 * 1024)
+    static let cacheEntryOverhead = 128
 
     static func key(source: String, policy: ImageLoadingPolicy) -> String {
-        [
-            source,
+        let canonicalPolicy = [
             String(policy.maxSourceBytes),
             String(policy.connectTimeout.bitPattern),
             String(policy.readTimeout.bitPattern),
+            String(policy.requestTimeout.bitPattern),
             String(policy.maxConcurrentRequests),
             String(policy.maxPendingRequests),
             String(policy.maxDecodeDimension),
         ].joined(separator: "|")
+        var input = Data(source.utf8)
+        input.append(0)
+        input.append(contentsOf: canonicalPolicy.utf8)
+        return SHA256.hash(data: input).map { String(format: "%02x", $0) }.joined()
     }
 
     static func decodedCost(_ image: UIImage) -> Int {
@@ -137,6 +167,12 @@ enum RenderImageCache {
         guard !pixelOverflow else { return Int.max }
         let (bytes, byteOverflow) = pixels.multipliedReportingOverflow(by: 4)
         return byteOverflow ? Int.max : bytes
+    }
+
+    static func retainedCost(_ image: UIImage) -> Int {
+        let metadataCost = 64 + cacheEntryOverhead
+        let (cost, overflow) = decodedCost(image).addingReportingOverflow(metadataCost)
+        return overflow ? Int.max : cost
     }
 }
 
@@ -161,53 +197,70 @@ final class ImageRequestTimeoutController {
 
     private let connectTimeout: TimeInterval
     private let readTimeout: TimeInterval
+    private let requestTimeout: TimeInterval
     private let schedule: Schedule
     private let onTimeout: () -> Void
     private let lock = NSLock()
-    private var timer: ImageLoadingTask?
+    private var phaseTimer: ImageLoadingTask?
+    private var totalTimer: ImageLoadingTask?
     private var finished = false
 
     init(
         connectTimeout: TimeInterval,
         readTimeout: TimeInterval,
+        requestTimeout: TimeInterval,
         schedule: @escaping Schedule,
         onTimeout: @escaping () -> Void
     ) {
         self.connectTimeout = connectTimeout
         self.readTimeout = readTimeout
+        self.requestTimeout = requestTimeout
         self.schedule = schedule
         self.onTimeout = onTimeout
     }
 
     func start() {
-        arm(after: connectTimeout)
+        lock.lock()
+        guard !finished, phaseTimer == nil, totalTimer == nil else {
+            lock.unlock()
+            return
+        }
+        phaseTimer = makeTimer(after: connectTimeout)
+        totalTimer = makeTimer(after: requestTimeout)
+        lock.unlock()
     }
 
     func receivedResponse() {
-        arm(after: readTimeout)
+        armPhase(after: readTimeout)
     }
 
     func receivedData() {
-        arm(after: readTimeout)
+        armPhase(after: readTimeout)
     }
 
     func cancel() {
         lock.lock()
         finished = true
-        let timer = self.timer
-        self.timer = nil
+        let timers = [phaseTimer, totalTimer]
+        phaseTimer = nil
+        totalTimer = nil
         lock.unlock()
-        timer?.cancel()
+        timers.forEach { $0?.cancel() }
     }
 
-    private func arm(after delay: TimeInterval) {
+    private func armPhase(after delay: TimeInterval) {
         lock.lock()
         guard !finished else {
             lock.unlock()
             return
         }
-        timer?.cancel()
-        timer = schedule(delay) { [weak self] in
+        phaseTimer?.cancel()
+        phaseTimer = makeTimer(after: delay)
+        lock.unlock()
+    }
+
+    private func makeTimer(after delay: TimeInterval) -> ImageLoadingTask {
+        schedule(delay) { [weak self] in
             guard let self else { return }
             self.lock.lock()
             guard !self.finished else {
@@ -215,11 +268,13 @@ final class ImageRequestTimeoutController {
                 return
             }
             self.finished = true
-            self.timer = nil
+            let timers = [self.phaseTimer, self.totalTimer]
+            self.phaseTimer = nil
+            self.totalTimer = nil
             self.lock.unlock()
+            timers.forEach { $0?.cancel() }
             self.onTimeout()
         }
-        lock.unlock()
     }
 }
 
@@ -268,10 +323,7 @@ final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionDataDeleg
         self.policy = policy
         self.completion = completion
         super.init()
-        let configuration = URLSessionConfiguration.ephemeral
-        let fallbackTimeout = max(policy.connectTimeout, policy.readTimeout) * 1_000
-        configuration.timeoutIntervalForRequest = fallbackTimeout
-        configuration.timeoutIntervalForResource = fallbackTimeout
+        let configuration = Self.configuration(policy: policy)
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         self.session = session
         let request = URLRequest(url: url)
@@ -280,6 +332,7 @@ final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionDataDeleg
         let timeoutController = ImageRequestTimeoutController(
             connectTimeout: policy.connectTimeout,
             readTimeout: policy.readTimeout,
+            requestTimeout: policy.requestTimeout,
             schedule: { delay, action in
                 DispatchImageTimeoutTask(delay: delay, action: action)
             },
@@ -290,6 +343,16 @@ final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionDataDeleg
         self.timeoutController = timeoutController
         timeoutController.start()
         task.resume()
+    }
+
+    static func configuration(policy: ImageLoadingPolicy) -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = max(
+            policy.connectTimeout,
+            policy.readTimeout
+        )
+        configuration.timeoutIntervalForResource = policy.requestTimeout
+        return configuration
     }
 
     func cancel() {
@@ -633,7 +696,7 @@ final class RenderImageLoadOwner {
                 RenderImageCache.cache.insert(
                     image,
                     forKey: cacheKey,
-                    cost: RenderImageCache.decodedCost(image)
+                    cost: RenderImageCache.retainedCost(image)
                 )
             }
             if request.generation == generation, active[request.id] != nil {

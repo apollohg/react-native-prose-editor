@@ -3678,6 +3678,38 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(view.richTextView.textView.editorId, 0)
     }
 
+    func testDestroyedEditorInvalidatesEveryBoundView() {
+        let editorId = editorCreate(configJson: "{}")
+        NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
+        let first = NativeEditorExpoView()
+        let second = NativeEditorExpoView()
+        first.setEditorId(editorId)
+        second.setEditorId(editorId)
+
+        NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: editorId)
+        editorDestroy(id: editorId)
+
+        XCTAssertEqual(first.richTextView.editorId, 0)
+        XCTAssertEqual(second.richTextView.editorId, 0)
+    }
+
+    func testUnregisterRemovesOnlyCallingViewFromEditorRegistry() {
+        let editorId = editorCreate(configJson: "{}")
+        NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
+        let first = NativeEditorExpoView()
+        let second = NativeEditorExpoView()
+        first.setEditorId(editorId)
+        second.setEditorId(editorId)
+
+        NativeEditorViewRegistry.shared.unregister(editorId: editorId, view: first)
+        NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: editorId)
+        editorDestroy(id: editorId)
+
+        XCTAssertEqual(first.richTextView.editorId, editorId)
+        XCTAssertEqual(second.richTextView.editorId, 0)
+        first.setEditorId(0)
+    }
+
     func testDestroyedEditorIdCannotRegisterNewView() {
         let editorId = editorCreate(configJson: "{}")
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
