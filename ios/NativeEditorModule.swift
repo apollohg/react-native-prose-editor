@@ -14,20 +14,28 @@ private func nativeArgumentError(_ field: String) -> String {
     "{\"error\":\"invalid \(field)\"}"
 }
 
-private func createdEditorId(_ resultJson: String) -> UInt64? {
+func createdEditorId(_ resultJson: String) -> UInt64? {
     guard let data = resultJson.data(using: .utf8),
           let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           result["error"] == nil,
-          let number = result["editorId"] as? NSNumber,
-          CFGetTypeID(number) != CFBooleanGetTypeID(),
-          number.doubleValue.isFinite,
-          number.doubleValue.rounded(.towardZero) == number.doubleValue,
-          number.doubleValue > 0,
-          number.doubleValue <= Double(UInt64.max)
+          result["editorId"] != nil,
+          let expression = try? NSRegularExpression(
+              pattern: #"^\s*\{\s*"editorId"\s*:\s*(0|[1-9][0-9]*)\s*\}\s*$"#
+          )
     else {
         return nil
     }
-    return number.uint64Value
+    let range = NSRange(resultJson.startIndex..., in: resultJson)
+    let matches = expression.matches(in: resultJson, range: range)
+    guard matches.count == 1,
+          let valueRange = Range(matches[0].range(at: 1), in: resultJson),
+          let editorId = UInt64(resultJson[valueRange]),
+          editorId > 0,
+          editorId <= UInt64(Int64.max)
+    else {
+        return nil
+    }
+    return editorId
 }
 
 @discardableResult

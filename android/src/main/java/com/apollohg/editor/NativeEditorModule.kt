@@ -16,13 +16,13 @@ internal fun nativeArgumentError(field: String): String =
 
 internal fun createdEditorId(resultJson: String): ULong? {
     val result = runCatching { JSONObject(resultJson) }.getOrNull() ?: return null
-    if (result.has("error")) return null
-    val value = result.opt("editorId") as? Number ?: return null
-    val doubleValue = value.toDouble()
-    if (!doubleValue.isFinite() || doubleValue % 1.0 != 0.0 || doubleValue <= 0.0 ||
-        doubleValue > Long.MAX_VALUE.toDouble()
-    ) return null
-    return value.toLong().toULong()
+    if (result.has("error") || !result.has("editorId")) return null
+    val matches = Regex("""^\s*\{\s*"editorId"\s*:\s*(0|[1-9][0-9]*)\s*}\s*$""")
+        .findAll(resultJson)
+        .toList()
+    if (matches.size != 1) return null
+    val editorId = matches.single().groupValues[1].toLongOrNull() ?: return null
+    return editorId.takeIf { it > 0 }?.toULong()
 }
 
 internal fun registerCreatedEditorResult(

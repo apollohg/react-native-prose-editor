@@ -19,15 +19,21 @@
     },
     "oversizedSchema": {
         "nodeCount": 1025,
-        "expectedErrorCode": "SCHEMA_LIMIT_EXCEEDED"
+        "expectedErrorCode": "SCHEMA_INVALID"
     },
     "customArticleRoot": {
         "schema": {
             "nodes": [
                 { "name": "article", "content": "title+", "role": "doc" },
-                { "name": "title", "content": "text*", "group": "block" },
-                { "name": "text", "group": "inline" }
-            ]
+                {
+                    "name": "title",
+                    "content": "text*",
+                    "group": "block",
+                    "role": "textBlock"
+                },
+                { "name": "text", "content": "", "group": "inline", "role": "text" }
+            ],
+            "marks": []
         },
         "document": { "type": "article", "content": [{ "type": "title" }] },
         "expectedRoot": "article"

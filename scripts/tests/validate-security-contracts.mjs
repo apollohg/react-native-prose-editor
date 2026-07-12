@@ -4,10 +4,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (path) => readFileSync(resolve(root, path), 'utf8');
 const releaseMode = process.argv.includes('--release');
+const behaviorMode = process.argv.includes('--behavior');
 
 const resourceDefaults = {
     maxInputBytes: 20 * 1024 * 1024,
@@ -156,7 +158,10 @@ for (const [name, ceiling] of Object.entries(imageCeilings)) {
     assert.equal(evaluateInteger(match[1].trim()), ceiling, `iOS ceiling drift for ${name}`);
 }
 
-const fixtures = JSON.parse(read('scripts/tests/security-contract-fixtures.json'));
+const fixturePath = process.env.SECURITY_FIXTURE_PATH
+    ? resolve(process.env.SECURITY_FIXTURE_PATH)
+    : resolve(root, 'scripts/tests/security-contract-fixtures.json');
+const fixtures = JSON.parse(readFileSync(fixturePath, 'utf8'));
 assert.deepEqual(
     Object.keys(fixtures).sort(),
     [
@@ -203,6 +208,57 @@ if (releaseMode) {
     );
 }
 
+if (behaviorMode) {
+    const environment = { ...process.env, SECURITY_FIXTURE_PATH: fixturePath };
+    const selectedTargets = new Set(
+        (process.env.SECURITY_BEHAVIOR_TARGETS ?? 'rust,typescript,android,ios').split(',')
+    );
+    const commands = [
+        [
+            'rust',
+            'cargo',
+            [
+                'test',
+                '--manifest-path',
+                'rust/editor-core/Cargo.toml',
+                '--test',
+                'security_contract_fixture_test',
+            ],
+            root,
+        ],
+        [
+            'typescript',
+            'npx',
+            ['jest', 'src/__tests__/securityContracts.test.ts', '--runInBand', '--watchman=false'],
+            root,
+        ],
+        [
+            'android',
+            './gradlew',
+            [
+                ':apollohg-react-native-prose-editor:testDebugUnitTest',
+                '--tests',
+                'com.apollohg.editor.RenderImageLoaderPolicyTest.shared whitespace base64 and trickle fixtures execute against Android boundary',
+            ],
+            resolve(root, 'example/android'),
+        ],
+        [
+            'ios',
+            'bash',
+            [
+                'scripts/run-ios-tests.sh',
+                '-only-testing:NativeEditorTests/RenderBridgeTests/testSharedWhitespaceBase64AndTrickleFixturesExecuteAgainstIOSBoundary',
+            ],
+            root,
+        ],
+    ];
+    for (const [target, command, args, cwd] of commands) {
+        if (!selectedTargets.has(target)) continue;
+        const result = spawnSync(command, args, { cwd, env: environment, stdio: 'inherit' });
+        assert.equal(result.status, 0, `behavior harness failed: ${command} ${args.join(' ')}`);
+    }
+}
+
 console.log(
-    `Security contracts and hostile fixtures are consistent across TypeScript, Rust, Android, and iOS${releaseMode ? ', including release artifacts' : ''}.`
+    `Security contracts and hostile fixtures are consistent across TypeScript, Rust, Android, and iOS${behaviorMode ? ', including executed behavior' : ''}${releaseMode ? ', including release artifacts' : ''}.`
 );

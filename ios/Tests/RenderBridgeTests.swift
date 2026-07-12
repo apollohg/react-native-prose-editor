@@ -4,6 +4,30 @@ import CoreText
 // MARK: - RenderBridge Tests
 
 final class RenderBridgeTests: XCTestCase {
+    private func securityFixtures() throws -> [String: Any] {
+        let configured = ProcessInfo.processInfo.environment["SECURITY_FIXTURE_PATH"]
+        let defaultURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("scripts/tests/security-contract-fixtures.json")
+        let data = try Data(contentsOf: configured.map(URL.init(fileURLWithPath:)) ?? defaultURL)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    func testStructuredEditorCreationIdUsesExactIntegerSemantics() {
+        XCTAssertEqual(createdEditorId(#"{"editorId":42}"#), 42)
+        XCTAssertNil(createdEditorId(#"{"editorId":true}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":-1}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":1.5}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":1e3}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":9223372036854775808}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":18446744073709551616}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":18446744073709551615.0}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":7,"editorId":8}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":1.5,"nested":{"editorId":7}}"#))
+        XCTAssertNil(createdEditorId(#"{"error":{"code":"CONFIG_INVALID"},"editorId":7}"#))
+    }
 
     // MARK: - Test Fixtures
 
@@ -351,6 +375,44 @@ final class RenderBridgeTests: XCTestCase {
         delivery.runAll()
 
         XCTAssertEqual(transport.requestCount, 1)
+        wait(for: [completion], timeout: 0.05)
+    }
+
+    func testSharedWhitespaceBase64AndTrickleFixturesExecuteAgainstIOSBoundary() throws {
+        let fixtures = try securityFixtures()
+        let whitespace = try XCTUnwrap(fixtures["whitespaceBase64"] as? [String: Any])
+        XCTAssertEqual(whitespace["whitespaceCountsTowardAdmission"] as? Bool, true)
+        XCTAssertEqual(
+            RenderImageLoadOwner.decodedDataURLByteCount(
+                try XCTUnwrap(whitespace["source"] as? String),
+                maxBytes: 1
+            ),
+            1
+        )
+
+        let trickle = try XCTUnwrap(fixtures["trickleDeadline"] as? [String: Any])
+        let requestTimeout = try XCTUnwrap(trickle["requestTimeoutMs"] as? Double) / 1_000
+        let expectedTerminal = try XCTUnwrap(trickle["expectedTerminalMs"] as? Double) / 1_000
+        let arrivals = try XCTUnwrap(trickle["byteArrivalMs"] as? [Double])
+        XCTAssertTrue(arrivals.contains { $0 > expectedTerminal * 1_000 })
+        XCTAssertEqual(trickle["expectedOutcome"] as? String, "timeout")
+
+        let clock = ManualImageClock()
+        let deadlines = ManualImageTimeoutScheduler()
+        let completion = expectation(description: "fixture deadline suppresses delivery")
+        completion.isInverted = true
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(requestTimeout: requestTimeout),
+            transport: HoldingImageTransport(),
+            now: clock.now,
+            scheduleTimeout: deadlines.schedule
+        )
+        XCTAssertNotNil(owner.startImageLoad(source: "https://example.com/trickle.png") { _ in
+            completion.fulfill()
+        })
+        XCTAssertEqual(deadlines.allDelays, [expectedTerminal])
+        clock.advance(to: expectedTerminal)
+        deadlines.fireAllActive()
         wait(for: [completion], timeout: 0.05)
     }
 

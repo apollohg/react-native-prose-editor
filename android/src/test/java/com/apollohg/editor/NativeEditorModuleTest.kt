@@ -37,6 +37,12 @@ class NativeEditorModuleTest {
         assertNull(createdEditorId("{\"editorId\":0}"))
         assertNull(createdEditorId("{\"editorId\":1.5}"))
         assertNull(createdEditorId("{\"editorId\":true}"))
+        assertNull(createdEditorId("{\"editorId\":9223372036854775808}"))
+        assertNull(createdEditorId("{\"editorId\":18446744073709551616}"))
+        assertNull(createdEditorId("{\"editorId\":9223372036854775807.0}"))
+        assertNull(createdEditorId("{\"editorId\":1e3}"))
+        assertNull(createdEditorId("{\"editorId\":7,\"editorId\":8}"))
+        assertNull(createdEditorId("{\"editorId\":1.5,\"nested\":{\"editorId\":7}}"))
         assertNull(createdEditorId("not json"))
     }
 

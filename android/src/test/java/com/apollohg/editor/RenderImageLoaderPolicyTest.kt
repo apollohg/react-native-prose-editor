@@ -3,6 +3,7 @@ package com.apollohg.editor
 import android.graphics.Bitmap
 import android.os.Looper
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -11,6 +12,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -25,6 +27,17 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class RenderImageLoaderPolicyTest {
+    private fun securityFixtures(): JSONObject {
+        val configuredPath: String = System.getenv("SECURITY_FIXTURE_PATH") ?: ""
+        val configured = configuredPath.takeIf { it.isNotEmpty() }?.let { File(it) }
+        val workingDirectory = requireNotNull(System.getProperty("user.dir"))
+        val fixture = configured ?: generateSequence(File(workingDirectory)) {
+            it.parentFile
+        }.map { File(it, "scripts/tests/security-contract-fixtures.json") }
+            .first { it.isFile }
+        return JSONObject(fixture.readText())
+    }
+
     @After
     fun tearDown() {
         RenderImageLoader.resetForTesting()
@@ -120,6 +133,33 @@ class RenderImageLoaderPolicyTest {
 
         assertNull(RenderImageDecoder.readBounded(stream, policy, clock))
         assertTrue(clock.elapsedRealtime() >= 60_000)
+    }
+
+    @Test
+    fun `shared whitespace base64 and trickle fixtures execute against Android boundary`() {
+        val fixtures = securityFixtures()
+        val whitespace = fixtures.getJSONObject("whitespaceBase64")
+        assertTrue(whitespace.getBoolean("whitespaceCountsTowardAdmission"))
+        assertEquals(
+            byteArrayOf(1).toList(),
+            RenderImageDecoder.decodeDataUrlBytes(
+                whitespace.getString("source"),
+                ImageLoadingPolicy.DEFAULT.copy(maxSourceBytes = 1)
+            )?.toList()
+        )
+
+        val trickle = fixtures.getJSONObject("trickleDeadline")
+        val arrivals = trickle.getJSONArray("byteArrivalMs")
+        val interval = arrivals.getLong(1) - arrivals.getLong(0)
+        val clock = FakeMonotonicClock()
+        val policy = ImageLoadingPolicy.DEFAULT.copy(
+            maxSourceBytes = 100,
+            readTimeoutMs = (interval + 1).toInt(),
+            requestTimeoutMs = trickle.getInt("requestTimeoutMs")
+        )
+        assertNull(RenderImageDecoder.readBounded(TrickleInputStream(clock, interval), policy, clock))
+        assertEquals(trickle.getLong("expectedTerminalMs"), clock.elapsedRealtime())
+        assertEquals("timeout", trickle.getString("expectedOutcome"))
     }
 
     @Test

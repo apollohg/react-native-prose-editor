@@ -20,6 +20,38 @@ OUT_DIR="$SCRIPT_DIR/bindings"
 STATICLIB_PATH="$CRATE_DIR/target/release/libeditor_core.a"
 CDYLIB_PATH="$CRATE_DIR/target/release/libeditor_core.dylib"
 
+normalize_header() {
+    local header_path="$1"
+    local normalized_path="${header_path}.normalized"
+    awk '
+      {
+        sub(/[[:blank:]]+$/, "")
+        if ($0 == "") {
+          blank_lines += 1
+        } else {
+          while (blank_lines > 0) {
+            print ""
+            blank_lines -= 1
+          }
+          print
+        }
+      }
+    ' "$header_path" > "$normalized_path"
+    mv "$normalized_path" "$header_path"
+}
+
+if [[ "${1:-}" == "--normalize-header" ]]; then
+    [[ "$#" == "2" ]] || {
+        echo "usage: $0 --normalize-header PATH" >&2
+        exit 2
+    }
+    normalize_header "$2"
+    exit 0
+elif [[ "$#" != "0" ]]; then
+    echo "unknown argument: $1" >&2
+    exit 2
+fi
+
 if command -v rustup >/dev/null 2>&1; then
     CARGO_BIN="$(rustup which cargo)"
     RUSTC_BIN="$(rustup which rustc)"
@@ -45,6 +77,7 @@ mkdir -p "$OUT_DIR/swift"
     generate --library "$STATICLIB_PATH" \
     --language swift \
     --out-dir "$OUT_DIR/swift"
+normalize_header "$OUT_DIR/swift/editor_coreFFI.h"
 
 echo "==> Generating Kotlin bindings..."
 mkdir -p "$OUT_DIR/kotlin"

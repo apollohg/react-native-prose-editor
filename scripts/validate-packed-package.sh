@@ -29,6 +29,40 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command '$1' is not installed"
 }
 
+require_declaration_symbol() {
+  local symbol="$1"
+  find "$package_dir/dist" -type f -name '*.d.ts' -exec grep -Fq "$symbol" {} + || \
+    fail "packed TypeScript declarations are missing $symbol"
+}
+
+require_structured_create_symbols() {
+  local binary_path="$1"
+  local nm_output="$2"
+  local label="$3"
+  grep -Eq '[[:space:]]_?uniffi_editor_core_fn_func_editor_create_result$' <<< "$nm_output" || \
+    fail "$label is missing the structured editor-create symbol ($binary_path)"
+  grep -Eq '[[:space:]]_?uniffi_editor_core_checksum_func_editor_create_result$' <<< "$nm_output" || \
+    fail "$label is missing the structured editor-create checksum ($binary_path)"
+}
+
+validate_android_library() {
+  local library_path="$1"
+  local abi="$2"
+  local file_output
+  local nm_output
+  [[ -s "$library_path" ]] || fail "Android $abi library is missing or empty"
+  file_output="$(file "$library_path")"
+  case "$abi" in
+    arm64-v8a) [[ "$file_output" == *"ELF 64-bit"* && "$file_output" == *"ARM aarch64"* ]] ;;
+    armeabi-v7a) [[ "$file_output" == *"ELF 32-bit"* && "$file_output" == *"ARM, EABI5"* ]] ;;
+    x86) [[ "$file_output" == *"ELF 32-bit"* && "$file_output" == *"Intel 80386"* ]] ;;
+    x86_64) [[ "$file_output" == *"ELF 64-bit"* && "$file_output" == *"x86-64"* ]] ;;
+    *) fail "unknown Android ABI: $abi" ;;
+  esac || fail "Android $abi library has the wrong machine type: $file_output"
+  nm_output="$(nm -D -g "$library_path" 2>&1)" || fail "Android $abi library has no readable dynamic symbol table: $nm_output"
+  require_structured_create_symbols "$library_path" "$nm_output" "Android $abi library"
+}
+
 validate_archive_architectures() {
   local archive_path="$1"
   local expected_architectures="$2"
@@ -73,6 +107,9 @@ validate_archive_architectures() {
       nm -gU ./*.o >/dev/null 2>&1
     ) || fail "$label $architecture archive contains an unreadable Mach-O object member"
   done
+  local nm_output
+  nm_output="$(nm -gU "$archive_path" 2>&1)" || fail "$label archive symbols cannot be read: $nm_output"
+  require_structured_create_symbols "$archive_path" "$nm_output" "$label archive"
 }
 
 validate_xcframework() {
@@ -132,12 +169,20 @@ if [[ "${1:-}" == "--validate-package-entries" ]]; then
   package_dir="$2"
   require_file "dist/index.js"
   require_file "dist/index.d.ts"
+  require_declaration_symbol "NativeEditorBoundaryError"
+  require_declaration_symbol "resourceLimits"
+  require_declaration_symbol "requestTimeoutMs"
   echo "Packed JavaScript entry-point validation passed."
   exit 0
 elif [[ "${1:-}" == "--validate-xcframework" ]]; then
   [[ "$#" == "2" ]] || fail "usage: $0 --validate-xcframework PATH"
   validate_xcframework "$2"
   echo "XCFramework metadata and static archive validation passed."
+  exit 0
+elif [[ "${1:-}" == "--validate-android-library" ]]; then
+  [[ "$#" == "3" ]] || fail "usage: $0 --validate-android-library PATH ABI"
+  validate_android_library "$2" "$3"
+  echo "Android library machine type and structured symbols passed."
   exit 0
 elif [[ "$#" != "0" ]]; then
   fail "unknown argument: $1"
@@ -172,12 +217,9 @@ require_file "ios/EditorCore.xcframework/ios-arm64/libeditor_core.a"
 require_file "ios/EditorCore.xcframework/ios-arm64_x86_64-simulator/libeditor_core.a"
 validate_xcframework "$package_dir/ios/EditorCore.xcframework"
 
-grep -RFq "NativeEditorBoundaryError" "$package_dir/dist" || \
-  fail "packed TypeScript declarations are missing NativeEditorBoundaryError"
-grep -RFq "resourceLimits" "$package_dir/dist" || \
-  fail "packed TypeScript declarations are missing resourceLimits"
-grep -RFq "requestTimeoutMs" "$package_dir/dist" || \
-  fail "packed TypeScript declarations are missing requestTimeoutMs"
+require_declaration_symbol "NativeEditorBoundaryError"
+require_declaration_symbol "resourceLimits"
+require_declaration_symbol "requestTimeoutMs"
 grep -Fq "uniffi_editor_core_fn_func_editor_create_result" "$package_dir/ios/editor_coreFFI/editor_coreFFI.h" || \
   fail "packed generated FFI header is missing editor_create_result"
 grep -Fq 'Function("editorCreateResult")' "$package_dir/android/src/main/java/com/apollohg/editor/NativeEditorModule.kt" || \
@@ -187,7 +229,10 @@ grep -Fq 'Function("editorCreateResult")' "$package_dir/ios/NativeEditorModule.s
 
 for abi in arm64-v8a armeabi-v7a x86 x86_64; do
   require_file "rust/android/$abi/libeditor_core.so"
+  validate_android_library "$package_dir/rust/android/$abi/libeditor_core.so" "$abi"
 done
+android_hash_count="$(shasum -a 256 "$package_dir"/rust/android/*/libeditor_core.so | awk '{print $1}' | sort -u | wc -l | tr -d '[:space:]')"
+[[ "$android_hash_count" == "4" ]] || fail "packed Android ABI libraries must be four distinct binaries"
 
 ffi_header_count="$(find "$package_dir" -type f -name 'editor_coreFFI.h' | wc -l | tr -d '[:space:]')"
 modulemap_count="$(find "$package_dir" -type f \( -name 'module.modulemap' -o -name 'editor_coreFFI.modulemap' \) | wc -l | tr -d '[:space:]')"
