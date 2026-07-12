@@ -41,7 +41,7 @@ fn walk_children(
     schema: &Schema,
     elements: &mut Vec<RenderElement>,
     pos: &mut u32,
-    depth: u8,
+    depth: u16,
     list_info: Option<(String, bool, u32, u32)>,
 ) {
     for i in 0..parent.child_count() {

@@ -68,7 +68,9 @@ fn mark_from_element(
     elem: &scraper::node::Element,
     schema: &Schema,
 ) -> Option<Mark> {
-    let mark_type = element_attr(elem, "data-native-editor-mark")
+    let mark_type = (tag == "span")
+        .then(|| element_attr(elem, "data-native-editor-mark"))
+        .flatten()
         .filter(|name| schema.mark(name).is_some())
         .or_else(|| tag_to_mark_type(tag).filter(|name| schema.mark(name).is_some()))
         .or_else(|| {
@@ -81,7 +83,7 @@ fn mark_from_element(
     let mut attrs = HashMap::new();
     for (name, attr_spec) in &spec.attrs {
         if let Some(value) = element_attr(elem, name) {
-            attrs.insert(name.clone(), parse_attr_value(name, value));
+            attrs.insert(name.clone(), parse_attr_value(name, attr_spec, value));
         } else if let Some(default) = &attr_spec.default {
             attrs.insert(name.clone(), default.clone());
         }
@@ -124,7 +126,7 @@ fn extract_node_attrs(
 
     for (key, attr_spec) in &spec.attrs {
         if let Some(value) = element_attr(elem, key) {
-            attrs.insert(key.clone(), parse_attr_value(key, value));
+            attrs.insert(key.clone(), parse_attr_value(key, attr_spec, value));
         } else if let Some(default) = &attr_spec.default {
             attrs.insert(key.clone(), default.clone());
         }
@@ -134,8 +136,12 @@ fn extract_node_attrs(
     attrs
 }
 
-fn parse_attr_value(key: &str, raw: &str) -> serde_json::Value {
-    if key == "checked" {
+fn parse_attr_value(
+    key: &str,
+    spec: &crate::schema::AttrSpec,
+    raw: &str,
+) -> serde_json::Value {
+    if matches!(spec.default.as_ref(), Some(serde_json::Value::Bool(_))) || key == "checked" {
         let normalized = raw.trim().to_ascii_lowercase();
         if normalized.is_empty() || normalized == "checked" || normalized == "true" {
             return serde_json::Value::Bool(true);
@@ -144,7 +150,9 @@ fn parse_attr_value(key: &str, raw: &str) -> serde_json::Value {
             return serde_json::Value::Bool(false);
         }
     }
-    if matches!(key, "width" | "height") {
+    if matches!(spec.default.as_ref(), Some(serde_json::Value::Number(_)))
+        || matches!(key, "width" | "height")
+    {
         let trimmed = raw.trim();
         if let Ok(value) = trimmed.parse::<u64>() {
             return serde_json::Value::Number(value.into());
@@ -441,18 +449,9 @@ fn process_schema_node(
             block_acc.push(node);
             Ok(())
         }
-        NodeRole::List { ordered } => {
+        NodeRole::List { .. } => {
             flush_inline_acc(inline_acc, schema, block_acc);
-            let mut attrs = extract_node_attrs(_elem, spec);
-            if *ordered {
-                let start_val = element_attr(_elem, "start")
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(1);
-                attrs.insert(
-                    "start".to_string(),
-                    serde_json::Value::Number(start_val.into()),
-                );
-            }
+            let attrs = extract_node_attrs(_elem, spec);
             let list_items = collect_list_items(node_ref, spec, schema, options)?;
             let node = Node::element(spec.name.clone(), attrs, Fragment::from(list_items));
             block_acc.push(node);

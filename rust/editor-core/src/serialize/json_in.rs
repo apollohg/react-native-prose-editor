@@ -127,17 +127,43 @@ fn parse_node(
     }
 
     // Element node — parse children
-    let child_placement = if matches!(spec.role, crate::schema::NodeRole::TextBlock) {
-        "inline"
-    } else {
-        "block"
-    };
+    let child_placement = infer_child_placement(spec, schema)?;
     let children = parse_content(obj, schema, mode, child_placement)?;
     Ok(Node::element(
         type_name.to_string(),
         attrs,
         Fragment::from(children),
     ))
+}
+
+fn infer_child_placement(
+    parent: &crate::schema::NodeSpec,
+    schema: &Schema,
+) -> Result<&'static str, JsonParseError> {
+    let mut accepts_inline = false;
+    let mut accepts_block = false;
+    for symbol in parent.content.symbols() {
+        for spec in schema
+            .all_nodes()
+            .filter(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+        {
+            match spec.role {
+                crate::schema::NodeRole::Text
+                | crate::schema::NodeRole::Inline
+                | crate::schema::NodeRole::HardBreak => accepts_inline = true,
+                crate::schema::NodeRole::Doc => {}
+                _ => accepts_block = true,
+            }
+        }
+    }
+    match (accepts_inline, accepts_block) {
+        (true, false) => Ok("inline"),
+        (false, true) | (true, true) => Ok("block"),
+        (false, false) => Err(JsonParseError::InvalidStructure(format!(
+            "cannot infer opaque placement for parent '{}'",
+            parent.name
+        ))),
+    }
 }
 
 /// Parse a text node from a JSON object.

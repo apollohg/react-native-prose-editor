@@ -132,6 +132,40 @@ fn editor_with_max_length(max: u32) -> Editor {
     Editor::new(tiptap_schema(), pipeline, false)
 }
 
+#[test]
+fn failed_replace_preserves_selection_and_stored_marks() {
+    let mut editor = editor_with_max_length(5);
+    editor.set_html("<p>abc</p>").unwrap();
+    editor.set_selection(Selection::cursor(2));
+    editor.toggle_mark("bold").unwrap();
+    let before_selection = editor.get_selection_state().selection;
+    let before_json = editor.get_json();
+
+    assert!(editor.replace_html("<p>too long</p>").is_err());
+    assert_eq!(editor.get_json(), before_json);
+    assert_eq!(editor.get_selection_state().selection, before_selection);
+
+    editor.insert_text(2, "z").unwrap();
+    assert_eq!(editor.get_json()["content"][0]["content"][1]["marks"][0]["type"], "bold");
+}
+
+#[test]
+fn failed_scalar_selection_ingestion_restores_selection() {
+    let mut editor = default_editor();
+    editor.set_html("<p>abcdef</p>").unwrap();
+    editor.set_selection(Selection::cursor(2));
+    let before = editor.get_selection_state().selection;
+
+    let malformed = serde_json::json!({
+        "type": "doc",
+        "content": [{ "type": "paragraph", "content": [{ "type": "text" }] }]
+    });
+    assert!(editor
+        .insert_content_json_at_selection_scalar(5, 5, &malformed)
+        .is_err());
+    assert_eq!(editor.get_selection_state().selection, before);
+}
+
 // ===========================================================================
 // Full lifecycle test
 // ===========================================================================
@@ -1397,6 +1431,32 @@ fn uniffi_editor_errors_are_always_valid_json() {
         serde_json::from_str(&response).expect("error response must be valid JSON");
     assert_eq!(parsed["error"]["code"], "DOCUMENT_PARSE_FAILED");
     assert!(parsed["error"]["message"].as_str().is_some());
+    editor_core::editor_destroy(id);
+}
+
+#[test]
+fn exported_document_and_mark_parse_errors_are_structured() {
+    let id = editor_core::editor_create("{}".to_string());
+    let responses = [
+        editor_core::editor_set_json(id, "{".to_string()),
+        editor_core::editor_insert_content_json(id, "{".to_string()),
+        editor_core::editor_insert_content_json_at_selection_scalar(id, 0, 0, "{".to_string()),
+        editor_core::editor_replace_json(id, "{".to_string()),
+        editor_core::editor_set_mark(id, "bold".to_string(), "{".to_string()),
+        editor_core::editor_set_mark_at_selection_scalar(
+            id,
+            0,
+            0,
+            "bold".to_string(),
+            "{".to_string(),
+        ),
+    ];
+    for response in responses {
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert!(parsed["error"].is_object(), "{response}");
+        assert!(parsed["error"]["code"].as_str().is_some(), "{response}");
+        assert!(parsed["error"]["message"].as_str().is_some(), "{response}");
+    }
     editor_core::editor_destroy(id);
 }
 

@@ -152,7 +152,7 @@ fn generate_block(
     schema: &Schema,
     elements: &mut Vec<RenderElement>,
     pos: &mut u32,
-    depth: u8,
+    depth: u16,
     list_info: Option<(String, bool, u32, u32)>,
     child_index: usize,
 ) {

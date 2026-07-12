@@ -1,5 +1,5 @@
 use editor_core::boundary::{BoundedInput, InputKind, ResourceLimits};
-use editor_core::editor::Editor;
+use editor_core::editor::{Editor, EditorError, EditorUpdate};
 use editor_core::intercept::InterceptorPipeline;
 use editor_core::registry::EditorRegistry;
 use editor_core::schema::{AttrSpec, NodeSpec, Schema};
@@ -308,6 +308,64 @@ fn candidate_documents_enforce_configured_node_and_depth_limits() {
 }
 
 #[test]
+fn transactions_honor_configured_limits_above_defaults() {
+    let limits = ResourceLimits {
+        max_document_depth: 512,
+        ..ResourceLimits::default()
+    };
+    let mut editor = Editor::new_with_limits(
+        tiptap_schema(),
+        InterceptorPipeline::new(),
+        false,
+        limits,
+    );
+    let mut child = serde_json::json!({ "type": "paragraph" });
+    for _ in 0..256 {
+        child = serde_json::json!({ "type": "blockquote", "content": [child] });
+    }
+    let document = serde_json::json!({ "type": "doc", "content": [child] });
+
+    editor
+        .replace_json(&document)
+        .expect("configured depth above the default must be honored");
+}
+
+#[test]
+fn every_editor_ingestion_endpoint_admits_bytes_before_parsing() {
+    let limits = ResourceLimits {
+        max_input_bytes: 32,
+        ..ResourceLimits::default()
+    };
+    let mut editor = Editor::new_with_limits(
+        tiptap_schema(),
+        InterceptorPipeline::new(),
+        false,
+        limits,
+    );
+    let html = format!("<p>{}</p>", "x".repeat(40));
+    let json = serde_json::json!({
+        "type": "doc",
+        "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }] }]
+    });
+
+    for error in [
+        editor_update_error(editor.insert_content_html(&html)),
+        editor_update_error(editor.replace_html(&html)),
+        editor_update_error(editor.insert_content_json(&json)),
+        editor_update_error(editor.replace_json(&json)),
+    ] {
+        assert!(error.to_string().contains("INPUT_LIMIT_EXCEEDED"));
+    }
+}
+
+fn editor_update_error(result: Result<EditorUpdate, EditorError>) -> EditorError {
+    match result {
+        Ok(_) => panic!("operation must fail"),
+        Err(error) => error,
+    }
+}
+
+#[test]
 fn opaque_json_round_trips_faithfully_twice() {
     let schema = tiptap_schema();
     let original = serde_json::json!({
@@ -326,6 +384,34 @@ fn opaque_json_round_trips_faithfully_twice() {
 
     assert_eq!(first_json, original);
     assert_eq!(second_json, original);
+}
+
+#[test]
+fn opaque_json_placement_follows_parent_content_roles() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "paragraph", "role": "doc" },
+            { "name": "paragraph", "content": "inlineContainer", "role": "textBlock" },
+            { "name": "inlineContainer", "content": "inline*", "group": "inline", "role": "inline" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let original = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "paragraph",
+            "content": [{
+                "type": "inlineContainer",
+                "content": [{ "type": "futureInline", "attrs": { "x": 1 } }]
+            }]
+        }]
+    });
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+
+    editor.set_json(&original).unwrap();
+    assert_eq!(editor.get_json(), original);
 }
 
 fn schema_with_required_image_src() -> Schema {

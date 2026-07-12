@@ -60,7 +60,7 @@ pub enum RenderElement {
     /// Start of a block-level container (paragraph, listItem, etc.).
     BlockStart {
         node_type: String,
-        depth: u8,
+        depth: u16,
         list_context: Option<ListContext>,
     },
     /// End of a block-level container.

@@ -224,6 +224,7 @@ impl Editor {
         &mut self,
         json: &serde_json::Value,
     ) -> Result<Vec<RenderElement>, EditorError> {
+        self.admit_json(json)?;
         let doc = serialize::from_prosemirror_json(
             json,
             &self.schema,
@@ -559,8 +560,7 @@ impl Editor {
         scalar_anchor: u32,
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.toggle_blockquote()
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.toggle_blockquote())
     }
 
     /// Toggle a heading level on the current text-block selection.
@@ -603,8 +603,7 @@ impl Editor {
         scalar_head: u32,
         level: u8,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.toggle_heading(level)
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.toggle_heading(level))
     }
 
     /// Toggle the selected text block(s) between `codeBlock` and paragraph.
@@ -613,27 +612,9 @@ impl Editor {
     /// paragraph; otherwise converts it to a codeBlock. No-op update when the
     /// schema defines no codeBlock node.
     pub fn toggle_code_block(&mut self) -> Result<EditorUpdate, EditorError> {
-        if self.schema.node("codeBlock").is_none() {
-            return Ok(self.build_update_from_current());
-        }
-
-        let doc = self.backend.document();
-        let pos = self.selection.from(doc);
-        let target_type = if self.is_code_block_at_pos(pos) {
-            let Some(paragraph_type) = self.paragraph_node_name() else {
-                return Ok(self.build_update_from_current());
-            };
-            paragraph_type
-        } else {
-            "codeBlock".to_string()
-        };
-
-        let from = self.selection.from(doc);
-        let to = self.selection.to(doc);
-        let Some(range) = self.selected_text_block_range(from, to) else {
+        let Some((range, target_type)) = self.code_block_toggle_plan() else {
             return Ok(self.build_update_from_current());
         };
-
         self.replace_selected_text_blocks(range, &target_type)
     }
 
@@ -643,8 +624,7 @@ impl Editor {
         scalar_anchor: u32,
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.toggle_code_block()
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.toggle_code_block())
     }
 
     /// Wrap the selected sibling block range in a blockquote container.
@@ -844,6 +824,7 @@ impl Editor {
 
     /// Insert HTML content at the current selection position.
     pub fn insert_content_html(&mut self, html: &str) -> Result<EditorUpdate, EditorError> {
+        self.admit_html(html)?;
         let parsed_doc = serialize::from_html(
             html,
             &self.schema,
@@ -878,6 +859,7 @@ impl Editor {
         &mut self,
         json: &serde_json::Value,
     ) -> Result<EditorUpdate, EditorError> {
+        self.admit_json(json)?;
         let parsed_doc = serialize::from_prosemirror_json(
             json,
             &self.schema,
@@ -910,6 +892,7 @@ impl Editor {
     /// this goes through the transaction pipeline so it can be undone and
     /// preserves the selection where possible.
     pub fn replace_html(&mut self, html: &str) -> Result<EditorUpdate, EditorError> {
+        self.admit_html(html)?;
         let parsed_doc = serialize::from_html(
             html,
             &self.schema,
@@ -927,8 +910,6 @@ impl Editor {
 
         let doc = self.backend.document();
         let doc_content_size = doc.content_size();
-        self.stored_marks = None;
-
         let mut tx = Transaction::new(Source::Api);
         tx.add_step(Step::ReplaceRange {
             from: 0,
@@ -940,6 +921,7 @@ impl Editor {
 
     /// Replace the entire document content with JSON.
     pub fn replace_json(&mut self, json: &serde_json::Value) -> Result<EditorUpdate, EditorError> {
+        self.admit_json(json)?;
         // This is equivalent to set_json but goes through the transaction
         // pipeline so it can be undone.
         let parsed_doc = serialize::from_prosemirror_json(
@@ -956,8 +938,6 @@ impl Editor {
 
         let doc = self.backend.document();
         let doc_content_size = doc.content_size();
-        self.stored_marks = None;
-
         let mut tx = Transaction::new(Source::Api);
         tx.add_step(Step::ReplaceRange {
             from: 0,
@@ -1165,8 +1145,16 @@ impl Editor {
         scalar_anchor: u32,
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.delete_backward_at_current_scalar_selection(scalar_anchor, scalar_head)
+        })
+    }
 
+    fn delete_backward_at_current_scalar_selection(
+        &mut self,
+        scalar_anchor: u32,
+        scalar_head: u32,
+    ) -> Result<EditorUpdate, EditorError> {
         let from = scalar_anchor.min(scalar_head);
         let to = scalar_anchor.max(scalar_head);
         if from < to {
@@ -1316,8 +1304,7 @@ impl Editor {
         scalar_head: u32,
         mark_name: &str,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.toggle_mark(mark_name)
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.toggle_mark(mark_name))
     }
 
     /// Set a mark with attrs at an explicit scalar selection supplied by the caller.
@@ -1328,8 +1315,7 @@ impl Editor {
         mark_name: &str,
         attrs: HashMap<String, serde_json::Value>,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.set_mark(mark_name, attrs)
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.set_mark(mark_name, attrs))
     }
 
     /// Remove a mark at an explicit scalar selection supplied by the caller.
@@ -1339,8 +1325,7 @@ impl Editor {
         scalar_head: u32,
         mark_name: &str,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.unset_mark(mark_name)
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.unset_mark(mark_name))
     }
 
     /// Apply a list type at an explicit scalar selection supplied by the caller.
@@ -1350,8 +1335,7 @@ impl Editor {
         scalar_head: u32,
         list_type: &str,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.apply_list_type(list_type)
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.apply_list_type(list_type))
     }
 
     /// Unwrap the list item at an explicit scalar selection supplied by the caller.
@@ -1360,10 +1344,10 @@ impl Editor {
         scalar_anchor: u32,
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        let doc = self.backend.document();
-        let pos = self.selection.from(doc);
-        self.unwrap_from_list(pos)
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            let pos = editor.selection.from(editor.backend.document());
+            editor.unwrap_from_list(pos)
+        })
     }
 
     /// Indent the list item at an explicit scalar selection supplied by the caller.
@@ -1372,8 +1356,7 @@ impl Editor {
         scalar_anchor: u32,
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.indent_list_item()
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.indent_list_item())
     }
 
     /// Outdent the list item at an explicit scalar selection supplied by the caller.
@@ -1382,8 +1365,7 @@ impl Editor {
         scalar_anchor: u32,
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.outdent_list_item()
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.outdent_list_item())
     }
 
     /// Toggle the checked state of the task item at an explicit scalar selection.
@@ -1392,8 +1374,9 @@ impl Editor {
         scalar_anchor: u32,
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.toggle_task_item_checked()
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.toggle_task_item_checked()
+        })
     }
 
     /// Insert a node at an explicit scalar selection supplied by the caller.
@@ -1403,8 +1386,9 @@ impl Editor {
         scalar_head: u32,
         node_type: &str,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.insert_node_at_selection(node_type)
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.insert_node_at_selection(node_type)
+        })
     }
 
     /// Insert JSON content at an explicit scalar selection supplied by the caller.
@@ -1414,8 +1398,9 @@ impl Editor {
         scalar_head: u32,
         json: &serde_json::Value,
     ) -> Result<EditorUpdate, EditorError> {
-        self.set_selection_scalar(scalar_anchor, scalar_head);
-        self.insert_content_json(json)
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.insert_content_json(json)
+        })
     }
 
     /// Replace the current selection with plain text in a single transaction.
@@ -1581,6 +1566,48 @@ impl Editor {
             }
         }
         Ok(())
+    }
+
+    fn admit_html(&self, html: &str) -> Result<(), EditorError> {
+        BoundedInput::new(html, InputKind::Html, &self.resource_limits)?;
+        Ok(())
+    }
+
+    fn admit_json(&self, json: &serde_json::Value) -> Result<(), EditorError> {
+        let actual = serde_json::to_vec(json)
+            .map_err(|error| BoundaryError::parse("DOCUMENT_PARSE_FAILED", error))?
+            .len();
+        if actual > self.resource_limits.max_input_bytes {
+            return Err(BoundaryError::limit(
+                "INPUT_LIMIT_EXCEEDED",
+                self.resource_limits.max_input_bytes,
+                actual,
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    fn with_scalar_selection<F>(
+        &mut self,
+        scalar_anchor: u32,
+        scalar_head: u32,
+        operation: F,
+    ) -> Result<EditorUpdate, EditorError>
+    where
+        F: FnOnce(&mut Self) -> Result<EditorUpdate, EditorError>,
+    {
+        let selection_before = self.selection.clone();
+        let stored_marks_before = self.stored_marks.clone();
+        self.set_selection_scalar(scalar_anchor, scalar_head);
+        match operation(self) {
+            Ok(update) => Ok(update),
+            Err(error) => {
+                self.selection = selection_before;
+                self.stored_marks = stored_marks_before;
+                Err(error)
+            }
+        }
     }
 
     fn validate_mark_request(
@@ -2401,18 +2428,16 @@ impl Editor {
     }
 
     fn can_toggle_code_block(&self) -> bool {
-        if self.schema.node("codeBlock").is_none() {
-            return false;
-        }
-        let Some(paragraph_type) = self.paragraph_node_name() else {
-            return false;
-        };
+        self.code_block_toggle_plan().is_some()
+    }
+
+    fn code_block_toggle_plan(&self) -> Option<(BlockSelectionRange, String)> {
+        self.schema.node("codeBlock")?;
+        let paragraph_type = self.paragraph_node_name()?;
         let doc = self.backend.document();
         let from = self.selection.from(doc);
         let to = self.selection.to(doc);
-        let Some(range) = self.selected_text_block_range(from, to) else {
-            return false;
-        };
+        let range = self.selected_text_block_range(from, to)?;
         let replacement_type = if range
             .selected_blocks
             .iter()
@@ -2423,6 +2448,7 @@ impl Editor {
             "codeBlock".to_string()
         };
         self.can_replace_selected_text_blocks(&range, &replacement_type)
+            .then_some((range, replacement_type))
     }
 
     fn wrap_selected_blocks_in_list(

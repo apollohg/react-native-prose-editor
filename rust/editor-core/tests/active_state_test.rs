@@ -40,6 +40,30 @@ fn active_state_exposes_code_and_task_command_capabilities() {
 }
 
 #[test]
+fn code_capability_and_execution_agree_for_mixed_selection() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "codeBlock", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "pre" },
+            { "name": "image", "content": "", "group": "block", "role": "block", "htmlTag": "img", "isVoid": true },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ], "marks": []
+    })).unwrap();
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+    editor.set_html("<p>x</p><img><p>y</p>").unwrap();
+    editor.set_selection(Selection::text(1, 5));
+    let before = editor.get_json();
+
+    assert_eq!(
+        editor.get_current_state().active_state.commands.get("toggleCodeBlock"),
+        Some(&false)
+    );
+    editor.toggle_code_block().unwrap();
+    assert_eq!(editor.get_json(), before);
+}
+
+#[test]
 fn literal_list_commands_are_disabled_when_only_snake_case_targets_exist() {
     let editor = Editor::new(prosemirror_schema(), InterceptorPipeline::new(), false);
     let commands = editor.get_selection_state().active_state.commands;

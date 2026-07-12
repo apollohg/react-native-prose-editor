@@ -2163,7 +2163,12 @@ impl DocumentValidator {
 /// Compatibility validator used by the transformation layer. The editor runs
 /// the authoritative validator with its configured limits before committing.
 pub(crate) fn validate_document(doc: &Document, schema: &Schema) -> Result<(), TransformError> {
-    DocumentValidator::validate(doc, schema, &ResourceLimits::default())
+    let structural_limits = ResourceLimits {
+        max_document_nodes: usize::MAX,
+        max_document_depth: usize::MAX,
+        ..ResourceLimits::default()
+    };
+    DocumentValidator::validate(doc, schema, &structural_limits)
         .map(|_| ())
         .map_err(|error| TransformError::ContentViolation(format!("{}: {}", error.code(), error)))
 }

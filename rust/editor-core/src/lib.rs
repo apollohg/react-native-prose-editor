@@ -299,16 +299,9 @@ pub fn editor_get_html(id: u64) -> String {
 #[uniffi::export]
 pub fn editor_set_json(id: u64, json: String) -> String {
     with_editor(id, |editor| {
-        if let Err(error) = BoundedInput::new(
-            &json,
-            InputKind::DocumentJson,
-            editor.resource_limits(),
-        ) {
-            return error_envelope(&error);
-        }
-        let value: serde_json::Value = match serde_json::from_str(&json) {
+        let value = match parse_document_json(&json, editor.resource_limits()) {
             Ok(v) => v,
-            Err(e) => return error_json(format!("invalid json: {e}")),
+            Err(error) => return error_envelope(&error),
         };
         match editor.set_json(&value) {
             Ok(elements) => serde_json::to_string(&serialize_render_elements(&elements))
@@ -403,9 +396,9 @@ pub fn editor_toggle_mark_at_selection_scalar(
 #[uniffi::export]
 pub fn editor_set_mark(id: u64, mark_name: String, attrs_json: String) -> String {
     with_editor(id, |editor| {
-        let attrs = match parse_mark_attrs_json(&attrs_json) {
+        let attrs = match parse_mark_attrs_json(&attrs_json, editor.resource_limits()) {
             Ok(attrs) => attrs,
-            Err(error) => return error_json(error),
+            Err(error) => return error_envelope(&error),
         };
         match editor.set_mark(&mark_name, attrs) {
             Ok(update) => serialize_editor_update(&update),
@@ -435,9 +428,9 @@ pub fn editor_set_mark_at_selection_scalar(
     attrs_json: String,
 ) -> String {
     with_editor(id, |editor| {
-        let attrs = match parse_mark_attrs_json(&attrs_json) {
+        let attrs = match parse_mark_attrs_json(&attrs_json, editor.resource_limits()) {
             Ok(attrs) => attrs,
-            Err(error) => return error_json(error),
+            Err(error) => return error_envelope(&error),
         };
         match editor.set_mark_at_selection_scalar(scalar_anchor, scalar_head, &mark_name, attrs) {
             Ok(update) => serialize_editor_update(&update),
@@ -543,9 +536,9 @@ pub fn editor_replace_html(id: u64, html: String) -> String {
 #[uniffi::export]
 pub fn editor_insert_content_json(id: u64, json: String) -> String {
     with_editor(id, |editor| {
-        let value: serde_json::Value = match serde_json::from_str(&json) {
+        let value = match parse_document_json(&json, editor.resource_limits()) {
             Ok(v) => v,
-            Err(e) => return error_json(format!("invalid json: {e}")),
+            Err(error) => return error_envelope(&error),
         };
         match editor.insert_content_json(&value) {
             Ok(update) => serialize_editor_update(&update),
@@ -564,9 +557,9 @@ pub fn editor_insert_content_json_at_selection_scalar(
     json: String,
 ) -> String {
     with_editor(id, |editor| {
-        let value: serde_json::Value = match serde_json::from_str(&json) {
+        let value = match parse_document_json(&json, editor.resource_limits()) {
             Ok(v) => v,
-            Err(e) => return error_json(format!("invalid json: {e}")),
+            Err(error) => return error_envelope(&error),
         };
         match editor.insert_content_json_at_selection_scalar(scalar_anchor, scalar_head, &value) {
             Ok(update) => serialize_editor_update(&update),
@@ -580,9 +573,9 @@ pub fn editor_insert_content_json_at_selection_scalar(
 #[uniffi::export]
 pub fn editor_replace_json(id: u64, json: String) -> String {
     with_editor(id, |editor| {
-        let value: serde_json::Value = match serde_json::from_str(&json) {
+        let value = match parse_document_json(&json, editor.resource_limits()) {
             Ok(v) => v,
-            Err(e) => return error_json(format!("invalid json: {e}")),
+            Err(error) => return error_envelope(&error),
         };
         match editor.replace_json(&value) {
             Ok(update) => serialize_editor_update(&update),
@@ -1140,16 +1133,30 @@ fn serialize_render_patch(patch: &render::incremental::RenderBlocksPatch) -> ser
 
 fn parse_mark_attrs_json(
     attrs_json: &str,
-) -> Result<std::collections::HashMap<String, serde_json::Value>, String> {
+    limits: &ResourceLimits,
+) -> BoundaryResult<std::collections::HashMap<String, serde_json::Value>> {
     if attrs_json.trim().is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let value: serde_json::Value = serde_json::from_str(attrs_json)
-        .map_err(|error| format!("invalid mark attrs json: {}", error))?;
+    let admitted = BoundedInput::new(attrs_json, InputKind::DocumentJson, limits)?;
+    let value: serde_json::Value = serde_json::from_str(admitted.as_str())
+        .map_err(|error| BoundaryError::parse("MARK_ATTRIBUTES_PARSE_FAILED", error))?;
     match value {
         serde_json::Value::Object(map) => Ok(map.into_iter().collect()),
-        _ => Err("invalid mark attrs json: expected object".to_string()),
+        _ => Err(BoundaryError::new(
+            "MARK_ATTRIBUTES_PARSE_FAILED",
+            "mark attributes must be a JSON object",
+        )),
     }
+}
+
+fn parse_document_json(
+    json: &str,
+    limits: &ResourceLimits,
+) -> BoundaryResult<serde_json::Value> {
+    let admitted = BoundedInput::new(json, InputKind::DocumentJson, limits)?;
+    serde_json::from_str(admitted.as_str())
+        .map_err(|error| BoundaryError::parse("DOCUMENT_PARSE_FAILED", error))
 }
 
 /// Serialize an EditorUpdate to a JSON string.

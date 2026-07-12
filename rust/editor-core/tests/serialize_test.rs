@@ -138,6 +138,46 @@ fn declared_custom_mark_tag_and_attrs_round_trip_through_html() {
     assert_eq!(to_html(&document, &schema), html);
 }
 
+#[test]
+fn private_mark_wrapper_is_recognized_only_on_span() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "panel", "role": "doc" },
+            { "name": "panel", "content": "paragraph", "role": "block", "htmlTag": "div", "attrs": { "data-native-editor-mark": { "default": "" } } },
+            { "name": "paragraph", "content": "inline*", "role": "textBlock", "htmlTag": "p" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": [{ "name": "bold", "htmlTag": "strong" }]
+    }))
+    .unwrap();
+    let html = "<div data-native-editor-mark=\"bold\"><p>x</p></div>";
+    let document = from_html(html, &schema, &default_opts()).unwrap();
+
+    assert_eq!(document.root().child(0).unwrap().node_type(), "panel");
+    assert_eq!(to_html(&document, &schema), html);
+}
+
+#[test]
+fn ordered_list_start_is_only_parsed_when_declared() {
+    let without_start = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "ordered", "role": "doc" },
+            { "name": "ordered", "content": "item+", "role": "list", "htmlTag": "ol" },
+            { "name": "item", "content": "paragraph", "role": "listItem", "htmlTag": "li" },
+            { "name": "paragraph", "content": "inline*", "role": "textBlock", "htmlTag": "p" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ], "marks": []
+    })).unwrap();
+    let html = "<ol start=\"7\"><li><p>x</p></li></ol>";
+    let document = from_html(html, &without_start, &default_opts()).unwrap();
+    assert!(document.root().child(0).unwrap().attrs().get("start").is_none());
+    assert_eq!(to_html(&document, &without_start), "<ol><li><p>x</p></li></ol>");
+
+    let declared = editor_core::tiptap_schema();
+    let document = from_html(html, &declared, &default_opts()).unwrap();
+    assert_eq!(to_html(&document, &declared), html);
+}
+
 fn default_opts() -> FromHtmlOptions {
     FromHtmlOptions::default()
 }
