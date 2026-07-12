@@ -538,6 +538,23 @@ class RenderBridgeTest {
     }
 
     @Test
+    fun `render - non finite and overflowing image dimensions are rejected`() {
+        assertEquals(null, org.json.JSONObject("""{"width":"Infinity"}""").optPositiveFiniteFloat("width"))
+        assertEquals(null, org.json.JSONObject("""{"width":2147483648}""").optPositiveFiniteFloat("width"))
+
+        val span = BlockImageSpan(
+            source = "https://example.com/cat.png",
+            hostView = null,
+            density = Float.MAX_VALUE,
+            preferredWidthDp = Float.MAX_VALUE,
+            preferredHeightDp = Float.MAX_VALUE
+        )
+        val (width, height) = span.currentSizePx()
+        assertTrue(width in 1..Int.MAX_VALUE)
+        assertTrue(height in 1..Int.MAX_VALUE)
+    }
+
+    @Test
     fun `render - data url decoder handles expo style payloads`() {
         val dataUrl =
             "data:image/gif;base64,R0lGODdhAQABAIAAAP///////ywAAAAAAQABAAACAkQBADs="

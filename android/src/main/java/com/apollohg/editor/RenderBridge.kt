@@ -9,6 +9,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import android.util.LruCache
@@ -35,13 +36,18 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Future
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.Locale
 
 object LayoutConstants {
     /** Base indentation per depth level (pixels at base scale). */
@@ -396,6 +402,7 @@ internal data class ImageLoadingPolicy(
     val maxSourceBytes: Int,
     val connectTimeoutMs: Int,
     val readTimeoutMs: Int,
+    val requestTimeoutMs: Int,
     val maxConcurrentRequests: Int,
     val maxPendingRequests: Int,
     val maxDecodeDimensionPx: Int
@@ -405,6 +412,7 @@ internal data class ImageLoadingPolicy(
             maxSourceBytes = 10 * 1024 * 1024,
             connectTimeoutMs = 10_000,
             readTimeoutMs = 20_000,
+            requestTimeoutMs = 60_000,
             maxConcurrentRequests = 2,
             maxPendingRequests = 64,
             maxDecodeDimensionPx = 2_048
@@ -412,25 +420,47 @@ internal data class ImageLoadingPolicy(
 
         fun fromJson(json: String?): ImageLoadingPolicy {
             val values = runCatching { json?.let(::JSONObject) }.getOrNull() ?: return DEFAULT
-            fun positiveInt(key: String, fallback: Int): Int {
+            fun boundedPositiveInt(key: String, fallback: Int, hardMaximum: Int): Int {
                 val value = values.opt(key) as? Number ?: return fallback
                 val doubleValue = value.toDouble()
                 if (!doubleValue.isFinite() || doubleValue % 1.0 != 0.0 || doubleValue <= 0.0 ||
-                    doubleValue > Int.MAX_VALUE.toDouble()
+                    doubleValue > hardMaximum.toDouble()
                 ) return fallback
                 return doubleValue.toInt()
             }
             return ImageLoadingPolicy(
-                positiveInt("maxSourceBytes", DEFAULT.maxSourceBytes),
-                positiveInt("connectTimeoutMs", DEFAULT.connectTimeoutMs),
-                positiveInt("readTimeoutMs", DEFAULT.readTimeoutMs),
-                positiveInt("maxConcurrentRequests", DEFAULT.maxConcurrentRequests),
-                positiveInt("maxPendingRequests", DEFAULT.maxPendingRequests),
-                positiveInt("maxDecodeDimensionPx", DEFAULT.maxDecodeDimensionPx)
+                boundedPositiveInt("maxSourceBytes", DEFAULT.maxSourceBytes, 64 * 1024 * 1024),
+                boundedPositiveInt("connectTimeoutMs", DEFAULT.connectTimeoutMs, 600_000),
+                boundedPositiveInt("readTimeoutMs", DEFAULT.readTimeoutMs, 600_000),
+                boundedPositiveInt("requestTimeoutMs", DEFAULT.requestTimeoutMs, 600_000),
+                boundedPositiveInt("maxConcurrentRequests", DEFAULT.maxConcurrentRequests, 16),
+                boundedPositiveInt("maxPendingRequests", DEFAULT.maxPendingRequests, 512),
+                boundedPositiveInt("maxDecodeDimensionPx", DEFAULT.maxDecodeDimensionPx, 8_192)
             )
         }
+
+        internal fun canonicalBytes(policy: ImageLoadingPolicy): ByteArray = ByteBuffer
+            .allocate(Int.SIZE_BYTES * 7)
+            .putInt(policy.maxSourceBytes)
+            .putInt(policy.connectTimeoutMs)
+            .putInt(policy.readTimeoutMs)
+            .putInt(policy.requestTimeoutMs)
+            .putInt(policy.maxConcurrentRequests)
+            .putInt(policy.maxPendingRequests)
+            .putInt(policy.maxDecodeDimensionPx)
+            .array()
     }
 }
+
+internal fun interface MonotonicClock {
+    fun elapsedRealtime(): Long
+}
+
+private val systemMonotonicClock = MonotonicClock { SystemClock.elapsedRealtime() }
+
+private fun deadlineAfter(startedAtMs: Long, timeoutMs: Int): Long =
+    if (startedAtMs > Long.MAX_VALUE - timeoutMs.toLong()) Long.MAX_VALUE
+    else startedAtMs + timeoutMs.toLong()
 
 internal object RenderImageDecoder {
     internal const val LOG_TAG = "NativeEditorImage"
@@ -467,11 +497,14 @@ internal object RenderImageDecoder {
     fun decodeSource(
         source: String,
         policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT,
-        cancellation: Cancellation? = null
+        cancellation: Cancellation? = null,
+        clock: MonotonicClock = systemMonotonicClock,
+        deadlineMs: Long = deadlineAfter(clock.elapsedRealtime(), policy.requestTimeoutMs)
     ): Bitmap? {
-        if (cancellation?.isCancelled() == true) return null
-        decodeDataUrlBytes(source, policy)?.let { bytes ->
-            if (cancellation?.isCancelled() == true) return null
+        if (unavailable(cancellation, clock, deadlineMs)) return null
+        if (source.regionMatches(0, "data:image/", 0, "data:image/".length, ignoreCase = true)) {
+            val bytes = decodeDataUrlBytes(source, policy, cancellation) ?: return null
+            if (unavailable(cancellation, clock, deadlineMs)) return null
             val decoded = decodeBitmap(bytes, policy)
             if (decoded == null) {
                 Log.w(LOG_TAG, "decodeSource: failed to decode data URL bytes (${sourceSummary(source)})")
@@ -489,16 +522,23 @@ internal object RenderImageDecoder {
         }.getOrNull() ?: return null
         cancellation?.bind(connection)
         val remoteBytes = try {
-            connection.connectTimeout = policy.connectTimeoutMs
-            connection.readTimeout = policy.readTimeoutMs
+            if (unavailable(cancellation, clock, deadlineMs)) return null
+            connection.connectTimeout = boundedTransportTimeout(
+                policy.connectTimeoutMs,
+                clock,
+                deadlineMs
+            )
+            connection.readTimeout = boundedTransportTimeout(policy.readTimeoutMs, clock, deadlineMs)
             connection.instanceFollowRedirects = true
             val status = connection.responseCode
-            if (status !in 200..299 || connection.contentLengthLong > policy.maxSourceBytes) {
+            if (unavailable(cancellation, clock, deadlineMs) || status !in 200..299 ||
+                connection.contentLengthLong > policy.maxSourceBytes
+            ) {
                 null
             } else {
                 connection.inputStream.use { input ->
                     cancellation?.bind(input)
-                    readBounded(input, policy.maxSourceBytes, cancellation)
+                    readBounded(input, policy, clock, cancellation, deadlineMs)
                 }
             }
         } catch (_: Exception) {
@@ -509,7 +549,7 @@ internal object RenderImageDecoder {
             Log.w(LOG_TAG, "decodeSource: failed to load remote image (${sourceSummary(source)})")
             return null
         }
-        if (cancellation?.isCancelled() == true) return null
+        if (unavailable(cancellation, clock, deadlineMs)) return null
         val decoded = decodeBitmap(remoteBytes, policy)
         if (decoded == null) {
             Log.w(LOG_TAG, "decodeSource: failed to decode remote bytes (${sourceSummary(source)})")
@@ -519,19 +559,45 @@ internal object RenderImageDecoder {
 
     fun decodeDataUrlBytes(
         source: String,
-        policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT
+        policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT,
+        cancellation: Cancellation? = null
     ): ByteArray? {
-        val trimmed = source.trim()
-        if (!trimmed.startsWith("data:image/", ignoreCase = true)) return null
-        val commaIndex = trimmed.indexOf(',')
+        if (cancellation?.isCancelled() == true ||
+            !source.regionMatches(0, "data:image/", 0, "data:image/".length, ignoreCase = true)
+        ) return null
+        var commaIndex = -1
+        var metadataUtf8Bytes = 0
+        var index = 0
+        while (index < source.length) {
+            if (cancellation?.isCancelled() == true) return null
+            val character = source[index]
+            if (character == ',') {
+                commaIndex = index
+                break
+            }
+            metadataUtf8Bytes += utf8BytesAt(source, index)
+            if (metadataUtf8Bytes > MAX_DATA_URL_METADATA_BYTES) return null
+            index += if (Character.isHighSurrogate(character) &&
+                index + 1 < source.length && Character.isLowSurrogate(source[index + 1])
+            ) 2 else 1
+        }
         if (commaIndex <= 0) return null
-        val metadata = trimmed.substring(0, commaIndex).lowercase()
-        if (!metadata.contains(";base64")) return null
-        val rawPayload = trimmed.substring(commaIndex + 1)
-        val payloadCharacters = rawPayload.count { !it.isWhitespace() }
+        val metadata = source.substring(0, commaIndex).lowercase(Locale.ROOT)
+        if (metadata.split(';').drop(1).none { it == "base64" }) return null
         val maximumEncodedCharacters = ((policy.maxSourceBytes.toLong() + 2L) / 3L) * 4L
-        if (payloadCharacters.toLong() > maximumEncodedCharacters) return null
-        val payload = rawPayload.filterNot(Char::isWhitespace)
+        val maximumRawPayload = maximumEncodedCharacters + DATA_URL_WHITESPACE_ALLOWANCE_BYTES
+        val rawPayloadLength = source.length.toLong() - commaIndex.toLong() - 1L
+        if (rawPayloadLength > maximumRawPayload) return null
+
+        val payload = StringBuilder(minOf(rawPayloadLength, maximumEncodedCharacters).toInt())
+        for (payloadIndex in commaIndex + 1 until source.length) {
+            if (cancellation?.isCancelled() == true) return null
+            val character = source[payloadIndex]
+            if (!character.isWhitespace()) {
+                payload.append(character)
+                if (payload.length.toLong() > maximumEncodedCharacters) return null
+            }
+        }
 
         val decodeFlags = intArrayOf(
             Base64.DEFAULT,
@@ -540,7 +606,7 @@ internal object RenderImageDecoder {
             Base64.URL_SAFE
         )
         for (flags in decodeFlags) {
-            val bytes = runCatching { Base64.decode(payload, flags) }.getOrNull()
+            val bytes = runCatching { Base64.decode(payload.toString(), flags) }.getOrNull()
             if (bytes != null && bytes.size <= policy.maxSourceBytes) {
                 return bytes
             }
@@ -553,19 +619,74 @@ internal object RenderImageDecoder {
         input: InputStream,
         maxBytes: Int,
         cancellation: Cancellation? = null
+    ): ByteArray? = readBoundedInternal(
+        input,
+        maxBytes,
+        cancellation,
+        systemMonotonicClock,
+        Long.MAX_VALUE
+    )
+
+    fun readBounded(
+        input: InputStream,
+        policy: ImageLoadingPolicy,
+        clock: MonotonicClock,
+        cancellation: Cancellation? = null,
+        deadlineMs: Long = deadlineAfter(clock.elapsedRealtime(), policy.requestTimeoutMs)
+    ): ByteArray? = readBoundedInternal(
+        input,
+        policy.maxSourceBytes,
+        cancellation,
+        clock,
+        deadlineMs
+    )
+
+    private fun readBoundedInternal(
+        input: InputStream,
+        maxBytes: Int,
+        cancellation: Cancellation?,
+        clock: MonotonicClock,
+        deadlineMs: Long
     ): ByteArray? {
         val output = ByteArrayOutputStream(minOf(maxBytes, 16 * 1024))
         val buffer = ByteArray(8 * 1024)
         var total = 0
         while (true) {
-            if (cancellation?.isCancelled() == true) return null
+            if (unavailable(cancellation, clock, deadlineMs)) return null
             val read = input.read(buffer)
+            if (unavailable(cancellation, clock, deadlineMs)) return null
             if (read < 0) break
             total += read
             if (total > maxBytes) return null
             output.write(buffer, 0, read)
         }
         return output.toByteArray()
+    }
+
+    private fun boundedTransportTimeout(
+        configuredMs: Int,
+        clock: MonotonicClock,
+        deadlineMs: Long
+    ): Int {
+        val remaining = (deadlineMs - clock.elapsedRealtime()).coerceAtLeast(1L)
+        return minOf(configuredMs.toLong(), remaining, Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    private fun unavailable(
+        cancellation: Cancellation?,
+        clock: MonotonicClock,
+        deadlineMs: Long
+    ): Boolean = cancellation?.isCancelled() == true || clock.elapsedRealtime() >= deadlineMs
+
+    private fun utf8BytesAt(value: String, index: Int): Int {
+        val character = value[index]
+        return when {
+            character.code <= 0x7f -> 1
+            character.code <= 0x7ff -> 2
+            Character.isHighSurrogate(character) && index + 1 < value.length &&
+                Character.isLowSurrogate(value[index + 1]) -> 4
+            else -> 3
+        }
     }
 
     fun calculateInSampleSize(
@@ -615,18 +736,26 @@ internal object RenderImageDecoder {
     }
 
     private fun sourceSummary(source: String): String {
-        val trimmed = source.trim()
-        if (!trimmed.startsWith("data:image/", ignoreCase = true)) {
-            return "urlLength=${trimmed.length}"
+        if (!source.regionMatches(0, "data:image/", 0, "data:image/".length, ignoreCase = true)) {
+            return "urlLength=${source.length}"
         }
-        val commaIndex = trimmed.indexOf(',')
+        var commaIndex = -1
+        for (index in 0..minOf(source.lastIndex, MAX_DATA_URL_METADATA_BYTES)) {
+            if (source[index] == ',') {
+                commaIndex = index
+                break
+            }
+        }
         if (commaIndex <= 0) {
-            return "dataUrlLength=${trimmed.length}"
+            return "dataUrlLength=${source.length}"
         }
-        val metadata = trimmed.substring(0, commaIndex)
-        val payloadLength = trimmed.length - commaIndex - 1
+        val metadata = source.substring(0, commaIndex)
+        val payloadLength = source.length - commaIndex - 1
         return "$metadata payloadLength=$payloadLength"
     }
+
+    private const val MAX_DATA_URL_METADATA_BYTES = 256
+    private const val DATA_URL_WHITESPACE_ALLOWANCE_BYTES = 4_096L
 }
 
 internal object RenderImageLoader {
@@ -637,8 +766,16 @@ internal object RenderImageLoader {
     private const val GLOBAL_QUEUE_CAPACITY = 256
     private const val GLOBAL_ADMISSION_LIMIT = GLOBAL_WORKERS + GLOBAL_QUEUE_CAPACITY
     private const val REJECTION_NOTIFICATION_LIMIT = 64
+    private const val CACHE_ENTRY_OVERHEAD_BYTES = 64
 
-    private data class RequestKey(val source: String, val policy: ImageLoadingPolicy)
+    private class CacheKey(val digest: ByteArray) {
+        override fun equals(other: Any?): Boolean =
+            other is CacheKey && digest.contentEquals(other.digest)
+
+        override fun hashCode(): Int = digest.contentHashCode()
+    }
+
+    private data class RequestKey(val digest: CacheKey, val policy: ImageLoadingPolicy)
     internal class LoadHandle(private val cancelAction: () -> Unit) {
         private val finished = AtomicBoolean(false)
         private val finishListeners = mutableListOf<() -> Unit>()
@@ -677,21 +814,29 @@ internal object RenderImageLoader {
     )
     private class PendingRequest(
         val key: RequestKey,
+        val source: String,
         val callbacks: MutableList<Callback>,
-        val cancellation: RenderImageDecoder.Cancellation
+        val cancellation: RenderImageDecoder.Cancellation,
+        val startedAtMs: Long
     ) {
+        val deadlineMs: Long = deadlineAfter(startedAtMs, key.policy.requestTimeoutMs)
         var future: Future<*>? = null
+        var timeoutFuture: ScheduledFuture<*>? = null
         var submitted = false
         var dispatching = false
         val started = AtomicBoolean(false)
+        val terminal = AtomicBoolean(false)
     }
     private data class PolicyState(
         var submittedCount: Int = 0,
         val pending: java.util.ArrayDeque<PendingRequest> = java.util.ArrayDeque()
     )
 
-    private val cache = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
-        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    private val cache = object : LruCache<CacheKey, Bitmap>(32 * 1024 * 1024) {
+        override fun sizeOf(key: CacheKey, value: Bitmap): Int =
+            (value.byteCount.toLong() + key.digest.size.toLong() + CACHE_ENTRY_OVERHEAD_BYTES)
+                .coerceAtMost(Int.MAX_VALUE.toLong())
+                .toInt()
     }
     private val lock = Any()
     private val inFlight = mutableMapOf<RequestKey, PendingRequest>()
@@ -705,6 +850,9 @@ internal object RenderImageLoader {
     private val submissionRejectionCount = AtomicLong()
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private var globalExecutor = createGlobalExecutor()
+    private val timeoutScheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "native-editor-image-deadline").apply { isDaemon = true }
+    }
 
     @Volatile
     internal var decodeSourceOverride: ((String, ImageLoadingPolicy) -> Bitmap?)? = null
@@ -716,6 +864,15 @@ internal object RenderImageLoader {
         source: String,
         policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT
     ): Bitmap? = synchronized(cache) { cache.get(cacheKey(source, policy)) }
+
+    internal fun cacheKeyByteCountForTesting(
+        source: String,
+        policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT
+    ): Int = cacheKey(source, policy).digest.size
+
+    internal fun cacheEntryCountForTesting(): Int = synchronized(cache) { cache.snapshot().size }
+
+    internal fun cacheRetainedCostForTesting(): Int = synchronized(cache) { cache.size() }
 
     internal fun resetForTesting() {
         synchronized(cache) {
@@ -735,6 +892,7 @@ internal object RenderImageLoader {
         pending.forEach { request ->
             runCatching { request.cancellation.cancel() }
             runCatching { request.future?.cancel(true) }
+            runCatching { request.timeoutFuture?.cancel(false) }
         }
         executor.shutdownNow()
         val rejected = synchronized(rejectionLock) {
@@ -776,9 +934,12 @@ internal object RenderImageLoader {
         onLoaded: (Bitmap?) -> Unit
     ): LoadHandle {
         val cancelled = AtomicBoolean(false)
-        val requestKey = RequestKey(source, policy)
+        var requestKey: RequestKey? = null
         lateinit var callback: Callback
-        val handle = LoadHandle { cancelCallback(requestKey, callback) }
+        val handle = LoadHandle {
+            cancelled.set(true)
+            requestKey?.let { cancelCallback(it, callback) }
+        }
         callback = Callback(nextCallbackId.incrementAndGet(), cancelled, handle, onLoaded)
         val admitted = synchronized(lock) {
             if (admissionCount >= GLOBAL_ADMISSION_LIMIT) {
@@ -797,39 +958,53 @@ internal object RenderImageLoader {
                 admissionCount = (admissionCount - 1).coerceAtLeast(0)
             }
         }
-        cached(source, policy)?.let { bitmap ->
-            mainHandler.post { deliverCallback(callback, bitmap) }
+        val requestedAtMs = systemMonotonicClock.elapsedRealtime()
+        val resolvedRequestKey = RequestKey(cacheKey(source, policy), policy)
+        requestKey = resolvedRequestKey
+        val deadlineMs = deadlineAfter(requestedAtMs, policy.requestTimeoutMs)
+        if (systemMonotonicClock.elapsedRealtime() >= deadlineMs) {
+            postCallbacks(listOf(callback), null)
+            return handle
+        }
+        synchronized(cache) { cache.get(resolvedRequestKey.digest) }?.let { bitmap ->
+            postCallbacks(listOf(callback), bitmap)
             return handle
         }
         var drain = false
         var reject = false
+        var createdRequest: PendingRequest? = null
         synchronized(lock) {
-            val existing = inFlight[requestKey]
+            val existing = inFlight[resolvedRequestKey]
             if (existing != null) {
                 existing.callbacks += callback
             } else {
                 val pending = PendingRequest(
-                    key = requestKey,
+                    key = resolvedRequestKey,
+                    source = source,
                     callbacks = mutableListOf(callback),
-                    cancellation = RenderImageDecoder.Cancellation()
+                    cancellation = RenderImageDecoder.Cancellation(),
+                    startedAtMs = requestedAtMs
                 )
                 val state = policyStates.getOrPut(policy) { PolicyState() }
                 when {
                     state.submittedCount < policy.maxConcurrentRequests -> {
-                        inFlight[requestKey] = pending
+                        createdRequest = pending
+                        inFlight[resolvedRequestKey] = pending
                         state.submittedCount += 1
                         pending.submitted = true
                         readyToSubmit.addLast(pending)
                         drain = true
                     }
                     state.pending.size < policy.maxPendingRequests -> {
-                        inFlight[requestKey] = pending
+                        createdRequest = pending
+                        inFlight[resolvedRequestKey] = pending
                         state.pending.addLast(pending)
                     }
                     else -> reject = true
                 }
             }
         }
+        createdRequest?.let(::scheduleDeadline)
         if (reject) {
             enqueueRejectionNotification(callback)
         } else if (drain) {
@@ -863,17 +1038,19 @@ internal object RenderImageLoader {
                 request.started.set(true)
                 var bitmap: Bitmap? = null
                 try {
-                    bitmap = decode(request.key.source, request.key.policy, request.cancellation)
-                    if (bitmap != null && !request.cancellation.isCancelled()) {
+                    bitmap = decode(request)
+                    if (bitmap != null && !request.cancellation.isCancelled() &&
+                        !request.terminal.get() && systemMonotonicClock.elapsedRealtime() < request.deadlineMs
+                    ) {
                         synchronized(cache) {
-                            cache.put(cacheKey(request.key.source, request.key.policy), bitmap)
+                            cache.put(request.key.digest, bitmap)
                         }
                     }
                 } catch (_: Exception) {
                     bitmap = null
                 } finally {
                     completeRequest(request, bitmap)
-                    beforeWorkerReturnOverride?.invoke(request.key.source)
+                    beforeWorkerReturnOverride?.invoke(request.source)
                 }
             }
             var orphaned = false
@@ -896,22 +1073,68 @@ internal object RenderImageLoader {
             runCatching { globalExecutor.remove(future as Runnable) }.getOrDefault(false)
         if (removed) {
             runCatching { future.cancel(false) }
-            synchronized(lock) { releaseSubmittedSlotLocked(request.key.policy) }
-            mainHandler.post { drainSubmissions() }
+            if (!request.terminal.get()) {
+                synchronized(lock) { releaseSubmittedSlotLocked(request.key.policy) }
+                mainHandler.post { drainSubmissions() }
+            }
         } else if (request.started.get()) {
             runCatching { future.cancel(true) }
         }
     }
 
     private fun completeRequest(request: PendingRequest, bitmap: Bitmap?) {
+        if (!request.terminal.compareAndSet(false, true)) return
+        runCatching { request.timeoutFuture?.cancel(false) }
         val callbacks: List<Callback>
         synchronized(lock) {
             if (inFlight[request.key] === request) inFlight.remove(request.key)
             callbacks = request.callbacks.toList()
             releaseSubmittedSlotLocked(request.key.policy)
         }
-        mainHandler.post {
-            callbacks.forEach { callback -> deliverCallback(callback, bitmap) }
+        postCallbacks(callbacks, bitmap)
+    }
+
+    private fun scheduleDeadline(request: PendingRequest) {
+        val delayMs = (request.deadlineMs - systemMonotonicClock.elapsedRealtime()).coerceAtLeast(0L)
+        val future = timeoutScheduler.schedule(
+            { expireRequest(request) },
+            delayMs,
+            TimeUnit.MILLISECONDS
+        )
+        request.timeoutFuture = future
+        if (request.terminal.get()) future.cancel(false)
+    }
+
+    private fun expireRequest(request: PendingRequest) {
+        if (!request.terminal.compareAndSet(false, true)) return
+        val callbacks: List<Callback>
+        synchronized(lock) {
+            if (inFlight[request.key] === request) inFlight.remove(request.key)
+            callbacks = request.callbacks.toList()
+            if (request.submitted) {
+                readyToSubmit.remove(request)
+                releaseSubmittedSlotLocked(request.key.policy)
+            } else {
+                policyStates[request.key.policy]?.pending?.remove(request)
+                removePolicyStateIfEmptyLocked(request.key.policy)
+            }
+        }
+        request.cancellation.cancel()
+        val future = request.future
+        if (future != null) {
+            if (!request.started.get()) runCatching { globalExecutor.remove(future as Runnable) }
+            runCatching { future.cancel(true) }
+        }
+        postCallbacks(callbacks, null)
+    }
+
+    private fun postCallbacks(callbacks: List<Callback>, bitmap: Bitmap?) {
+        if (!mainHandler.post {
+                callbacks.forEach { callback -> deliverCallback(callback, bitmap) }
+                drainSubmissions()
+            }
+        ) {
+            callbacks.forEach { it.handle.finish() }
             drainSubmissions()
         }
     }
@@ -991,6 +1214,7 @@ internal object RenderImageLoader {
             }
         }
         val request = requestToCancel ?: return
+        runCatching { request.timeoutFuture?.cancel(false) }
         runCatching { request.cancellation.cancel() }
         val future = futureToCancel
         if (future != null) {
@@ -1039,14 +1263,22 @@ internal object RenderImageLoader {
         }
     }.apply { allowCoreThreadTimeOut(true) }
 
-    private fun decode(
-        source: String,
-        policy: ImageLoadingPolicy,
-        cancellation: RenderImageDecoder.Cancellation
-    ): Bitmap? = decodeSourceOverride?.invoke(source, policy)
-        ?: RenderImageDecoder.decodeSource(source, policy, cancellation)
+    private fun decode(request: PendingRequest): Bitmap? =
+        decodeSourceOverride?.invoke(request.source, request.key.policy)
+            ?: RenderImageDecoder.decodeSource(
+                request.source,
+                request.key.policy,
+                request.cancellation,
+                systemMonotonicClock,
+                request.deadlineMs
+            )
 
-    private fun cacheKey(source: String, policy: ImageLoadingPolicy) = "$policy\n$source"
+    private fun cacheKey(source: String, policy: ImageLoadingPolicy): CacheKey {
+        val digest = MessageDigest.getInstance("SHA-256")
+        digest.update(source.toByteArray(Charsets.UTF_8))
+        digest.update(ImageLoadingPolicy.canonicalBytes(policy))
+        return CacheKey(digest.digest())
+    }
 }
 
 internal class BlockImageSpan(
@@ -1174,8 +1406,8 @@ internal class BlockImageSpan(
             0.56f
         }
 
-        var widthPx = preferredWidthDp?.takeIf { it > 0f }?.times(density)
-        var heightPx = preferredHeightDp?.takeIf { it > 0f }?.times(density)
+        var widthPx = checkedPixels(preferredWidthDp)
+        var heightPx = checkedPixels(preferredHeightDp)
 
         if (widthPx == null && heightPx == null && loadedBitmap != null && loadedBitmap.width > 0 && loadedBitmap.height > 0) {
             widthPx = loadedBitmap.width.toFloat()
@@ -1196,10 +1428,19 @@ internal class BlockImageSpan(
             heightPx = placeholderHeight
         }
 
-        val scale = minOf(1f, maxWidth / widthPx.coerceAtLeast(1f))
+        if (!widthPx.isFinite() || widthPx <= 0f || !heightPx.isFinite() || heightPx <= 0f) {
+            widthPx = maxWidth
+            heightPx = minOf(maxWidth * 0.56f, policy.maxDecodeDimensionPx.toFloat())
+        }
+        val maximumDimension = policy.maxDecodeDimensionPx.toFloat()
+        val scale = minOf(
+            1f,
+            maxWidth / widthPx.coerceAtLeast(1f),
+            maximumDimension / heightPx.coerceAtLeast(1f)
+        )
         return Pair(
-            (widthPx * scale).toInt().coerceAtLeast(1),
-            (heightPx * scale).toInt().coerceAtLeast(1)
+            checkedPositiveInt(widthPx * scale),
+            checkedPositiveInt(heightPx * scale)
         )
     }
 
@@ -1210,8 +1451,28 @@ internal class BlockImageSpan(
         val hostWidth = host?.let {
             maxOf(it.width, it.measuredWidth) - it.totalPaddingLeft - it.totalPaddingRight
         } ?: 0
-        return if (hostWidth > 0) hostWidth.toFloat() else 240f * density
+        val candidate = if (hostWidth > 0) hostWidth.toDouble() else 240.0 * density.toDouble()
+        return candidate
+            .takeIf { it.isFinite() && it > 0.0 }
+            ?.coerceAtMost(policy.maxDecodeDimensionPx.toDouble())
+            ?.toFloat()
+            ?: policy.maxDecodeDimensionPx.toFloat()
     }
+
+    private fun checkedPixels(preferredDp: Float?): Float? {
+        val value = preferredDp ?: return null
+        if (!value.isFinite() || value <= 0f || !density.isFinite() || density <= 0f) return null
+        val pixels = value.toDouble() * density.toDouble()
+        return pixels.takeIf { it.isFinite() && it > 0.0 && it <= Int.MAX_VALUE.toDouble() }?.toFloat()
+    }
+
+    private fun checkedPositiveInt(value: Float): Int = value
+        .takeIf { it.isFinite() && it > 0f }
+        ?.toDouble()
+        ?.coerceAtMost(Int.MAX_VALUE.toDouble())
+        ?.toInt()
+        ?.coerceAtLeast(1)
+        ?: 1
 }
 
 class FixedLineHeightSpan(
@@ -2015,12 +2276,12 @@ object RenderBridge {
             }
             "image" -> {
                 val source = if (attrs != null && attrs.has("src") && !attrs.isNull("src")) {
-                    attrs.optString("src", "").trim()
+                    attrs.optString("src", "")
                 } else {
                     ""
                 }
-                val preferredWidthDp = attrs?.optPositiveFloat("width")
-                val preferredHeightDp = attrs?.optPositiveFloat("height")
+                val preferredWidthDp = attrs?.optPositiveFiniteFloat("width")
+                val preferredHeightDp = attrs?.optPositiveFiniteFloat("height")
                 if (source.isEmpty()) {
                     builder.append(LayoutConstants.OBJECT_REPLACEMENT_CHARACTER)
                     return
@@ -2701,9 +2962,9 @@ object RenderBridge {
     }
 }
 
-private fun JSONObject.optPositiveFloat(key: String): Float? {
+internal fun JSONObject.optPositiveFiniteFloat(key: String): Float? {
     if (!has(key) || isNull(key)) return null
     val value = optDouble(key, Double.NaN)
-    if (value.isNaN() || value <= 0.0) return null
-    return value.toFloat()
+    if (!value.isFinite() || value <= 0.0 || value > Int.MAX_VALUE.toDouble()) return null
+    return value.toFloat().takeIf { it.isFinite() && it > 0f }
 }

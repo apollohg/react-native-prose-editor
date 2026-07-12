@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -36,15 +37,103 @@ class RenderImageLoaderPolicyTest {
         assertEquals(10 * 1024 * 1024, defaults.maxSourceBytes)
         assertEquals(10_000, defaults.connectTimeoutMs)
         assertEquals(20_000, defaults.readTimeoutMs)
+        assertEquals(60_000, defaults.requestTimeoutMs)
         assertEquals(2, defaults.maxConcurrentRequests)
         assertEquals(64, defaults.maxPendingRequests)
         assertEquals(2_048, defaults.maxDecodeDimensionPx)
 
         val parsed = ImageLoadingPolicy.fromJson(
-            """{"maxSourceBytes":12,"connectTimeoutMs":13,"readTimeoutMs":14,"maxConcurrentRequests":3,"maxPendingRequests":4,"maxDecodeDimensionPx":15}"""
+            """{"maxSourceBytes":12,"connectTimeoutMs":13,"readTimeoutMs":14,"requestTimeoutMs":15,"maxConcurrentRequests":3,"maxPendingRequests":4,"maxDecodeDimensionPx":16}"""
         )
-        assertEquals(ImageLoadingPolicy(12, 13, 14, 3, 4, 15), parsed)
+        assertEquals(ImageLoadingPolicy(12, 13, 14, 15, 3, 4, 16), parsed)
         assertEquals(defaults, ImageLoadingPolicy.fromJson("""{"maxSourceBytes":0}"""))
+        assertEquals(
+            defaults,
+            ImageLoadingPolicy.fromJson(
+                """{"maxSourceBytes":67108865,"connectTimeoutMs":600001,"readTimeoutMs":600001,"requestTimeoutMs":600001,"maxConcurrentRequests":17,"maxPendingRequests":513,"maxDecodeDimensionPx":8193}"""
+            )
+        )
+    }
+
+    @Test
+    fun `data url admission bounds metadata raw whitespace and observes cancellation`() {
+        val policy = ImageLoadingPolicy.DEFAULT.copy(maxSourceBytes = 8)
+        assertNull(
+            RenderImageDecoder.decodeDataUrlBytes(
+                "data:image/png;base64," + "A ".repeat(10_000),
+                policy
+            )
+        )
+        assertNull(
+            RenderImageDecoder.decodeDataUrlBytes(
+                "data:image/" + "x".repeat(257) + ";base64,AQ==",
+                policy
+            )
+        )
+        val cancellation = RenderImageDecoder.Cancellation().apply { cancel() }
+        assertNull(
+            RenderImageDecoder.decodeDataUrlBytes(
+                "data:image/png;base64,AQ==",
+                policy,
+                cancellation
+            )
+        )
+    }
+
+    @Test
+    fun `absolute deadline stops trickle reads`() {
+        val clock = FakeMonotonicClock()
+        val stream = TrickleInputStream(clock, byteEveryMs = 19_000)
+        val policy = ImageLoadingPolicy.DEFAULT.copy(
+            maxSourceBytes = 100,
+            readTimeoutMs = 20_000,
+            requestTimeoutMs = 60_000
+        )
+
+        assertNull(RenderImageDecoder.readBounded(stream, policy, clock))
+        assertTrue(clock.elapsedRealtime() >= 60_000)
+    }
+
+    @Test
+    fun `blocked request deadline releases admission and suppresses stale success`() {
+        val stream = BlockingInputStream()
+        val connection = FakeConnection(URL("https://example.com/deadline.png"), stream = stream)
+        RenderImageDecoder.connectionFactoryOverride = { connection }
+        val callbackResult = AtomicReference<Bitmap?>(Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888))
+        val completed = CountDownLatch(1)
+        val policy = ImageLoadingPolicy.DEFAULT.copy(requestTimeoutMs = 50)
+
+        RenderImageLoader.load("https://example.com/deadline.png", policy) {
+            callbackResult.set(it)
+            completed.countDown()
+        }
+        assertTrue(stream.readStarted.await(2, TimeUnit.SECONDS))
+        drainMainUntil(completed)
+
+        assertEquals(0L, completed.count)
+        assertNull(callbackResult.get())
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+        assertTrue(stream.closed.await(2, TimeUnit.SECONDS))
+        assertTrue(connection.disconnected)
+    }
+
+    @Test
+    fun `cache uses fixed digest keys and accounts retained entry cost`() {
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val first = "https://example.com/" + "a".repeat(2 * 1024 * 1024)
+        val second = "https://example.com/" + "b".repeat(2 * 1024 * 1024)
+        val completed = CountDownLatch(2)
+
+        RenderImageLoader.load(first) { completed.countDown() }
+        RenderImageLoader.load(second) { completed.countDown() }
+        drainMainUntil(completed)
+
+        assertEquals(0L, completed.count)
+        assertEquals(32, RenderImageLoader.cacheKeyByteCountForTesting(first))
+        assertEquals(2, RenderImageLoader.cacheEntryCountForTesting())
+        assertTrue(RenderImageLoader.cacheRetainedCostForTesting() < 1_024)
     }
 
     @Test
@@ -663,6 +752,29 @@ class RenderImageLoaderPolicyTest {
         }
         override fun close() {
             closed.countDown()
+        }
+    }
+
+    private class FakeMonotonicClock : MonotonicClock {
+        private var nowMs = 0L
+        override fun elapsedRealtime(): Long = nowMs
+        fun advance(milliseconds: Long) {
+            nowMs += milliseconds
+        }
+    }
+
+    private class TrickleInputStream(
+        private val clock: FakeMonotonicClock,
+        private val byteEveryMs: Long
+    ) : InputStream() {
+        override fun read(): Int {
+            clock.advance(byteEveryMs)
+            return 1
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            buffer[offset] = read().toByte()
+            return 1
         }
     }
 }
