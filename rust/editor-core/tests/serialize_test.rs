@@ -131,6 +131,66 @@ fn json_mark_attrs_receive_schema_defaults() {
 }
 
 #[test]
+fn synthetic_html_nodes_receive_the_same_default_attrs_as_json_nodes() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "article", "content": "list", "role": "doc", "attrs": { "locale": { "default": "en" } } },
+            { "name": "list", "content": "item+", "role": "list", "htmlTag": "ul" },
+            { "name": "item", "content": "body", "role": "listItem", "htmlTag": "li", "attrs": { "checked": { "default": false } } },
+            { "name": "body", "content": "text*", "role": "textBlock", "htmlTag": "p", "attrs": { "kind": { "default": "plain" } } },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let from_auto_html = from_html("<ul>loose</ul>", &schema, &default_opts()).unwrap();
+    let from_explicit_html =
+        from_html("<ul><li><p>loose</p></li></ul>", &schema, &default_opts()).unwrap();
+    let from_json = from_prosemirror_json(
+        &serde_json::json!({
+            "type": "article",
+            "content": [{
+                "type": "list",
+                "content": [{
+                    "type": "item",
+                    "content": [{
+                        "type": "body",
+                        "content": [{ "type": "text", "text": "loose" }]
+                    }]
+                }]
+            }]
+        }),
+        &schema,
+        UnknownTypeMode::Error,
+    )
+    .unwrap();
+
+    assert_eq!(from_auto_html.root().attrs(), from_json.root().attrs());
+    assert_eq!(
+        from_auto_html.root().attrs(),
+        from_explicit_html.root().attrs()
+    );
+    let html_item = from_auto_html.root().child(0).unwrap().child(0).unwrap();
+    let explicit_html_item = from_explicit_html
+        .root()
+        .child(0)
+        .unwrap()
+        .child(0)
+        .unwrap();
+    let json_item = from_json.root().child(0).unwrap().child(0).unwrap();
+    assert_eq!(html_item.attrs(), json_item.attrs());
+    assert_eq!(html_item.attrs(), explicit_html_item.attrs());
+    assert_eq!(
+        html_item.child(0).unwrap().attrs(),
+        json_item.child(0).unwrap().attrs()
+    );
+    assert_eq!(
+        html_item.child(0).unwrap().attrs(),
+        explicit_html_item.child(0).unwrap().attrs()
+    );
+}
+
+#[test]
 fn custom_block_and_list_attrs_round_trip_through_html() {
     let schema = Schema::from_json(&serde_json::json!({
         "nodes": [

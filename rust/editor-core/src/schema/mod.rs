@@ -6,7 +6,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::boundary::{BoundaryError, BoundaryResult, ResourceLimits};
 use crate::model::{Document, Fragment, Node};
-use crate::schema::content_rule::{ContentRule, ContentRuleError, WorkBudget};
+use crate::schema::content_rule::{
+    ContentRule, ContentRuleError, WorkBudget, DEFAULT_RUNTIME_WORK_LIMIT,
+};
 
 #[derive(Debug)]
 enum SchemaValidationError {
@@ -389,7 +391,7 @@ impl Schema {
                     |symbol| constructible_symbols.contains(symbol),
                     budget,
                 )
-                .ok_or_else(|| {
+                .map_err(|()| {
                     SchemaValidationError::resource("schema constructibility work budget exceeded")
                 })?;
             if constructible {
@@ -431,7 +433,7 @@ impl Schema {
                     |symbol| constructible_symbols.contains(symbol),
                     budget,
                 )
-                .ok_or_else(|| {
+                .map_err(|()| {
                     SchemaValidationError::resource("schema constructibility work budget exceeded")
                 })?;
             if !constructible {
@@ -530,13 +532,31 @@ impl Schema {
     /// spec declares a `checked` attr); non-task lists prefer non-task
     /// candidates. Ties resolve alphabetically for determinism.
     pub fn list_item_type_for(&self, list_type: &str) -> Option<String> {
-        let list_spec = self.node(list_type)?;
-        let initial_symbols = list_spec.content.initial_symbols();
-        let mut candidates: Vec<&NodeSpec> = initial_symbols
-            .into_iter()
-            .flat_map(|symbol| self.candidates_for_symbol(symbol))
-            .filter(|spec| matches!(spec.role, NodeRole::ListItem))
-            .collect();
+        self.list_item_type_for_with_budget(list_type, &WorkBudget::new(DEFAULT_DOCUMENT_MAX_WORK))
+            .ok()
+            .flatten()
+    }
+
+    pub(crate) fn list_item_type_for_with_budget(
+        &self,
+        list_type: &str,
+        budget: &WorkBudget,
+    ) -> Result<Option<String>, ()> {
+        let Some(list_spec) = self.node(list_type) else {
+            return Ok(None);
+        };
+        let initial_symbols = list_spec.content.initial_symbols_with_budget(budget)?;
+        let mut candidates = Vec::new();
+        for symbol in initial_symbols {
+            for spec in self.candidates_for_symbol(symbol) {
+                if !budget.consume() {
+                    return Err(());
+                }
+                if matches!(spec.role, NodeRole::ListItem) {
+                    candidates.push(spec);
+                }
+            }
+        }
         candidates.sort_by(|a, b| a.name.cmp(&b.name));
         candidates.dedup_by(|a, b| a.name == b.name);
 
@@ -545,11 +565,11 @@ impl Schema {
             spec.name.to_ascii_lowercase().contains("task") || spec.attrs.contains_key("checked")
         };
 
-        candidates
+        Ok(candidates
             .iter()
             .find(|spec| is_task_item(spec) == is_task_list)
             .or_else(|| candidates.first())
-            .map(|spec| spec.name.clone())
+            .map(|spec| spec.name.clone()))
     }
 
     /// Find the first node spec whose `html_tag` matches the given tag name.
@@ -652,6 +672,22 @@ impl Schema {
         prefix_child_types: &[&str],
         suffix_child_types: &[&str],
     ) -> Vec<String> {
+        self.insertable_nodes_at_with_budget(
+            parent_spec,
+            prefix_child_types,
+            suffix_child_types,
+            &WorkBudget::new(DEFAULT_RUNTIME_WORK_LIMIT),
+        )
+        .unwrap_or_default()
+    }
+
+    pub(crate) fn insertable_nodes_at_with_budget(
+        &self,
+        parent_spec: &NodeSpec,
+        prefix_child_types: &[&str],
+        suffix_child_types: &[&str],
+        budget: &WorkBudget,
+    ) -> Result<Vec<String>, ()> {
         let mut result = Vec::new();
 
         let excluded_roles = |role: &NodeRole| -> bool {
@@ -667,6 +703,9 @@ impl Schema {
         };
 
         for node_spec in self.all_nodes() {
+            if !budget.consume() {
+                return Err(());
+            }
             if excluded_roles(&node_spec.role) {
                 continue;
             }
@@ -676,18 +715,19 @@ impl Schema {
                 .chain(std::iter::once(node_spec.name.as_str()))
                 .chain(suffix_child_types.iter().copied())
                 .collect::<Vec<_>>();
-            if parent_spec
-                .content
-                .matches(&candidate_types, |child_type, symbol| {
+            if parent_spec.content.matches_with_budget(
+                &candidate_types,
+                |child_type, symbol| {
                     self.node(child_type)
                         .is_some_and(|spec| node_spec_matches_symbol(spec, symbol))
-                })
-            {
+                },
+                budget,
+            )? {
                 result.push(node_spec.name.clone());
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Construct the shortest complete document accepted by the schema using

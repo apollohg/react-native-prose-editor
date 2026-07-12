@@ -127,13 +127,11 @@ fn extract_node_attrs(
     elem: &scraper::node::Element,
     spec: &crate::schema::NodeSpec,
 ) -> HashMap<String, serde_json::Value> {
-    let mut attrs = HashMap::new();
+    let mut attrs = super::default_node_attrs(spec);
 
     for (key, attr_spec) in &spec.attrs {
         if let Some(value) = element_attr(elem, key) {
             attrs.insert(key.clone(), parse_attr_value(key, attr_spec, value));
-        } else if let Some(default) = &attr_spec.default {
-            attrs.insert(key.clone(), default.clone());
         }
     }
 
@@ -291,7 +289,10 @@ pub fn from_html_with_limits(
 
     let doc_node = Node::element(
         schema.doc_node_type().to_string(),
-        HashMap::new(),
+        schema
+            .node(schema.doc_node_type())
+            .map(super::default_node_attrs)
+            .unwrap_or_default(),
         Fragment::from(block_children),
     );
     Ok(Document::new(doc_node))
@@ -667,8 +668,11 @@ fn collect_list_items(
                 if let Some(item_type) = list_item_name.clone().or_else(fallback_list_item) {
                     let para = make_paragraph(schema, vec![Node::text(text.to_string(), vec![])]);
                     let li = Node::element(
-                        item_type,
-                        HashMap::new(),
+                        item_type.clone(),
+                        schema
+                            .node(&item_type)
+                            .map(super::default_node_attrs)
+                            .unwrap_or_default(),
                         Fragment::from(vec![para]),
                     );
                     items.push(li);
@@ -808,9 +812,9 @@ fn make_paragraph(schema: &Schema, children: Vec<Node>) -> Node {
         .map(|n| n.name.as_str())
         .or_else(|| schema.preferred_text_block().map(|node| node.name.as_str()))
         .unwrap_or("paragraph");
-    Node::element(
-        para_name.to_string(),
-        HashMap::new(),
-        Fragment::from(children),
-    )
+    let attrs = schema
+        .node(para_name)
+        .map(super::default_node_attrs)
+        .unwrap_or_default();
+    Node::element(para_name.to_string(), attrs, Fragment::from(children))
 }

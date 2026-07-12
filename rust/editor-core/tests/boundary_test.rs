@@ -547,6 +547,26 @@ fn split_skips_required_attr_candidates_and_applies_defaults() {
 }
 
 #[test]
+fn split_skips_preferred_text_blocks_that_reject_the_split_content() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "hardBreak", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "body", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "section" },
+            { "name": "hardBreak", "content": "", "group": "inline", "role": "hardBreak", "isVoid": true },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+    editor.set_html("<section>ab</section>").unwrap();
+
+    editor.split_block_scalar(1).unwrap();
+    assert_eq!(editor.get_html(), "<section>a</section><section>b</section>");
+}
+
+#[test]
 fn delete_and_split_success_is_one_undoable_transaction() {
     let schema = Schema::from_json(&serde_json::json!({
         "nodes": [
@@ -643,6 +663,86 @@ fn document_content_matching_uses_one_resolved_work_budget() {
     };
     assert_eq!(error.code(), "DOCUMENT_LIMIT_EXCEEDED");
     assert_eq!(error.details.as_ref().unwrap()["phase"], "documentWork");
+}
+
+#[test]
+fn split_preflight_exhaustion_is_a_structured_boundary_error() {
+    let alternatives = std::iter::repeat_n("paragraph", 400)
+        .collect::<Vec<_>>()
+        .join("|");
+    let limits = ResourceLimits {
+        max_document_nodes: 4,
+        ..ResourceLimits::default()
+    };
+    let schema = Schema::from_json_with_limits(
+        &serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": format!("({alternatives})+"), "role": "doc" },
+                { "name": "paragraph", "content": "text*", "role": "textBlock", "htmlTag": "p" },
+                { "name": "text", "content": "", "group": "inline", "role": "text" }
+            ],
+            "marks": []
+        }),
+        &limits,
+    )
+    .unwrap();
+    let mut editor = Editor::new_with_limits(schema, InterceptorPipeline::new(), false, limits);
+    let before = editor.get_json();
+
+    let error = editor_update_error(editor.split_block(1));
+    let EditorError::Boundary(error) = error else {
+        panic!("expected a boundary error");
+    };
+    assert_eq!(error.code(), "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(
+        error.details.as_ref().unwrap()["phase"],
+        "runtimeContentWork"
+    );
+    assert_eq!(editor.get_json(), before);
+}
+
+#[test]
+fn wide_document_insertability_preflight_uses_one_work_budget() {
+    let mut nodes = vec![
+        serde_json::json!({ "name": "doc", "content": "block*", "role": "doc" }),
+        serde_json::json!({ "name": "paragraph", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "p" }),
+        serde_json::json!({ "name": "text", "content": "", "group": "inline", "role": "text" }),
+    ];
+    for index in 0..200 {
+        nodes.push(serde_json::json!({
+            "name": format!("widget{index}"),
+            "content": "",
+            "group": "block",
+            "role": "block",
+            "isVoid": true
+        }));
+    }
+    let limits = ResourceLimits {
+        max_document_nodes: 128,
+        ..ResourceLimits::default()
+    };
+    let schema =
+        Schema::from_json_with_limits(&serde_json::json!({ "nodes": nodes, "marks": [] }), &limits)
+            .unwrap();
+    let mut editor = Editor::new_with_limits(schema, InterceptorPipeline::new(), false, limits);
+    let document = serde_json::json!({
+        "type": "doc",
+        "content": std::iter::repeat_n(serde_json::json!({ "type": "paragraph" }), 100)
+            .collect::<Vec<_>>()
+    });
+    editor.set_json(&document).unwrap();
+    let before = editor.get_json();
+
+    let error = editor_update_error(editor.insert_node(1, "widget0"));
+    let EditorError::Boundary(error) = error else {
+        panic!("expected a boundary error");
+    };
+    assert_eq!(error.code(), "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(
+        error.details.as_ref().unwrap()["phase"],
+        "runtimeContentWork"
+    );
+    assert_eq!(editor.get_json(), before);
 }
 
 #[test]

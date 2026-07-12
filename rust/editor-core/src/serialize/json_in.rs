@@ -266,14 +266,7 @@ fn parse_attrs(
     obj: &serde_json::Map<String, Value>,
     spec: &crate::schema::NodeSpec,
 ) -> HashMap<String, Value> {
-    let mut attrs = HashMap::new();
-
-    // Start with schema defaults
-    for (key, attr_spec) in &spec.attrs {
-        if let Some(default) = &attr_spec.default {
-            attrs.insert(key.clone(), default.clone());
-        }
-    }
+    let mut attrs = super::default_node_attrs(spec);
 
     // Overlay with values from JSON — only attrs the schema declares for this
     // node (parity with the HTML path's extract_node_attrs), unless the spec

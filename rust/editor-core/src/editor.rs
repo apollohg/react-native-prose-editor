@@ -12,6 +12,7 @@ use crate::model::resolved_pos::ResolvedPos;
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::position::PositionMap;
 use crate::render::RenderElement;
+use crate::schema::content_rule::WorkBudget;
 use crate::schema::{NodeRole, NodeSpec, Schema};
 use crate::selection::Selection;
 use crate::serialize;
@@ -192,6 +193,18 @@ impl Editor {
 
     pub fn resource_limits(&self) -> &ResourceLimits {
         &self.resource_limits
+    }
+
+    fn runtime_content_budget(&self) -> (WorkBudget, usize) {
+        let limit = self.resource_limits.max_document_nodes.saturating_mul(128);
+        (WorkBudget::new(limit), limit)
+    }
+
+    fn runtime_content_limit_error(limit: usize) -> EditorError {
+        let mut error =
+            BoundaryError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, limit.saturating_add(1));
+        error.details = Some(serde_json::json!({ "phase": "runtimeContentWork" }));
+        error.into()
     }
 
     // -----------------------------------------------------------------------
@@ -442,8 +455,9 @@ impl Editor {
 
     /// Split a block at the given position (e.g. pressing Enter).
     pub fn split_block(&mut self, pos: u32) -> Result<EditorUpdate, EditorError> {
+        let (budget, work_limit) = self.runtime_content_budget();
         if self.is_code_block_at_pos(pos) {
-            if let Some(exit) = self.try_exit_code_block(pos) {
+            if let Some(exit) = self.try_exit_code_block(pos, &budget, work_limit) {
                 return exit;
             }
             return self.insert_text(pos, "\n");
@@ -454,11 +468,14 @@ impl Editor {
         }
 
         // Normal split: create the schema-preferred constructible text block.
-        let step = self.preferred_split_step(self.backend.document(), pos).ok_or_else(|| {
-            EditorError::Transform(TransformError::InvalidTarget(
-                "schema has no constructible text block valid at the split position".to_string(),
-            ))
-        })?;
+        let step = self
+            .preferred_split_step(self.backend.document(), pos, &budget, work_limit)?
+            .ok_or_else(|| {
+                EditorError::Transform(TransformError::InvalidTarget(
+                    "schema has no constructible text block valid at the split position"
+                        .to_string(),
+                ))
+            })?;
         let mut tx = Transaction::new(Source::Input);
         tx.add_step(step);
         self.apply_transaction(tx)
@@ -743,7 +760,8 @@ impl Editor {
         }
 
         let insert_pos = self.resolve_block_insert_pos(pos);
-        if !self.can_insert_block_node_at_pos(pos, node_type) {
+        let (budget, work_limit) = self.runtime_content_budget();
+        if !self.can_insert_block_node_at_pos(pos, node_type, &budget, work_limit)? {
             return Ok(self.build_update_from_current());
         }
         let node = Node::void(node_type.to_string(), HashMap::new());
@@ -1260,6 +1278,7 @@ impl Editor {
             .apply(self.backend.document(), &self.schema)
             .map_err(EditorError::Transform)?
             .0;
+        let (budget, work_limit) = self.runtime_content_budget();
         let selection_override = match self.empty_split_action_in_document(&preview, doc_from) {
             Some(SplitAction::UnwrapList(pos)) => {
                 tx.add_step(Step::UnwrapFromList { pos });
@@ -1276,7 +1295,7 @@ impl Editor {
             }
             None => {
                 let step = self
-                    .preferred_split_step(&preview, doc_from)
+                    .preferred_split_step(&preview, doc_from, &budget, work_limit)?
                     .ok_or_else(|| {
                         EditorError::Transform(TransformError::InvalidTarget(
                             "schema has no constructible text block valid at the split position"
@@ -1775,8 +1794,12 @@ impl Editor {
                 // Node selection (e.g. on a void node): no text cursor for marks,
                 // but we can still compute insertable nodes at this position.
                 let resolved = doc.resolve(pos).ok();
+                let (budget, work_limit) = self.runtime_content_budget();
                 let insertable = resolved
-                    .map(|r| self.insertable_nodes_from_resolved(doc, &r))
+                    .and_then(|r| {
+                        self.insertable_nodes_from_resolved(doc, &r, &budget, work_limit)
+                            .ok()
+                    })
                     .unwrap_or_default();
                 (Vec::new(), insertable)
             }
@@ -1796,8 +1819,12 @@ impl Editor {
                     })
                     .unwrap_or_default();
 
+                let (budget, work_limit) = self.runtime_content_budget();
                 let insertable = resolved
-                    .map(|r| self.insertable_nodes_from_resolved(doc, &r))
+                    .and_then(|r| {
+                        self.insertable_nodes_from_resolved(doc, &r, &budget, work_limit)
+                            .ok()
+                    })
                     .unwrap_or_default();
 
                 (allowed, insertable)
@@ -1846,14 +1873,17 @@ impl Editor {
         &self,
         doc: &Document,
         resolved: &ResolvedPos,
-    ) -> Vec<String> {
-        let mut insertable = self.block_insertable_nodes_from_resolved(doc, resolved);
+        budget: &WorkBudget,
+        work_limit: usize,
+    ) -> Result<Vec<String>, EditorError> {
+        let mut insertable =
+            self.block_insertable_nodes_from_resolved(doc, resolved, budget, work_limit)?;
         for node_type in self.inline_insertable_nodes_from_resolved(doc, resolved) {
             if !insertable.contains(&node_type) {
                 insertable.push(node_type);
             }
         }
-        insertable
+        Ok(insertable)
     }
 
     /// Walk up from the resolved position past TextBlock nodes to find the
@@ -1862,7 +1892,9 @@ impl Editor {
         &self,
         doc: &Document,
         resolved: &ResolvedPos,
-    ) -> Vec<String> {
+        budget: &WorkBudget,
+        work_limit: usize,
+    ) -> Result<Vec<String>, EditorError> {
         // Walk the node path to find the deepest non-TextBlock ancestor.
         // The resolved position's parent is the innermost node; if it's a
         // TextBlock (e.g. paragraph), we go one level up.
@@ -1879,13 +1911,16 @@ impl Editor {
         }
 
         let Some((parent, prefix, suffix)) = self.block_parent_and_siblings(doc, resolved) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let Some(spec) = self.schema.node(parent.node_type()) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let insertable = self.schema.insertable_nodes_at(spec, &prefix, &suffix);
-        self.filter_insertable_nodes_for_parent(parent, insertable)
+        let insertable = self
+            .schema
+            .insertable_nodes_at_with_budget(spec, &prefix, &suffix, budget)
+            .map_err(|()| Self::runtime_content_limit_error(work_limit))?;
+        Ok(self.filter_insertable_nodes_for_parent(parent, insertable))
     }
 
     fn inline_insertable_nodes_from_resolved(
@@ -1910,12 +1945,17 @@ impl Editor {
             .collect()
     }
 
-    fn insertable_nodes_at_pos(&self, pos: u32) -> Vec<String> {
+    fn insertable_nodes_at_pos(
+        &self,
+        pos: u32,
+        budget: &WorkBudget,
+        work_limit: usize,
+    ) -> Result<Vec<String>, EditorError> {
         let doc = self.backend.document();
-        doc.resolve(pos)
-            .ok()
-            .map(|resolved| self.insertable_nodes_from_resolved(doc, &resolved))
-            .unwrap_or_default()
+        let Ok(resolved) = doc.resolve(pos) else {
+            return Ok(Vec::new());
+        };
+        self.insertable_nodes_from_resolved(doc, &resolved, budget, work_limit)
     }
 
     fn filter_insertable_nodes_for_parent(
@@ -1940,10 +1980,17 @@ impl Editor {
         filtered
     }
 
-    fn can_insert_block_node_at_pos(&self, pos: u32, node_type: &str) -> bool {
-        self.insertable_nodes_at_pos(pos)
+    fn can_insert_block_node_at_pos(
+        &self,
+        pos: u32,
+        node_type: &str,
+        budget: &WorkBudget,
+        work_limit: usize,
+    ) -> Result<bool, EditorError> {
+        Ok(self
+            .insertable_nodes_at_pos(pos, budget, work_limit)?
             .iter()
-            .any(|insertable| insertable == node_type)
+            .any(|insertable| insertable == node_type))
     }
 
     fn is_block_fragment(&self, content: &Fragment) -> bool {
@@ -2079,7 +2126,12 @@ impl Editor {
     /// `is_code_block_at_pos`) — this is the only place that decision is
     /// re-checked, via `resolve_code_block_parent` below, so a caller
     /// passing an unrelated position simply gets `None`.
-    fn try_exit_code_block(&mut self, pos: u32) -> Option<Result<EditorUpdate, EditorError>> {
+    fn try_exit_code_block(
+        &mut self,
+        pos: u32,
+        budget: &WorkBudget,
+        work_limit: usize,
+    ) -> Option<Result<EditorUpdate, EditorError>> {
         {
             let doc = self.backend.document();
             let (resolved, parent) = Self::resolve_code_block_parent(doc, pos)?;
@@ -2102,10 +2154,14 @@ impl Editor {
             Ok((preview, _)) => preview,
             Err(error) => return Some(Err(EditorError::Transform(error))),
         };
-        let Some(split) = self.preferred_split_step(&preview, pos - 1) else {
-            return Some(Err(EditorError::Transform(TransformError::InvalidTarget(
-                "schema has no constructible text block valid after the code block".to_string(),
-            ))));
+        let split = match self.preferred_split_step(&preview, pos - 1, budget, work_limit) {
+            Ok(Some(split)) => split,
+            Err(error) => return Some(Err(error)),
+            Ok(None) => {
+                return Some(Err(EditorError::Transform(TransformError::InvalidTarget(
+                    "schema has no constructible text block valid after the code block".to_string(),
+                ))))
+            }
         };
         tx.add_step(split);
         Some(self.apply_transaction(tx))
@@ -2178,26 +2234,57 @@ impl Editor {
         &self,
         doc: &Document,
         pos: u32,
-    ) -> Option<Step> {
-        let resolved = doc.resolve(pos).ok()?;
+        budget: &WorkBudget,
+        work_limit: usize,
+    ) -> Result<Option<Step>, EditorError> {
+        let Ok(resolved) = doc.resolve(pos) else {
+            return Ok(None);
+        };
         let block_path = &resolved.node_path;
-        let &block_index = block_path.last()?;
+        let Some(&block_index) = block_path.last() else {
+            return Ok(None);
+        };
         let parent_path = &block_path[..block_path.len().saturating_sub(1)];
         let parent = if parent_path.is_empty() {
             doc.root()
         } else {
-            doc.node_at(parent_path)?
+            let Some(parent) = doc.node_at(parent_path) else {
+                return Ok(None);
+            };
+            parent
         };
-        let parent_spec = self.schema.node(parent.node_type())?;
+        let Some(parent_spec) = self.schema.node(parent.node_type()) else {
+            return Ok(None);
+        };
+        let Some(parent_content) = parent.content() else {
+            return Ok(None);
+        };
+        let split_index = usize::try_from(block_index).unwrap_or(usize::MAX);
         let prefix = parent
-            .content()?
+            .content()
+            .expect("checked element content")
             .iter()
-            .take(usize::try_from(block_index).ok()?.saturating_add(1))
+            .take(split_index.saturating_add(1))
+            .map(Node::node_type)
+            .collect::<Vec<_>>();
+        let suffix = parent_content
+            .iter()
+            .skip(split_index.saturating_add(1))
             .map(Node::node_type)
             .collect::<Vec<_>>();
 
-        for name in preferred_text_block_node_names_for_parent(&self.schema, parent_spec, &prefix) {
-            let spec = self.schema.node(&name)?;
+        for name in preferred_text_block_node_names_for_parent(
+            &self.schema,
+            parent_spec,
+            &prefix,
+            &suffix,
+            budget,
+        )
+        .map_err(|()| Self::runtime_content_limit_error(work_limit))?
+        {
+            let Some(spec) = self.schema.node(&name) else {
+                continue;
+            };
             if !spec.attrs.values().all(|attr| attr.has_default) {
                 continue;
             }
@@ -2213,13 +2300,33 @@ impl Editor {
                 node_type: name,
                 attrs,
             };
-            let mut trial = Transaction::new(Source::Input);
-            trial.add_step(step.clone());
-            if trial.apply(doc, &self.schema).is_ok() {
-                return Some(step);
+            let Ok((candidate, _)) = crate::transform::apply_step(doc, &step, &self.schema) else {
+                continue;
+            };
+            match crate::transform::DocumentValidator::validate_with_budget(
+                &candidate,
+                &self.schema,
+                &self.resource_limits,
+                budget,
+                work_limit,
+            ) {
+                Ok(_) => return Ok(Some(step)),
+                Err(error)
+                    if error.code() == "DOCUMENT_LIMIT_EXCEEDED"
+                        && error.details.as_ref().is_some_and(|details| {
+                            details.get("phase").and_then(serde_json::Value::as_str)
+                                == Some("documentWork")
+                        }) =>
+                {
+                    return Err(Self::runtime_content_limit_error(work_limit));
+                }
+                Err(error) if error.code() == "DOCUMENT_LIMIT_EXCEEDED" => {
+                    return Err(error.into());
+                }
+                Err(_) => continue,
             }
         }
-        None
+        Ok(None)
     }
 
     fn apply_empty_split_action(
@@ -3892,6 +3999,7 @@ impl Editor {
         &mut self,
         pos: u32,
     ) -> Result<Option<EditorUpdate>, EditorError> {
+        let (budget, work_limit) = self.runtime_content_budget();
         let replacement_type = {
             let doc = self.backend.document();
             let resolved = match doc.resolve(pos) {
@@ -3946,7 +4054,23 @@ impl Editor {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default(),
-            );
+                &parent
+                    .content()
+                    .map(|content| {
+                        content
+                            .iter()
+                            .skip(
+                                usize::try_from(block_index)
+                                    .expect("u32 index fits usize")
+                                    .saturating_add(1),
+                            )
+                            .map(Node::node_type)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+                &budget,
+            )
+            .map_err(|()| Self::runtime_content_limit_error(work_limit))?;
             if matches!(candidates.first(), Some(candidate) if candidate == block.node_type()) {
                 return Ok(None);
             }
@@ -4101,18 +4225,21 @@ impl Editor {
 fn preferred_text_block_node_names_for_parent(
     schema: &Schema,
     parent_spec: &NodeSpec,
-    existing_child_types: &[&str],
-) -> Vec<String> {
-    let accepting_groups =
-        parent_spec
-            .content
-            .accepting_symbols_after(existing_child_types, |child_type, symbol| {
-                schema
-                    .node(child_type)
-                    .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
-            });
+    prefix_child_types: &[&str],
+    suffix_child_types: &[&str],
+    budget: &WorkBudget,
+) -> Result<Vec<String>, ()> {
+    let accepting_groups = parent_spec.content.accepting_symbols_after_with_budget(
+        prefix_child_types,
+        |child_type, symbol| {
+            schema
+                .node(child_type)
+                .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+        },
+        budget,
+    )?;
     if accepting_groups.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let paragraph_name = schema
@@ -4120,16 +4247,36 @@ fn preferred_text_block_node_names_for_parent(
         .map(|spec| spec.name.as_str())
         .or_else(|| schema.node("paragraph").map(|spec| spec.name.as_str()));
 
-    let mut candidates: Vec<String> = schema
-        .all_nodes()
-        .filter(|spec| matches!(spec.role, NodeRole::TextBlock))
-        .filter(|spec| {
-            accepting_groups
+    let mut candidates = Vec::new();
+    for spec in schema.all_nodes() {
+        if !budget.consume() {
+            return Err(());
+        }
+        if !matches!(spec.role, NodeRole::TextBlock)
+            || !accepting_groups
                 .iter()
                 .any(|group| crate::schema::node_spec_matches_symbol(spec, group))
-        })
-        .map(|spec| spec.name.clone())
-        .collect();
+        {
+            continue;
+        }
+        let candidate_types = prefix_child_types
+            .iter()
+            .copied()
+            .chain(std::iter::once(spec.name.as_str()))
+            .chain(suffix_child_types.iter().copied())
+            .collect::<Vec<_>>();
+        if parent_spec.content.matches_with_budget(
+            &candidate_types,
+            |child_type, symbol| {
+                schema
+                    .node(child_type)
+                    .is_some_and(|node| crate::schema::node_spec_matches_symbol(node, symbol))
+            },
+            budget,
+        )? {
+            candidates.push(spec.name.clone());
+        }
+    }
 
     candidates.sort_by(|left, right| {
         let left_priority = if Some(left.as_str()) == paragraph_name {
@@ -4147,7 +4294,7 @@ fn preferred_text_block_node_names_for_parent(
             .then_with(|| left.cmp(right))
     });
     candidates.dedup();
-    candidates
+    Ok(candidates)
 }
 
 /// Create the complete shortest schema-valid document using defaultable nodes.

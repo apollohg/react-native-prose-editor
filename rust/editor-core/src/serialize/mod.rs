@@ -9,3 +9,12 @@ pub use json_in::{
     from_prosemirror_json, from_prosemirror_json_with_limits, JsonParseError, UnknownTypeMode,
 };
 pub use json_out::to_prosemirror_json;
+
+fn default_node_attrs(
+    spec: &crate::schema::NodeSpec,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    spec.attrs
+        .iter()
+        .filter_map(|(name, attr)| attr.default.clone().map(|value| (name.clone(), value)))
+        .collect()
+}

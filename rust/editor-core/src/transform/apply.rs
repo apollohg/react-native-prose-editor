@@ -2142,6 +2142,18 @@ impl DocumentValidator {
         schema: &Schema,
         limits: &ResourceLimits,
     ) -> BoundaryResult<DocumentStats> {
+        let work_limit = limits.max_document_nodes.saturating_mul(128);
+        let budget = WorkBudget::new(work_limit);
+        Self::validate_with_budget(doc, schema, limits, &budget, work_limit)
+    }
+
+    pub(crate) fn validate_with_budget(
+        doc: &Document,
+        schema: &Schema,
+        limits: &ResourceLimits,
+        budget: &WorkBudget,
+        work_limit: usize,
+    ) -> BoundaryResult<DocumentStats> {
         let root_spec = schema.node(doc.root().node_type()).ok_or_else(|| {
             BoundaryError::new("DOCUMENT_INVALID", "document root is not in the schema")
         })?;
@@ -2159,9 +2171,7 @@ impl DocumentValidator {
             node_count: 0,
             max_depth: 0,
         };
-        let work_limit = limits.max_document_nodes.saturating_mul(128);
-        let budget = WorkBudget::new(work_limit);
-        validate_node(doc.root(), schema, limits, 1, &mut stats, &budget, work_limit)?;
+        validate_node(doc.root(), schema, limits, 1, &mut stats, budget, work_limit)?;
         Ok(stats)
     }
 }

@@ -3,6 +3,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 const MAX_NESTING_DEPTH: usize = 128;
 const MAX_AUTOMATON_STATES: usize = 10_000;
+pub(crate) const DEFAULT_RUNTIME_WORK_LIMIT: usize = 100_000 * 128;
 
 pub(crate) struct WorkBudget {
     remaining: Cell<usize>,
@@ -131,8 +132,12 @@ impl ContentRule {
     where
         F: FnMut(&T, &str) -> bool,
     {
-        let states = self.states_after(children, &mut symbol_matches);
-        states.contains(&self.accept)
+        self.matches_with_budget(
+            children,
+            &mut symbol_matches,
+            &WorkBudget::new(DEFAULT_RUNTIME_WORK_LIMIT),
+        )
+        .unwrap_or(false)
     }
 
     pub(crate) fn matches_with_budget<T, F>(
@@ -173,14 +178,37 @@ impl ContentRule {
     where
         F: FnMut(&T, &str) -> bool,
     {
-        let states = self.states_after(children, &mut symbol_matches);
+        self.accepting_symbols_after_with_budget(
+            children,
+            &mut symbol_matches,
+            &WorkBudget::new(DEFAULT_RUNTIME_WORK_LIMIT),
+        )
+        .unwrap_or_default()
+    }
+
+    pub(crate) fn accepting_symbols_after_with_budget<T, F>(
+        &self,
+        children: &[T],
+        mut symbol_matches: F,
+        budget: &WorkBudget,
+    ) -> Result<Vec<&str>, ()>
+    where
+        F: FnMut(&T, &str) -> bool,
+    {
+        let states = self.states_after_with_budget(children, &mut symbol_matches, budget)?;
         let mut symbols = BTreeSet::new();
         for state in states {
+            if !budget.consume() {
+                return Err(());
+            }
             for (symbol, _) in &self.states[state].transitions {
+                if !budget.consume() {
+                    return Err(());
+                }
                 symbols.insert(symbol.as_str());
             }
         }
-        symbols.into_iter().collect()
+        Ok(symbols.into_iter().collect())
     }
 
     pub(crate) fn choose_matches<T, C, F>(
@@ -240,17 +268,25 @@ impl ContentRule {
 
     /// Return every symbol accepted at the start of the expression.
     pub fn initial_symbols(&self) -> Vec<&str> {
-        let states = self.epsilon_closure([self.start]);
+        self.initial_symbols_with_budget(&WorkBudget::new(DEFAULT_RUNTIME_WORK_LIMIT))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn initial_symbols_with_budget(&self, budget: &WorkBudget) -> Result<Vec<&str>, ()> {
+        let states = self.epsilon_closure_budgeted([self.start], budget)?;
         let mut symbols = BTreeSet::new();
         for state in states {
-            symbols.extend(
-                self.states[state]
-                    .transitions
-                    .iter()
-                    .map(|(symbol, _)| symbol.as_str()),
-            );
+            if !budget.consume() {
+                return Err(());
+            }
+            for (symbol, _) in &self.states[state].transitions {
+                if !budget.consume() {
+                    return Err(());
+                }
+                symbols.insert(symbol.as_str());
+            }
         }
-        symbols.into_iter().collect()
+        Ok(symbols.into_iter().collect())
     }
 
     /// Find a shortest accepted sequence, choosing one concrete value for
@@ -298,7 +334,7 @@ impl ContentRule {
     {
         self.is_constructible_with_budget(
             &mut symbol_is_constructible,
-            &WorkBudget::new(usize::MAX),
+            &WorkBudget::new(DEFAULT_RUNTIME_WORK_LIMIT),
         )
         .unwrap_or(false)
     }
@@ -307,7 +343,7 @@ impl ContentRule {
         &self,
         mut symbol_is_constructible: F,
         budget: &WorkBudget,
-    ) -> Option<bool>
+    ) -> Result<bool, ()>
     where
         F: FnMut(&str) -> bool,
     {
@@ -315,61 +351,58 @@ impl ContentRule {
         let mut visited = HashSet::new();
         while let Some(state) = pending.pop() {
             if !budget.consume() {
-                return None;
+                return Err(());
             }
             if !visited.insert(state) {
                 continue;
             }
             if state == self.accept {
-                return Some(true);
+                return Ok(true);
             }
             pending.extend(self.states[state].epsilon.iter().copied());
             for (symbol, target) in &self.states[state].transitions {
                 if !budget.consume() {
-                    return None;
+                    return Err(());
                 }
                 if symbol_is_constructible(symbol) {
                     pending.push(*target);
                 }
             }
         }
-        Some(false)
+        Ok(false)
     }
 
-    fn states_after<T, F>(&self, children: &[T], symbol_matches: &mut F) -> HashSet<usize>
+    fn states_after_with_budget<T, F>(
+        &self,
+        children: &[T],
+        symbol_matches: &mut F,
+        budget: &WorkBudget,
+    ) -> Result<HashSet<usize>, ()>
     where
         F: FnMut(&T, &str) -> bool,
     {
-        let mut current = self.epsilon_closure([self.start]);
+        let mut current = self.epsilon_closure_budgeted([self.start], budget)?;
         for child in children {
             let mut next = HashSet::new();
             for state in current {
+                if !budget.consume() {
+                    return Err(());
+                }
                 for (symbol, target) in &self.states[state].transitions {
+                    if !budget.consume() {
+                        return Err(());
+                    }
                     if symbol_matches(child, symbol) {
                         next.insert(*target);
                     }
                 }
             }
             if next.is_empty() {
-                return next;
+                return Ok(next);
             }
-            current = self.epsilon_closure(next);
+            current = self.epsilon_closure_budgeted(next, budget)?;
         }
-        current
-    }
-
-    fn epsilon_closure<I>(&self, initial: I) -> HashSet<usize>
-    where
-        I: IntoIterator<Item = usize>,
-    {
-        let mut result = HashSet::new();
-        let mut pending: Vec<usize> = initial.into_iter().collect();
-        while let Some(state) = pending.pop() {
-            if result.insert(state) {
-                pending.extend(self.states[state].epsilon.iter().copied());
-            }
-        }
-        result
+        Ok(current)
     }
 
     fn epsilon_closure_budgeted<I>(
