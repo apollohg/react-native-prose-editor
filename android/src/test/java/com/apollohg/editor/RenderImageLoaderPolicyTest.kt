@@ -160,6 +160,69 @@ class RenderImageLoaderPolicyTest {
     }
 
     @Test
+    fun `block image span does not hash when global admission is full`() {
+        val release = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            release.await(2, TimeUnit.SECONDS)
+            null
+        }
+        val accepted = (0 until RenderImageLoader.globalAdmissionLimitForTesting()).map { index ->
+            RenderImageLoader.load(
+                "https://example.com/admission-filler/$index",
+                ImageLoadingPolicy.DEFAULT.copy(readTimeoutMs = 10_000 + index)
+            ) { }
+        }
+        val digestsBeforeRejectedSpan = RenderImageLoader.digestConstructionCountForTesting()
+
+        BlockImageSpan(
+            source = "https://example.com/not-admitted.png",
+            hostView = EditorEditText(org.robolectric.RuntimeEnvironment.getApplication()),
+            density = 1f,
+            preferredWidthDp = null,
+            preferredHeightDp = null
+        )
+
+        assertEquals(
+            digestsBeforeRejectedSpan,
+            RenderImageLoader.digestConstructionCountForTesting()
+        )
+        accepted.forEach { it.cancel() }
+        release.countDown()
+    }
+
+    @Test
+    fun `digest time is charged to the absolute request deadline`() {
+        val clock = FakeMonotonicClock()
+        RenderImageLoader.monotonicClockOverride = clock
+        RenderImageLoader.beforeDigestOverride = { clock.advance(31) }
+        val decodeInvoked = AtomicBoolean(false)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            decodeInvoked.set(true)
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val completed = CountDownLatch(1)
+        val finished = AtomicInteger(0)
+        var result: Bitmap? = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+
+        val handle = RenderImageLoader.load(
+            "https://example.com/digest-deadline.png",
+            ImageLoadingPolicy.DEFAULT.copy(requestTimeoutMs = 30)
+        ) {
+            result = it
+            completed.countDown()
+        }
+        handle.onFinished { finished.incrementAndGet() }
+        drainMainUntil(completed)
+
+        assertNull(result)
+        assertFalse(decodeInvoked.get())
+        assertEquals(1L, RenderImageLoader.digestConstructionCountForTesting())
+        assertEquals(0, RenderImageLoader.cacheEntryCountForTesting())
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+        assertEquals(1, finished.get())
+    }
+
+    @Test
     fun `absolute deadline stops trickle reads`() {
         val clock = FakeMonotonicClock()
         val stream = TrickleInputStream(clock, byteEveryMs = 19_000)

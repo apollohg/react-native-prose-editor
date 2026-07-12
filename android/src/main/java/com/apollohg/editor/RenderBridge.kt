@@ -852,8 +852,7 @@ internal object RenderImageLoader {
     internal data class RequestKey(val digest: CacheKey, val policy: ImageLoadingPolicy)
     internal class PreparedSource internal constructor(
         internal val source: String,
-        internal val policy: ImageLoadingPolicy,
-        internal val requestKey: RequestKey
+        internal val policy: ImageLoadingPolicy
     )
     internal class LoadHandle(private val cancelAction: () -> Unit) {
         private val finished = AtomicBoolean(false)
@@ -957,10 +956,15 @@ internal object RenderImageLoader {
     @Volatile
     internal var monotonicClockOverride: MonotonicClock? = null
 
+    @Volatile
+    internal var beforeDigestOverride: (() -> Unit)? = null
+
     fun cached(
         source: String,
         policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT
-    ): Bitmap? = prepare(source, policy)?.let(::cached)
+    ): Bitmap? = prepare(source, policy)?.let {
+        synchronized(cache) { cache.get(cacheKey(it.source, it.policy)) }
+    }
 
     internal fun prepare(
         source: String,
@@ -969,11 +973,8 @@ internal object RenderImageLoader {
         if (source.regionMatches(0, "data:image/", 0, "data:image/".length, ignoreCase = true) &&
             RenderImageDecoder.preflightDataUrl(source, policy) == null
         ) return null
-        return PreparedSource(source, policy, RequestKey(cacheKey(source, policy), policy))
+        return PreparedSource(source, policy)
     }
-
-    internal fun cached(prepared: PreparedSource): Bitmap? =
-        synchronized(cache) { cache.get(prepared.requestKey.digest) }
 
     internal fun cacheKeyByteCountForTesting(
         source: String,
@@ -1023,6 +1024,7 @@ internal object RenderImageLoader {
         beforeTerminalClaimOverride = null
         decodedDeliveryPostedOverride = null
         monotonicClockOverride = null
+        beforeDigestOverride = null
     }
 
     internal fun executionResourceCountForTesting(): Int = 1
@@ -1105,7 +1107,10 @@ internal object RenderImageLoader {
             postCallbacks(listOf(callback), null)
             return handle
         }
-        val resolvedRequestKey = resolvedSource.requestKey
+        val resolvedRequestKey = RequestKey(
+            cacheKey(resolvedSource.source, resolvedSource.policy),
+            resolvedSource.policy
+        )
         requestKey = resolvedRequestKey
         if (monotonicNowMs() >= deadlineMs) {
             releaseAdmission(callback)
@@ -1482,6 +1487,7 @@ internal object RenderImageLoader {
 
     private fun cacheKey(source: String, policy: ImageLoadingPolicy): CacheKey {
         digestConstructionCount.incrementAndGet()
+        beforeDigestOverride?.invoke()
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update(source.toByteArray(Charsets.UTF_8))
         digest.update(ImageLoadingPolicy.canonicalBytes(policy))
@@ -1503,7 +1509,7 @@ internal class BlockImageSpan(
     private val preparedSource = RenderImageLoader.prepare(source, policy)
 
     @Volatile
-    private var bitmap: Bitmap? = preparedSource?.let(RenderImageLoader::cached)
+    private var bitmap: Bitmap? = null
     @Volatile
     private var lastDrawRect: RectF? = null
 
