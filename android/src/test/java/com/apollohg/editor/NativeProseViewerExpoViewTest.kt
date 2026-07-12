@@ -7,6 +7,8 @@ import android.text.Spanned
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.accessibility.AccessibilityNodeInfo
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import expo.modules.core.ModuleRegistry
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.ModulesProvider
@@ -24,6 +26,54 @@ import java.lang.ref.WeakReference
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class NativeProseViewerExpoViewTest {
+    @Test
+    fun `accessibility exposes and activates viewer link through touch emitter`() {
+        val (viewer, _) = laidOutInteractiveViewer(TargetKind.LINK)
+        var activations = 0
+        viewer.onLinkTapForTesting = { activations += 1 }
+
+        val host = AccessibilityNodeInfo.obtain(viewer)
+        viewer.onInitializeAccessibilityNodeInfo(host)
+        assertEquals("plain text link target with plenty of width", host.text.toString())
+        assertEquals(1, host.childCount)
+
+        val child = requireNotNull(viewer.accessibilityNodeProvider.createAccessibilityNodeInfo(1))
+        val bounds = android.graphics.Rect()
+        child.getBoundsInParent(bounds)
+        assertEquals("link target with plenty of width", child.text.toString())
+        assertEquals("link", AccessibilityNodeInfoCompat.wrap(child).roleDescription.toString())
+        assertTrue(bounds.width() > 0)
+        assertTrue(bounds.height() > 0)
+        assertTrue(child.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK })
+        assertTrue(
+            viewer.accessibilityNodeProvider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_CLICK,
+                null
+            )
+        )
+        assertEquals(1, activations)
+    }
+
+    @Test
+    fun `accessibility exposes and activates viewer mention through touch emitter`() {
+        val (viewer, _) = laidOutInteractiveViewer(TargetKind.MENTION)
+        var activations = 0
+        viewer.onMentionTapForTesting = { activations += 1 }
+
+        val child = requireNotNull(viewer.accessibilityNodeProvider.createAccessibilityNodeInfo(1))
+        assertEquals("@Alice", child.text.toString())
+        assertEquals("mention", AccessibilityNodeInfoCompat.wrap(child).roleDescription.toString())
+        assertTrue(
+            viewer.accessibilityNodeProvider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_CLICK,
+                null
+            )
+        )
+        assertEquals(1, activations)
+    }
+
     @Test
     fun `viewer image policy prop reaches prose view`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())

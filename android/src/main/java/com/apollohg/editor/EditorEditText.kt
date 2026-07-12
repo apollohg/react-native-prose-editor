@@ -120,6 +120,18 @@ class EditorEditText @JvmOverloads constructor(
         val text: String
     )
 
+    internal data class AccessibleAnnotation(
+        val target: AccessibleAnnotationTarget,
+        val label: String,
+        val role: String,
+        val bounds: Rect
+    )
+
+    internal sealed interface AccessibleAnnotationTarget {
+        data class Mention(val docPos: Int, val label: String) : AccessibleAnnotationTarget
+        data class Link(val href: String, val text: String) : AccessibleAnnotationTarget
+    }
+
     private data class ParsedRenderPatch(
         val startIndex: Int,
         val deleteCount: Int,
@@ -141,6 +153,19 @@ class EditorEditText @JvmOverloads constructor(
     private data class ImageSelectionRange(
         val start: Int,
         val end: Int
+    )
+
+    private data class ImageSpanHit(
+        val span: BlockImageSpan,
+        val start: Int,
+        val end: Int
+    )
+
+    private data class ImageGesture(
+        val target: BlockImageSpan,
+        val pointerId: Int,
+        val downX: Float,
+        val downY: Float
     )
 
     private data class NativeTextMutation(
@@ -296,6 +321,7 @@ class EditorEditText @JvmOverloads constructor(
     private var lastAuthorizedTextRevision: Long = 0L
     private var lastAuthorizedRenderedText: CharSequence? = null
     private var explicitSelectedImageRange: ImageSelectionRange? = null
+    private var pendingImageGesture: ImageGesture? = null
     private var lastRenderAppliedPatchForTesting: Boolean = false
     internal var captureApplyUpdateTraceForTesting: Boolean = false
     private var lastApplyUpdateTraceForTesting: ApplyUpdateTrace? = null
@@ -614,6 +640,7 @@ class EditorEditText @JvmOverloads constructor(
         )
         val initialSurroundingText = applyInitialSurroundingTextForIme(outAttrs)
         val generation = nextInputConnectionGenerationForEditor()
+        NativeEditorViewRegistry.registerInputView(editorId, this)
         recordImeTraceForTesting(
             "createInputConnection",
             "boundEditor=$editorId boundGen=$generation inputType=$inputType initialCaps=$originalInitialCapsMode->${outAttrs.initialCapsMode} " +
@@ -895,6 +922,11 @@ class EditorEditText @JvmOverloads constructor(
             discardTransientNativeInputForEditorRebind()
         }
         editorId = 0
+    }
+
+    internal fun handleEditorDestroyedFromRegistry(destroyedEditorId: Long) {
+        if (editorId != destroyedEditorId) return
+        unbindEditor()
     }
 
     fun setBaseStyle(fontSizePx: Float, textColor: Int, backgroundColor: Int) {
@@ -4305,20 +4337,137 @@ class EditorEditText @JvmOverloads constructor(
         )
     }
 
+    internal fun accessibleAnnotations(): List<AccessibleAnnotation> {
+        val spannable = text as? Spanned ?: return emptyList()
+        val textLayout = layout ?: return emptyList()
+        val annotations = spannable.getSpans(0, spannable.length, Annotation::class.java)
+        val results = mutableListOf<Pair<Int, AccessibleAnnotation>>()
+        annotations.forEach { annotation ->
+            val start = spannable.getSpanStart(annotation)
+            val end = spannable.getSpanEnd(annotation)
+            if (start < 0 || end <= start) return@forEach
+            val label = spannable.subSequence(start, end).toString()
+            val target = when {
+                annotation.key == RenderBridge.NATIVE_LINK_HREF_ANNOTATION &&
+                    annotation.value.isNotBlank() -> AccessibleAnnotationTarget.Link(
+                    href = annotation.value,
+                    text = label
+                )
+                annotation.key == "nativeVoidNodeType" && annotation.value == "mention" -> {
+                    val docPos = annotations.firstOrNull { candidate ->
+                        candidate.key == "nativeDocPos" &&
+                            spannable.getSpanStart(candidate) == start &&
+                            spannable.getSpanEnd(candidate) == end
+                    }?.value?.toIntOrNull() ?: return@forEach
+                    AccessibleAnnotationTarget.Mention(docPos, label)
+                }
+                else -> return@forEach
+            }
+            val role = when (target) {
+                is AccessibleAnnotationTarget.Link -> "link"
+                is AccessibleAnnotationTarget.Mention -> "mention"
+            }
+            results += start to AccessibleAnnotation(
+                target = target,
+                label = label,
+                role = role,
+                bounds = annotationBounds(textLayout, start, end)
+            )
+        }
+        return results.sortedBy { it.first }.map { it.second }
+    }
+
+    private fun annotationBounds(textLayout: Layout, start: Int, end: Int): Rect {
+        val firstLine = textLayout.getLineForOffset(start)
+        val lastLine = textLayout.getLineForOffset((end - 1).coerceAtLeast(start))
+        val bounds = Rect()
+        for (line in firstLine..lastLine) {
+            val segmentStart = maxOf(start, textLayout.getLineStart(line))
+            val segmentEnd = minOf(end, textLayout.getLineEnd(line))
+            val left = totalPaddingLeft + minOf(
+                textLayout.getPrimaryHorizontal(segmentStart),
+                textLayout.getPrimaryHorizontal(segmentEnd)
+            ) - scrollX
+            val right = totalPaddingLeft + maxOf(
+                textLayout.getPrimaryHorizontal(segmentStart),
+                textLayout.getPrimaryHorizontal(segmentEnd)
+            ) - scrollX
+            val lineBounds = Rect(
+                kotlin.math.floor(left.toDouble()).toInt(),
+                totalPaddingTop + textLayout.getLineTop(line) - scrollY,
+                kotlin.math.ceil(right.toDouble()).toInt().coerceAtLeast(
+                    kotlin.math.floor(left.toDouble()).toInt() + 1
+                ),
+                totalPaddingTop + textLayout.getLineBottom(line) - scrollY
+            )
+            if (bounds.isEmpty) bounds.set(lineBounds) else bounds.union(lineBounds)
+        }
+        return bounds
+    }
+
     private fun handleImageTap(event: MotionEvent): Boolean {
         if (!imageResizingEnabled) {
+            pendingImageGesture = null
             return false
         }
-        if (event.actionMasked != MotionEvent.ACTION_DOWN && event.actionMasked != MotionEvent.ACTION_UP) {
-            return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val hit = if (event.pointerCount == 1) imageSpanHitAt(event.x, event.y) else null
+                pendingImageGesture = hit?.let {
+                    ImageGesture(
+                        target = it.span,
+                        pointerId = event.getPointerId(event.actionIndex),
+                        downX = event.x,
+                        downY = event.y
+                    )
+                }
+                if (hit != null) requestFocus()
+                return hit != null
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val gesture = pendingImageGesture ?: return false
+                if (
+                    event.pointerCount != 1 ||
+                    event.findPointerIndex(gesture.pointerId) < 0 ||
+                    movedBeyondImageTouchSlop(gesture, event)
+                ) {
+                    pendingImageGesture = null
+                    return false
+                }
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN,
+            MotionEvent.ACTION_POINTER_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                pendingImageGesture = null
+                return false
+            }
+            MotionEvent.ACTION_UP -> {
+                val gesture = pendingImageGesture
+                pendingImageGesture = null
+                if (
+                    gesture == null ||
+                    event.pointerCount != 1 ||
+                    event.getPointerId(event.actionIndex) != gesture.pointerId ||
+                    movedBeyondImageTouchSlop(gesture, event)
+                ) {
+                    return false
+                }
+                val hit = imageSpanHitAt(event.x, event.y) ?: return false
+                if (hit.span !== gesture.target) return false
+                requestFocus()
+                selectExplicitImageRange(hit.start, hit.end)
+                performClick()
+                return true
+            }
+            else -> return false
         }
-        val hit = imageSpanHitAt(event.x, event.y) ?: return false
-        requestFocus()
-        selectExplicitImageRange(hit.first, hit.second)
-        if (event.actionMasked == MotionEvent.ACTION_UP) {
-            performClick()
-        }
-        return true
+    }
+
+    private fun movedBeyondImageTouchSlop(gesture: ImageGesture, event: MotionEvent): Boolean {
+        val deltaX = event.x - gesture.downX
+        val deltaY = event.y - gesture.downY
+        return deltaX * deltaX + deltaY * deltaY > touchSlopPx * touchSlopPx
     }
 
     private var pendingTaskMarkerDownScalar: Int? = null
@@ -4405,7 +4554,7 @@ class EditorEditText @JvmOverloads constructor(
         return PositionBridge.utf16ToScalar(snappedUtf16, currentText)
     }
 
-    private fun imageSpanHitAt(x: Float, y: Float): Pair<Int, Int>? {
+    private fun imageSpanHitAt(x: Float, y: Float): ImageSpanHit? {
         val spannable = text as? Spanned ?: return null
         imageSpanRangeNearTouchOffset(spannable, x, y)?.let { return it }
         val textLayout = layout ?: return null
@@ -4417,7 +4566,7 @@ class EditorEditText @JvmOverloads constructor(
         textLayout: Layout,
         x: Float,
         y: Float
-    ): Pair<Int, Int>? {
+    ): ImageSpanHit? {
         val candidateSpans = spannable.getSpans(0, spannable.length, BlockImageSpan::class.java)
         for (span in candidateSpans) {
             val spanStart = spannable.getSpanStart(span)
@@ -4425,7 +4574,7 @@ class EditorEditText @JvmOverloads constructor(
             if (spanStart < 0 || spanEnd <= spanStart) continue
             val rect = resolvedImageRect(textLayout, span, spanStart, spanEnd)
             if (rect.contains(x, y)) {
-                return spanStart to spanEnd
+                return ImageSpanHit(span, spanStart, spanEnd)
             }
         }
         return null
@@ -4505,7 +4654,7 @@ class EditorEditText @JvmOverloads constructor(
         spannable: Spanned,
         x: Float,
         y: Float
-    ): Pair<Int, Int>? {
+    ): ImageSpanHit? {
         val safeOffset = runCatching { getOffsetForPosition(x, y) }.getOrNull() ?: return null
         val nearbyOffsets = linkedSetOf(
             safeOffset,
@@ -4521,7 +4670,7 @@ class EditorEditText @JvmOverloads constructor(
             val spanStart = spannable.getSpanStart(imageSpan)
             val spanEnd = spannable.getSpanEnd(imageSpan)
             if (spanStart >= 0 && spanEnd > spanStart) {
-                return spanStart to spanEnd
+                return ImageSpanHit(imageSpan, spanStart, spanEnd)
             }
         }
         return null

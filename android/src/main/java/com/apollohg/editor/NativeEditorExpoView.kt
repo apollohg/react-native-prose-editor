@@ -60,22 +60,33 @@ internal object NativeEditorViewRegistry {
         val isDestroyed: Boolean
     )
 
-    private val viewsByEditorId = mutableMapOf<Long, WeakNativeEditorExpoView>()
+    private val liveEditorIds = mutableSetOf<Long>()
+    private val viewsByEditorId = mutableMapOf<Long, MutableList<WeakNativeEditorExpoView>>()
+    private val inputViewsByEditorId = mutableMapOf<Long, MutableList<WeakReference<EditorEditText>>>()
     private val detachedEditorOwnersByEditorId = mutableMapOf<Long, WeakNativeEditorExpoView>()
-    private val destroyedEditorIds = mutableSetOf<Long>()
+    private val destroyingEditorIds = mutableSetOf<Long>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Synchronized
     fun markEditorCreated(editorId: Long) {
         if (editorId == 0L) return
-        destroyedEditorIds.remove(editorId)
+        liveEditorIds.add(editorId)
+        destroyingEditorIds.remove(editorId)
     }
 
     @Synchronized
     fun register(editorId: Long, view: NativeEditorExpoView): Boolean {
         if (editorId == 0L) return false
-        if (destroyedEditorIds.contains(editorId)) return false
-        viewsByEditorId[editorId] = WeakNativeEditorExpoView(view)
+        if (destroyingEditorIds.contains(editorId)) return false
+        val isKnownDetachedOwner = detachedEditorOwnersByEditorId[editorId]?.view?.get() === view
+        if (
+            !liveEditorIds.contains(editorId) &&
+            !isKnownDetachedOwner &&
+            !rustEditorExists(editorId)
+        ) return false
+        val views = viewsByEditorId.getOrPut(editorId) { mutableListOf() }
+        views.removeAll { it.view.get() == null || it.view.get() === view }
+        views += WeakNativeEditorExpoView(view)
         detachedEditorOwnersByEditorId.remove(editorId)
         return true
     }
@@ -87,42 +98,81 @@ internal object NativeEditorViewRegistry {
         blockCommandsUntilRegistered: Boolean = false
     ) {
         if (editorId == 0L) return
-        val registeredView = viewsByEditorId[editorId]?.view?.get()
-        if (registeredView === view) {
-            viewsByEditorId.remove(editorId)
-        }
+        val registeredViews = viewsByEditorId[editorId]
+        val wasRegistered = registeredViews?.any { it.view.get() === view } == true
+        registeredViews?.removeAll { it.view.get() == null || it.view.get() === view }
+        if (registeredViews?.isEmpty() == true) viewsByEditorId.remove(editorId)
         if (blockCommandsUntilRegistered) {
             detachedEditorOwnersByEditorId[editorId] = WeakNativeEditorExpoView(view)
         } else {
             val detachedOwner = detachedEditorOwnersByEditorId[editorId]?.view?.get()
-            if (registeredView === view || detachedOwner === view) {
+            if (wasRegistered || detachedOwner === view) {
                 detachedEditorOwnersByEditorId.remove(editorId)
             }
         }
     }
 
     @Synchronized
-    fun isDestroyed(editorId: Long): Boolean = destroyedEditorIds.contains(editorId)
+    fun isDestroyed(editorId: Long): Boolean = destroyingEditorIds.contains(editorId)
+
+    @Synchronized
+    internal fun retainedDestroyedIdCountForTests(): Int = destroyingEditorIds.size
 
     @Synchronized
     internal fun forceDetachedOwnerClearedForTesting(editorId: Long) {
         detachedEditorOwnersByEditorId[editorId] = WeakNativeEditorExpoView.cleared()
     }
 
+    @Synchronized
+    internal fun forceRegisteredViewsClearedForTesting(editorId: Long) {
+        viewsByEditorId[editorId] = mutableListOf(WeakNativeEditorExpoView.cleared())
+    }
+
+    @Synchronized
+    internal fun boundViewReferenceCountForTests(editorId: Long): Int =
+        viewsByEditorId[editorId]?.size ?: 0
+
+    @Synchronized
+    fun registerInputView(editorId: Long, view: EditorEditText) {
+        if (editorId == 0L || destroyingEditorIds.contains(editorId)) return
+        if (!liveEditorIds.contains(editorId) && !rustEditorExists(editorId)) return
+        val views = inputViewsByEditorId.getOrPut(editorId) { mutableListOf() }
+        views.removeAll { it.get() == null || it.get() === view }
+        views += WeakReference(view)
+    }
+
     fun invalidateDestroyedEditor(editorId: Long) {
         if (editorId == 0L) return
         val affectedViews = synchronized(this) {
-            destroyedEditorIds.add(editorId)
+            destroyingEditorIds.add(editorId)
+            liveEditorIds.remove(editorId)
             val views = listOfNotNull(
-                viewsByEditorId.remove(editorId)?.view?.get(),
+                *viewsByEditorId.remove(editorId)
+                    .orEmpty()
+                    .mapNotNull { it.view.get() }
+                    .toTypedArray(),
                 detachedEditorOwnersByEditorId.remove(editorId)?.view?.get()
             ).distinct()
-            views
+            val inputViews = inputViewsByEditorId.remove(editorId)
+                .orEmpty()
+                .mapNotNull { it.get() }
+                .distinct()
+            views to inputViews
         }
-        if (affectedViews.isEmpty()) return
+        if (affectedViews.first.isEmpty() && affectedViews.second.isEmpty()) {
+            synchronized(this) { destroyingEditorIds.remove(editorId) }
+            return
+        }
         val invalidate = Runnable {
-            affectedViews.forEach { view ->
-                view.handleEditorDestroyed(editorId)
+            try {
+                affectedViews.first.forEach { view ->
+                    view.handleEditorDestroyed(editorId)
+                }
+                affectedViews.second.forEach { view ->
+                    view.handleEditorDestroyedFromRegistry(editorId)
+                }
+            } finally {
+                synchronized(this) { destroyingEditorIds.remove(editorId) }
             }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -136,7 +186,10 @@ internal object NativeEditorViewRegistry {
                     latch.countDown()
                 }
             }
-            if (!posted) return
+            if (!posted) {
+                synchronized(this) { destroyingEditorIds.remove(editorId) }
+                return
+            }
             try {
                 latch.await(DESTROY_INVALIDATION_AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {
@@ -150,7 +203,7 @@ internal object NativeEditorViewRegistry {
     fun prepareForCommandJSON(editorId: Long): String {
         val prepare = {
             val snapshot = synchronized(this) {
-                val isDestroyed = destroyedEditorIds.contains(editorId)
+                val isDestroyed = destroyingEditorIds.contains(editorId)
                 if (isDestroyed) {
                     return@synchronized CommandPreparationSnapshot(
                         view = null,
@@ -158,8 +211,10 @@ internal object NativeEditorViewRegistry {
                         isDestroyed = true
                     )
                 }
-                val candidate = viewsByEditorId[editorId]?.view?.get()
-                if (candidate == null) {
+                val registeredViews = viewsByEditorId[editorId]
+                registeredViews?.removeAll { it.view.get() == null }
+                val candidate = registeredViews?.firstNotNullOfOrNull { it.view.get() }
+                if (registeredViews?.isEmpty() == true) {
                     viewsByEditorId.remove(editorId)
                 }
                 val detachedOwner = detachedEditorOwnersByEditorId[editorId]?.view?.get()
@@ -169,10 +224,15 @@ internal object NativeEditorViewRegistry {
                 } else {
                     true
                 }
+                val missingFromRust =
+                    !liveEditorIds.contains(editorId) &&
+                        candidate == null &&
+                        !isDetached &&
+                        !rustEditorExists(editorId)
                 CommandPreparationSnapshot(
                     view = candidate,
                     isDetached = isDetached,
-                    isDestroyed = false
+                    isDestroyed = missingFromRust
                 )
             }
             snapshot.view?.prepareForEditorCommandJSON()
@@ -243,6 +303,10 @@ internal object NativeEditorViewRegistry {
         }
         return result.get()
     }
+
+    private fun rustEditorExists(editorId: Long): Boolean = runCatching {
+        !JSONObject(editorGetContentSnapshot(editorId.toULong())).has("error")
+    }.getOrDefault(false)
 
     fun commandPreparationJSON(
         ready: Boolean,

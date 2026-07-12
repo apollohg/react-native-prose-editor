@@ -147,6 +147,13 @@ class RichTextEditorViewTest {
         ]
     """.trimIndent()
 
+    private fun twoImageRenderJson(): String = """
+        [
+          {"type":"voidBlock","nodeType":"image","docPos":1,"attrs":{"src":"https://example.com/first.png","width":120,"height":60}},
+          {"type":"voidBlock","nodeType":"image","docPos":2,"attrs":{"src":"https://example.com/second.png","width":120,"height":60}}
+        ]
+    """.trimIndent()
+
     private fun paragraphRenderBlock(text: String): JSONArray {
         return JSONArray().apply {
             put(
@@ -775,6 +782,68 @@ class RichTextEditorViewTest {
         overlayRect ?: return
         assertEquals(140f, overlayRect.width(), 1f)
         assertEquals(80f, overlayRect.height(), 1f)
+    }
+
+    @Test
+    fun `dragging between images does not select either image`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = RichTextEditorView(context)
+        view.editorEditText.editorId = 1
+        view.editorEditText.applyRenderJSON(twoImageRenderJson())
+        view.editorEditText.onSetSelectionScalarInRustForTesting = { _, _ -> }
+
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.EXACTLY)
+        view.measure(widthSpec, heightSpec)
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+        val spans = (view.editorEditText.text as Spanned)
+            .getSpans(0, view.editorEditText.text!!.length, BlockImageSpan::class.java)
+        assertEquals(2, spans.size)
+        val canvasBitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        view.editorEditText.draw(Canvas(canvasBitmap))
+        val first = requireNotNull(spans[0].currentDrawRect())
+        val second = requireNotNull(spans[1].currentDrawRect())
+
+        val down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, first.centerX(), first.centerY(), 0)
+        val move = MotionEvent.obtain(0, 8, MotionEvent.ACTION_MOVE, second.centerX(), second.centerY(), 0)
+        val up = MotionEvent.obtain(0, 16, MotionEvent.ACTION_UP, second.centerX(), second.centerY(), 0)
+        view.editorEditText.onTouchEvent(down)
+        view.editorEditText.onTouchEvent(move)
+        view.editorEditText.onTouchEvent(up)
+        down.recycle()
+        move.recycle()
+        up.recycle()
+
+        assertNull(view.imageResizeOverlayRectForTesting())
+    }
+
+    @Test
+    fun `cancel or additional pointer aborts pending image selection`() {
+        listOf(MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN).forEach { abortAction ->
+            val context = RuntimeEnvironment.getApplication()
+            val view = RichTextEditorView(context)
+            view.editorEditText.applyRenderJSON(imageRenderJson())
+            val widthSpec = View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY)
+            val heightSpec = View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY)
+            view.measure(widthSpec, heightSpec)
+            view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+            val span = (view.editorEditText.text as Spanned)
+                .getSpans(0, view.editorEditText.text!!.length, BlockImageSpan::class.java)
+                .single()
+            val canvasBitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+            view.editorEditText.draw(Canvas(canvasBitmap))
+            val rect = requireNotNull(span.currentDrawRect())
+            val pointX = rect.centerX()
+            val pointY = rect.centerY()
+
+            listOf(MotionEvent.ACTION_DOWN, abortAction, MotionEvent.ACTION_UP).forEach { action ->
+                val event = MotionEvent.obtain(0, 0, action, pointX, pointY, 0)
+                view.editorEditText.onTouchEvent(event)
+                event.recycle()
+            }
+
+            assertNull(view.imageResizeOverlayRectForTesting())
+        }
     }
 
     @Test

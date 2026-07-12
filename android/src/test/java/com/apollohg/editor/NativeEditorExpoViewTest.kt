@@ -37,6 +37,55 @@ import java.util.concurrent.atomic.AtomicReference
 @Config(sdk = [34])
 class NativeEditorExpoViewTest {
     @Test
+    fun `Rust editor destruction precedes registry invalidation even when destruction fails`() {
+        val calls = mutableListOf<String>()
+
+        runCatching {
+            destroyEditorThenInvalidate(
+                editorId = 42uL,
+                destroy = {
+                    calls += "rust"
+                    error("simulated destroy failure")
+                },
+                invalidate = { calls += "registry:$it" }
+            )
+        }
+
+        assertEquals(listOf("rust", "registry:42"), calls)
+    }
+
+    @Test
+    fun `destroyed editor registry retains no tombstones`() {
+        repeat(10_000) { index ->
+            val editorId = 9_000_000L + index
+            NativeEditorViewRegistry.markEditorCreated(editorId)
+            NativeEditorViewRegistry.invalidateDestroyedEditor(editorId)
+        }
+
+        assertEquals(0, NativeEditorViewRegistry.retainedDestroyedIdCountForTests())
+    }
+
+    @Test
+    fun `cleared bound view references are pruned without retaining editor history`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editorId = 9_100_000L
+        NativeEditorViewRegistry.markEditorCreated(editorId)
+        assertTrue(NativeEditorViewRegistry.register(editorId, view))
+        assertEquals(1, NativeEditorViewRegistry.boundViewReferenceCountForTests(editorId))
+
+        NativeEditorViewRegistry.forceRegisteredViewsClearedForTesting(editorId)
+        assertTrue(
+            JSONObject(NativeEditorViewRegistry.prepareForCommandJSON(editorId))
+                .getBoolean("ready")
+        )
+        assertEquals(0, NativeEditorViewRegistry.boundViewReferenceCountForTests(editorId))
+
+        NativeEditorViewRegistry.invalidateDestroyedEditor(editorId)
+        assertEquals(0, NativeEditorViewRegistry.retainedDestroyedIdCountForTests())
+    }
+
+    @Test
     fun `editor image policy prop reaches editor text view`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
@@ -200,6 +249,7 @@ class NativeEditorExpoViewTest {
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
         val editorId = 12345L
 
+        NativeEditorViewRegistry.markEditorCreated(editorId)
         NativeEditorViewRegistry.register(editorId, view)
         assertTrue(
             JSONObject(NativeEditorViewRegistry.prepareForCommandJSON(editorId))
@@ -220,6 +270,7 @@ class NativeEditorExpoViewTest {
                 .getBoolean("ready")
         )
         NativeEditorViewRegistry.unregister(editorId, view)
+        NativeEditorViewRegistry.invalidateDestroyedEditor(editorId)
     }
 
     @Test
@@ -307,6 +358,7 @@ class NativeEditorExpoViewTest {
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
         val editorId = 24568L
 
+        NativeEditorViewRegistry.markEditorCreated(editorId)
         view.richTextView.setEditorIdWhileDetached(editorId)
         view.richTextView.editorEditText.applyUpdateJSON(renderUpdateJson(""), notifyListener = false)
         view.richTextView.editorEditText.editorId = editorId
@@ -334,6 +386,7 @@ class NativeEditorExpoViewTest {
         assertTrue(preparation.getBoolean("ready"))
 
         NativeEditorViewRegistry.unregister(editorId, view)
+        NativeEditorViewRegistry.invalidateDestroyedEditor(editorId)
     }
 
     @Test
@@ -636,6 +689,7 @@ class NativeEditorExpoViewTest {
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
         val editorId = 77883L
 
+        NativeEditorViewRegistry.markEditorCreated(editorId)
         NativeEditorViewRegistry.register(editorId, view)
         NativeEditorViewRegistry.unregister(
             editorId,
@@ -1199,7 +1253,9 @@ class NativeEditorExpoViewTest {
         val updateJson = renderUpdateJson("")
         var toolbarActionPayload: Map<String, Any>? = null
 
+        NativeEditorViewRegistry.markEditorCreated(editorId)
         view.richTextView.setEditorIdWhileDetached(editorId)
+        NativeEditorViewRegistry.register(editorId, view)
         editText.applyUpdateJSON(updateJson, notifyListener = false)
         editText.setSelection(0)
         editText.editorId = editorId
@@ -1690,7 +1746,9 @@ class NativeEditorExpoViewTest {
         )
         var addonPayload: Map<String, Any>? = null
 
+        NativeEditorViewRegistry.markEditorCreated(editorId)
         view.richTextView.setEditorIdWhileDetached(editorId)
+        NativeEditorViewRegistry.register(editorId, view)
         editText.applyUpdateJSON(updateJson, notifyListener = false)
         editText.setSelection(7)
         editText.editorId = editorId
@@ -1967,7 +2025,9 @@ class NativeEditorExpoViewTest {
         val editorId = 779900L
         val editText = view.richTextView.editorEditText
 
+        NativeEditorViewRegistry.markEditorCreated(editorId)
         view.richTextView.setEditorIdWhileDetached(editorId)
+        NativeEditorViewRegistry.register(editorId, view)
         editText.editorId = editorId
         editText.blockExternalEditorUpdatePreparationForTesting = true
 
@@ -1990,6 +2050,7 @@ class NativeEditorExpoViewTest {
         val editorId = 779902L
         val editText = view.richTextView.editorEditText
 
+        NativeEditorViewRegistry.markEditorCreated(editorId)
         view.richTextView.setEditorIdWhileDetached(editorId)
         editText.editorId = editorId
         view.setAttachedToNativeWindowForTesting(true)
@@ -2020,6 +2081,7 @@ class NativeEditorExpoViewTest {
         val editorId = 779903L
         val editText = view.richTextView.editorEditText
 
+        NativeEditorViewRegistry.markEditorCreated(editorId)
         view.richTextView.setEditorIdWhileDetached(editorId)
         editText.editorId = editorId
         view.setAttachedToNativeWindowForTesting(true)
@@ -2468,6 +2530,7 @@ class NativeEditorExpoViewTest {
         val release = CountDownLatch(1)
         val result = AtomicReference<String>()
 
+        NativeEditorViewRegistry.markEditorCreated(editorId)
         view.richTextView.setEditorIdWhileDetached(editorId)
         view.richTextView.editorEditText.applyUpdateJSON(renderUpdateJson("ready"), notifyListener = false)
         view.richTextView.editorEditText.setSelection(0)
@@ -2505,6 +2568,7 @@ class NativeEditorExpoViewTest {
         assertTrue(preparation.getBoolean("ready"))
 
         NativeEditorViewRegistry.unregister(editorId, view)
+        NativeEditorViewRegistry.invalidateDestroyedEditor(editorId)
     }
 
     private fun renderUpdateJson(text: String): String =

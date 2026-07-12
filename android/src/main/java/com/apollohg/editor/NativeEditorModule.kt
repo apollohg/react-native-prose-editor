@@ -13,6 +13,18 @@ internal fun nativeUInt(value: Int): UInt? =
 internal fun nativeArgumentError(field: String): String =
     "{\"error\":\"invalid $field\"}"
 
+internal fun destroyEditorThenInvalidate(
+    editorId: ULong,
+    destroy: (ULong) -> Unit = ::editorDestroy,
+    invalidate: (Long) -> Unit = NativeEditorViewRegistry::invalidateDestroyedEditor
+) {
+    try {
+        destroy(editorId)
+    } finally {
+        invalidate(editorId.toLong())
+    }
+}
+
 class NativeEditorModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("NativeEditor")
@@ -24,8 +36,7 @@ class NativeEditorModule : Module() {
         }
         Function("editorDestroy") { id: Int ->
             val editorId = nativeULong(id) ?: return@Function
-            NativeEditorViewRegistry.invalidateDestroyedEditor(id.toLong())
-            editorDestroy(editorId)
+            destroyEditorThenInvalidate(editorId)
         }
         Function("editorPrepareForCommand") { id: Int ->
             nativeULong(id) ?: return@Function nativeArgumentError("editor id")

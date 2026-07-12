@@ -3,11 +3,16 @@ package com.apollohg.editor
 import android.content.Intent
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Rect
 import android.net.Uri
+import android.os.Bundle
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityNodeProvider
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
@@ -18,6 +23,13 @@ private sealed interface TapTarget {
     data class Mention(val docPos: Int, val label: String) : TapTarget
     data class Link(val href: String, val text: String) : TapTarget
 }
+
+private data class PendingTapGesture(
+    val target: TapTarget,
+    val pointerId: Int,
+    val downX: Float,
+    val downY: Float
+)
 
 class NativeProseViewerExpoView(
     context: Context,
@@ -39,9 +51,7 @@ class NativeProseViewerExpoView(
     private var enableLinkTaps = true
     private var interceptLinkTaps = false
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
-    private var pendingTapTarget: TapTarget? = null
-    private var tapDownX = 0f
-    private var tapDownY = 0f
+    private var pendingTapGesture: PendingTapGesture? = null
     internal var suppressContentHeightEventsForTesting = false
     internal var onLinkTapForTesting: (() -> Unit)? = null
     internal var onMentionTapForTesting: (() -> Unit)? = null
@@ -64,6 +74,8 @@ class NativeProseViewerExpoView(
         proseView.isLongClickable = false
         proseView.setTextIsSelectable(false)
         proseView.showSoftInputOnFocus = false
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        proseView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         proseView.setOnTouchListener { _, event ->
             handleProseTouch(event)
         }
@@ -118,47 +130,59 @@ class NativeProseViewerExpoView(
     private fun handleProseTouch(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                pendingTapTarget = if (event.pointerCount == 1) {
-                    tapTargetAt(event.x, event.y)
+                pendingTapGesture = if (event.pointerCount == 1) {
+                    tapTargetAt(event.x, event.y)?.let { target ->
+                        PendingTapGesture(
+                            target = target,
+                            pointerId = event.getPointerId(event.actionIndex),
+                            downX = event.x,
+                            downY = event.y
+                        )
+                    }
                 } else {
                     null
                 }
-                tapDownX = event.x
-                tapDownY = event.y
                 return false
             }
             MotionEvent.ACTION_MOVE -> {
-                if (event.pointerCount != 1 || movedBeyondTouchSlop(event)) {
-                    pendingTapTarget = null
+                val gesture = pendingTapGesture
+                if (
+                    gesture != null &&
+                    (event.pointerCount != 1 ||
+                        event.findPointerIndex(gesture.pointerId) < 0 ||
+                        movedBeyondTouchSlop(event, gesture))
+                ) {
+                    pendingTapGesture = null
                 }
                 return false
             }
             MotionEvent.ACTION_POINTER_DOWN,
             MotionEvent.ACTION_POINTER_UP,
             MotionEvent.ACTION_CANCEL -> {
-                pendingTapTarget = null
+                pendingTapGesture = null
                 return false
             }
             MotionEvent.ACTION_UP -> {
-                val target = pendingTapTarget
-                pendingTapTarget = null
+                val gesture = pendingTapGesture
+                pendingTapGesture = null
                 if (
                     event.pointerCount != 1 ||
-                    target == null ||
-                    movedBeyondTouchSlop(event) ||
-                    target != tapTargetAt(event.x, event.y)
+                    gesture == null ||
+                    event.getPointerId(event.actionIndex) != gesture.pointerId ||
+                    movedBeyondTouchSlop(event, gesture) ||
+                    gesture.target != tapTargetAt(event.x, event.y)
                 ) {
                     return false
                 }
-                return activateTapTarget(target)
+                return activateTapTarget(gesture.target)
             }
             else -> return false
         }
     }
 
-    private fun movedBeyondTouchSlop(event: MotionEvent): Boolean {
-        val deltaX = event.x - tapDownX
-        val deltaY = event.y - tapDownY
+    private fun movedBeyondTouchSlop(event: MotionEvent, gesture: PendingTapGesture): Boolean {
+        val deltaX = event.x - gesture.downX
+        val deltaY = event.y - gesture.downY
         return deltaX * deltaX + deltaY * deltaY > touchSlop * touchSlop
     }
 
@@ -193,6 +217,72 @@ class NativeProseViewerExpoView(
                 }
             }
         }
+    }
+
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = android.widget.TextView::class.java.name
+        info.text = proseView.text?.toString()?.replace(EMPTY_TEXT_BLOCK_PLACEHOLDER.toString(), "")
+        accessibleAnnotations().indices.forEach { index ->
+            info.addChild(this, index + FIRST_VIRTUAL_ANNOTATION_ID)
+        }
+    }
+
+    override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider = annotationNodeProvider
+
+    private val annotationNodeProvider = object : AccessibilityNodeProvider() {
+        override fun createAccessibilityNodeInfo(virtualViewId: Int): AccessibilityNodeInfo? {
+            if (virtualViewId == View.NO_ID) {
+                return AccessibilityNodeInfo.obtain(this@NativeProseViewerExpoView).also {
+                    onInitializeAccessibilityNodeInfo(it)
+                }
+            }
+            val annotation = accessibleAnnotations()
+                .getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) ?: return null
+            val bounds = Rect(annotation.bounds).apply {
+                offset(proseView.left, proseView.top)
+            }
+            val screenBounds = Rect(bounds)
+            val screenLocation = IntArray(2)
+            getLocationOnScreen(screenLocation)
+            screenBounds.offset(screenLocation[0], screenLocation[1])
+            return AccessibilityNodeInfo.obtain().apply {
+                packageName = context.packageName
+                className = android.widget.Button::class.java.name
+                setSource(this@NativeProseViewerExpoView, virtualViewId)
+                setParent(this@NativeProseViewerExpoView)
+                text = annotation.label
+                contentDescription = annotation.label
+                isEnabled = isAttachedToWindow || !isInEditMode
+                isClickable = true
+                isFocusable = true
+                setBoundsInParent(bounds)
+                setBoundsInScreen(screenBounds)
+                addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK)
+                AccessibilityNodeInfoCompat.wrap(this).roleDescription = annotation.role
+            }
+        }
+
+        override fun performAction(
+            virtualViewId: Int,
+            action: Int,
+            arguments: Bundle?
+        ): Boolean {
+            if (action != AccessibilityNodeInfo.ACTION_CLICK) return false
+            val annotation = accessibleAnnotations()
+                .getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) ?: return false
+            return activateTapTarget(annotation.target.toTapTarget())
+        }
+    }
+
+    private fun accessibleAnnotations(): List<EditorEditText.AccessibleAnnotation> =
+        proseView.accessibleAnnotations().filter { annotation ->
+            annotation.target !is EditorEditText.AccessibleAnnotationTarget.Link || enableLinkTaps
+        }
+
+    private fun EditorEditText.AccessibleAnnotationTarget.toTapTarget(): TapTarget = when (this) {
+        is EditorEditText.AccessibleAnnotationTarget.Link -> TapTarget.Link(href, text)
+        is EditorEditText.AccessibleAnnotationTarget.Mention -> TapTarget.Mention(docPos, label)
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -332,6 +422,7 @@ class NativeProseViewerExpoView(
 
     companion object {
         private const val EMPTY_TEXT_BLOCK_PLACEHOLDER = '\u200B'
+        private const val FIRST_VIRTUAL_ANNOTATION_ID = 1
 
         internal fun renderJsonContainsOnlyEmptyParagraphs(renderJson: String): Boolean {
             val elements = try {
