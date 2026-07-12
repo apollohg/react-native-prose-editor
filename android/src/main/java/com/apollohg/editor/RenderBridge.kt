@@ -47,7 +47,6 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import java.util.Locale
 
 object LayoutConstants {
     /** Base indentation per depth level (pixels at base scale). */
@@ -470,6 +469,12 @@ internal object RenderImageDecoder {
     @Volatile
     internal var bitmapDecoderOverride: ((ByteArray, ImageLoadingPolicy) -> Bitmap?)? = null
 
+    internal data class DataUrlAdmission(
+        val commaIndex: Int,
+        val maximumEncodedCharacters: Long,
+        val sanitizedPayloadLength: Int
+    )
+
     internal class Cancellation {
         private val cancelled = AtomicBoolean(false)
         @Volatile private var connection: HttpURLConnection? = null
@@ -562,34 +567,10 @@ internal object RenderImageDecoder {
         policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT,
         cancellation: Cancellation? = null
     ): ByteArray? {
-        if (cancellation?.isCancelled() == true ||
-            !source.regionMatches(0, "data:image/", 0, "data:image/".length, ignoreCase = true)
-        ) return null
-        var commaIndex = -1
-        var metadataUtf8Bytes = 0
-        var index = 0
-        while (index < source.length) {
-            if (cancellation?.isCancelled() == true) return null
-            val character = source[index]
-            if (character == ',') {
-                commaIndex = index
-                break
-            }
-            metadataUtf8Bytes += utf8BytesAt(source, index)
-            if (metadataUtf8Bytes > MAX_DATA_URL_METADATA_BYTES) return null
-            index += if (Character.isHighSurrogate(character) &&
-                index + 1 < source.length && Character.isLowSurrogate(source[index + 1])
-            ) 2 else 1
-        }
-        if (commaIndex <= 0) return null
-        val metadata = source.substring(0, commaIndex).lowercase(Locale.ROOT)
-        if (metadata.split(';').drop(1).none { it == "base64" }) return null
-        val maximumEncodedCharacters = ((policy.maxSourceBytes.toLong() + 2L) / 3L) * 4L
-        val maximumRawPayload = maximumEncodedCharacters + DATA_URL_WHITESPACE_ALLOWANCE_BYTES
-        val rawPayloadLength = source.length.toLong() - commaIndex.toLong() - 1L
-        if (rawPayloadLength > maximumRawPayload) return null
-
-        val payload = StringBuilder(minOf(rawPayloadLength, maximumEncodedCharacters).toInt())
+        val admission = preflightDataUrl(source, policy, cancellation) ?: return null
+        val commaIndex = admission.commaIndex
+        val maximumEncodedCharacters = admission.maximumEncodedCharacters
+        val payload = StringBuilder(admission.sanitizedPayloadLength)
         for (payloadIndex in commaIndex + 1 until source.length) {
             if (cancellation?.isCancelled() == true) return null
             val character = source[payloadIndex]
@@ -613,6 +594,72 @@ internal object RenderImageDecoder {
         }
         Log.w(LOG_TAG, "decodeDataUrlBytes: unsupported base64 payload (${sourceSummary(source)})")
         return null
+    }
+
+    internal fun preflightDataUrl(
+        source: String,
+        policy: ImageLoadingPolicy,
+        cancellation: Cancellation? = null
+    ): DataUrlAdmission? {
+        if (cancellation?.isCancelled() == true ||
+            !source.regionMatches(0, "data:image/", 0, "data:image/".length, ignoreCase = true)
+        ) return null
+        var commaIndex = -1
+        var metadataUtf8Bytes = 0
+        var index = 0
+        while (index < source.length) {
+            if (cancellation?.isCancelled() == true) return null
+            val character = source[index]
+            if (character == ',') {
+                commaIndex = index
+                break
+            }
+            metadataUtf8Bytes += utf8BytesAt(source, index)
+            if (metadataUtf8Bytes > MAX_DATA_URL_METADATA_BYTES) return null
+            index += if (Character.isHighSurrogate(character) &&
+                index + 1 < source.length && Character.isLowSurrogate(source[index + 1])
+            ) 2 else 1
+        }
+        if (commaIndex <= 0) return null
+        if (!hasBase64MetadataToken(source, commaIndex)) return null
+        val maximumEncodedCharacters = ((policy.maxSourceBytes.toLong() + 2L) / 3L) * 4L
+        val maximumRawPayload = maximumEncodedCharacters + DATA_URL_WHITESPACE_ALLOWANCE_BYTES
+        val rawPayloadLength = source.length.toLong() - commaIndex.toLong() - 1L
+        if (rawPayloadLength > maximumRawPayload) return null
+        var sanitizedPayloadLength = 0L
+        for (payloadIndex in commaIndex + 1 until source.length) {
+            if (cancellation?.isCancelled() == true) return null
+            if (!source[payloadIndex].isWhitespace()) {
+                sanitizedPayloadLength += 1L
+                if (sanitizedPayloadLength > maximumEncodedCharacters) return null
+            }
+        }
+        return DataUrlAdmission(
+            commaIndex,
+            maximumEncodedCharacters,
+            sanitizedPayloadLength.toInt()
+        )
+    }
+
+    private fun hasBase64MetadataToken(source: String, commaIndex: Int): Boolean {
+        var index = "data:image/".length
+        while (index < commaIndex) {
+            if (source[index] == ';') {
+                val tokenStart = index + 1
+                val tokenEnd = tokenStart + "base64".length
+                if (tokenEnd <= commaIndex &&
+                    source.regionMatches(
+                        tokenStart,
+                        "base64",
+                        0,
+                        "base64".length,
+                        ignoreCase = true
+                    ) && (tokenEnd == commaIndex || source[tokenEnd] == ';')
+                ) return true
+            }
+            index += 1
+        }
+        return false
     }
 
     fun readBounded(
@@ -697,15 +744,17 @@ internal object RenderImageDecoder {
     ): Int {
         if (width <= 0 || height <= 0) return 1
 
-        var sampleSize = 1
-        var sampledWidth = width
-        var sampledHeight = height
-        while (sampledWidth > maxWidth || sampledHeight > maxHeight) {
-            sampleSize *= 2
-            sampledWidth = width / sampleSize
-            sampledHeight = height / sampleSize
+        if (maxWidth <= 0 || maxHeight <= 0) return 1
+        var sampleSize = 1L
+        var sampledWidth = width.toLong()
+        var sampledHeight = height.toLong()
+        while (sampledWidth > maxWidth.toLong() || sampledHeight > maxHeight.toLong()) {
+            if (sampleSize >= (1L shl 30)) return (1 shl 30)
+            sampleSize = sampleSize shl 1
+            sampledWidth = width.toLong() / sampleSize
+            sampledHeight = height.toLong() / sampleSize
         }
-        return sampleSize.coerceAtLeast(1)
+        return sampleSize.toInt().coerceAtLeast(1)
     }
 
     private fun decodeBitmap(bytes: ByteArray, policy: ImageLoadingPolicy): Bitmap? {
@@ -809,6 +858,7 @@ internal object RenderImageLoader {
     private data class Callback(
         val id: Long,
         val cancelled: AtomicBoolean,
+        val admissionReleased: AtomicBoolean,
         val handle: LoadHandle,
         val deliver: (Bitmap?) -> Unit
     )
@@ -826,6 +876,7 @@ internal object RenderImageLoader {
         var dispatching = false
         val started = AtomicBoolean(false)
         val terminal = AtomicBoolean(false)
+        val workerSlotReleased = AtomicBoolean(false)
     }
     private data class PolicyState(
         var submittedCount: Int = 0,
@@ -848,6 +899,7 @@ internal object RenderImageLoader {
     private var admissionCount = 0
     private val nextCallbackId = AtomicLong()
     private val submissionRejectionCount = AtomicLong()
+    private val digestConstructionCount = AtomicLong()
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private var globalExecutor = createGlobalExecutor()
     private val timeoutScheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -859,6 +911,18 @@ internal object RenderImageLoader {
 
     @Volatile
     internal var beforeWorkerReturnOverride: ((String) -> Unit)? = null
+
+    @Volatile
+    internal var deadlineExecutionGateOverride: (() -> Unit)? = null
+
+    @Volatile
+    internal var beforeCacheCommitOverride: (() -> Unit)? = null
+
+    @Volatile
+    internal var decodedDeliveryPostedOverride: (() -> Unit)? = null
+
+    @Volatile
+    internal var monotonicClockOverride: MonotonicClock? = null
 
     fun cached(
         source: String,
@@ -873,6 +937,8 @@ internal object RenderImageLoader {
     internal fun cacheEntryCountForTesting(): Int = synchronized(cache) { cache.snapshot().size }
 
     internal fun cacheRetainedCostForTesting(): Int = synchronized(cache) { cache.size() }
+
+    internal fun digestConstructionCountForTesting(): Long = digestConstructionCount.get()
 
     internal fun resetForTesting() {
         synchronized(cache) {
@@ -903,8 +969,13 @@ internal object RenderImageLoader {
         }
         rejected.forEach { it.handle.finish() }
         submissionRejectionCount.set(0)
+        digestConstructionCount.set(0)
         decodeSourceOverride = null
         beforeWorkerReturnOverride = null
+        deadlineExecutionGateOverride = null
+        beforeCacheCommitOverride = null
+        decodedDeliveryPostedOverride = null
+        monotonicClockOverride = null
     }
 
     internal fun executionResourceCountForTesting(): Int = 1
@@ -940,7 +1011,13 @@ internal object RenderImageLoader {
             cancelled.set(true)
             requestKey?.let { cancelCallback(it, callback) }
         }
-        callback = Callback(nextCallbackId.incrementAndGet(), cancelled, handle, onLoaded)
+        callback = Callback(
+            nextCallbackId.incrementAndGet(),
+            cancelled,
+            AtomicBoolean(false),
+            handle,
+            onLoaded
+        )
         val admitted = synchronized(lock) {
             if (admissionCount >= GLOBAL_ADMISSION_LIMIT) {
                 false
@@ -954,20 +1031,31 @@ internal object RenderImageLoader {
             return handle
         }
         handle.onFinished {
-            synchronized(lock) {
-                admissionCount = (admissionCount - 1).coerceAtLeast(0)
-            }
+            releaseAdmission(callback)
         }
-        val requestedAtMs = systemMonotonicClock.elapsedRealtime()
+        val requestedAtMs = monotonicNowMs()
+        val deadlineMs = deadlineAfter(requestedAtMs, policy.requestTimeoutMs)
+        if (source.regionMatches(0, "data:image/", 0, "data:image/".length, ignoreCase = true) &&
+            RenderImageDecoder.preflightDataUrl(source, policy) == null
+        ) {
+            releaseAdmission(callback)
+            postCallbacks(listOf(callback), null)
+            return handle
+        }
+        if (monotonicNowMs() >= deadlineMs) {
+            releaseAdmission(callback)
+            postCallbacks(listOf(callback), null)
+            return handle
+        }
         val resolvedRequestKey = RequestKey(cacheKey(source, policy), policy)
         requestKey = resolvedRequestKey
-        val deadlineMs = deadlineAfter(requestedAtMs, policy.requestTimeoutMs)
-        if (systemMonotonicClock.elapsedRealtime() >= deadlineMs) {
+        if (monotonicNowMs() >= deadlineMs) {
+            releaseAdmission(callback)
             postCallbacks(listOf(callback), null)
             return handle
         }
         synchronized(cache) { cache.get(resolvedRequestKey.digest) }?.let { bitmap ->
-            postCallbacks(listOf(callback), bitmap)
+            scheduleCachedDelivery(callback, bitmap, deadlineMs)
             return handle
         }
         var drain = false
@@ -1024,7 +1112,7 @@ internal object RenderImageLoader {
                     if (inFlight[request.key] === request) {
                         readyToSubmit.addFirst(request)
                     } else {
-                        releaseSubmittedSlotLocked(request.key.policy)
+                        releaseRequestSlotLocked(request)
                     }
                 }
                 return
@@ -1039,17 +1127,10 @@ internal object RenderImageLoader {
                 var bitmap: Bitmap? = null
                 try {
                     bitmap = decode(request)
-                    if (bitmap != null && !request.cancellation.isCancelled() &&
-                        !request.terminal.get() && systemMonotonicClock.elapsedRealtime() < request.deadlineMs
-                    ) {
-                        synchronized(cache) {
-                            cache.put(request.key.digest, bitmap)
-                        }
-                    }
                 } catch (_: Exception) {
                     bitmap = null
                 } finally {
-                    completeRequest(request, bitmap)
+                    completeDecodedRequest(request, bitmap)
                     beforeWorkerReturnOverride?.invoke(request.source)
                 }
             }
@@ -1074,7 +1155,7 @@ internal object RenderImageLoader {
         if (removed) {
             runCatching { future.cancel(false) }
             if (!request.terminal.get()) {
-                synchronized(lock) { releaseSubmittedSlotLocked(request.key.policy) }
+                synchronized(lock) { releaseRequestSlotLocked(request) }
                 mainHandler.post { drainSubmissions() }
             }
         } else if (request.started.get()) {
@@ -1082,22 +1163,67 @@ internal object RenderImageLoader {
         }
     }
 
-    private fun completeRequest(request: PendingRequest, bitmap: Bitmap?) {
-        if (!request.terminal.compareAndSet(false, true)) return
-        runCatching { request.timeoutFuture?.cancel(false) }
+    private fun completeDecodedRequest(request: PendingRequest, bitmap: Bitmap?) {
+        synchronized(lock) {
+            releaseRequestSlotLocked(request)
+        }
+        mainHandler.post { drainSubmissions() }
+        if (request.terminal.get()) return
+        if (bitmap == null || request.cancellation.isCancelled() ||
+            monotonicNowMs() >= request.deadlineMs
+        ) {
+            claimRequestOutcome(request, null, deliverInline = false)
+            return
+        }
+        decodedDeliveryPostedOverride?.invoke()
+        if (!mainHandler.post {
+                if (request.terminal.get()) return@post
+                beforeCacheCommitOverride?.invoke()
+                val deliverable = bitmap.takeIf {
+                    !request.cancellation.isCancelled() &&
+                        monotonicNowMs() < request.deadlineMs
+                }
+                claimRequestOutcome(request, deliverable, deliverInline = true)
+            }
+        ) {
+            claimRequestOutcome(request, null, deliverInline = false)
+        }
+    }
+
+    private fun claimRequestOutcome(
+        request: PendingRequest,
+        bitmap: Bitmap?,
+        deliverInline: Boolean
+    ): Boolean {
+        if (!request.terminal.compareAndSet(false, true)) return false
+        request.timeoutFuture?.cancel(false)
+        if (bitmap == null) request.cancellation.cancel()
         val callbacks: List<Callback>
         synchronized(lock) {
             if (inFlight[request.key] === request) inFlight.remove(request.key)
+            releaseRequestSlotLocked(request)
             callbacks = request.callbacks.toList()
-            releaseSubmittedSlotLocked(request.key.policy)
         }
-        postCallbacks(callbacks, bitmap)
+        if (bitmap != null) {
+            synchronized(cache) { cache.put(request.key.digest, bitmap) }
+        }
+        callbacks.forEach(::releaseAdmission)
+        if (deliverInline) {
+            callbacks.forEach { callback -> deliverCallback(callback, bitmap) }
+            drainSubmissions()
+        } else {
+            postCallbacks(callbacks, bitmap)
+        }
+        return true
     }
 
     private fun scheduleDeadline(request: PendingRequest) {
-        val delayMs = (request.deadlineMs - systemMonotonicClock.elapsedRealtime()).coerceAtLeast(0L)
+        val delayMs = (request.deadlineMs - monotonicNowMs()).coerceAtLeast(0L)
         val future = timeoutScheduler.schedule(
-            { expireRequest(request) },
+            {
+                deadlineExecutionGateOverride?.invoke()
+                expireRequest(request)
+            },
             delayMs,
             TimeUnit.MILLISECONDS
         )
@@ -1105,27 +1231,43 @@ internal object RenderImageLoader {
         if (request.terminal.get()) future.cancel(false)
     }
 
-    private fun expireRequest(request: PendingRequest) {
-        if (!request.terminal.compareAndSet(false, true)) return
-        val callbacks: List<Callback>
-        synchronized(lock) {
-            if (inFlight[request.key] === request) inFlight.remove(request.key)
-            callbacks = request.callbacks.toList()
-            if (request.submitted) {
-                readyToSubmit.remove(request)
-                releaseSubmittedSlotLocked(request.key.policy)
-            } else {
-                policyStates[request.key.policy]?.pending?.remove(request)
-                removePolicyStateIfEmptyLocked(request.key.policy)
+    private fun scheduleCachedDelivery(callback: Callback, bitmap: Bitmap, deadlineMs: Long) {
+        val terminal = AtomicBoolean(false)
+        val delayMs = (deadlineMs - monotonicNowMs()).coerceAtLeast(0L)
+        val timeoutFuture = timeoutScheduler.schedule(
+            {
+                deadlineExecutionGateOverride?.invoke()
+                if (terminal.compareAndSet(false, true)) {
+                    releaseAdmission(callback)
+                    postCallbacks(listOf(callback), null)
+                }
+            },
+            delayMs,
+            TimeUnit.MILLISECONDS
+        )
+        if (!mainHandler.post {
+                if (!terminal.compareAndSet(false, true)) return@post
+                timeoutFuture.cancel(false)
+                releaseAdmission(callback)
+                val result = bitmap.takeIf {
+                    !callback.cancelled.get() && monotonicNowMs() < deadlineMs
+                }
+                deliverCallback(callback, result)
             }
+        ) {
+            timeoutFuture.cancel(false)
+            terminal.set(true)
+            callback.handle.finish()
         }
-        request.cancellation.cancel()
+    }
+
+    private fun expireRequest(request: PendingRequest) {
+        if (!claimRequestOutcome(request, null, deliverInline = false)) return
         val future = request.future
         if (future != null) {
             if (!request.started.get()) runCatching { globalExecutor.remove(future as Runnable) }
             runCatching { future.cancel(true) }
         }
-        postCallbacks(callbacks, null)
     }
 
     private fun postCallbacks(callbacks: List<Callback>, bitmap: Bitmap?) {
@@ -1188,47 +1330,45 @@ internal object RenderImageLoader {
         }
     }
 
+    private fun releaseAdmission(callback: Callback) {
+        if (!callback.admissionReleased.compareAndSet(false, true)) return
+        synchronized(lock) {
+            admissionCount = (admissionCount - 1).coerceAtLeast(0)
+        }
+    }
+
     private fun cancelCallback(key: RequestKey, callback: Callback) {
         callback.cancelled.set(true)
         var requestToCancel: PendingRequest? = null
-        var futureToCancel: Future<*>? = null
-        var releasedReadySlot = false
         synchronized(lock) {
             val request = inFlight[key] ?: return@synchronized
             request.callbacks.removeAll { it.id == callback.id }
             if (request.callbacks.isNotEmpty()) return@synchronized
+            if (!request.terminal.compareAndSet(false, true)) return@synchronized
             inFlight.remove(key)
             requestToCancel = request
-            val state = policyStates[key.policy]
-            if (!request.submitted) {
-                state?.pending?.remove(request)
-                removePolicyStateIfEmptyLocked(key.policy)
-            } else {
-                val future = request.future
-                if (future == null && readyToSubmit.remove(request)) {
-                    releaseSubmittedSlotLocked(key.policy)
-                    releasedReadySlot = true
-                } else {
-                    futureToCancel = future
-                }
-            }
+            releaseRequestSlotLocked(request)
         }
         val request = requestToCancel ?: return
         runCatching { request.timeoutFuture?.cancel(false) }
         runCatching { request.cancellation.cancel() }
-        val future = futureToCancel
+        val future = request.future
         if (future != null) {
-            val removed = !request.started.get() &&
-                runCatching { globalExecutor.remove(future as Runnable) }.getOrDefault(false)
-            if (removed) {
-                runCatching { future.cancel(false) }
-                synchronized(lock) { releaseSubmittedSlotLocked(key.policy) }
-                releasedReadySlot = true
-            } else if (request.started.get()) {
-                runCatching { future.cancel(true) }
-            }
+            if (!request.started.get()) runCatching { globalExecutor.remove(future as Runnable) }
+            runCatching { future.cancel(true) }
         }
-        if (releasedReadySlot) drainSubmissions()
+        drainSubmissions()
+    }
+
+    private fun releaseRequestSlotLocked(request: PendingRequest) {
+        if (!request.submitted) {
+            policyStates[request.key.policy]?.pending?.remove(request)
+            removePolicyStateIfEmptyLocked(request.key.policy)
+            return
+        }
+        if (!request.workerSlotReleased.compareAndSet(false, true)) return
+        readyToSubmit.remove(request)
+        releaseSubmittedSlotLocked(request.key.policy)
     }
 
     private fun releaseSubmittedSlotLocked(policy: ImageLoadingPolicy) {
@@ -1269,11 +1409,15 @@ internal object RenderImageLoader {
                 request.source,
                 request.key.policy,
                 request.cancellation,
-                systemMonotonicClock,
+                monotonicClockOverride ?: systemMonotonicClock,
                 request.deadlineMs
             )
 
+    private fun monotonicNowMs(): Long =
+        (monotonicClockOverride ?: systemMonotonicClock).elapsedRealtime()
+
     private fun cacheKey(source: String, policy: ImageLoadingPolicy): CacheKey {
+        digestConstructionCount.incrementAndGet()
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update(source.toByteArray(Charsets.UTF_8))
         digest.update(ImageLoadingPolicy.canonicalBytes(policy))

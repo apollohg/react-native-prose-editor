@@ -81,6 +81,34 @@ class RenderImageLoaderPolicyTest {
     }
 
     @Test
+    fun `hostile data url is rejected before digest construction`() {
+        val policy = ImageLoadingPolicy.DEFAULT.copy(maxSourceBytes = 8)
+        val completed = CountDownLatch(1)
+        var result: Bitmap? = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+
+        RenderImageLoader.load(
+            "data:image/png;base64," + "A ".repeat(10_000),
+            policy
+        ) {
+            result = it
+            completed.countDown()
+        }
+        drainMainUntil(completed)
+
+        assertNull(result)
+        assertEquals(0, RenderImageLoader.digestConstructionCountForTesting())
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+
+        val encodedOverflow = CountDownLatch(1)
+        RenderImageLoader.load("data:image/png;base64," + "A".repeat(13), policy) {
+            encodedOverflow.countDown()
+        }
+        drainMainUntil(encodedOverflow)
+        assertEquals(0L, RenderImageLoader.digestConstructionCountForTesting())
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+    }
+
+    @Test
     fun `absolute deadline stops trickle reads`() {
         val clock = FakeMonotonicClock()
         val stream = TrickleInputStream(clock, byteEveryMs = 19_000)
@@ -115,6 +143,132 @@ class RenderImageLoaderPolicyTest {
         assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
         assertTrue(stream.closed.await(2, TimeUnit.SECONDS))
         assertTrue(connection.disconnected)
+    }
+
+    @Test
+    fun `decode completing after deadline fails even when deadline scheduler is delayed`() {
+        val clock = FakeMonotonicClock()
+        RenderImageLoader.monotonicClockOverride = clock
+        val schedulerRelease = CountDownLatch(1)
+        RenderImageLoader.deadlineExecutionGateOverride = {
+            schedulerRelease.await(2, TimeUnit.SECONDS)
+        }
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            clock.advance(31)
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val completed = CountDownLatch(1)
+        var result: Bitmap? = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val source = "https://example.com/late-decode.png"
+
+        RenderImageLoader.load(
+            source,
+            ImageLoadingPolicy.DEFAULT.copy(requestTimeoutMs = 30)
+        ) {
+            result = it
+            completed.countDown()
+        }
+        drainMainUntil(completed)
+        schedulerRelease.countDown()
+
+        assertEquals(0L, completed.count)
+        assertNull(result)
+        assertNull(RenderImageLoader.cached(source, ImageLoadingPolicy.DEFAULT.copy(requestTimeoutMs = 30)))
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+    }
+
+    @Test
+    fun `deadline between validation and cache commit suppresses bitmap`() {
+        val clock = FakeMonotonicClock()
+        RenderImageLoader.monotonicClockOverride = clock
+        val schedulerRelease = CountDownLatch(1)
+        RenderImageLoader.deadlineExecutionGateOverride = {
+            schedulerRelease.await(2, TimeUnit.SECONDS)
+        }
+        RenderImageLoader.beforeCacheCommitOverride = { clock.advance(31) }
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val completed = CountDownLatch(1)
+        var result: Bitmap? = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val policy = ImageLoadingPolicy.DEFAULT.copy(requestTimeoutMs = 30)
+        val source = "https://example.com/cache-race.png"
+
+        RenderImageLoader.load(source, policy) {
+            result = it
+            completed.countDown()
+        }
+        drainMainUntil(completed)
+        schedulerRelease.countDown()
+
+        assertEquals(0L, completed.count)
+        assertNull(result)
+        assertNull(RenderImageLoader.cached(source, policy))
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+    }
+
+    @Test
+    fun `main looper delivery after absolute deadline suppresses decoded bitmap`() {
+        val clock = FakeMonotonicClock()
+        RenderImageLoader.monotonicClockOverride = clock
+        val schedulerRelease = CountDownLatch(1)
+        val deliveryPosted = CountDownLatch(1)
+        RenderImageLoader.deadlineExecutionGateOverride = {
+            schedulerRelease.await(2, TimeUnit.SECONDS)
+        }
+        RenderImageLoader.decodedDeliveryPostedOverride = { deliveryPosted.countDown() }
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val policy = ImageLoadingPolicy.DEFAULT.copy(requestTimeoutMs = 30)
+        var result: Bitmap? = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val completed = CountDownLatch(1)
+
+        RenderImageLoader.load("https://example.com/main-delay.png", policy) {
+            result = it
+            completed.countDown()
+        }
+        assertTrue(deliveryPosted.await(2, TimeUnit.SECONDS))
+        clock.advance(31)
+        drainMainUntil(completed)
+        schedulerRelease.countDown()
+
+        assertEquals(0L, completed.count)
+        assertNull(result)
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+    }
+
+    @Test
+    fun `cached main looper delivery after deadline is suppressed`() {
+        val policy = ImageLoadingPolicy.DEFAULT.copy(requestTimeoutMs = 30)
+        val source = "https://example.com/cached-deadline.png"
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val warmed = CountDownLatch(1)
+        RenderImageLoader.load(source, policy) { warmed.countDown() }
+        drainMainUntil(warmed)
+        assertTrue(RenderImageLoader.cached(source, policy) != null)
+
+        val clock = FakeMonotonicClock()
+        RenderImageLoader.monotonicClockOverride = clock
+        val schedulerRelease = CountDownLatch(1)
+        RenderImageLoader.deadlineExecutionGateOverride = {
+            schedulerRelease.await(2, TimeUnit.SECONDS)
+        }
+        var result: Bitmap? = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val completed = CountDownLatch(1)
+        RenderImageLoader.load(source, policy) {
+            result = it
+            completed.countDown()
+        }
+        clock.advance(31)
+        drainMainUntil(completed)
+        schedulerRelease.countDown()
+
+        assertEquals(0L, completed.count)
+        assertNull(result)
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
     }
 
     @Test
@@ -283,6 +437,19 @@ class RenderImageLoaderPolicyTest {
                 height = 1_024,
                 maxWidth = policy.maxDecodeDimensionPx,
                 maxHeight = policy.maxDecodeDimensionPx
+            )
+        )
+    }
+
+    @Test
+    fun `sampling maximum integer dimensions never overflows`() {
+        assertEquals(
+            1 shl 30,
+            RenderImageDecoder.calculateInSampleSize(
+                width = Int.MAX_VALUE,
+                height = Int.MAX_VALUE,
+                maxWidth = 1,
+                maxHeight = 1
             )
         )
     }
