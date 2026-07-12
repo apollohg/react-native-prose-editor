@@ -1,6 +1,98 @@
+use editor_core::boundary::ResourceLimits;
 use editor_core::schema::content_rule::ContentRule;
 use editor_core::schema::presets::{prosemirror_schema, tiptap_schema};
 use editor_core::schema::{NodeRole, Schema};
+
+fn three_node_schema() -> serde_json::Value {
+    serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "paragraph", "role": "doc" },
+            { "name": "paragraph", "content": "", "role": "textBlock" },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": []
+    })
+}
+
+#[test]
+fn schema_rejects_node_and_aggregate_expression_limits() {
+    let node_limits = ResourceLimits {
+        max_schema_nodes: 2,
+        ..ResourceLimits::default()
+    };
+    assert_eq!(
+        Schema::from_json_with_limits(&three_node_schema(), &node_limits)
+            .unwrap_err()
+            .code(),
+        "SCHEMA_INVALID"
+    );
+
+    let expression_limits = ResourceLimits {
+        max_schema_expression_bytes: 4,
+        ..ResourceLimits::default()
+    };
+    assert_eq!(
+        Schema::from_json_with_limits(&three_node_schema(), &expression_limits)
+            .unwrap_err()
+            .code(),
+        "SCHEMA_INVALID"
+    );
+}
+
+#[test]
+fn reversed_dependency_chain_is_constructible_within_the_indexed_work_budget() {
+    const CHAIN_LENGTH: usize = 128;
+    let mut nodes = vec![serde_json::json!({
+        "name": "doc", "content": "n0", "role": "doc"
+    })];
+    for index in 0..CHAIN_LENGTH {
+        let content = if index + 1 == CHAIN_LENGTH {
+            String::new()
+        } else {
+            format!("n{}", index + 1)
+        };
+        nodes.push(serde_json::json!({ "name": format!("n{index}"), "content": content }));
+    }
+    nodes.push(serde_json::json!({ "name": "text", "role": "text" }));
+    let limits = ResourceLimits {
+        max_schema_nodes: nodes.len(),
+        max_schema_expression_bytes: 4 * 1024,
+        ..ResourceLimits::default()
+    };
+
+    assert!(Schema::from_json_with_limits(
+        &serde_json::json!({ "nodes": nodes, "marks": [] }),
+        &limits,
+    )
+    .is_ok());
+}
+
+#[test]
+fn constructibility_work_stops_at_the_configured_schema_budget() {
+    let mut nodes = vec![serde_json::json!({
+        "name": "doc", "content": "g", "role": "doc"
+    })];
+    for index in 0..298 {
+        nodes.push(serde_json::json!({
+            "name": format!("n{index}"), "content": "g", "group": "g"
+        }));
+    }
+    nodes.push(serde_json::json!({ "name": "text", "role": "text" }));
+    let limits = ResourceLimits {
+        max_schema_nodes: 300,
+        max_schema_expression_bytes: 300,
+        ..ResourceLimits::default()
+    };
+    let expected_work_budget = 300 * 64 + 300 * 32;
+
+    let error =
+        Schema::from_json_with_limits(&serde_json::json!({ "nodes": nodes, "marks": [] }), &limits)
+            .unwrap_err();
+    assert_eq!(error.code(), "SCHEMA_INVALID");
+    assert_eq!(error.limit, Some(expected_work_budget));
+    assert_eq!(error.actual, Some(expected_work_budget + 1));
+    assert_eq!(error.details.unwrap()["phase"], "schemaWork");
+}
 
 #[test]
 fn test_schema_registers_node_types() {

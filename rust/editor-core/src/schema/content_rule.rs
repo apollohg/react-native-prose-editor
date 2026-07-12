@@ -1,7 +1,29 @@
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashSet, VecDeque};
 
 const MAX_NESTING_DEPTH: usize = 128;
 const MAX_AUTOMATON_STATES: usize = 10_000;
+
+pub(crate) struct WorkBudget {
+    remaining: Cell<usize>,
+}
+
+impl WorkBudget {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            remaining: Cell::new(limit),
+        }
+    }
+
+    pub(crate) fn consume(&self) -> bool {
+        let remaining = self.remaining.get();
+        if remaining == 0 {
+            return false;
+        }
+        self.remaining.set(remaining - 1);
+        true
+    }
+}
 
 /// A parsed ProseMirror-style content expression.
 ///
@@ -37,7 +59,11 @@ enum Expr {
 
 impl ContentRule {
     pub fn parse(source: &str) -> Result<Self, String> {
-        let mut parser = Parser::new(source);
+        Self::parse_with_budget(source, &WorkBudget::new(usize::MAX))
+    }
+
+    pub(crate) fn parse_with_budget(source: &str, budget: &WorkBudget) -> Result<Self, String> {
+        let mut parser = Parser::new(source, budget);
         let expression = if source.trim().is_empty() {
             Expr::Empty
         } else {
@@ -53,13 +79,14 @@ impl ContentRule {
             expression
         };
 
-        let mut compiler = Compiler::default();
+        let symbols = parser.symbols;
+        let mut compiler = Compiler::new(budget);
         let (start, accept) = compiler.compile(&expression)?;
         Ok(Self {
             states: compiler.states,
             start,
             accept,
-            symbols: parser.symbols,
+            symbols,
         })
     }
 
@@ -155,25 +182,44 @@ impl ContentRule {
     where
         F: FnMut(&str) -> bool,
     {
+        self.is_constructible_with_budget(
+            &mut symbol_is_constructible,
+            &WorkBudget::new(usize::MAX),
+        )
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn is_constructible_with_budget<F>(
+        &self,
+        mut symbol_is_constructible: F,
+        budget: &WorkBudget,
+    ) -> Option<bool>
+    where
+        F: FnMut(&str) -> bool,
+    {
         let mut pending = vec![self.start];
         let mut visited = HashSet::new();
         while let Some(state) = pending.pop() {
+            if !budget.consume() {
+                return None;
+            }
             if !visited.insert(state) {
                 continue;
             }
             if state == self.accept {
-                return true;
+                return Some(true);
             }
             pending.extend(self.states[state].epsilon.iter().copied());
-            pending.extend(
-                self.states[state]
-                    .transitions
-                    .iter()
-                    .filter(|(symbol, _)| symbol_is_constructible(symbol))
-                    .map(|(_, target)| *target),
-            );
+            for (symbol, target) in &self.states[state].transitions {
+                if !budget.consume() {
+                    return None;
+                }
+                if symbol_is_constructible(symbol) {
+                    pending.push(*target);
+                }
+            }
         }
-        false
+        Some(false)
     }
 
     fn states_after<T, F>(&self, children: &[T], symbol_matches: &mut F) -> HashSet<usize>
@@ -218,19 +264,30 @@ struct Parser<'a> {
     pos: usize,
     symbols: BTreeSet<String>,
     depth: usize,
+    budget: &'a WorkBudget,
 }
 
 impl<'a> Parser<'a> {
-    fn new(source: &'a str) -> Self {
+    fn new(source: &'a str, budget: &'a WorkBudget) -> Self {
         Self {
             source,
             pos: 0,
             symbols: BTreeSet::new(),
             depth: 0,
+            budget,
+        }
+    }
+
+    fn consume_work(&self) -> Result<(), String> {
+        if self.budget.consume() {
+            Ok(())
+        } else {
+            Err("content expression work budget exceeded".to_string())
         }
     }
 
     fn parse_alternation(&mut self) -> Result<Expr, String> {
+        self.consume_work()?;
         let mut alternatives = vec![self.parse_sequence()?];
         loop {
             self.skip_whitespace();
@@ -251,6 +308,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_sequence(&mut self) -> Result<Expr, String> {
+        self.consume_work()?;
         let mut expressions = Vec::new();
         loop {
             self.skip_whitespace();
@@ -270,6 +328,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_repeated(&mut self) -> Result<Expr, String> {
+        self.consume_work()?;
         let atom = self.parse_atom()?;
         self.skip_whitespace();
         let quantified = match self.peek() {
@@ -308,6 +367,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_atom(&mut self) -> Result<Expr, String> {
+        self.consume_work()?;
         self.skip_whitespace();
         if self.consume('(') {
             if self.depth >= MAX_NESTING_DEPTH {
@@ -344,6 +404,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_range(&mut self, atom: Expr) -> Result<Expr, String> {
+        self.consume_work()?;
         self.consume('{');
         let min = self.parse_number()?;
         let max = if self.consume('}') {
@@ -376,6 +437,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_number(&mut self) -> Result<u32, String> {
+        self.consume_work()?;
         let start = self.pos;
         while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
             self.pos += 1;
@@ -410,13 +472,23 @@ impl<'a> Parser<'a> {
     }
 }
 
-#[derive(Default)]
-struct Compiler {
+struct Compiler<'a> {
     states: Vec<State>,
+    budget: &'a WorkBudget,
 }
 
-impl Compiler {
+impl<'a> Compiler<'a> {
+    fn new(budget: &'a WorkBudget) -> Self {
+        Self {
+            states: Vec::new(),
+            budget,
+        }
+    }
+
     fn state(&mut self) -> Result<usize, String> {
+        if !self.budget.consume() {
+            return Err("content expression work budget exceeded".to_string());
+        }
         if self.states.len() >= MAX_AUTOMATON_STATES {
             return Err(format!(
                 "content expression exceeds {MAX_AUTOMATON_STATES} automaton states"

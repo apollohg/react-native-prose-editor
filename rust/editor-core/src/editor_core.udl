@@ -3,6 +3,7 @@ namespace editor_core {
 
     // Editor lifecycle
     u64 editor_create(string config_json);
+    string editor_create_result(string config_json);
     void editor_destroy(u64 id);
 
     // Collaboration lifecycle

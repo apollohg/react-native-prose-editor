@@ -2,10 +2,11 @@ pub mod content_rule;
 pub mod presets;
 
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
+use crate::boundary::{BoundaryError, BoundaryResult, ResourceLimits};
 use crate::model::{Document, Fragment, Node};
-use crate::schema::content_rule::ContentRule;
+use crate::schema::content_rule::{ContentRule, WorkBudget};
 
 /// A schema defines the set of node types and mark types available in a document.
 ///
@@ -16,6 +17,9 @@ use crate::schema::content_rule::ContentRule;
 pub struct Schema {
     nodes: HashMap<String, NodeSpec>,
     marks: HashMap<String, MarkSpec>,
+    groups: HashMap<String, Vec<String>>,
+    doc_node_name: String,
+    text_node_name: String,
 }
 
 /// Specification for a node type within a schema.
@@ -105,6 +109,14 @@ impl Schema {
     /// Create and validate a schema, returning a descriptive error for invalid
     /// role, name, content-symbol, or constructibility definitions.
     pub fn try_new(nodes: Vec<NodeSpec>, marks: Vec<MarkSpec>) -> Result<Self, String> {
+        Self::try_new_with_budget(nodes, marks, &WorkBudget::new(usize::MAX))
+    }
+
+    fn try_new_with_budget(
+        nodes: Vec<NodeSpec>,
+        marks: Vec<MarkSpec>,
+        budget: &WorkBudget,
+    ) -> Result<Self, String> {
         let mut node_names = HashSet::new();
         for node in &nodes {
             if node
@@ -138,72 +150,43 @@ impl Schema {
             }
         }
 
-        let doc_count = nodes
+        let doc_names = nodes
             .iter()
             .filter(|node| matches!(node.role, NodeRole::Doc))
-            .count();
-        let text_count = nodes
+            .map(|node| node.name.clone())
+            .collect::<Vec<_>>();
+        let text_names = nodes
             .iter()
             .filter(|node| matches!(node.role, NodeRole::Text))
-            .count();
-        if doc_count != 1 {
+            .map(|node| node.name.clone())
+            .collect::<Vec<_>>();
+        if doc_names.len() != 1 {
             return Err(format!(
-                "schema must define exactly one doc role, found {doc_count}"
+                "schema must define exactly one doc role, found {}",
+                doc_names.len()
             ));
         }
-        if text_count != 1 {
+        if text_names.len() != 1 {
             return Err(format!(
-                "schema must define exactly one text role, found {text_count}"
+                "schema must define exactly one text role, found {}",
+                text_names.len()
             ));
         }
 
+        let mut groups: HashMap<String, Vec<String>> = HashMap::new();
         for node in &nodes {
-            for symbol in node.content.symbols() {
-                if !nodes
-                    .iter()
-                    .any(|candidate| node_spec_matches_symbol(candidate, symbol))
-                {
-                    return Err(format!(
-                        "content rule for '{}' references unresolved node or group '{}'",
-                        node.name, symbol
-                    ));
+            if let Some(node_groups) = &node.group {
+                for group in node_groups.split_whitespace() {
+                    groups
+                        .entry(group.to_string())
+                        .or_default()
+                        .push(node.name.clone());
                 }
             }
         }
-
-        let mut generatable = HashSet::new();
-        loop {
-            let before = generatable.len();
-            for node in &nodes {
-                let has_required_attrs = node.attrs.values().any(|attr| !attr.has_default);
-                if !matches!(node.role, NodeRole::Text)
-                    && !has_required_attrs
-                    && node.content.is_constructible_with(|symbol| {
-                        nodes.iter().any(|candidate| {
-                            generatable.contains(&candidate.name)
-                                && node_spec_matches_symbol(candidate, symbol)
-                        })
-                    })
-                {
-                    generatable.insert(node.name.clone());
-                }
-            }
-            if generatable.len() == before {
-                break;
-            }
-        }
-        if let Some(node) = nodes.iter().find(|node| {
-            !node.content.is_constructible_with(|symbol| {
-                nodes.iter().any(|candidate| {
-                    generatable.contains(&candidate.name)
-                        && node_spec_matches_symbol(candidate, symbol)
-                })
-            })
-        }) {
-            return Err(format!(
-                "content rule for '{}' has required content that cannot be auto-created",
-                node.name
-            ));
+        for names in groups.values_mut() {
+            names.sort();
+            names.dedup();
         }
 
         let schema = Self {
@@ -215,9 +198,120 @@ impl Schema {
                 .into_iter()
                 .map(|mark| (mark.name.clone(), mark))
                 .collect(),
+            groups,
+            doc_node_name: doc_names.into_iter().next().expect("one doc role"),
+            text_node_name: text_names.into_iter().next().expect("one text role"),
         };
+        schema.validate_constructibility(budget)?;
         schema.default_document()?;
         Ok(schema)
+    }
+
+    fn validate_constructibility(&self, budget: &WorkBudget) -> Result<(), String> {
+        let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+        for node in self.nodes.values() {
+            for symbol in node.content.symbols() {
+                let candidates = self.candidate_names_for_symbol(symbol).collect::<Vec<_>>();
+                if candidates.is_empty() {
+                    return Err(format!(
+                        "content rule for '{}' references unresolved node or group '{}'",
+                        node.name, symbol
+                    ));
+                }
+                for candidate in candidates {
+                    if !budget.consume() {
+                        return Err("schema constructibility work budget exceeded".to_string());
+                    }
+                    dependents
+                        .entry(candidate.to_string())
+                        .or_default()
+                        .push(node.name.clone());
+                }
+            }
+        }
+
+        let eligible = self
+            .nodes
+            .values()
+            .filter(|node| {
+                !matches!(node.role, NodeRole::Text)
+                    && !node.attrs.values().any(|attr| !attr.has_default)
+            })
+            .map(|node| node.name.clone())
+            .collect::<HashSet<_>>();
+        let mut generatable = HashSet::new();
+        let mut queued = eligible.clone();
+        let mut pending = eligible.iter().cloned().collect::<VecDeque<_>>();
+
+        while let Some(name) = pending.pop_front() {
+            queued.remove(&name);
+            if generatable.contains(&name) {
+                continue;
+            }
+            let node = self.nodes.get(&name).expect("indexed node");
+            let constructible = node
+                .content
+                .is_constructible_with_budget(
+                    |symbol| {
+                        self.candidate_names_for_symbol(symbol)
+                            .any(|candidate| generatable.contains(candidate))
+                    },
+                    budget,
+                )
+                .ok_or_else(|| "schema constructibility work budget exceeded".to_string())?;
+            if constructible {
+                generatable.insert(name.clone());
+                if let Some(nodes) = dependents.get(&name) {
+                    for dependent in nodes {
+                        if eligible.contains(dependent)
+                            && !generatable.contains(dependent)
+                            && queued.insert(dependent.clone())
+                        {
+                            pending.push_back(dependent.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        for node in self.nodes.values() {
+            let constructible = node
+                .content
+                .is_constructible_with_budget(
+                    |symbol| {
+                        self.candidate_names_for_symbol(symbol)
+                            .any(|candidate| generatable.contains(candidate))
+                    },
+                    budget,
+                )
+                .ok_or_else(|| "schema constructibility work budget exceeded".to_string())?;
+            if !constructible {
+                return Err(format!(
+                    "content rule for '{}' has required content that cannot be auto-created",
+                    node.name
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn candidate_names_for_symbol<'a>(&'a self, symbol: &'a str) -> impl Iterator<Item = &'a str> {
+        self.nodes
+            .get_key_value(symbol)
+            .map(|(name, _)| name.as_str())
+            .into_iter()
+            .chain(
+                self.groups
+                    .get(symbol)
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str),
+            )
+    }
+
+    fn candidates_for_symbol<'a>(&'a self, symbol: &'a str) -> impl Iterator<Item = &'a NodeSpec> {
+        self.candidate_names_for_symbol(symbol)
+            .filter_map(|name| self.nodes.get(name))
     }
 
     /// Look up a node spec by name.
@@ -231,19 +325,20 @@ impl Schema {
     }
 
     pub fn doc_node_type(&self) -> &str {
-        self.nodes
-            .values()
-            .find(|node| matches!(node.role, NodeRole::Doc))
-            .expect("validated schemas always contain one doc role")
-            .name
-            .as_str()
+        &self.doc_node_name
+    }
+
+    pub fn text_node_type(&self) -> &str {
+        &self.text_node_name
     }
 
     /// Return all node specs belonging to the given group.
     pub fn nodes_in_group(&self, group: &str) -> Vec<&NodeSpec> {
-        self.nodes
-            .values()
-            .filter(|node| node_spec_matches_symbol(node, group) && node.name != group)
+        self.groups
+            .get(group)
+            .into_iter()
+            .flatten()
+            .filter_map(|name| self.nodes.get(name))
             .collect()
     }
 
@@ -279,13 +374,9 @@ impl Schema {
     pub fn list_item_type_for(&self, list_type: &str) -> Option<String> {
         let list_spec = self.node(list_type)?;
         let initial_symbols = list_spec.content.initial_symbols();
-        let mut candidates: Vec<&NodeSpec> = self
-            .all_nodes()
-            .filter(|spec| {
-                initial_symbols
-                    .iter()
-                    .any(|symbol| node_spec_matches_symbol(spec, symbol))
-            })
+        let mut candidates: Vec<&NodeSpec> = initial_symbols
+            .into_iter()
+            .flat_map(|symbol| self.candidates_for_symbol(symbol))
             .filter(|spec| matches!(spec.role, NodeRole::ListItem))
             .collect();
         candidates.sort_by(|a, b| a.name.cmp(&b.name));
@@ -430,8 +521,7 @@ impl Schema {
     /// implicitly because they require text content.
     pub fn default_document(&self) -> Result<Document, String> {
         let doc_spec = self
-            .all_nodes()
-            .find(|node| matches!(node.role, NodeRole::Doc))
+            .node(&self.doc_node_name)
             .ok_or_else(|| "schema has no doc role".to_string())?;
         let root = self
             .construct_default_node(
@@ -472,13 +562,11 @@ impl Schema {
         let children = spec.content.minimal_match_with(
             |symbol| {
                 let mut candidates = Vec::new();
-                for candidate in self.all_nodes() {
+                for candidate in self.candidates_for_symbol(symbol) {
                     if !budget.consume_work() {
                         return None;
                     }
-                    if node_spec_matches_symbol(candidate, symbol) {
-                        candidates.push(candidate);
-                    }
+                    candidates.push(candidate);
                 }
                 for _ in &candidates {
                     if !budget.consume_work() {
@@ -526,10 +614,52 @@ impl Schema {
     /// }
     /// ```
     pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        Self::from_json_with_limits(value, &ResourceLimits::default())
+            .map_err(|error| error.message)
+    }
+
+    pub fn from_json_with_limits(
+        value: &serde_json::Value,
+        limits: &ResourceLimits,
+    ) -> BoundaryResult<Self> {
         let nodes_arr = value
             .get("nodes")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| "schema JSON missing 'nodes' array".to_string())?;
+            .ok_or_else(|| {
+                BoundaryError::new("SCHEMA_INVALID", "schema JSON missing 'nodes' array")
+            })?;
+
+        if nodes_arr.len() > limits.max_schema_nodes {
+            return Err(BoundaryError::limit(
+                "SCHEMA_INVALID",
+                limits.max_schema_nodes,
+                nodes_arr.len(),
+            ));
+        }
+
+        let expression_bytes = nodes_arr.iter().try_fold(0usize, |total, node| {
+            total.checked_add(
+                node.get("content")
+                    .and_then(serde_json::Value::as_str)
+                    .map_or(0, str::len),
+            )
+        });
+        let expression_bytes = expression_bytes.ok_or_else(|| {
+            BoundaryError::new("SCHEMA_INVALID", "schema expression size overflow")
+        })?;
+        if expression_bytes > limits.max_schema_expression_bytes {
+            return Err(BoundaryError::limit(
+                "SCHEMA_INVALID",
+                limits.max_schema_expression_bytes,
+                expression_bytes,
+            ));
+        }
+
+        let work_limit = limits
+            .max_schema_nodes
+            .saturating_mul(64)
+            .saturating_add(limits.max_schema_expression_bytes.saturating_mul(32));
+        let budget = WorkBudget::new(work_limit);
 
         let marks_arr = value
             .get("marks")
@@ -542,7 +672,7 @@ impl Schema {
             let name = node_val
                 .get("name")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| "node spec missing 'name'".to_string())?
+                .ok_or_else(|| BoundaryError::new("SCHEMA_INVALID", "node spec missing 'name'"))?
                 .to_string();
 
             let content_str = node_val
@@ -550,8 +680,13 @@ impl Schema {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            let content = ContentRule::parse(content_str)
-                .map_err(|e| format!("content rule parse error for {name}: {e}"))?;
+            let content =
+                ContentRule::parse_with_budget(content_str, &budget).map_err(|error| {
+                    schema_boundary_error(
+                        format!("content rule parse error for {name}: {error}"),
+                        work_limit,
+                    )
+                })?;
 
             let group = node_val
                 .get("group")
@@ -619,7 +754,7 @@ impl Schema {
             let name = mark_val
                 .get("name")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| "mark spec missing 'name'".to_string())?
+                .ok_or_else(|| BoundaryError::new("SCHEMA_INVALID", "mark spec missing 'name'"))?
                 .to_string();
 
             let mut attrs = HashMap::new();
@@ -653,7 +788,24 @@ impl Schema {
             });
         }
 
-        Schema::try_new(nodes, marks)
+        Schema::try_new_with_budget(nodes, marks, &budget)
+            .map_err(|error| schema_boundary_error(error, work_limit))
+    }
+}
+
+fn schema_boundary_error(message: String, work_limit: usize) -> BoundaryError {
+    if message.contains("work budget exceeded")
+        || message.contains("automaton states")
+        || message.contains("nesting exceeds")
+        || message.contains("repetition bound exceeds")
+    {
+        let mut error =
+            BoundaryError::limit("SCHEMA_INVALID", work_limit, work_limit.saturating_add(1));
+        error.message = message;
+        error.details = Some(serde_json::json!({ "phase": "schemaWork" }));
+        error
+    } else {
+        BoundaryError::new("SCHEMA_INVALID", message)
     }
 }
 

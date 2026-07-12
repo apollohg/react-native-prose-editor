@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::boundary::ResourceLimits;
 use crate::editor::Editor;
 use crate::intercept::InterceptorPipeline;
 use crate::schema::Schema;
@@ -38,8 +39,23 @@ impl EditorRegistry {
         interceptors: InterceptorPipeline,
         allow_base64_images: bool,
     ) -> EditorId {
+        Self::create_with_limits(
+            schema,
+            interceptors,
+            allow_base64_images,
+            ResourceLimits::default(),
+        )
+    }
+
+    pub fn create_with_limits(
+        schema: Schema,
+        interceptors: InterceptorPipeline,
+        allow_base64_images: bool,
+        resource_limits: ResourceLimits,
+    ) -> EditorId {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let editor = Editor::new(schema, interceptors, allow_base64_images);
+        let editor =
+            Editor::new_with_limits(schema, interceptors, allow_base64_images, resource_limits);
         let arc = Arc::new(Mutex::new(editor));
 
         let mut map = global_registry().lock().expect("registry lock poisoned");

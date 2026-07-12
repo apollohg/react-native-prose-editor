@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use crate::backend::{DocumentBackend, StandaloneBackend};
+use crate::boundary::ResourceLimits;
 use crate::intercept::{InterceptError, InterceptorPipeline};
 use crate::model::resolved_pos::ResolvedPos;
 use crate::model::{Document, Fragment, Mark, Node};
@@ -136,6 +137,7 @@ pub struct Editor {
     selection: Selection,
     stored_marks: Option<Vec<Mark>>,
     interceptors: InterceptorPipeline,
+    resource_limits: ResourceLimits,
     allow_base64_images: bool,
     document_version: u64,
 }
@@ -149,6 +151,20 @@ impl Editor {
         interceptors: InterceptorPipeline,
         allow_base64_images: bool,
     ) -> Self {
+        Self::new_with_limits(
+            schema,
+            interceptors,
+            allow_base64_images,
+            ResourceLimits::default(),
+        )
+    }
+
+    pub fn new_with_limits(
+        schema: Schema,
+        interceptors: InterceptorPipeline,
+        allow_base64_images: bool,
+        resource_limits: ResourceLimits,
+    ) -> Self {
         let doc = make_empty_doc(&schema);
         let backend = StandaloneBackend::new(doc, &schema);
         Self {
@@ -157,9 +173,14 @@ impl Editor {
             selection: Selection::cursor(1), // inside the initial empty text block
             stored_marks: None,
             interceptors,
+            resource_limits,
             allow_base64_images,
             document_version: 1,
         }
+    }
+
+    pub fn resource_limits(&self) -> &ResourceLimits {
+        &self.resource_limits
     }
 
     // -----------------------------------------------------------------------

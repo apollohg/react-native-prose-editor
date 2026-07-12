@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod boundary;
 pub mod collaboration;
 pub mod editor;
 pub mod history;
@@ -14,12 +15,18 @@ pub mod transform;
 
 pub use schema::presets::{prosemirror_schema, tiptap_schema};
 
+use boundary::{BoundaryError, BoundaryResult, BoundedInput, InputKind, ResourceLimits};
+
 uniffi::setup_scaffolding!();
 
 const INVALID_EDITOR_ID: u64 = 0;
 
 fn error_json(error: impl std::fmt::Display) -> String {
     serde_json::json!({ "error": error.to_string() }).to_string()
+}
+
+fn error_envelope(error: &BoundaryError) -> String {
+    serde_json::json!({ "error": error }).to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -45,20 +52,44 @@ pub fn editor_core_version() -> String {
 /// Falls back to the default Tiptap schema when `"schema"` is absent or invalid.
 #[uniffi::export]
 pub fn editor_create(config_json: String) -> u64 {
-    let config: serde_json::Value =
-        serde_json::from_str(&config_json).unwrap_or_else(|_| serde_json::json!({}));
+    create_editor_from_config(&config_json).unwrap_or(INVALID_EDITOR_ID)
+}
 
-    let schema = config
-        .get("schema")
-        .and_then(|v| schema::Schema::from_json(v).ok())
-        .unwrap_or_else(tiptap_schema);
+#[uniffi::export]
+pub fn editor_create_result(config_json: String) -> String {
+    match create_editor_from_config(&config_json) {
+        Ok(editor_id) => serde_json::json!({ "editorId": editor_id }).to_string(),
+        Err(error) => error_envelope(&error),
+    }
+}
+
+fn create_editor_from_config(config_json: &str) -> BoundaryResult<u64> {
+    let hard_defaults = ResourceLimits::default();
+    let admitted = BoundedInput::new(config_json, InputKind::Config, &hard_defaults)?;
+    let config: serde_json::Value = serde_json::from_str(admitted.as_str())
+        .map_err(|error| BoundaryError::parse("CONFIG_PARSE_FAILED", error))?;
+    let limits = ResourceLimits::try_from_config(config.get("resourceLimits"))?;
+
+    let schema = match config.get("schema") {
+        Some(value) => match schema::Schema::from_json_with_limits(value, &limits) {
+            Ok(schema) => schema,
+            Err(error) if error.limit.is_some() => return Err(error),
+            Err(_) => tiptap_schema(),
+        },
+        None => tiptap_schema(),
+    };
 
     let mut interceptors = intercept::InterceptorPipeline::new();
 
     if let Some(max_length) = config.get("maxLength") {
-        let Some(max_length) = max_length.as_u64().and_then(|value| u32::try_from(value).ok())
+        let Some(max_length) = max_length
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
         else {
-            return INVALID_EDITOR_ID;
+            return Err(BoundaryError::new(
+                "CONFIG_INVALID",
+                "maxLength must be an unsigned 32-bit integer",
+            ));
         };
         interceptors.add(Box::new(intercept::MaxLength::new(max_length)));
     }
@@ -76,7 +107,12 @@ pub fn editor_create(config_json: String) -> u64 {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    registry::EditorRegistry::create(schema, interceptors, allow_base64_images)
+    Ok(registry::EditorRegistry::create_with_limits(
+        schema,
+        interceptors,
+        allow_base64_images,
+        limits,
+    ))
 }
 
 /// Destroy an editor instance, freeing its resources.
