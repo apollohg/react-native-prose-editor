@@ -435,6 +435,231 @@ fn every_editor_ingestion_endpoint_admits_bytes_before_parsing() {
     }
 }
 
+#[test]
+fn direct_text_mutations_reject_utf8_bytes_atomically() {
+    let limits = ResourceLimits {
+        max_input_bytes: 4,
+        ..ResourceLimits::default()
+    };
+    let mut editor =
+        Editor::new_with_limits(tiptap_schema(), InterceptorPipeline::new(), false, limits);
+    let before = editor.get_json();
+    let before_selection = editor.selection().clone();
+
+    for error in [
+        editor_update_error(editor.insert_text(1, "ééé")),
+        editor_update_error(editor.insert_text_scalar(0, "ééé")),
+        editor_update_error(editor.replace_text_scalar(0, 1, "ééé")),
+        editor_update_error(editor.replace_selection_text("ééé")),
+    ] {
+        assert!(error.to_string().contains("INPUT_LIMIT_EXCEEDED"));
+        assert_eq!(editor.get_json(), before);
+        assert_eq!(editor.selection(), &before_selection);
+        assert!(!editor.can_undo());
+    }
+}
+
+#[test]
+fn ffi_text_mutation_rejects_utf8_bytes_with_structured_error() {
+    let created: serde_json::Value = serde_json::from_str(&editor_core::editor_create_result(
+        serde_json::json!({ "resourceLimits": { "maxInputBytes": 4 } }).to_string(),
+    ))
+    .unwrap();
+    let id = created["editorId"].as_u64().unwrap();
+
+    for response in [
+        editor_core::editor_insert_text(id, 1, "ééé".to_string()),
+        editor_core::editor_insert_text_scalar(id, 0, "ééé".to_string()),
+        editor_core::editor_replace_text_scalar(id, 0, 0, "ééé".to_string()),
+        editor_core::editor_replace_selection_text(id, "ééé".to_string()),
+    ] {
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["error"]["code"], "INPUT_LIMIT_EXCEEDED");
+        assert_eq!(value["error"]["limit"], 4);
+        assert_eq!(value["error"]["actual"], 6);
+    }
+    editor_core::editor_destroy(id);
+}
+
+#[test]
+fn delete_and_split_failure_preserves_document_selection_and_history() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "article", "content": "body", "role": "doc" },
+            { "name": "body", "content": "text*", "role": "textBlock", "htmlTag": "section" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+    editor.set_html("<section>ab</section>").unwrap();
+    editor.set_selection_scalar(0, 1);
+    let before = editor.get_json();
+    let before_selection = editor.selection().clone();
+
+    assert!(editor.delete_and_split_scalar(0, 1).is_err());
+    assert_eq!(editor.get_json(), before);
+    assert_eq!(editor.selection(), &before_selection);
+    assert!(!editor.can_undo());
+}
+
+#[test]
+fn split_uses_schema_preferred_constructible_text_block() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "article", "content": "body+", "role": "doc" },
+            { "name": "body", "content": "text*", "group": "body", "role": "textBlock", "htmlTag": "section" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+    editor.set_html("<section>ab</section>").unwrap();
+
+    editor.split_block_scalar(1).unwrap();
+    assert_eq!(editor.get_html(), "<section>a</section><section>b</section>");
+}
+
+#[test]
+fn split_skips_required_attr_candidates_and_applies_defaults() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "article", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "p", "attrs": { "id": {} } },
+            { "name": "body", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "section", "attrs": { "data-kind": { "default": "plain" } } },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+    editor
+        .set_html("<section data-kind=\"plain\">ab</section>")
+        .unwrap();
+
+    editor.split_block_scalar(1).unwrap();
+    assert_eq!(
+        editor.get_html(),
+        "<section data-kind=\"plain\">a</section><section data-kind=\"plain\">b</section>"
+    );
+}
+
+#[test]
+fn delete_and_split_success_is_one_undoable_transaction() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "article", "content": "body+", "role": "doc" },
+            { "name": "body", "content": "text*", "group": "body", "role": "textBlock", "htmlTag": "section" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+    editor.set_html("<section>ab</section>").unwrap();
+
+    editor.delete_and_split_scalar(0, 1).unwrap();
+    assert_eq!(editor.get_html(), "<section></section><section>b</section>");
+    editor.undo().expect("one undo restores both deletion and split");
+    assert_eq!(editor.get_html(), "<section>ab</section>");
+    assert!(!editor.can_undo());
+}
+
+#[test]
+fn custom_doc_root_is_tokenless_for_marked_range_selection() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "article", "content": "body", "role": "doc" },
+            { "name": "body", "content": "text*", "role": "textBlock", "htmlTag": "section" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": [{ "name": "bold", "htmlTag": "strong" }]
+    }))
+    .unwrap();
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+    editor
+        .set_json(&serde_json::json!({
+            "type": "article",
+            "content": [{
+                "type": "body",
+                "content": [{ "type": "text", "text": "x", "marks": [{ "type": "bold" }] }]
+            }]
+        }))
+        .unwrap();
+    editor.set_selection_scalar(0, 1);
+
+    assert_eq!(editor.active_marks(), vec!["bold"]);
+}
+
+#[test]
+fn configured_doc_root_must_be_an_element_not_a_void_node() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "article", "content": "", "role": "doc", "isVoid": true },
+            { "name": "text", "content": "", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+
+    let error = editor
+        .set_json(&serde_json::json!({ "type": "article" }))
+        .unwrap_err();
+    assert!(error.to_string().contains("DOCUMENT_INVALID"));
+}
+
+#[test]
+fn document_content_matching_uses_one_resolved_work_budget() {
+    let alternatives = std::iter::repeat_n("paragraph", 400).collect::<Vec<_>>().join("|");
+    let limits = ResourceLimits {
+        max_document_nodes: 4,
+        ..ResourceLimits::default()
+    };
+    let schema = Schema::from_json_with_limits(
+        &serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": alternatives, "role": "doc" },
+                { "name": "paragraph", "content": "text*", "role": "textBlock", "htmlTag": "p" },
+                { "name": "text", "content": "", "group": "inline", "role": "text" }
+            ],
+            "marks": []
+        }),
+        &limits,
+    )
+    .unwrap();
+    let mut editor = Editor::new_with_limits(schema, InterceptorPipeline::new(), false, limits);
+
+    let error = editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph" }]
+        }))
+        .unwrap_err();
+    let EditorError::Boundary(error) = error else {
+        panic!("expected a boundary error");
+    };
+    assert_eq!(error.code(), "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(error.details.as_ref().unwrap()["phase"], "documentWork");
+}
+
+#[test]
+fn html_import_uses_shared_bounded_work_before_node_construction() {
+    let limits = ResourceLimits {
+        max_document_nodes: 2,
+        ..ResourceLimits::default()
+    };
+    let mut editor =
+        Editor::new_with_limits(tiptap_schema(), InterceptorPipeline::new(), false, limits);
+    let html = std::iter::repeat_n("<future>x</future>", 20).collect::<String>();
+
+    let error = editor.set_html(&html).unwrap_err();
+    assert!(error.to_string().contains("DOCUMENT_LIMIT_EXCEEDED"));
+    assert_eq!(editor.get_html(), "<p></p>");
+}
+
 fn editor_update_error(result: Result<EditorUpdate, EditorError>) -> EditorError {
     match result {
         Ok(_) => panic!("operation must fail"),

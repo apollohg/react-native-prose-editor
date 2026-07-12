@@ -201,15 +201,16 @@ impl Editor {
     /// Replace the document content from an HTML string.
     pub fn set_html(&mut self, html: &str) -> Result<Vec<RenderElement>, EditorError> {
         BoundedInput::new(html, InputKind::Html, &self.resource_limits)?;
-        let doc = serialize::from_html(
+        let doc = serialize::from_html_with_limits(
             html,
             &self.schema,
             &serialize::FromHtmlOptions {
                 strict: false,
                 allow_base64_images: self.allow_base64_images,
             },
+            &self.resource_limits,
         )
-        .map_err(|error| BoundaryError::parse("DOCUMENT_PARSE_FAILED", error))?;
+        .map_err(map_html_parse_error)?;
         self.validate_candidate(&doc)?;
         self.backend = StandaloneBackend::new(doc, &self.schema);
         self.selection = Selection::cursor(1);
@@ -271,6 +272,7 @@ impl Editor {
 
     /// Insert text at a document position.
     pub fn insert_text(&mut self, pos: u32, text: &str) -> Result<EditorUpdate, EditorError> {
+        self.admit_text_mutation(text)?;
         let marks = self.effective_marks_for_insert(pos);
         let mut tx = Transaction::new(Source::Input);
         tx.add_step(Step::InsertText {
@@ -451,13 +453,14 @@ impl Editor {
             return self.apply_empty_split_action(action);
         }
 
-        // Normal split: create a new paragraph block.
+        // Normal split: create the schema-preferred constructible text block.
+        let step = self.preferred_split_step(self.backend.document(), pos).ok_or_else(|| {
+            EditorError::Transform(TransformError::InvalidTarget(
+                "schema has no constructible text block valid at the split position".to_string(),
+            ))
+        })?;
         let mut tx = Transaction::new(Source::Input);
-        tx.add_step(Step::SplitBlock {
-            pos,
-            node_type: "paragraph".to_string(),
-            attrs: HashMap::new(),
-        });
+        tx.add_step(step);
         self.apply_transaction(tx)
     }
 
@@ -826,15 +829,16 @@ impl Editor {
     /// Insert HTML content at the current selection position.
     pub fn insert_content_html(&mut self, html: &str) -> Result<EditorUpdate, EditorError> {
         self.admit_html(html)?;
-        let parsed_doc = serialize::from_html(
+        let parsed_doc = serialize::from_html_with_limits(
             html,
             &self.schema,
             &serialize::FromHtmlOptions {
                 strict: false,
                 allow_base64_images: self.allow_base64_images,
             },
+            &self.resource_limits,
         )
-        .map_err(|error| BoundaryError::parse("DOCUMENT_PARSE_FAILED", error))?;
+        .map_err(map_html_parse_error)?;
 
         let content = match parsed_doc.root().content() {
             Some(c) => c.clone(),
@@ -895,15 +899,16 @@ impl Editor {
     /// preserves the selection where possible.
     pub fn replace_html(&mut self, html: &str) -> Result<EditorUpdate, EditorError> {
         self.admit_html(html)?;
-        let parsed_doc = serialize::from_html(
+        let parsed_doc = serialize::from_html_with_limits(
             html,
             &self.schema,
             &serialize::FromHtmlOptions {
                 strict: false,
                 allow_base64_images: self.allow_base64_images,
             },
+            &self.resource_limits,
         )
-        .map_err(|error| BoundaryError::parse("DOCUMENT_PARSE_FAILED", error))?;
+        .map_err(map_html_parse_error)?;
 
         let content = match parsed_doc.root().content() {
             Some(c) => c.clone(),
@@ -1054,6 +1059,7 @@ impl Editor {
         scalar_pos: u32,
         text: &str,
     ) -> Result<EditorUpdate, EditorError> {
+        self.admit_text_mutation(text)?;
         let doc_pos = self.scalar_to_doc(scalar_pos);
         self.insert_text(doc_pos, text)
     }
@@ -1200,6 +1206,7 @@ impl Editor {
         scalar_to: u32,
         text: &str,
     ) -> Result<EditorUpdate, EditorError> {
+        self.admit_text_mutation(text)?;
         let doc_from = self.scalar_to_doc(scalar_from);
         let doc_to = self.scalar_to_doc(scalar_to);
         let marks = self.effective_marks_for_insert(doc_from);
@@ -1242,25 +1249,45 @@ impl Editor {
             return self.split_block(doc_from);
         }
 
-        // Apply the delete as a separate transaction first.
+        let mut tx = Transaction::new(Source::Input);
         if doc_from < doc_to {
-            let mut delete_tx = Transaction::new(Source::Input);
-            delete_tx.add_step(Step::DeleteRange {
+            tx.add_step(Step::DeleteRange {
                 from: doc_from,
                 to: doc_to,
             });
-            self.apply_transaction(delete_tx)?;
         }
-
-        // After the delete, check if we're now in an empty structured block.
-        // doc_from is still valid because DeleteRange remaps positions before
-        // the range to themselves.
-        if let Some(action) = self.empty_split_action(doc_from) {
-            return self.apply_empty_split_action(action);
-        }
-
-        // Normal split.
-        self.split_block(doc_from)
+        let preview = tx
+            .apply(self.backend.document(), &self.schema)
+            .map_err(EditorError::Transform)?
+            .0;
+        let selection_override = match self.empty_split_action_in_document(&preview, doc_from) {
+            Some(SplitAction::UnwrapList(pos)) => {
+                tx.add_step(Step::UnwrapFromList { pos });
+                None
+            }
+            Some(SplitAction::OutdentList(pos)) => {
+                tx.add_step(Step::OutdentListItem { pos });
+                None
+            }
+            Some(SplitAction::ExitBlockquote(pos)) => {
+                let (step, selection) = self.empty_blockquote_exit_plan(&preview, pos)?;
+                tx.add_step(step);
+                Some(selection)
+            }
+            None => {
+                let step = self
+                    .preferred_split_step(&preview, doc_from)
+                    .ok_or_else(|| {
+                        EditorError::Transform(TransformError::InvalidTarget(
+                            "schema has no constructible text block valid at the split position"
+                                .to_string(),
+                        ))
+                    })?;
+                tx.add_step(step);
+                None
+            }
+        };
+        self.apply_transaction_with_selection_adjustments(tx, None, selection_override)
     }
 
     /// Set the selection from scalar offsets, converting to document positions.
@@ -1383,6 +1410,7 @@ impl Editor {
 
     /// Replace the current selection with plain text in a single transaction.
     pub fn replace_selection_text(&mut self, text: &str) -> Result<EditorUpdate, EditorError> {
+        self.admit_text_mutation(text)?;
         let doc = self.backend.document();
         let from = self.selection.from(doc);
         let to = self.selection.to(doc);
@@ -1558,6 +1586,11 @@ impl Editor {
 
     fn admit_html(&self, html: &str) -> Result<(), EditorError> {
         BoundedInput::new(html, InputKind::Html, &self.resource_limits)?;
+        Ok(())
+    }
+
+    fn admit_text_mutation(&self, text: &str) -> Result<(), EditorError> {
+        BoundedInput::new(text, InputKind::DocumentJson, &self.resource_limits)?;
         Ok(())
     }
 
@@ -2038,7 +2071,7 @@ impl Editor {
 
     /// If `pos` sits at the very end of a code block whose text ends with a
     /// newline (i.e. the caret is on an empty last line), exit the block:
-    /// delete that trailing newline and split into a paragraph after the
+    /// delete that trailing newline and split into the schema-preferred text block after the
     /// code block. Returns `None` when the exit does not apply (caller
     /// should fall back to inserting a literal newline).
     ///
@@ -2065,11 +2098,16 @@ impl Editor {
             from: pos - 1,
             to: pos,
         });
-        tx.add_step(Step::SplitBlock {
-            pos: pos - 1,
-            node_type: "paragraph".to_string(),
-            attrs: HashMap::new(),
-        });
+        let preview = match tx.apply(self.backend.document(), &self.schema) {
+            Ok((preview, _)) => preview,
+            Err(error) => return Some(Err(EditorError::Transform(error))),
+        };
+        let Some(split) = self.preferred_split_step(&preview, pos - 1) else {
+            return Some(Err(EditorError::Transform(TransformError::InvalidTarget(
+                "schema has no constructible text block valid after the code block".to_string(),
+            ))));
+        };
+        tx.add_step(split);
         Some(self.apply_transaction(tx))
     }
 
@@ -2122,6 +2160,68 @@ impl Editor {
         Node::element("paragraph".to_string(), HashMap::new(), Fragment::empty())
     }
 
+    fn default_text_block_node(&self) -> Option<Node> {
+        let spec = self.schema.preferred_text_block()?;
+        let attrs = spec
+            .attrs
+            .iter()
+            .filter_map(|(name, attr)| attr.default.clone().map(|value| (name.clone(), value)))
+            .collect();
+        Some(Node::element(
+            spec.name.clone(),
+            attrs,
+            Fragment::empty(),
+        ))
+    }
+
+    fn preferred_split_step(
+        &self,
+        doc: &Document,
+        pos: u32,
+    ) -> Option<Step> {
+        let resolved = doc.resolve(pos).ok()?;
+        let block_path = &resolved.node_path;
+        let &block_index = block_path.last()?;
+        let parent_path = &block_path[..block_path.len().saturating_sub(1)];
+        let parent = if parent_path.is_empty() {
+            doc.root()
+        } else {
+            doc.node_at(parent_path)?
+        };
+        let parent_spec = self.schema.node(parent.node_type())?;
+        let prefix = parent
+            .content()?
+            .iter()
+            .take(usize::try_from(block_index).ok()?.saturating_add(1))
+            .map(Node::node_type)
+            .collect::<Vec<_>>();
+
+        for name in preferred_text_block_node_names_for_parent(&self.schema, parent_spec, &prefix) {
+            let spec = self.schema.node(&name)?;
+            if !spec.attrs.values().all(|attr| attr.has_default) {
+                continue;
+            }
+            let attrs = spec
+                .attrs
+                .iter()
+                .filter_map(|(name, attr)| {
+                    attr.default.clone().map(|value| (name.clone(), value))
+                })
+                .collect();
+            let step = Step::SplitBlock {
+                pos,
+                node_type: name,
+                attrs,
+            };
+            let mut trial = Transaction::new(Source::Input);
+            trial.add_step(step.clone());
+            if trial.apply(doc, &self.schema).is_ok() {
+                return Some(step);
+            }
+        }
+        None
+    }
+
     fn apply_empty_split_action(
         &mut self,
         action: SplitAction,
@@ -2139,12 +2239,27 @@ impl Editor {
     }
 
     fn empty_split_action(&self, pos: u32) -> Option<SplitAction> {
-        self.empty_list_item_split_action(pos)
-            .or_else(|| self.empty_blockquote_split_action(pos))
+        self.empty_split_action_in_document(self.backend.document(), pos)
+    }
+
+    fn empty_split_action_in_document(&self, doc: &Document, pos: u32) -> Option<SplitAction> {
+        self.empty_list_item_split_action_in_document(doc, pos)
+            .or_else(|| self.empty_blockquote_split_action_in_document(doc, pos))
     }
 
     fn exit_empty_blockquote(&mut self, pos: u32) -> Result<EditorUpdate, EditorError> {
-        let context = self.empty_blockquote_exit_context(pos).ok_or_else(|| {
+        let (step, selection) = self.empty_blockquote_exit_plan(self.backend.document(), pos)?;
+        let mut tx = Transaction::new(Source::Input);
+        tx.add_step(step);
+        self.apply_transaction_with_selection_adjustments(tx, None, Some(selection))
+    }
+
+    fn empty_blockquote_exit_plan(
+        &self,
+        doc: &Document,
+        pos: u32,
+    ) -> Result<(Step, Selection), EditorError> {
+        let context = self.empty_blockquote_exit_context_in_document(doc, pos).ok_or_else(|| {
             EditorError::Transform(TransformError::InvalidTarget(
                 "cannot exit blockquote outside an empty direct blockquote paragraph".to_string(),
             ))
@@ -2180,7 +2295,11 @@ impl Editor {
             replacement.push(before_quote);
         }
 
-        replacement.push(Self::empty_paragraph_node());
+        replacement.push(self.default_text_block_node().ok_or_else(|| {
+            EditorError::Transform(TransformError::InvalidTarget(
+                "schema has no defaultable text block".to_string(),
+            ))
+        })?);
 
         if !after_children.is_empty() {
             replacement.push(Node::element(
@@ -2190,18 +2309,11 @@ impl Editor {
             ));
         }
 
-        let mut tx = Transaction::new(Source::Input);
-        tx.add_step(Step::ReplaceRange {
+        Ok((Step::ReplaceRange {
             from: context.replace_from,
             to: context.replace_to,
             content: Fragment::from(replacement),
-        });
-
-        self.apply_transaction_with_selection_adjustments(
-            tx,
-            None,
-            Some(Selection::cursor(target_cursor_pos.saturating_add(1))),
-        )
+        }, Selection::cursor(target_cursor_pos.saturating_add(1))))
     }
 
     fn empty_text_block_replace_range_at(&self, pos: u32) -> Option<(u32, u32)> {
@@ -3471,8 +3583,11 @@ impl Editor {
     /// (a list item whose only child is an empty text block). Returns `None`
     /// for non-empty items or positions not in a list — callers fall through
     /// to the normal split_block path.
-    fn empty_list_item_split_action(&self, pos: u32) -> Option<SplitAction> {
-        let doc = self.backend.document();
+    fn empty_list_item_split_action_in_document(
+        &self,
+        doc: &Document,
+        pos: u32,
+    ) -> Option<SplitAction> {
         let resolved = doc.resolve(pos).ok()?;
 
         // 1. Check we're in an empty text block
@@ -3530,14 +3645,25 @@ impl Editor {
         Some(SplitAction::UnwrapList(pos))
     }
 
-    fn empty_blockquote_split_action(&self, pos: u32) -> Option<SplitAction> {
-        self.empty_blockquote_exit_context(pos)
+    fn empty_blockquote_split_action_in_document(
+        &self,
+        doc: &Document,
+        pos: u32,
+    ) -> Option<SplitAction> {
+        self.empty_blockquote_exit_context_in_document(doc, pos)
             .map(|context| SplitAction::ExitBlockquote(context.cursor_pos))
     }
 
     fn empty_blockquote_exit_context(&self, pos: u32) -> Option<EmptyBlockquoteExitContext> {
+        self.empty_blockquote_exit_context_in_document(self.backend.document(), pos)
+    }
+
+    fn empty_blockquote_exit_context_in_document(
+        &self,
+        doc: &Document,
+        pos: u32,
+    ) -> Option<EmptyBlockquoteExitContext> {
         let blockquote_type = self.blockquote_node_name()?;
-        let doc = self.backend.document();
         let resolved = doc.resolve(pos).ok()?;
 
         let parent = resolved.parent(doc);
@@ -3910,6 +4036,7 @@ impl Editor {
             from,
             to,
             &mut overlapping_marks,
+            true,
         );
 
         let mut iter = overlapping_marks.into_iter();
@@ -3934,6 +4061,7 @@ impl Editor {
         from: u32,
         to: u32,
         out: &mut Vec<Vec<Mark>>,
+        is_root: bool,
     ) {
         if from >= to {
             return;
@@ -3951,7 +4079,7 @@ impl Editor {
             return;
         };
 
-        let mut child_start = if node.node_type() == "doc" {
+        let mut child_start = if is_root {
             start
         } else {
             start + 1
@@ -3959,7 +4087,7 @@ impl Editor {
         for child in content.iter() {
             let child_end = child_start + child.node_size();
             if child_end > from && child_start < to {
-                Self::collect_text_marks_in_range(child, child_start, from, to, out);
+                Self::collect_text_marks_in_range(child, child_start, from, to, out, false);
             }
             child_start = child_end;
         }
@@ -4105,6 +4233,15 @@ fn map_json_parse_error(error: serialize::JsonParseError) -> EditorError {
         )
         .into(),
         serialize::JsonParseError::ResourceLimit { limit, actual } => {
+            BoundaryError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, actual).into()
+        }
+        other => BoundaryError::parse("DOCUMENT_PARSE_FAILED", other).into(),
+    }
+}
+
+fn map_html_parse_error(error: serialize::ParseError) -> EditorError {
+    match error {
+        serialize::ParseError::ResourceLimit { limit, actual } => {
             BoundaryError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, actual).into()
         }
         other => BoundaryError::parse("DOCUMENT_PARSE_FAILED", other).into(),

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use crate::boundary::{BoundaryError, BoundaryResult, ResourceLimits};
 use crate::model::{Document, Fragment, Mark, Node};
+use crate::schema::content_rule::WorkBudget;
 use crate::schema::{NodeRole, Schema};
 
 use super::mapping::StepMap;
@@ -2144,7 +2145,10 @@ impl DocumentValidator {
         let root_spec = schema.node(doc.root().node_type()).ok_or_else(|| {
             BoundaryError::new("DOCUMENT_INVALID", "document root is not in the schema")
         })?;
-        if !matches!(root_spec.role, NodeRole::Doc) {
+        if doc.root().node_type() != schema.doc_node_type()
+            || !doc.root().is_element()
+            || !matches!(root_spec.role, NodeRole::Doc)
+        {
             return Err(BoundaryError::new(
                 "DOCUMENT_INVALID",
                 format!("document root '{}' does not have the doc role", doc.root().node_type()),
@@ -2155,7 +2159,9 @@ impl DocumentValidator {
             node_count: 0,
             max_depth: 0,
         };
-        validate_node(doc.root(), schema, limits, 1, &mut stats)?;
+        let work_limit = limits.max_document_nodes.saturating_mul(128);
+        let budget = WorkBudget::new(work_limit);
+        validate_node(doc.root(), schema, limits, 1, &mut stats, &budget, work_limit)?;
         Ok(stats)
     }
 }
@@ -2179,6 +2185,8 @@ fn validate_node(
     limits: &ResourceLimits,
     depth: usize,
     stats: &mut DocumentStats,
+    budget: &WorkBudget,
+    work_limit: usize,
 ) -> BoundaryResult<()> {
     stats.node_count = stats.node_count.saturating_add(1);
     stats.max_depth = stats.max_depth.max(depth);
@@ -2225,9 +2233,23 @@ fn validate_node(
         BoundaryError::new("DOCUMENT_INVALID", "non-void schema node has no content")
     })?;
     let children = content.iter().collect::<Vec<_>>();
-    if !spec.content.matches(&children, |child, symbol| {
-        child_matches_group(child, symbol, schema)
-    }) {
+    let matches = spec
+        .content
+        .matches_with_budget(
+            &children,
+            |child, symbol| child_matches_group(child, symbol, schema),
+            budget,
+        )
+        .map_err(|()| {
+            let mut error = BoundaryError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                work_limit,
+                work_limit.saturating_add(1),
+            );
+            error.details = Some(serde_json::json!({ "phase": "documentWork" }));
+            error
+        })?;
+    if !matches {
         let child_types = children
             .iter()
             .map(|child| child.node_type())
@@ -2243,7 +2265,15 @@ fn validate_node(
     }
 
     for child in content.iter() {
-        validate_node(child, schema, limits, depth.saturating_add(1), stats)?;
+        validate_node(
+            child,
+            schema,
+            limits,
+            depth.saturating_add(1),
+            stats,
+            budget,
+            work_limit,
+        )?;
     }
     Ok(())
 }
@@ -2313,19 +2343,8 @@ fn child_matches_group(child: &Node, group: &str, schema: &Schema) -> bool {
             .attrs()
             .get("opaque_placement")
             .and_then(|value| value.as_str());
-        return schema.all_nodes().any(|spec| {
-            crate::schema::node_spec_matches_symbol(spec, group)
-                && match placement {
-                    Some("inline") => matches!(
-                        spec.role,
-                        NodeRole::Text | NodeRole::Inline | NodeRole::HardBreak
-                    ),
-                    Some("block") => !matches!(
-                        spec.role,
-                        NodeRole::Text | NodeRole::Inline | NodeRole::HardBreak | NodeRole::Doc
-                    ),
-                    _ => false,
-                }
+        return placement.is_some_and(|placement| {
+            schema.symbol_accepts_opaque_placement(group, placement)
         });
     }
     schema

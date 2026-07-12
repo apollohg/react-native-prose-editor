@@ -40,6 +40,39 @@ fn schema_rejects_node_and_aggregate_expression_limits() {
 }
 
 #[test]
+fn schema_rejects_unsafe_html_tags_and_attribute_identifiers() {
+    for schema in [
+        serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "paragraph", "role": "doc" },
+                { "name": "paragraph", "content": "", "role": "textBlock", "htmlTag": "p><script" },
+                { "name": "text", "role": "text" }
+            ],
+            "marks": []
+        }),
+        serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "paragraph", "role": "doc" },
+                { "name": "paragraph", "content": "", "role": "textBlock", "attrs": { "on load": { "default": "" } } },
+                { "name": "text", "role": "text" }
+            ],
+            "marks": []
+        }),
+        serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "paragraph", "role": "doc" },
+                { "name": "paragraph", "content": "text*", "role": "textBlock" },
+                { "name": "text", "role": "text" }
+            ],
+            "marks": [{ "name": "link", "htmlTag": "a", "attrs": { "href\" onclick": { "default": "" } } }]
+        }),
+    ] {
+        let error = Schema::from_json_with_limits(&schema, &ResourceLimits::default()).unwrap_err();
+        assert_eq!(error.code(), "SCHEMA_INVALID");
+    }
+}
+
+#[test]
 fn reversed_dependency_chain_is_constructible_within_the_indexed_work_budget() {
     const CHAIN_LENGTH: usize = 128;
     let mut nodes = vec![serde_json::json!({

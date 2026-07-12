@@ -98,6 +98,39 @@ fn custom_mark_names_are_never_emitted_as_raw_html_tags() {
 }
 
 #[test]
+fn json_mark_attrs_receive_schema_defaults() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "paragraph", "role": "doc" },
+            { "name": "paragraph", "content": "text*", "role": "textBlock", "htmlTag": "p" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": [{
+            "name": "link", "htmlTag": "a",
+            "attrs": { "target": { "default": "_self" }, "href": { "default": "" } }
+        }]
+    }))
+    .unwrap();
+    let json = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": "x", "marks": [{ "type": "link", "attrs": { "href": "/" } }] }]
+        }]
+    });
+
+    let document = editor_core::serialize::from_prosemirror_json(
+        &json,
+        &schema,
+        editor_core::serialize::UnknownTypeMode::Error,
+    )
+    .unwrap();
+    let output = editor_core::serialize::to_prosemirror_json(&document, &schema);
+    assert_eq!(output["content"][0]["content"][0]["marks"][0]["attrs"]["target"], "_self");
+    assert_eq!(output["content"][0]["content"][0]["marks"][0]["attrs"]["href"], "/");
+}
+
+#[test]
 fn custom_block_and_list_attrs_round_trip_through_html() {
     let schema = Schema::from_json(&serde_json::json!({
         "nodes": [

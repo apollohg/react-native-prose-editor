@@ -245,14 +245,19 @@ fn parse_mark_attrs(
     let Some(spec) = spec else {
         return HashMap::new();
     };
-    match mark_obj.get("attrs") {
-        Some(Value::Object(attrs_obj)) => attrs_obj
-            .iter()
-            .filter(|(k, _)| spec.allow_undeclared_attrs || spec.attrs.contains_key(*k))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-        _ => HashMap::new(),
+    let mut attrs = spec
+        .attrs
+        .iter()
+        .filter_map(|(name, attr)| attr.default.clone().map(|value| (name.clone(), value)))
+        .collect::<HashMap<_, _>>();
+    if let Some(Value::Object(attrs_obj)) = mark_obj.get("attrs") {
+        for (name, value) in attrs_obj {
+            if spec.allow_undeclared_attrs || spec.attrs.contains_key(name) {
+                attrs.insert(name.clone(), value.clone());
+            }
+        }
     }
+    attrs
 }
 
 /// Parse node attributes from a node's JSON object, filling in schema defaults

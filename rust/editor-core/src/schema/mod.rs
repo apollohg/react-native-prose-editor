@@ -39,6 +39,10 @@ impl SchemaValidationError {
 pub struct Schema {
     nodes: HashMap<String, NodeSpec>,
     marks: HashMap<String, MarkSpec>,
+    node_html_tags: HashMap<String, String>,
+    mark_html_tags: HashMap<String, String>,
+    preferred_text_block_name: Option<String>,
+    fallback_list_item_name: Option<String>,
     groups: HashMap<String, Vec<String>>,
     symbol_role_masks: HashMap<String, u8>,
     doc_node_name: String,
@@ -148,6 +152,20 @@ impl Schema {
     ) -> Result<Self, SchemaValidationError> {
         let mut node_names = HashSet::new();
         for node in &nodes {
+            if let Some(tag) = node.html_tag.as_deref() {
+                if !is_safe_html_tag(tag) {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "node '{}' has invalid HTML tag '{}'",
+                        node.name, tag
+                    )));
+                }
+            }
+            if let Some(name) = node.attrs.keys().find(|name| !is_safe_html_attr(name)) {
+                return Err(SchemaValidationError::semantic(format!(
+                    "node '{}' has invalid HTML attribute identifier '{}'",
+                    node.name, name
+                )));
+            }
             if node
                 .attrs
                 .values()
@@ -177,6 +195,12 @@ impl Schema {
                         mark.name, tag
                     )));
                 }
+            }
+            if let Some(name) = mark.attrs.keys().find(|name| !is_safe_html_attr(name)) {
+                return Err(SchemaValidationError::semantic(format!(
+                    "mark '{}' has invalid HTML attribute identifier '{}'",
+                    mark.name, name
+                )));
             }
             if mark
                 .attrs
@@ -250,6 +274,48 @@ impl Schema {
             }
         }
 
+        let mut node_html_tags = HashMap::new();
+        for node in &nodes {
+            if let Some(tag) = &node.html_tag {
+                // Several supported schemas intentionally map multiple semantic
+                // node types to the same HTML tag (for example task and bullet
+                // lists). Preserve descriptor order as the deterministic import
+                // precedence while keeping lookup constant-time.
+                node_html_tags
+                    .entry(tag.clone())
+                    .or_insert_with(|| node.name.clone());
+            }
+        }
+        let mut mark_html_tags = HashMap::new();
+        for mark in &marks {
+            if let Some(tag) = &mark.html_tag {
+                mark_html_tags
+                    .entry(tag.clone())
+                    .or_insert_with(|| mark.name.clone());
+            }
+        }
+
+        let preferred_text_block_name = nodes
+            .iter()
+            .filter(|node| matches!(node.role, NodeRole::TextBlock))
+            .filter(|node| node.attrs.values().all(|attr| attr.has_default))
+            .min_by_key(|node| {
+                (
+                    if node.html_tag.as_deref() == Some("p") || node.name == "paragraph" {
+                        0
+                    } else {
+                        1
+                    },
+                    node.name.as_str(),
+                )
+            })
+            .map(|node| node.name.clone());
+        let fallback_list_item_name = nodes
+            .iter()
+            .filter(|node| matches!(node.role, NodeRole::ListItem))
+            .min_by_key(|node| node.name.as_str())
+            .map(|node| node.name.clone());
+
         let schema = Self {
             nodes: nodes
                 .into_iter()
@@ -259,6 +325,10 @@ impl Schema {
                 .into_iter()
                 .map(|mark| (mark.name.clone(), mark))
                 .collect(),
+            node_html_tags,
+            mark_html_tags,
+            preferred_text_block_name,
+            fallback_list_item_name,
             groups,
             symbol_role_masks,
             doc_node_name: doc_names.into_iter().next().expect("one doc role"),
@@ -484,9 +554,25 @@ impl Schema {
 
     /// Find the first node spec whose `html_tag` matches the given tag name.
     pub fn node_by_html_tag(&self, tag: &str) -> Option<&NodeSpec> {
-        self.nodes
-            .values()
-            .find(|n| n.html_tag.as_deref() == Some(tag))
+        self.node_html_tags
+            .get(tag)
+            .and_then(|name| self.nodes.get(name))
+    }
+
+    pub fn mark_by_html_tag(&self, tag: &str) -> Option<&MarkSpec> {
+        self.mark_html_tags
+            .get(tag)
+            .and_then(|name| self.marks.get(name))
+    }
+
+    pub fn preferred_text_block(&self) -> Option<&NodeSpec> {
+        self.preferred_text_block_name
+            .as_deref()
+            .and_then(|name| self.node(name))
+    }
+
+    pub fn fallback_list_item_type(&self) -> Option<&str> {
+        self.fallback_list_item_name.as_deref()
     }
 
     /// Iterate over all node specs.
@@ -880,6 +966,20 @@ impl Schema {
         Schema::try_new_with_budget(nodes, marks, &budget)
             .map_err(|error| schema_boundary_error(error, work_limit))
     }
+}
+
+fn is_safe_html_tag(tag: &str) -> bool {
+    let mut chars = tag.chars();
+    matches!(chars.next(), Some('a'..='z'))
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+}
+
+fn is_safe_html_attr(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(ch) if ch.is_ascii_alphabetic() || ch == '_' || ch == ':')
+        && chars.all(|ch| {
+            ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '.' | '-')
+        })
 }
 
 fn content_rule_schema_error(name: &str, error: ContentRuleError) -> SchemaValidationError {

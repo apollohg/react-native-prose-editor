@@ -135,6 +135,39 @@ impl ContentRule {
         states.contains(&self.accept)
     }
 
+    pub(crate) fn matches_with_budget<T, F>(
+        &self,
+        children: &[T],
+        mut symbol_matches: F,
+        budget: &WorkBudget,
+    ) -> Result<bool, ()>
+    where
+        F: FnMut(&T, &str) -> bool,
+    {
+        let mut current = self.epsilon_closure_budgeted([self.start], budget)?;
+        for child in children {
+            let mut next = HashSet::new();
+            for state in current {
+                if !budget.consume() {
+                    return Err(());
+                }
+                for (symbol, target) in &self.states[state].transitions {
+                    if !budget.consume() {
+                        return Err(());
+                    }
+                    if symbol_matches(child, symbol) {
+                        next.insert(*target);
+                    }
+                }
+            }
+            if next.is_empty() {
+                return Ok(false);
+            }
+            current = self.epsilon_closure_budgeted(next, budget)?;
+        }
+        Ok(current.contains(&self.accept))
+    }
+
     /// Return symbols accepted immediately after the supplied prefix.
     pub fn accepting_symbols_after<T, F>(&self, children: &[T], mut symbol_matches: F) -> Vec<&str>
     where

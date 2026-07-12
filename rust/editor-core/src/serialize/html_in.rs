@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use ego_tree::iter::Edge;
 use scraper::Html;
 
+use crate::boundary::ResourceLimits;
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::{NodeRole, Schema};
 
@@ -20,6 +22,7 @@ pub enum ParseError {
     UnknownTag(String),
     /// The parsed content does not satisfy the schema's content rules.
     InvalidContent(String),
+    ResourceLimit { limit: usize, actual: usize },
 }
 
 impl fmt::Display for ParseError {
@@ -27,6 +30,9 @@ impl fmt::Display for ParseError {
         match self {
             ParseError::UnknownTag(tag) => write!(f, "unknown HTML tag: <{}>", tag),
             ParseError::InvalidContent(msg) => write!(f, "invalid content: {}", msg),
+            ParseError::ResourceLimit { limit, actual } => {
+                write!(f, "HTML parse work exceeds limit {limit}: {actual}")
+            }
         }
     }
 }
@@ -75,8 +81,7 @@ fn mark_from_element(
         .or_else(|| tag_to_mark_type(tag).filter(|name| schema.mark(name).is_some()))
         .or_else(|| {
             schema
-                .all_marks()
-                .find(|spec| spec.html_tag.as_deref() == Some(tag))
+                .mark_by_html_tag(tag)
                 .map(|spec| spec.name.as_str())
         })?;
     let spec = schema.mark(mark_type)?;
@@ -222,9 +227,45 @@ pub fn from_html(
     schema: &Schema,
     options: &FromHtmlOptions,
 ) -> Result<Document, ParseError> {
+    from_html_with_limits(html, schema, options, &ResourceLimits::default())
+}
+
+pub fn from_html_with_limits(
+    html: &str,
+    schema: &Schema,
+    options: &FromHtmlOptions,
+    limits: &ResourceLimits,
+) -> Result<Document, ParseError> {
     let fragment = Html::parse_fragment(html);
     let root_el = fragment.root_element();
 
+    // Charge every scraper node once before recursive conversion. This shared
+    // admission pass bounds import work independently of schema size and
+    // prevents nested helpers from resetting their own allowance.
+    let work_limit = limits.max_document_nodes.saturating_mul(4);
+    let mut actual = 0usize;
+    let mut depth = 0usize;
+    for edge in root_el.traverse() {
+        match edge {
+            Edge::Open(_) => {
+                actual = actual.saturating_add(1);
+                depth = depth.saturating_add(1);
+                if actual > work_limit {
+                    return Err(ParseError::ResourceLimit {
+                        limit: work_limit,
+                        actual,
+                    });
+                }
+                if depth > limits.max_document_depth {
+                    return Err(ParseError::ResourceLimit {
+                        limit: limits.max_document_depth,
+                        actual: depth,
+                    });
+                }
+            }
+            Edge::Close(_) => depth = depth.saturating_sub(1),
+        }
+    }
     let mut block_children = Vec::new();
     let mut inline_acc: Vec<Node> = Vec::new();
 
@@ -590,10 +631,7 @@ fn collect_list_items(
     let mut items = Vec::new();
     let list_item_name = schema.list_item_type_for(&list_spec.name);
     let fallback_list_item = || {
-        schema
-            .all_nodes()
-            .find(|node| matches!(node.role, NodeRole::ListItem))
-            .map(|node| node.name.clone())
+        schema.fallback_list_item_type().map(str::to_string)
     };
 
     for child in list_ref.children() {
@@ -768,12 +806,7 @@ fn make_paragraph(schema: &Schema, children: Vec<Node>) -> Node {
         .node_by_html_tag("p")
         .or_else(|| schema.node("paragraph"))
         .map(|n| n.name.as_str())
-        .or_else(|| {
-            schema
-                .all_nodes()
-                .find(|n| matches!(n.role, NodeRole::TextBlock))
-                .map(|n| n.name.as_str())
-        })
+        .or_else(|| schema.preferred_text_block().map(|node| node.name.as_str()))
         .unwrap_or("paragraph");
     Node::element(
         para_name.to_string(),
