@@ -259,6 +259,7 @@ if (behaviorMode) {
     }
 }
 
-console.log(
-    `Security contracts and hostile fixtures are consistent across TypeScript, Rust, Android, and iOS${behaviorMode ? ', including executed behavior' : ''}${releaseMode ? ', including release artifacts' : ''}.`
-);
+const validationScope = behaviorMode
+    ? 'Security contracts and hostile fixture behavior are consistent across TypeScript, Rust, Android, and iOS'
+    : 'Security contract source constants and hostile fixture definitions are consistent';
+console.log(`${validationScope}${releaseMode ? ', including release artifacts' : ''}.`);
