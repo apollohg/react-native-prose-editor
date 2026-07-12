@@ -143,6 +143,23 @@ describe('schema-aware document normalization', () => {
         expect(normalizeDocumentJson(foreign, articleSchema)).toBe(foreign);
     });
 
+    it('never selects a non-root node named doc before the document-role node', () => {
+        const schema: SchemaDefinition = {
+            nodes: [
+                { name: 'doc', content: '', role: 'block' },
+                { name: 'article', content: 'paragraph', role: 'doc' },
+                { name: 'paragraph', content: '', role: 'textBlock' },
+                { name: 'text', content: '', role: 'text' },
+            ],
+            marks: [],
+        };
+
+        expect(defaultEmptyDocument(resolveDocumentSchema(schema))).toEqual({
+            type: 'article',
+            content: [{ type: 'paragraph' }],
+        });
+    });
+
     it('falls back to Tiptap for schemas native would reject', () => {
         const empty = { nodes: [], marks: [] } as SchemaDefinition;
         const unconstructible: SchemaDefinition = {
@@ -183,7 +200,7 @@ describe('schema-aware document normalization', () => {
     });
 
     it('retains a valid custom schema', () => {
-        expect(resolveDocumentSchema(articleSchema)).toBe(articleSchema);
+        expect(resolveDocumentSchema(articleSchema)).toMatchObject(articleSchema);
     });
 
     it('matches native by treating a non-array marks field as an empty mark list', () => {
@@ -200,7 +217,7 @@ describe('schema-aware document normalization', () => {
             ...articleSchema,
             marks: [{ name: 'highlight', htmlTag: 'mark' }],
         };
-        expect(resolveDocumentSchema(approved)).toBe(approved);
+        expect(resolveDocumentSchema(approved)).toMatchObject(approved);
 
         expect(
             resolveDocumentSchema({
@@ -208,6 +225,57 @@ describe('schema-aware document normalization', () => {
                 marks: [{ name: 'danger', htmlTag: 'script' }],
             } as unknown as SchemaDefinition)
         ).toBe(tiptapSchema);
+    });
+
+    it('matches native schema defaults, tag normalization, and identifier validation', () => {
+        const schema = {
+            nodes: [
+                { name: 'article', content: 'paragraph', role: 'doc' },
+                { name: 'paragraph', group: 'block', role: 'textBlock', htmlTag: 'p' },
+                { name: 'text', role: 'text' },
+            ],
+            marks: [{ name: 'highlight', htmlTag: 'MARK' }],
+        } as unknown as SchemaDefinition;
+        const resolved = resolveDocumentSchema(schema);
+
+        expect(resolved).not.toBe(schema);
+        expect(resolved.nodes[1]).toMatchObject({ content: '', isVoid: false });
+        expect(resolved.marks[0].htmlTag).toBe('mark');
+
+        for (const invalid of [
+            { ...schema, nodes: [{ ...schema.nodes[0], htmlTag: 'P' }, ...schema.nodes.slice(1)] },
+            {
+                ...schema,
+                nodes: [
+                    schema.nodes[0],
+                    { ...schema.nodes[1], attrs: { 'on load': {} } },
+                    schema.nodes[2],
+                ],
+            },
+            {
+                ...schema,
+                marks: [{ name: 'highlight', attrs: { 'href\" onclick': {} } }],
+            },
+        ] as SchemaDefinition[]) {
+            expect(resolveDocumentSchema(invalid)).toBe(tiptapSchema);
+        }
+    });
+
+    it('matches native by treating non-object attrs and non-string groups as absent', () => {
+        const schema = {
+            nodes: [
+                { name: 'article', content: 'paragraph', role: 'doc', group: 7 },
+                { name: 'paragraph', role: 'textBlock', attrs: [] },
+                { name: 'text', role: 'text' },
+            ],
+            marks: [{ name: 'highlight', attrs: 'ignored' }],
+        } as unknown as SchemaDefinition;
+
+        const resolved = resolveDocumentSchema(schema);
+        expect(resolved.nodes[0].name).toBe('article');
+        expect(resolved.nodes[0].group).toBeUndefined();
+        expect(resolved.nodes[1].attrs).toBeUndefined();
+        expect(resolved.marks[0].attrs).toBeUndefined();
     });
 
     it('resolves one custom-root descriptor for empty documents and fragments', () => {
@@ -300,10 +368,7 @@ describe('schema-aware document normalization', () => {
             'attrs',
             {
                 attrs: Object.fromEntries(
-                    Array.from({ length: 700 }, (_, index) => [
-                        `a${index}`,
-                        { default: null },
-                    ])
+                    Array.from({ length: 700 }, (_, index) => [`a${index}`, { default: null }])
                 ),
             },
         ],

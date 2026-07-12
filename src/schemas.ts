@@ -79,6 +79,18 @@ type DocumentDescriptorLimits = Pick<
 
 export const IMAGE_NODE_NAME = 'image';
 const HEADING_LEVELS = [1, 2, 3, 4, 5, 6] as const;
+const ALLOWED_MARK_HTML_TAGS = new Set([
+    'span',
+    'strong',
+    'em',
+    'u',
+    's',
+    'code',
+    'a',
+    'sub',
+    'sup',
+    'mark',
+]);
 
 export function imageNodeSpec(name: string = IMAGE_NODE_NAME): NodeSpec {
     return {
@@ -277,8 +289,7 @@ function collectOwnAttrs(
     value: unknown,
     budget: SchemaWorkBudget
 ): Array<[string, AttrSpec]> | null {
-    if (value == null) return [];
-    if (typeof value !== 'object' || Array.isArray(value)) return null;
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) return [];
     const attrs: Array<[string, AttrSpec]> = [];
     for (const name in value) {
         if (!Object.prototype.hasOwnProperty.call(value, name)) continue;
@@ -286,6 +297,125 @@ function collectOwnAttrs(
         attrs.push([name, (value as Record<string, AttrSpec>)[name]]);
     }
     return attrs;
+}
+
+function isSafeHtmlTag(tag: string): boolean {
+    if (tag.length === 0 || tag[0] < 'a' || tag[0] > 'z') return false;
+    for (let index = 1; index < tag.length; index += 1) {
+        const char = tag[index];
+        if (!((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char === '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function isSafeHtmlAttr(name: string): boolean {
+    if (name.length === 0) return false;
+    const isAlpha = (char: string): boolean =>
+        (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z');
+    if (!(isAlpha(name[0]) || name[0] === '_' || name[0] === ':')) return false;
+    for (let index = 1; index < name.length; index += 1) {
+        const char = name[index];
+        if (
+            !(
+                isAlpha(char) ||
+                (char >= '0' && char <= '9') ||
+                char === '_' ||
+                char === ':' ||
+                char === '.' ||
+                char === '-'
+            )
+        ) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function normalizeAttrs(value: unknown): Record<string, AttrSpec> {
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(
+        Object.entries(value).map(([name, rawSpec]) => {
+            if (rawSpec == null || typeof rawSpec !== 'object' || Array.isArray(rawSpec)) {
+                return [name, {}];
+            }
+            return Object.prototype.hasOwnProperty.call(rawSpec, 'default') &&
+                (rawSpec as AttrSpec).default !== undefined
+                ? [name, { default: (rawSpec as AttrSpec).default }]
+                : [name, {}];
+        })
+    );
+}
+
+function normalizeSchemaDefinition(schema: SchemaDefinition): SchemaDefinition | null {
+    const normalizeRole = (role: unknown): string => {
+        switch (role) {
+            case 'doc':
+            case 'textBlock':
+            case 'list':
+            case 'listItem':
+            case 'text':
+            case 'hardBreak':
+            case 'inline':
+                return role;
+            default:
+                return 'block';
+        }
+    };
+    const nodes: NodeSpec[] = [];
+    for (const rawNode of schema.nodes) {
+        if (rawNode == null || typeof rawNode !== 'object' || typeof rawNode.name !== 'string') {
+            return null;
+        }
+        const raw = rawNode as unknown as Record<string, unknown>;
+        const htmlTag = typeof raw.htmlTag === 'string' ? raw.htmlTag : undefined;
+        const attrs = normalizeAttrs(raw.attrs);
+        if (
+            (htmlTag != null && !isSafeHtmlTag(htmlTag)) ||
+            Object.keys(attrs).some((name) => !isSafeHtmlAttr(name))
+        ) {
+            return null;
+        }
+        nodes.push({
+            name: rawNode.name,
+            content: typeof raw.content === 'string' ? raw.content : '',
+            ...(typeof raw.group === 'string' ? { group: raw.group } : {}),
+            ...(Object.keys(attrs).length > 0 ? { attrs } : {}),
+            role: normalizeRole(raw.role),
+            ...(htmlTag == null ? {} : { htmlTag }),
+            isVoid: typeof raw.isVoid === 'boolean' ? raw.isVoid : false,
+            ...(typeof raw.allowUndeclaredAttrs === 'boolean'
+                ? { allowUndeclaredAttrs: raw.allowUndeclaredAttrs }
+                : {}),
+        });
+    }
+
+    const marks: MarkSpec[] = [];
+    for (const rawMark of schema.marks) {
+        if (rawMark == null || typeof rawMark !== 'object' || typeof rawMark.name !== 'string') {
+            return null;
+        }
+        const raw = rawMark as unknown as Record<string, unknown>;
+        const htmlTag = typeof raw.htmlTag === 'string' ? raw.htmlTag.toLowerCase() : undefined;
+        const attrs = normalizeAttrs(raw.attrs);
+        if (
+            (htmlTag != null && !ALLOWED_MARK_HTML_TAGS.has(htmlTag)) ||
+            Object.keys(attrs).some((name) => !isSafeHtmlAttr(name))
+        ) {
+            return null;
+        }
+        marks.push({
+            name: rawMark.name,
+            ...(Object.keys(attrs).length > 0 ? { attrs } : {}),
+            ...(typeof raw.excludes === 'string' ? { excludes: raw.excludes } : {}),
+            ...(htmlTag == null ? {} : { htmlTag: htmlTag as MarkSpec['htmlTag'] }),
+            ...(typeof raw.allowUndeclaredAttrs === 'boolean'
+                ? { allowUndeclaredAttrs: raw.allowUndeclaredAttrs }
+                : {}),
+        });
+    }
+    return { nodes, marks };
 }
 
 function schemaBoundaryError(limit: number, actual: number): NativeEditorBoundaryError {
@@ -321,8 +451,7 @@ function admitSchemaCollections(
     for (const node of schema.nodes) {
         if (node == null || typeof node !== 'object') return null;
         const groups: string[] = [];
-        if (node.group != null) {
-            if (typeof node.group !== 'string') return null;
+        if (typeof node.group === 'string') {
             if (
                 !forEachGroupToken(
                     node.group,
@@ -386,7 +515,15 @@ export function resolveDocumentSchema(
         }
     }
     const schemaBudget = createSchemaWorkBudget(resolvedLimits);
-    const admittedCollections = admitSchemaCollections(schema, schemaBudget);
+    if (admitSchemaCollections(schema, schemaBudget) == null) return tiptapSchema;
+    const normalizedSchema = normalizeSchemaDefinition(schema);
+    if (normalizedSchema == null) return tiptapSchema;
+    schema = normalizedSchema;
+    const admittedCollections = admitSchemaCollections(schema, {
+        limit: Number.MAX_SAFE_INTEGER,
+        work: 0,
+        exhausted: false,
+    });
     if (admittedCollections == null) return tiptapSchema;
 
     const nodeNames = new Set<string>();
@@ -413,10 +550,6 @@ export function resolveDocumentSchema(
             mark == null ||
             typeof mark.name !== 'string' ||
             mark.name.length === 0 ||
-            (mark.htmlTag != null &&
-                !['span', 'strong', 'em', 'u', 's', 'code', 'a', 'sub', 'sup', 'mark'].includes(
-                    mark.htmlTag
-                )) ||
             markNames.has(mark.name)
         ) {
             return tiptapSchema;
@@ -505,7 +638,7 @@ function constructDefaultEmptyDocument(
     resolvedLimits: ResolvedEditorResourceLimits,
     admittedCollections: AdmittedSchemaCollections
 ): DocumentJSON {
-    const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
+    const docNode = schema.nodes.find((node) => node.role === 'doc');
     if (!docNode) throw new Error('schema cannot construct a default document: missing doc role');
 
     const budget = { nodes: 0, work: 0, exhausted: false };

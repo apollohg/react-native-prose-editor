@@ -275,6 +275,7 @@ jest.mock('expo-modules-core', () => ({
 // ─── Imports ────────────────────────────────────────────────────
 
 import {
+    decodeCollaborationStateBase64,
     NativeCollaborationBridge,
     NativeEditorBridge,
     _resetNativeModuleCache,
@@ -287,7 +288,7 @@ import {
     resolveEditorImageLoadingPolicy,
 } from '../ImageLoadingPolicy';
 import { Platform } from 'react-native';
-import { resolveDocumentDescriptor } from '../schemas';
+import { resolveDocumentDescriptor, type SchemaDefinition } from '../schemas';
 
 // ─── Tests ──────────────────────────────────────────────────────
 
@@ -481,9 +482,8 @@ describe('NativeEditorBridge', () => {
             const schemaJson = JSON.stringify({ nodes: { doc: {} } });
             const bridge = NativeEditorBridge.create({ schemaJson });
 
-            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith(
-                JSON.stringify({ schema: { nodes: { doc: {} } } })
-            );
+            const sent = JSON.parse(mockNativeModule.editorCreateResult.mock.calls[0][0]);
+            expect(sent.schema).toEqual(resolveDocumentDescriptor().schema);
             expect(bridge.editorId).toBe(1);
 
             bridge.destroy();
@@ -493,9 +493,11 @@ describe('NativeEditorBridge', () => {
             const schemaJson = JSON.stringify({ nodes: { doc: {} } });
             const bridge = NativeEditorBridge.create({ maxLength: 200, schemaJson });
 
-            expect(mockNativeModule.editorCreateResult).toHaveBeenCalledWith(
-                JSON.stringify({ maxLength: 200, schema: { nodes: { doc: {} } } })
-            );
+            const sent = JSON.parse(mockNativeModule.editorCreateResult.mock.calls[0][0]);
+            expect(sent).toEqual({
+                maxLength: 200,
+                schema: resolveDocumentDescriptor().schema,
+            });
             expect(bridge.editorId).toBe(1);
 
             bridge.destroy();
@@ -522,6 +524,23 @@ describe('NativeEditorBridge', () => {
                 JSON.stringify({ type: 'article', content: [{ type: 'title' }] })
             );
             bridge.destroy();
+        });
+
+        it('sends the descriptor-resolved schema to native', () => {
+            NativeEditorBridge.create({
+                schemaJson: JSON.stringify({
+                    nodes: [
+                        { name: 'article', content: 'paragraph', role: 'doc' },
+                        { name: 'paragraph', role: 'textBlock' },
+                        { name: 'text', role: 'text' },
+                    ],
+                    marks: [{ name: 'highlight', htmlTag: 'MARK' }],
+                }),
+            });
+
+            const sent = JSON.parse(mockNativeModule.editorCreateResult.mock.calls[0][0]);
+            expect(sent.schema.nodes[1]).toMatchObject({ content: '', isVoid: false });
+            expect(sent.schema.marks[0].htmlTag).toBe('mark');
         });
 
         it('creates a bridge with allowBase64Images in config', () => {
@@ -579,6 +598,43 @@ describe('NativeEditorBridge', () => {
     });
 
     describe('NativeCollaborationBridge', () => {
+        it('caps raw base64 before whitespace normalization for initial and outgoing state', () => {
+            const paddedWithWhitespace = `AQ==${' '.repeat(12)}`;
+            expect(() =>
+                NativeCollaborationBridge.create({
+                    initialEncodedState: paddedWithWhitespace,
+                    resourceLimits: { maxInputBytes: 8, maxEncodedStateBytes: 4 },
+                })
+            ).toThrow(
+                expect.objectContaining({ code: 'INPUT_LIMIT_EXCEEDED', limit: 8, actual: 16 })
+            );
+            expect(mockNativeModule.collaborationSessionCreate).not.toHaveBeenCalled();
+
+            const bridge = NativeCollaborationBridge.create({
+                resourceLimits: { maxInputBytes: 8, maxEncodedStateBytes: 4 },
+            });
+            expect(() => bridge.applyEncodedState(' '.repeat(9))).toThrow(
+                expect.objectContaining({ code: 'INPUT_LIMIT_EXCEEDED', limit: 8, actual: 9 })
+            );
+            expect(mockNativeModule.collaborationSessionApplyEncodedState).not.toHaveBeenCalled();
+            bridge.destroy();
+        });
+
+        it('validates and decodes compatible whitespace in one bounded base64 pass', () => {
+            expect(
+                decodeCollaborationStateBase64(' A\nQ\tI\rD ', {
+                    maxInputBytes: 16,
+                    maxEncodedStateBytes: 3,
+                })
+            ).toEqual(Uint8Array.from([1, 2, 3]));
+            expect(() =>
+                decodeCollaborationStateBase64('AQ=A', {
+                    maxInputBytes: 16,
+                    maxEncodedStateBytes: 3,
+                })
+            ).toThrow('NativeEditorBridge: invalid encoded collaboration state');
+        });
+
         it('rejects oversized initial and subsequent encoded state atomically', () => {
             expect(() =>
                 NativeCollaborationBridge.create({
@@ -642,7 +698,11 @@ describe('NativeEditorBridge', () => {
             );
 
             mockNativeModule.collaborationSessionStart.mockReturnValueOnce(
-                JSON.stringify({ messages: [[1, 2, 3]], documentChanged: false, peersChanged: false })
+                JSON.stringify({
+                    messages: [[1, 2, 3]],
+                    documentChanged: false,
+                    peersChanged: false,
+                })
             );
             expect(() => bridge.start()).toThrow(
                 expect.objectContaining({ code: 'INPUT_LIMIT_EXCEEDED', limit: 2, actual: 3 })
@@ -689,10 +749,27 @@ describe('NativeEditorBridge', () => {
             expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
                 JSON.stringify({
                     fragmentName: 'default',
-                    schema: MOCK_COLLABORATION_SCHEMA,
+                    schema: resolveDocumentDescriptor(MOCK_COLLABORATION_SCHEMA).schema,
                 })
             );
 
+            bridge.destroy();
+        });
+
+        it('sends descriptor-resolved schema metadata for direct collaboration creation', () => {
+            const schema = {
+                nodes: [
+                    { name: 'article', content: 'paragraph', role: 'doc' },
+                    { name: 'paragraph', role: 'textBlock' },
+                    { name: 'text', role: 'text' },
+                ],
+                marks: [{ name: 'highlight', htmlTag: 'MARK' }],
+            } as const;
+
+            const typedSchema = schema as unknown as SchemaDefinition;
+            const bridge = NativeCollaborationBridge.create({ schema: typedSchema });
+            const sent = JSON.parse(mockNativeModule.collaborationSessionCreate.mock.calls[0][0]);
+            expect(sent.schema).toEqual(resolveDocumentDescriptor(typedSchema).schema);
             bridge.destroy();
         });
 

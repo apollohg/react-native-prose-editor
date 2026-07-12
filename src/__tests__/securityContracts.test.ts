@@ -39,4 +39,42 @@ describe('shared hostile security fixtures', () => {
         expect(descriptor.documentNodeName).toBe(fixture.expectedRoot);
         expect(descriptor.emptyDocument.type).toBe(fixture.expectedRoot);
     });
+
+    it('normalizes the shared schema fixture exactly as the Rust boundary does', () => {
+        const fixture = fixtures.schemaNormalizationParity;
+        const descriptor = resolveDocumentDescriptor(fixture.missingFields as SchemaDefinition);
+
+        expect(descriptor.schema.nodes).toEqual([
+            {
+                name: 'article',
+                content: 'paragraph',
+                role: 'doc',
+                isVoid: false,
+            },
+            {
+                name: 'paragraph',
+                content: '',
+                group: 'block',
+                role: 'textBlock',
+                htmlTag: 'p',
+                isVoid: false,
+            },
+            { name: 'text', content: '', role: 'text', isVoid: false },
+        ]);
+        expect(descriptor.schema.marks).toEqual([{ name: 'highlight', htmlTag: 'mark' }]);
+    });
+
+    it.each(['invalidNodeTag', 'invalidAttribute'])(
+        'falls back for the shared %s schema fixture',
+        (fixtureName) => {
+            const fixture = fixtures.schemaNormalizationParity;
+            const schema = structuredClone(fixture.missingFields) as SchemaDefinition;
+            if (fixtureName === 'invalidNodeTag') {
+                schema.nodes[1].htmlTag = fixture.invalidNodeTag;
+            } else {
+                schema.marks[0].attrs = { [fixture.invalidAttribute]: {} };
+            }
+            expect(resolveDocumentDescriptor(schema).schema.nodes[0].name).toBe('doc');
+        }
+    );
 });

@@ -38,6 +38,18 @@
         "document": { "type": "article", "content": [{ "type": "title" }] },
         "expectedRoot": "article"
     },
+    "schemaNormalizationParity": {
+        "missingFields": {
+            "nodes": [
+                { "name": "article", "content": "paragraph", "role": "doc" },
+                { "name": "paragraph", "group": "block", "role": "textBlock", "htmlTag": "p" },
+                { "name": "text", "role": "text" }
+            ],
+            "marks": [{ "name": "highlight", "htmlTag": "MARK" }]
+        },
+        "invalidNodeTag": "p><script",
+        "invalidAttribute": "href\" onclick"
+    },
     "whitespaceBase64": {
         "source": "data:image/png;base64, A Q = = \n",
         "whitespaceCountsTowardAdmission": true

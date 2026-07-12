@@ -346,36 +346,12 @@ function peersToRemoteSelections(peers: readonly CollaborationPeer[]): RemoteSel
     });
 }
 
-function encodedStateInputLength(encodedState: EncodedCollaborationStateInput): number {
-    if (typeof encodedState !== 'string') return encodedState.length;
-    let symbols = 0;
-    let padding = 0;
-    for (let index = 0; index < encodedState.length; index += 1) {
-        const char = encodedState[index];
-        if (/\s/.test(char)) continue;
-        symbols += 1;
-        padding = char === '=' ? padding + 1 : 0;
-    }
-    return symbols === 0
-        ? 0
-        : Math.max(0, Math.floor((symbols * 3) / 4) - Math.min(padding, 2));
-}
-
 function encodeInitialStateKey(
     encodedState: EncodedCollaborationStateInput | undefined,
     limits: ResolvedEditorResourceLimits
 ): string {
     if (encodedState == null) return '';
-    const actual = encodedStateInputLength(encodedState);
-    if (actual > limits.maxEncodedStateBytes) {
-        throw new NativeEditorBoundaryError(
-            'INPUT_LIMIT_EXCEEDED',
-            `encoded state exceeds limit ${limits.maxEncodedStateBytes}: ${actual}`,
-            limits.maxEncodedStateBytes,
-            actual
-        );
-    }
-    return encodeCollaborationStateBase64(encodedState);
+    return encodeCollaborationStateBase64(encodedState, limits);
 }
 
 class YjsCollaborationControllerImpl implements YjsCollaborationController {

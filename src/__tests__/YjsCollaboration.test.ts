@@ -159,7 +159,7 @@ jest.mock('expo-modules-core', () => ({
 }));
 
 import React from 'react';
-import { render, act } from '@testing-library/react-native';
+import { render, renderHook, act } from '@testing-library/react-native';
 import { createYjsCollaborationController, useYjsCollaboration } from '../YjsCollaboration';
 import type { DocumentJSON } from '../NativeEditorBridge';
 import { _resetNativeModuleCache, NativeCollaborationBridge } from '../NativeEditorBridge';
@@ -1039,20 +1039,18 @@ describe('YjsCollaboration', () => {
             },
         });
 
-        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
-            JSON.stringify({
-                fragmentName: 'default',
-                schema: TITLE_FIRST_SCHEMA,
-                localAwareness: {
-                    user: {
-                        userId: '1',
-                        name: 'Alice',
-                        color: '#f00',
-                    },
-                    focused: false,
+        expect(JSON.parse(mockNativeModule.collaborationSessionCreate.mock.calls[0][0])).toEqual({
+            fragmentName: 'default',
+            schema: schemas.resolveDocumentDescriptor(TITLE_FIRST_SCHEMA).schema,
+            localAwareness: {
+                user: {
+                    userId: '1',
+                    name: 'Alice',
+                    color: '#f00',
                 },
-            })
-        );
+                focused: false,
+            },
+        });
         expect(controller.state.documentJson).toEqual(TITLE_EMPTY_DOC);
 
         controller.destroy();
@@ -1344,20 +1342,18 @@ describe('YjsCollaboration', () => {
             },
         });
 
-        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
-            JSON.stringify({
-                fragmentName: 'default',
-                schema: CUSTOM_COLLABORATION_SCHEMA,
-                localAwareness: {
-                    user: {
-                        userId: '1',
-                        name: 'Alice',
-                        color: '#f00',
-                    },
-                    focused: false,
+        expect(JSON.parse(mockNativeModule.collaborationSessionCreate.mock.calls[0][0])).toEqual({
+            fragmentName: 'default',
+            schema: schemas.resolveDocumentDescriptor(CUSTOM_COLLABORATION_SCHEMA).schema,
+            localAwareness: {
+                user: {
+                    userId: '1',
+                    name: 'Alice',
+                    color: '#f00',
                 },
-            })
-        );
+                focused: false,
+            },
+        });
     });
 
     it('seeds the native Yjs session from initial document JSON', () => {
@@ -1486,6 +1482,26 @@ describe('YjsCollaboration', () => {
             })
         ).toThrow('NativeEditorBridge: invalid encoded state');
         expect(mockNativeModule.collaborationSessionDestroy).toHaveBeenCalledWith(1);
+    });
+
+    it('bounds the raw initial-state hook key before whitespace normalization', () => {
+        expect(() =>
+            renderHook(() =>
+                useYjsCollaboration({
+                    documentId: 'doc-raw-limit',
+                    connect: false,
+                    createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+                    initialEncodedState: ' '.repeat(9),
+                    resourceLimits: { maxInputBytes: 8, maxEncodedStateBytes: 4 },
+                    localAwareness: {
+                        userId: '1',
+                        name: 'Alice',
+                        color: '#f00',
+                    },
+                })
+            )
+        ).toThrow(expect.objectContaining({ code: 'INPUT_LIMIT_EXCEEDED', limit: 8, actual: 9 }));
+        expect(mockNativeModule.collaborationSessionCreate).not.toHaveBeenCalled();
     });
 
     it('exposes the durable encoded collaboration state', () => {

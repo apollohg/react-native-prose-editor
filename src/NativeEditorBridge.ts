@@ -61,20 +61,6 @@ function assertCountWithinLimit(actual: number, limit: number): void {
     }
 }
 
-function encodedStateByteLength(encodedState: EncodedCollaborationStateInput): number {
-    if (typeof encodedState !== 'string') return encodedState.length;
-    let symbols = 0;
-    let padding = 0;
-    for (let index = 0; index < encodedState.length; index += 1) {
-        const char = encodedState[index];
-        if (/\s/.test(char)) continue;
-        symbols += 1;
-        padding = char === '=' ? padding + 1 : 0;
-    }
-    if (symbols === 0) return 0;
-    return Math.max(0, Math.floor((symbols * 3) / 4) - Math.min(padding, 2));
-}
-
 export interface NativeEditorModule {
     editorCreateResult(configJson: string): string;
     editorDestroy(editorId: number): void;
@@ -530,7 +516,7 @@ function parseByteArrayJson(json: string, limit?: number): Uint8Array {
     }
 }
 
-function bytesToBase64(bytes: readonly number[]): string {
+function bytesToBase64(bytes: ArrayLike<number>): string {
     let output = '';
     for (let index = 0; index < bytes.length; index += 3) {
         const byte1 = bytes[index] ?? 0;
@@ -546,57 +532,141 @@ function bytesToBase64(bytes: readonly number[]): string {
     return output;
 }
 
-function base64ToBytes(base64: string): Uint8Array {
-    const normalized = base64.replace(/\s+/g, '');
-    if (normalized.length === 0) return new Uint8Array();
-    if (normalized.length % 4 === 1) {
-        throw new Error(ERR_INVALID_ENCODED_STATE);
-    }
+const BASE64_COMPATIBILITY_WHITESPACE_LIMIT = 4096;
 
-    const bytes: number[] = [];
-    for (let index = 0; index < normalized.length; index += 4) {
-        const chunk = normalized.slice(index, index + 4);
-        const values = chunk.split('').map((char, charIndex) => {
-            if (char === '=') {
-                return charIndex >= 2 ? 0 : -1;
-            }
-            const value = BASE64_ALPHABET.indexOf(char);
-            return value;
-        });
-
-        if (values[0] < 0 || values[1] < 0 || values.some((value) => value < 0)) {
-            throw new Error(ERR_INVALID_ENCODED_STATE);
-        }
-
-        const combined = (values[0] << 18) | (values[1] << 12) | (values[2] << 6) | values[3];
-
-        bytes.push((combined >> 16) & 0xff);
-        if (chunk[2] !== '=') {
-            bytes.push((combined >> 8) & 0xff);
-        }
-        if (chunk[3] !== '=') {
-            bytes.push(combined & 0xff);
-        }
-    }
-
-    return Uint8Array.from(bytes);
+function isBase64CompatibilityWhitespace(char: string): boolean {
+    return char === ' ' || char === '\t' || char === '\r' || char === '\n' || char === '\f';
 }
 
-function normalizeEncodedStateInput(encodedState: EncodedCollaborationStateInput): number[] {
-    if (typeof encodedState === 'string') {
-        return Array.from(base64ToBytes(encodedState));
+function decodeBase64WithinLimits(
+    base64: string,
+    limits: ResolvedEditorResourceLimits
+): Uint8Array {
+    const encodedCeiling = Math.ceil(limits.maxEncodedStateBytes / 3) * 4;
+    const derivedRawLimit = Math.min(
+        Number.MAX_SAFE_INTEGER,
+        encodedCeiling + BASE64_COMPATIBILITY_WHITESPACE_LIMIT
+    );
+    const rawLimit = Math.min(limits.maxInputBytes, derivedRawLimit);
+    if (base64.length > rawLimit) {
+        throw new NativeEditorBoundaryError(
+            'INPUT_LIMIT_EXCEEDED',
+            `input exceeds limit ${rawLimit}: ${base64.length}`,
+            rawLimit,
+            base64.length
+        );
     }
-    return Array.from(encodedState);
+
+    let output = new Uint8Array(Math.min(limits.maxEncodedStateBytes, 1024));
+    const quartet = [0, 0, 0, 0];
+    let quartetLength = 0;
+    let outputLength = 0;
+    let whitespace = 0;
+    let sawPadding = false;
+
+    const writeQuartet = (byteCount: number): void => {
+        const nextLength = outputLength + byteCount;
+        if (nextLength > limits.maxEncodedStateBytes) {
+            throw new NativeEditorBoundaryError(
+                'INPUT_LIMIT_EXCEEDED',
+                `input exceeds limit ${limits.maxEncodedStateBytes}: ${nextLength}`,
+                limits.maxEncodedStateBytes,
+                nextLength
+            );
+        }
+        if (nextLength > output.length) {
+            const nextCapacity = Math.min(
+                limits.maxEncodedStateBytes,
+                Math.max(nextLength, Math.max(1, output.length) * 2)
+            );
+            const grown = new Uint8Array(nextCapacity);
+            grown.set(output);
+            output = grown;
+        }
+        const combined =
+            (quartet[0] << 18) |
+            (quartet[1] << 12) |
+            ((quartet[2] < 0 ? 0 : quartet[2]) << 6) |
+            (quartet[3] < 0 ? 0 : quartet[3]);
+        output[outputLength] = (combined >> 16) & 0xff;
+        if (byteCount > 1) output[outputLength + 1] = (combined >> 8) & 0xff;
+        if (byteCount > 2) output[outputLength + 2] = combined & 0xff;
+        outputLength = nextLength;
+    };
+
+    for (let index = 0; index < base64.length; index += 1) {
+        const char = base64[index];
+        if (isBase64CompatibilityWhitespace(char)) {
+            whitespace += 1;
+            if (whitespace > BASE64_COMPATIBILITY_WHITESPACE_LIMIT) {
+                throw new NativeEditorBoundaryError(
+                    'INPUT_LIMIT_EXCEEDED',
+                    `input whitespace exceeds limit ${BASE64_COMPATIBILITY_WHITESPACE_LIMIT}: ${whitespace}`,
+                    BASE64_COMPATIBILITY_WHITESPACE_LIMIT,
+                    whitespace
+                );
+            }
+            continue;
+        }
+        if (sawPadding) throw new Error(ERR_INVALID_ENCODED_STATE);
+
+        if (char === '=') {
+            if (quartetLength < 2) throw new Error(ERR_INVALID_ENCODED_STATE);
+            quartet[quartetLength] = -1;
+        } else {
+            const value = BASE64_ALPHABET.indexOf(char);
+            if (value < 0) throw new Error(ERR_INVALID_ENCODED_STATE);
+            quartet[quartetLength] = value;
+        }
+        quartetLength += 1;
+
+        if (quartetLength === 4) {
+            if (quartet[2] < 0) {
+                if (quartet[3] >= 0) throw new Error(ERR_INVALID_ENCODED_STATE);
+                writeQuartet(1);
+                sawPadding = true;
+            } else if (quartet[3] < 0) {
+                writeQuartet(2);
+                sawPadding = true;
+            } else {
+                writeQuartet(3);
+            }
+            quartetLength = 0;
+        }
+    }
+
+    if (quartetLength === 1 || (quartetLength > 0 && quartet[quartetLength - 1] < 0)) {
+        throw new Error(ERR_INVALID_ENCODED_STATE);
+    }
+    if (quartetLength === 2) writeQuartet(1);
+    if (quartetLength === 3) writeQuartet(2);
+    return outputLength === output.length ? output : output.slice(0, outputLength);
+}
+
+export function normalizeEncodedCollaborationStateInput(
+    encodedState: EncodedCollaborationStateInput,
+    resourceLimits?: EditorResourceLimits
+): Uint8Array {
+    const limits = resolveEditorResourceLimits(resourceLimits);
+    if (typeof encodedState === 'string') {
+        return decodeBase64WithinLimits(encodedState, limits);
+    }
+    assertCountWithinLimit(encodedState.length, limits.maxEncodedStateBytes);
+    return encodedState instanceof Uint8Array ? encodedState : Uint8Array.from(encodedState);
 }
 
 export function encodeCollaborationStateBase64(
-    encodedState: EncodedCollaborationStateInput
+    encodedState: EncodedCollaborationStateInput,
+    resourceLimits?: EditorResourceLimits
 ): string {
-    return bytesToBase64(normalizeEncodedStateInput(encodedState));
+    return bytesToBase64(normalizeEncodedCollaborationStateInput(encodedState, resourceLimits));
 }
 
-export function decodeCollaborationStateBase64(base64: string): Uint8Array {
-    return base64ToBytes(base64);
+export function decodeCollaborationStateBase64(
+    base64: string,
+    resourceLimits?: EditorResourceLimits
+): Uint8Array {
+    return normalizeEncodedCollaborationStateInput(base64, resourceLimits);
 }
 
 function normalizeDocumentJsonString(
@@ -786,7 +856,6 @@ export class NativeEditorBridge {
             assertInputStringWithinLimit(config.schemaJson, resolvedResourceLimits.maxInputBytes);
             try {
                 parsedSchema = JSON.parse(config.schemaJson) as SchemaDefinition;
-                configObj.schema = parsedSchema;
             } catch {
                 // Fall back to the default schema when the provided JSON is invalid.
             }
@@ -798,6 +867,7 @@ export class NativeEditorBridge {
             parsedSchema == null && config?.documentDescriptor != null
                 ? config.documentDescriptor
                 : resolveDocumentDescriptor(parsedSchema, config?.resourceLimits);
+        if (parsedSchema != null) configObj.schema = descriptor.schema;
         const nativeModule = getNativeModule();
         const configJson = JSON.stringify(configObj);
         const id = parseEditorId(nativeModule.editorCreateResult(configJson));
@@ -1583,27 +1653,30 @@ export class NativeCollaborationBridge {
         ) {
             throw new Error('NativeEditorBridge: invalid maxLength');
         }
-        const { initialEncodedState, resourceLimits, ...normalizedConfig } = config ?? {};
+        const { initialEncodedState, resourceLimits, schema, ...normalizedConfig } = config ?? {};
         const resolvedResourceLimits = resolveEditorResourceLimits(resourceLimits);
-        if (initialEncodedState != null) {
-            assertCountWithinLimit(
-                encodedStateByteLength(initialEncodedState),
-                resolvedResourceLimits.maxEncodedStateBytes
-            );
-        }
+        const normalizedInitialEncodedState =
+            initialEncodedState == null
+                ? undefined
+                : normalizeEncodedCollaborationStateInput(
+                      initialEncodedState,
+                      resolvedResourceLimits
+                  );
         if (normalizedConfig.initialDocumentJson != null) {
             assertInputStringWithinLimit(
                 JSON.stringify(normalizedConfig.initialDocumentJson),
                 resolvedResourceLimits.maxInputBytes
             );
         }
-        const resolvedConfig =
-            resourceLimits == null
-                ? normalizedConfig
-                : {
-                      ...normalizedConfig,
-                      resourceLimits: resolveEditorResourceLimits(resourceLimits),
-                  };
+        const resolvedConfig = {
+            ...normalizedConfig,
+            ...(schema == null
+                ? {}
+                : { schema: resolveDocumentDescriptor(schema, resolvedResourceLimits).schema }),
+            ...(resourceLimits == null
+                ? {}
+                : { resourceLimits: resolveEditorResourceLimits(resourceLimits) }),
+        };
         const nativeModule = getNativeModule();
         const configJson = JSON.stringify(resolvedConfig);
         const id = nativeModule.collaborationSessionCreateResult
@@ -1613,9 +1686,9 @@ export class NativeCollaborationBridge {
             throw new Error('NativeEditorBridge: native collaboration creation failed');
         }
         const bridge = new NativeCollaborationBridge(id, resolvedResourceLimits);
-        if (initialEncodedState != null) {
+        if (normalizedInitialEncodedState != null) {
             try {
-                bridge.replaceEncodedState(initialEncodedState);
+                bridge.replaceEncodedState(normalizedInitialEncodedState);
             } catch (error) {
                 bridge.destroy();
                 throw error;
@@ -1675,37 +1748,34 @@ export class NativeCollaborationBridge {
         const json = JSON.stringify(doc);
         assertInputStringWithinLimit(json, this._resourceLimits.maxInputBytes);
         return this.parseBoundedResult(
-            getNativeModule().collaborationSessionApplyLocalDocumentJson(
-                this._sessionId,
-                json
-            )
+            getNativeModule().collaborationSessionApplyLocalDocumentJson(this._sessionId, json)
         );
     }
 
     applyEncodedState(encodedState: EncodedCollaborationStateInput): CollaborationResult {
         this.assertNotDestroyed();
-        assertCountWithinLimit(
-            encodedStateByteLength(encodedState),
-            this._resourceLimits.maxEncodedStateBytes
+        const normalized = normalizeEncodedCollaborationStateInput(
+            encodedState,
+            this._resourceLimits
         );
         return this.parseBoundedResult(
             getNativeModule().collaborationSessionApplyEncodedState(
                 this._sessionId,
-                JSON.stringify(normalizeEncodedStateInput(encodedState))
+                JSON.stringify(Array.from(normalized))
             )
         );
     }
 
     replaceEncodedState(encodedState: EncodedCollaborationStateInput): CollaborationResult {
         this.assertNotDestroyed();
-        assertCountWithinLimit(
-            encodedStateByteLength(encodedState),
-            this._resourceLimits.maxEncodedStateBytes
+        const normalized = normalizeEncodedCollaborationStateInput(
+            encodedState,
+            this._resourceLimits
         );
         return this.parseBoundedResult(
             getNativeModule().collaborationSessionReplaceEncodedState(
                 this._sessionId,
-                JSON.stringify(normalizeEncodedStateInput(encodedState))
+                JSON.stringify(Array.from(normalized))
             )
         );
     }
