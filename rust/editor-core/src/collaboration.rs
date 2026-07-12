@@ -21,8 +21,11 @@ use yrs::{
     TransactionMut, Update, WriteTxn,
 };
 
-use crate::schema::presets::{prosemirror_schema, tiptap_schema};
+use crate::boundary::{BoundaryError, BoundaryResult, BoundedInput, InputKind, ResourceLimits};
+use crate::schema::presets::tiptap_schema;
 use crate::schema::Schema;
+use crate::serialize::{from_prosemirror_json_with_limits, UnknownTypeMode};
+use crate::transform::DocumentValidator;
 
 pub type CollaborationSessionId = u64;
 
@@ -115,6 +118,9 @@ pub struct CollaborationSession {
     cached_peer_states: HashMap<u64, CachedPeerState>,
     peers_revision: u64,
     local_awareness_state: Option<Value>,
+    schema: Schema,
+    resource_limits: ResourceLimits,
+    max_length: Option<u32>,
 }
 
 fn empty_document_json(document_root_type: &str) -> Value {
@@ -124,13 +130,31 @@ fn empty_document_json(document_root_type: &str) -> Value {
     })
 }
 
+fn check_binary_input(actual: usize, limit: usize) -> BoundaryResult<()> {
+    if actual > limit {
+        return Err(BoundaryError::limit("INPUT_LIMIT_EXCEEDED", limit, actual));
+    }
+    Ok(())
+}
+
 impl CollaborationSession {
     pub fn new(config_json: &str) -> Self {
-        let config: Value = serde_json::from_str(config_json).unwrap_or_else(|_| json!({}));
+        Self::try_new(config_json)
+            .unwrap_or_else(|_| Self::from_config(&json!({}), ResourceLimits::default()))
+    }
+
+    fn try_new(config_json: &str) -> BoundaryResult<Self> {
+        let defaults = ResourceLimits::default();
+        let admitted = BoundedInput::new(config_json, InputKind::Config, &defaults)?;
+        let config: Value = serde_json::from_str(admitted.as_str())
+            .map_err(|error| BoundaryError::parse("CONFIG_PARSE_FAILED", error))?;
+        let limits = ResourceLimits::try_from_config(config.get("resourceLimits"))?;
+        Ok(Self::from_config(&config, limits))
+    }
+
+    fn from_config(config: &Value, resource_limits: ResourceLimits) -> Self {
         let client_id = config.get("clientId").and_then(Value::as_u64);
-        let mut doc_options = client_id
-            .map(Options::with_client_id)
-            .unwrap_or_default();
+        let mut doc_options = client_id.map(Options::with_client_id).unwrap_or_default();
         doc_options.offset_kind = OffsetKind::Utf16;
         let doc = Doc::with_options(doc_options);
         let awareness = Awareness::new(doc.clone());
@@ -139,8 +163,13 @@ impl CollaborationSession {
             .and_then(Value::as_str)
             .unwrap_or("prosemirror")
             .to_string();
-        let void_element_tags = void_element_tags_from_config(&config);
-        let document_root_type = document_root_type_from_config(&config);
+        let schema = schema_from_config(config, &resource_limits);
+        let void_element_tags = void_element_tags_from_schema_with_opaque(&schema);
+        let document_root_type = schema.doc_node_type().to_string();
+        let max_length = config
+            .get("maxLength")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok());
 
         let mut session = Self {
             doc,
@@ -154,6 +183,9 @@ impl CollaborationSession {
             cached_peer_states: HashMap::new(),
             peers_revision: 0,
             local_awareness_state: None,
+            schema,
+            resource_limits,
+            max_length,
         };
 
         if let Some(initial_json) = config.get("initialDocumentJson") {
@@ -171,6 +203,10 @@ impl CollaborationSession {
         session
     }
 
+    pub fn resource_limits(&self) -> &ResourceLimits {
+        &self.resource_limits
+    }
+
     pub fn encoded_state(&self) -> Vec<u8> {
         self.doc
             .transact()
@@ -180,47 +216,138 @@ impl CollaborationSession {
     pub fn apply_encoded_state(
         &mut self,
         encoded_state: Vec<u8>,
-    ) -> Result<CollaborationResult, String> {
-        self.merge_encoded_state(encoded_state)
+    ) -> BoundaryResult<CollaborationResult> {
+        self.commit_encoded_state(encoded_state, false)
     }
 
     pub fn replace_encoded_state(
         &mut self,
         encoded_state: Vec<u8>,
-    ) -> Result<CollaborationResult, String> {
-        self.reset_shared_state();
-        self.merge_encoded_state(encoded_state)
+    ) -> BoundaryResult<CollaborationResult> {
+        self.commit_encoded_state(encoded_state, true)
     }
 
-    fn merge_encoded_state(
+    fn commit_encoded_state(
         &mut self,
         encoded_state: Vec<u8>,
-    ) -> Result<CollaborationResult, String> {
+        replace: bool,
+    ) -> BoundaryResult<CollaborationResult> {
         let previous_document_revision = self.document_revision;
         let previous_peers_revision = self.peers_revision;
+        let previous_document_json = self.cached_document_json.clone();
+        let previous_peers = self.cached_peers.clone();
+        let mut candidate = self.decode_candidate_state(&encoded_state, replace)?;
 
-        let update = Update::decode_v1(encoded_state.as_slice())
-            .map_err(|error| format!("invalid encoded state: {error}"))?;
+        candidate.document_revision = if candidate.cached_document_json == previous_document_json {
+            previous_document_revision
+        } else {
+            previous_document_revision.wrapping_add(1)
+        };
+        candidate.peers_revision = if candidate.cached_peers == previous_peers {
+            previous_peers_revision
+        } else {
+            previous_peers_revision.wrapping_add(1)
+        };
 
-        self.doc
-            .transact_mut()
-            .apply_update(update)
-            .map_err(|error| format!("failed to apply encoded state: {error}"))?;
+        *self = candidate;
 
-        self.refresh_cached_document_json();
-        self.refresh_cached_peers();
-
-        let mut messages = Vec::new();
-        if !encoded_state.is_empty() {
-            messages.push(encode_message(Message::Sync(SyncMessage::Update(
+        let messages = if encoded_state.is_empty() {
+            Vec::new()
+        } else {
+            vec![encode_message(Message::Sync(SyncMessage::Update(
                 encoded_state,
-            ))));
-        }
+            )))]
+        };
         Ok(self.finish_result(
             previous_document_revision,
             previous_peers_revision,
             messages,
         ))
+    }
+
+    fn decode_candidate_state(&self, encoded_state: &[u8], replace: bool) -> BoundaryResult<Self> {
+        check_binary_input(
+            encoded_state.len(),
+            self.resource_limits.max_encoded_state_bytes,
+        )?;
+
+        let update = Update::decode_v1(encoded_state)
+            .map_err(|error| BoundaryError::parse("COLLABORATION_DECODE_FAILED", error))?;
+        let client_id = self.doc.client_id();
+        let mut options = Options::with_client_id(client_id);
+        options.offset_kind = OffsetKind::Utf16;
+        let doc = Doc::with_options(options);
+        if !replace {
+            let current_state = self.encoded_state();
+            let current_update = Update::decode_v1(&current_state)
+                .map_err(|error| BoundaryError::parse("COLLABORATION_DECODE_FAILED", error))?;
+            doc.transact_mut()
+                .apply_update(current_update)
+                .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
+        }
+        doc.transact_mut()
+            .apply_update(update)
+            .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
+
+        let awareness = Awareness::new(doc.clone());
+        if !replace {
+            if let Ok(update) = self.awareness.update() {
+                awareness
+                    .apply_update(update)
+                    .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
+            }
+        } else if let Some(local_state) = self.local_awareness_state.as_ref() {
+            awareness
+                .set_local_state(local_state)
+                .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
+        }
+
+        let mut candidate = Self {
+            doc,
+            awareness,
+            fragment_name: self.fragment_name.clone(),
+            document_root_type: self.document_root_type.clone(),
+            void_element_tags: self.void_element_tags.clone(),
+            cached_document_json: empty_document_json(&self.document_root_type),
+            document_revision: 0,
+            cached_peers: Vec::new(),
+            cached_peer_states: HashMap::new(),
+            peers_revision: 0,
+            local_awareness_state: self.local_awareness_state.clone(),
+            schema: self.schema.clone(),
+            resource_limits: self.resource_limits.clone(),
+            max_length: self.max_length,
+        };
+        candidate.refresh_cached_document_json();
+        candidate.refresh_cached_peers();
+        candidate.validate_cached_document()?;
+        Ok(candidate)
+    }
+
+    fn validate_cached_document(&self) -> BoundaryResult<()> {
+        self.validate_document_json(&self.cached_document_json)
+    }
+
+    pub(crate) fn validate_document_json(&self, json: &Value) -> BoundaryResult<()> {
+        let document = from_prosemirror_json_with_limits(
+            json,
+            &self.schema,
+            UnknownTypeMode::Preserve,
+            &self.resource_limits,
+        )
+        .map_err(|error| BoundaryError::parse("DOCUMENT_INVALID", error))?;
+        DocumentValidator::validate(&document, &self.schema, &self.resource_limits)?;
+        if let Some(limit) = self.max_length {
+            let actual = document.root().text_content().chars().count();
+            if actual > limit as usize {
+                return Err(BoundaryError::limit(
+                    "MAX_LENGTH_EXCEEDED",
+                    limit as usize,
+                    actual,
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn start(&mut self) -> CollaborationResult {
@@ -304,32 +431,91 @@ impl CollaborationSession {
         )
     }
 
-    pub fn handle_message(&mut self, message: Vec<u8>) -> Result<CollaborationResult, String> {
+    pub fn handle_message(&mut self, message: Vec<u8>) -> BoundaryResult<CollaborationResult> {
+        check_binary_input(
+            message.len(),
+            self.resource_limits.max_collaboration_message_bytes,
+        )?;
         let previous_document_revision = self.document_revision;
         let previous_peers_revision = self.peers_revision;
         let refresh_scope = refresh_scope_for_message(message.as_slice());
+        let previous_document_json = self.cached_document_json.clone();
+        let previous_peers = self.cached_peers.clone();
+        let mut candidate = self.clone_candidate()?;
 
         let protocol = DefaultProtocol;
         let mut responses = Vec::new();
         let replies = protocol
-            .handle(&self.awareness, &message)
-            .map_err(|error| format!("invalid collaboration message: {error}"))?;
+            .handle(&candidate.awareness, &message)
+            .map_err(|error| BoundaryError::parse("COLLABORATION_DECODE_FAILED", error))?;
         for reply in replies {
             responses.push(encode_message(reply));
         }
 
         if refresh_scope.document {
-            self.refresh_cached_document_json();
+            candidate.refresh_cached_document_json();
+            candidate.validate_cached_document()?;
         }
         if refresh_scope.peers || refresh_scope.document {
-            self.refresh_cached_peers();
+            candidate.refresh_cached_peers();
         }
+
+        candidate.document_revision = if candidate.cached_document_json == previous_document_json {
+            previous_document_revision
+        } else {
+            previous_document_revision.wrapping_add(1)
+        };
+        candidate.peers_revision = if candidate.cached_peers == previous_peers {
+            previous_peers_revision
+        } else {
+            previous_peers_revision.wrapping_add(1)
+        };
+        *self = candidate;
 
         Ok(self.finish_result(
             previous_document_revision,
             previous_peers_revision,
             responses,
         ))
+    }
+
+    fn clone_candidate(&self) -> BoundaryResult<Self> {
+        let client_id = self.doc.client_id();
+        let mut options = Options::with_client_id(client_id);
+        options.offset_kind = OffsetKind::Utf16;
+        let doc = Doc::with_options(options);
+        let current_state = self.encoded_state();
+        let current_update = Update::decode_v1(&current_state)
+            .map_err(|error| BoundaryError::parse("COLLABORATION_DECODE_FAILED", error))?;
+        doc.transact_mut()
+            .apply_update(current_update)
+            .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
+        let awareness = Awareness::new(doc.clone());
+        if let Ok(update) = self.awareness.update() {
+            awareness
+                .apply_update(update)
+                .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
+        }
+
+        let mut candidate = Self {
+            doc,
+            awareness,
+            fragment_name: self.fragment_name.clone(),
+            document_root_type: self.document_root_type.clone(),
+            void_element_tags: self.void_element_tags.clone(),
+            cached_document_json: empty_document_json(&self.document_root_type),
+            document_revision: 0,
+            cached_peers: Vec::new(),
+            cached_peer_states: HashMap::new(),
+            peers_revision: 0,
+            local_awareness_state: self.local_awareness_state.clone(),
+            schema: self.schema.clone(),
+            resource_limits: self.resource_limits.clone(),
+            max_length: self.max_length,
+        };
+        candidate.refresh_cached_document_json();
+        candidate.refresh_cached_peers();
+        Ok(candidate)
     }
 
     pub fn set_local_awareness(&mut self, next_state: Value) -> CollaborationResult {
@@ -391,19 +577,6 @@ impl CollaborationSession {
             }
         }
         drop(txn);
-        self.refresh_cached_document_json();
-        self.refresh_cached_peers();
-    }
-
-    fn reset_shared_state(&mut self) {
-        let client_id = self.doc.client_id();
-        let mut options = Options::with_client_id(client_id);
-        options.offset_kind = OffsetKind::Utf16;
-        self.doc = Doc::with_options(options);
-        self.awareness = Awareness::new(self.doc.clone());
-        if let Some(local_awareness_state) = self.local_awareness_state.clone() {
-            let _ = self.awareness.set_local_state(&local_awareness_state);
-        }
         self.refresh_cached_document_json();
         self.refresh_cached_peers();
     }
@@ -779,8 +952,7 @@ fn doc_pos_to_sticky_index_in_sequence<'a, T: ReadTxn>(
                 let text_value = text.get_string(txn);
                 let text_scalar_len = scalar_len(&text_value);
                 if doc_pos <= consumed_pm + text_scalar_len {
-                    let utf16_offset =
-                        scalar_offset_to_utf16(&text_value, doc_pos - consumed_pm)?;
+                    let utf16_offset = scalar_offset_to_utf16(&text_value, doc_pos - consumed_pm)?;
                     return StickyIndex::at(
                         txn,
                         BranchPtr::from(<XmlTextRef as AsRef<Branch>>::as_ref(text)),
@@ -856,39 +1028,21 @@ fn void_element_tags_from_schema(schema: &Schema) -> HashSet<String> {
         .collect()
 }
 
-fn default_void_element_tags() -> HashSet<String> {
-    let mut tags = void_element_tags_from_schema(&tiptap_schema());
-    tags.extend(void_element_tags_from_schema(&prosemirror_schema()));
+fn void_element_tags_from_schema_with_opaque(schema: &Schema) -> HashSet<String> {
+    let mut tags = void_element_tags_from_schema(schema);
     tags.extend(
-        ["mention", "__opaque", "__opaque_json", "__skip"]
+        ["__opaque", "__opaque_json", "__skip"]
             .into_iter()
             .map(str::to_string),
     );
     tags
 }
 
-fn void_element_tags_from_config(config: &Value) -> HashSet<String> {
-    if let Some(schema_json) = config.get("schema") {
-        if let Ok(schema) = Schema::from_json(schema_json) {
-            let mut tags = void_element_tags_from_schema(&schema);
-            tags.extend(
-                ["__opaque", "__opaque_json", "__skip"]
-                    .into_iter()
-                    .map(str::to_string),
-            );
-            return tags;
-        }
-    }
-
-    default_void_element_tags()
-}
-
-fn document_root_type_from_config(config: &Value) -> String {
+fn schema_from_config(config: &Value, limits: &ResourceLimits) -> Schema {
     config
         .get("schema")
-        .and_then(|schema_json| Schema::from_json(schema_json).ok())
-        .map(|schema| schema.doc_node_type().to_string())
-        .unwrap_or_else(|| "doc".to_string())
+        .and_then(|schema_json| Schema::from_json_with_limits(schema_json, limits).ok())
+        .unwrap_or_else(tiptap_schema)
 }
 
 fn is_void_element_tag(tag: &str, void_element_tags: &HashSet<String>) -> bool {
@@ -1512,18 +1666,26 @@ mod tests {
             "type": "article",
             "content": [{ "type": "title", "content": [{ "type": "text", "text": "Hello" }] }]
         });
-        let source = CollaborationSession::new(&json!({
-            "clientId": 41,
-            "schema": schema.clone(),
-            "initialDocumentJson": initial.clone(),
-        }).to_string());
+        let source = CollaborationSession::new(
+            &json!({
+                "clientId": 41,
+                "schema": schema.clone(),
+                "initialDocumentJson": initial.clone(),
+            })
+            .to_string(),
+        );
         assert_eq!(source.document_json(), initial);
 
-        let mut restored = CollaborationSession::new(&json!({
-            "clientId": 42,
-            "schema": schema.clone(),
-        }).to_string());
-        restored.apply_encoded_state(source.encoded_state()).unwrap();
+        let mut restored = CollaborationSession::new(
+            &json!({
+                "clientId": 42,
+                "schema": schema.clone(),
+            })
+            .to_string(),
+        );
+        restored
+            .apply_encoded_state(source.encoded_state())
+            .unwrap();
         assert_eq!(restored.document_json(), initial);
 
         let parsed_schema = Schema::from_json(&schema).unwrap();
@@ -2362,12 +2524,7 @@ mod tests {
             .expect("parent boundary should produce sticky index");
 
         assert_eq!(
-            sticky_index_to_doc_pos(
-                &txn,
-                &fragment,
-                &boundary,
-                &session.void_element_tags,
-            ),
+            sticky_index_to_doc_pos(&txn, &fragment, &boundary, &session.void_element_tags,),
             Some(4),
             "parent index 1 is after the entire three-scalar XmlText child"
         );
@@ -3061,5 +3218,86 @@ mod tests {
 
         assert_eq!(result.messages.len(), 1);
         assert_eq!(session.document_json(), source.document_json());
+    }
+
+    #[test]
+    fn invalid_replacement_preserves_all_collaboration_state() {
+        let mut session = CollaborationSession::new(
+            &json!({
+                "clientId": 2,
+                "initialDocumentJson": {
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{ "type": "text", "text": "keep me" }]
+                    }]
+                },
+                "localAwareness": { "user": { "name": "Ada" } }
+            })
+            .to_string(),
+        );
+        let before_json = session.document_json();
+        let before_encoded = session.encoded_state();
+        let before_peers = session.peers();
+        let before_document_revision = session.document_revision;
+        let before_peers_revision = session.peers_revision;
+        let before_local_awareness = session.local_awareness_state.clone();
+
+        let error = session.replace_encoded_state(vec![0xff, 0x00]).unwrap_err();
+
+        assert_eq!(error.code(), "COLLABORATION_DECODE_FAILED");
+        assert_eq!(session.document_json(), before_json);
+        assert_eq!(session.encoded_state(), before_encoded);
+        assert_eq!(session.peers(), before_peers);
+        assert_eq!(session.document_revision, before_document_revision);
+        assert_eq!(session.peers_revision, before_peers_revision);
+        assert_eq!(session.local_awareness_state, before_local_awareness);
+    }
+
+    #[test]
+    fn encoded_state_limit_is_checked_before_yrs_decode() {
+        let mut session = CollaborationSession::new(
+            &json!({
+                "resourceLimits": { "maxEncodedStateBytes": 1 }
+            })
+            .to_string(),
+        );
+
+        let error = session.replace_encoded_state(vec![0xff, 0x00]).unwrap_err();
+
+        assert_eq!(error.code(), "INPUT_LIMIT_EXCEEDED");
+        assert_eq!(error.limit, Some(1));
+        assert_eq!(error.actual, Some(2));
+    }
+
+    #[test]
+    fn invalid_remote_document_message_preserves_all_collaboration_state() {
+        let mut source = CollaborationSession::new(r#"{"clientId":1}"#);
+        let update = source.apply_local_document(json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "too long" }]
+            }]
+        }));
+        let message = update.messages.into_iter().next().unwrap();
+
+        let mut session = CollaborationSession::new(
+            r#"{"clientId":2,"maxLength":3,"localAwareness":{"user":{"name":"Ada"}}}"#,
+        );
+        let before_json = session.document_json();
+        let before_encoded = session.encoded_state();
+        let before_peers = session.peers();
+        let before_document_revision = session.document_revision;
+        let before_peers_revision = session.peers_revision;
+
+        let error = session.handle_message(message).unwrap_err();
+
+        assert_eq!(error.code(), "MAX_LENGTH_EXCEEDED");
+        assert_eq!(session.document_json(), before_json);
+        assert_eq!(session.encoded_state(), before_encoded);
+        assert_eq!(session.peers(), before_peers);
+        assert_eq!(session.document_revision, before_document_revision);
+        assert_eq!(session.peers_revision, before_peers_revision);
     }
 }

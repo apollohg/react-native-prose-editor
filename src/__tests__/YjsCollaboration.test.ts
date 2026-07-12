@@ -159,7 +159,7 @@ import React from 'react';
 import { render, act } from '@testing-library/react-native';
 import { createYjsCollaborationController, useYjsCollaboration } from '../YjsCollaboration';
 import type { DocumentJSON } from '../NativeEditorBridge';
-import { _resetNativeModuleCache } from '../NativeEditorBridge';
+import { _resetNativeModuleCache, NativeCollaborationBridge } from '../NativeEditorBridge';
 
 class MockWebSocket {
     static CONNECTING = 0;
@@ -1493,6 +1493,31 @@ describe('YjsCollaboration', () => {
         expect(onError).toHaveBeenCalled();
 
         controller.destroy();
+    });
+
+    it('preserves structured collaboration boundary errors', () => {
+        mockNativeModule.collaborationSessionReplaceEncodedState.mockReturnValueOnce(
+            JSON.stringify({
+                error: {
+                    code: 'INPUT_LIMIT_EXCEEDED',
+                    message: 'input exceeds limit 3: 8',
+                    limit: 3,
+                    actual: 8,
+                },
+            })
+        );
+        const bridge = NativeCollaborationBridge.create();
+
+        expect(() => bridge.replaceEncodedState([1, 2, 3, 4])).toThrow(
+            expect.objectContaining({
+                name: 'NativeEditorBoundaryError',
+                code: 'INPUT_LIMIT_EXCEEDED',
+                limit: 3,
+                actual: 8,
+            })
+        );
+
+        bridge.destroy();
     });
 
     it('updates local awareness when hook inputs change without documentId churn', () => {

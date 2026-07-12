@@ -3,11 +3,11 @@ use editor_core::editor::{Editor, EditorError, EditorUpdate};
 use editor_core::intercept::InterceptorPipeline;
 use editor_core::registry::EditorRegistry;
 use editor_core::schema::{AttrSpec, NodeSpec, Schema};
-use editor_core::tiptap_schema;
 use editor_core::serialize::{
-    from_prosemirror_json, from_prosemirror_json_with_limits, to_prosemirror_json,
-    JsonParseError, UnknownTypeMode,
+    from_prosemirror_json, from_prosemirror_json_with_limits, to_prosemirror_json, JsonParseError,
+    UnknownTypeMode,
 };
+use editor_core::tiptap_schema;
 
 #[test]
 fn boundary_rejects_input_before_json_parse() {
@@ -35,6 +35,39 @@ fn dedicated_input_kinds_use_their_own_byte_limits() {
     assert!(BoundedInput::new("ab", InputKind::CollaborationMessage, &limits).is_ok());
     assert!(BoundedInput::new("abc", InputKind::EncodedState, &limits).is_ok());
     assert!(BoundedInput::new("ab", InputKind::Html, &limits).is_err());
+}
+
+#[test]
+fn collaboration_ffi_rejects_state_and_messages_before_json_decode() {
+    let session_id = editor_core::collaboration_session_create(
+        serde_json::json!({
+            "resourceLimits": {
+                "maxCollaborationMessageBytes": 2,
+                "maxEncodedStateBytes": 3
+            }
+        })
+        .to_string(),
+    );
+
+    let state: serde_json::Value =
+        serde_json::from_str(&editor_core::collaboration_session_replace_encoded_state(
+            session_id,
+            "not-json".to_string(),
+        ))
+        .unwrap();
+    assert_eq!(state["error"]["code"], "INPUT_LIMIT_EXCEEDED");
+    assert_eq!(state["error"]["limit"], 3);
+    assert_eq!(state["error"]["actual"], 8);
+
+    let message: serde_json::Value = serde_json::from_str(
+        &editor_core::collaboration_session_handle_message(session_id, "bad".to_string()),
+    )
+    .unwrap();
+    assert_eq!(message["error"]["code"], "INPUT_LIMIT_EXCEEDED");
+    assert_eq!(message["error"]["limit"], 2);
+    assert_eq!(message["error"]["actual"], 3);
+
+    editor_core::collaboration_session_destroy(session_id);
 }
 
 #[test]
@@ -296,12 +329,8 @@ fn candidate_documents_enforce_configured_node_and_depth_limits() {
         max_document_depth: 2,
         ..ResourceLimits::default()
     };
-    let mut editor = Editor::new_with_limits(
-        tiptap_schema(),
-        InterceptorPipeline::new(),
-        false,
-        limits,
-    );
+    let mut editor =
+        Editor::new_with_limits(tiptap_schema(), InterceptorPipeline::new(), false, limits);
 
     let error = editor
         .set_html("<blockquote><p>x</p></blockquote>")
@@ -316,12 +345,8 @@ fn transactions_honor_configured_limits_above_defaults() {
         max_document_depth: 512,
         ..ResourceLimits::default()
     };
-    let mut editor = Editor::new_with_limits(
-        tiptap_schema(),
-        InterceptorPipeline::new(),
-        false,
-        limits,
-    );
+    let mut editor =
+        Editor::new_with_limits(tiptap_schema(), InterceptorPipeline::new(), false, limits);
     let mut child = serde_json::json!({ "type": "paragraph" });
     for _ in 0..256 {
         child = serde_json::json!({ "type": "blockquote", "content": [child] });
@@ -339,12 +364,8 @@ fn every_editor_ingestion_endpoint_admits_bytes_before_parsing() {
         max_input_bytes: 32,
         ..ResourceLimits::default()
     };
-    let mut editor = Editor::new_with_limits(
-        tiptap_schema(),
-        InterceptorPipeline::new(),
-        false,
-        limits,
-    );
+    let mut editor =
+        Editor::new_with_limits(tiptap_schema(), InterceptorPipeline::new(), false, limits);
     let html = format!("<p>{}</p>", "x".repeat(40));
     let json = serde_json::json!({
         "type": "doc",
@@ -437,7 +458,10 @@ fn many_opaque_siblings_exhaust_parse_budget_before_placement_work() {
     .unwrap_err();
     assert!(matches!(
         error,
-        JsonParseError::ResourceLimit { limit: 32, actual: 33 }
+        JsonParseError::ResourceLimit {
+            limit: 32,
+            actual: 33
+        }
     ));
 }
 
@@ -461,11 +485,9 @@ fn many_admitted_opaque_siblings_match_against_near_ceiling_schema() {
         max_schema_nodes: 1_024,
         ..ResourceLimits::default()
     };
-    let schema = Schema::from_json_with_limits(
-        &serde_json::json!({ "nodes": nodes, "marks": [] }),
-        &limits,
-    )
-    .unwrap();
+    let schema =
+        Schema::from_json_with_limits(&serde_json::json!({ "nodes": nodes, "marks": [] }), &limits)
+            .unwrap();
     assert!(schema.symbol_accepts_opaque_placement("wide", "inline"));
     assert!(!schema.symbol_accepts_opaque_placement("wide", "block"));
     let content = (0..500)
@@ -473,13 +495,9 @@ fn many_admitted_opaque_siblings_match_against_near_ceiling_schema() {
         .collect::<Vec<_>>();
     let json = serde_json::json!({ "type": "doc", "content": content });
 
-    let document = from_prosemirror_json_with_limits(
-        &json,
-        &schema,
-        UnknownTypeMode::Preserve,
-        &limits,
-    )
-    .unwrap();
+    let document =
+        from_prosemirror_json_with_limits(&json, &schema, UnknownTypeMode::Preserve, &limits)
+            .unwrap();
     assert_eq!(document.root().child_count(), 500);
     assert!(document.root().content().unwrap().iter().all(|node| {
         node.attrs()["opaque_placement"] == serde_json::Value::String("inline".to_string())

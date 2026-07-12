@@ -6,6 +6,10 @@ import {
     type EditorResourceLimits,
 } from './ResourceLimits';
 import { normalizeDocumentJson, type SchemaDefinition } from './schemas';
+import {
+    NativeEditorBoundaryError,
+    parseNativeBoundaryError,
+} from './NativeEditorBoundaryError';
 
 const ERR_DESTROYED = 'NativeEditorBridge: editor has been destroyed';
 const ERR_NATIVE_RESPONSE = 'NativeEditorBridge: invalid JSON response from native module';
@@ -573,6 +577,8 @@ export function parseCollaborationResultJson(json: string): CollaborationResult 
     try {
         const parsed = JSON.parse(json) as Record<string, unknown>;
         if ('error' in parsed) {
+            const boundaryError = parseNativeBoundaryError(parsed);
+            if (boundaryError) throw boundaryError;
             throw new Error(`NativeEditorBridge: ${parsed.error}`);
         }
         return {
@@ -586,7 +592,10 @@ export function parseCollaborationResultJson(json: string): CollaborationResult 
             peers: Array.isArray(parsed.peers) ? (parsed.peers as CollaborationPeer[]) : undefined,
         };
     } catch (e) {
-        if (e instanceof Error && e.message.startsWith('NativeEditorBridge:')) {
+        if (
+            e instanceof NativeEditorBoundaryError ||
+            (e instanceof Error && e.message.startsWith('NativeEditorBridge:'))
+        ) {
             throw e;
         }
         throw new Error(ERR_NATIVE_RESPONSE);

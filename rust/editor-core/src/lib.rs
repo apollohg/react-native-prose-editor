@@ -22,6 +22,9 @@ uniffi::setup_scaffolding!();
 const INVALID_EDITOR_ID: u64 = 0;
 
 fn error_json(error: impl std::fmt::Display + std::any::Any) -> String {
+    if let Some(error) = (&error as &dyn std::any::Any).downcast_ref::<BoundaryError>() {
+        return error_envelope(error);
+    }
     if let Some(error) = (&error as &dyn std::any::Any).downcast_ref::<editor::EditorError>() {
         let boundary = match error {
             editor::EditorError::Boundary(error) => error.clone(),
@@ -193,10 +196,20 @@ pub fn collaboration_session_start(id: u64) -> String {
 #[uniffi::export]
 pub fn collaboration_session_apply_local_document_json(id: u64, json: String) -> String {
     with_collaboration_session(id, |session| {
-        let value: serde_json::Value = match serde_json::from_str(&json) {
+        let admitted =
+            match BoundedInput::new(&json, InputKind::DocumentJson, session.resource_limits()) {
+                Ok(admitted) => admitted,
+                Err(error) => return error_envelope(&error),
+            };
+        let value: serde_json::Value = match serde_json::from_str(admitted.as_str()) {
             Ok(value) => value,
-            Err(error) => return error_json(format!("invalid json: {error}")),
+            Err(error) => {
+                return error_envelope(&BoundaryError::parse("DOCUMENT_PARSE_FAILED", error))
+            }
         };
+        if let Err(error) = session.validate_document_json(&value) {
+            return error_envelope(&error);
+        }
         serde_json::to_string(&session.apply_local_document(value))
             .unwrap_or_else(|_| "{}".to_string())
     })
@@ -207,10 +220,18 @@ pub fn collaboration_session_apply_local_document_json(id: u64, json: String) ->
 #[uniffi::export]
 pub fn collaboration_session_apply_encoded_state(id: u64, encoded_state_json: String) -> String {
     with_collaboration_session(id, |session| {
-        let encoded_state: Vec<u8> = match serde_json::from_str(&encoded_state_json) {
+        let admitted = match BoundedInput::new(
+            &encoded_state_json,
+            InputKind::EncodedState,
+            session.resource_limits(),
+        ) {
+            Ok(admitted) => admitted,
+            Err(error) => return error_envelope(&error),
+        };
+        let encoded_state: Vec<u8> = match serde_json::from_str(admitted.as_str()) {
             Ok(bytes) => bytes,
             Err(error) => {
-                return error_json(format!("invalid encoded state json: {error}"))
+                return error_envelope(&BoundaryError::parse("COLLABORATION_DECODE_FAILED", error))
             }
         };
         match session.apply_encoded_state(encoded_state) {
@@ -225,10 +246,18 @@ pub fn collaboration_session_apply_encoded_state(id: u64, encoded_state_json: St
 #[uniffi::export]
 pub fn collaboration_session_replace_encoded_state(id: u64, encoded_state_json: String) -> String {
     with_collaboration_session(id, |session| {
-        let encoded_state: Vec<u8> = match serde_json::from_str(&encoded_state_json) {
+        let admitted = match BoundedInput::new(
+            &encoded_state_json,
+            InputKind::EncodedState,
+            session.resource_limits(),
+        ) {
+            Ok(admitted) => admitted,
+            Err(error) => return error_envelope(&error),
+        };
+        let encoded_state: Vec<u8> = match serde_json::from_str(admitted.as_str()) {
             Ok(bytes) => bytes,
             Err(error) => {
-                return error_json(format!("invalid encoded state json: {error}"))
+                return error_envelope(&BoundaryError::parse("COLLABORATION_DECODE_FAILED", error))
             }
         };
         match session.replace_encoded_state(encoded_state) {
@@ -243,9 +272,19 @@ pub fn collaboration_session_replace_encoded_state(id: u64, encoded_state_json: 
 #[uniffi::export]
 pub fn collaboration_session_handle_message(id: u64, message_json: String) -> String {
     with_collaboration_session(id, |session| {
-        let message: Vec<u8> = match serde_json::from_str(&message_json) {
+        let admitted = match BoundedInput::new(
+            &message_json,
+            InputKind::CollaborationMessage,
+            session.resource_limits(),
+        ) {
+            Ok(admitted) => admitted,
+            Err(error) => return error_envelope(&error),
+        };
+        let message: Vec<u8> = match serde_json::from_str(admitted.as_str()) {
             Ok(bytes) => bytes,
-            Err(error) => return error_json(format!("invalid message json: {error}")),
+            Err(error) => {
+                return error_envelope(&BoundaryError::parse("COLLABORATION_DECODE_FAILED", error))
+            }
         };
         match session.handle_message(message) {
             Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
@@ -259,9 +298,19 @@ pub fn collaboration_session_handle_message(id: u64, message_json: String) -> St
 #[uniffi::export]
 pub fn collaboration_session_set_local_awareness(id: u64, awareness_json: String) -> String {
     with_collaboration_session(id, |session| {
-        let value: serde_json::Value = match serde_json::from_str(&awareness_json) {
+        let admitted = match BoundedInput::new(
+            &awareness_json,
+            InputKind::DocumentJson,
+            session.resource_limits(),
+        ) {
+            Ok(admitted) => admitted,
+            Err(error) => return error_envelope(&error),
+        };
+        let value: serde_json::Value = match serde_json::from_str(admitted.as_str()) {
             Ok(value) => value,
-            Err(error) => return error_json(format!("invalid awareness json: {error}")),
+            Err(error) => {
+                return error_envelope(&BoundaryError::parse("COLLABORATION_DECODE_FAILED", error))
+            }
         };
         serde_json::to_string(&session.set_local_awareness(value))
             .unwrap_or_else(|_| "{}".to_string())
@@ -1150,10 +1199,7 @@ fn parse_mark_attrs_json(
     }
 }
 
-fn parse_document_json(
-    json: &str,
-    limits: &ResourceLimits,
-) -> BoundaryResult<serde_json::Value> {
+fn parse_document_json(json: &str, limits: &ResourceLimits) -> BoundaryResult<serde_json::Value> {
     let admitted = BoundedInput::new(json, InputKind::DocumentJson, limits)?;
     serde_json::from_str(admitted.as_str())
         .map_err(|error| BoundaryError::parse("DOCUMENT_PARSE_FAILED", error))
