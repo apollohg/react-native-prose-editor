@@ -282,6 +282,10 @@ import {
     resolveEditorResourceLimits,
 } from '../ResourceLimits';
 import { NativeEditorBoundaryError, parseNativeBoundaryError } from '../NativeEditorBoundaryError';
+import {
+    HARD_EDITOR_IMAGE_LOADING_POLICY,
+    resolveEditorImageLoadingPolicy,
+} from '../ImageLoadingPolicy';
 import { Platform } from 'react-native';
 
 // ─── Tests ──────────────────────────────────────────────────────
@@ -325,6 +329,30 @@ describe('NativeEditorBridge', () => {
                 details: { input: 'html' },
             });
             expect(parseNativeBoundaryError({ error: 'legacy error' })).toBeNull();
+        });
+
+        it('rejects an unknown structured native boundary error code', () => {
+            expect(
+                parseNativeBoundaryError({
+                    error: { code: 'NOT_A_REAL_BOUNDARY_CODE', message: 'unknown' },
+                })
+            ).toBeNull();
+        });
+
+        it('accepts image policy values at their exact hard ceilings', () => {
+            expect(resolveEditorImageLoadingPolicy(HARD_EDITOR_IMAGE_LOADING_POLICY)).toEqual(
+                HARD_EDITOR_IMAGE_LOADING_POLICY
+            );
+        });
+
+        it.each([
+            ['above the hard ceiling', HARD_EDITOR_IMAGE_LOADING_POLICY.maxSourceBytes + 1],
+            ['zero', 0],
+            ['a non-safe integer', Number.MAX_SAFE_INTEGER + 1],
+        ])('rejects image maxSourceBytes set to %s', (_case, maxSourceBytes) => {
+            expect(() => resolveEditorImageLoadingPolicy({ maxSourceBytes })).toThrow(
+                expect.objectContaining({ code: 'IMAGE_POLICY_INVALID' })
+            );
         });
 
         it('serializes one canonical resource policy into editor creation', () => {

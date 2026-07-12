@@ -474,6 +474,38 @@ describe('NativeRichTextEditor', () => {
             });
         });
 
+        it('does not recreate the editor for semantically equal resource limits', () => {
+            const { rerender } = render(
+                <NativeRichTextEditor resourceLimits={{ maxDocumentDepth: 128 }} />
+            );
+
+            rerender(<NativeRichTextEditor resourceLimits={{ maxDocumentDepth: 128 }} />);
+
+            expect(mockNativeModule.editorCreate).toHaveBeenCalledTimes(1);
+            expect(mockNativeModule.editorDestroy).not.toHaveBeenCalled();
+        });
+
+        it('recreates the editor when a resolved resource limit changes', () => {
+            const { rerender } = render(
+                <NativeRichTextEditor resourceLimits={{ maxDocumentDepth: 128 }} />
+            );
+
+            rerender(<NativeRichTextEditor resourceLimits={{ maxDocumentDepth: 129 }} />);
+
+            expect(mockNativeModule.editorCreate).toHaveBeenCalledTimes(2);
+            expect(mockNativeModule.editorDestroy).toHaveBeenCalledTimes(1);
+        });
+
+        it('surfaces invalid image policies as structured boundary errors', () => {
+            expect(() =>
+                render(
+                    <NativeRichTextEditor
+                        imageLoadingPolicy={{ requestTimeoutMs: 600_001 }}
+                    />
+                )
+            ).toThrow(expect.objectContaining({ code: 'IMAGE_POLICY_INVALID' }));
+        });
+
         it('sets initial content via setHtml when initialContent is provided', () => {
             render(<NativeRichTextEditor initialContent='<p>hello</p>' />);
             expect(mockNativeModule.editorSetHtml).toHaveBeenCalledWith(1, '<p>hello</p>');

@@ -132,6 +132,7 @@ export {
 } from './ResourceLimits';
 
 export {
+    NATIVE_EDITOR_BOUNDARY_ERROR_CODES,
     NativeEditorBoundaryError,
     parseNativeBoundaryError,
     type NativeEditorBoundaryErrorCode,

@@ -50,7 +50,11 @@ import {
     serializeEditorImageLoadingPolicy,
     type EditorImageLoadingPolicy,
 } from './ImageLoadingPolicy';
-import type { EditorResourceLimits } from './ResourceLimits';
+import {
+    resolveEditorResourceLimits,
+    type EditorResourceLimits,
+    type ResolvedEditorResourceLimits,
+} from './ResourceLimits';
 import {
     TASK_LIST_MARKER_CHECKED,
     TASK_LIST_MARKER_UNCHECKED,
@@ -1199,6 +1203,20 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         },
         ref
     ) {
+        const resourceLimitsKey = useMemo(
+            () =>
+                resourceLimits == null
+                    ? undefined
+                    : JSON.stringify(resolveEditorResourceLimits(resourceLimits)),
+            [resourceLimits]
+        );
+        const resolvedResourceLimits = useMemo(
+            () =>
+                resourceLimitsKey == null
+                    ? undefined
+                    : (JSON.parse(resourceLimitsKey) as ResolvedEditorResourceLimits),
+            [resourceLimitsKey]
+        );
         const bridgeRef = useRef<NativeEditorBridge | null>(null);
         const nativeViewRef = useRef<NativeEditorViewHandle | null>(null);
         const [isReady, setIsReady] = useState(false);
@@ -1978,12 +1996,15 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     : null;
             pendingBridgeRecreationContentRef.current = null;
             const bridgeConfig =
-                maxLength != null || serializedSchemaJson || allowBase64Images || resourceLimits
+                maxLength != null ||
+                serializedSchemaJson ||
+                allowBase64Images ||
+                resolvedResourceLimits
                     ? {
                           maxLength,
                           schemaJson: serializedSchemaJson,
                           allowBase64Images,
-                          resourceLimits,
+                          resourceLimits: resolvedResourceLimits,
                       }
                     : undefined;
             const bridge = NativeEditorBridge.create(bridgeConfig);
@@ -2072,7 +2093,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             syncStateFromUpdate,
             allowBase64Images,
             serializedSchemaJson,
-            resourceLimits,
+            resolvedResourceLimits,
             clearBlockedNativeCommandRetryTimer,
             nextNativeUpdateRevision,
         ]);
