@@ -19,7 +19,7 @@ pub struct ResolvedPos {
     pub depth: usize,
     /// Index chain from root: `node_path[i]` is the child index at depth `i+1`.
     /// Length = `depth - 1` (the root doc is implicit).
-    pub node_path: SmallVec<[u16; 8]>,
+    pub node_path: SmallVec<[u32; 8]>,
     /// Offset within the innermost parent node's content (in tokens).
     pub parent_offset: u32,
 }
@@ -49,7 +49,7 @@ impl ResolvedPos {
 pub(crate) fn resolve_in_node(
     node: &Node,
     pos: u32,
-    path: &mut SmallVec<[u16; 8]>,
+    path: &mut SmallVec<[u32; 8]>,
 ) -> Result<ResolvedPos, String> {
     let content = match node.content() {
         Some(c) => c,
@@ -127,7 +127,9 @@ pub(crate) fn resolve_in_node(
             if pos >= inner_start && pos <= inner_end {
                 // Position is inside this child element
                 let inner_pos = pos - inner_start;
-                path.push(child_idx as u16);
+                path.push(u32::try_from(child_idx).map_err(|_| {
+                    "DOCUMENT_LIMIT_EXCEEDED: child index exceeds u32".to_string()
+                })?);
                 return resolve_in_node(child, inner_pos, path);
             }
 

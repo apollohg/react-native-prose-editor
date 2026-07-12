@@ -210,30 +210,35 @@ fn build_schema(convention: NamingConvention) -> Schema {
     let marks = vec![
         MarkSpec {
             name: "bold".to_string(),
+            html_tag: Some("strong".to_string()),
             attrs: HashMap::new(),
             excludes: None,
             allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "italic".to_string(),
+            html_tag: Some("em".to_string()),
             attrs: HashMap::new(),
             excludes: None,
             allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "underline".to_string(),
+            html_tag: Some("u".to_string()),
             attrs: HashMap::new(),
             excludes: None,
             allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "strike".to_string(),
+            html_tag: Some("s".to_string()),
             attrs: HashMap::new(),
             excludes: None,
             allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "link".to_string(),
+            html_tag: Some("a".to_string()),
             attrs: {
                 let mut attrs = HashMap::new();
                 attrs.insert(

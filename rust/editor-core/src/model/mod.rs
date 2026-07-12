@@ -54,7 +54,7 @@ impl Document {
             ));
         }
 
-        let mut path: SmallVec<[u16; 8]> = SmallVec::new();
+        let mut path: SmallVec<[u32; 8]> = SmallVec::new();
         let mut result = resolved_pos::resolve_in_node(&self.root, pos, &mut path)?;
 
         // Fill in the absolute position.
@@ -67,7 +67,7 @@ impl Document {
 
     /// Look up a node by following a path of child indices from the root.
     /// An empty path returns the root node.
-    pub fn node_at(&self, path: &[u16]) -> Option<&Node> {
+    pub fn node_at(&self, path: &[u32]) -> Option<&Node> {
         let mut node = &self.root;
         for &idx in path {
             node = node.child(idx as usize)?;

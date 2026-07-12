@@ -63,9 +63,30 @@ fn tag_to_mark_type(tag: &str) -> Option<&'static str> {
     }
 }
 
-/// Check if a tag is a known inline mark tag.
-fn is_mark_tag(tag: &str) -> bool {
-    tag_to_mark_type(tag).is_some()
+fn mark_from_element(
+    tag: &str,
+    elem: &scraper::node::Element,
+    schema: &Schema,
+) -> Option<Mark> {
+    let mark_type = element_attr(elem, "data-native-editor-mark")
+        .filter(|name| schema.mark(name).is_some())
+        .or_else(|| tag_to_mark_type(tag).filter(|name| schema.mark(name).is_some()))
+        .or_else(|| {
+            schema
+                .all_marks()
+                .find(|spec| spec.html_tag.as_deref() == Some(tag))
+                .map(|spec| spec.name.as_str())
+        })?;
+    let spec = schema.mark(mark_type)?;
+    let mut attrs = HashMap::new();
+    for (name, attr_spec) in &spec.attrs {
+        if let Some(value) = element_attr(elem, name) {
+            attrs.insert(name.clone(), parse_attr_value(name, value));
+        } else if let Some(default) = &attr_spec.default {
+            attrs.insert(name.clone(), default.clone());
+        }
+    }
+    Some(Mark::new(mark_type.to_string(), attrs))
 }
 
 // ---------------------------------------------------------------------------
@@ -278,24 +299,15 @@ fn process_element(
     inline_acc: &mut Vec<Node>,
 ) -> Result<(), ParseError> {
     // 1) Check if this is a mark tag
-    if is_mark_tag(tag) {
-        let mark_type = tag_to_mark_type(tag).unwrap();
-        if schema.mark(mark_type).is_some() {
-            let mut new_marks = active_marks.to_vec();
-            if !new_marks.iter().any(|m| m.mark_type() == mark_type) {
-                let mut attrs = HashMap::new();
-                if mark_type == "link" {
-                    if let Some(href) = element_attr(elem, "href") {
-                        attrs.insert(
-                            "href".to_string(),
-                            serde_json::Value::String(href.to_string()),
-                        );
-                    }
-                }
-                new_marks.push(Mark::new(mark_type.to_string(), attrs));
-            }
-            return process_children(node_ref, schema, options, &new_marks, block_acc, inline_acc);
+    if let Some(mark) = mark_from_element(tag, elem, schema) {
+        let mut new_marks = active_marks.to_vec();
+        if !new_marks
+            .iter()
+            .any(|existing| existing.mark_type() == mark.mark_type())
+        {
+            new_marks.push(mark);
         }
+        return process_children(node_ref, schema, options, &new_marks, block_acc, inline_acc);
     }
 
     // 1b) Native-editor mention round-trip
@@ -314,7 +326,7 @@ fn process_element(
             if options.strict {
                 return Err(ParseError::UnknownTag(tag.to_string()));
             }
-            let opaque = build_opaque_node(node_ref, tag, elem)?;
+            let opaque = build_opaque_node(node_ref, tag, elem, "block")?;
             flush_inline_acc(inline_acc, schema, block_acc);
             block_acc.push(opaque);
             return Ok(());
@@ -337,7 +349,12 @@ fn process_element(
     }
 
     // Preserve as opaque node
-    let opaque = build_opaque_node(node_ref, tag, elem)?;
+    let placement = if is_block_html_element(tag) || is_void_html_element(tag) {
+        "block"
+    } else {
+        "inline"
+    };
+    let opaque = build_opaque_node(node_ref, tag, elem, placement)?;
     if is_block_html_element(tag) || is_void_html_element(tag) {
         flush_inline_acc(inline_acc, schema, block_acc);
         block_acc.push(opaque);
@@ -426,7 +443,7 @@ fn process_schema_node(
         }
         NodeRole::List { ordered } => {
             flush_inline_acc(inline_acc, schema, block_acc);
-            let mut attrs = HashMap::new();
+            let mut attrs = extract_node_attrs(_elem, spec);
             if *ordered {
                 let start_val = element_attr(_elem, "start")
                     .and_then(|s| s.parse::<u64>().ok())
@@ -483,7 +500,7 @@ fn process_schema_node(
             }
             let node = Node::element(
                 spec.name.clone(),
-                HashMap::new(),
+                extract_node_attrs(_elem, spec),
                 Fragment::from(child_blocks),
             );
             block_acc.push(node);
@@ -528,25 +545,17 @@ fn collect_inline_children(
             }
 
             // Mark tag — recurse with added mark
-            if let Some(mark_type) = tag_to_mark_type(tag) {
-                if schema.mark(mark_type).is_some() {
-                    let mut new_marks = active_marks.to_vec();
-                    if !new_marks.iter().any(|m| m.mark_type() == mark_type) {
-                        let mut attrs = HashMap::new();
-                        if mark_type == "link" {
-                            if let Some(href) = element_attr(elem, "href") {
-                                attrs.insert(
-                                    "href".to_string(),
-                                    serde_json::Value::String(href.to_string()),
-                                );
-                            }
-                        }
-                        new_marks.push(Mark::new(mark_type.to_string(), attrs));
-                    }
-                    let children = collect_inline_children(child, schema, options, &new_marks)?;
-                    inline_nodes.extend(children);
-                    continue;
+            if let Some(mark) = mark_from_element(tag, elem, schema) {
+                let mut new_marks = active_marks.to_vec();
+                if !new_marks
+                    .iter()
+                    .any(|existing| existing.mark_type() == mark.mark_type())
+                {
+                    new_marks.push(mark);
                 }
+                let children = collect_inline_children(child, schema, options, &new_marks)?;
+                inline_nodes.extend(children);
+                continue;
             }
 
             // Known void inline node (hardBreak)
@@ -564,7 +573,7 @@ fn collect_inline_children(
             if options.strict {
                 return Err(ParseError::UnknownTag(tag.to_string()));
             }
-            let opaque = build_opaque_node(child, tag, elem)?;
+            let opaque = build_opaque_node(child, tag, elem, "inline")?;
             inline_nodes.push(opaque);
         }
     }
@@ -642,11 +651,16 @@ fn build_opaque_node(
     node_ref: SNodeRef<'_>,
     tag: &str,
     elem: &scraper::node::Element,
+    placement: &str,
 ) -> Result<Node, ParseError> {
     let mut attrs = HashMap::new();
     attrs.insert(
         "html_tag".to_string(),
         serde_json::Value::String(tag.to_string()),
+    );
+    attrs.insert(
+        "opaque_placement".to_string(),
+        serde_json::Value::String(placement.to_string()),
     );
 
     // Preserve HTML attributes

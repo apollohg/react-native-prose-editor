@@ -15,6 +15,8 @@ use crate::schema::Schema;
 pub enum JsonParseError {
     /// A node/mark type in the JSON was not found in the schema.
     UnknownType(String),
+    /// A mark is never eligible for opaque preservation.
+    UnknownMark(String),
     /// The JSON structure is invalid (e.g. missing "type" field).
     InvalidStructure(String),
 }
@@ -25,6 +27,7 @@ impl fmt::Display for JsonParseError {
             JsonParseError::UnknownType(name) => {
                 write!(f, "unknown node/mark type: \"{}\"", name)
             }
+            JsonParseError::UnknownMark(name) => write!(f, "unknown mark type: \"{}\"", name),
             JsonParseError::InvalidStructure(msg) => {
                 write!(f, "invalid JSON structure: {}", msg)
             }
@@ -69,7 +72,7 @@ pub fn from_prosemirror_json(
     mode: UnknownTypeMode,
 ) -> Result<Document, JsonParseError> {
     let normalized = normalize_json_aliases(json);
-    let root = parse_node(&normalized, schema, mode)?;
+    let root = parse_node(&normalized, schema, mode, "block")?;
     Ok(Document::new(root))
 }
 
@@ -81,6 +84,7 @@ fn parse_node(
     json: &Value,
     schema: &Schema,
     mode: UnknownTypeMode,
+    placement: &'static str,
 ) -> Result<Node, JsonParseError> {
     let obj = json
         .as_object()
@@ -104,7 +108,7 @@ fn parse_node(
                 return Err(JsonParseError::UnknownType(type_name.to_string()));
             }
             UnknownTypeMode::Preserve => {
-                return Ok(build_opaque_json_node(type_name, json));
+                return Ok(build_opaque_json_node(type_name, json, placement));
             }
             UnknownTypeMode::Skip => {
                 // Signal to the caller that this node should be dropped.
@@ -123,7 +127,12 @@ fn parse_node(
     }
 
     // Element node — parse children
-    let children = parse_content(obj, schema, mode)?;
+    let child_placement = if matches!(spec.role, crate::schema::NodeRole::TextBlock) {
+        "inline"
+    } else {
+        "block"
+    };
+    let children = parse_content(obj, schema, mode, child_placement)?;
     Ok(Node::element(
         type_name.to_string(),
         attrs,
@@ -149,7 +158,7 @@ fn parse_text_node(
 fn parse_marks(
     obj: &serde_json::Map<String, Value>,
     schema: &Schema,
-    mode: UnknownTypeMode,
+    _mode: UnknownTypeMode,
 ) -> Result<Vec<Mark>, JsonParseError> {
     let marks_val = match obj.get("marks") {
         Some(v) => v,
@@ -175,17 +184,7 @@ fn parse_marks(
 
         // Check if mark exists in schema
         if schema.mark(mark_type).is_none() {
-            match mode {
-                UnknownTypeMode::Error => {
-                    return Err(JsonParseError::UnknownType(mark_type.to_string()));
-                }
-                UnknownTypeMode::Preserve => {
-                    // Keep the mark even though it's unknown
-                }
-                UnknownTypeMode::Skip => {
-                    continue; // Drop the unknown mark
-                }
-            }
+            return Err(JsonParseError::UnknownMark(mark_type.to_string()));
         }
 
         let attrs = parse_mark_attrs(mark_obj, schema.mark(mark_type));
@@ -250,6 +249,7 @@ fn parse_content(
     obj: &serde_json::Map<String, Value>,
     schema: &Schema,
     mode: UnknownTypeMode,
+    placement: &'static str,
 ) -> Result<Vec<Node>, JsonParseError> {
     let content_val = match obj.get("content") {
         Some(v) => v,
@@ -262,7 +262,7 @@ fn parse_content(
 
     let mut children = Vec::with_capacity(content_arr.len());
     for child_json in content_arr {
-        let child = parse_node(child_json, schema, mode)?;
+        let child = parse_node(child_json, schema, mode, placement)?;
         // Skip sentinel nodes (from UnknownTypeMode::Skip)
         if child.node_type() != "__skip" {
             children.push(child);
@@ -275,13 +275,17 @@ fn parse_content(
 /// Build an opaque node for an unknown type (Preserve mode).
 ///
 /// The original JSON is stored in the attrs so it can survive round-trips.
-fn build_opaque_json_node(type_name: &str, original_json: &Value) -> Node {
+fn build_opaque_json_node(type_name: &str, original_json: &Value, placement: &str) -> Node {
     let mut attrs = HashMap::new();
     attrs.insert(
         "original_type".to_string(),
         Value::String(type_name.to_string()),
     );
     attrs.insert("original_json".to_string(), original_json.clone());
+    attrs.insert(
+        "opaque_placement".to_string(),
+        Value::String(placement.to_string()),
+    );
     Node::void("__opaque_json".to_string(), attrs)
 }
 

@@ -12,6 +12,34 @@ fn default_editor() -> Editor {
 }
 
 #[test]
+fn active_state_exposes_code_and_task_command_capabilities() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "taskList", "content": "taskItem+", "group": "block", "role": "list", "htmlTag": "ul" },
+            { "name": "taskItem", "content": "paragraph block*", "role": "listItem", "htmlTag": "li", "attrs": { "checked": { "default": false } } },
+            { "name": "codeBlock", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "pre" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+
+    let plain = editor.get_current_state().active_state.commands;
+    assert_eq!(plain.get("toggleCodeBlock"), Some(&true));
+    assert_eq!(plain.get("toggleTaskItem"), Some(&false));
+
+    editor
+        .set_html("<ul><li checked=\"true\"><p>x</p></li></ul>")
+        .unwrap();
+    editor.set_selection(Selection::cursor(3));
+    let task = editor.get_current_state().active_state.commands;
+    assert_eq!(task.get("toggleTaskItem"), Some(&true));
+}
+
+#[test]
 fn literal_list_commands_are_disabled_when_only_snake_case_targets_exist() {
     let editor = Editor::new(prosemirror_schema(), InterceptorPipeline::new(), false);
     let commands = editor.get_selection_state().active_state.commands;
@@ -51,12 +79,14 @@ fn test_allowed_marks_active_mark_always_toggleable() {
     let marks = vec![
         MarkSpec {
             name: "bold".to_string(),
+            html_tag: Some("strong".to_string()),
             attrs: HashMap::new(),
             excludes: None,
             allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "code".to_string(),
+            html_tag: Some("code".to_string()),
             attrs: HashMap::new(),
             excludes: Some("_".to_string()),
             allow_undeclared_attrs: false,
@@ -82,12 +112,14 @@ fn test_allowed_marks_bidirectional_excludes() {
     let marks = vec![
         MarkSpec {
             name: "bold".to_string(),
+            html_tag: Some("strong".to_string()),
             attrs: HashMap::new(),
             excludes: Some("code".to_string()),
             allow_undeclared_attrs: false,
         },
         MarkSpec {
             name: "code".to_string(),
+            html_tag: Some("code".to_string()),
             attrs: HashMap::new(),
             excludes: None,
             allow_undeclared_attrs: false,

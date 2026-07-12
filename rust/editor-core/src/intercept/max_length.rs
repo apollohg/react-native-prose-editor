@@ -78,6 +78,10 @@ impl Interceptor for MaxLength {
     fn sources(&self) -> &[Source] {
         MAX_LENGTH_SOURCES
     }
+
+    fn max_length(&self) -> Option<u32> {
+        Some(self.max)
+    }
 }
 
 /// Recursively compute the text character count of a Fragment's content.

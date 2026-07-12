@@ -1395,10 +1395,8 @@ fn uniffi_editor_errors_are_always_valid_json() {
 
     let parsed: serde_json::Value =
         serde_json::from_str(&response).expect("error response must be valid JSON");
-    assert!(parsed
-        .get("error")
-        .and_then(serde_json::Value::as_str)
-        .is_some());
+    assert_eq!(parsed["error"]["code"], "DOCUMENT_PARSE_FAILED");
+    assert!(parsed["error"]["message"].as_str().is_some());
     editor_core::editor_destroy(id);
 }
 

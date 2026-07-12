@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::boundary::{BoundaryError, BoundaryResult, ResourceLimits};
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::{NodeRole, Schema};
 
@@ -1483,7 +1484,7 @@ fn apply_outdent_list_item(
 }
 
 struct ListItemContext<'a> {
-    list_path: Vec<u16>,
+    list_path: Vec<u32>,
     list_node: &'a Node,
     list_item_idx: usize,
 }
@@ -2000,7 +2001,7 @@ fn apply_cross_parent_replace(
 }
 
 /// Find the length of the common prefix of two paths.
-fn common_prefix_len(a: &[u16], b: &[u16]) -> usize {
+fn common_prefix_len(a: &[u32], b: &[u32]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
@@ -2011,7 +2012,7 @@ fn common_prefix_len(a: &[u16], b: &[u16]) -> usize {
 /// Replace a node at the given path in the tree with two new nodes, returning
 /// a new root. The node at `path` is removed and replaced by `first` and
 /// `second` in that order.
-fn replace_node_with_two(root: &Node, path: &[u16], first: &Node, second: &Node) -> Node {
+fn replace_node_with_two(root: &Node, path: &[u32], first: &Node, second: &Node) -> Node {
     if path.is_empty() {
         panic!("replace_node_with_two called with empty path — cannot replace root with two nodes");
     }
@@ -2056,7 +2057,7 @@ fn replace_node_with_two(root: &Node, path: &[u16], first: &Node, second: &Node)
 /// Replace a node at the given path with multiple nodes, returning a new root.
 ///
 /// The node at `path` is removed and replaced by all nodes in `replacements`.
-fn replace_node_with_many(root: &Node, path: &[u16], replacements: &[Node]) -> Node {
+fn replace_node_with_many(root: &Node, path: &[u32], replacements: &[Node]) -> Node {
     if path.is_empty() {
         panic!("replace_node_with_many called with empty path — cannot replace root with multiple nodes");
     }
@@ -2101,7 +2102,7 @@ fn replace_node_with_many(root: &Node, path: &[u16], replacements: &[Node]) -> N
 ///
 /// `path` is a sequence of child indices from the root. An empty path means
 /// replace the root itself.
-fn replace_node_at_path(root: &Node, path: &[u16], replacement: &Node) -> Node {
+fn replace_node_at_path(root: &Node, path: &[u32], replacement: &Node) -> Node {
     if path.is_empty() {
         return replacement.clone();
     }
@@ -2126,28 +2127,98 @@ fn replace_node_at_path(root: &Node, path: &[u16], replacement: &Node) -> Node {
 // Document validation
 // ---------------------------------------------------------------------------
 
-/// Validate that every node in the document satisfies its schema content rule.
-///
-/// This is called after all steps in a transaction have been applied.
-pub(crate) fn validate_document(doc: &Document, schema: &Schema) -> Result<(), TransformError> {
-    validate_node(doc.root(), schema)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocumentStats {
+    pub node_count: usize,
+    pub max_depth: usize,
 }
 
-fn validate_node(node: &Node, schema: &Schema) -> Result<(), TransformError> {
-    if node.is_text() || node.is_void() {
+pub struct DocumentValidator;
+
+impl DocumentValidator {
+    pub fn validate(
+        doc: &Document,
+        schema: &Schema,
+        limits: &ResourceLimits,
+    ) -> BoundaryResult<DocumentStats> {
+        let root_spec = schema.node(doc.root().node_type()).ok_or_else(|| {
+            BoundaryError::new("DOCUMENT_INVALID", "document root is not in the schema")
+        })?;
+        if !matches!(root_spec.role, NodeRole::Doc) {
+            return Err(BoundaryError::new(
+                "DOCUMENT_INVALID",
+                format!("document root '{}' does not have the doc role", doc.root().node_type()),
+            ));
+        }
+
+        let mut stats = DocumentStats {
+            node_count: 0,
+            max_depth: 0,
+        };
+        validate_node(doc.root(), schema, limits, 1, &mut stats)?;
+        Ok(stats)
+    }
+}
+
+/// Compatibility validator used by the transformation layer. The editor runs
+/// the authoritative validator with its configured limits before committing.
+pub(crate) fn validate_document(doc: &Document, schema: &Schema) -> Result<(), TransformError> {
+    DocumentValidator::validate(doc, schema, &ResourceLimits::default())
+        .map(|_| ())
+        .map_err(|error| TransformError::ContentViolation(format!("{}: {}", error.code(), error)))
+}
+
+fn validate_node(
+    node: &Node,
+    schema: &Schema,
+    limits: &ResourceLimits,
+    depth: usize,
+    stats: &mut DocumentStats,
+) -> BoundaryResult<()> {
+    stats.node_count = stats.node_count.saturating_add(1);
+    stats.max_depth = stats.max_depth.max(depth);
+    if stats.node_count > limits.max_document_nodes {
+        return Err(BoundaryError::limit(
+            "DOCUMENT_LIMIT_EXCEEDED",
+            limits.max_document_nodes,
+            stats.node_count,
+        ));
+    }
+    if depth > limits.max_document_depth {
+        return Err(BoundaryError::limit(
+            "DOCUMENT_LIMIT_EXCEEDED",
+            limits.max_document_depth,
+            depth,
+        ));
+    }
+
+    if node.is_text() {
+        if schema.node(node.node_type()).is_none() {
+            return Err(BoundaryError::new("DOCUMENT_INVALID", "text node is not in the schema"));
+        }
+        validate_marks(node, schema)?;
         return Ok(());
     }
 
-    let spec = match schema.node(node.node_type()) {
-        Some(s) => s,
-        None => {
-            // Unknown node type — skip validation (lenient).
-            return Ok(());
-        }
-    };
+    if node.node_type() == "__opaque" || node.node_type() == "__opaque_json" {
+        return validate_opaque(node);
+    }
 
-    let content = node.content().expect("element node should have content");
+    let spec = schema.node(node.node_type()).ok_or_else(|| {
+        BoundaryError::new(
+            "DOCUMENT_INVALID",
+            format!("unknown node '{}'", node.node_type()),
+        )
+    })?;
+    validate_attrs(node.attrs(), &spec.attrs, spec.allow_undeclared_attrs, node.node_type())?;
 
+    if node.is_void() {
+        return Ok(());
+    }
+
+    let content = node.content().ok_or_else(|| {
+        BoundaryError::new("DOCUMENT_INVALID", "non-void schema node has no content")
+    })?;
     let children = content.iter().collect::<Vec<_>>();
     if !spec.content.matches(&children, |child, symbol| {
         child_matches_group(child, symbol, schema)
@@ -2157,18 +2228,72 @@ fn validate_node(node: &Node, schema: &Schema) -> Result<(), TransformError> {
             .map(|child| child.node_type())
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(TransformError::ContentViolation(format!(
-            "node '{}' content [{}] does not match its content expression",
-            node.node_type(),
-            child_types
-        )));
+        return Err(BoundaryError::new(
+            "DOCUMENT_INVALID",
+            format!(
+                "node '{}' content [{}] does not match its content expression",
+                node.node_type(), child_types
+            ),
+        ));
     }
 
-    // Recursively validate children.
-    for i in 0..content.child_count() {
-        validate_node(content.child(i).unwrap(), schema)?;
+    for child in content.iter() {
+        validate_node(child, schema, limits, depth.saturating_add(1), stats)?;
     }
+    Ok(())
+}
 
+fn validate_attrs(
+    attrs: &HashMap<String, serde_json::Value>,
+    specs: &HashMap<String, crate::schema::AttrSpec>,
+    allow_undeclared: bool,
+    owner: &str,
+) -> BoundaryResult<()> {
+    for (name, spec) in specs {
+        if !spec.has_default && !attrs.contains_key(name) {
+            return Err(BoundaryError::new(
+                "REQUIRED_ATTRIBUTE_MISSING",
+                format!("'{owner}' requires attribute '{name}'"),
+            ));
+        }
+    }
+    if !allow_undeclared {
+        if let Some(name) = attrs.keys().find(|name| !specs.contains_key(*name)) {
+            return Err(BoundaryError::new(
+                "DOCUMENT_INVALID",
+                format!("'{owner}' contains undeclared attribute '{name}'"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_marks(node: &Node, schema: &Schema) -> BoundaryResult<()> {
+    for mark in node.marks() {
+        let spec = schema.mark(mark.mark_type()).ok_or_else(|| {
+            BoundaryError::new(
+                "UNKNOWN_MARK",
+                format!("unknown mark '{}'", mark.mark_type()),
+            )
+        })?;
+        validate_attrs(
+            mark.attrs(),
+            &spec.attrs,
+            spec.allow_undeclared_attrs,
+            mark.mark_type(),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_opaque(node: &Node) -> BoundaryResult<()> {
+    let placement = node.attrs().get("opaque_placement").and_then(|value| value.as_str());
+    if !matches!(placement, Some("block" | "inline")) {
+        return Err(BoundaryError::new(
+            "DOCUMENT_INVALID",
+            "opaque node is missing a valid placement",
+        ));
+    }
     Ok(())
 }
 
@@ -2178,6 +2303,26 @@ fn validate_node(node: &Node, schema: &Schema) -> Result<(), TransformError> {
 /// - Its node_type equals the group name exactly, OR
 /// - Its schema spec belongs to the named group
 fn child_matches_group(child: &Node, group: &str, schema: &Schema) -> bool {
+    if matches!(child.node_type(), "__opaque" | "__opaque_json") {
+        let placement = child
+            .attrs()
+            .get("opaque_placement")
+            .and_then(|value| value.as_str());
+        return schema.all_nodes().any(|spec| {
+            crate::schema::node_spec_matches_symbol(spec, group)
+                && match placement {
+                    Some("inline") => matches!(
+                        spec.role,
+                        NodeRole::Text | NodeRole::Inline | NodeRole::HardBreak
+                    ),
+                    Some("block") => !matches!(
+                        spec.role,
+                        NodeRole::Text | NodeRole::Inline | NodeRole::HardBreak | NodeRole::Doc
+                    ),
+                    _ => false,
+                }
+        });
+    }
     schema
         .node(child.node_type())
         .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, group))

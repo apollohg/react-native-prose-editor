@@ -21,7 +21,22 @@ uniffi::setup_scaffolding!();
 
 const INVALID_EDITOR_ID: u64 = 0;
 
-fn error_json(error: impl std::fmt::Display) -> String {
+fn error_json(error: impl std::fmt::Display + std::any::Any) -> String {
+    if let Some(error) = (&error as &dyn std::any::Any).downcast_ref::<editor::EditorError>() {
+        let boundary = match error {
+            editor::EditorError::Boundary(error) => error.clone(),
+            editor::EditorError::Parse(message) => {
+                BoundaryError::new("DOCUMENT_PARSE_FAILED", message)
+            }
+            editor::EditorError::Transform(error) => {
+                BoundaryError::new("DOCUMENT_INVALID", error.to_string())
+            }
+            editor::EditorError::Intercept(error) => {
+                BoundaryError::new("MUTATION_REJECTED", error.to_string())
+            }
+        };
+        return error_envelope(&boundary);
+    }
     serde_json::json!({ "error": error.to_string() }).to_string()
 }
 
@@ -106,6 +121,11 @@ fn create_editor_from_config(config_json: &str) -> BoundaryResult<u64> {
         .get("allowBase64Images")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+
+    let initial_document = schema
+        .default_document()
+        .map_err(|error| BoundaryError::new("DOCUMENT_INVALID", error))?;
+    transform::DocumentValidator::validate(&initial_document, &schema, &limits)?;
 
     Ok(registry::EditorRegistry::create_with_limits(
         schema,
@@ -279,6 +299,13 @@ pub fn editor_get_html(id: u64) -> String {
 #[uniffi::export]
 pub fn editor_set_json(id: u64, json: String) -> String {
     with_editor(id, |editor| {
+        if let Err(error) = BoundedInput::new(
+            &json,
+            InputKind::DocumentJson,
+            editor.resource_limits(),
+        ) {
+            return error_envelope(&error);
+        }
         let value: serde_json::Value = match serde_json::from_str(&json) {
             Ok(v) => v,
             Err(e) => return error_json(format!("invalid json: {e}")),

@@ -24,6 +24,13 @@ pub fn to_prosemirror_json(doc: &Document, schema: &Schema) -> Value {
 }
 
 fn node_to_json(node: &Node, schema: &Schema) -> Value {
+    if node.node_type() == "__opaque_json" {
+        return node
+            .attrs()
+            .get("original_json")
+            .cloned()
+            .unwrap_or(Value::Null);
+    }
     let mut obj = Map::new();
     obj.insert("type".to_string(), json!(node.node_type()));
 

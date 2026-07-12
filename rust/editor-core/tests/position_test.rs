@@ -19,6 +19,20 @@ fn text(s: &str) -> Node {
     Node::text(s.to_string(), vec![])
 }
 
+#[test]
+fn position_paths_do_not_truncate_sibling_indexes_above_u16() {
+    let children = (0..=65_536).map(|_| paragraph(vec![])).collect();
+    let document = Document::new(doc(children));
+    let map = PositionMap::build(&document, &tiptap_schema());
+
+    assert_eq!(map.block(65_535).unwrap().node_path.as_slice(), &[65_535]);
+    assert_eq!(map.block(65_536).unwrap().node_path.as_slice(), &[65_536]);
+    assert_ne!(
+        map.block(65_535).unwrap().node_path,
+        map.block(65_536).unwrap().node_path
+    );
+}
+
 fn paragraph(children: Vec<Node>) -> Node {
     Node::element(
         "paragraph".to_string(),

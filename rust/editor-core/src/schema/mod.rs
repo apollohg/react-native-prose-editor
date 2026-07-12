@@ -83,6 +83,8 @@ pub enum NodeRole {
 #[derive(Debug, Clone)]
 pub struct MarkSpec {
     pub name: String,
+    /// Optional validated HTML tag used for importing and exporting this mark.
+    pub html_tag: Option<String>,
     pub attrs: HashMap<String, AttrSpec>,
     /// Marks in the `excludes` set cannot coexist with this mark on the same
     /// text range. `None` means no exclusions.
@@ -161,6 +163,17 @@ impl Schema {
         }
         let mut mark_names = HashSet::new();
         for mark in &marks {
+            if let Some(tag) = mark.html_tag.as_deref() {
+                const ALLOWED_MARK_TAGS: &[&str] = &[
+                    "span", "strong", "em", "u", "s", "code", "a", "sub", "sup", "mark",
+                ];
+                if !ALLOWED_MARK_TAGS.contains(&tag) {
+                    return Err(SchemaValidationError::semantic(format!(
+                        "mark '{}' has disallowed HTML tag '{}'",
+                        mark.name, tag
+                    )));
+                }
+            }
             if mark
                 .attrs
                 .values()
@@ -825,6 +838,10 @@ impl Schema {
 
             marks.push(MarkSpec {
                 name,
+                html_tag: mark_val
+                    .get("htmlTag")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_ascii_lowercase),
                 attrs,
                 excludes,
                 allow_undeclared_attrs,

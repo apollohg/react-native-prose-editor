@@ -57,9 +57,85 @@ fn comment_schema() -> Schema {
             attrs: HashMap::new(),
             excludes: None,
             allow_undeclared_attrs: true,
+            html_tag: None,
         });
     }
     Schema::new(nodes, marks)
+}
+
+#[test]
+fn custom_mark_names_are_never_emitted_as_raw_html_tags() {
+    let base = schema();
+    let nodes = base.all_nodes().cloned().collect();
+    let mut marks: Vec<MarkSpec> = base.all_marks().cloned().collect();
+    marks.push(MarkSpec {
+        name: "custom<script".to_string(),
+        attrs: HashMap::new(),
+        excludes: None,
+        allow_undeclared_attrs: false,
+        html_tag: None,
+    });
+    let schema = Schema::new(nodes, marks);
+    let document = Document::new(Node::element(
+        "doc".to_string(),
+        HashMap::new(),
+        Fragment::from(vec![paragraph(vec![Node::text(
+            "safe".to_string(),
+            vec![Mark::new("custom<script".to_string(), HashMap::new())],
+        )])]),
+    ));
+
+    let html = to_html(&document, &schema);
+    assert_eq!(
+        html,
+        "<p><span data-native-editor-mark=\"custom&lt;script\">safe</span></p>"
+    );
+    let reparsed = from_html(&html, &schema, &default_opts()).unwrap();
+    assert_eq!(
+        reparsed.root().child(0).unwrap().child(0).unwrap().marks()[0].mark_type(),
+        "custom<script"
+    );
+}
+
+#[test]
+fn custom_block_and_list_attrs_round_trip_through_html() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "section", "role": "doc" },
+            { "name": "section", "content": "customList", "role": "block", "htmlTag": "section", "attrs": { "data-kind": { "default": "" } } },
+            { "name": "customList", "content": "listItem+", "role": "list", "htmlTag": "ul", "attrs": { "data-id": { "default": "" } } },
+            { "name": "listItem", "content": "paragraph", "role": "listItem", "htmlTag": "li" },
+            { "name": "paragraph", "content": "inline*", "role": "textBlock", "htmlTag": "p" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let html = "<section data-kind=\"note\"><ul data-id=\"7\"><li><p>x</p></li></ul></section>";
+    let document = from_html(html, &schema, &default_opts()).unwrap();
+
+    assert_eq!(to_html(&document, &schema), html);
+}
+
+#[test]
+fn declared_custom_mark_tag_and_attrs_round_trip_through_html() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "paragraph", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "role": "textBlock", "htmlTag": "p" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": [{
+            "name": "highlight",
+            "htmlTag": "mark",
+            "attrs": { "data-tone": { "default": "yellow" } }
+        }]
+    }))
+    .unwrap();
+    let html = "<p><mark data-tone=\"blue\">x</mark></p>";
+    let document = from_html(html, &schema, &default_opts()).unwrap();
+
+    assert_eq!(to_html(&document, &schema), html);
 }
 
 fn default_opts() -> FromHtmlOptions {
@@ -1896,13 +1972,13 @@ fn test_from_json_unknown_mark_error_mode() {
     });
     let result = from_prosemirror_json(&json, &schema(), UnknownTypeMode::Error);
     assert!(result.is_err());
-    if let Err(JsonParseError::UnknownType(name)) = result {
+    if let Err(JsonParseError::UnknownMark(name)) = result {
         assert_eq!(name, "superscript");
     }
 }
 
 #[test]
-fn test_from_json_unknown_mark_skip_mode() {
+fn test_from_json_unknown_mark_skip_mode_still_rejects() {
     let json = serde_json::json!({
         "type": "doc",
         "content": [{
@@ -1918,17 +1994,14 @@ fn test_from_json_unknown_mark_skip_mode() {
             }]
         }]
     });
-    let d = from_prosemirror_json(&json, &schema(), UnknownTypeMode::Skip).unwrap();
-    let t = d.root().child(0).unwrap().child(0).unwrap();
-    assert_eq!(t.marks().len(), 2, "unknown mark should be dropped");
-    let mark_types: Vec<&str> = t.marks().iter().map(|m| m.mark_type()).collect();
-    assert!(mark_types.contains(&"bold"));
-    assert!(mark_types.contains(&"italic"));
-    assert!(!mark_types.contains(&"superscript"));
+    assert!(matches!(
+        from_prosemirror_json(&json, &schema(), UnknownTypeMode::Skip),
+        Err(JsonParseError::UnknownMark(name)) if name == "superscript"
+    ));
 }
 
 #[test]
-fn test_from_json_unknown_mark_preserve_mode() {
+fn test_from_json_unknown_mark_preserve_mode_still_rejects() {
     let json = serde_json::json!({
         "type": "doc",
         "content": [{
@@ -1943,16 +2016,10 @@ fn test_from_json_unknown_mark_preserve_mode() {
             }]
         }]
     });
-    let d = from_prosemirror_json(&json, &schema(), UnknownTypeMode::Preserve).unwrap();
-    let t = d.root().child(0).unwrap().child(0).unwrap();
-    assert_eq!(
-        t.marks().len(),
-        2,
-        "preserve mode should keep unknown marks"
-    );
-    let mark_types: Vec<&str> = t.marks().iter().map(|m| m.mark_type()).collect();
-    assert!(mark_types.contains(&"bold"));
-    assert!(mark_types.contains(&"superscript"));
+    assert!(matches!(
+        from_prosemirror_json(&json, &schema(), UnknownTypeMode::Preserve),
+        Err(JsonParseError::UnknownMark(name)) if name == "superscript"
+    ));
 }
 
 // ---------------------------------------------------------------------------

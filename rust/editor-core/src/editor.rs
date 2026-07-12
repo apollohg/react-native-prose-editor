@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use crate::backend::{DocumentBackend, StandaloneBackend};
-use crate::boundary::ResourceLimits;
+use crate::boundary::{BoundaryError, BoundedInput, InputKind, ResourceLimits};
 use crate::intercept::{InterceptError, InterceptorPipeline};
 use crate::model::resolved_pos::ResolvedPos;
 use crate::model::{Document, Fragment, Mark, Node};
@@ -28,6 +28,7 @@ pub enum EditorError {
     Transform(TransformError),
     Intercept(InterceptError),
     Parse(String),
+    Boundary(BoundaryError),
 }
 
 impl std::fmt::Display for EditorError {
@@ -36,7 +37,14 @@ impl std::fmt::Display for EditorError {
             EditorError::Transform(e) => write!(f, "transform error: {e}"),
             EditorError::Intercept(e) => write!(f, "intercept error: {e}"),
             EditorError::Parse(e) => write!(f, "parse error: {e}"),
+            EditorError::Boundary(e) => write!(f, "{}: {}", e.code(), e),
         }
+    }
+}
+
+impl From<BoundaryError> for EditorError {
+    fn from(e: BoundaryError) -> Self {
+        EditorError::Boundary(e)
     }
 }
 
@@ -97,7 +105,7 @@ pub struct HistoryState {
 
 #[derive(Clone)]
 struct SelectionPathRemap {
-    target_item_path: Vec<u16>,
+    target_item_path: Vec<u32>,
     selection: SelectionOffset,
 }
 
@@ -138,6 +146,7 @@ pub struct Editor {
     stored_marks: Option<Vec<Mark>>,
     interceptors: InterceptorPipeline,
     resource_limits: ResourceLimits,
+    max_length: Option<u32>,
     allow_base64_images: bool,
     document_version: u64,
 }
@@ -165,6 +174,7 @@ impl Editor {
         allow_base64_images: bool,
         resource_limits: ResourceLimits,
     ) -> Self {
+        let max_length = interceptors.max_length();
         let doc = make_empty_doc(&schema);
         let backend = StandaloneBackend::new(doc, &schema);
         Self {
@@ -174,6 +184,7 @@ impl Editor {
             stored_marks: None,
             interceptors,
             resource_limits,
+            max_length,
             allow_base64_images,
             document_version: 1,
         }
@@ -189,6 +200,7 @@ impl Editor {
 
     /// Replace the document content from an HTML string.
     pub fn set_html(&mut self, html: &str) -> Result<Vec<RenderElement>, EditorError> {
+        BoundedInput::new(html, InputKind::Html, &self.resource_limits)?;
         let doc = serialize::from_html(
             html,
             &self.schema,
@@ -197,8 +209,8 @@ impl Editor {
                 allow_base64_images: self.allow_base64_images,
             },
         )
-        .map_err(|e| EditorError::Parse(e.to_string()))?;
-        crate::transform::validate_document(&doc, &self.schema)?;
+        .map_err(|error| BoundaryError::parse("DOCUMENT_PARSE_FAILED", error))?;
+        self.validate_candidate(&doc)?;
         self.backend = StandaloneBackend::new(doc, &self.schema);
         self.selection = Selection::cursor(1);
         self.stored_marks = None;
@@ -217,18 +229,22 @@ impl Editor {
             &self.schema,
             serialize::UnknownTypeMode::Preserve,
         )
-        .map_err(|e| EditorError::Parse(e.to_string()))?;
+        .map_err(map_json_parse_error)?;
         let root_spec = self.schema.node(doc.root().node_type());
         if !root_spec
             .map(|spec| matches!(spec.role, NodeRole::Doc))
             .unwrap_or(false)
         {
-            return Err(EditorError::Parse(format!(
-                "document root '{}' does not have the doc role",
-                doc.root().node_type()
-            )));
+            return Err(BoundaryError::new(
+                "DOCUMENT_INVALID",
+                format!(
+                    "document root '{}' does not have the doc role",
+                    doc.root().node_type()
+                ),
+            )
+            .into());
         }
-        crate::transform::validate_document(&doc, &self.schema)?;
+        self.validate_candidate(&doc)?;
         self.backend = StandaloneBackend::new(doc, &self.schema);
         self.selection = Selection::cursor(1);
         self.stored_marks = None;
@@ -275,6 +291,7 @@ impl Editor {
     /// If the selection is collapsed, toggle stored marks for subsequent
     /// insertions. If the selection is a range, add or remove the mark.
     pub fn toggle_mark(&mut self, mark_name: &str) -> Result<EditorUpdate, EditorError> {
+        self.validate_mark_request(mark_name, &HashMap::new())?;
         let doc = self.backend.document();
         let from = self.selection.from(doc);
         let to = self.selection.to(doc);
@@ -319,6 +336,7 @@ impl Editor {
         mark_name: &str,
         attrs: HashMap<String, serde_json::Value>,
     ) -> Result<EditorUpdate, EditorError> {
+        self.validate_mark_request(mark_name, &attrs)?;
         let doc = self.backend.document();
         let from = self.selection.from(doc);
         let to = self.selection.to(doc);
@@ -834,7 +852,7 @@ impl Editor {
                 allow_base64_images: self.allow_base64_images,
             },
         )
-        .map_err(|e| EditorError::Parse(e.to_string()))?;
+        .map_err(|error| BoundaryError::parse("DOCUMENT_PARSE_FAILED", error))?;
 
         let content = match parsed_doc.root().content() {
             Some(c) => c.clone(),
@@ -865,7 +883,7 @@ impl Editor {
             &self.schema,
             serialize::UnknownTypeMode::Preserve,
         )
-        .map_err(|e| EditorError::Parse(e.to_string()))?;
+        .map_err(map_json_parse_error)?;
 
         let content = match parsed_doc.root().content() {
             Some(c) => c.clone(),
@@ -900,7 +918,7 @@ impl Editor {
                 allow_base64_images: self.allow_base64_images,
             },
         )
-        .map_err(|e| EditorError::Parse(e.to_string()))?;
+        .map_err(|error| BoundaryError::parse("DOCUMENT_PARSE_FAILED", error))?;
 
         let content = match parsed_doc.root().content() {
             Some(c) => c.clone(),
@@ -929,7 +947,7 @@ impl Editor {
             &self.schema,
             serialize::UnknownTypeMode::Preserve,
         )
-        .map_err(|e| EditorError::Parse(e.to_string()))?;
+        .map_err(map_json_parse_error)?;
 
         let content = match parsed_doc.root().content() {
             Some(c) => c.clone(),
@@ -1497,6 +1515,7 @@ impl Editor {
 
         // Compute the step map for selection mapping before mutating backend.
         let (preview_doc, step_map) = tx.apply(&doc_before, &self.schema)?;
+        self.validate_candidate(&preview_doc)?;
 
         // Save selection before for history.
         let selection_before = self.selection.clone();
@@ -1542,6 +1561,55 @@ impl Editor {
             state.render_blocks,
             state.render_patch,
         ))
+    }
+
+    fn validate_candidate(&self, candidate: &Document) -> Result<(), EditorError> {
+        crate::transform::DocumentValidator::validate(
+            candidate,
+            &self.schema,
+            &self.resource_limits,
+        )?;
+        if let Some(limit) = self.max_length {
+            let actual = candidate.root().text_content().chars().count();
+            if actual > limit as usize {
+                return Err(BoundaryError::limit(
+                    "MAX_LENGTH_EXCEEDED",
+                    limit as usize,
+                    actual,
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_mark_request(
+        &self,
+        mark_name: &str,
+        attrs: &HashMap<String, serde_json::Value>,
+    ) -> Result<(), EditorError> {
+        let spec = self.schema.mark(mark_name).ok_or_else(|| {
+            BoundaryError::new("UNKNOWN_MARK", format!("unknown mark '{mark_name}'"))
+        })?;
+        for (name, attr) in &spec.attrs {
+            if !attr.has_default && !attrs.contains_key(name) {
+                return Err(BoundaryError::new(
+                    "REQUIRED_ATTRIBUTE_MISSING",
+                    format!("'{mark_name}' requires attribute '{name}'"),
+                )
+                .into());
+            }
+        }
+        if !spec.allow_undeclared_attrs {
+            if let Some(name) = attrs.keys().find(|name| !spec.attrs.contains_key(*name)) {
+                return Err(BoundaryError::new(
+                    "DOCUMENT_INVALID",
+                    format!("'{mark_name}' contains undeclared attribute '{name}'"),
+                )
+                .into());
+            }
+        }
+        Ok(())
     }
 
     /// Build an EditorUpdate from render elements and current state.
@@ -1642,6 +1710,11 @@ impl Editor {
                 self.can_toggle_heading(level),
             );
         }
+        commands.insert("toggleCodeBlock".to_string(), self.can_toggle_code_block());
+        commands.insert(
+            "toggleTaskItem".to_string(),
+            self.task_item_path_at(pos).is_some(),
+        );
 
         // Compute allowed_marks and insertable_nodes based on selection type.
         let (allowed_marks, insertable_nodes) = match &self.selection {
@@ -2327,6 +2400,31 @@ impl Editor {
         self.can_replace_selected_text_blocks(&range, &replacement_type)
     }
 
+    fn can_toggle_code_block(&self) -> bool {
+        if self.schema.node("codeBlock").is_none() {
+            return false;
+        }
+        let Some(paragraph_type) = self.paragraph_node_name() else {
+            return false;
+        };
+        let doc = self.backend.document();
+        let from = self.selection.from(doc);
+        let to = self.selection.to(doc);
+        let Some(range) = self.selected_text_block_range(from, to) else {
+            return false;
+        };
+        let replacement_type = if range
+            .selected_blocks
+            .iter()
+            .all(|block| block.node_type() == "codeBlock")
+        {
+            paragraph_type
+        } else {
+            "codeBlock".to_string()
+        };
+        self.can_replace_selected_text_blocks(&range, &replacement_type)
+    }
+
     fn wrap_selected_blocks_in_list(
         &mut self,
         from: u32,
@@ -2576,7 +2674,7 @@ impl Editor {
         ))
     }
 
-    fn content_start_for_path(&self, path: &[u16]) -> Option<u32> {
+    fn content_start_for_path(&self, path: &[u32]) -> Option<u32> {
         let doc = self.backend.document();
         let mut content_start: u32 = 0;
         let mut node = doc.root();
@@ -2801,7 +2899,7 @@ impl Editor {
                 continue;
             }
             let insertion_index = if let Some(index) = resolved.node_path.get(depth) {
-                usize::from(*index) + 1
+                usize::try_from(*index).ok()?.saturating_add(1)
             } else {
                 let mut consumed = 0u32;
                 node.content()?
@@ -2856,7 +2954,7 @@ impl Editor {
         }
     }
 
-    fn block_path_for_pos(&self, pos: u32) -> Option<Vec<u16>> {
+    fn block_path_for_pos(&self, pos: u32) -> Option<Vec<u32>> {
         let doc = self.backend.document();
         let resolved = doc.resolve(pos).ok()?;
         let mut node = doc.root();
@@ -2924,13 +3022,13 @@ impl Editor {
         })
     }
 
-    fn containing_blockquote_node_at(&self, pos: u32) -> Option<(u32, Vec<u16>, Node)> {
+    fn containing_blockquote_node_at(&self, pos: u32) -> Option<(u32, Vec<u32>, Node)> {
         let blockquote_type = self.blockquote_node_name()?;
         let doc = self.backend.document();
         let resolved = doc.resolve(pos).ok()?;
         let mut node = doc.root();
         let mut content_start: u32 = 0;
-        let mut nearest: Option<(u32, Vec<u16>, Node)> = None;
+        let mut nearest: Option<(u32, Vec<u32>, Node)> = None;
         let mut path = Vec::new();
 
         for &idx in &resolved.node_path {
@@ -3003,7 +3101,7 @@ impl Editor {
 
         let current_item_path = {
             let mut path = context.list_path.clone();
-            path.push(context.list_item_idx as u16);
+            path.push(u32::try_from(context.list_item_idx).ok()?);
             path
         };
         let parent_list_item_path = &context.list_path[..context.list_path.len() - 1];
@@ -3013,7 +3111,7 @@ impl Editor {
         let parent_list_path = &parent_list_item_path[..parent_list_item_path.len() - 1];
         let parent_list_item_idx = *parent_list_item_path.last()? as usize;
         let mut target_item_path = parent_list_path.to_vec();
-        target_item_path.push((parent_list_item_idx + 1) as u16);
+        target_item_path.push(u32::try_from(parent_list_item_idx + 1).ok()?);
 
         let item_open = Self::node_open_pos(self.backend.document(), &current_item_path)?;
         let selection = SelectionOffset::from_selection(&self.selection, item_open)?;
@@ -3024,10 +3122,10 @@ impl Editor {
         })
     }
 
-    fn task_item_path_at(&self, pos: u32) -> Option<Vec<u16>> {
+    fn task_item_path_at(&self, pos: u32) -> Option<Vec<u32>> {
         let context = self.list_item_context_at(pos)?;
         let mut path = context.list_path.clone();
-        path.push(context.list_item_idx as u16);
+        path.push(u32::try_from(context.list_item_idx).ok()?);
         let node = self.backend.document().node_at(&path)?;
         if matches!(node.node_type(), "taskItem" | "task_item")
             || node.attrs().contains_key("checked")
@@ -3075,7 +3173,7 @@ impl Editor {
         })
     }
 
-    fn node_open_pos(doc: &Document, path: &[u16]) -> Option<u32> {
+    fn node_open_pos(doc: &Document, path: &[u32]) -> Option<u32> {
         let mut current = doc.root();
         let mut open_pos = 0;
 
@@ -3092,7 +3190,7 @@ impl Editor {
         Some(open_pos)
     }
 
-    fn node_delete_start_pos(doc: &Document, path: &[u16]) -> Option<u32> {
+    fn node_delete_start_pos(doc: &Document, path: &[u32]) -> Option<u32> {
         let open_pos = Self::node_open_pos(doc, path)?;
         open_pos.checked_sub(1)
     }
@@ -3669,7 +3767,7 @@ impl Editor {
                     .map(|content| {
                         content
                             .iter()
-                            .take(usize::from(block_index))
+                            .take(usize::try_from(block_index).expect("u32 index fits usize"))
                             .map(Node::node_type)
                             .collect::<Vec<_>>()
                     })
@@ -3899,13 +3997,13 @@ fn list_attrs_for_type(
 }
 
 struct ListItemContext {
-    list_path: Vec<u16>,
+    list_path: Vec<u32>,
     list_item_idx: usize,
     parent_is_list_item: bool,
 }
 
 struct BlockSelectionRange {
-    parent_path: Vec<u16>,
+    parent_path: Vec<u32>,
     first_child_index: usize,
     replace_from: u32,
     replace_to: u32,
@@ -3948,5 +4046,16 @@ impl SelectionOffset {
                 pos: item_open + pos,
             },
         }
+    }
+}
+
+fn map_json_parse_error(error: serialize::JsonParseError) -> EditorError {
+    match error {
+        serialize::JsonParseError::UnknownMark(name) => BoundaryError::new(
+            "UNKNOWN_MARK",
+            format!("unknown mark '{name}'"),
+        )
+        .into(),
+        other => BoundaryError::parse("DOCUMENT_PARSE_FAILED", other).into(),
     }
 }

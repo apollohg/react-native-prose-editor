@@ -1,7 +1,10 @@
 use editor_core::boundary::{BoundedInput, InputKind, ResourceLimits};
+use editor_core::editor::Editor;
 use editor_core::intercept::InterceptorPipeline;
 use editor_core::registry::EditorRegistry;
+use editor_core::schema::{AttrSpec, NodeSpec, Schema};
 use editor_core::tiptap_schema;
+use editor_core::serialize::{from_prosemirror_json, to_prosemirror_json, UnknownTypeMode};
 
 #[test]
 fn boundary_rejects_input_before_json_parse() {
@@ -126,6 +129,20 @@ fn editor_create_result_propagates_schema_limits_but_falls_back_for_semantic_err
 }
 
 #[test]
+fn editor_creation_rejects_limits_that_exclude_its_initial_document() {
+    let result: serde_json::Value = serde_json::from_str(&editor_core::editor_create_result(
+        serde_json::json!({
+            "resourceLimits": { "maxDocumentNodes": 1 }
+        })
+        .to_string(),
+    ))
+    .unwrap();
+
+    assert_eq!(result["error"]["code"], "DOCUMENT_LIMIT_EXCEEDED");
+    assert!(result.get("editorId").is_none());
+}
+
+#[test]
 fn attacker_controlled_error_text_cannot_turn_semantic_schema_invalidity_into_a_limit_error() {
     let result: serde_json::Value = serde_json::from_str(&editor_core::editor_create_result(
         serde_json::json!({
@@ -174,4 +191,153 @@ fn editor_registry_stores_resolved_resource_limits() {
         321
     );
     EditorRegistry::destroy(id);
+}
+
+#[test]
+fn unknown_marks_are_rejected_atomically() {
+    let mut editor = Editor::new(tiptap_schema(), InterceptorPipeline::new(), false);
+    editor.set_html("<p>safe</p>").unwrap();
+    let before = editor.get_json();
+
+    let error = editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "unsafe",
+                    "marks": [{ "type": "script" }]
+                }]
+            }]
+        }))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("UNKNOWN_MARK"));
+    assert_eq!(editor.get_json(), before);
+    assert!(!editor.get_html().contains("<script"));
+}
+
+#[test]
+fn unknown_mark_commands_are_rejected_before_stored_marks_change() {
+    let mut editor = Editor::new(tiptap_schema(), InterceptorPipeline::new(), false);
+    editor.set_html("<p>safe</p>").unwrap();
+    let before = editor.get_json();
+
+    let error = match editor.toggle_mark("script") {
+        Ok(_) => panic!("unknown mark command must fail"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("UNKNOWN_MARK"));
+    assert_eq!(editor.get_json(), before);
+    assert!(!editor.get_html().contains("<script"));
+}
+
+#[test]
+fn missing_required_mark_attribute_is_rejected_atomically() {
+    let mut editor = Editor::new(tiptap_schema(), InterceptorPipeline::new(), false);
+    let before = editor.get_json();
+    let error = editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "link",
+                    "marks": [{ "type": "link" }]
+                }]
+            }]
+        }))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("REQUIRED_ATTRIBUTE_MISSING"));
+    assert_eq!(editor.get_json(), before);
+}
+
+#[test]
+fn missing_required_void_attribute_is_rejected_atomically() {
+    let schema = schema_with_required_image_src();
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+    editor.set_html("<p>before</p>").unwrap();
+    let before = editor.get_json();
+
+    let error = editor
+        .set_json(&serde_json::json!({
+            "type": "doc",
+            "content": [{ "type": "image" }]
+        }))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("REQUIRED_ATTRIBUTE_MISSING"));
+    assert_eq!(editor.get_json(), before);
+}
+
+#[test]
+fn snapshot_setters_enforce_unicode_scalar_max_length() {
+    use editor_core::intercept::MaxLength;
+
+    let mut pipeline = InterceptorPipeline::new();
+    pipeline.add(Box::new(MaxLength::new(1)));
+    let mut editor = Editor::new(tiptap_schema(), pipeline, false);
+
+    let error = editor.set_html("<p>😀x</p>").unwrap_err();
+    assert!(error.to_string().contains("MAX_LENGTH_EXCEEDED"));
+    assert_eq!(editor.get_html(), "<p></p>");
+}
+
+#[test]
+fn candidate_documents_enforce_configured_node_and_depth_limits() {
+    let limits = ResourceLimits {
+        max_document_nodes: 3,
+        max_document_depth: 2,
+        ..ResourceLimits::default()
+    };
+    let mut editor = Editor::new_with_limits(
+        tiptap_schema(),
+        InterceptorPipeline::new(),
+        false,
+        limits,
+    );
+
+    let error = editor
+        .set_html("<blockquote><p>x</p></blockquote>")
+        .unwrap_err();
+    assert!(error.to_string().contains("DOCUMENT_LIMIT_EXCEEDED"));
+    assert_eq!(editor.get_html(), "<p></p>");
+}
+
+#[test]
+fn opaque_json_round_trips_faithfully_twice() {
+    let schema = tiptap_schema();
+    let original = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "futureWidget",
+            "attrs": { "nested": { "answer": 42 }, "enabled": true },
+            "content": [{ "type": "text", "text": "do not reinterpret" }]
+        }]
+    });
+
+    let first = from_prosemirror_json(&original, &schema, UnknownTypeMode::Preserve).unwrap();
+    let first_json = to_prosemirror_json(&first, &schema);
+    let second = from_prosemirror_json(&first_json, &schema, UnknownTypeMode::Preserve).unwrap();
+    let second_json = to_prosemirror_json(&second, &schema);
+
+    assert_eq!(first_json, original);
+    assert_eq!(second_json, original);
+}
+
+fn schema_with_required_image_src() -> Schema {
+    let base = tiptap_schema();
+    let mut nodes: Vec<NodeSpec> = base.all_nodes().cloned().collect();
+    let image = nodes.iter_mut().find(|node| node.name == "image").unwrap();
+    image.attrs.insert(
+        "src".to_string(),
+        AttrSpec {
+            default: None,
+            has_default: false,
+        },
+    );
+    Schema::new(nodes, base.all_marks().cloned().collect())
 }

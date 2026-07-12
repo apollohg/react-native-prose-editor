@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use editor_core::model::{Document, Fragment, Mark, Node};
 use editor_core::schema::presets::tiptap_schema;
+use editor_core::schema::{AttrSpec, Schema};
 use editor_core::transform::{Source, Step, Transaction};
 
 // ---------------------------------------------------------------------------
@@ -1443,7 +1444,21 @@ fn test_wrap_in_list_applies_item_attrs_to_created_items() {
     // Wrap with item_attrs carrying checked=true. Every created list item
     // must receive those attrs — this is what lets the inverse of
     // UnwrapFromList restore a taskItem's `checked` state on undo.
-    let (d, schema) = doc_and_schema(doc(vec![paragraph(vec![text("Todo")])]));
+    let (d, base_schema) = doc_and_schema(doc(vec![paragraph(vec![text("Todo")])]));
+    let mut nodes = base_schema.all_nodes().cloned().collect::<Vec<_>>();
+    nodes
+        .iter_mut()
+        .find(|node| node.name == "listItem")
+        .unwrap()
+        .attrs
+        .insert(
+            "checked".to_string(),
+            AttrSpec {
+                default: Some(serde_json::Value::Bool(false)),
+                has_default: true,
+            },
+        );
+    let schema = Schema::new(nodes, base_schema.all_marks().cloned().collect());
     let mut item_attrs = HashMap::new();
     item_attrs.insert("checked".to_string(), serde_json::Value::Bool(true));
     let mut tx = Transaction::new(Source::Input);

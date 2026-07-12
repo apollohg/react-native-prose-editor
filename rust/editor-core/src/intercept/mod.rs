@@ -52,6 +52,11 @@ pub trait Interceptor: Send + Sync {
     /// Which transaction sources this interceptor applies to.
     /// If the transaction's source is not in this list, the interceptor is skipped.
     fn sources(&self) -> &[Source];
+
+    /// Maximum Unicode-scalar document length enforced by this interceptor.
+    fn max_length(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Extension method for interceptors: checks source applicability, then delegates
@@ -103,6 +108,14 @@ impl InterceptorPipeline {
             current = interceptor.check(current, doc)?;
         }
         Ok(current)
+    }
+
+    /// The strictest configured maximum document length, if present.
+    pub fn max_length(&self) -> Option<u32> {
+        self.interceptors
+            .iter()
+            .filter_map(|interceptor| interceptor.max_length())
+            .min()
     }
 }
 

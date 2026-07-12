@@ -4,7 +4,7 @@ pub mod steps;
 
 // Re-export apply_step for use by the backend module.
 pub use apply::apply_step;
-pub(crate) use apply::validate_document;
+pub use apply::DocumentValidator;
 
 use std::collections::HashMap;
 

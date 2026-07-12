@@ -40,7 +40,7 @@ pub struct BlockMapping {
     /// Number of scalars for the separator after this block (0 for terminal).
     pub rendered_break_after: u32,
     /// Path from doc root to this block's node (child indices at each level).
-    pub node_path: SmallVec<[u16; 8]>,
+    pub node_path: SmallVec<[u32; 8]>,
     /// Whether this block maps a block-level void node instead of text content.
     pub is_void_block: bool,
 }

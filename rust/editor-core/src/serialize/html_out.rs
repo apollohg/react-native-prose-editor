@@ -20,14 +20,14 @@ fn serialize_node(node: &Node, schema: &Schema, buf: &mut String) {
         let text = node.text_str().unwrap_or("");
         // Open mark tags
         for mark in node.marks() {
-            serialize_mark_open(mark, buf);
+            serialize_mark_open(mark, schema, buf);
         }
         escape_html(text, buf);
         // Close mark tags in reverse order
         for mark in node.marks().iter().rev() {
-            let tag = mark_type_to_tag(mark.mark_type());
+            let tag = mark_tag(mark, schema);
             buf.push_str("</");
-            buf.push_str(tag);
+            buf.push_str(tag.as_str());
             buf.push('>');
         }
         return;
@@ -122,15 +122,28 @@ fn serialize_node_attrs(node: &Node, spec: &crate::schema::NodeSpec, buf: &mut S
     }
 }
 
-fn serialize_mark_open(mark: &crate::model::Mark, buf: &mut String) {
-    let tag = mark_type_to_tag(mark.mark_type());
+fn serialize_mark_open(mark: &crate::model::Mark, schema: &Schema, buf: &mut String) {
+    let tag = mark_tag(mark, schema);
     buf.push('<');
-    buf.push_str(tag);
-    if mark.mark_type() == "link" {
-        if let Some(href) = mark.attrs().get("href").and_then(|value| value.as_str()) {
-            buf.push_str(" href=\"");
-            escape_html(href, buf);
-            buf.push('"');
+    buf.push_str(tag.as_str());
+    if matches!(tag, MarkTag::DataSpan) {
+        buf.push_str(" data-native-editor-mark=\"");
+        escape_html(mark.mark_type(), buf);
+        buf.push('"');
+    }
+    if let Some(spec) = schema.mark(mark.mark_type()) {
+        for name in spec.attrs.keys() {
+            if let Some(value) = mark.attrs().get(name) {
+                let rendered = value
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| value.to_string());
+                buf.push(' ');
+                buf.push_str(name);
+                buf.push_str("=\"");
+                escape_html(&rendered, buf);
+                buf.push('"');
+            }
         }
     }
     buf.push('>');
@@ -203,16 +216,26 @@ fn serialize_opaque_node(node: &Node, buf: &mut String) {
     buf.push('>');
 }
 
-/// Map mark type names to their HTML tag equivalents.
-fn mark_type_to_tag(mark_type: &str) -> &str {
-    match mark_type {
-        "bold" => "strong",
-        "italic" => "em",
-        "underline" => "u",
-        "strike" => "s",
-        "link" => "a",
-        _ => mark_type,
+enum MarkTag<'a> {
+    Element(&'a str),
+    DataSpan,
+}
+
+impl MarkTag<'_> {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Element(tag) => tag,
+            Self::DataSpan => "span",
+        }
     }
+}
+
+fn mark_tag<'a>(mark: &'a crate::model::Mark, schema: &'a Schema) -> MarkTag<'a> {
+    schema
+        .mark(mark.mark_type())
+        .and_then(|spec| spec.html_tag.as_deref())
+        .map(MarkTag::Element)
+        .unwrap_or(MarkTag::DataSpan)
 }
 
 /// HTML-escape text content: `&`, `<`, `>`, `"`.

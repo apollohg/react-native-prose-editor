@@ -31,7 +31,7 @@ pub const BLOCK_BREAK_SCALARS: u32 = 1;
 pub fn build_position_map(doc: &Document, schema: &Schema) -> PositionMap {
     let mut blocks: Vec<BlockMapping> = Vec::new();
     let mut scalar_cursor: u32 = 0;
-    let path: SmallVec<[u16; 8]> = SmallVec::new();
+    let path: SmallVec<[u32; 8]> = SmallVec::new();
 
     // The root node ("doc") is an element. We walk its direct and indirect
     // children looking for text blocks and block-level void nodes.
@@ -120,7 +120,7 @@ pub(crate) fn rebuild_existing_block_mapping(
 fn walk_node(
     node: &Node,
     schema: &Schema,
-    path: &SmallVec<[u16; 8]>,
+    path: &SmallVec<[u32; 8]>,
     doc_offset: u32,
     blocks: &mut Vec<BlockMapping>,
     scalar_cursor: &mut u32,
@@ -175,7 +175,7 @@ fn walk_node(
     let mut child_doc_offset = doc_offset;
     for (child_idx, child) in content.iter().enumerate() {
         let mut child_path = path.clone();
-        child_path.push(child_idx as u16);
+        child_path.push(u32::try_from(child_idx).expect("validated document index fits u32"));
         let mut child_prefix_len = pending_prefix_len;
         pending_prefix_len = 0;
 
