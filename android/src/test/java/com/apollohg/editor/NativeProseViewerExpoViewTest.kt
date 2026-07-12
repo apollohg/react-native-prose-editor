@@ -8,6 +8,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityEvent
+import android.widget.FrameLayout
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import expo.modules.core.ModuleRegistry
 import expo.modules.kotlin.AppContext
@@ -26,6 +28,18 @@ import java.lang.ref.WeakReference
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class NativeProseViewerExpoViewTest {
+    private class AccessibilityEventParent(context: Context) : FrameLayout(context) {
+        val eventTypes = mutableListOf<Int>()
+
+        override fun requestSendAccessibilityEvent(
+            child: View,
+            event: AccessibilityEvent
+        ): Boolean {
+            eventTypes += event.eventType
+            return true
+        }
+    }
+
     @Test
     fun `accessibility exposes and activates viewer link through touch emitter`() {
         val (viewer, _) = laidOutInteractiveViewer(TargetKind.LINK)
@@ -72,6 +86,127 @@ class NativeProseViewerExpoViewTest {
             )
         )
         assertEquals(1, activations)
+    }
+
+    @Test
+    fun `virtual annotation accessibility focus can move clear and reject invalid ids`() {
+        val (viewer, _) = laidOutInteractiveViewer(TargetKind.LINK)
+        val parent = AccessibilityEventParent(viewer.context)
+        parent.addView(viewer)
+        val provider = viewer.accessibilityNodeProvider
+
+        var first = requireNotNull(provider.createAccessibilityNodeInfo(1))
+        assertFalse(first.isAccessibilityFocused)
+        assertTrue(first.actionList.any {
+            it.id == AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS
+        })
+        assertFalse(
+            provider.performAction(
+                99,
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null
+            )
+        )
+
+        assertTrue(
+            provider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null
+            )
+        )
+        first = requireNotNull(provider.createAccessibilityNodeInfo(1))
+        assertTrue(first.isAccessibilityFocused)
+        assertTrue(first.actionList.any {
+            it.id == AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS
+        })
+        assertTrue(parent.eventTypes.contains(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED))
+
+        assertTrue(
+            provider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS,
+                null
+            )
+        )
+        assertFalse(requireNotNull(provider.createAccessibilityNodeInfo(1)).isAccessibilityFocused)
+        assertTrue(
+            parent.eventTypes.contains(
+                AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED
+            )
+        )
+        assertFalse(
+            provider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS,
+                null
+            )
+        )
+    }
+
+    @Test
+    fun `replacing render clears virtual accessibility focus`() {
+        val (viewer, _) = laidOutInteractiveViewer(TargetKind.LINK)
+        val parent = AccessibilityEventParent(viewer.context)
+        parent.addView(viewer)
+        val provider = viewer.accessibilityNodeProvider
+        assertTrue(
+            provider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null
+            )
+        )
+
+        viewer.setRenderJson(paragraphRenderJson("replacement"))
+
+        assertTrue(
+            parent.eventTypes.contains(
+                AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED
+            )
+        )
+        assertTrue(provider.createAccessibilityNodeInfo(1) == null)
+    }
+
+    @Test
+    fun `crossing adjacent equal links does not activate the up range`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val viewer = NativeProseViewerExpoView(expoContext.context, expoContext.appContext)
+        viewer.suppressContentHeightEventsForTesting = true
+        viewer.setRenderJson(
+            """
+            [
+              {"type":"blockStart","nodeType":"paragraph","depth":0},
+              {"type":"textRun","text":"i","marks":[{"type":"link","href":"https://example.com/same"}]},
+              {"type":"textRun","text":"i","marks":[{"type":"link","href":"https://example.com/same"}]},
+              {"type":"blockEnd"}
+            ]
+            """.trimIndent()
+        )
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        viewer.measure(widthSpec, heightSpec)
+        viewer.layout(0, 0, viewer.measuredWidth, viewer.measuredHeight)
+        val proseView = viewer.getChildAt(0) as EditorEditText
+        val text = proseView.text as Spanned
+        val links = text.getSpans(0, text.length, Annotation::class.java)
+            .filter { it.key == RenderBridge.NATIVE_LINK_HREF_ANNOTATION }
+            .sortedBy { text.getSpanStart(it) }
+        assertEquals(2, links.size)
+        val down = pointForOffset(proseView, text.getSpanStart(links[0]))
+        val up = pointForOffset(proseView, text.getSpanStart(links[1]))
+        NativeProseViewerExpoView::class.java.getDeclaredField("touchSlop").apply {
+            isAccessible = true
+            setFloat(viewer, 1_000f)
+        }
+        var activations = 0
+        viewer.onLinkTapForTesting = { activations += 1 }
+
+        handleProseTouch(viewer, motion(MotionEvent.ACTION_DOWN, down))
+        val consumed = handleProseTouch(viewer, motion(MotionEvent.ACTION_UP, up))
+
+        assertFalse(consumed)
+        assertEquals(0, activations)
     }
 
     @Test

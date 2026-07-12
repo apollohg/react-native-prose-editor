@@ -16,12 +16,15 @@ internal fun nativeArgumentError(field: String): String =
 internal fun destroyEditorThenInvalidate(
     editorId: ULong,
     destroy: (ULong) -> Unit = ::editorDestroy,
-    invalidate: (Long) -> Unit = NativeEditorViewRegistry::invalidateDestroyedEditor
+    beginDestroy: (Long) -> Boolean = NativeEditorViewRegistry::beginDestroy,
+    finalizeDestroy: (Long) -> Unit = NativeEditorViewRegistry::finalizeDestroy
 ) {
+    val signedEditorId = editorId.toLong()
+    if (!beginDestroy(signedEditorId)) return
     try {
         destroy(editorId)
     } finally {
-        invalidate(editorId.toLong())
+        finalizeDestroy(signedEditorId)
     }
 }
 

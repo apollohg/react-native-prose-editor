@@ -141,11 +141,23 @@ internal object NativeEditorViewRegistry {
         views += WeakReference(view)
     }
 
+    @Synchronized
+    fun beginDestroy(editorId: Long): Boolean {
+        if (editorId == 0L || destroyingEditorIds.contains(editorId)) return false
+        if (!liveEditorIds.contains(editorId) && !rustEditorExists(editorId)) return false
+        destroyingEditorIds.add(editorId)
+        liveEditorIds.remove(editorId)
+        return true
+    }
+
     fun invalidateDestroyedEditor(editorId: Long) {
-        if (editorId == 0L) return
+        if (!beginDestroy(editorId)) return
+        finalizeDestroy(editorId)
+    }
+
+    fun finalizeDestroy(editorId: Long) {
         val affectedViews = synchronized(this) {
-            destroyingEditorIds.add(editorId)
-            liveEditorIds.remove(editorId)
+            if (!destroyingEditorIds.contains(editorId)) return
             val views = listOfNotNull(
                 *viewsByEditorId.remove(editorId)
                     .orEmpty()

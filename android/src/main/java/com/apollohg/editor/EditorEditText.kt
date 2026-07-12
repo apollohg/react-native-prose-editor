@@ -124,7 +124,17 @@ class EditorEditText @JvmOverloads constructor(
         val target: AccessibleAnnotationTarget,
         val label: String,
         val role: String,
-        val bounds: Rect
+        val bounds: Rect,
+        val annotation: Annotation,
+        val start: Int,
+        val end: Int
+    )
+
+    internal data class InteractiveAnnotationHit(
+        val target: AccessibleAnnotationTarget,
+        val annotation: Annotation,
+        val start: Int,
+        val end: Int
     )
 
     internal sealed interface AccessibleAnnotationTarget {
@@ -4371,10 +4381,43 @@ class EditorEditText @JvmOverloads constructor(
                 target = target,
                 label = label,
                 role = role,
-                bounds = annotationBounds(textLayout, start, end)
+                bounds = annotationBounds(textLayout, start, end),
+                annotation = annotation,
+                start = start,
+                end = end
             )
         }
         return results.sortedBy { it.first }.map { it.second }
+    }
+
+    internal fun interactiveAnnotationHitAt(x: Float, y: Float): InteractiveAnnotationHit? {
+        val (spannable, offset) = textOffsetHitAt(x, y) ?: return null
+        val annotations = spannable.getSpans(
+            offset,
+            (offset + 1).coerceAtMost(spannable.length),
+            Annotation::class.java
+        )
+        val mentionAnnotation = annotations.firstOrNull {
+            it.key == "nativeVoidNodeType" && it.value == "mention"
+        }
+        val annotation = mentionAnnotation ?: annotations.firstOrNull {
+            it.key == RenderBridge.NATIVE_LINK_HREF_ANNOTATION && it.value.isNotBlank()
+        } ?: return null
+        val start = spannable.getSpanStart(annotation)
+        val end = spannable.getSpanEnd(annotation)
+        if (start < 0 || end <= start) return null
+        val label = spannable.subSequence(start, end).toString()
+        val target = if (annotation === mentionAnnotation) {
+            val docPos = annotations.firstOrNull {
+                it.key == "nativeDocPos" &&
+                    spannable.getSpanStart(it) == start &&
+                    spannable.getSpanEnd(it) == end
+            }?.value?.toIntOrNull() ?: return null
+            AccessibleAnnotationTarget.Mention(docPos, label)
+        } else {
+            AccessibleAnnotationTarget.Link(annotation.value, label)
+        }
+        return InteractiveAnnotationHit(target, annotation, start, end)
     }
 
     private fun annotationBounds(textLayout: Layout, start: Int, end: Int): Rect {

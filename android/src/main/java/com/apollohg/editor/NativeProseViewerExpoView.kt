@@ -12,6 +12,7 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
+import android.view.accessibility.AccessibilityEvent
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
@@ -20,9 +21,33 @@ import kotlin.math.abs
 import org.json.JSONArray
 
 private sealed interface TapTarget {
-    data class Mention(val docPos: Int, val label: String) : TapTarget
-    data class Link(val href: String, val text: String) : TapTarget
+    val annotation: android.text.Annotation
+    val start: Int
+    val end: Int
+
+    data class Mention(
+        val docPos: Int,
+        val label: String,
+        override val annotation: android.text.Annotation,
+        override val start: Int,
+        override val end: Int
+    ) : TapTarget
+
+    data class Link(
+        val href: String,
+        val text: String,
+        override val annotation: android.text.Annotation,
+        override val start: Int,
+        override val end: Int
+    ) : TapTarget
 }
+
+private fun TapTarget.matches(other: TapTarget?): Boolean =
+    other != null &&
+        annotation === other.annotation &&
+        start == other.start &&
+        end == other.end &&
+        this::class == other::class
 
 private data class PendingTapGesture(
     val target: TapTarget,
@@ -52,6 +77,7 @@ class NativeProseViewerExpoView(
     private var interceptLinkTaps = false
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private var pendingTapGesture: PendingTapGesture? = null
+    private var accessibilityFocusedVirtualId = View.NO_ID
     internal var suppressContentHeightEventsForTesting = false
     internal var onLinkTapForTesting: (() -> Unit)? = null
     internal var onMentionTapForTesting: (() -> Unit)? = null
@@ -91,6 +117,7 @@ class NativeProseViewerExpoView(
 
     fun setRenderJson(renderJson: String?) {
         if (lastRenderJson == renderJson) return
+        clearVirtualAccessibilityFocus()
         lastRenderJson = renderJson
         applyRenderJson()
         requestLayout()
@@ -120,7 +147,10 @@ class NativeProseViewerExpoView(
     }
 
     fun setEnableLinkTaps(enableLinkTaps: Boolean?) {
-        this.enableLinkTaps = enableLinkTaps ?: true
+        val nextValue = enableLinkTaps ?: true
+        if (this.enableLinkTaps == nextValue) return
+        clearVirtualAccessibilityFocus()
+        this.enableLinkTaps = nextValue
     }
 
     fun setInterceptLinkTaps(interceptLinkTaps: Boolean?) {
@@ -170,7 +200,7 @@ class NativeProseViewerExpoView(
                     gesture == null ||
                     event.getPointerId(event.actionIndex) != gesture.pointerId ||
                     movedBeyondTouchSlop(event, gesture) ||
-                    gesture.target != tapTargetAt(event.x, event.y)
+                    !gesture.target.matches(tapTargetAt(event.x, event.y))
                 ) {
                     return false
                 }
@@ -187,12 +217,25 @@ class NativeProseViewerExpoView(
     }
 
     private fun tapTargetAt(x: Float, y: Float): TapTarget? {
-        proseView.mentionHitAt(x, y)?.let { mention ->
-            return TapTarget.Mention(mention.docPos, mention.label)
-        }
-        if (!enableLinkTaps) return null
-        return proseView.linkHitAt(x, y)?.let { link ->
-            TapTarget.Link(link.href, link.text)
+        val hit = proseView.interactiveAnnotationHitAt(x, y) ?: return null
+        return when (val target = hit.target) {
+            is EditorEditText.AccessibleAnnotationTarget.Mention -> TapTarget.Mention(
+                target.docPos,
+                target.label,
+                hit.annotation,
+                hit.start,
+                hit.end
+            )
+            is EditorEditText.AccessibleAnnotationTarget.Link -> {
+                if (!enableLinkTaps) return null
+                TapTarget.Link(
+                    target.href,
+                    target.text,
+                    hit.annotation,
+                    hit.start,
+                    hit.end
+                )
+            }
         }
     }
 
@@ -256,9 +299,17 @@ class NativeProseViewerExpoView(
                 isEnabled = isAttachedToWindow || !isInEditMode
                 isClickable = true
                 isFocusable = true
+                isAccessibilityFocused = virtualViewId == accessibilityFocusedVirtualId
                 setBoundsInParent(bounds)
                 setBoundsInScreen(screenBounds)
                 addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK)
+                addAction(
+                    if (isAccessibilityFocused) {
+                        AccessibilityNodeInfo.AccessibilityAction.ACTION_CLEAR_ACCESSIBILITY_FOCUS
+                    } else {
+                        AccessibilityNodeInfo.AccessibilityAction.ACTION_ACCESSIBILITY_FOCUS
+                    }
+                )
                 AccessibilityNodeInfoCompat.wrap(this).roleDescription = annotation.role
             }
         }
@@ -268,11 +319,65 @@ class NativeProseViewerExpoView(
             action: Int,
             arguments: Bundle?
         ): Boolean {
-            if (action != AccessibilityNodeInfo.ACTION_CLICK) return false
             val annotation = accessibleAnnotations()
                 .getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) ?: return false
-            return activateTapTarget(annotation.target.toTapTarget())
+            return when (action) {
+                AccessibilityNodeInfo.ACTION_CLICK ->
+                    activateTapTarget(annotation.toTapTarget())
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS ->
+                    requestVirtualAccessibilityFocus(virtualViewId)
+                AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS ->
+                    clearVirtualAccessibilityFocus(virtualViewId)
+                else -> false
+            }
         }
+    }
+
+    private fun requestVirtualAccessibilityFocus(virtualViewId: Int): Boolean {
+        if (accessibleAnnotations().getOrNull(virtualViewId - FIRST_VIRTUAL_ANNOTATION_ID) == null) {
+            return false
+        }
+        if (accessibilityFocusedVirtualId == virtualViewId) return false
+        if (accessibilityFocusedVirtualId != View.NO_ID) {
+            val previousId = accessibilityFocusedVirtualId
+            accessibilityFocusedVirtualId = View.NO_ID
+            sendVirtualAccessibilityEvent(
+                previousId,
+                AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED
+            )
+        }
+        accessibilityFocusedVirtualId = virtualViewId
+        invalidate()
+        sendVirtualAccessibilityEvent(
+            virtualViewId,
+            AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED
+        )
+        return true
+    }
+
+    private fun clearVirtualAccessibilityFocus(
+        virtualViewId: Int = accessibilityFocusedVirtualId
+    ): Boolean {
+        if (
+            virtualViewId == View.NO_ID ||
+            virtualViewId != accessibilityFocusedVirtualId
+        ) return false
+        accessibilityFocusedVirtualId = View.NO_ID
+        invalidate()
+        sendVirtualAccessibilityEvent(
+            virtualViewId,
+            AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED
+        )
+        return true
+    }
+
+    private fun sendVirtualAccessibilityEvent(virtualViewId: Int, eventType: Int) {
+        val event = AccessibilityEvent.obtain(eventType).apply {
+            packageName = context.packageName
+            className = android.widget.Button::class.java.name
+            setSource(this@NativeProseViewerExpoView, virtualViewId)
+        }
+        parent?.requestSendAccessibilityEvent(this, event)
     }
 
     private fun accessibleAnnotations(): List<EditorEditText.AccessibleAnnotation> =
@@ -280,9 +385,11 @@ class NativeProseViewerExpoView(
             annotation.target !is EditorEditText.AccessibleAnnotationTarget.Link || enableLinkTaps
         }
 
-    private fun EditorEditText.AccessibleAnnotationTarget.toTapTarget(): TapTarget = when (this) {
-        is EditorEditText.AccessibleAnnotationTarget.Link -> TapTarget.Link(href, text)
-        is EditorEditText.AccessibleAnnotationTarget.Mention -> TapTarget.Mention(docPos, label)
+    private fun EditorEditText.AccessibleAnnotation.toTapTarget(): TapTarget = when (val value = target) {
+        is EditorEditText.AccessibleAnnotationTarget.Link ->
+            TapTarget.Link(value.href, value.text, annotation, start, end)
+        is EditorEditText.AccessibleAnnotationTarget.Mention ->
+            TapTarget.Mention(value.docPos, value.label, annotation, start, end)
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {

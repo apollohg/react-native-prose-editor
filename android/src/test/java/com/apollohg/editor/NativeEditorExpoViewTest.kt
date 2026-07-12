@@ -43,15 +43,56 @@ class NativeEditorExpoViewTest {
         runCatching {
             destroyEditorThenInvalidate(
                 editorId = 42uL,
+                beginDestroy = {
+                    calls += "begin:$it"
+                    true
+                },
                 destroy = {
                     calls += "rust"
                     error("simulated destroy failure")
                 },
-                invalidate = { calls += "registry:$it" }
+                finalizeDestroy = { calls += "registry:$it" }
             )
         }
 
-        assertEquals(listOf("rust", "registry:42"), calls)
+        assertEquals(listOf("begin:42", "rust", "registry:42"), calls)
+    }
+
+    @Test
+    fun `destroy transition rejects commands and reentrant destroy before Rust returns`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val editorId = 9_200_000L
+        var rustDestroyCalls = 0
+        NativeEditorViewRegistry.markEditorCreated(editorId)
+        assertTrue(NativeEditorViewRegistry.register(editorId, view))
+
+        destroyEditorThenInvalidate(
+            editorId = editorId.toULong(),
+            destroy = {
+                rustDestroyCalls += 1
+                assertTrue(NativeEditorViewRegistry.isDestroyed(editorId))
+                assertFalse(NativeEditorViewRegistry.register(editorId, view))
+                val preparation = JSONObject(
+                    NativeEditorViewRegistry.prepareForCommandJSON(editorId)
+                )
+                assertFalse(preparation.getBoolean("ready"))
+                assertEquals("destroyed", preparation.getString("blockedReason"))
+                destroyEditorThenInvalidate(
+                    editorId = editorId.toULong(),
+                    destroy = { rustDestroyCalls += 1 }
+                )
+            }
+        )
+
+        destroyEditorThenInvalidate(
+            editorId = editorId.toULong(),
+            destroy = { rustDestroyCalls += 1 }
+        )
+
+        assertEquals(1, rustDestroyCalls)
+        assertEquals(0, NativeEditorViewRegistry.retainedDestroyedIdCountForTests())
+        assertEquals(0L, view.richTextView.editorId)
     }
 
     @Test
@@ -2366,7 +2407,9 @@ class NativeEditorExpoViewTest {
         val editorId = 779901L
         val editText = view.richTextView.editorEditText
 
+        NativeEditorViewRegistry.markEditorCreated(editorId)
         view.richTextView.setEditorIdWhileDetached(editorId)
+        NativeEditorViewRegistry.register(editorId, view)
         editText.editorId = editorId
         editText.blockExternalEditorUpdatePreparationForTesting = true
 
