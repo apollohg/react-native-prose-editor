@@ -412,6 +412,30 @@ fn transactions_honor_configured_limits_above_defaults() {
 }
 
 #[test]
+fn delete_and_split_preview_honors_configured_limits_above_defaults() {
+    let limits = ResourceLimits {
+        max_document_depth: 512,
+        ..ResourceLimits::default()
+    };
+    let mut editor =
+        Editor::new_with_limits(tiptap_schema(), InterceptorPipeline::new(), false, limits);
+    let mut child = serde_json::json!({
+        "type": "paragraph",
+        "content": [{ "type": "text", "text": "ab" }]
+    });
+    for _ in 0..256 {
+        child = serde_json::json!({ "type": "blockquote", "content": [child] });
+    }
+    editor
+        .set_json(&serde_json::json!({ "type": "doc", "content": [child] }))
+        .unwrap();
+
+    editor
+        .delete_and_split_scalar(0, 1)
+        .expect("internal preview must not revalidate with default limits");
+}
+
+#[test]
 fn every_editor_ingestion_endpoint_admits_bytes_before_parsing() {
     let limits = ResourceLimits {
         max_input_bytes: 32,
@@ -663,6 +687,47 @@ fn document_content_matching_uses_one_resolved_work_budget() {
     };
     assert_eq!(error.code(), "DOCUMENT_LIMIT_EXCEEDED");
     assert_eq!(error.details.as_ref().unwrap()["phase"], "documentWork");
+}
+
+#[test]
+fn transaction_document_work_exhaustion_is_atomic() {
+    let limits = ResourceLimits {
+        max_document_nodes: 4,
+        ..ResourceLimits::default()
+    };
+    let schema = Schema::from_json_with_limits(
+        &serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "paragraph", "role": "doc" },
+                { "name": "paragraph", "content": "text*", "role": "textBlock", "htmlTag": "p" },
+                { "name": "text", "content": "", "role": "text" }
+            ],
+            "marks": [{ "name": "metadata", "allowUndeclaredAttrs": true }]
+        }),
+        &limits,
+    )
+    .unwrap();
+    let mut editor = Editor::new_with_limits(schema, InterceptorPipeline::new(), false, limits);
+    let before = editor.get_json();
+    let attrs = (0..600)
+        .map(|index| (format!("key{index}"), serde_json::json!(index)))
+        .collect::<serde_json::Map<_, _>>();
+
+    let error = editor_update_error(editor.insert_content_json(&serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "text",
+            "text": "x",
+            "marks": [{ "type": "metadata", "attrs": attrs }]
+        }]
+    })));
+
+    let EditorError::Boundary(error) = error else {
+        panic!("expected configured document work exhaustion");
+    };
+    assert_eq!(error.code(), "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(error.details.as_ref().unwrap()["phase"], "documentWork");
+    assert_eq!(editor.get_json(), before);
 }
 
 #[test]

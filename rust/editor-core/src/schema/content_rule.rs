@@ -46,6 +46,16 @@ impl WorkBudget {
         self.remaining.set(remaining - 1);
         true
     }
+
+    pub(crate) fn consume_n(&self, amount: usize) -> bool {
+        let remaining = self.remaining.get();
+        if amount > remaining {
+            self.remaining.set(0);
+            return false;
+        }
+        self.remaining.set(remaining - amount);
+        true
+    }
 }
 
 /// A parsed ProseMirror-style content expression.

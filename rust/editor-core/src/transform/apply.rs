@@ -2176,19 +2176,6 @@ impl DocumentValidator {
     }
 }
 
-/// Compatibility validator used by the transformation layer. The editor runs
-/// the authoritative validator with its configured limits before committing.
-pub(crate) fn validate_document(doc: &Document, schema: &Schema) -> Result<(), TransformError> {
-    let structural_limits = ResourceLimits {
-        max_document_nodes: usize::MAX,
-        max_document_depth: usize::MAX,
-        ..ResourceLimits::default()
-    };
-    DocumentValidator::validate(doc, schema, &structural_limits)
-        .map(|_| ())
-        .map_err(|error| TransformError::ContentViolation(format!("{}: {}", error.code(), error)))
-}
-
 fn validate_node(
     node: &Node,
     schema: &Schema,
@@ -2198,6 +2185,7 @@ fn validate_node(
     budget: &WorkBudget,
     work_limit: usize,
 ) -> BoundaryResult<()> {
+    consume_document_work(budget, work_limit, 1)?;
     stats.node_count = stats.node_count.saturating_add(1);
     stats.max_depth = stats.max_depth.max(depth);
     if stats.node_count > limits.max_document_nodes {
@@ -2219,7 +2207,7 @@ fn validate_node(
         if schema.node(node.node_type()).is_none() {
             return Err(BoundaryError::new("DOCUMENT_INVALID", "text node is not in the schema"));
         }
-        validate_marks(node, schema)?;
+        validate_marks(node, schema, budget, work_limit)?;
         return Ok(());
     }
 
@@ -2233,7 +2221,14 @@ fn validate_node(
             format!("unknown node '{}'", node.node_type()),
         )
     })?;
-    validate_attrs(node.attrs(), &spec.attrs, spec.allow_undeclared_attrs, node.node_type())?;
+    validate_attrs(
+        node.attrs(),
+        &spec.attrs,
+        spec.allow_undeclared_attrs,
+        node.node_type(),
+        budget,
+        work_limit,
+    )?;
 
     if node.is_void() {
         return Ok(());
@@ -2293,8 +2288,11 @@ fn validate_attrs(
     specs: &HashMap<String, crate::schema::AttrSpec>,
     allow_undeclared: bool,
     owner: &str,
+    budget: &WorkBudget,
+    work_limit: usize,
 ) -> BoundaryResult<()> {
     for (name, spec) in specs {
+        consume_document_work(budget, work_limit, 1)?;
         if !spec.has_default && !attrs.contains_key(name) {
             return Err(BoundaryError::new(
                 "REQUIRED_ATTRIBUTE_MISSING",
@@ -2302,8 +2300,9 @@ fn validate_attrs(
             ));
         }
     }
-    if !allow_undeclared {
-        if let Some(name) = attrs.keys().find(|name| !specs.contains_key(*name)) {
+    for name in attrs.keys() {
+        consume_document_work(budget, work_limit, 1)?;
+        if !allow_undeclared && !specs.contains_key(name) {
             return Err(BoundaryError::new(
                 "DOCUMENT_INVALID",
                 format!("'{owner}' contains undeclared attribute '{name}'"),
@@ -2313,8 +2312,14 @@ fn validate_attrs(
     Ok(())
 }
 
-fn validate_marks(node: &Node, schema: &Schema) -> BoundaryResult<()> {
+fn validate_marks(
+    node: &Node,
+    schema: &Schema,
+    budget: &WorkBudget,
+    work_limit: usize,
+) -> BoundaryResult<()> {
     for mark in node.marks() {
+        consume_document_work(budget, work_limit, 1)?;
         let spec = schema.mark(mark.mark_type()).ok_or_else(|| {
             BoundaryError::new(
                 "UNKNOWN_MARK",
@@ -2326,9 +2331,28 @@ fn validate_marks(node: &Node, schema: &Schema) -> BoundaryResult<()> {
             &spec.attrs,
             spec.allow_undeclared_attrs,
             mark.mark_type(),
+            budget,
+            work_limit,
         )?;
     }
     Ok(())
+}
+
+fn consume_document_work(
+    budget: &WorkBudget,
+    work_limit: usize,
+    amount: usize,
+) -> BoundaryResult<()> {
+    if budget.consume_n(amount) {
+        return Ok(());
+    }
+    let mut error = BoundaryError::limit(
+        "DOCUMENT_LIMIT_EXCEEDED",
+        work_limit,
+        work_limit.saturating_add(1),
+    );
+    error.details = Some(serde_json::json!({ "phase": "documentWork" }));
+    Err(error)
 }
 
 fn validate_opaque(node: &Node) -> BoundaryResult<()> {
@@ -2357,7 +2381,5 @@ fn child_matches_group(child: &Node, group: &str, schema: &Schema) -> bool {
             schema.symbol_accepts_opaque_placement(group, placement)
         });
     }
-    schema
-        .node(child.node_type())
-        .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, group))
+    schema.node_matches_symbol(child.node_type(), group)
 }

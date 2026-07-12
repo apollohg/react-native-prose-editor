@@ -40,6 +40,108 @@ fn schema_rejects_node_and_aggregate_expression_limits() {
 }
 
 #[test]
+fn schema_metadata_uses_the_derived_schema_work_budget() {
+    let limits = ResourceLimits {
+        max_schema_nodes: 2,
+        max_schema_expression_bytes: 16,
+        ..ResourceLimits::default()
+    };
+    let hostile_schemas = [
+        serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "", "role": "doc" },
+                { "name": "text", "content": "", "role": "text" }
+            ],
+            "marks": (0..700).map(|index| serde_json::json!({ "name": format!("m{index}") })).collect::<Vec<_>>()
+        }),
+        serde_json::json!({
+            "nodes": [
+                { "name": "doc", "content": "", "group": "a ".repeat(700), "role": "doc" },
+                { "name": "text", "content": "", "role": "text" }
+            ],
+            "marks": []
+        }),
+        serde_json::json!({
+            "nodes": [
+                {
+                    "name": "doc",
+                    "content": "",
+                    "role": "doc",
+                    "attrs": (0..700)
+                        .map(|index| (format!("a{index}"), serde_json::json!({ "default": null })))
+                        .collect::<serde_json::Map<_, _>>()
+                },
+                { "name": "text", "content": "", "role": "text" }
+            ],
+            "marks": []
+        }),
+    ];
+
+    for hostile in hostile_schemas {
+        let error = Schema::from_json_with_limits(&hostile, &limits).unwrap_err();
+        assert_eq!(error.code(), "SCHEMA_INVALID");
+        assert_eq!(error.limit, Some(640));
+        assert_eq!(error.actual, Some(641));
+        assert_eq!(error.details.as_ref().unwrap()["phase"], "schemaWork");
+    }
+}
+
+#[test]
+fn schema_metadata_at_the_ts_parity_fixture_is_admitted() {
+    let limits = ResourceLimits {
+        max_schema_nodes: 2,
+        max_schema_expression_bytes: 16,
+        ..ResourceLimits::default()
+    };
+    let schema = serde_json::json!({
+        "nodes": [
+            {
+                "name": "doc",
+                "content": "                ",
+                "group": "a b",
+                "role": "doc",
+                "attrs": {
+                    "a": { "default": null },
+                    "b": { "default": null }
+                }
+            },
+            { "name": "text", "content": "", "role": "text" }
+        ],
+        "marks": [
+            { "name": "a" },
+            { "name": "b" },
+            { "name": "c" }
+        ]
+    });
+
+    Schema::from_json_with_limits(&schema, &limits).unwrap();
+}
+
+#[test]
+fn deeply_nested_schema_default_fails_as_structured_schema_work() {
+    let mut default = serde_json::Value::Null;
+    for _ in 0..512 {
+        default = serde_json::json!({ "nested": default });
+    }
+    let schema = serde_json::json!({
+        "nodes": [
+            {
+                "name": "doc",
+                "content": "",
+                "role": "doc",
+                "attrs": { "metadata": { "default": default } }
+            },
+            { "name": "text", "content": "", "role": "text" }
+        ],
+        "marks": []
+    });
+
+    let error = Schema::from_json_with_limits(&schema, &ResourceLimits::default()).unwrap_err();
+    assert_eq!(error.code(), "SCHEMA_INVALID");
+    assert_eq!(error.details.as_ref().unwrap()["phase"], "schemaWork");
+}
+
+#[test]
 fn schema_rejects_unsafe_html_tags_and_attribute_identifiers() {
     for schema in [
         serde_json::json!({

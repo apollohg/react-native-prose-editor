@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::boundary::ResourceLimits;
 use crate::history::UndoHistory;
 use crate::model::{Document, Fragment};
 use crate::position::update::UpdateMode;
@@ -44,6 +45,8 @@ pub trait DocumentBackend {
         &mut self,
         tx: &Transaction,
         schema: &Schema,
+        prepared_doc: &Document,
+        prepared_map: &crate::transform::StepMap,
         selection_before: &Selection,
         selection_after: &Selection,
     ) -> Result<DocState, TransformError>;
@@ -83,11 +86,12 @@ pub struct StandaloneBackend {
     pos_map: PositionMap,
     history: UndoHistory,
     render_blocks: Vec<Vec<RenderElement>>,
+    resource_limits: ResourceLimits,
 }
 
 impl StandaloneBackend {
     /// Create a new backend from an initial document.
-    pub fn new(doc: Document, schema: &Schema) -> Self {
+    pub fn new(doc: Document, schema: &Schema, resource_limits: ResourceLimits) -> Self {
         let pos_map = PositionMap::build(&doc, schema);
         let render_blocks = render_blocks(&doc, schema);
         Self {
@@ -95,6 +99,7 @@ impl StandaloneBackend {
             pos_map,
             history: UndoHistory::with_default_depth(),
             render_blocks,
+            resource_limits,
         }
     }
 
@@ -321,18 +326,22 @@ impl DocumentBackend for StandaloneBackend {
         &mut self,
         tx: &Transaction,
         schema: &Schema,
+        prepared_doc: &Document,
+        prepared_map: &crate::transform::StepMap,
         selection_before: &Selection,
         selection_after: &Selection,
     ) -> Result<DocState, TransformError> {
         // 1. Compute inverse steps before applying (uses current doc state).
         let inverse_steps = self.compute_inverse_steps(tx, schema);
 
-        // 2. Apply the transaction to get the new document.
-        let (new_doc, step_map) = tx.apply(&self.doc, schema)?;
+        // 2. The editor supplies the candidate and map after one authoritative
+        // validation with its resolved resource limits.
+        let new_doc = prepared_doc.clone();
+        let step_map = prepared_map;
 
         // 3. Update position map.
         self.pos_map.update(
-            &step_map,
+            step_map,
             &self.doc,
             &new_doc,
             Self::classify_position_map_update(&tx.steps),
@@ -400,7 +409,7 @@ impl DocumentBackend for StandaloneBackend {
             tx.add_step(step);
         }
 
-        match tx.apply(&self.doc, schema) {
+        match tx.apply_with_limits(&self.doc, schema, &self.resource_limits) {
             Ok((new_doc, step_map)) => {
                 self.pos_map.update(
                     &step_map,
@@ -437,7 +446,7 @@ impl DocumentBackend for StandaloneBackend {
             tx.add_step(step);
         }
 
-        match tx.apply(&self.doc, schema) {
+        match tx.apply_with_limits(&self.doc, schema, &self.resource_limits) {
             Ok((new_doc, step_map)) => {
                 self.pos_map.update(
                     &step_map,

@@ -118,6 +118,7 @@ pub struct AttrSpec {
 const DEFAULT_DOCUMENT_MAX_DEPTH: usize = 128;
 const DEFAULT_DOCUMENT_MAX_NODES: usize = 10_000;
 const DEFAULT_DOCUMENT_MAX_WORK: usize = 10_000;
+const MAX_SCHEMA_METADATA_DEPTH: usize = 128;
 
 struct DefaultConstructionBudget {
     work: Cell<usize>,
@@ -154,6 +155,7 @@ impl Schema {
     ) -> Result<Self, SchemaValidationError> {
         let mut node_names = HashSet::new();
         for node in &nodes {
+            consume_schema_work(budget, 1, "schema node index work budget exceeded")?;
             if let Some(tag) = node.html_tag.as_deref() {
                 if !is_safe_html_tag(tag) {
                     return Err(SchemaValidationError::semantic(format!(
@@ -187,6 +189,7 @@ impl Schema {
         }
         let mut mark_names = HashSet::new();
         for mark in &marks {
+            consume_schema_work(budget, 1, "schema mark index work budget exceeded")?;
             if let Some(tag) = mark.html_tag.as_deref() {
                 const ALLOWED_MARK_TAGS: &[&str] = &[
                     "span", "strong", "em", "u", "s", "code", "a", "sub", "sup", "mark",
@@ -249,6 +252,7 @@ impl Schema {
         for node in &nodes {
             if let Some(node_groups) = &node.group {
                 for group in node_groups.split_whitespace() {
+                    consume_schema_work(budget, 1, "schema group index work budget exceeded")?;
                     groups
                         .entry(group.to_string())
                         .or_default()
@@ -263,6 +267,7 @@ impl Schema {
 
         let mut symbol_role_masks = HashMap::new();
         for node in &nodes {
+            consume_schema_work(budget, 1, "schema role index work budget exceeded")?;
             let mask = match node.role {
                 NodeRole::Text | NodeRole::Inline | NodeRole::HardBreak => OPAQUE_INLINE_ROLE,
                 NodeRole::Doc => 0,
@@ -271,6 +276,7 @@ impl Schema {
             *symbol_role_masks.entry(node.name.clone()).or_insert(0) |= mask;
             if let Some(node_groups) = &node.group {
                 for group in node_groups.split_whitespace() {
+                    consume_schema_work(budget, 1, "schema role index work budget exceeded")?;
                     *symbol_role_masks.entry(group.to_string()).or_insert(0) |= mask;
                 }
             }
@@ -279,6 +285,7 @@ impl Schema {
         let mut node_html_tags = HashMap::new();
         for node in &nodes {
             if let Some(tag) = &node.html_tag {
+                consume_schema_work(budget, 1, "schema HTML index work budget exceeded")?;
                 // Several supported schemas intentionally map multiple semantic
                 // node types to the same HTML tag (for example task and bullet
                 // lists). Preserve descriptor order as the deterministic import
@@ -291,6 +298,7 @@ impl Schema {
         let mut mark_html_tags = HashMap::new();
         for mark in &marks {
             if let Some(tag) = &mark.html_tag {
+                consume_schema_work(budget, 1, "schema HTML index work budget exceeded")?;
                 mark_html_tags
                     .entry(tag.clone())
                     .or_insert_with(|| mark.name.clone());
@@ -500,6 +508,15 @@ impl Schema {
             .flatten()
             .filter_map(|name| self.nodes.get(name))
             .collect()
+    }
+
+    pub(crate) fn node_matches_symbol(&self, node_type: &str, symbol: &str) -> bool {
+        node_type == symbol
+            || self.groups.get(symbol).is_some_and(|members| {
+                members
+                    .binary_search_by(|member| member.as_str().cmp(node_type))
+                    .is_ok()
+            })
     }
 
     /// Node-type classification by schema role. These are the single source
@@ -718,8 +735,7 @@ impl Schema {
             if parent_spec.content.matches_with_budget(
                 &candidate_types,
                 |child_type, symbol| {
-                    self.node(child_type)
-                        .is_some_and(|spec| node_spec_matches_symbol(spec, symbol))
+                    self.node_matches_symbol(child_type, symbol)
                 },
                 budget,
             )? {
@@ -875,19 +891,19 @@ impl Schema {
             .saturating_add(limits.max_schema_expression_bytes.saturating_mul(32));
         let budget = WorkBudget::new(work_limit);
 
+        let empty_marks = Vec::new();
         let marks_arr = value
             .get("marks")
             .and_then(|v| v.as_array())
-            .unwrap_or(&Vec::new())
-            .clone();
+            .unwrap_or(&empty_marks);
 
         let mut nodes = Vec::new();
         for node_val in nodes_arr {
             let name = node_val
                 .get("name")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| BoundaryError::new("SCHEMA_INVALID", "node spec missing 'name'"))?
-                .to_string();
+                .ok_or_else(|| BoundaryError::new("SCHEMA_INVALID", "node spec missing 'name'"))?;
+            admit_schema_string(name, &budget, work_limit)?;
 
             let content_str = node_val
                 .get("content")
@@ -896,8 +912,13 @@ impl Schema {
 
             let content =
                 ContentRule::parse_with_budget(content_str, &budget).map_err(|error| {
-                    schema_boundary_error(content_rule_schema_error(&name, error), work_limit)
+                    schema_boundary_error(content_rule_schema_error(name, error), work_limit)
                 })?;
+
+            if let Some(group) = node_val.get("group").and_then(|v| v.as_str()) {
+                admit_schema_groups(group, &budget, work_limit)?;
+            }
+            admit_schema_attrs(node_val.get("attrs"), &budget, work_limit)?;
 
             let group = node_val
                 .get("group")
@@ -949,7 +970,7 @@ impl Schema {
             }
 
             nodes.push(NodeSpec {
-                name,
+                name: name.to_string(),
                 content,
                 group,
                 attrs,
@@ -961,12 +982,14 @@ impl Schema {
         }
 
         let mut marks = Vec::new();
-        for mark_val in &marks_arr {
+        for mark_val in marks_arr {
+            consume_schema_boundary_work(&budget, 1, work_limit)?;
             let name = mark_val
                 .get("name")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| BoundaryError::new("SCHEMA_INVALID", "mark spec missing 'name'"))?
-                .to_string();
+                .ok_or_else(|| BoundaryError::new("SCHEMA_INVALID", "mark spec missing 'name'"))?;
+            admit_schema_string(name, &budget, work_limit)?;
+            admit_schema_attrs(mark_val.get("attrs"), &budget, work_limit)?;
 
             let mut attrs = HashMap::new();
             if let Some(attrs_obj) = mark_val.get("attrs").and_then(|v| v.as_object()) {
@@ -992,7 +1015,7 @@ impl Schema {
                 .unwrap_or(false);
 
             marks.push(MarkSpec {
-                name,
+                name: name.to_string(),
                 html_tag: mark_val
                     .get("htmlTag")
                     .and_then(|value| value.as_str())
@@ -1005,6 +1028,109 @@ impl Schema {
 
         Schema::try_new_with_budget(nodes, marks, &budget)
             .map_err(|error| schema_boundary_error(error, work_limit))
+    }
+}
+
+fn consume_schema_work(
+    budget: &WorkBudget,
+    amount: usize,
+    message: &'static str,
+) -> Result<(), SchemaValidationError> {
+    if budget.consume_n(amount) {
+        Ok(())
+    } else {
+        Err(SchemaValidationError::resource(message))
+    }
+}
+
+fn consume_schema_boundary_work(
+    budget: &WorkBudget,
+    amount: usize,
+    work_limit: usize,
+) -> BoundaryResult<()> {
+    if budget.consume_n(amount) {
+        Ok(())
+    } else {
+        Err(schema_boundary_error(
+            SchemaValidationError::resource("schema metadata work budget exceeded"),
+            work_limit,
+        ))
+    }
+}
+
+fn admit_schema_string(
+    value: &str,
+    budget: &WorkBudget,
+    work_limit: usize,
+) -> BoundaryResult<()> {
+    consume_schema_boundary_work(budget, value.len().saturating_add(1), work_limit)
+}
+
+fn admit_schema_groups(
+    groups: &str,
+    budget: &WorkBudget,
+    work_limit: usize,
+) -> BoundaryResult<()> {
+    let mut in_token = false;
+    for character in groups.chars() {
+        consume_schema_boundary_work(budget, character.len_utf8(), work_limit)?;
+        if character.is_whitespace() {
+            in_token = false;
+        } else if !in_token {
+            consume_schema_boundary_work(budget, 1, work_limit)?;
+            in_token = true;
+        }
+    }
+    Ok(())
+}
+
+fn admit_schema_attrs(
+    attrs: Option<&serde_json::Value>,
+    budget: &WorkBudget,
+    work_limit: usize,
+) -> BoundaryResult<()> {
+    let Some(attrs) = attrs.and_then(serde_json::Value::as_object) else {
+        return Ok(());
+    };
+    for (name, spec) in attrs {
+        consume_schema_boundary_work(budget, 1, work_limit)?;
+        admit_schema_string(name, budget, work_limit)?;
+        if let Some(default) = spec.get("default") {
+            admit_schema_value(default, budget, work_limit, 1)?;
+        }
+    }
+    Ok(())
+}
+
+fn admit_schema_value(
+    value: &serde_json::Value,
+    budget: &WorkBudget,
+    work_limit: usize,
+    depth: usize,
+) -> BoundaryResult<()> {
+    if depth > MAX_SCHEMA_METADATA_DEPTH {
+        return Err(schema_boundary_error(
+            SchemaValidationError::resource("schema metadata nesting work budget exceeded"),
+            work_limit,
+        ));
+    }
+    consume_schema_boundary_work(budget, 1, work_limit)?;
+    match value {
+        serde_json::Value::String(value) => admit_schema_string(value, budget, work_limit),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                admit_schema_value(value, budget, work_limit, depth + 1)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(values) => {
+            for (name, value) in values {
+                admit_schema_string(name, budget, work_limit)?;
+                admit_schema_value(value, budget, work_limit, depth + 1)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 
@@ -1044,14 +1170,6 @@ fn schema_boundary_error(error: SchemaValidationError, work_limit: usize) -> Bou
             error
         }
     }
-}
-
-pub(crate) fn node_spec_matches_symbol(node: &NodeSpec, symbol: &str) -> bool {
-    node.name == symbol
-        || node
-            .group
-            .as_deref()
-            .is_some_and(|groups| groups.split_whitespace().any(|group| group == symbol))
 }
 
 fn default_node_priority(node: &NodeSpec) -> (u8, &str) {

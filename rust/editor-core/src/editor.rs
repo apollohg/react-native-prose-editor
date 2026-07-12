@@ -177,7 +177,7 @@ impl Editor {
     ) -> Self {
         let max_length = interceptors.max_length();
         let doc = make_empty_doc(&schema);
-        let backend = StandaloneBackend::new(doc, &schema);
+        let backend = StandaloneBackend::new(doc, &schema, resource_limits.clone());
         Self {
             schema,
             backend,
@@ -225,7 +225,7 @@ impl Editor {
         )
         .map_err(map_html_parse_error)?;
         self.validate_candidate(&doc)?;
-        self.backend = StandaloneBackend::new(doc, &self.schema);
+        self.backend = StandaloneBackend::new(doc, &self.schema, self.resource_limits.clone());
         self.selection = Selection::cursor(1);
         self.stored_marks = None;
         self.document_version = self.document_version.saturating_add(1);
@@ -261,7 +261,7 @@ impl Editor {
             .into());
         }
         self.validate_candidate(&doc)?;
-        self.backend = StandaloneBackend::new(doc, &self.schema);
+        self.backend = StandaloneBackend::new(doc, &self.schema, self.resource_limits.clone());
         self.selection = Selection::cursor(1);
         self.stored_marks = None;
         self.document_version = self.document_version.saturating_add(1);
@@ -1275,7 +1275,7 @@ impl Editor {
             });
         }
         let preview = tx
-            .apply(self.backend.document(), &self.schema)
+            .apply_steps_unchecked(self.backend.document(), &self.schema)
             .map_err(EditorError::Transform)?
             .0;
         let (budget, work_limit) = self.runtime_content_budget();
@@ -1534,7 +1534,7 @@ impl Editor {
         let tx = self.interceptors.run(tx, &doc_before)?;
 
         // Compute the step map for selection mapping before mutating backend.
-        let (preview_doc, step_map) = tx.apply(&doc_before, &self.schema)?;
+        let (preview_doc, step_map) = tx.apply_steps_unchecked(&doc_before, &self.schema)?;
         self.validate_candidate(&preview_doc)?;
 
         // Save selection before for history.
@@ -1559,6 +1559,8 @@ impl Editor {
         let state = self.backend.apply_transaction(
             &tx,
             &self.schema,
+            &preview_doc,
+            &step_map,
             &selection_before,
             &selection_after,
         )?;
@@ -2150,7 +2152,7 @@ impl Editor {
             from: pos - 1,
             to: pos,
         });
-        let preview = match tx.apply(self.backend.document(), &self.schema) {
+        let preview = match tx.apply_steps_unchecked(self.backend.document(), &self.schema) {
             Ok((preview, _)) => preview,
             Err(error) => return Some(Err(EditorError::Transform(error))),
         };
@@ -2555,7 +2557,8 @@ impl Editor {
                 });
             }
         }
-        tx.apply(doc, &self.schema).is_ok()
+        tx.apply_with_limits(doc, &self.schema, &self.resource_limits)
+            .is_ok()
     }
 
     fn can_toggle_blockquote_at(&self, selection: &Selection) -> bool {
@@ -2574,7 +2577,9 @@ impl Editor {
                 to: start + quote.node_size(),
                 content: Fragment::from(content.iter().cloned().collect::<Vec<_>>()),
             });
-            return tx.apply(doc, &self.schema).is_ok();
+            return tx
+                .apply_with_limits(doc, &self.schema, &self.resource_limits)
+                .is_ok();
         }
 
         let Some(range) = self.selected_block_range(selection.from(doc), selection.to(doc)) else {
@@ -2589,9 +2594,7 @@ impl Editor {
             .map(Node::node_type)
             .collect::<Vec<_>>();
         if !quote_spec.content.matches(&selected, |child, symbol| {
-            self.schema
-                .node(child)
-                .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+            self.schema.node_matches_symbol(child, symbol)
         }) {
             return false;
         }
@@ -2606,7 +2609,8 @@ impl Editor {
             to: range.replace_to,
             content: Fragment::from(vec![quote]),
         });
-        tx.apply(doc, &self.schema).is_ok()
+        tx.apply_with_limits(doc, &self.schema, &self.resource_limits)
+            .is_ok()
     }
 
     fn can_toggle_heading(&self, level: u8) -> bool {
@@ -3079,10 +3083,7 @@ impl Editor {
         child_types: &[&str],
     ) -> bool {
         fn child_matches_symbol(schema: &Schema, child_type: &str, symbol: &str) -> bool {
-            schema
-                .node(child_type)
-                .map(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
-                .unwrap_or(false)
+            schema.node_matches_symbol(child_type, symbol)
         }
         parent_spec
             .content
@@ -3398,7 +3399,7 @@ impl Editor {
             pos: task_item_pos,
             attrs,
         });
-        let (candidate, _) = tx.apply(doc, &self.schema)?;
+        let (candidate, _) = tx.apply_steps_unchecked(doc, &self.schema)?;
         self.validate_candidate(&candidate)?;
         Ok(Some(tx))
     }
@@ -4088,7 +4089,10 @@ impl Editor {
                     to: replace_to,
                     content: Fragment::from(vec![replacement]),
                 });
-                if tx.apply(doc, &self.schema).is_ok() {
+                if tx
+                    .apply_with_limits(doc, &self.schema, &self.resource_limits)
+                    .is_ok()
+                {
                     selected = Some(candidate);
                     break;
                 }
@@ -4232,9 +4236,7 @@ fn preferred_text_block_node_names_for_parent(
     let accepting_groups = parent_spec.content.accepting_symbols_after_with_budget(
         prefix_child_types,
         |child_type, symbol| {
-            schema
-                .node(child_type)
-                .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+            schema.node_matches_symbol(child_type, symbol)
         },
         budget,
     )?;
@@ -4255,7 +4257,7 @@ fn preferred_text_block_node_names_for_parent(
         if !matches!(spec.role, NodeRole::TextBlock)
             || !accepting_groups
                 .iter()
-                .any(|group| crate::schema::node_spec_matches_symbol(spec, group))
+                .any(|group| schema.node_matches_symbol(&spec.name, group))
         {
             continue;
         }
@@ -4268,9 +4270,7 @@ fn preferred_text_block_node_names_for_parent(
         if parent_spec.content.matches_with_budget(
             &candidate_types,
             |child_type, symbol| {
-                schema
-                    .node(child_type)
-                    .is_some_and(|node| crate::schema::node_spec_matches_symbol(node, symbol))
+                schema.node_matches_symbol(child_type, symbol)
             },
             budget,
         )? {

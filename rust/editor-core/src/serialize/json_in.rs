@@ -3,8 +3,8 @@ use std::fmt;
 
 use serde_json::{Map, Value};
 
-use crate::model::{Document, Fragment, Mark, Node};
 use crate::boundary::ResourceLimits;
+use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::content_rule::WorkBudget;
 use crate::schema::Schema;
 
@@ -373,8 +373,7 @@ fn placement_choice(
 ) -> Option<PlacementChoice> {
     if child.node_type() != "__opaque_json" {
         return schema
-            .node(child.node_type())
-            .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+            .node_matches_symbol(child.node_type(), symbol)
             .then_some(PlacementChoice::Known);
     }
     let inline = schema.symbol_accepts_opaque_placement(symbol, "inline");

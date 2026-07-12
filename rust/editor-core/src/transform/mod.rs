@@ -8,6 +8,7 @@ pub use apply::DocumentValidator;
 
 use std::collections::HashMap;
 
+use crate::boundary::ResourceLimits;
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::Schema;
 
@@ -191,6 +192,29 @@ impl Transaction {
         doc: &Document,
         schema: &Schema,
     ) -> Result<(Document, StepMap), TransformError> {
+        self.apply_with_limits(doc, schema, &ResourceLimits::default())
+    }
+
+    /// Apply and validate with explicit resource limits. Callers that own an
+    /// editor configuration should use those resolved limits.
+    pub fn apply_with_limits(
+        &self,
+        doc: &Document,
+        schema: &Schema,
+        limits: &ResourceLimits,
+    ) -> Result<(Document, StepMap), TransformError> {
+        let (current, composed_map) = self.apply_steps_unchecked(doc, schema)?;
+        apply::DocumentValidator::validate(&current, schema, limits).map_err(|error| {
+            TransformError::ContentViolation(format!("{}: {}", error.code(), error))
+        })?;
+        Ok((current, composed_map))
+    }
+
+    pub(crate) fn apply_steps_unchecked(
+        &self,
+        doc: &Document,
+        schema: &Schema,
+    ) -> Result<(Document, StepMap), TransformError> {
         let mut current = doc.clone();
         let mut composed_map = StepMap::empty();
 
@@ -199,9 +223,6 @@ impl Transaction {
             composed_map = composed_map.compose(&step_map);
             current = new_doc;
         }
-
-        // Validate the final document against the schema.
-        apply::validate_document(&current, schema)?;
 
         Ok((current, composed_map))
     }
