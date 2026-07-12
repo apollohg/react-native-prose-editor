@@ -231,7 +231,8 @@ function utf8ByteLengthUpTo(value: string, maximum: number): number {
 function forEachGroupToken(
     group: string,
     visit: (token: string) => void,
-    consumeCharacter?: () => boolean
+    consumeCharacter?: () => boolean,
+    consumeToken?: () => boolean
 ): boolean {
     let tokenStart = -1;
     for (let index = 0; index <= group.length; index += 1) {
@@ -239,6 +240,7 @@ function forEachGroupToken(
         const isBoundary = index === group.length || /\s/.test(group[index]);
         if (!isBoundary && tokenStart < 0) tokenStart = index;
         if (isBoundary && tokenStart >= 0) {
+            if (consumeToken && !consumeToken()) return false;
             visit(group.slice(tokenStart, index));
             tokenStart = -1;
         }
@@ -246,16 +248,39 @@ function forEachGroupToken(
     return true;
 }
 
-function countOwnAttrsUpTo(value: unknown, maximum: number): number | null {
-    if (value == null) return 0;
+interface SchemaWorkBudget {
+    readonly limit: number;
+    work: number;
+    exhausted: boolean;
+}
+
+interface AdmittedSchemaCollections {
+    readonly groupsByNode: ReadonlyMap<NodeSpec, readonly string[]>;
+    readonly attrsByNode: ReadonlyMap<NodeSpec, ReadonlyArray<[string, AttrSpec]>>;
+}
+
+function consumeSchemaWork(budget: SchemaWorkBudget): boolean {
+    if (budget.work >= budget.limit) {
+        budget.exhausted = true;
+        return false;
+    }
+    budget.work += 1;
+    return true;
+}
+
+function collectOwnAttrs(
+    value: unknown,
+    budget: SchemaWorkBudget
+): Array<[string, AttrSpec]> | null {
+    if (value == null) return [];
     if (typeof value !== 'object' || Array.isArray(value)) return null;
-    let count = 0;
+    const attrs: Array<[string, AttrSpec]> = [];
     for (const name in value) {
         if (!Object.prototype.hasOwnProperty.call(value, name)) continue;
-        count += 1;
-        if (count > maximum) return count;
+        if (!consumeSchemaWork(budget)) return attrs;
+        attrs.push([name, (value as Record<string, AttrSpec>)[name]]);
     }
-    return count;
+    return attrs;
 }
 
 function schemaBoundaryError(limit: number, actual: number): NativeEditorBoundaryError {
@@ -271,6 +296,63 @@ function resolveDescriptorLimits(limits?: DocumentDescriptorLimits): ResolvedEdi
     return resolveEditorResourceLimits(limits);
 }
 
+function createSchemaWorkBudget(limits: ResolvedEditorResourceLimits): SchemaWorkBudget {
+    return {
+        limit:
+            limits.maxSchemaNodes * 64 +
+            limits.maxSchemaExpressionBytes * 32,
+        work: 0,
+        exhausted: false,
+    };
+}
+
+function admitSchemaCollections(
+    schema: SchemaDefinition,
+    budget: SchemaWorkBudget
+): AdmittedSchemaCollections | null {
+    const groupsByNode = new Map<NodeSpec, readonly string[]>();
+    const attrsByNode = new Map<NodeSpec, ReadonlyArray<[string, AttrSpec]>>();
+
+    for (const node of schema.nodes) {
+        if (node == null || typeof node !== 'object') return null;
+        const groups: string[] = [];
+        if (node.group != null) {
+            if (typeof node.group !== 'string') return null;
+            if (
+                !forEachGroupToken(
+                    node.group,
+                    (group) => groups.push(group),
+                    () => consumeSchemaWork(budget),
+                    () => consumeSchemaWork(budget)
+                )
+            ) {
+                throw schemaBoundaryError(budget.limit, budget.limit + 1);
+            }
+        }
+        const attrs = collectOwnAttrs(node.attrs, budget);
+        if (attrs == null) return null;
+        if (budget.exhausted) {
+            throw schemaBoundaryError(budget.limit, budget.limit + 1);
+        }
+        groupsByNode.set(node, groups);
+        attrsByNode.set(node, attrs);
+    }
+
+    for (const mark of schema.marks) {
+        if (!consumeSchemaWork(budget)) {
+            throw schemaBoundaryError(budget.limit, budget.limit + 1);
+        }
+        if (mark == null || typeof mark !== 'object') return null;
+        const attrs = collectOwnAttrs(mark.attrs, budget);
+        if (attrs == null) return null;
+        if (budget.exhausted) {
+            throw schemaBoundaryError(budget.limit, budget.limit + 1);
+        }
+    }
+
+    return { groupsByNode, attrsByNode };
+}
+
 /** Mirror native's invalid-schema fallback after bounded admission succeeds. */
 export function resolveDocumentSchema(
     schema?: SchemaDefinition,
@@ -283,13 +365,7 @@ export function resolveDocumentSchema(
     if (schema.nodes.length > resolvedLimits.maxSchemaNodes) {
         throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, schema.nodes.length);
     }
-    if (schema.marks.length > resolvedLimits.maxSchemaNodes) {
-        throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, schema.marks.length);
-    }
     let expressionBytes = 0;
-    let groupBytes = 0;
-    let groupTokens = 0;
-    let attrCount = 0;
     for (const node of schema.nodes) {
         if (node != null && typeof node.content === 'string') {
             expressionBytes += utf8ByteLengthUpTo(
@@ -300,43 +376,10 @@ export function resolveDocumentSchema(
                 throw schemaBoundaryError(resolvedLimits.maxSchemaExpressionBytes, expressionBytes);
             }
         }
-        if (node != null && node.group != null) {
-            if (typeof node.group !== 'string') return tiptapSchema;
-            groupBytes += utf8ByteLengthUpTo(
-                node.group,
-                resolvedLimits.maxSchemaExpressionBytes - groupBytes
-            );
-            if (groupBytes > resolvedLimits.maxSchemaExpressionBytes) {
-                throw schemaBoundaryError(resolvedLimits.maxSchemaExpressionBytes, groupBytes);
-            }
-            forEachGroupToken(node.group, () => {
-                groupTokens += 1;
-                if (groupTokens > resolvedLimits.maxSchemaNodes) {
-                    throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, groupTokens);
-                }
-            });
-        }
-        const admittedAttrs = countOwnAttrsUpTo(
-            node?.attrs,
-            resolvedLimits.maxSchemaNodes - attrCount
-        );
-        if (admittedAttrs == null) return tiptapSchema;
-        attrCount += admittedAttrs;
-        if (attrCount > resolvedLimits.maxSchemaNodes) {
-            throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, attrCount);
-        }
     }
-    for (const mark of schema.marks) {
-        const admittedAttrs = countOwnAttrsUpTo(
-            mark?.attrs,
-            resolvedLimits.maxSchemaNodes - attrCount
-        );
-        if (admittedAttrs == null) return tiptapSchema;
-        attrCount += admittedAttrs;
-        if (attrCount > resolvedLimits.maxSchemaNodes) {
-            throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, attrCount);
-        }
-    }
+    const schemaBudget = createSchemaWorkBudget(resolvedLimits);
+    const admittedCollections = admitSchemaCollections(schema, schemaBudget);
+    if (admittedCollections == null) return tiptapSchema;
 
     const nodeNames = new Set<string>();
     const markNames = new Set<string>();
@@ -379,11 +422,10 @@ export function resolveDocumentSchema(
     };
     for (const node of schema.nodes) {
         addCandidate(node.name, node);
-        if (node.group != null)
-            forEachGroupToken(node.group, (group) => {
-                groups.add(group);
-                addCandidate(group, node);
-            });
+        for (const group of admittedCollections.groupsByNode.get(node) ?? []) {
+            groups.add(group);
+            addCandidate(group, node);
+        }
     }
     for (const node of schema.nodes) {
         const symbols = contentExpressionSymbols(node.content);
@@ -396,65 +438,49 @@ export function resolveDocumentSchema(
     }
 
     const generatable = new Set<string>();
-    const workLimit =
-        resolvedLimits.maxSchemaNodes * 64 + resolvedLimits.maxSchemaExpressionBytes * 32;
-    let work = 0;
-    let schemaWorkExhausted = false;
-    const consumeSchemaWork = (): boolean => {
-        if (work >= workLimit) {
-            schemaWorkExhausted = true;
-            return false;
-        }
-        work += 1;
-        return true;
-    };
+    const consumeWork = (): boolean => consumeSchemaWork(schemaBudget);
     const contentIsConstructible = (node: NodeSpec): boolean => {
-        if (!consumeSchemaWork()) return false;
+        if (!consumeWork()) return false;
         return (
             minimalContentMatch(
                 node.content,
                 (symbol) => {
                     const candidates = nodesBySymbol.get(symbol) ?? [];
                     for (const candidate of candidates) {
-                        if (!consumeSchemaWork()) return undefined;
+                        if (!consumeWork()) return undefined;
                         if (generatable.has(candidate.name)) return { type: candidate.name };
                     }
                     return undefined;
                 },
-                consumeSchemaWork
+                consumeWork
             ) != null
         );
     };
     while (true) {
         const before = generatable.size;
         for (const node of schema.nodes) {
-            let hasRequiredAttrs = false;
-            for (const name in node.attrs ?? {}) {
-                if (!Object.prototype.hasOwnProperty.call(node.attrs, name)) continue;
-                if (node.attrs?.[name].default === undefined) {
-                    hasRequiredAttrs = true;
-                    break;
-                }
-            }
+            const hasRequiredAttrs = (
+                admittedCollections.attrsByNode.get(node) ?? []
+            ).some(([, attr]) => attr.default === undefined);
             if (node.role !== 'text' && !hasRequiredAttrs && contentIsConstructible(node)) {
                 generatable.add(node.name);
             }
         }
         if (generatable.size === before) break;
     }
-    if (schemaWorkExhausted) {
-        throw schemaBoundaryError(workLimit, workLimit + 1);
+    if (schemaBudget.exhausted) {
+        throw schemaBoundaryError(schemaBudget.limit, schemaBudget.limit + 1);
     }
     const hasUnconstructibleNode = schema.nodes.some(
         (node) => !contentIsConstructible(node)
     );
-    if (schemaWorkExhausted) {
-        throw schemaBoundaryError(workLimit, workLimit + 1);
+    if (schemaBudget.exhausted) {
+        throw schemaBoundaryError(schemaBudget.limit, schemaBudget.limit + 1);
     }
     if (hasUnconstructibleNode) return tiptapSchema;
 
     try {
-        defaultEmptyDocument(schema, resolvedLimits, true);
+        constructDefaultEmptyDocument(schema, resolvedLimits, admittedCollections);
         return schema;
     } catch (error) {
         if (error instanceof NativeEditorBoundaryError) throw error;
@@ -462,18 +488,11 @@ export function resolveDocumentSchema(
     }
 }
 
-export function defaultEmptyDocument(
-    schema: SchemaDefinition = tiptapSchema,
-    limits?: DocumentDescriptorLimits,
-    collectionsAdmitted = false
+function constructDefaultEmptyDocument(
+    schema: SchemaDefinition,
+    resolvedLimits: ResolvedEditorResourceLimits,
+    admittedCollections: AdmittedSchemaCollections
 ): DocumentJSON {
-    const resolvedLimits = resolveDescriptorLimits(limits);
-    if (schema.nodes.length > resolvedLimits.maxSchemaNodes) {
-        throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, schema.nodes.length);
-    }
-    if (schema.marks.length > resolvedLimits.maxSchemaNodes) {
-        throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, schema.marks.length);
-    }
     const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
     if (!docNode) throw new Error('schema cannot construct a default document: missing doc role');
 
@@ -513,23 +532,11 @@ export function defaultEmptyDocument(
             candidateIndexAdmitted = false;
             break;
         }
-        if (
-            candidate.group != null &&
-            !forEachGroupToken(
-                candidate.group,
-                (group) => {
-                    if (
-                        candidateIndexAdmitted &&
-                        group !== candidate.name &&
-                        !addCandidate(group, candidate)
-                    ) {
-                        candidateIndexAdmitted = false;
-                    }
-                },
-                collectionsAdmitted ? undefined : consumeWork
-            )
-        ) {
-            candidateIndexAdmitted = false;
+        for (const group of admittedCollections.groupsByNode.get(candidate) ?? []) {
+            if (group !== candidate.name && !addCandidate(group, candidate)) {
+                candidateIndexAdmitted = false;
+                break;
+            }
         }
         if (!candidateIndexAdmitted) break;
     }
@@ -566,14 +573,12 @@ export function defaultEmptyDocument(
             return undefined;
         }
         if (node.role === 'text' || visiting.has(node.name)) return undefined;
-        const attrs: Array<[string, AttrSpec]> = [];
-        for (const name in node.attrs ?? {}) {
-            if (!Object.prototype.hasOwnProperty.call(node.attrs, name)) continue;
-            if (attrs.length >= resolvedLimits.maxSchemaNodes || !consumeWork()) {
+        const attrs = admittedCollections.attrsByNode.get(node) ?? [];
+        for (const _attr of attrs) {
+            if (!consumeWork()) {
                 budget.exhausted = true;
                 return undefined;
             }
-            attrs.push([name, node.attrs![name]]);
         }
         if (attrs.some(([, spec]) => spec.default === undefined)) {
             return undefined;
@@ -618,6 +623,37 @@ export function defaultEmptyDocument(
     return document;
 }
 
+export function defaultEmptyDocument(
+    schema: SchemaDefinition = tiptapSchema,
+    limits?: DocumentDescriptorLimits
+): DocumentJSON {
+    const resolvedLimits = resolveDescriptorLimits(limits);
+    if (schema.nodes.length > resolvedLimits.maxSchemaNodes) {
+        throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, schema.nodes.length);
+    }
+    let expressionBytes = 0;
+    for (const node of schema.nodes) {
+        if (node != null && typeof node.content === 'string') {
+            expressionBytes += utf8ByteLengthUpTo(
+                node.content,
+                resolvedLimits.maxSchemaExpressionBytes - expressionBytes
+            );
+            if (expressionBytes > resolvedLimits.maxSchemaExpressionBytes) {
+                throw schemaBoundaryError(
+                    resolvedLimits.maxSchemaExpressionBytes,
+                    expressionBytes
+                );
+            }
+        }
+    }
+    const admissionBudget = createSchemaWorkBudget(resolvedLimits);
+    const admittedCollections = admitSchemaCollections(schema, admissionBudget);
+    if (admittedCollections == null) {
+        throw new Error('schema cannot construct a default document: invalid schema collections');
+    }
+    return constructDefaultEmptyDocument(schema, resolvedLimits, admittedCollections);
+}
+
 export function resolveDocumentDescriptor(
     schema?: SchemaDefinition,
     limits?: DocumentDescriptorLimits
@@ -631,7 +667,7 @@ export function resolveDocumentDescriptor(
     return {
         schema: resolvedSchema,
         documentNodeName: documentNode.name,
-        emptyDocument: defaultEmptyDocument(resolvedSchema, resolvedLimits, true),
+        emptyDocument: defaultEmptyDocument(resolvedSchema, resolvedLimits),
     };
 }
 

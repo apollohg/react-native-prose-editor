@@ -229,7 +229,7 @@ describe('schema-aware document normalization', () => {
         ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 5 }));
     });
 
-    it('admits marks, group tokens, and attrs before allocating proportional schema work', () => {
+    it('does not reinterpret node and expression limits as mark, group, or attr caps', () => {
         const minimalNodes: SchemaDefinition['nodes'] = [
             { name: 'doc', content: '', role: 'doc' },
             { name: 'text', content: '', role: 'text' },
@@ -239,47 +239,11 @@ describe('schema-aware document normalization', () => {
         expect(() =>
             resolveDocumentDescriptor(
                 {
-                    nodes: minimalNodes,
-                    marks: [{ name: 'a' }, { name: 'b' }, { name: 'c' }],
-                },
-                limits
-            )
-        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 2, actual: 3 }));
-
-        expect(() =>
-            resolveDocumentDescriptor(
-                {
-                    nodes: [
-                        { name: 'doc', content: '', group: 'a b c', role: 'doc' },
-                        minimalNodes[1],
-                    ],
-                    marks: [],
-                },
-                limits
-            )
-        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 2, actual: 3 }));
-
-        expect(() =>
-            resolveDocumentDescriptor(
-                {
-                    nodes: [
-                        { name: 'doc', content: '', group: 'abcdefghijklmnopq', role: 'doc' },
-                        minimalNodes[1],
-                    ],
-                    marks: [],
-                },
-                limits
-            )
-        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 16 }));
-
-        expect(() =>
-            resolveDocumentDescriptor(
-                {
                     nodes: [
                         {
-                            name: 'doc',
+                            ...minimalNodes[0],
                             content: ' '.repeat(16),
-                            role: 'doc',
+                            group: 'a b c',
                             attrs: {
                                 a: { default: null },
                                 b: { default: null },
@@ -288,11 +252,79 @@ describe('schema-aware document normalization', () => {
                         },
                         minimalNodes[1],
                     ],
-                    marks: [],
+                    marks: [{ name: 'a' }, { name: 'b' }, { name: 'c' }],
                 },
                 limits
             )
-        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 2, actual: 3 }));
+        ).not.toThrow();
+    });
+
+    it.each([
+        [
+            'marks',
+            {
+                marks: Array.from({ length: 700 }, (_, index) => ({ name: `m${index}` })),
+            },
+        ],
+        [
+            'group work',
+            {
+                group: 'a '.repeat(700),
+            },
+        ],
+        [
+            'attrs',
+            {
+                attrs: Object.fromEntries(
+                    Array.from({ length: 700 }, (_, index) => [
+                        `a${index}`,
+                        { default: null },
+                    ])
+                ),
+            },
+        ],
+    ])('rejects excessive %s through the derived schema work budget', (_name, hostile) => {
+        const nodes: SchemaDefinition['nodes'] = [
+            {
+                name: 'doc',
+                content: '',
+                role: 'doc',
+                ...('group' in hostile ? { group: hostile.group } : {}),
+                ...('attrs' in hostile ? { attrs: hostile.attrs } : {}),
+            },
+            { name: 'text', content: '', role: 'text' },
+        ];
+
+        expect(() =>
+            resolveDocumentDescriptor(
+                {
+                    nodes,
+                    marks: 'marks' in hostile ? hostile.marks : [],
+                },
+                { maxSchemaNodes: 2, maxSchemaExpressionBytes: 16 }
+            )
+        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 640 }));
+    });
+
+    it('bounds hostile group scanning for direct defaultEmptyDocument callers', () => {
+        const schema: SchemaDefinition = {
+            nodes: [
+                { name: 'doc', content: '', group: 'a'.repeat(700), role: 'doc' },
+                { name: 'text', content: '', role: 'text' },
+            ],
+            marks: [],
+        };
+        expect(() =>
+            defaultEmptyDocument(schema, {
+                maxSchemaNodes: 2,
+                maxSchemaExpressionBytes: 16,
+            })
+        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 640 }));
+
+        if (false) {
+            // @ts-expect-error the public API must not expose an admission-bypass argument
+            defaultEmptyDocument(schema, undefined, true);
+        }
     });
 
     it('accepts schema collections at their exact public limits', () => {
@@ -309,7 +341,7 @@ describe('schema-aware document normalization', () => {
                         },
                         { name: 'text', content: '', role: 'text' },
                     ],
-                    marks: [{ name: 'a' }, { name: 'b' }],
+                    marks: [{ name: 'a' }, { name: 'b' }, { name: 'c' }],
                 },
                 { maxSchemaNodes: 2, maxSchemaExpressionBytes: 16 }
             )
