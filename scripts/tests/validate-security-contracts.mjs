@@ -168,6 +168,7 @@ assert.deepEqual(
         'customArticleRoot',
         'missingImageSource',
         'oversizedSchema',
+        'schemaNormalizationParity',
         'trickleDeadline',
         'unknownScriptMark',
         'whitespaceBase64',
@@ -179,6 +180,10 @@ assert.equal(
     fixtures.trickleDeadline.requestTimeoutMs
 );
 assert.ok(/\s/.test(fixtures.whitespaceBase64.source.slice('data:image/png;base64,'.length)));
+assert.ok(Array.isArray(fixtures.schemaNormalizationParity.missingFields?.nodes));
+assert.ok(Array.isArray(fixtures.schemaNormalizationParity.missingFields?.marks));
+assert.equal(typeof fixtures.schemaNormalizationParity.invalidNodeTag, 'string');
+assert.equal(typeof fixtures.schemaNormalizationParity.invalidAttribute, 'string');
 
 const udl = read('rust/editor-core/src/editor_core.udl');
 assert.match(udl, /string editor_create_result\(string config_json\);/);
