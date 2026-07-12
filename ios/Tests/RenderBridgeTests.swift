@@ -224,6 +224,27 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertTrue(scheduler.allCancelCounts.allSatisfy { $0 == 1 })
     }
 
+    func testCancelledPhaseTimerCallbackCannotFinishReplacementPhase() {
+        let scheduler = ManualImageTimeoutScheduler()
+        var timeoutCount = 0
+        let controller = ImageRequestTimeoutController(
+            connectTimeout: 10,
+            readTimeout: 20,
+            requestTimeout: 60,
+            schedule: scheduler.schedule,
+            onTimeout: { timeoutCount += 1 }
+        )
+
+        controller.start()
+        controller.receivedResponse()
+        scheduler.fireFirstCancelledIgnoringCancellation()
+
+        XCTAssertEqual(timeoutCount, 0)
+        XCTAssertEqual(scheduler.pendingDelays, [60, 20])
+        scheduler.fire(delay: 20)
+        XCTAssertEqual(timeoutCount, 1)
+    }
+
     func testURLSessionUsesPolicySecondsAndTotalResourceDeadline() {
         let configuration = URLSessionImageTask.configuration(
             policy: imagePolicy(connectTimeout: 10, readTimeout: 20, requestTimeout: 60)
@@ -284,6 +305,115 @@ final class RenderBridgeTests: XCTestCase {
             RenderImageCache.retainedCost(image),
             decoded + 64 + RenderImageCache.cacheEntryOverhead
         )
+    }
+
+    func testImageCacheRetainedCostUsesBackingRowBytesAndSaturatesOverflow() {
+        let image = paddedBackingImage(bytesPerRow: 64, height: 2)
+
+        XCTAssertEqual(
+            RenderImageCache.retainedCost(image),
+            128 + 64 + RenderImageCache.cacheEntryOverhead
+        )
+        XCTAssertEqual(
+            RenderImageCache.backingCost(
+                bytesPerRow: Int.max,
+                height: 2,
+                fallback: 4
+            ),
+            Int.max
+        )
+    }
+
+    func testAbsoluteRequestDeadlineStartsAtAdmissionAndSuppressesQueuedWork() {
+        let clock = ManualImageClock()
+        let deadlines = ManualImageTimeoutScheduler()
+        let transport = HoldingImageTransport()
+        let delivery = ManualImageDeliveryScheduler()
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(requestTimeout: 60, maxConcurrentRequests: 1),
+            transport: transport,
+            deliver: delivery.schedule,
+            now: clock.now,
+            scheduleTimeout: deadlines.schedule
+        )
+        let completion = expectation(description: "expired queued request is not delivered")
+        completion.isInverted = true
+
+        XCTAssertNotNil(owner.startImageLoad(source: "https://example.com/active.png") { _ in })
+        XCTAssertNotNil(owner.startImageLoad(source: "https://example.com/queued.png") { _ in
+            completion.fulfill()
+        })
+        XCTAssertEqual(transport.requestCount, 1)
+
+        clock.advance(to: 61)
+        deadlines.fireAllActive()
+        transport.completeAll(with: .success(Data()))
+        delivery.runAll()
+
+        XCTAssertEqual(transport.requestCount, 1)
+        wait(for: [completion], timeout: 0.05)
+    }
+
+    func testRejectedImageAdmissionDoesNotRetainDeadlineHandle() {
+        let deadlines = ManualImageTimeoutScheduler()
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(maxConcurrentRequests: 1, maxPendingRequests: 1),
+            transport: HoldingImageTransport(),
+            scheduleTimeout: deadlines.schedule
+        )
+
+        XCTAssertNotNil(owner.startImageLoad(source: "https://example.com/active.png") { _ in })
+        XCTAssertNotNil(owner.startImageLoad(source: "https://example.com/pending.png") { _ in })
+        XCTAssertNil(owner.startImageLoad(source: "https://example.com/rejected.png") { _ in })
+        XCTAssertEqual(deadlines.allDelays.count, 2)
+    }
+
+    func testAbsoluteRequestDeadlineSuppressesStaleMainDelivery() {
+        let clock = ManualImageClock()
+        let deadlines = ManualImageTimeoutScheduler()
+        let delivery = ManualImageDeliveryScheduler()
+        let owner = RenderImageLoadOwner(
+            policy: imagePolicy(requestTimeout: 60),
+            transport: ImmediateImageTransport(result: .failure(URLError(.cannotDecodeContentData))),
+            deliver: delivery.schedule,
+            now: clock.now,
+            scheduleTimeout: deadlines.schedule
+        )
+        let completion = expectation(description: "post-deadline delivery suppressed")
+        completion.isInverted = true
+
+        XCTAssertNotNil(owner.startImageLoad(source: "https://example.com/image.png") { _ in
+            completion.fulfill()
+        })
+        XCTAssertTrue(delivery.waitUntilScheduled(timeout: 1))
+        clock.advance(to: 61)
+        deadlines.fireAllActive()
+        delivery.runAll()
+
+        wait(for: [completion], timeout: 0.05)
+    }
+
+    func testAbsoluteRequestDeadlineRejectsDecodeResultAndCacheCommit() {
+        let clock = ManualImageClock()
+        let deadlines = ManualImageTimeoutScheduler()
+        let source = "https://example.com/deadline-\(UUID().uuidString).png"
+        let policy = imagePolicy(requestTimeout: 60)
+        let key = RenderImageCache.key(source: source, policy: policy)
+        let owner = RenderImageLoadOwner(
+            policy: policy,
+            transport: ImmediateImageTransport(result: .success(Data([1]))),
+            decoder: DeadlineAdvancingImageDecoder(clock: clock, image: onePixelImage()),
+            now: clock.now,
+            scheduleTimeout: deadlines.schedule
+        )
+        let completion = expectation(description: "expired decode is not delivered")
+        completion.isInverted = true
+
+        XCTAssertNil(RenderImageCache.cache.image(forKey: key))
+        XCTAssertNotNil(owner.startImageLoad(source: source) { _ in completion.fulfill() })
+
+        wait(for: [completion], timeout: 0.1)
+        XCTAssertNil(RenderImageCache.cache.image(forKey: key))
     }
 
     func testEditorTextViewsKeepConfiguredImageOwnersAcrossInternalRenders() {
@@ -2960,6 +3090,25 @@ private func onePixelImage() -> UIImage {
     }
 }
 
+private func paddedBackingImage(bytesPerRow: Int, height: Int) -> UIImage {
+    let data = Data(repeating: 0, count: bytesPerRow * height)
+    let provider = CGDataProvider(data: data as CFData)!
+    let image = CGImage(
+        width: 1,
+        height: height,
+        bitsPerComponent: 8,
+        bitsPerPixel: 32,
+        bytesPerRow: bytesPerRow,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: false,
+        intent: .defaultIntent
+    )!
+    return UIImage(cgImage: image)
+}
+
 private func imageRenderJSON(source: String) -> String {
     """
     [{"type":"voidBlock","nodeType":"image","docPos":1,"attrs":{"src":"\(source)"}}]
@@ -3024,6 +3173,45 @@ private final class ManualImageTimeoutScheduler {
 
     func fireAllIncludingCancelled() {
         tasks.forEach { $0.action() }
+    }
+
+    func fireFirstCancelledIgnoringCancellation() {
+        tasks.first(where: \.cancelled)?.action()
+    }
+
+    func fireAllActive() {
+        tasks.filter { !$0.cancelled }.forEach { $0.action() }
+    }
+}
+
+private final class ManualImageClock {
+    private let lock = NSLock()
+    private var value: TimeInterval = 0
+    lazy var now: () -> TimeInterval = { [weak self] in
+        guard let self else { return .infinity }
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.value
+    }
+    func advance(to value: TimeInterval) {
+        lock.lock()
+        self.value = value
+        lock.unlock()
+    }
+}
+
+private final class DeadlineAdvancingImageDecoder: ImageDataDecoding {
+    private let clock: ManualImageClock
+    private let image: UIImage
+
+    init(clock: ManualImageClock, image: UIImage) {
+        self.clock = clock
+        self.image = image
+    }
+
+    func decode(_ data: Data, maxDimension: Int) -> UIImage? {
+        clock.advance(to: 61)
+        return image
     }
 }
 

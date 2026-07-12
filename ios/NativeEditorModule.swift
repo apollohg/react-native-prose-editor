@@ -25,8 +25,9 @@ public class NativeEditorModule: Module {
         }
         Function("editorDestroy") { (id: Int) in
             guard let editorId = nativeUInt64(id) else { return }
-            NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: editorId)
-            editorDestroy(id: editorId)
+            NativeEditorViewRegistry.shared.destroy(editorId: editorId) {
+                editorDestroy(id: editorId)
+            }
         }
         Function("editorPrepareForCommand") { (id: Int) -> String in
             guard let editorId = nativeUInt64(id) else {

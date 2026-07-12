@@ -6,6 +6,7 @@ final class NativeEditorViewRegistry {
 
     private var viewsByEditorId: [UInt64: NSHashTable<NativeEditorExpoView>] = [:]
     private var activeEditorIds: Set<UInt64> = []
+    private var destroyingEditorIds: Set<UInt64> = []
 
     private init() {}
 
@@ -19,6 +20,7 @@ final class NativeEditorViewRegistry {
     func isDestroyed(editorId: UInt64) -> Bool {
         guard editorId != 0 else { return false }
         return performOnMain {
+            if destroyingEditorIds.contains(editorId) { return true }
             if activeEditorIds.contains(editorId) {
                 return false
             }
@@ -30,6 +32,7 @@ final class NativeEditorViewRegistry {
     func register(editorId: UInt64, view: NativeEditorExpoView) -> Bool {
         guard editorId != 0 else { return false }
         return performOnMain {
+            guard !destroyingEditorIds.contains(editorId) else { return false }
             if !activeEditorIds.contains(editorId) {
                 guard !editorGetCurrentState(id: editorId).contains("\"error\":\"editor not found\"") else {
                     return false
@@ -57,14 +60,27 @@ final class NativeEditorViewRegistry {
     func invalidateDestroyedEditor(editorId: UInt64) {
         guard editorId != 0 else { return }
         performOnMain {
+            destroyingEditorIds.remove(editorId)
             activeEditorIds.remove(editorId)
             let views = viewsByEditorId.removeValue(forKey: editorId)?.allObjects ?? []
             views.forEach { $0.handleEditorDestroyed(editorId) }
         }
     }
 
+    func destroy(editorId: UInt64, operation: () -> Void) {
+        guard editorId != 0 else { return }
+        performOnMain {
+            guard destroyingEditorIds.insert(editorId).inserted else { return }
+            defer { invalidateDestroyedEditor(editorId: editorId) }
+            operation()
+        }
+    }
+
     func prepareForCommandJSON(editorId: UInt64) -> String {
         let prepare = { () -> String in
+            if self.destroyingEditorIds.contains(editorId) {
+                return Self.commandPreparationJSON(ready: false, blockedReason: "destroying")
+            }
             if !self.activeEditorIds.contains(editorId),
                editorGetCurrentState(id: editorId).contains("\"error\":\"editor not found\"")
             {

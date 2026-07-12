@@ -161,12 +161,25 @@ enum RenderImageCache {
     }
 
     static func decodedCost(_ image: UIImage) -> Int {
-        let width = image.cgImage?.width ?? Int(image.size.width * image.scale)
-        let height = image.cgImage?.height ?? Int(image.size.height * image.scale)
+        if let cgImage = image.cgImage {
+            return backingCost(
+                bytesPerRow: cgImage.bytesPerRow,
+                height: cgImage.height,
+                fallback: Int.max
+            )
+        }
+        let width = Int(image.size.width * image.scale)
+        let height = Int(image.size.height * image.scale)
         let (pixels, pixelOverflow) = width.multipliedReportingOverflow(by: height)
         guard !pixelOverflow else { return Int.max }
         let (bytes, byteOverflow) = pixels.multipliedReportingOverflow(by: 4)
         return byteOverflow ? Int.max : bytes
+    }
+
+    static func backingCost(bytesPerRow: Int, height: Int, fallback: Int) -> Int {
+        guard bytesPerRow >= 0, height >= 0 else { return fallback }
+        let (cost, overflow) = bytesPerRow.multipliedReportingOverflow(by: height)
+        return overflow ? Int.max : cost
     }
 
     static func retainedCost(_ image: UIImage) -> Int {
@@ -203,6 +216,8 @@ final class ImageRequestTimeoutController {
     private let lock = NSLock()
     private var phaseTimer: ImageLoadingTask?
     private var totalTimer: ImageLoadingTask?
+    private var phaseGeneration: UInt64 = 0
+    private var totalGeneration: UInt64 = 0
     private var finished = false
 
     init(
@@ -225,8 +240,10 @@ final class ImageRequestTimeoutController {
             lock.unlock()
             return
         }
-        phaseTimer = makeTimer(after: connectTimeout)
-        totalTimer = makeTimer(after: requestTimeout)
+        phaseGeneration &+= 1
+        totalGeneration &+= 1
+        phaseTimer = makeTimer(after: connectTimeout, phase: true, generation: phaseGeneration)
+        totalTimer = makeTimer(after: requestTimeout, phase: false, generation: totalGeneration)
         lock.unlock()
     }
 
@@ -255,15 +272,23 @@ final class ImageRequestTimeoutController {
             return
         }
         phaseTimer?.cancel()
-        phaseTimer = makeTimer(after: delay)
+        phaseGeneration &+= 1
+        phaseTimer = makeTimer(after: delay, phase: true, generation: phaseGeneration)
         lock.unlock()
     }
 
-    private func makeTimer(after delay: TimeInterval) -> ImageLoadingTask {
+    private func makeTimer(
+        after delay: TimeInterval,
+        phase: Bool,
+        generation: UInt64
+    ) -> ImageLoadingTask {
         schedule(delay) { [weak self] in
             guard let self else { return }
             self.lock.lock()
-            guard !self.finished else {
+            let isCurrent = phase
+                ? generation == self.phaseGeneration && self.phaseTimer != nil
+                : generation == self.totalGeneration && self.totalTimer != nil
+            guard !self.finished, isCurrent else {
                 self.lock.unlock()
                 return
             }
@@ -452,6 +477,8 @@ private final class URLSessionImageTransport: ImageLoadingTransport {
 
 final class RenderImageLoadOwner {
     typealias Delivery = (@escaping () -> Void) -> Void
+    typealias Now = () -> TimeInterval
+    typealias TimeoutSchedule = (TimeInterval, @escaping () -> Void) -> ImageLoadingTask
     final class ImageLoadReceipt {
         private let lock = NSLock()
         private var cancellation: (() -> Void)?
@@ -473,6 +500,7 @@ final class RenderImageLoadOwner {
         let id: UUID
         let source: String
         let generation: UInt64
+        let deadline: TimeInterval
         let completion: (UIImage?) -> Void
     }
 
@@ -527,23 +555,32 @@ final class RenderImageLoadOwner {
     private let transport: ImageLoadingTransport
     private let decoder: ImageDataDecoding
     private let deliver: Delivery
+    private let now: Now
+    private let scheduleTimeout: TimeoutSchedule
     private var storedPolicy: ImageLoadingPolicy
     private var generation: UInt64 = 0
     private var pending: [Request] = []
     private var active: [UUID: ActiveRequest] = [:]
     private var decodeWorkIds = Set<UUID>()
     private var deliveryTickets: [UUID: DeliveryTicket] = [:]
+    private var deadlineTasks: [UUID: ImageLoadingTask] = [:]
 
     init(
         policy: ImageLoadingPolicy,
         transport: ImageLoadingTransport = URLSessionImageTransport(),
         decoder: ImageDataDecoding = DefaultImageDataDecoder(),
-        deliver: @escaping Delivery = { action in DispatchQueue.main.async(execute: action) }
+        deliver: @escaping Delivery = { action in DispatchQueue.main.async(execute: action) },
+        now: @escaping Now = { ProcessInfo.processInfo.systemUptime },
+        scheduleTimeout: @escaping TimeoutSchedule = { delay, action in
+            DispatchImageTimeoutTask(delay: delay, action: action)
+        }
     ) {
         storedPolicy = policy
         self.transport = transport
         self.decoder = decoder
         self.deliver = deliver
+        self.now = now
+        self.scheduleTimeout = scheduleTimeout
     }
 
     var policy: ImageLoadingPolicy {
@@ -572,13 +609,16 @@ final class RenderImageLoadOwner {
                 id: UUID(),
                 source: source,
                 generation: generation,
+                deadline: now() + storedPolicy.requestTimeout,
                 completion: completion
             )
             if occupiedWorkCountLocked >= storedPolicy.maxConcurrentRequests {
                 guard pending.count < storedPolicy.maxPendingRequests else { return nil }
+                scheduleDeadlineLocked(for: request)
                 pending.append(request)
                 return request
             }
+            scheduleDeadlineLocked(for: request)
             startLocked(request)
             return request
         }
@@ -626,10 +666,18 @@ final class RenderImageLoadOwner {
     }
 
     private func startLocked(_ request: Request) {
+        guard isWithinDeadline(request) else {
+            expireLocked(request)
+            return
+        }
         let activeRequest = ActiveRequest(request: request)
         active[request.id] = activeRequest
         let policy = storedPolicy
         let cacheKey = RenderImageCache.key(source: request.source, policy: policy)
+        guard isWithinDeadline(request) else {
+            expireLocked(request)
+            return
+        }
         if let cached = RenderImageCache.cache.image(forKey: cacheKey) {
             finishLocked(request, image: cached)
             return
@@ -639,16 +687,21 @@ final class RenderImageLoadOwner {
             guard Self.decodedDataURLByteCount(
                 request.source,
                 maxBytes: policy.maxSourceBytes
-            ) != nil else {
+            ) != nil, isWithinDeadline(request) else {
                 finishLocked(request, image: nil)
                 return
             }
             decodeWorkIds.insert(request.id)
             decodeQueue.async { [weak self] in
                 guard let self else { return }
+                guard self.isLiveAndWithinDeadline(request) else {
+                    self.finishDecode(request, image: nil, cacheKey: cacheKey)
+                    return
+                }
                 let data = Self.decodeDataURL(request.source, maxBytes: policy.maxSourceBytes)
-                let image = data.flatMap {
-                    self.decoder.decode($0, maxDimension: policy.maxDecodeDimension)
+                let image: UIImage? = data.flatMap { data -> UIImage? in
+                    guard self.isLiveAndWithinDeadline(request) else { return nil }
+                    return self.decoder.decode(data, maxDimension: policy.maxDecodeDimension)
                 }
                 self.finishDecode(request, image: image, cacheKey: cacheKey)
             }
@@ -657,7 +710,8 @@ final class RenderImageLoadOwner {
 
         guard let url = URL(string: request.source),
               let scheme = url.scheme?.lowercased(),
-              scheme == "https" || scheme == "http"
+              scheme == "https" || scheme == "http",
+              isWithinDeadline(request)
         else {
             finishLocked(request, image: nil)
             return
@@ -666,16 +720,23 @@ final class RenderImageLoadOwner {
             guard let self else { return }
             self.stateQueue.async {
                 guard request.generation == self.generation,
-                      self.active[request.id] != nil
+                      self.active[request.id] != nil,
+                      self.isWithinDeadline(request)
                 else {
                     return
                 }
                 self.decodeWorkIds.insert(request.id)
                 self.decodeQueue.async {
+                    guard self.isLiveAndWithinDeadline(request) else {
+                        self.finishDecode(request, image: nil, cacheKey: cacheKey)
+                        return
+                    }
                     let image: UIImage?
                     switch result {
                     case let .success(data) where data.count <= policy.maxSourceBytes:
-                        image = self.decoder.decode(data, maxDimension: policy.maxDecodeDimension)
+                        image = self.isLiveAndWithinDeadline(request)
+                            ? self.decoder.decode(data, maxDimension: policy.maxDecodeDimension)
+                            : nil
                     default:
                         image = nil
                     }
@@ -685,23 +746,35 @@ final class RenderImageLoadOwner {
         }
     }
 
+    private func scheduleDeadlineLocked(for request: Request) {
+        let remaining = max(0, request.deadline - now())
+        deadlineTasks[request.id] = scheduleTimeout(remaining) {
+            [weak self] in
+            self?.expire(request)
+        }
+    }
+
     private func finishDecode(_ request: Request, image: UIImage?, cacheKey: String) {
         stateQueue.async { [weak self] in
             guard let self else { return }
             decodeWorkIds.remove(request.id)
             if request.generation == generation,
                active[request.id] != nil,
+               isWithinDeadline(request),
                let image
             {
-                RenderImageCache.cache.insert(
-                    image,
-                    forKey: cacheKey,
-                    cost: RenderImageCache.retainedCost(image)
-                )
+                let cost = RenderImageCache.retainedCost(image)
+                if isWithinDeadline(request) {
+                    RenderImageCache.cache.insert(image, forKey: cacheKey, cost: cost)
+                }
             }
-            if request.generation == generation, active[request.id] != nil {
+            if request.generation == generation,
+               active[request.id] != nil,
+               isWithinDeadline(request)
+            {
                 finishLocked(request, image: image)
             } else {
+                expireLocked(request)
                 drainLocked()
             }
         }
@@ -710,6 +783,7 @@ final class RenderImageLoadOwner {
     private func finishLocked(_ request: Request, image: UIImage?) {
         guard request.generation == generation,
               active[request.id] != nil,
+              isWithinDeadline(request),
               deliveryTickets[request.id] == nil
         else {
             return
@@ -720,6 +794,7 @@ final class RenderImageLoadOwner {
             guard let self else { return }
             let shouldDeliver = stateQueue.sync {
                 guard request.generation == self.generation,
+                      self.isWithinDeadline(request),
                       self.active.removeValue(forKey: request.id) != nil,
                       self.deliveryTickets.removeValue(forKey: request.id) === ticket,
                       ticket.begin()
@@ -727,6 +802,7 @@ final class RenderImageLoadOwner {
                     return false
                 }
                 self.drainLocked()
+                self.deadlineTasks.removeValue(forKey: request.id)?.cancel()
                 return true
             }
             guard shouldDeliver else { return }
@@ -748,11 +824,14 @@ final class RenderImageLoadOwner {
     private func cancelAllLocked() {
         generation &+= 1
         let tasks = active.values.compactMap(\.task)
+        let deadlineTasks = Array(self.deadlineTasks.values)
         deliveryTickets.values.forEach { $0.cancel() }
         active.removeAll()
         pending.removeAll()
         deliveryTickets.removeAll()
+        self.deadlineTasks.removeAll()
         tasks.forEach { $0.cancel() }
+        deadlineTasks.forEach { $0.cancel() }
     }
 
     private func cancel(_ request: Request) {
@@ -760,13 +839,42 @@ final class RenderImageLoadOwner {
             guard request.generation == generation else { return }
             if let index = pending.firstIndex(where: { $0.id == request.id }) {
                 pending.remove(at: index)
+                deadlineTasks.removeValue(forKey: request.id)?.cancel()
                 return
             }
             guard let activeRequest = active.removeValue(forKey: request.id) else { return }
             deliveryTickets.removeValue(forKey: request.id)?.cancel()
             activeRequest.task?.cancel()
+            deadlineTasks.removeValue(forKey: request.id)?.cancel()
             drainLocked()
         }
+    }
+
+    private func isWithinDeadline(_ request: Request) -> Bool {
+        now() < request.deadline
+    }
+
+    private func isLiveAndWithinDeadline(_ request: Request) -> Bool {
+        stateQueue.sync {
+            request.generation == generation
+                && active[request.id] != nil
+                && isWithinDeadline(request)
+        }
+    }
+
+    private func expire(_ request: Request) {
+        stateQueue.sync { expireLocked(request) }
+    }
+
+    private func expireLocked(_ request: Request) {
+        if let index = pending.firstIndex(where: { $0.id == request.id }) {
+            pending.remove(at: index)
+        }
+        let activeRequest = active.removeValue(forKey: request.id)
+        activeRequest?.task?.cancel()
+        deliveryTickets.removeValue(forKey: request.id)?.cancel()
+        deadlineTasks.removeValue(forKey: request.id)?.cancel()
+        drainLocked()
     }
 
     private static func isDataURL(_ source: String) -> Bool {

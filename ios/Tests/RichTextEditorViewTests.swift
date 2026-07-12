@@ -3710,6 +3710,47 @@ final class RichTextEditorViewTests: XCTestCase {
         first.setEditorId(0)
     }
 
+    func testDestroyBoundaryBlocksReentrantRegistrationAndCommandsUntilInvalidation() {
+        let editorId = editorCreate(configJson: "{}")
+        let registry = NativeEditorViewRegistry.shared
+        registry.markEditorCreated(editorId: editorId)
+        let first = NativeEditorExpoView()
+        let second = NativeEditorExpoView()
+        first.setEditorId(editorId)
+        var nestedDestroyRan = false
+
+        registry.destroy(editorId: editorId) {
+            XCTAssertFalse(registry.register(editorId: editorId, view: second))
+            XCTAssertTrue(
+                registry.prepareForCommandJSON(editorId: editorId).contains("\"blockedReason\":\"destroying\"")
+            )
+            registry.destroy(editorId: editorId) { nestedDestroyRan = true }
+            editorDestroy(id: editorId)
+            XCTAssertEqual(first.richTextView.editorId, editorId)
+        }
+
+        XCTAssertFalse(nestedDestroyRan)
+        XCTAssertEqual(first.richTextView.editorId, 0)
+        XCTAssertEqual(second.richTextView.editorId, 0)
+    }
+
+    func testDestroyBoundaryInvalidatesViewsWhenDestroyOperationDoesNotRemoveEditor() {
+        let editorId = editorCreate(configJson: "{}")
+        let registry = NativeEditorViewRegistry.shared
+        registry.markEditorCreated(editorId: editorId)
+        let view = NativeEditorExpoView()
+        view.setEditorId(editorId)
+
+        registry.destroy(editorId: editorId) {
+            // Deterministically simulate a native destroy operation that returned
+            // without removing the Rust editor.
+        }
+
+        XCTAssertEqual(view.richTextView.editorId, 0)
+        XCTAssertFalse(editorGetCurrentState(id: editorId).contains("editor not found"))
+        editorDestroy(id: editorId)
+    }
+
     func testDestroyedEditorIdCannotRegisterNewView() {
         let editorId = editorCreate(configJson: "{}")
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
