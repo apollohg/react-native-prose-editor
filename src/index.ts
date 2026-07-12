@@ -117,6 +117,22 @@ export { clearHeightCache } from './heightCache';
 
 export {
     DEFAULT_EDITOR_IMAGE_LOADING_POLICY,
+    HARD_EDITOR_IMAGE_LOADING_POLICY,
+    resolveEditorImageLoadingPolicy,
     type EditorImageLoadingPolicy,
     type ResolvedEditorImageLoadingPolicy,
 } from './ImageLoadingPolicy';
+
+export {
+    DEFAULT_EDITOR_RESOURCE_LIMITS,
+    HARD_EDITOR_RESOURCE_LIMITS,
+    resolveEditorResourceLimits,
+    type EditorResourceLimits,
+    type ResolvedEditorResourceLimits,
+} from './ResourceLimits';
+
+export {
+    NativeEditorBoundaryError,
+    parseNativeBoundaryError,
+    type NativeEditorBoundaryErrorCode,
+} from './NativeEditorBoundaryError';

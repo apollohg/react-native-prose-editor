@@ -157,9 +157,26 @@ describe('NativeProseViewer', () => {
             maxSourceBytes: 10485760,
             connectTimeoutMs: 10000,
             readTimeoutMs: 3000,
+            requestTimeoutMs: 60000,
             maxConcurrentRequests: 2,
             maxPendingRequests: 8,
             maxDecodeDimensionPx: 2048,
+        });
+    });
+
+    it('passes resolved resource limits into the native render config', () => {
+        render(
+            <NativeProseViewer
+                contentJSON={{ type: 'doc' }}
+                resourceLimits={{ maxSchemaNodes: 500 }}
+            />
+        );
+
+        const config = JSON.parse(mockRenderDocumentJson.mock.calls[0]?.[0] as string);
+        expect(config.resourceLimits).toMatchObject({
+            maxInputBytes: 20 * 1024 * 1024,
+            maxSchemaNodes: 500,
+            maxEncodedStateBytes: 50 * 1024 * 1024,
         });
     });
 

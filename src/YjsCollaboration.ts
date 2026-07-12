@@ -10,6 +10,7 @@ import {
     encodeCollaborationStateBase64,
 } from './NativeEditorBridge';
 import type { RemoteSelectionDecoration } from './NativeRichTextEditor';
+import type { EditorResourceLimits } from './ResourceLimits';
 import {
     defaultEmptyDocument,
     resolveDocumentSchema,
@@ -65,6 +66,7 @@ export interface YjsCollaborationOptions {
     schema?: SchemaDefinition;
     initialDocumentJson?: DocumentJSON;
     initialEncodedState?: EncodedCollaborationStateInput;
+    resourceLimits?: EditorResourceLimits;
     localAwareness: LocalAwarenessUser;
     onPeersChange?: (peers: CollaborationPeer[]) => void;
     onStateChange?: (state: YjsCollaborationState) => void;
@@ -332,6 +334,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             initialDocumentJson: options.initialDocumentJson,
             initialEncodedState: options.initialEncodedState,
             localAwareness: awarenessToRecord(this.localAwarenessState),
+            resourceLimits: options.resourceLimits,
         });
         const nativeDocumentJson = this.bridge.getDocumentJson();
         this._peers = this.bridge.getPeers();
@@ -756,6 +759,7 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
     const initialEncodedStateKey = encodeInitialStateKey(options.initialEncodedState);
     const localAwarenessKey = JSON.stringify(options.localAwareness);
     const schemaKey = JSON.stringify(options.schema ?? null);
+    const resourceLimitsKey = JSON.stringify(options.resourceLimits ?? null);
     const [state, setState] = useState<YjsCollaborationState>({
         documentId: options.documentId,
         status: 'idle',
@@ -816,6 +820,7 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
         options.documentId,
         options.fragmentName,
         schemaKey,
+        resourceLimitsKey,
         initialEncodedStateKey,
     ]);
 

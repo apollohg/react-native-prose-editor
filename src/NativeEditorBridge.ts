@@ -1,6 +1,10 @@
 import { requireNativeModule } from 'expo-modules-core';
 import { Platform } from 'react-native';
 import type { EditorMentionTheme } from './EditorTheme';
+import {
+    resolveEditorResourceLimits,
+    type EditorResourceLimits,
+} from './ResourceLimits';
 import { normalizeDocumentJson, type SchemaDefinition } from './schemas';
 
 const ERR_DESTROYED = 'NativeEditorBridge: editor has been destroyed';
@@ -628,6 +632,7 @@ export class NativeEditorBridge {
         maxLength?: number;
         schemaJson?: string;
         allowBase64Images?: boolean;
+        resourceLimits?: EditorResourceLimits;
     }): NativeEditorBridge {
         const configObj: Record<string, unknown> = {};
         let parsedSchema: SchemaDefinition | undefined;
@@ -651,6 +656,9 @@ export class NativeEditorBridge {
             } catch {
                 // Fall back to the default schema when the provided JSON is invalid.
             }
+        }
+        if (config?.resourceLimits != null) {
+            configObj.resourceLimits = resolveEditorResourceLimits(config.resourceLimits);
         }
         const id = getNativeModule().editorCreate(JSON.stringify(configObj));
         if (!Number.isSafeInteger(id) || id <= 0) {
@@ -1410,9 +1418,17 @@ export class NativeCollaborationBridge {
         initialDocumentJson?: DocumentJSON;
         initialEncodedState?: EncodedCollaborationStateInput;
         localAwareness?: Record<string, unknown>;
+        resourceLimits?: EditorResourceLimits;
     }): NativeCollaborationBridge {
-        const { initialEncodedState, ...normalizedConfig } = config ?? {};
-        const id = getNativeModule().collaborationSessionCreate(JSON.stringify(normalizedConfig));
+        const { initialEncodedState, resourceLimits, ...normalizedConfig } = config ?? {};
+        const resolvedConfig =
+            resourceLimits == null
+                ? normalizedConfig
+                : {
+                      ...normalizedConfig,
+                      resourceLimits: resolveEditorResourceLimits(resourceLimits),
+                  };
+        const id = getNativeModule().collaborationSessionCreate(JSON.stringify(resolvedConfig));
         const bridge = new NativeCollaborationBridge(id);
         if (initialEncodedState != null) {
             try {

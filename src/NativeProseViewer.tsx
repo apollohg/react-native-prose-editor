@@ -4,6 +4,7 @@ import {
     serializeEditorImageLoadingPolicy,
     type EditorImageLoadingPolicy,
 } from './ImageLoadingPolicy';
+import { resolveEditorResourceLimits, type EditorResourceLimits } from './ResourceLimits';
 import {
     type NativeSyntheticEvent,
     PixelRatio,
@@ -111,6 +112,7 @@ interface NativeProseViewerBaseProps {
     style?: StyleProp<ViewStyle>;
     allowBase64Images?: boolean;
     imageLoadingPolicy?: EditorImageLoadingPolicy;
+    resourceLimits?: EditorResourceLimits;
     collapseTrailingEmptyParagraphs?: boolean;
     enableLinkTaps?: boolean;
     addons?: NativeProseViewerAddons;
@@ -592,6 +594,7 @@ export function NativeProseViewer({
         style,
         allowBase64Images = false,
         imageLoadingPolicy,
+        resourceLimits,
         collapseTrailingEmptyParagraphs = true,
         enableLinkTaps = true,
         addons,
@@ -635,6 +638,9 @@ export function NativeProseViewer({
         const configJson = JSON.stringify({
             schema: documentSchema,
             ...(allowBase64Images ? { allowBase64Images } : {}),
+            ...(resourceLimits
+                ? { resourceLimits: resolveEditorResourceLimits(resourceLimits) }
+                : {}),
         });
         const nextRenderJson =
             serializedContentJson != null
@@ -670,6 +676,7 @@ export function NativeProseViewer({
         contentHTML,
         documentSchema,
         mentionPayloadsByDocPos,
+        resourceLimits,
         serializedContentJson,
     ]);
     const renderJsonIsCollapsedEmpty = useMemo(

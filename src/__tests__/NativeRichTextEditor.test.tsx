@@ -456,9 +456,21 @@ describe('NativeRichTextEditor', () => {
                 maxSourceBytes: 1024,
                 connectTimeoutMs: 2500,
                 readTimeoutMs: 20000,
+                requestTimeoutMs: 60000,
                 maxConcurrentRequests: 2,
                 maxPendingRequests: 64,
                 maxDecodeDimensionPx: 2048,
+            });
+        });
+
+        it('passes resolved resource limits into editor creation', () => {
+            render(<NativeRichTextEditor resourceLimits={{ maxDocumentDepth: 128 }} />);
+
+            const config = JSON.parse(mockNativeModule.editorCreate.mock.calls[0]?.[0] as string);
+            expect(config.resourceLimits).toMatchObject({
+                maxInputBytes: 20 * 1024 * 1024,
+                maxDocumentDepth: 128,
+                maxEncodedStateBytes: 50 * 1024 * 1024,
             });
         });
 

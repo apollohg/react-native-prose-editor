@@ -1179,6 +1179,29 @@ describe('YjsCollaboration', () => {
         );
     });
 
+    it('passes resolved resource limits into the native collaboration session', () => {
+        createYjsCollaborationController({
+            documentId: 'doc-limits',
+            connect: false,
+            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            resourceLimits: { maxCollaborationMessageBytes: 1024 },
+            localAwareness: {
+                userId: '1',
+                name: 'Alice',
+                color: '#f00',
+            },
+        });
+
+        const config = JSON.parse(
+            mockNativeModule.collaborationSessionCreate.mock.calls[0]?.[0] as string
+        );
+        expect(config.resourceLimits).toMatchObject({
+            maxInputBytes: 20 * 1024 * 1024,
+            maxCollaborationMessageBytes: 1024,
+            maxEncodedStateBytes: 50 * 1024 * 1024,
+        });
+    });
+
     it('passes a custom fragment name through to the native collaboration session', () => {
         createYjsCollaborationController({
             documentId: 'doc-fragment',

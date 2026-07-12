@@ -277,6 +277,11 @@ import {
     NativeEditorBridge,
     _resetNativeModuleCache,
 } from '../NativeEditorBridge';
+import {
+    DEFAULT_EDITOR_RESOURCE_LIMITS,
+    resolveEditorResourceLimits,
+} from '../ResourceLimits';
+import { NativeEditorBoundaryError, parseNativeBoundaryError } from '../NativeEditorBoundaryError';
 import { Platform } from 'react-native';
 
 // ─── Tests ──────────────────────────────────────────────────────
@@ -290,6 +295,54 @@ describe('NativeEditorBridge', () => {
     // ── Creation & Destruction ──────────────────────────────────
 
     describe('create', () => {
+        it('resolves defaults and rejects hard-ceiling overrides', () => {
+            expect(resolveEditorResourceLimits()).toEqual(DEFAULT_EDITOR_RESOURCE_LIMITS);
+            expect(() => resolveEditorResourceLimits({ maxDocumentDepth: 1_025 })).toThrow(
+                expect.objectContaining({ code: 'INVALID_RESOURCE_LIMIT' })
+            );
+            expect(() =>
+                resolveEditorResourceLimits({ maxInputBytes: Number.MAX_SAFE_INTEGER })
+            ).toThrow(expect.objectContaining({ code: 'INVALID_RESOURCE_LIMIT' }));
+        });
+
+        it('parses a structured native boundary error envelope', () => {
+            const error = parseNativeBoundaryError({
+                error: {
+                    code: 'INPUT_LIMIT_EXCEEDED',
+                    message: 'input is too large',
+                    limit: 10,
+                    actual: 11,
+                    details: { input: 'html' },
+                },
+            });
+
+            expect(error).toBeInstanceOf(NativeEditorBoundaryError);
+            expect(error).toMatchObject({
+                code: 'INPUT_LIMIT_EXCEEDED',
+                message: 'input is too large',
+                limit: 10,
+                actual: 11,
+                details: { input: 'html' },
+            });
+            expect(parseNativeBoundaryError({ error: 'legacy error' })).toBeNull();
+        });
+
+        it('serializes one canonical resource policy into editor creation', () => {
+            const bridge = NativeEditorBridge.create({
+                resourceLimits: { maxDocumentNodes: 12_345 },
+            });
+
+            expect(mockNativeModule.editorCreate).toHaveBeenCalledWith(
+                JSON.stringify({
+                    resourceLimits: {
+                        ...DEFAULT_EDITOR_RESOURCE_LIMITS,
+                        maxDocumentNodes: 12_345,
+                    },
+                })
+            );
+            bridge.destroy();
+        });
+
         it('creates a bridge with empty config (no options)', () => {
             const bridge = NativeEditorBridge.create();
 

@@ -50,6 +50,7 @@ import {
     serializeEditorImageLoadingPolicy,
     type EditorImageLoadingPolicy,
 } from './ImageLoadingPolicy';
+import type { EditorResourceLimits } from './ResourceLimits';
 import {
     TASK_LIST_MARKER_CHECKED,
     TASK_LIST_MARKER_UNCHECKED,
@@ -992,6 +993,8 @@ export interface NativeRichTextEditorProps {
     allowBase64Images?: boolean;
     /** Bounds native data-URL and remote image loading. */
     imageLoadingPolicy?: EditorImageLoadingPolicy;
+    /** Bounds document, schema, and input processing at the native boundary. */
+    resourceLimits?: EditorResourceLimits;
     /** Whether selected images show native resize handles. */
     allowImageResizing?: boolean;
     /** Called when content changes with the current HTML. */
@@ -1191,6 +1194,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             remoteSelections,
             allowBase64Images = false,
             imageLoadingPolicy,
+            resourceLimits,
             allowImageResizing = true,
         },
         ref
@@ -1974,11 +1978,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     : null;
             pendingBridgeRecreationContentRef.current = null;
             const bridgeConfig =
-                maxLength != null || serializedSchemaJson || allowBase64Images
+                maxLength != null || serializedSchemaJson || allowBase64Images || resourceLimits
                     ? {
                           maxLength,
                           schemaJson: serializedSchemaJson,
                           allowBase64Images,
+                          resourceLimits,
                       }
                     : undefined;
             const bridge = NativeEditorBridge.create(bridgeConfig);
@@ -2067,6 +2072,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             syncStateFromUpdate,
             allowBase64Images,
             serializedSchemaJson,
+            resourceLimits,
             clearBlockedNativeCommandRetryTimer,
             nextNativeUpdateRevision,
         ]);
