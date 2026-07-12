@@ -919,6 +919,9 @@ internal object RenderImageLoader {
     internal var beforeCacheCommitOverride: (() -> Unit)? = null
 
     @Volatile
+    internal var beforeTerminalClaimOverride: (() -> Unit)? = null
+
+    @Volatile
     internal var decodedDeliveryPostedOverride: (() -> Unit)? = null
 
     @Volatile
@@ -974,6 +977,7 @@ internal object RenderImageLoader {
         beforeWorkerReturnOverride = null
         deadlineExecutionGateOverride = null
         beforeCacheCommitOverride = null
+        beforeTerminalClaimOverride = null
         decodedDeliveryPostedOverride = null
         monotonicClockOverride = null
     }
@@ -1183,6 +1187,7 @@ internal object RenderImageLoader {
                     !request.cancellation.isCancelled() &&
                         monotonicNowMs() < request.deadlineMs
                 }
+                beforeTerminalClaimOverride?.invoke()
                 claimRequestOutcome(request, deliverable, deliverInline = true)
             }
         ) {
@@ -1192,27 +1197,32 @@ internal object RenderImageLoader {
 
     private fun claimRequestOutcome(
         request: PendingRequest,
-        bitmap: Bitmap?,
+        candidateBitmap: Bitmap?,
         deliverInline: Boolean
     ): Boolean {
         if (!request.terminal.compareAndSet(false, true)) return false
         request.timeoutFuture?.cancel(false)
-        if (bitmap == null) request.cancellation.cancel()
         val callbacks: List<Callback>
         synchronized(lock) {
             if (inFlight[request.key] === request) inFlight.remove(request.key)
             releaseRequestSlotLocked(request)
             callbacks = request.callbacks.toList()
         }
-        if (bitmap != null) {
-            synchronized(cache) { cache.put(request.key.digest, bitmap) }
+        val resolvedBitmap = candidateBitmap?.takeIf {
+            !request.cancellation.isCancelled() &&
+                monotonicNowMs() < request.deadlineMs &&
+                callbacks.any { callback -> !callback.cancelled.get() }
+        }
+        if (resolvedBitmap == null) request.cancellation.cancel()
+        if (resolvedBitmap != null) {
+            synchronized(cache) { cache.put(request.key.digest, resolvedBitmap) }
         }
         callbacks.forEach(::releaseAdmission)
         if (deliverInline) {
-            callbacks.forEach { callback -> deliverCallback(callback, bitmap) }
+            callbacks.forEach { callback -> deliverCallback(callback, resolvedBitmap) }
             drainSubmissions()
         } else {
-            postCallbacks(callbacks, bitmap)
+            postCallbacks(callbacks, resolvedBitmap)
         }
         return true
     }

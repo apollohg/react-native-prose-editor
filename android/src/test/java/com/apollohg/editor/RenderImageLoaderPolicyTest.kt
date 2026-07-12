@@ -208,6 +208,36 @@ class RenderImageLoaderPolicyTest {
     }
 
     @Test
+    fun `deadline crossing immediately before terminal claim downgrades success`() {
+        val clock = FakeMonotonicClock()
+        RenderImageLoader.monotonicClockOverride = clock
+        val schedulerRelease = CountDownLatch(1)
+        RenderImageLoader.deadlineExecutionGateOverride = {
+            schedulerRelease.await(2, TimeUnit.SECONDS)
+        }
+        RenderImageLoader.beforeTerminalClaimOverride = { clock.advance(31) }
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        }
+        val completed = CountDownLatch(1)
+        var result: Bitmap? = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val policy = ImageLoadingPolicy.DEFAULT.copy(requestTimeoutMs = 30)
+        val source = "https://example.com/terminal-race.png"
+
+        RenderImageLoader.load(source, policy) {
+            result = it
+            completed.countDown()
+        }
+        drainMainUntil(completed)
+        schedulerRelease.countDown()
+
+        assertEquals(0L, completed.count)
+        assertNull(result)
+        assertNull(RenderImageLoader.cached(source, policy))
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+    }
+
+    @Test
     fun `main looper delivery after absolute deadline suppresses decoded bitmap`() {
         val clock = FakeMonotonicClock()
         RenderImageLoader.monotonicClockOverride = clock
