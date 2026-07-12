@@ -751,14 +751,16 @@ internal object RenderImageDecoder {
         while (sampledWidth > maxWidth.toLong() || sampledHeight > maxHeight.toLong()) {
             if (sampleSize >= (1L shl 30)) return (1 shl 30)
             sampleSize = sampleSize shl 1
-            sampledWidth = width.toLong() / sampleSize
-            sampledHeight = height.toLong() / sampleSize
+            sampledWidth = (width.toLong() + sampleSize - 1L) / sampleSize
+            sampledHeight = (height.toLong() + sampleSize - 1L) / sampleSize
         }
         return sampleSize.toInt().coerceAtLeast(1)
     }
 
     private fun decodeBitmap(bytes: ByteArray, policy: ImageLoadingPolicy): Bitmap? {
-        bitmapDecoderOverride?.let { return it(bytes, policy) }
+        bitmapDecoderOverride?.let {
+            return constrainDecodedBitmap(it(bytes, policy), policy.maxDecodeDimensionPx)
+        }
         val bounds = BitmapFactory.Options().apply {
             inJustDecodeBounds = true
         }
@@ -776,7 +778,30 @@ internal object RenderImageDecoder {
                 policy.maxDecodeDimensionPx
             )
         }
-        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        return constrainDecodedBitmap(
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options),
+            policy.maxDecodeDimensionPx
+        )
+    }
+
+    private fun constrainDecodedBitmap(bitmap: Bitmap?, maximumDimension: Int): Bitmap? {
+        bitmap ?: return null
+        if (bitmap.width <= maximumDimension && bitmap.height <= maximumDimension) return bitmap
+        val scale = minOf(
+            maximumDimension.toDouble() / bitmap.width.toDouble(),
+            maximumDimension.toDouble() / bitmap.height.toDouble()
+        )
+        val targetWidth = kotlin.math.floor(bitmap.width.toDouble() * scale)
+            .toInt()
+            .coerceIn(1, maximumDimension)
+        val targetHeight = kotlin.math.floor(bitmap.height.toDouble() * scale)
+            .toInt()
+            .coerceIn(1, maximumDimension)
+        val constrained = runCatching {
+            Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+        }.getOrNull() ?: return null
+        if (constrained !== bitmap) bitmap.recycle()
+        return constrained
     }
 
     internal fun resetForTesting() {
@@ -817,14 +842,19 @@ internal object RenderImageLoader {
     private const val REJECTION_NOTIFICATION_LIMIT = 64
     private const val CACHE_ENTRY_OVERHEAD_BYTES = 64
 
-    private class CacheKey(val digest: ByteArray) {
+    internal class CacheKey(val digest: ByteArray) {
         override fun equals(other: Any?): Boolean =
             other is CacheKey && digest.contentEquals(other.digest)
 
         override fun hashCode(): Int = digest.contentHashCode()
     }
 
-    private data class RequestKey(val digest: CacheKey, val policy: ImageLoadingPolicy)
+    internal data class RequestKey(val digest: CacheKey, val policy: ImageLoadingPolicy)
+    internal class PreparedSource internal constructor(
+        internal val source: String,
+        internal val policy: ImageLoadingPolicy,
+        internal val requestKey: RequestKey
+    )
     internal class LoadHandle(private val cancelAction: () -> Unit) {
         private val finished = AtomicBoolean(false)
         private val finishListeners = mutableListOf<() -> Unit>()
@@ -930,7 +960,20 @@ internal object RenderImageLoader {
     fun cached(
         source: String,
         policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT
-    ): Bitmap? = synchronized(cache) { cache.get(cacheKey(source, policy)) }
+    ): Bitmap? = prepare(source, policy)?.let(::cached)
+
+    internal fun prepare(
+        source: String,
+        policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT
+    ): PreparedSource? {
+        if (source.regionMatches(0, "data:image/", 0, "data:image/".length, ignoreCase = true) &&
+            RenderImageDecoder.preflightDataUrl(source, policy) == null
+        ) return null
+        return PreparedSource(source, policy, RequestKey(cacheKey(source, policy), policy))
+    }
+
+    internal fun cached(prepared: PreparedSource): Bitmap? =
+        synchronized(cache) { cache.get(prepared.requestKey.digest) }
 
     internal fun cacheKeyByteCountForTesting(
         source: String,
@@ -1007,6 +1050,18 @@ internal object RenderImageLoader {
         source: String,
         policy: ImageLoadingPolicy = ImageLoadingPolicy.DEFAULT,
         onLoaded: (Bitmap?) -> Unit
+    ): LoadHandle = load(source, policy, null, onLoaded)
+
+    internal fun load(
+        prepared: PreparedSource,
+        onLoaded: (Bitmap?) -> Unit
+    ): LoadHandle = load(prepared.source, prepared.policy, prepared, onLoaded)
+
+    private fun load(
+        source: String,
+        policy: ImageLoadingPolicy,
+        prepared: PreparedSource?,
+        onLoaded: (Bitmap?) -> Unit
     ): LoadHandle {
         val cancelled = AtomicBoolean(false)
         var requestKey: RequestKey? = null
@@ -1039,9 +1094,8 @@ internal object RenderImageLoader {
         }
         val requestedAtMs = monotonicNowMs()
         val deadlineMs = deadlineAfter(requestedAtMs, policy.requestTimeoutMs)
-        if (source.regionMatches(0, "data:image/", 0, "data:image/".length, ignoreCase = true) &&
-            RenderImageDecoder.preflightDataUrl(source, policy) == null
-        ) {
+        val resolvedSource = prepared ?: prepare(source, policy)
+        if (resolvedSource == null) {
             releaseAdmission(callback)
             postCallbacks(listOf(callback), null)
             return handle
@@ -1051,7 +1105,7 @@ internal object RenderImageLoader {
             postCallbacks(listOf(callback), null)
             return handle
         }
-        val resolvedRequestKey = RequestKey(cacheKey(source, policy), policy)
+        val resolvedRequestKey = resolvedSource.requestKey
         requestKey = resolvedRequestKey
         if (monotonicNowMs() >= deadlineMs) {
             releaseAdmission(callback)
@@ -1446,15 +1500,16 @@ internal class BlockImageSpan(
     private val policy = (hostView as? EditorEditText)?.imageLoadingPolicy
         ?: ImageLoadingPolicy.DEFAULT
     private val generation = (hostView as? EditorEditText)?.currentImageLoadGeneration()
+    private val preparedSource = RenderImageLoader.prepare(source, policy)
 
     @Volatile
-    private var bitmap: Bitmap? = RenderImageLoader.cached(source, policy)
+    private var bitmap: Bitmap? = preparedSource?.let(RenderImageLoader::cached)
     @Volatile
     private var lastDrawRect: RectF? = null
 
     init {
-        if (bitmap == null) {
-            val handle = RenderImageLoader.load(source, policy) { loaded ->
+        if (bitmap == null && preparedSource != null) {
+            val handle = RenderImageLoader.load(preparedSource) { loaded ->
                 val currentHost = hostRef.get()
                 if (
                     currentHost is EditorEditText &&

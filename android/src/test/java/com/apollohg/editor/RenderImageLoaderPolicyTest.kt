@@ -122,6 +122,44 @@ class RenderImageLoaderPolicyTest {
     }
 
     @Test
+    fun `block image span preflights hostile data url before cache digest construction`() {
+        val host = EditorEditText(org.robolectric.RuntimeEnvironment.getApplication()).apply {
+            setImageLoadingPolicyJson("""{"maxSourceBytes":8}""")
+        }
+
+        BlockImageSpan(
+            source = "data:image/png;base64," + "A".repeat(13),
+            hostView = host,
+            density = 1f,
+            preferredWidthDp = null,
+            preferredHeightDp = null
+        )
+
+        assertEquals(0L, RenderImageLoader.digestConstructionCountForTesting())
+        assertEquals(0, RenderImageLoader.globalAdmissionCountForTesting())
+    }
+
+    @Test
+    fun `block image span computes one digest for cache lookup and load`() {
+        val release = CountDownLatch(1)
+        RenderImageLoader.decodeSourceOverride = { _, _ ->
+            release.await(2, TimeUnit.SECONDS)
+            null
+        }
+
+        BlockImageSpan(
+            source = "https://example.com/one-digest.png",
+            hostView = EditorEditText(org.robolectric.RuntimeEnvironment.getApplication()),
+            density = 1f,
+            preferredWidthDp = null,
+            preferredHeightDp = null
+        )
+
+        assertEquals(1L, RenderImageLoader.digestConstructionCountForTesting())
+        release.countDown()
+    }
+
+    @Test
     fun `absolute deadline stops trickle reads`() {
         val clock = FakeMonotonicClock()
         val stream = TrickleInputStream(clock, byteEveryMs = 19_000)
@@ -509,6 +547,34 @@ class RenderImageLoaderPolicyTest {
                 maxHeight = policy.maxDecodeDimensionPx
             )
         )
+    }
+
+    @Test
+    fun `sampling uses ceiling division at the decode dimension boundary`() {
+        assertEquals(
+            4,
+            RenderImageDecoder.calculateInSampleSize(
+                width = 4_097,
+                height = 2_048,
+                maxWidth = 2_048,
+                maxHeight = 2_048
+            )
+        )
+    }
+
+    @Test
+    fun `actual decoded bitmap is constrained when decoder dimensions are approximate`() {
+        val oversized = Bitmap.createBitmap(4_097, 2_048, Bitmap.Config.ARGB_8888)
+        RenderImageDecoder.bitmapDecoderOverride = { _, _ -> oversized }
+
+        val decoded = RenderImageDecoder.decodeSource(
+            "data:image/png;base64,AQ==",
+            ImageLoadingPolicy.DEFAULT.copy(maxDecodeDimensionPx = 2_048)
+        )
+
+        requireNotNull(decoded)
+        assertEquals(2_048, decoded.width)
+        assertTrue(decoded.height <= 2_048)
     }
 
     @Test

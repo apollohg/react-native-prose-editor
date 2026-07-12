@@ -121,6 +121,7 @@ class NativeProseViewerExpoView(
         lastRenderJson = renderJson
         applyRenderJson()
         requestLayout()
+        notifyAccessibilitySubtreeChanged()
     }
 
     fun setThemeJson(themeJson: String?) {
@@ -151,6 +152,7 @@ class NativeProseViewerExpoView(
         if (this.enableLinkTaps == nextValue) return
         clearVirtualAccessibilityFocus()
         this.enableLinkTaps = nextValue
+        notifyAccessibilitySubtreeChanged()
     }
 
     fun setInterceptLinkTaps(interceptLinkTaps: Boolean?) {
@@ -376,6 +378,16 @@ class NativeProseViewerExpoView(
             packageName = context.packageName
             className = android.widget.Button::class.java.name
             setSource(this@NativeProseViewerExpoView, virtualViewId)
+        }
+        parent?.requestSendAccessibilityEvent(this, event)
+    }
+
+    private fun notifyAccessibilitySubtreeChanged() {
+        val event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED).apply {
+            packageName = context.packageName
+            className = android.widget.TextView::class.java.name
+            contentChangeTypes = AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE
+            setSource(this@NativeProseViewerExpoView)
         }
         parent?.requestSendAccessibilityEvent(this, event)
     }

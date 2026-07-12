@@ -30,12 +30,14 @@ import java.lang.ref.WeakReference
 class NativeProseViewerExpoViewTest {
     private class AccessibilityEventParent(context: Context) : FrameLayout(context) {
         val eventTypes = mutableListOf<Int>()
+        val contentChangeTypes = mutableListOf<Int>()
 
         override fun requestSendAccessibilityEvent(
             child: View,
             event: AccessibilityEvent
         ): Boolean {
             eventTypes += event.eventType
+            contentChangeTypes += event.contentChangeTypes
             return true
         }
     }
@@ -166,6 +168,54 @@ class NativeProseViewerExpoViewTest {
             )
         )
         assertTrue(provider.createAccessibilityNodeInfo(1) == null)
+    }
+
+    @Test
+    fun `replacing render notifies accessibility subtree and updates virtual children`() {
+        val (viewer, _) = laidOutInteractiveViewer(TargetKind.LINK)
+        val parent = AccessibilityEventParent(viewer.context)
+        parent.addView(viewer)
+        val provider = viewer.accessibilityNodeProvider
+        assertTrue(provider.createAccessibilityNodeInfo(1) != null)
+
+        viewer.setRenderJson(paragraphRenderJson("replacement"))
+
+        assertTrue(provider.createAccessibilityNodeInfo(1) == null)
+        val eventIndex = parent.eventTypes.indexOfLast {
+            it == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        }
+        assertTrue(eventIndex >= 0)
+        assertEquals(
+            AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE,
+            parent.contentChangeTypes[eventIndex]
+        )
+    }
+
+    @Test
+    fun `link tap setting notifies accessibility subtree and updates virtual children`() {
+        val (viewer, _) = laidOutInteractiveViewer(TargetKind.LINK)
+        val parent = AccessibilityEventParent(viewer.context)
+        parent.addView(viewer)
+        val provider = viewer.accessibilityNodeProvider
+        assertTrue(provider.createAccessibilityNodeInfo(1) != null)
+
+        viewer.setEnableLinkTaps(false)
+
+        assertTrue(provider.createAccessibilityNodeInfo(1) == null)
+        val eventIndex = parent.eventTypes.indexOfLast {
+            it == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        }
+        assertTrue(eventIndex >= 0)
+        assertEquals(
+            AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE,
+            parent.contentChangeTypes[eventIndex]
+        )
+
+        viewer.setEnableLinkTaps(true)
+        assertTrue(provider.createAccessibilityNodeInfo(1) != null)
+        assertTrue(
+            parent.eventTypes.count { it == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED } >= 2
+        )
     }
 
     @Test
