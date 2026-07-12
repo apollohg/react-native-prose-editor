@@ -225,10 +225,11 @@ impl Editor {
         json: &serde_json::Value,
     ) -> Result<Vec<RenderElement>, EditorError> {
         self.admit_json(json)?;
-        let doc = serialize::from_prosemirror_json(
+        let doc = serialize::from_prosemirror_json_with_limits(
             json,
             &self.schema,
             serialize::UnknownTypeMode::Preserve,
+            &self.resource_limits,
         )
         .map_err(map_json_parse_error)?;
         let root_spec = self.schema.node(doc.root().node_type());
@@ -860,10 +861,11 @@ impl Editor {
         json: &serde_json::Value,
     ) -> Result<EditorUpdate, EditorError> {
         self.admit_json(json)?;
-        let parsed_doc = serialize::from_prosemirror_json(
+        let parsed_doc = serialize::from_prosemirror_json_with_limits(
             json,
             &self.schema,
             serialize::UnknownTypeMode::Preserve,
+            &self.resource_limits,
         )
         .map_err(map_json_parse_error)?;
 
@@ -924,10 +926,11 @@ impl Editor {
         self.admit_json(json)?;
         // This is equivalent to set_json but goes through the transaction
         // pipeline so it can be undone.
-        let parsed_doc = serialize::from_prosemirror_json(
+        let parsed_doc = serialize::from_prosemirror_json_with_limits(
             json,
             &self.schema,
             serialize::UnknownTypeMode::Preserve,
+            &self.resource_limits,
         )
         .map_err(map_json_parse_error)?;
 
@@ -4101,6 +4104,9 @@ fn map_json_parse_error(error: serialize::JsonParseError) -> EditorError {
             format!("unknown mark '{name}'"),
         )
         .into(),
+        serialize::JsonParseError::ResourceLimit { limit, actual } => {
+            BoundaryError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, actual).into()
+        }
         other => BoundaryError::parse("DOCUMENT_PARSE_FAILED", other).into(),
     }
 }

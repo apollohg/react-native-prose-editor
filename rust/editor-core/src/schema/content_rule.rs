@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 const MAX_NESTING_DEPTH: usize = 128;
 const MAX_AUTOMATON_STATES: usize = 10_000;
@@ -150,6 +150,61 @@ impl ContentRule {
         symbols.into_iter().collect()
     }
 
+    pub(crate) fn choose_matches<T, C, F>(
+        &self,
+        children: &[T],
+        mut symbol_choice: F,
+        budget: &WorkBudget,
+    ) -> Result<Option<Vec<C>>, ()>
+    where
+        C: Copy,
+        F: FnMut(&T, &str) -> Option<C>,
+    {
+        let mut current = self.epsilon_closure_budgeted([self.start], budget)?;
+        let mut predecessors: Vec<HashMap<usize, (usize, C)>> = Vec::with_capacity(children.len());
+        for child in children {
+            let mut next = HashSet::new();
+            let mut step = HashMap::new();
+            for &state in &current {
+                if !budget.consume() {
+                    return Err(());
+                }
+                for (symbol, target) in &self.states[state].transitions {
+                    if !budget.consume() {
+                        return Err(());
+                    }
+                    let Some(choice) = symbol_choice(child, symbol) else {
+                        continue;
+                    };
+                    for reached in self.epsilon_closure_budgeted([*target], budget)? {
+                        if next.insert(reached) {
+                            step.insert(reached, (state, choice));
+                        }
+                    }
+                }
+            }
+            if next.is_empty() {
+                return Ok(None);
+            }
+            predecessors.push(step);
+            current = next;
+        }
+        if !current.contains(&self.accept) {
+            return Ok(None);
+        }
+        let mut state = self.accept;
+        let mut choices = Vec::with_capacity(children.len());
+        for step in predecessors.iter().rev() {
+            let Some((previous, choice)) = step.get(&state).copied() else {
+                return Ok(None);
+            };
+            choices.push(choice);
+            state = previous;
+        }
+        choices.reverse();
+        Ok(Some(choices))
+    }
+
     /// Return every symbol accepted at the start of the expression.
     pub fn initial_symbols(&self) -> Vec<&str> {
         let states = self.epsilon_closure([self.start]);
@@ -282,6 +337,27 @@ impl ContentRule {
             }
         }
         result
+    }
+
+    fn epsilon_closure_budgeted<I>(
+        &self,
+        initial: I,
+        budget: &WorkBudget,
+    ) -> Result<HashSet<usize>, ()>
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let mut result = HashSet::new();
+        let mut pending: Vec<usize> = initial.into_iter().collect();
+        while let Some(state) = pending.pop() {
+            if !budget.consume() {
+                return Err(());
+            }
+            if result.insert(state) {
+                pending.extend(self.states[state].epsilon.iter().copied());
+            }
+        }
+        Ok(result)
     }
 }
 

@@ -4,6 +4,8 @@ use std::fmt;
 use serde_json::{Map, Value};
 
 use crate::model::{Document, Fragment, Mark, Node};
+use crate::boundary::ResourceLimits;
+use crate::schema::content_rule::WorkBudget;
 use crate::schema::Schema;
 
 // ---------------------------------------------------------------------------
@@ -17,6 +19,7 @@ pub enum JsonParseError {
     UnknownType(String),
     /// A mark is never eligible for opaque preservation.
     UnknownMark(String),
+    ResourceLimit { limit: usize, actual: usize },
     /// The JSON structure is invalid (e.g. missing "type" field).
     InvalidStructure(String),
 }
@@ -28,6 +31,9 @@ impl fmt::Display for JsonParseError {
                 write!(f, "unknown node/mark type: \"{}\"", name)
             }
             JsonParseError::UnknownMark(name) => write!(f, "unknown mark type: \"{}\"", name),
+            JsonParseError::ResourceLimit { limit, actual } => {
+                write!(f, "document parse work exceeds limit {limit}: {actual}")
+            }
             JsonParseError::InvalidStructure(msg) => {
                 write!(f, "invalid JSON structure: {}", msg)
             }
@@ -71,9 +77,46 @@ pub fn from_prosemirror_json(
     schema: &Schema,
     mode: UnknownTypeMode,
 ) -> Result<Document, JsonParseError> {
+    from_prosemirror_json_with_limits(json, schema, mode, &ResourceLimits::default())
+}
+
+pub fn from_prosemirror_json_with_limits(
+    json: &Value,
+    schema: &Schema,
+    mode: UnknownTypeMode,
+    limits: &ResourceLimits,
+) -> Result<Document, JsonParseError> {
     let normalized = normalize_json_aliases(json);
-    let root = parse_node(&normalized, schema, mode, "block")?;
+    let mut budget = ParseBudget::new(limits.max_document_nodes);
+    let root = parse_node(&normalized, schema, mode, "block", &mut budget)?;
     Ok(Document::new(root))
+}
+
+struct ParseBudget {
+    nodes: usize,
+    max_nodes: usize,
+    placement: WorkBudget,
+}
+
+impl ParseBudget {
+    fn new(max_nodes: usize) -> Self {
+        Self {
+            nodes: 0,
+            max_nodes,
+            placement: WorkBudget::new(max_nodes.saturating_mul(64)),
+        }
+    }
+
+    fn admit_node(&mut self) -> Result<(), JsonParseError> {
+        self.nodes = self.nodes.saturating_add(1);
+        if self.nodes > self.max_nodes {
+            return Err(JsonParseError::ResourceLimit {
+                limit: self.max_nodes,
+                actual: self.nodes,
+            });
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -85,7 +128,9 @@ fn parse_node(
     schema: &Schema,
     mode: UnknownTypeMode,
     placement: &'static str,
+    budget: &mut ParseBudget,
 ) -> Result<Node, JsonParseError> {
+    budget.admit_node()?;
     let obj = json
         .as_object()
         .ok_or_else(|| JsonParseError::InvalidStructure("node must be a JSON object".into()))?;
@@ -127,7 +172,7 @@ fn parse_node(
     }
 
     // Element node — parse children
-    let children = parse_content(obj, schema, mode, spec)?;
+    let children = parse_content(obj, schema, mode, spec, budget)?;
     Ok(Node::element(
         type_name.to_string(),
         attrs,
@@ -245,6 +290,7 @@ fn parse_content(
     schema: &Schema,
     mode: UnknownTypeMode,
     parent: &crate::schema::NodeSpec,
+    budget: &mut ParseBudget,
 ) -> Result<Vec<Node>, JsonParseError> {
     let content_val = match obj.get("content") {
         Some(v) => v,
@@ -257,36 +303,54 @@ fn parse_content(
 
     let mut children = Vec::with_capacity(content_arr.len());
     for child_json in content_arr {
-        let child = parse_node(child_json, schema, mode, "unknown")?;
+        let child = parse_node(child_json, schema, mode, "unknown", budget)?;
         // Skip sentinel nodes (from UnknownTypeMode::Skip)
         if child.node_type() != "__skip" {
             children.push(child);
         }
     }
 
-    resolve_opaque_placements(children, parent, schema)
+    resolve_opaque_placements(children, parent, schema, &budget.placement)
+}
+
+#[derive(Clone, Copy)]
+enum PlacementChoice {
+    Known,
+    Inline,
+    Block,
 }
 
 fn resolve_opaque_placements(
     mut children: Vec<Node>,
     parent: &crate::schema::NodeSpec,
     schema: &Schema,
+    budget: &WorkBudget,
 ) -> Result<Vec<Node>, JsonParseError> {
-    for index in 0..children.len() {
-        if children[index].node_type() != "__opaque_json" {
-            continue;
-        }
-        let inline = sequence_matches_with_placement(&children, index, "inline", parent, schema);
-        let block = sequence_matches_with_placement(&children, index, "block", parent, schema);
-        let placement = match (inline, block) {
-            (true, false) => "inline",
-            (false, true) | (true, true) => "block",
-            (false, false) => {
-                return Err(JsonParseError::InvalidStructure(format!(
-                    "opaque child at index {index} is incompatible with parent '{}'",
-                    parent.name
-                )))
-            }
+    if !children.iter().any(|node| node.node_type() == "__opaque_json") {
+        return Ok(children);
+    }
+    let choices = parent
+        .content
+        .choose_matches(
+            &children,
+            |child, symbol| placement_choice(child, symbol, schema),
+            budget,
+        )
+        .map_err(|_| JsonParseError::ResourceLimit {
+            limit: children.len().saturating_mul(64),
+            actual: children.len().saturating_mul(64).saturating_add(1),
+        })?
+        .ok_or_else(|| {
+            JsonParseError::InvalidStructure(format!(
+                "opaque children are incompatible with parent '{}'",
+                parent.name
+            ))
+        })?;
+    for (index, choice) in choices.into_iter().enumerate() {
+        let placement = match choice {
+            PlacementChoice::Known => continue,
+            PlacementChoice::Inline => "inline",
+            PlacementChoice::Block => "block",
         };
         let original_type = children[index]
             .attrs()
@@ -304,53 +368,38 @@ fn resolve_opaque_placements(
     Ok(children)
 }
 
-fn sequence_matches_with_placement(
-    children: &[Node],
-    candidate_index: usize,
-    candidate_placement: &str,
-    parent: &crate::schema::NodeSpec,
+fn placement_choice(
+    child: &Node,
+    symbol: &str,
     schema: &Schema,
-) -> bool {
-    parent.content.matches(children, |child, symbol| {
-        if child.node_type() != "__opaque_json" {
-            return schema
-                .node(child.node_type())
-                .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol));
+) -> Option<PlacementChoice> {
+    if child.node_type() != "__opaque_json" {
+        return schema
+            .node(child.node_type())
+            .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+            .then_some(PlacementChoice::Known);
+    }
+    let mut inline = false;
+    let mut block = false;
+    for spec in schema
+        .all_nodes()
+        .filter(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
+    {
+        match spec.role {
+            crate::schema::NodeRole::Text
+            | crate::schema::NodeRole::Inline
+            | crate::schema::NodeRole::HardBreak => inline = true,
+            crate::schema::NodeRole::Doc => {}
+            _ => block = true,
         }
-        let placement = if std::ptr::eq(child, &children[candidate_index]) {
-            candidate_placement
-        } else {
-            child
-                .attrs()
-                .get("opaque_placement")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-        };
-        placement_matches_symbol(placement, symbol, schema)
-    })
-}
-
-fn placement_matches_symbol(placement: &str, symbol: &str, schema: &Schema) -> bool {
-    schema.all_nodes().any(|spec| {
-        crate::schema::node_spec_matches_symbol(spec, symbol)
-            && match placement {
-                "inline" => matches!(
-                    spec.role,
-                    crate::schema::NodeRole::Text
-                        | crate::schema::NodeRole::Inline
-                        | crate::schema::NodeRole::HardBreak
-                ),
-                "block" => !matches!(
-                    spec.role,
-                    crate::schema::NodeRole::Doc
-                        | crate::schema::NodeRole::Text
-                        | crate::schema::NodeRole::Inline
-                        | crate::schema::NodeRole::HardBreak
-                ),
-                "unknown" => !matches!(spec.role, crate::schema::NodeRole::Doc),
-                _ => false,
-            }
-    })
+    }
+    if block {
+        Some(PlacementChoice::Block)
+    } else if inline {
+        Some(PlacementChoice::Inline)
+    } else {
+        None
+    }
 }
 
 /// Build an opaque node for an unknown type (Preserve mode).

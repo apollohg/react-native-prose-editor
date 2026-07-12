@@ -4,7 +4,10 @@ use editor_core::intercept::InterceptorPipeline;
 use editor_core::registry::EditorRegistry;
 use editor_core::schema::{AttrSpec, NodeSpec, Schema};
 use editor_core::tiptap_schema;
-use editor_core::serialize::{from_prosemirror_json, to_prosemirror_json, UnknownTypeMode};
+use editor_core::serialize::{
+    from_prosemirror_json, from_prosemirror_json_with_limits, to_prosemirror_json,
+    JsonParseError, UnknownTypeMode,
+};
 
 #[test]
 fn boundary_rejects_input_before_json_parse() {
@@ -412,6 +415,30 @@ fn opaque_json_placement_follows_parent_content_roles() {
 
     editor.set_json(&original).unwrap();
     assert_eq!(editor.get_json(), original);
+}
+
+#[test]
+fn many_opaque_siblings_exhaust_parse_budget_before_placement_work() {
+    let limits = ResourceLimits {
+        max_document_nodes: 32,
+        ..ResourceLimits::default()
+    };
+    let content = (0..1_000)
+        .map(|index| serde_json::json!({ "type": format!("future{index}") }))
+        .collect::<Vec<_>>();
+    let json = serde_json::json!({ "type": "doc", "content": content });
+
+    let error = from_prosemirror_json_with_limits(
+        &json,
+        &tiptap_schema(),
+        UnknownTypeMode::Preserve,
+        &limits,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        JsonParseError::ResourceLimit { limit: 32, actual: 33 }
+    ));
 }
 
 fn schema_with_required_image_src() -> Schema {
