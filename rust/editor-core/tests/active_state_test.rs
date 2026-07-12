@@ -64,6 +64,30 @@ fn code_capability_and_execution_agree_for_mixed_selection() {
 }
 
 #[test]
+fn task_toggle_requires_declared_checked_attribute() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "taskList", "role": "doc" },
+            { "name": "taskList", "content": "taskItem", "role": "list", "htmlTag": "ul" },
+            { "name": "taskItem", "content": "paragraph", "role": "listItem", "htmlTag": "li" },
+            { "name": "paragraph", "content": "inline*", "role": "textBlock", "htmlTag": "p" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ], "marks": []
+    })).unwrap();
+    let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
+    editor.set_html("<ul><li><p>x</p></li></ul>").unwrap();
+    editor.set_selection(Selection::cursor(3));
+    let before = editor.get_json();
+
+    assert_eq!(
+        editor.get_current_state().active_state.commands.get("toggleTaskItem"),
+        Some(&false)
+    );
+    editor.toggle_task_item_checked().unwrap();
+    assert_eq!(editor.get_json(), before);
+}
+
+#[test]
 fn literal_list_commands_are_disabled_when_only_snake_case_targets_exist() {
     let editor = Editor::new(prosemirror_schema(), InterceptorPipeline::new(), false);
     let commands = editor.get_selection_state().active_state.commands;

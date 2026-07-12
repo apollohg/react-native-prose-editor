@@ -916,7 +916,7 @@ impl Editor {
             to: doc_content_size,
             content,
         });
-        self.apply_transaction(tx)
+        self.apply_full_document_replace(tx)
     }
 
     /// Replace the entire document content with JSON.
@@ -944,7 +944,7 @@ impl Editor {
             to: doc_content_size,
             content,
         });
-        self.apply_transaction(tx)
+        self.apply_full_document_replace(tx)
     }
 
     // -----------------------------------------------------------------------
@@ -1180,36 +1180,11 @@ impl Editor {
 
     /// Toggle the checked state of the current task item.
     pub fn toggle_task_item_checked(&mut self) -> Result<EditorUpdate, EditorError> {
-        let doc = self.backend.document();
-        let pos = self.selection.from(doc);
-        let Some(task_item_path) = self.task_item_path_at(pos) else {
+        let pos = self.selection.from(self.backend.document());
+        let Some(tx) = self.task_item_toggle_plan(pos)? else {
             return Ok(self.build_update_from_current());
         };
-        let Some(task_item_node) = doc.node_at(&task_item_path) else {
-            return Ok(self.build_update_from_current());
-        };
-
-        let mut attrs = task_item_node.attrs().clone();
-        let checked = attrs
-            .get("checked")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-        attrs.insert("checked".to_string(), serde_json::Value::Bool(!checked));
-
-        let Some(task_item_pos) = Self::node_delete_start_pos(doc, &task_item_path) else {
-            return Ok(self.build_update_from_current());
-        };
-
-        let mut tx = Transaction::new(Source::Input);
-        tx.add_step(Step::UpdateNodeAttrs {
-            pos: task_item_pos,
-            attrs,
-        });
-        match self.apply_transaction(tx) {
-            Ok(update) => Ok(update),
-            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
-            Err(e) => Err(e),
-        }
+        self.apply_transaction(tx)
     }
 
     /// Replace a scalar range with text in a single transaction.
@@ -1476,6 +1451,16 @@ impl Editor {
         self.apply_transaction_with_selection_adjustments(tx, None, None)
     }
 
+    fn apply_full_document_replace(
+        &mut self,
+        tx: Transaction,
+    ) -> Result<EditorUpdate, EditorError> {
+        let mut update = self.apply_transaction(tx)?;
+        self.stored_marks = None;
+        update.active_state = self.compute_active_state();
+        Ok(update)
+    }
+
     fn apply_transaction_with_selection_remap(
         &mut self,
         tx: Transaction,
@@ -1740,7 +1725,8 @@ impl Editor {
         commands.insert("toggleCodeBlock".to_string(), self.can_toggle_code_block());
         commands.insert(
             "toggleTaskItem".to_string(),
-            self.task_item_path_at(pos).is_some(),
+            self.task_item_toggle_plan(pos)
+                .is_ok_and(|plan| plan.is_some()),
         );
 
         // Compute allowed_marks and insertable_nodes based on selection type.
@@ -3160,6 +3146,39 @@ impl Editor {
         } else {
             None
         }
+    }
+
+    fn task_item_toggle_plan(&self, pos: u32) -> Result<Option<Transaction>, EditorError> {
+        let Some(path) = self.task_item_path_at(pos) else {
+            return Ok(None);
+        };
+        let doc = self.backend.document();
+        let Some(node) = doc.node_at(&path) else {
+            return Ok(None);
+        };
+        let Some(spec) = self.schema.node(node.node_type()) else {
+            return Ok(None);
+        };
+        if !spec.attrs.contains_key("checked") {
+            return Ok(None);
+        }
+        let mut attrs = node.attrs().clone();
+        let checked = attrs
+            .get("checked")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        attrs.insert("checked".to_string(), serde_json::Value::Bool(!checked));
+        let Some(task_item_pos) = Self::node_delete_start_pos(doc, &path) else {
+            return Ok(None);
+        };
+        let mut tx = Transaction::new(Source::Input);
+        tx.add_step(Step::UpdateNodeAttrs {
+            pos: task_item_pos,
+            attrs,
+        });
+        let (candidate, _) = tx.apply(doc, &self.schema)?;
+        self.validate_candidate(&candidate)?;
+        Ok(Some(tx))
     }
 
     fn list_item_context_at(&self, pos: u32) -> Option<ListItemContext> {

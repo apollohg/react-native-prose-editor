@@ -178,6 +178,44 @@ fn ordered_list_start_is_only_parsed_when_declared() {
     assert_eq!(to_html(&document, &declared), html);
 }
 
+#[test]
+fn non_void_empty_content_node_parses_without_opaque_inference() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "empty", "role": "doc" },
+            { "name": "empty", "content": "", "role": "block" },
+            { "name": "text", "content": "", "role": "text" }
+        ], "marks": []
+    })).unwrap();
+    let json = serde_json::json!({ "type": "doc", "content": [{ "type": "empty" }] });
+
+    let document = from_prosemirror_json(&json, &schema, UnknownTypeMode::Preserve).unwrap();
+    assert_eq!(to_prosemirror_json(&document, &schema), json);
+}
+
+#[test]
+fn opaque_placement_uses_complete_mixed_sibling_sequence() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "inline block", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock" },
+            { "name": "inlineAtom", "content": "", "group": "inline", "role": "inline", "isVoid": true },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ], "marks": []
+    })).unwrap();
+    let json = serde_json::json!({
+        "type": "doc",
+        "content": [{ "type": "futureInline" }, { "type": "paragraph" }]
+    });
+
+    let document = from_prosemirror_json(&json, &schema, UnknownTypeMode::Preserve).unwrap();
+    assert_eq!(
+        document.root().child(0).unwrap().attrs()["opaque_placement"],
+        "inline"
+    );
+    assert_eq!(to_prosemirror_json(&document, &schema), json);
+}
+
 fn default_opts() -> FromHtmlOptions {
     FromHtmlOptions::default()
 }

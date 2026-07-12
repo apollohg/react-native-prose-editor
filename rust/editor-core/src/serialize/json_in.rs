@@ -127,43 +127,12 @@ fn parse_node(
     }
 
     // Element node — parse children
-    let child_placement = infer_child_placement(spec, schema)?;
-    let children = parse_content(obj, schema, mode, child_placement)?;
+    let children = parse_content(obj, schema, mode, spec)?;
     Ok(Node::element(
         type_name.to_string(),
         attrs,
         Fragment::from(children),
     ))
-}
-
-fn infer_child_placement(
-    parent: &crate::schema::NodeSpec,
-    schema: &Schema,
-) -> Result<&'static str, JsonParseError> {
-    let mut accepts_inline = false;
-    let mut accepts_block = false;
-    for symbol in parent.content.symbols() {
-        for spec in schema
-            .all_nodes()
-            .filter(|spec| crate::schema::node_spec_matches_symbol(spec, symbol))
-        {
-            match spec.role {
-                crate::schema::NodeRole::Text
-                | crate::schema::NodeRole::Inline
-                | crate::schema::NodeRole::HardBreak => accepts_inline = true,
-                crate::schema::NodeRole::Doc => {}
-                _ => accepts_block = true,
-            }
-        }
-    }
-    match (accepts_inline, accepts_block) {
-        (true, false) => Ok("inline"),
-        (false, true) | (true, true) => Ok("block"),
-        (false, false) => Err(JsonParseError::InvalidStructure(format!(
-            "cannot infer opaque placement for parent '{}'",
-            parent.name
-        ))),
-    }
 }
 
 /// Parse a text node from a JSON object.
@@ -275,7 +244,7 @@ fn parse_content(
     obj: &serde_json::Map<String, Value>,
     schema: &Schema,
     mode: UnknownTypeMode,
-    placement: &'static str,
+    parent: &crate::schema::NodeSpec,
 ) -> Result<Vec<Node>, JsonParseError> {
     let content_val = match obj.get("content") {
         Some(v) => v,
@@ -288,14 +257,100 @@ fn parse_content(
 
     let mut children = Vec::with_capacity(content_arr.len());
     for child_json in content_arr {
-        let child = parse_node(child_json, schema, mode, placement)?;
+        let child = parse_node(child_json, schema, mode, "unknown")?;
         // Skip sentinel nodes (from UnknownTypeMode::Skip)
         if child.node_type() != "__skip" {
             children.push(child);
         }
     }
 
+    resolve_opaque_placements(children, parent, schema)
+}
+
+fn resolve_opaque_placements(
+    mut children: Vec<Node>,
+    parent: &crate::schema::NodeSpec,
+    schema: &Schema,
+) -> Result<Vec<Node>, JsonParseError> {
+    for index in 0..children.len() {
+        if children[index].node_type() != "__opaque_json" {
+            continue;
+        }
+        let inline = sequence_matches_with_placement(&children, index, "inline", parent, schema);
+        let block = sequence_matches_with_placement(&children, index, "block", parent, schema);
+        let placement = match (inline, block) {
+            (true, false) => "inline",
+            (false, true) | (true, true) => "block",
+            (false, false) => {
+                return Err(JsonParseError::InvalidStructure(format!(
+                    "opaque child at index {index} is incompatible with parent '{}'",
+                    parent.name
+                )))
+            }
+        };
+        let original_type = children[index]
+            .attrs()
+            .get("original_type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let original_json = children[index]
+            .attrs()
+            .get("original_json")
+            .cloned()
+            .unwrap_or(Value::Null);
+        children[index] = build_opaque_json_node(&original_type, &original_json, placement);
+    }
     Ok(children)
+}
+
+fn sequence_matches_with_placement(
+    children: &[Node],
+    candidate_index: usize,
+    candidate_placement: &str,
+    parent: &crate::schema::NodeSpec,
+    schema: &Schema,
+) -> bool {
+    parent.content.matches(children, |child, symbol| {
+        if child.node_type() != "__opaque_json" {
+            return schema
+                .node(child.node_type())
+                .is_some_and(|spec| crate::schema::node_spec_matches_symbol(spec, symbol));
+        }
+        let placement = if std::ptr::eq(child, &children[candidate_index]) {
+            candidate_placement
+        } else {
+            child
+                .attrs()
+                .get("opaque_placement")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        };
+        placement_matches_symbol(placement, symbol, schema)
+    })
+}
+
+fn placement_matches_symbol(placement: &str, symbol: &str, schema: &Schema) -> bool {
+    schema.all_nodes().any(|spec| {
+        crate::schema::node_spec_matches_symbol(spec, symbol)
+            && match placement {
+                "inline" => matches!(
+                    spec.role,
+                    crate::schema::NodeRole::Text
+                        | crate::schema::NodeRole::Inline
+                        | crate::schema::NodeRole::HardBreak
+                ),
+                "block" => !matches!(
+                    spec.role,
+                    crate::schema::NodeRole::Doc
+                        | crate::schema::NodeRole::Text
+                        | crate::schema::NodeRole::Inline
+                        | crate::schema::NodeRole::HardBreak
+                ),
+                "unknown" => !matches!(spec.role, crate::schema::NodeRole::Doc),
+                _ => false,
+            }
+    })
 }
 
 /// Build an opaque node for an unknown type (Preserve mode).

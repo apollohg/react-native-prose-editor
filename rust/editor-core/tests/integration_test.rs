@@ -150,6 +150,34 @@ fn failed_replace_preserves_selection_and_stored_marks() {
 }
 
 #[test]
+fn successful_full_document_replaces_clear_stored_marks() {
+    for use_json in [false, true] {
+        let mut editor = default_editor();
+        editor.set_html("<p>abc</p>").unwrap();
+        editor.set_selection(Selection::cursor(2));
+        editor.toggle_mark("bold").unwrap();
+
+        if use_json {
+            editor
+                .replace_json(&serde_json::json!({
+                    "type": "doc",
+                    "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "new" }] }]
+                }))
+                .unwrap();
+        } else {
+            editor.replace_html("<p>new</p>").unwrap();
+        }
+        editor.insert_text(1, "x").unwrap();
+        let content = &editor.get_json()["content"][0]["content"];
+        assert!(content
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|node| node.get("marks").is_none()));
+    }
+}
+
+#[test]
 fn failed_scalar_selection_ingestion_restores_selection() {
     let mut editor = default_editor();
     editor.set_html("<p>abcdef</p>").unwrap();
