@@ -328,11 +328,14 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     private _state: YjsCollaborationState;
     private _peers: CollaborationPeer[] = [];
 
-    constructor(options: YjsCollaborationOptions, callbacks: MutableCallbacks = {}) {
-        const documentDescriptor = resolveDocumentDescriptor(
+    constructor(
+        options: YjsCollaborationOptions,
+        callbacks: MutableCallbacks = {},
+        documentDescriptor: ResolvedDocumentSchema = resolveDocumentDescriptor(
             options.schema,
             options.resourceLimits
-        );
+        )
+    ) {
         this.callbacks = callbacks;
         this.createWebSocket = options.createWebSocket;
         this.retryIntervalMs = options.retryIntervalMs;
@@ -340,10 +343,17 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             user: options.localAwareness,
             focused: false,
         };
+        const normalizedInitialDocumentJson =
+            options.initialDocumentJson == null
+                ? undefined
+                : normalizeDocumentJson(
+                      cloneJsonValue(options.initialDocumentJson),
+                      documentDescriptor
+                  );
         this.bridge = NativeCollaborationBridge.create({
             fragmentName: options.fragmentName ?? DEFAULT_YJS_FRAGMENT_NAME,
             schema: options.schema == null ? undefined : documentDescriptor.schema,
-            initialDocumentJson: options.initialDocumentJson,
+            initialDocumentJson: normalizedInitialDocumentJson,
             initialEncodedState: options.initialEncodedState,
             maxLength: options.maxLength,
             localAwareness: awarenessToRecord(this.localAwarenessState),
@@ -804,7 +814,8 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
                     onError: (error) => {
                         callbacksRef.current.onError?.(error);
                     },
-                }
+                },
+                documentDescriptor
             );
             controllerRef.current = controller;
             setState({ ...controller.state });

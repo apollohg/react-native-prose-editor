@@ -228,4 +228,91 @@ describe('schema-aware document normalization', () => {
             })
         ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 5 }));
     });
+
+    it('admits marks, group tokens, and attrs before allocating proportional schema work', () => {
+        const minimalNodes: SchemaDefinition['nodes'] = [
+            { name: 'doc', content: '', role: 'doc' },
+            { name: 'text', content: '', role: 'text' },
+        ];
+        const limits = { maxSchemaNodes: 2, maxSchemaExpressionBytes: 16 };
+
+        expect(() =>
+            resolveDocumentDescriptor(
+                {
+                    nodes: minimalNodes,
+                    marks: [{ name: 'a' }, { name: 'b' }, { name: 'c' }],
+                },
+                limits
+            )
+        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 2, actual: 3 }));
+
+        expect(() =>
+            resolveDocumentDescriptor(
+                {
+                    nodes: [
+                        { name: 'doc', content: '', group: 'a b c', role: 'doc' },
+                        minimalNodes[1],
+                    ],
+                    marks: [],
+                },
+                limits
+            )
+        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 2, actual: 3 }));
+
+        expect(() =>
+            resolveDocumentDescriptor(
+                {
+                    nodes: [
+                        { name: 'doc', content: '', group: 'abcdefghijklmnopq', role: 'doc' },
+                        minimalNodes[1],
+                    ],
+                    marks: [],
+                },
+                limits
+            )
+        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 16 }));
+
+        expect(() =>
+            resolveDocumentDescriptor(
+                {
+                    nodes: [
+                        {
+                            name: 'doc',
+                            content: ' '.repeat(16),
+                            role: 'doc',
+                            attrs: {
+                                a: { default: null },
+                                b: { default: null },
+                                c: { default: null },
+                            },
+                        },
+                        minimalNodes[1],
+                    ],
+                    marks: [],
+                },
+                limits
+            )
+        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 2, actual: 3 }));
+    });
+
+    it('accepts schema collections at their exact public limits', () => {
+        expect(() =>
+            resolveDocumentDescriptor(
+                {
+                    nodes: [
+                        {
+                            name: 'doc',
+                            content: ' '.repeat(16),
+                            group: 'a b',
+                            role: 'doc',
+                            attrs: { a: { default: null }, b: { default: null } },
+                        },
+                        { name: 'text', content: '', role: 'text' },
+                    ],
+                    marks: [{ name: 'a' }, { name: 'b' }],
+                },
+                { maxSchemaNodes: 2, maxSchemaExpressionBytes: 16 }
+            )
+        ).not.toThrow();
+    });
 });

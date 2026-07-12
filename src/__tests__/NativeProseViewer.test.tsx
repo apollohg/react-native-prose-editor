@@ -36,6 +36,7 @@ import { PixelRatio, Platform } from 'react-native';
 
 import { NativeProseViewer } from '../NativeProseViewer';
 import { clearHeightCache } from '../heightCache';
+import * as schemas from '../schemas';
 
 describe('NativeProseViewer', () => {
     let consoleErrorSpy: jest.SpyInstance;
@@ -199,6 +200,28 @@ describe('NativeProseViewer', () => {
             maxSchemaNodes: 500,
             maxEncodedStateBytes: 50 * 1024 * 1024,
         });
+    });
+
+    it('does not rescan or rerender for semantically equal inline resource limits', () => {
+        const descriptorSpy = jest.spyOn(schemas, 'resolveDocumentDescriptor');
+        const contentJSON = { type: 'doc', content: [{ type: 'paragraph' }] };
+        const { rerender } = render(
+            <NativeProseViewer
+                contentJSON={contentJSON}
+                resourceLimits={{ maxSchemaNodes: 500 }}
+            />
+        );
+
+        rerender(
+            <NativeProseViewer
+                contentJSON={contentJSON}
+                resourceLimits={{ maxSchemaNodes: 500 }}
+            />
+        );
+
+        expect(mockRenderDocumentJson).toHaveBeenCalledTimes(1);
+        expect(descriptorSpy).toHaveBeenCalledTimes(1);
+        descriptorSpy.mockRestore();
     });
 
     it('includes mention schema support in the native render config', () => {

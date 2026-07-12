@@ -228,6 +228,36 @@ function utf8ByteLengthUpTo(value: string, maximum: number): number {
     return bytes;
 }
 
+function forEachGroupToken(
+    group: string,
+    visit: (token: string) => void,
+    consumeCharacter?: () => boolean
+): boolean {
+    let tokenStart = -1;
+    for (let index = 0; index <= group.length; index += 1) {
+        if (index < group.length && consumeCharacter && !consumeCharacter()) return false;
+        const isBoundary = index === group.length || /\s/.test(group[index]);
+        if (!isBoundary && tokenStart < 0) tokenStart = index;
+        if (isBoundary && tokenStart >= 0) {
+            visit(group.slice(tokenStart, index));
+            tokenStart = -1;
+        }
+    }
+    return true;
+}
+
+function countOwnAttrsUpTo(value: unknown, maximum: number): number | null {
+    if (value == null) return 0;
+    if (typeof value !== 'object' || Array.isArray(value)) return null;
+    let count = 0;
+    for (const name in value) {
+        if (!Object.prototype.hasOwnProperty.call(value, name)) continue;
+        count += 1;
+        if (count > maximum) return count;
+    }
+    return count;
+}
+
 function schemaBoundaryError(limit: number, actual: number): NativeEditorBoundaryError {
     return new NativeEditorBoundaryError(
         'SCHEMA_INVALID',
@@ -253,7 +283,13 @@ export function resolveDocumentSchema(
     if (schema.nodes.length > resolvedLimits.maxSchemaNodes) {
         throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, schema.nodes.length);
     }
+    if (schema.marks.length > resolvedLimits.maxSchemaNodes) {
+        throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, schema.marks.length);
+    }
     let expressionBytes = 0;
+    let groupBytes = 0;
+    let groupTokens = 0;
+    let attrCount = 0;
     for (const node of schema.nodes) {
         if (node != null && typeof node.content === 'string') {
             expressionBytes += utf8ByteLengthUpTo(
@@ -263,6 +299,42 @@ export function resolveDocumentSchema(
             if (expressionBytes > resolvedLimits.maxSchemaExpressionBytes) {
                 throw schemaBoundaryError(resolvedLimits.maxSchemaExpressionBytes, expressionBytes);
             }
+        }
+        if (node != null && node.group != null) {
+            if (typeof node.group !== 'string') return tiptapSchema;
+            groupBytes += utf8ByteLengthUpTo(
+                node.group,
+                resolvedLimits.maxSchemaExpressionBytes - groupBytes
+            );
+            if (groupBytes > resolvedLimits.maxSchemaExpressionBytes) {
+                throw schemaBoundaryError(resolvedLimits.maxSchemaExpressionBytes, groupBytes);
+            }
+            forEachGroupToken(node.group, () => {
+                groupTokens += 1;
+                if (groupTokens > resolvedLimits.maxSchemaNodes) {
+                    throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, groupTokens);
+                }
+            });
+        }
+        const admittedAttrs = countOwnAttrsUpTo(
+            node?.attrs,
+            resolvedLimits.maxSchemaNodes - attrCount
+        );
+        if (admittedAttrs == null) return tiptapSchema;
+        attrCount += admittedAttrs;
+        if (attrCount > resolvedLimits.maxSchemaNodes) {
+            throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, attrCount);
+        }
+    }
+    for (const mark of schema.marks) {
+        const admittedAttrs = countOwnAttrsUpTo(
+            mark?.attrs,
+            resolvedLimits.maxSchemaNodes - attrCount
+        );
+        if (admittedAttrs == null) return tiptapSchema;
+        attrCount += admittedAttrs;
+        if (attrCount > resolvedLimits.maxSchemaNodes) {
+            throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, attrCount);
         }
     }
 
@@ -307,10 +379,11 @@ export function resolveDocumentSchema(
     };
     for (const node of schema.nodes) {
         addCandidate(node.name, node);
-        for (const group of node.group?.split(/\s+/).filter(Boolean) ?? []) {
-            groups.add(group);
-            addCandidate(group, node);
-        }
+        if (node.group != null)
+            forEachGroupToken(node.group, (group) => {
+                groups.add(group);
+                addCandidate(group, node);
+            });
     }
     for (const node of schema.nodes) {
         const symbols = contentExpressionSymbols(node.content);
@@ -355,9 +428,14 @@ export function resolveDocumentSchema(
     while (true) {
         const before = generatable.size;
         for (const node of schema.nodes) {
-            const hasRequiredAttrs = Object.values(node.attrs ?? {}).some(
-                (attr) => attr.default === undefined
-            );
+            let hasRequiredAttrs = false;
+            for (const name in node.attrs ?? {}) {
+                if (!Object.prototype.hasOwnProperty.call(node.attrs, name)) continue;
+                if (node.attrs?.[name].default === undefined) {
+                    hasRequiredAttrs = true;
+                    break;
+                }
+            }
             if (node.role !== 'text' && !hasRequiredAttrs && contentIsConstructible(node)) {
                 generatable.add(node.name);
             }
@@ -376,7 +454,7 @@ export function resolveDocumentSchema(
     if (hasUnconstructibleNode) return tiptapSchema;
 
     try {
-        defaultEmptyDocument(schema, resolvedLimits);
+        defaultEmptyDocument(schema, resolvedLimits, true);
         return schema;
     } catch (error) {
         if (error instanceof NativeEditorBoundaryError) throw error;
@@ -386,9 +464,16 @@ export function resolveDocumentSchema(
 
 export function defaultEmptyDocument(
     schema: SchemaDefinition = tiptapSchema,
-    limits?: DocumentDescriptorLimits
+    limits?: DocumentDescriptorLimits,
+    collectionsAdmitted = false
 ): DocumentJSON {
     const resolvedLimits = resolveDescriptorLimits(limits);
+    if (schema.nodes.length > resolvedLimits.maxSchemaNodes) {
+        throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, schema.nodes.length);
+    }
+    if (schema.marks.length > resolvedLimits.maxSchemaNodes) {
+        throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, schema.marks.length);
+    }
     const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
     if (!docNode) throw new Error('schema cannot construct a default document: missing doc role');
 
@@ -428,11 +513,23 @@ export function defaultEmptyDocument(
             candidateIndexAdmitted = false;
             break;
         }
-        for (const group of candidate.group?.split(/\s+/).filter(Boolean) ?? []) {
-            if (group !== candidate.name && !addCandidate(group, candidate)) {
-                candidateIndexAdmitted = false;
-                break;
-            }
+        if (
+            candidate.group != null &&
+            !forEachGroupToken(
+                candidate.group,
+                (group) => {
+                    if (
+                        candidateIndexAdmitted &&
+                        group !== candidate.name &&
+                        !addCandidate(group, candidate)
+                    ) {
+                        candidateIndexAdmitted = false;
+                    }
+                },
+                collectionsAdmitted ? undefined : consumeWork
+            )
+        ) {
+            candidateIndexAdmitted = false;
         }
         if (!candidateIndexAdmitted) break;
     }
@@ -469,7 +566,15 @@ export function defaultEmptyDocument(
             return undefined;
         }
         if (node.role === 'text' || visiting.has(node.name)) return undefined;
-        const attrs = Object.entries(node.attrs ?? {});
+        const attrs: Array<[string, AttrSpec]> = [];
+        for (const name in node.attrs ?? {}) {
+            if (!Object.prototype.hasOwnProperty.call(node.attrs, name)) continue;
+            if (attrs.length >= resolvedLimits.maxSchemaNodes || !consumeWork()) {
+                budget.exhausted = true;
+                return undefined;
+            }
+            attrs.push([name, node.attrs![name]]);
+        }
         if (attrs.some(([, spec]) => spec.default === undefined)) {
             return undefined;
         }
@@ -526,7 +631,7 @@ export function resolveDocumentDescriptor(
     return {
         schema: resolvedSchema,
         documentNodeName: documentNode.name,
-        emptyDocument: defaultEmptyDocument(resolvedSchema, resolvedLimits),
+        emptyDocument: defaultEmptyDocument(resolvedSchema, resolvedLimits, true),
     };
 }
 

@@ -4,7 +4,11 @@ import {
     serializeEditorImageLoadingPolicy,
     type EditorImageLoadingPolicy,
 } from './ImageLoadingPolicy';
-import { resolveEditorResourceLimits, type EditorResourceLimits } from './ResourceLimits';
+import {
+    resolveEditorResourceLimits,
+    type EditorResourceLimits,
+    type ResolvedEditorResourceLimits,
+} from './ResourceLimits';
 import { parseNativeBoundaryError } from './NativeEditorBoundaryError';
 import {
     type NativeSyntheticEvent,
@@ -597,10 +601,21 @@ export function NativeProseViewer({ ...props }: NativeProseViewerProps) {
     const contentJSON = 'contentJSON' in props ? props.contentJSON : undefined;
     const contentHTML = 'contentHTML' in props ? props.contentHTML : undefined;
     const resolvedContentRevision = contentRevision ?? contentJSONRevision;
-    const resolvedResourceLimits = useMemo(
-        () => resolveEditorResourceLimits(resourceLimits),
+    const resourceLimitsKey = useMemo(
+        () =>
+            resourceLimits == null
+                ? undefined
+                : JSON.stringify(resolveEditorResourceLimits(resourceLimits)),
         [resourceLimits]
     );
+    const resolvedResourceLimits = useMemo(
+        () =>
+            resourceLimitsKey == null
+                ? resolveEditorResourceLimits()
+                : (JSON.parse(resourceLimitsKey) as ResolvedEditorResourceLimits),
+        [resourceLimitsKey]
+    );
+    const hasResourceLimits = resourceLimits != null;
     const documentDescriptor = useMemo(
         () =>
             resolveDocumentDescriptor(
@@ -634,7 +649,7 @@ export function NativeProseViewer({ ...props }: NativeProseViewerProps) {
         const configJson = JSON.stringify({
             schema: documentDescriptor.schema,
             ...(allowBase64Images ? { allowBase64Images } : {}),
-            ...(resourceLimits ? { resourceLimits: resolvedResourceLimits } : {}),
+            ...(hasResourceLimits ? { resourceLimits: resolvedResourceLimits } : {}),
         });
         const nextRenderJson =
             serializedContentJson != null
@@ -658,9 +673,9 @@ export function NativeProseViewer({ ...props }: NativeProseViewerProps) {
         collapseTrailingEmptyParagraphs,
         contentHTML,
         documentDescriptor,
+        hasResourceLimits,
         mentionPayloadsByDocPos,
         resolvedResourceLimits,
-        resourceLimits,
         serializedContentJson,
     ]);
     const renderJsonIsCollapsedEmpty = useMemo(

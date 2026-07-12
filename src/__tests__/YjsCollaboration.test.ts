@@ -163,6 +163,7 @@ import { render, act } from '@testing-library/react-native';
 import { createYjsCollaborationController, useYjsCollaboration } from '../YjsCollaboration';
 import type { DocumentJSON } from '../NativeEditorBridge';
 import { _resetNativeModuleCache, NativeCollaborationBridge } from '../NativeEditorBridge';
+import * as schemas from '../schemas';
 
 class MockWebSocket {
     static CONNECTING = 0;
@@ -1099,6 +1100,45 @@ describe('YjsCollaboration', () => {
 
         expect(latest?.state.documentJson).toEqual(ARTICLE_EMPTY_DOC);
         expect(latest?.editorBindings.valueJSON).toEqual(ARTICLE_EMPTY_DOC);
+    });
+
+    it('normalizes custom-root initial JSON before native session creation', () => {
+        const controller = createYjsCollaborationController({
+            documentId: 'article-initial-empty',
+            connect: false,
+            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            schema: ARTICLE_SCHEMA,
+            initialDocumentJson: { type: 'article', content: [] },
+            localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
+        });
+
+        const config = JSON.parse(
+            mockNativeModule.collaborationSessionCreate.mock.calls[0]?.[0] as string
+        );
+        expect(config.initialDocumentJson).toEqual(ARTICLE_EMPTY_DOC);
+        controller.destroy();
+    });
+
+    it('reuses the hook descriptor for semantically equal inline resource limits', () => {
+        const descriptorSpy = jest.spyOn(schemas, 'resolveDocumentDescriptor');
+
+        function Harness({ maxSchemaNodes }: { maxSchemaNodes: number }) {
+            useYjsCollaboration({
+                documentId: 'semantic-resource-limits',
+                connect: false,
+                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+                resourceLimits: { maxSchemaNodes },
+                localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
+            });
+            return null;
+        }
+
+        const { rerender } = render(React.createElement(Harness, { maxSchemaNodes: 500 }));
+        rerender(React.createElement(Harness, { maxSchemaNodes: 500 }));
+
+        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledTimes(1);
+        expect(descriptorSpy).toHaveBeenCalledTimes(1);
+        descriptorSpy.mockRestore();
     });
 
     it('uses grouped alternatives and ranges for the empty-document fallback', () => {
