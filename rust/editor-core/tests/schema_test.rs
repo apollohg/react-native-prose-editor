@@ -68,7 +68,7 @@ fn reversed_dependency_chain_is_constructible_within_the_indexed_work_budget() {
 }
 
 #[test]
-fn constructibility_work_stops_at_the_configured_schema_budget() {
+fn dense_group_dependencies_are_indexed_without_quadratic_edge_expansion() {
     let mut nodes = vec![serde_json::json!({
         "name": "doc", "content": "g", "role": "doc"
     })];
@@ -83,15 +83,14 @@ fn constructibility_work_stops_at_the_configured_schema_budget() {
         max_schema_expression_bytes: 300,
         ..ResourceLimits::default()
     };
-    let expected_work_budget = 300 * 64 + 300 * 32;
-
     let error =
         Schema::from_json_with_limits(&serde_json::json!({ "nodes": nodes, "marks": [] }), &limits)
             .unwrap_err();
     assert_eq!(error.code(), "SCHEMA_INVALID");
-    assert_eq!(error.limit, Some(expected_work_budget));
-    assert_eq!(error.actual, Some(expected_work_budget + 1));
-    assert_eq!(error.details.unwrap()["phase"], "schemaWork");
+    assert_eq!(error.limit, None);
+    assert_eq!(error.actual, None);
+    assert_eq!(error.details, None);
+    assert!(error.message.contains("cannot be auto-created"));
 }
 
 #[test]

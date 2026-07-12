@@ -8,6 +8,28 @@ pub(crate) struct WorkBudget {
     remaining: Cell<usize>,
 }
 
+#[derive(Debug)]
+pub(crate) enum ContentRuleError {
+    Semantic(String),
+    ResourceExhausted(String),
+}
+
+impl ContentRuleError {
+    fn semantic(message: impl Into<String>) -> Self {
+        Self::Semantic(message.into())
+    }
+
+    fn resource(message: impl Into<String>) -> Self {
+        Self::ResourceExhausted(message.into())
+    }
+
+    pub(crate) fn message(self) -> String {
+        match self {
+            Self::Semantic(message) | Self::ResourceExhausted(message) => message,
+        }
+    }
+}
+
 impl WorkBudget {
     pub(crate) fn new(limit: usize) -> Self {
         Self {
@@ -60,9 +82,13 @@ enum Expr {
 impl ContentRule {
     pub fn parse(source: &str) -> Result<Self, String> {
         Self::parse_with_budget(source, &WorkBudget::new(usize::MAX))
+            .map_err(ContentRuleError::message)
     }
 
-    pub(crate) fn parse_with_budget(source: &str, budget: &WorkBudget) -> Result<Self, String> {
+    pub(crate) fn parse_with_budget(
+        source: &str,
+        budget: &WorkBudget,
+    ) -> Result<Self, ContentRuleError> {
         let mut parser = Parser::new(source, budget);
         let expression = if source.trim().is_empty() {
             Expr::Empty
@@ -70,11 +96,11 @@ impl ContentRule {
             let expression = parser.parse_alternation()?;
             parser.skip_whitespace();
             if !parser.at_end() {
-                return Err(format!(
+                return Err(ContentRuleError::semantic(format!(
                     "unexpected '{}' at byte {}",
                     parser.peek().unwrap(),
                     parser.pos
-                ));
+                )));
             }
             expression
         };
@@ -278,15 +304,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn consume_work(&self) -> Result<(), String> {
+    fn consume_work(&self) -> Result<(), ContentRuleError> {
         if self.budget.consume() {
             Ok(())
         } else {
-            Err("content expression work budget exceeded".to_string())
+            Err(ContentRuleError::resource(
+                "content expression work budget exceeded",
+            ))
         }
     }
 
-    fn parse_alternation(&mut self) -> Result<Expr, String> {
+    fn parse_alternation(&mut self) -> Result<Expr, ContentRuleError> {
         self.consume_work()?;
         let mut alternatives = vec![self.parse_sequence()?];
         loop {
@@ -296,7 +324,10 @@ impl<'a> Parser<'a> {
             }
             self.skip_whitespace();
             if self.at_end() || self.peek() == Some(')') || self.peek() == Some('|') {
-                return Err(format!("missing expression after '|' at byte {}", self.pos));
+                return Err(ContentRuleError::semantic(format!(
+                    "missing expression after '|' at byte {}",
+                    self.pos
+                )));
             }
             alternatives.push(self.parse_sequence()?);
         }
@@ -307,7 +338,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_sequence(&mut self) -> Result<Expr, String> {
+    fn parse_sequence(&mut self) -> Result<Expr, ContentRuleError> {
         self.consume_work()?;
         let mut expressions = Vec::new();
         loop {
@@ -318,7 +349,10 @@ impl<'a> Parser<'a> {
             expressions.push(self.parse_repeated()?);
         }
         if expressions.is_empty() {
-            return Err(format!("expected expression at byte {}", self.pos));
+            return Err(ContentRuleError::semantic(format!(
+                "expected expression at byte {}",
+                self.pos
+            )));
         }
         Ok(if expressions.len() == 1 {
             expressions.remove(0)
@@ -327,7 +361,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_repeated(&mut self) -> Result<Expr, String> {
+    fn parse_repeated(&mut self) -> Result<Expr, ContentRuleError> {
         self.consume_work()?;
         let atom = self.parse_atom()?;
         self.skip_whitespace();
@@ -361,32 +395,41 @@ impl<'a> Parser<'a> {
         };
         self.skip_whitespace();
         if matches!(self.peek(), Some('?') | Some('*') | Some('+') | Some('{')) {
-            return Err(format!("multiple quantifiers at byte {}", self.pos));
+            return Err(ContentRuleError::semantic(format!(
+                "multiple quantifiers at byte {}",
+                self.pos
+            )));
         }
         Ok(quantified)
     }
 
-    fn parse_atom(&mut self) -> Result<Expr, String> {
+    fn parse_atom(&mut self) -> Result<Expr, ContentRuleError> {
         self.consume_work()?;
         self.skip_whitespace();
         if self.consume('(') {
             if self.depth >= MAX_NESTING_DEPTH {
-                return Err(format!(
+                return Err(ContentRuleError::resource(format!(
                     "content expression nesting exceeds {MAX_NESTING_DEPTH}"
-                ));
+                )));
             }
             self.depth += 1;
             self.skip_whitespace();
             if self.peek() == Some(')') {
                 self.depth -= 1;
-                return Err(format!("empty group at byte {}", self.pos));
+                return Err(ContentRuleError::semantic(format!(
+                    "empty group at byte {}",
+                    self.pos
+                )));
             }
             let expression_result = self.parse_alternation();
             self.depth -= 1;
             let expression = expression_result?;
             self.skip_whitespace();
             if !self.consume(')') {
-                return Err(format!("missing ')' at byte {}", self.pos));
+                return Err(ContentRuleError::semantic(format!(
+                    "missing ')' at byte {}",
+                    self.pos
+                )));
             }
             return Ok(expression);
         }
@@ -396,14 +439,17 @@ impl<'a> Parser<'a> {
             self.pos += self.peek().unwrap().len_utf8();
         }
         if start == self.pos {
-            return Err(format!("expected node or group name at byte {}", self.pos));
+            return Err(ContentRuleError::semantic(format!(
+                "expected node or group name at byte {}",
+                self.pos
+            )));
         }
         let symbol = self.source[start..self.pos].to_string();
         self.symbols.insert(symbol.clone());
         Ok(Expr::Symbol(symbol))
     }
 
-    fn parse_range(&mut self, atom: Expr) -> Result<Expr, String> {
+    fn parse_range(&mut self, atom: Expr) -> Result<Expr, ContentRuleError> {
         self.consume_work()?;
         self.consume('{');
         let min = self.parse_number()?;
@@ -411,23 +457,29 @@ impl<'a> Parser<'a> {
             Some(min)
         } else {
             if !self.consume(',') {
-                return Err(format!("expected ',' or '}}' at byte {}", self.pos));
+                return Err(ContentRuleError::semantic(format!(
+                    "expected ',' or '}}' at byte {}",
+                    self.pos
+                )));
             }
             if self.consume('}') {
                 None
             } else {
                 let max = self.parse_number()?;
                 if !self.consume('}') {
-                    return Err(format!("expected '}}' at byte {}", self.pos));
+                    return Err(ContentRuleError::semantic(format!(
+                        "expected '}}' at byte {}",
+                        self.pos
+                    )));
                 }
                 Some(max)
             }
         };
         if max.is_some_and(|max| max < min) {
-            return Err(format!(
+            return Err(ContentRuleError::semantic(format!(
                 "range maximum is smaller than minimum at byte {}",
                 self.pos
-            ));
+            )));
         }
         Ok(Expr::Repeat {
             expr: Box::new(atom),
@@ -436,18 +488,21 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_number(&mut self) -> Result<u32, String> {
+    fn parse_number(&mut self) -> Result<u32, ContentRuleError> {
         self.consume_work()?;
         let start = self.pos;
         while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
             self.pos += 1;
         }
         if start == self.pos {
-            return Err(format!("expected number at byte {}", self.pos));
+            return Err(ContentRuleError::semantic(format!(
+                "expected number at byte {}",
+                self.pos
+            )));
         }
         self.source[start..self.pos]
             .parse()
-            .map_err(|_| format!("invalid count at byte {start}"))
+            .map_err(|_| ContentRuleError::semantic(format!("invalid count at byte {start}")))
     }
 
     fn skip_whitespace(&mut self) {
@@ -485,21 +540,23 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn state(&mut self) -> Result<usize, String> {
+    fn state(&mut self) -> Result<usize, ContentRuleError> {
         if !self.budget.consume() {
-            return Err("content expression work budget exceeded".to_string());
+            return Err(ContentRuleError::resource(
+                "content expression work budget exceeded",
+            ));
         }
         if self.states.len() >= MAX_AUTOMATON_STATES {
-            return Err(format!(
+            return Err(ContentRuleError::resource(format!(
                 "content expression exceeds {MAX_AUTOMATON_STATES} automaton states"
-            ));
+            )));
         }
         let index = self.states.len();
         self.states.push(State::default());
         Ok(index)
     }
 
-    fn compile(&mut self, expression: &Expr) -> Result<(usize, usize), String> {
+    fn compile(&mut self, expression: &Expr) -> Result<(usize, usize), ContentRuleError> {
         self.compile_at_depth(expression, 0)
     }
 
@@ -507,11 +564,11 @@ impl<'a> Compiler<'a> {
         &mut self,
         expression: &Expr,
         depth: usize,
-    ) -> Result<(usize, usize), String> {
+    ) -> Result<(usize, usize), ContentRuleError> {
         if depth > MAX_NESTING_DEPTH {
-            return Err(format!(
+            return Err(ContentRuleError::resource(format!(
                 "content expression nesting exceeds {MAX_NESTING_DEPTH}"
-            ));
+            )));
         }
         match expression {
             Expr::Empty => {
@@ -557,11 +614,13 @@ impl<'a> Compiler<'a> {
         min: u32,
         max: Option<u32>,
         depth: usize,
-    ) -> Result<(usize, usize), String> {
+    ) -> Result<(usize, usize), ContentRuleError> {
         // Bounds are expanded into automaton states. This generous cap prevents
         // hostile schemas from forcing impractical allocations.
         if max.unwrap_or(min) > 10_000 {
-            return Err("content repetition bound exceeds 10000".to_string());
+            return Err(ContentRuleError::resource(
+                "content repetition bound exceeds 10000",
+            ));
         }
         let start = self.state()?;
         let end = self.state()?;

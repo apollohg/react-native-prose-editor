@@ -125,6 +125,27 @@ fn editor_create_result_propagates_schema_limits_but_falls_back_for_semantic_err
     assert!(semantic["editorId"].as_u64().is_some_and(|id| id > 0));
 }
 
+#[test]
+fn attacker_controlled_error_text_cannot_turn_semantic_schema_invalidity_into_a_limit_error() {
+    let result: serde_json::Value = serde_json::from_str(&editor_core::editor_create_result(
+        serde_json::json!({
+            "schema": {
+                "nodes": [
+                    { "name": "doc", "role": "doc" },
+                    { "name": "text", "role": "text" },
+                    { "name": "work budget exceeded" },
+                    { "name": "work budget exceeded" }
+                ]
+            }
+        })
+        .to_string(),
+    ))
+    .unwrap();
+
+    assert!(result["editorId"].as_u64().is_some_and(|id| id > 0));
+    assert!(result.get("error").is_none());
+}
+
 fn three_node_schema_for_config() -> serde_json::Value {
     serde_json::json!({
         "nodes": [

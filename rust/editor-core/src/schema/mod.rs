@@ -6,7 +6,29 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::boundary::{BoundaryError, BoundaryResult, ResourceLimits};
 use crate::model::{Document, Fragment, Node};
-use crate::schema::content_rule::{ContentRule, WorkBudget};
+use crate::schema::content_rule::{ContentRule, ContentRuleError, WorkBudget};
+
+#[derive(Debug)]
+enum SchemaValidationError {
+    Semantic(String),
+    ResourceExhausted(String),
+}
+
+impl SchemaValidationError {
+    fn semantic(message: impl Into<String>) -> Self {
+        Self::Semantic(message.into())
+    }
+
+    fn resource(message: impl Into<String>) -> Self {
+        Self::ResourceExhausted(message.into())
+    }
+
+    fn message(self) -> String {
+        match self {
+            Self::Semantic(message) | Self::ResourceExhausted(message) => message,
+        }
+    }
+}
 
 /// A schema defines the set of node types and mark types available in a document.
 ///
@@ -110,13 +132,14 @@ impl Schema {
     /// role, name, content-symbol, or constructibility definitions.
     pub fn try_new(nodes: Vec<NodeSpec>, marks: Vec<MarkSpec>) -> Result<Self, String> {
         Self::try_new_with_budget(nodes, marks, &WorkBudget::new(usize::MAX))
+            .map_err(SchemaValidationError::message)
     }
 
     fn try_new_with_budget(
         nodes: Vec<NodeSpec>,
         marks: Vec<MarkSpec>,
         budget: &WorkBudget,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, SchemaValidationError> {
         let mut node_names = HashSet::new();
         for node in &nodes {
             if node
@@ -124,13 +147,16 @@ impl Schema {
                 .values()
                 .any(|attr| attr.has_default != attr.default.is_some())
             {
-                return Err(format!(
+                return Err(SchemaValidationError::semantic(format!(
                     "node '{}' has an inconsistent attribute default",
                     node.name
-                ));
+                )));
             }
             if !node_names.insert(node.name.clone()) {
-                return Err(format!("duplicate node name '{}'", node.name));
+                return Err(SchemaValidationError::semantic(format!(
+                    "duplicate node name '{}'",
+                    node.name
+                )));
             }
         }
         let mut mark_names = HashSet::new();
@@ -140,13 +166,16 @@ impl Schema {
                 .values()
                 .any(|attr| attr.has_default != attr.default.is_some())
             {
-                return Err(format!(
+                return Err(SchemaValidationError::semantic(format!(
                     "mark '{}' has an inconsistent attribute default",
                     mark.name
-                ));
+                )));
             }
             if !mark_names.insert(mark.name.clone()) {
-                return Err(format!("duplicate mark name '{}'", mark.name));
+                return Err(SchemaValidationError::semantic(format!(
+                    "duplicate mark name '{}'",
+                    mark.name
+                )));
             }
         }
 
@@ -161,16 +190,16 @@ impl Schema {
             .map(|node| node.name.clone())
             .collect::<Vec<_>>();
         if doc_names.len() != 1 {
-            return Err(format!(
+            return Err(SchemaValidationError::semantic(format!(
                 "schema must define exactly one doc role, found {}",
                 doc_names.len()
-            ));
+            )));
         }
         if text_names.len() != 1 {
-            return Err(format!(
+            return Err(SchemaValidationError::semantic(format!(
                 "schema must define exactly one text role, found {}",
                 text_names.len()
-            ));
+            )));
         }
 
         let mut groups: HashMap<String, Vec<String>> = HashMap::new();
@@ -203,30 +232,31 @@ impl Schema {
             text_node_name: text_names.into_iter().next().expect("one text role"),
         };
         schema.validate_constructibility(budget)?;
-        schema.default_document()?;
+        schema
+            .default_document()
+            .map_err(SchemaValidationError::semantic)?;
         Ok(schema)
     }
 
-    fn validate_constructibility(&self, budget: &WorkBudget) -> Result<(), String> {
-        let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+    fn validate_constructibility(&self, budget: &WorkBudget) -> Result<(), SchemaValidationError> {
+        let mut dependents_by_symbol: HashMap<String, Vec<String>> = HashMap::new();
         for node in self.nodes.values() {
             for symbol in node.content.symbols() {
-                let candidates = self.candidate_names_for_symbol(symbol).collect::<Vec<_>>();
-                if candidates.is_empty() {
-                    return Err(format!(
+                if !self.nodes.contains_key(symbol) && !self.groups.contains_key(symbol) {
+                    return Err(SchemaValidationError::semantic(format!(
                         "content rule for '{}' references unresolved node or group '{}'",
                         node.name, symbol
+                    )));
+                }
+                if !budget.consume() {
+                    return Err(SchemaValidationError::resource(
+                        "schema constructibility work budget exceeded",
                     ));
                 }
-                for candidate in candidates {
-                    if !budget.consume() {
-                        return Err("schema constructibility work budget exceeded".to_string());
-                    }
-                    dependents
-                        .entry(candidate.to_string())
-                        .or_default()
-                        .push(node.name.clone());
-                }
+                dependents_by_symbol
+                    .entry(symbol.to_string())
+                    .or_default()
+                    .push(node.name.clone());
             }
         }
 
@@ -240,6 +270,7 @@ impl Schema {
             .map(|node| node.name.clone())
             .collect::<HashSet<_>>();
         let mut generatable = HashSet::new();
+        let mut constructible_symbols = HashSet::new();
         let mut queued = eligible.clone();
         let mut pending = eligible.iter().cloned().collect::<VecDeque<_>>();
 
@@ -252,22 +283,38 @@ impl Schema {
             let constructible = node
                 .content
                 .is_constructible_with_budget(
-                    |symbol| {
-                        self.candidate_names_for_symbol(symbol)
-                            .any(|candidate| generatable.contains(candidate))
-                    },
+                    |symbol| constructible_symbols.contains(symbol),
                     budget,
                 )
-                .ok_or_else(|| "schema constructibility work budget exceeded".to_string())?;
+                .ok_or_else(|| {
+                    SchemaValidationError::resource("schema constructibility work budget exceeded")
+                })?;
             if constructible {
                 generatable.insert(name.clone());
-                if let Some(nodes) = dependents.get(&name) {
-                    for dependent in nodes {
-                        if eligible.contains(dependent)
-                            && !generatable.contains(dependent)
-                            && queued.insert(dependent.clone())
-                        {
-                            pending.push_back(dependent.clone());
+                let node = self.nodes.get(&name).expect("indexed node");
+                let symbols = std::iter::once(name.as_str()).chain(
+                    node.group
+                        .as_deref()
+                        .into_iter()
+                        .flat_map(str::split_whitespace),
+                );
+                for symbol in symbols {
+                    if !constructible_symbols.insert(symbol.to_string()) {
+                        continue;
+                    }
+                    if let Some(nodes) = dependents_by_symbol.get(symbol) {
+                        for dependent in nodes {
+                            if !budget.consume() {
+                                return Err(SchemaValidationError::resource(
+                                    "schema constructibility work budget exceeded",
+                                ));
+                            }
+                            if eligible.contains(dependent)
+                                && !generatable.contains(dependent)
+                                && queued.insert(dependent.clone())
+                            {
+                                pending.push_back(dependent.clone());
+                            }
                         }
                     }
                 }
@@ -278,18 +325,17 @@ impl Schema {
             let constructible = node
                 .content
                 .is_constructible_with_budget(
-                    |symbol| {
-                        self.candidate_names_for_symbol(symbol)
-                            .any(|candidate| generatable.contains(candidate))
-                    },
+                    |symbol| constructible_symbols.contains(symbol),
                     budget,
                 )
-                .ok_or_else(|| "schema constructibility work budget exceeded".to_string())?;
+                .ok_or_else(|| {
+                    SchemaValidationError::resource("schema constructibility work budget exceeded")
+                })?;
             if !constructible {
-                return Err(format!(
+                return Err(SchemaValidationError::semantic(format!(
                     "content rule for '{}' has required content that cannot be auto-created",
                     node.name
-                ));
+                )));
             }
         }
         Ok(())
@@ -682,10 +728,7 @@ impl Schema {
 
             let content =
                 ContentRule::parse_with_budget(content_str, &budget).map_err(|error| {
-                    schema_boundary_error(
-                        format!("content rule parse error for {name}: {error}"),
-                        work_limit,
-                    )
+                    schema_boundary_error(content_rule_schema_error(&name, error), work_limit)
                 })?;
 
             let group = node_val
@@ -793,19 +836,27 @@ impl Schema {
     }
 }
 
-fn schema_boundary_error(message: String, work_limit: usize) -> BoundaryError {
-    if message.contains("work budget exceeded")
-        || message.contains("automaton states")
-        || message.contains("nesting exceeds")
-        || message.contains("repetition bound exceeds")
-    {
-        let mut error =
-            BoundaryError::limit("SCHEMA_INVALID", work_limit, work_limit.saturating_add(1));
-        error.message = message;
-        error.details = Some(serde_json::json!({ "phase": "schemaWork" }));
-        error
-    } else {
-        BoundaryError::new("SCHEMA_INVALID", message)
+fn content_rule_schema_error(name: &str, error: ContentRuleError) -> SchemaValidationError {
+    match error {
+        ContentRuleError::Semantic(message) => SchemaValidationError::semantic(format!(
+            "content rule parse error for {name}: {message}"
+        )),
+        ContentRuleError::ResourceExhausted(message) => SchemaValidationError::resource(format!(
+            "content rule parse error for {name}: {message}"
+        )),
+    }
+}
+
+fn schema_boundary_error(error: SchemaValidationError, work_limit: usize) -> BoundaryError {
+    match error {
+        SchemaValidationError::Semantic(message) => BoundaryError::new("SCHEMA_INVALID", message),
+        SchemaValidationError::ResourceExhausted(message) => {
+            let mut error =
+                BoundaryError::limit("SCHEMA_INVALID", work_limit, work_limit.saturating_add(1));
+            error.message = message;
+            error.details = Some(serde_json::json!({ "phase": "schemaWork" }));
+            error
+        }
     }
 }
 
