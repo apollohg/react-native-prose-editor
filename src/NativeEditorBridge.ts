@@ -1,15 +1,14 @@
 import { requireNativeModule } from 'expo-modules-core';
 import { Platform } from 'react-native';
 import type { EditorMentionTheme } from './EditorTheme';
+import { resolveEditorResourceLimits, type EditorResourceLimits } from './ResourceLimits';
 import {
-    resolveEditorResourceLimits,
-    type EditorResourceLimits,
-} from './ResourceLimits';
-import { normalizeDocumentJson, type SchemaDefinition } from './schemas';
-import {
-    NativeEditorBoundaryError,
-    parseNativeBoundaryError,
-} from './NativeEditorBoundaryError';
+    normalizeDocumentJson,
+    resolveDocumentDescriptor,
+    type ResolvedDocumentSchema,
+    type SchemaDefinition,
+} from './schemas';
+import { NativeEditorBoundaryError, parseNativeBoundaryError } from './NativeEditorBoundaryError';
 
 const ERR_DESTROYED = 'NativeEditorBridge: editor has been destroyed';
 const ERR_NATIVE_RESPONSE = 'NativeEditorBridge: invalid JSON response from native module';
@@ -19,6 +18,7 @@ const MAX_NATIVE_LENGTH = 0xffff_ffff;
 
 export interface NativeEditorModule {
     editorCreate(configJson: string): number;
+    editorCreateResult?(configJson: string): string;
     editorDestroy(editorId: number): void;
     editorPrepareForCommand?(editorId: number): string;
     collaborationSessionCreate(configJson: string): number;
@@ -290,6 +290,28 @@ export function normalizeActiveState(raw: unknown): ActiveState {
     };
 }
 
+function nativeResponseError(value: unknown): Error | null {
+    const boundaryError = parseNativeBoundaryError(value);
+    if (boundaryError) return boundaryError;
+    if (value != null && typeof value === 'object' && !Array.isArray(value)) {
+        const legacyError = (value as Record<string, unknown>).error;
+        if (typeof legacyError === 'string') {
+            return new Error(`NativeEditorBridge: ${legacyError}`);
+        }
+    }
+    return null;
+}
+
+function rethrowParsedNativeError(error: unknown): never {
+    if (
+        error instanceof NativeEditorBoundaryError ||
+        (error instanceof Error && error.message.startsWith('NativeEditorBridge:'))
+    ) {
+        throw error;
+    }
+    throw new Error(ERR_NATIVE_RESPONSE);
+}
+
 function parseRenderElements(json: string): RenderElement[] {
     if (!json || json === '[]') return [];
     try {
@@ -300,17 +322,14 @@ function parseRenderElements(json: string): RenderElement[] {
             !Array.isArray(parsed) &&
             'error' in parsed
         ) {
-            throw new Error(`NativeEditorBridge: ${(parsed as { error: unknown }).error}`);
+            throw nativeResponseError(parsed) ?? new Error(ERR_NATIVE_RESPONSE);
         }
         if (!Array.isArray(parsed)) {
             throw new Error(ERR_NATIVE_RESPONSE);
         }
         return parsed as RenderElement[];
     } catch (e) {
-        if (e instanceof Error && e.message.startsWith('NativeEditorBridge:')) {
-            throw e;
-        }
-        throw new Error(ERR_NATIVE_RESPONSE);
+        rethrowParsedNativeError(e);
     }
 }
 
@@ -322,7 +341,7 @@ export function parseEditorUpdateJson(
     try {
         const parsed = JSON.parse(json) as Record<string, unknown>;
         if ('error' in parsed) {
-            throw new Error(`NativeEditorBridge: ${parsed.error}`);
+            throw nativeResponseError(parsed) ?? new Error(ERR_NATIVE_RESPONSE);
         }
         const renderBlocks = Array.isArray(parsed.renderBlocks)
             ? (parsed.renderBlocks as RenderElement[][])
@@ -352,10 +371,7 @@ export function parseEditorUpdateJson(
                 typeof parsed.documentVersion === 'number' ? parsed.documentVersion : undefined,
         };
     } catch (e) {
-        if (e instanceof Error && e.message.startsWith('NativeEditorBridge:')) {
-            throw e;
-        }
-        throw new Error(ERR_NATIVE_RESPONSE);
+        rethrowParsedNativeError(e);
     }
 }
 
@@ -397,7 +413,7 @@ function parseContentSnapshotJson(json: string): ContentSnapshot {
     try {
         const parsed = JSON.parse(json) as Record<string, unknown>;
         if ('error' in parsed) {
-            throw new Error(`NativeEditorBridge: ${parsed.error}`);
+            throw nativeResponseError(parsed) ?? new Error(ERR_NATIVE_RESPONSE);
         }
         return {
             html: typeof parsed.html === 'string' ? parsed.html : '',
@@ -407,10 +423,7 @@ function parseContentSnapshotJson(json: string): ContentSnapshot {
                     : {},
         };
     } catch (e) {
-        if (e instanceof Error && e.message.startsWith('NativeEditorBridge:')) {
-            throw e;
-        }
-        throw new Error(ERR_NATIVE_RESPONSE);
+        rethrowParsedNativeError(e);
     }
 }
 
@@ -423,24 +436,23 @@ function parseDocumentJSON(json: string): DocumentJSON {
             typeof parsed === 'object' &&
             'error' in (parsed as Record<string, unknown>)
         ) {
-            throw new Error(`NativeEditorBridge: ${(parsed as Record<string, unknown>).error}`);
+            throw nativeResponseError(parsed) ?? new Error(ERR_NATIVE_RESPONSE);
         }
         return parsed;
     } catch (e) {
-        if (e instanceof Error && e.message.startsWith('NativeEditorBridge:')) {
-            throw e;
-        }
-        throw new Error(ERR_NATIVE_RESPONSE);
+        rethrowParsedNativeError(e);
     }
 }
 
 function parseCollaborationPeersJson(json: string): CollaborationPeer[] {
     if (!json || json === '[]') return [];
     try {
-        const parsed = JSON.parse(json) as CollaborationPeer[];
+        const parsed = JSON.parse(json) as unknown;
+        const error = nativeResponseError(parsed);
+        if (error) throw error;
         return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        throw new Error(ERR_NATIVE_RESPONSE);
+    } catch (error) {
+        rethrowParsedNativeError(error);
     }
 }
 
@@ -448,15 +460,14 @@ function parseByteArrayJson(json: string): Uint8Array {
     if (!json || json === '[]') return new Uint8Array();
     try {
         const parsed = JSON.parse(json) as unknown;
+        const error = nativeResponseError(parsed);
+        if (error) throw error;
         if (!Array.isArray(parsed)) {
             throw new Error(ERR_NATIVE_RESPONSE);
         }
         return Uint8Array.from(parsed as number[]);
     } catch (e) {
-        if (e instanceof Error && e.message.startsWith('NativeEditorBridge:')) {
-            throw e;
-        }
-        throw new Error(ERR_NATIVE_RESPONSE);
+        rethrowParsedNativeError(e);
     }
 }
 
@@ -529,10 +540,13 @@ export function decodeCollaborationStateBase64(base64: string): Uint8Array {
     return base64ToBytes(base64);
 }
 
-function normalizeDocumentJsonString(jsonString: string, schema?: SchemaDefinition): string {
+function normalizeDocumentJsonString(
+    jsonString: string,
+    descriptor: ResolvedDocumentSchema
+): string {
     try {
         const parsed = JSON.parse(jsonString) as DocumentJSON;
-        const normalized = normalizeDocumentJson(parsed, schema);
+        const normalized = normalizeDocumentJson(parsed, descriptor);
         return normalized === parsed ? jsonString : JSON.stringify(normalized);
     } catch {
         return jsonString;
@@ -547,9 +561,8 @@ function parseCommandPreparationJson(json: string): CommandPreparation {
     } catch {
         throw new Error(ERR_NATIVE_RESPONSE);
     }
-    if (typeof parsed.error === 'string') {
-        throw new Error(`NativeEditorBridge: ${parsed.error}`);
-    }
+    const responseError = nativeResponseError(parsed);
+    if (responseError) throw responseError;
     const rawBlockedReason = parsed.blockedReason;
     const blockedReason =
         rawBlockedReason === 'composition' ||
@@ -619,6 +632,22 @@ function parseCollaborationSessionId(json: string): number {
     }
 }
 
+function parseEditorId(json: string): number {
+    try {
+        const parsed = JSON.parse(json) as Record<string, unknown>;
+        const boundaryError = parseNativeBoundaryError(parsed);
+        if (boundaryError) throw boundaryError;
+        const editorId = parsed.editorId;
+        if (!Number.isSafeInteger(editorId) || (editorId as number) <= 0) {
+            throw new Error(ERR_NATIVE_RESPONSE);
+        }
+        return editorId as number;
+    } catch (error) {
+        if (error instanceof NativeEditorBoundaryError) throw error;
+        throw new Error(ERR_NATIVE_RESPONSE);
+    }
+}
+
 function throwIfNativeBoundaryError(json: string): void {
     try {
         const parsed = JSON.parse(json) as unknown;
@@ -645,7 +674,7 @@ export function _resetNativeModuleCache(): void {
 
 export class NativeEditorBridge {
     private _editorId: number;
-    private _schema?: SchemaDefinition;
+    private _documentDescriptor: ResolvedDocumentSchema;
     private _destroyed = false;
     private _lastSelection: Selection = { type: 'text', anchor: 0, head: 0 };
     private _documentVersion = 0;
@@ -658,9 +687,9 @@ export class NativeEditorBridge {
     private _lastAcceptedUpdateJson: string | null = null;
     private _hasSeenDocumentVersion = false;
 
-    private constructor(editorId: number, schema?: SchemaDefinition) {
+    private constructor(editorId: number, descriptor: ResolvedDocumentSchema) {
         this._editorId = editorId;
-        this._schema = schema;
+        this._documentDescriptor = descriptor;
     }
 
     /** Create a new editor instance backed by the Rust engine. */
@@ -669,6 +698,8 @@ export class NativeEditorBridge {
         schemaJson?: string;
         allowBase64Images?: boolean;
         resourceLimits?: EditorResourceLimits;
+        /** Pre-resolved by the React wrapper so every call site shares one descriptor. */
+        documentDescriptor?: ResolvedDocumentSchema;
     }): NativeEditorBridge {
         const configObj: Record<string, unknown> = {};
         let parsedSchema: SchemaDefinition | undefined;
@@ -696,11 +727,18 @@ export class NativeEditorBridge {
         if (config?.resourceLimits != null) {
             configObj.resourceLimits = resolveEditorResourceLimits(config.resourceLimits);
         }
-        const id = getNativeModule().editorCreate(JSON.stringify(configObj));
+        const descriptor =
+            config?.documentDescriptor ??
+            resolveDocumentDescriptor(parsedSchema, config?.resourceLimits);
+        const nativeModule = getNativeModule();
+        const configJson = JSON.stringify(configObj);
+        const id = nativeModule.editorCreateResult
+            ? parseEditorId(nativeModule.editorCreateResult(configJson))
+            : nativeModule.editorCreate(configJson);
         if (!Number.isSafeInteger(id) || id <= 0) {
             throw new Error('NativeEditorBridge: native editor creation failed');
         }
-        return new NativeEditorBridge(id, parsedSchema);
+        return new NativeEditorBridge(id, descriptor);
     }
 
     /** The underlying native editor ID. */
@@ -787,7 +825,9 @@ export class NativeEditorBridge {
 
     /** Set content from ProseMirror JSON. Returns render elements. */
     setJson(doc: DocumentJSON): RenderElement[] {
-        return this.setJsonString(JSON.stringify(normalizeDocumentJson(doc, this._schema)));
+        return this.setJsonString(
+            JSON.stringify(normalizeDocumentJson(doc, this._documentDescriptor))
+        );
     }
 
     /** Set content from a serialized ProseMirror JSON string. Returns render elements. */
@@ -795,7 +835,10 @@ export class NativeEditorBridge {
         this.assertNotDestroyed();
         this.invalidateContentCaches();
         this._renderBlocksCache = null;
-        const normalizedJsonString = normalizeDocumentJsonString(jsonString, this._schema);
+        const normalizedJsonString = normalizeDocumentJsonString(
+            jsonString,
+            this._documentDescriptor
+        );
         const json = getNativeModule().editorSetJson(this._editorId, normalizedJsonString);
         return parseRenderElements(json);
     }
@@ -1148,13 +1191,18 @@ export class NativeEditorBridge {
 
     /** Replace entire document with JSON via transaction (preserves undo history). */
     replaceJson(doc: DocumentJSON): EditorUpdate | null {
-        return this.replaceJsonString(JSON.stringify(normalizeDocumentJson(doc, this._schema)));
+        return this.replaceJsonString(
+            JSON.stringify(normalizeDocumentJson(doc, this._documentDescriptor))
+        );
     }
 
     /** Replace entire document with a serialized JSON transaction. */
     replaceJsonString(jsonString: string): EditorUpdate | null {
         this.assertNotDestroyed();
-        const normalizedJsonString = normalizeDocumentJsonString(jsonString, this._schema);
+        const normalizedJsonString = normalizeDocumentJsonString(
+            jsonString,
+            this._documentDescriptor
+        );
         return this.runPreparedCommand(() =>
             getNativeModule().editorReplaceJson(this._editorId, normalizedJsonString)
         );
@@ -1476,9 +1524,7 @@ export class NativeCollaborationBridge {
         const nativeModule = getNativeModule();
         const configJson = JSON.stringify(resolvedConfig);
         const id = nativeModule.collaborationSessionCreateResult
-            ? parseCollaborationSessionId(
-                  nativeModule.collaborationSessionCreateResult(configJson)
-              )
+            ? parseCollaborationSessionId(nativeModule.collaborationSessionCreateResult(configJson))
             : nativeModule.collaborationSessionCreate(configJson);
         if (!Number.isSafeInteger(id) || id <= 0) {
             throw new Error('NativeEditorBridge: native collaboration creation failed');

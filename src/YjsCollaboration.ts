@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
     NativeCollaborationBridge,
@@ -12,8 +12,9 @@ import {
 import type { RemoteSelectionDecoration } from './NativeRichTextEditor';
 import type { EditorResourceLimits } from './ResourceLimits';
 import {
-    defaultEmptyDocument,
-    resolveDocumentSchema,
+    normalizeDocumentJson,
+    resolveDocumentDescriptor,
+    type ResolvedDocumentSchema,
     type SchemaDefinition,
 } from './schemas';
 
@@ -140,21 +141,27 @@ function cloneJsonValue<T>(value: T): T {
     return value;
 }
 
-function initialFallbackDocument(options: YjsCollaborationOptions): DocumentJSON {
+function initialFallbackDocument(
+    options: YjsCollaborationOptions,
+    descriptor: ResolvedDocumentSchema = resolveDocumentDescriptor(
+        options.schema,
+        options.resourceLimits
+    )
+): DocumentJSON {
     return options.initialDocumentJson
-        ? cloneJsonValue(options.initialDocumentJson)
-        : defaultEmptyDocument(resolveDocumentSchema(options.schema));
+        ? normalizeDocumentJson(cloneJsonValue(options.initialDocumentJson), descriptor)
+        : cloneJsonValue(descriptor.emptyDocument);
 }
 
 function shouldUseFallbackForNativeDocument(
     doc: DocumentJSON,
-    options: YjsCollaborationOptions
+    options: YjsCollaborationOptions,
+    descriptor: ResolvedDocumentSchema
 ): boolean {
     if (options.initialDocumentJson != null || options.initialEncodedState != null) {
         return false;
     }
-    const docNode = resolveDocumentSchema(options.schema).nodes.find((node) => node.role === 'doc');
-    if (doc.type !== docNode?.name) {
+    if (doc.type !== descriptor.documentNodeName) {
         return false;
     }
     return !Array.isArray(doc.content) || doc.content.length === 0;
@@ -322,6 +329,10 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     private _peers: CollaborationPeer[] = [];
 
     constructor(options: YjsCollaborationOptions, callbacks: MutableCallbacks = {}) {
+        const documentDescriptor = resolveDocumentDescriptor(
+            options.schema,
+            options.resourceLimits
+        );
         this.callbacks = callbacks;
         this.createWebSocket = options.createWebSocket;
         this.retryIntervalMs = options.retryIntervalMs;
@@ -331,7 +342,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         };
         this.bridge = NativeCollaborationBridge.create({
             fragmentName: options.fragmentName ?? DEFAULT_YJS_FRAGMENT_NAME,
-            schema: options.schema,
+            schema: options.schema == null ? undefined : documentDescriptor.schema,
             initialDocumentJson: options.initialDocumentJson,
             initialEncodedState: options.initialEncodedState,
             maxLength: options.maxLength,
@@ -341,8 +352,8 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         const nativeDocumentJson = this.bridge.getDocumentJson();
         this._peers = this.bridge.getPeers();
         let initialDocumentJson: DocumentJSON;
-        if (shouldUseFallbackForNativeDocument(nativeDocumentJson, options)) {
-            initialDocumentJson = defaultEmptyDocument(resolveDocumentSchema(options.schema));
+        if (shouldUseFallbackForNativeDocument(nativeDocumentJson, options, documentDescriptor)) {
+            initialDocumentJson = cloneJsonValue(documentDescriptor.emptyDocument);
         } else {
             initialDocumentJson = nativeDocumentJson;
         }
@@ -424,9 +435,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
                 sendBinaryMessages(socket, result.messages);
             } catch (error) {
                 this.handleTransportFailure(
-                    error instanceof Error
-                        ? error
-                        : new Error('Yjs collaboration protocol error'),
+                    error instanceof Error ? error : new Error('Yjs collaboration protocol error'),
                     socket
                 );
             }
@@ -762,11 +771,17 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
     const localAwarenessKey = JSON.stringify(options.localAwareness);
     const schemaKey = JSON.stringify(options.schema ?? null);
     const resourceLimitsKey = JSON.stringify(options.resourceLimits ?? null);
+    const documentDescriptor = useMemo(
+        () => resolveDocumentDescriptor(options.schema, options.resourceLimits),
+        // Stable serialized keys intentionally define semantic configuration equality.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [schemaKey, resourceLimitsKey]
+    );
     const [state, setState] = useState<YjsCollaborationState>({
         documentId: options.documentId,
         status: 'idle',
         isConnected: false,
-        documentJson: initialFallbackDocument(options),
+        documentJson: initialFallbackDocument(options, documentDescriptor),
     });
     const [peers, setPeers] = useState<CollaborationPeer[]>([]);
 
@@ -803,7 +818,7 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
                 documentId: options.documentId,
                 status: 'error',
                 isConnected: false,
-                documentJson: initialFallbackDocument(options),
+                documentJson: initialFallbackDocument(options, documentDescriptor),
                 lastError: nextError,
             };
             controllerRef.current = null;

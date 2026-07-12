@@ -215,6 +215,20 @@ const TITLE_EMPTY_DOC = {
     content: [{ type: 'title' }],
 };
 
+const ARTICLE_SCHEMA = {
+    nodes: [
+        { name: 'article', content: 'title+', role: 'doc' },
+        { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
+        { name: 'text', content: '', group: 'inline', role: 'text' },
+    ],
+    marks: [],
+};
+
+const ARTICLE_EMPTY_DOC = {
+    type: 'article',
+    content: [{ type: 'title' }],
+};
+
 // ─── Mock Setup (must be before imports) ────────────────────────
 
 let mockEditorIdCounter = 0;
@@ -452,7 +466,9 @@ describe('NativeRichTextEditor', () => {
                 />
             );
 
-            expect(JSON.parse(getByTestId('native-editor-view').props.imageLoadingPolicyJson)).toEqual({
+            expect(
+                JSON.parse(getByTestId('native-editor-view').props.imageLoadingPolicyJson)
+            ).toEqual({
                 maxSourceBytes: 1024,
                 connectTimeoutMs: 2500,
                 readTimeoutMs: 20000,
@@ -498,11 +514,7 @@ describe('NativeRichTextEditor', () => {
 
         it('surfaces invalid image policies as structured boundary errors', () => {
             expect(() =>
-                render(
-                    <NativeRichTextEditor
-                        imageLoadingPolicy={{ requestTimeoutMs: 600_001 }}
-                    />
-                )
+                render(<NativeRichTextEditor imageLoadingPolicy={{ requestTimeoutMs: 600_001 }} />)
             ).toThrow(expect.objectContaining({ code: 'IMAGE_POLICY_INVALID' }));
         });
 
@@ -1145,7 +1157,9 @@ describe('NativeRichTextEditor', () => {
                 );
                 mockNativeModule.editorPrepareForCommand.mockClear();
                 mockNativeModule.editorPrepareForCommand
-                    .mockReturnValueOnce(JSON.stringify({ ready: false, blockedReason: 'detached' }))
+                    .mockReturnValueOnce(
+                        JSON.stringify({ ready: false, blockedReason: 'detached' })
+                    )
                     .mockReturnValue(JSON.stringify({ ready: true }));
 
                 act(() => {
@@ -1879,7 +1893,9 @@ describe('NativeRichTextEditor', () => {
                     context.insertImage('https://example.com/cat.png');
                 });
 
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).not.toHaveBeenCalled();
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).not.toHaveBeenCalled();
             } finally {
                 Object.defineProperty(Platform, 'OS', {
                     configurable: true,
@@ -1913,12 +1929,7 @@ describe('NativeRichTextEditor', () => {
 
                 const context = onRequestLink.mock.calls[0][0];
 
-                rerender(
-                    <NativeRichTextEditor
-                        maxLength={100}
-                        onRequestLink={onRequestLink}
-                    />
-                );
+                rerender(<NativeRichTextEditor maxLength={100} onRequestLink={onRequestLink} />);
                 expect(getByTestId('native-editor-view').props.editorId).toBe(2);
 
                 mockNativeModule.editorSetMarkAtSelectionScalar.mockClear();
@@ -1963,12 +1974,7 @@ describe('NativeRichTextEditor', () => {
 
                 const context = onRequestImage.mock.calls[0][0];
 
-                rerender(
-                    <NativeRichTextEditor
-                        maxLength={100}
-                        onRequestImage={onRequestImage}
-                    />
-                );
+                rerender(<NativeRichTextEditor maxLength={100} onRequestImage={onRequestImage} />);
                 expect(getByTestId('native-editor-view').props.editorId).toBe(2);
 
                 mockNativeModule.editorInsertContentJsonAtSelectionScalar.mockClear();
@@ -2461,7 +2467,9 @@ describe('NativeRichTextEditor', () => {
                     jest.advanceTimersByTime(50);
                 });
 
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).toHaveBeenCalledWith(
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).toHaveBeenCalledWith(
                     1,
                     0,
                     0,
@@ -2677,6 +2685,26 @@ describe('NativeRichTextEditor', () => {
             expect(mockApplyEditorUpdate).toHaveBeenCalledWith(MOCK_INSERT_UPDATE_JSON);
         });
 
+        it('wraps inserted images in the active custom document root', () => {
+            const ref = createRef<NativeRichTextEditorRef>();
+            render(<NativeRichTextEditor ref={ref} schema={ARTICLE_SCHEMA} />);
+
+            act(() => ref.current!.insertImage('https://example.com/cat.png'));
+
+            expect(mockNativeModule.editorInsertContentJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify({
+                    type: 'article',
+                    content: [
+                        {
+                            type: 'image',
+                            attrs: { src: 'https://example.com/cat.png' },
+                        },
+                    ],
+                })
+            );
+        });
+
         it('insertImage blocks base64 image sources unless allowBase64Images is enabled', () => {
             const ref = createRef<NativeRichTextEditorRef>();
             render(<NativeRichTextEditor ref={ref} />);
@@ -2767,6 +2795,18 @@ describe('NativeRichTextEditor', () => {
                     value: originalPlatform,
                 });
             }
+        });
+
+        it('clearContent resets a custom root to its constructible empty document', () => {
+            const ref = createRef<NativeRichTextEditorRef>();
+            render(<NativeRichTextEditor ref={ref} schema={ARTICLE_SCHEMA} />);
+
+            act(() => ref.current!.clearContent());
+
+            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify(ARTICLE_EMPTY_DOC)
+            );
         });
 
         it('retries Android setContentJson after in flight native update is acknowledged', () => {
@@ -3588,7 +3628,9 @@ describe('NativeRichTextEditor', () => {
                     jest.advanceTimersByTime(1);
                 });
 
-                expect(mockNativeModule.editorPrepareForCommand.mock.calls.length).toBeGreaterThanOrEqual(2);
+                expect(
+                    mockNativeModule.editorPrepareForCommand.mock.calls.length
+                ).toBeGreaterThanOrEqual(2);
                 expect(mockNativeModule.editorReplaceHtml).toHaveBeenCalledWith(1, '<p>new</p>');
             } finally {
                 jest.useRealTimers();
@@ -3661,10 +3703,7 @@ describe('NativeRichTextEditor', () => {
                 mockNativeModule.editorGetHtml.mockReturnValue('<p>the</p>');
 
                 rerender(
-                    <NativeRichTextEditor
-                        value='<p>target</p>'
-                        onContentChange={onContentChange}
-                    />
+                    <NativeRichTextEditor value='<p>target</p>' onContentChange={onContentChange} />
                 );
 
                 expect(onContentChange).toHaveBeenCalledWith('<p>the</p>');
@@ -3813,9 +3852,9 @@ describe('NativeRichTextEditor', () => {
 
                 expect(getByTestId('native-editor-view').props.editorUpdateJson).toBeUndefined();
                 expect(getByTestId('native-editor-view').props.editorUpdateEditorId).toBe(1);
-                expect(getByTestId('native-editor-view').props.editorUpdateRevision).toBeGreaterThan(
-                    queuedRevision
-                );
+                expect(
+                    getByTestId('native-editor-view').props.editorUpdateRevision
+                ).toBeGreaterThan(queuedRevision);
             } finally {
                 Object.defineProperty(Platform, 'OS', {
                     configurable: true,
@@ -3875,10 +3914,7 @@ describe('NativeRichTextEditor', () => {
                 rerender(<NativeRichTextEditor value='<p>latest</p>' />);
 
                 expect(mockNativeModule.editorReplaceHtml).toHaveBeenCalledTimes(1);
-                expect(mockNativeModule.editorReplaceHtml).toHaveBeenCalledWith(
-                    1,
-                    '<p>queued</p>'
-                );
+                expect(mockNativeModule.editorReplaceHtml).toHaveBeenCalledWith(1, '<p>queued</p>');
 
                 act(() => {
                     getByTestId('native-editor-view').props.onEditorReady({
@@ -6161,12 +6197,9 @@ describe('NativeRichTextEditor', () => {
                 expect(resolveSelectionAttrs).toHaveBeenCalledWith(
                     expect.not.objectContaining({ documentVersion: expect.any(Number) })
                 );
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).toHaveBeenCalledWith(
-                    1,
-                    3,
-                    7,
-                    expect.any(String)
-                );
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).toHaveBeenCalledWith(1, 3, 7, expect.any(String));
                 expect(onSelect).toHaveBeenCalledWith(
                     expect.not.objectContaining({ documentVersion: expect.any(Number) })
                 );
@@ -6344,7 +6377,9 @@ describe('NativeRichTextEditor', () => {
                 });
 
                 expect(resolveSelectionAttrs).not.toHaveBeenCalled();
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).not.toHaveBeenCalled();
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).not.toHaveBeenCalled();
                 expect(onSelect).not.toHaveBeenCalled();
 
                 act(() => {
@@ -6354,12 +6389,9 @@ describe('NativeRichTextEditor', () => {
                 expect(resolveSelectionAttrs).toHaveBeenCalledWith(
                     expect.objectContaining({ documentVersion: 2 })
                 );
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).toHaveBeenCalledWith(
-                    1,
-                    4,
-                    7,
-                    expect.any(String)
-                );
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).toHaveBeenCalledWith(1, 4, 7, expect.any(String));
                 expect(onSelect).toHaveBeenCalledWith(
                     expect.objectContaining({ documentVersion: 2 })
                 );
@@ -6445,7 +6477,9 @@ describe('NativeRichTextEditor', () => {
                 });
 
                 expect(resolveSelectionAttrs).not.toHaveBeenCalled();
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).not.toHaveBeenCalled();
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).not.toHaveBeenCalled();
                 expect(onSelect).not.toHaveBeenCalled();
 
                 act(() => {
@@ -6453,12 +6487,9 @@ describe('NativeRichTextEditor', () => {
                 });
 
                 expect(resolveSelectionAttrs).toHaveBeenCalledTimes(1);
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).toHaveBeenCalledWith(
-                    1,
-                    3,
-                    7,
-                    expect.any(String)
-                );
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).toHaveBeenCalledWith(1, 3, 7, expect.any(String));
                 expect(onSelect).toHaveBeenCalledTimes(1);
             } finally {
                 Object.defineProperty(Platform, 'OS', {
@@ -6533,7 +6564,9 @@ describe('NativeRichTextEditor', () => {
             });
 
             expect(resolveSelectionAttrs).not.toHaveBeenCalled();
-            expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).not.toHaveBeenCalled();
+            expect(
+                mockNativeModule.editorInsertContentJsonAtSelectionScalar
+            ).not.toHaveBeenCalled();
             expect(onSelect).not.toHaveBeenCalled();
         });
 
@@ -6612,7 +6645,9 @@ describe('NativeRichTextEditor', () => {
             });
 
             expect(resolveSelectionAttrs).not.toHaveBeenCalled();
-            expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).not.toHaveBeenCalled();
+            expect(
+                mockNativeModule.editorInsertContentJsonAtSelectionScalar
+            ).not.toHaveBeenCalled();
             expect(onSelect).not.toHaveBeenCalled();
         });
 
@@ -6724,7 +6759,9 @@ describe('NativeRichTextEditor', () => {
                 });
 
                 expect(resolveSelectionAttrs).not.toHaveBeenCalled();
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).not.toHaveBeenCalled();
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).not.toHaveBeenCalled();
                 expect(onQueryChange).not.toHaveBeenCalled();
                 expect(onSelect).not.toHaveBeenCalled();
                 expect(queryByTestId('native-editor-inline-mention-suggestions')).toBeNull();
@@ -6808,7 +6845,9 @@ describe('NativeRichTextEditor', () => {
                 expect(onQueryChange).not.toHaveBeenCalled();
                 expect(resolveSelectionAttrs).not.toHaveBeenCalled();
                 expect(onSelect).not.toHaveBeenCalled();
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).not.toHaveBeenCalled();
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).not.toHaveBeenCalled();
                 expect(queryByTestId('native-editor-inline-mention-suggestions')).toBeNull();
             } finally {
                 Object.defineProperty(Platform, 'OS', {
@@ -7218,12 +7257,9 @@ describe('NativeRichTextEditor', () => {
                     jest.advanceTimersByTime(50);
                 });
 
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).toHaveBeenCalledWith(
-                    1,
-                    3,
-                    7,
-                    expect.any(String)
-                );
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).toHaveBeenCalledWith(1, 3, 7, expect.any(String));
                 expect(onSelect).toHaveBeenCalledTimes(1);
                 expect(queryByTestId('native-editor-inline-mention-suggestions')).toBeNull();
             } finally {
@@ -7379,7 +7415,9 @@ describe('NativeRichTextEditor', () => {
 
                 expect(getByTestId('native-editor-view').props.editorId).toBe(2);
                 expect(queryByTestId('native-editor-inline-mention-suggestions')).toBeNull();
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).not.toHaveBeenCalled();
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).not.toHaveBeenCalled();
                 expect(onSelect).not.toHaveBeenCalled();
             } finally {
                 Object.defineProperty(Platform, 'OS', {
@@ -7560,9 +7598,7 @@ describe('NativeRichTextEditor', () => {
                         },
                     });
                 });
-                expect(() =>
-                    getByTestId('native-editor-inline-mention-suggestion-u1')
-                ).toThrow();
+                expect(() => getByTestId('native-editor-inline-mention-suggestion-u1')).toThrow();
 
                 act(() => {
                     getByTestId('native-editor-view').props.onAddonEvent({
@@ -7581,12 +7617,9 @@ describe('NativeRichTextEditor', () => {
                 });
                 fireEvent.press(getByTestId('native-editor-inline-mention-suggestion-u1'));
 
-                expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).toHaveBeenCalledWith(
-                    1,
-                    4,
-                    7,
-                    expect.any(String)
-                );
+                expect(
+                    mockNativeModule.editorInsertContentJsonAtSelectionScalar
+                ).toHaveBeenCalledWith(1, 4, 7, expect.any(String));
                 expect(onSelect).toHaveBeenCalledTimes(1);
             } finally {
                 Object.defineProperty(Platform, 'OS', {

@@ -1,6 +1,11 @@
 import type { EditorMentionTheme } from './EditorTheme';
 import type { DocumentJSON } from './NativeEditorBridge';
-import type { SchemaDefinition, NodeSpec } from './schemas';
+import {
+    buildDocumentFragmentJson,
+    type ResolvedDocumentSchema,
+    type SchemaDefinition,
+    type NodeSpec,
+} from './schemas';
 
 export interface MentionSuggestion {
     key: string;
@@ -188,14 +193,17 @@ export function serializeEditorAddons(addons?: EditorAddons): string | undefined
     return JSON.stringify(normalized);
 }
 
-export function buildMentionFragmentJson(attrs: Record<string, unknown>): DocumentJSON {
-    return {
-        type: 'doc',
-        content: [
+export function buildMentionFragmentJson(
+    attrs: Record<string, unknown>,
+    descriptor?: Pick<ResolvedDocumentSchema, 'documentNodeName'>
+): DocumentJSON {
+    return buildDocumentFragmentJson(
+        [
             {
                 type: MENTION_NODE_NAME,
                 attrs,
             },
         ],
-    };
+        descriptor
+    );
 }

@@ -1,4 +1,10 @@
 import type { DocumentJSON } from './NativeEditorBridge';
+import { NativeEditorBoundaryError } from './NativeEditorBoundaryError';
+import {
+    resolveEditorResourceLimits,
+    type EditorResourceLimits,
+    type ResolvedEditorResourceLimits,
+} from './ResourceLimits';
 import {
     CONTENT_EXPRESSION_MAX_DEPTH,
     DEFAULT_CONTENT_MAX_NODES,
@@ -55,6 +61,17 @@ export interface ImageNodeAttributes {
     height?: number | null;
 }
 
+export interface ResolvedDocumentSchema {
+    schema: SchemaDefinition;
+    documentNodeName: string;
+    emptyDocument: DocumentJSON;
+}
+
+type DocumentDescriptorLimits = Pick<
+    EditorResourceLimits,
+    'maxSchemaNodes' | 'maxSchemaExpressionBytes' | 'maxDocumentNodes' | 'maxDocumentDepth'
+>;
+
 export const IMAGE_NODE_NAME = 'image';
 const HEADING_LEVELS = [1, 2, 3, 4, 5, 6] as const;
 
@@ -98,16 +115,28 @@ export function withImagesSchema(schema: SchemaDefinition): SchemaDefinition {
     };
 }
 
-export function buildImageFragmentJson(attrs: ImageNodeAttributes): DocumentJSON {
-    return {
-        type: 'doc',
-        content: [
+export function buildDocumentFragmentJson(
+    content: DocumentJSON[],
+    descriptor: Pick<ResolvedDocumentSchema, 'documentNodeName'> = {
+        documentNodeName: 'doc',
+    }
+): DocumentJSON {
+    return { type: descriptor.documentNodeName, content };
+}
+
+export function buildImageFragmentJson(
+    attrs: ImageNodeAttributes,
+    descriptor?: Pick<ResolvedDocumentSchema, 'documentNodeName'>
+): DocumentJSON {
+    return buildDocumentFragmentJson(
+        [
             {
                 type: IMAGE_NODE_NAME,
                 attrs,
             },
         ],
-    };
+        descriptor
+    );
 }
 
 const MARKS: MarkSpec[] = [
@@ -189,9 +218,53 @@ export const tiptapSchema: SchemaDefinition = {
 };
 
 /** Mirror native's invalid-schema fallback before constructing an empty doc. */
-export function resolveDocumentSchema(schema?: SchemaDefinition): SchemaDefinition {
+function utf8ByteLengthUpTo(value: string, maximum: number): number {
+    let bytes = 0;
+    for (const char of value) {
+        const codePoint = char.codePointAt(0) ?? 0;
+        bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+        if (bytes > maximum) return bytes;
+    }
+    return bytes;
+}
+
+function schemaBoundaryError(limit: number, actual: number): NativeEditorBoundaryError {
+    return new NativeEditorBoundaryError(
+        'SCHEMA_INVALID',
+        `schema work exceeds configured limit ${limit}`,
+        limit,
+        actual
+    );
+}
+
+function resolveDescriptorLimits(limits?: DocumentDescriptorLimits): ResolvedEditorResourceLimits {
+    return resolveEditorResourceLimits(limits);
+}
+
+/** Mirror native's invalid-schema fallback after bounded admission succeeds. */
+export function resolveDocumentSchema(
+    schema?: SchemaDefinition,
+    limits?: DocumentDescriptorLimits
+): SchemaDefinition {
     if (schema == null) return tiptapSchema;
     if (!Array.isArray(schema.nodes) || !Array.isArray(schema.marks)) return tiptapSchema;
+
+    const resolvedLimits = resolveDescriptorLimits(limits);
+    if (schema.nodes.length > resolvedLimits.maxSchemaNodes) {
+        throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, schema.nodes.length);
+    }
+    let expressionBytes = 0;
+    for (const node of schema.nodes) {
+        if (node != null && typeof node.content === 'string') {
+            expressionBytes += utf8ByteLengthUpTo(
+                node.content,
+                resolvedLimits.maxSchemaExpressionBytes - expressionBytes
+            );
+            if (expressionBytes > resolvedLimits.maxSchemaExpressionBytes) {
+                throw schemaBoundaryError(resolvedLimits.maxSchemaExpressionBytes, expressionBytes);
+            }
+        }
+    }
 
     const nodeNames = new Set<string>();
     const markNames = new Set<string>();
@@ -225,9 +298,20 @@ export function resolveDocumentSchema(schema?: SchemaDefinition): SchemaDefiniti
     }
     if (docRoles !== 1 || textRoles !== 1) return tiptapSchema;
 
-    const groups = new Set(
-        schema.nodes.flatMap((node) => node.group?.split(/\s+/).filter(Boolean) ?? [])
-    );
+    const groups = new Set<string>();
+    const nodesBySymbol = new Map<string, NodeSpec[]>();
+    const addCandidate = (symbol: string, node: NodeSpec): void => {
+        const candidates = nodesBySymbol.get(symbol);
+        if (candidates) candidates.push(node);
+        else nodesBySymbol.set(symbol, [node]);
+    };
+    for (const node of schema.nodes) {
+        addCandidate(node.name, node);
+        for (const group of node.group?.split(/\s+/).filter(Boolean) ?? []) {
+            groups.add(group);
+            addCandidate(group, node);
+        }
+    }
     for (const node of schema.nodes) {
         const symbols = contentExpressionSymbols(node.content);
         if (
@@ -238,17 +322,36 @@ export function resolveDocumentSchema(schema?: SchemaDefinition): SchemaDefiniti
         }
     }
 
-    const matchesSymbol = (candidate: NodeSpec, symbol: string): boolean =>
-        candidate.name === symbol ||
-        candidate.group?.split(/\s+/).some((group) => group === symbol) === true;
     const generatable = new Set<string>();
-    const contentIsConstructible = (node: NodeSpec): boolean =>
-        minimalContentMatch(node.content, (symbol) => {
-            const candidate = schema.nodes.find(
-                (next) => generatable.has(next.name) && matchesSymbol(next, symbol)
-            );
-            return candidate == null ? undefined : { type: candidate.name };
-        }) != null;
+    const workLimit =
+        resolvedLimits.maxSchemaNodes * 64 + resolvedLimits.maxSchemaExpressionBytes * 32;
+    let work = 0;
+    let schemaWorkExhausted = false;
+    const consumeSchemaWork = (): boolean => {
+        if (work >= workLimit) {
+            schemaWorkExhausted = true;
+            return false;
+        }
+        work += 1;
+        return true;
+    };
+    const contentIsConstructible = (node: NodeSpec): boolean => {
+        if (!consumeSchemaWork()) return false;
+        return (
+            minimalContentMatch(
+                node.content,
+                (symbol) => {
+                    const candidates = nodesBySymbol.get(symbol) ?? [];
+                    for (const candidate of candidates) {
+                        if (!consumeSchemaWork()) return undefined;
+                        if (generatable.has(candidate.name)) return { type: candidate.name };
+                    }
+                    return undefined;
+                },
+                consumeSchemaWork
+            ) != null
+        );
+    };
     while (true) {
         const before = generatable.size;
         for (const node of schema.nodes) {
@@ -261,32 +364,108 @@ export function resolveDocumentSchema(schema?: SchemaDefinition): SchemaDefiniti
         }
         if (generatable.size === before) break;
     }
-    if (schema.nodes.some((node) => !contentIsConstructible(node))) return tiptapSchema;
+    if (schemaWorkExhausted) {
+        throw schemaBoundaryError(workLimit, workLimit + 1);
+    }
+    const hasUnconstructibleNode = schema.nodes.some(
+        (node) => !contentIsConstructible(node)
+    );
+    if (schemaWorkExhausted) {
+        throw schemaBoundaryError(workLimit, workLimit + 1);
+    }
+    if (hasUnconstructibleNode) return tiptapSchema;
 
     try {
-        defaultEmptyDocument(schema);
+        defaultEmptyDocument(schema, resolvedLimits);
         return schema;
-    } catch {
+    } catch (error) {
+        if (error instanceof NativeEditorBoundaryError) throw error;
         return tiptapSchema;
     }
 }
 
-export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): DocumentJSON {
+export function defaultEmptyDocument(
+    schema: SchemaDefinition = tiptapSchema,
+    limits?: DocumentDescriptorLimits
+): DocumentJSON {
+    const resolvedLimits = resolveDescriptorLimits(limits);
     const docNode = schema.nodes.find((node) => node.role === 'doc' || node.name === 'doc');
     if (!docNode) throw new Error('schema cannot construct a default document: missing doc role');
 
-    const budget = { nodes: 0, work: 0 };
+    const budget = { nodes: 0, work: 0, exhausted: false };
+    const workLimit = Math.min(
+        DEFAULT_CONTENT_MAX_NODES,
+        resolvedLimits.maxSchemaNodes * 64 + resolvedLimits.maxSchemaExpressionBytes * 32
+    );
     const consumeWork = (): boolean => {
-        if (budget.work >= DEFAULT_CONTENT_MAX_NODES) return false;
+        if (budget.work >= workLimit) {
+            budget.exhausted = true;
+            return false;
+        }
         budget.work += 1;
         return true;
     };
+    const candidatePriority = (candidate: NodeSpec): number => {
+        if (
+            candidate.role === 'textBlock' &&
+            (candidate.htmlTag === 'p' || candidate.name === 'paragraph')
+        ) {
+            return 0;
+        }
+        return candidate.role === 'textBlock' ? 1 : 2;
+    };
+    const candidatesBySymbol = new Map<string, NodeSpec[]>();
+    let candidateIndexAdmitted = true;
+    const addCandidate = (symbol: string, candidate: NodeSpec): boolean => {
+        if (!consumeWork()) return false;
+        const candidates = candidatesBySymbol.get(symbol);
+        if (candidates) candidates.push(candidate);
+        else candidatesBySymbol.set(symbol, [candidate]);
+        return true;
+    };
+    for (const candidate of schema.nodes) {
+        if (!addCandidate(candidate.name, candidate)) {
+            candidateIndexAdmitted = false;
+            break;
+        }
+        for (const group of candidate.group?.split(/\s+/).filter(Boolean) ?? []) {
+            if (group !== candidate.name && !addCandidate(group, candidate)) {
+                candidateIndexAdmitted = false;
+                break;
+            }
+        }
+        if (!candidateIndexAdmitted) break;
+    }
+    for (const candidates of candidatesBySymbol.values()) {
+        const sortingWork = Math.max(
+            candidates.length,
+            Math.ceil(candidates.length * Math.log2(Math.max(2, candidates.length)))
+        );
+        for (let index = 0; index < sortingWork; index += 1) {
+            if (!consumeWork()) {
+                candidateIndexAdmitted = false;
+                break;
+            }
+        }
+        if (!candidateIndexAdmitted) break;
+        candidates.sort(
+            (left, right) =>
+                candidatePriority(left) - candidatePriority(right) ||
+                left.name.localeCompare(right.name)
+        );
+    }
+    if (!candidateIndexAdmitted) {
+        throw schemaBoundaryError(workLimit, workLimit + 1);
+    }
     const constructNode = (
         node: NodeSpec,
         visiting: Set<string>,
         depth: number
     ): DocumentJSON | undefined => {
-        if (depth > CONTENT_EXPRESSION_MAX_DEPTH || !consumeWork()) {
+        if (
+            depth > Math.min(CONTENT_EXPRESSION_MAX_DEPTH, resolvedLimits.maxDocumentDepth) ||
+            !consumeWork()
+        ) {
             return undefined;
         }
         if (node.role === 'text' || visiting.has(node.name)) return undefined;
@@ -299,29 +478,8 @@ export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): D
         const children = minimalContentMatch(
             node.content ?? '',
             (symbol) => {
-                const candidates: NodeSpec[] = [];
-                for (const candidate of schema.nodes) {
+                for (const candidate of candidatesBySymbol.get(symbol) ?? []) {
                     if (!consumeWork()) return undefined;
-                    if (
-                        candidate.name === symbol ||
-                        candidate.group?.split(/\s+/).some((group) => group === symbol)
-                    )
-                        candidates.push(candidate);
-                }
-                for (const _candidate of candidates) if (!consumeWork()) return undefined;
-                candidates.sort((left, right) => {
-                    const priority = (candidate: NodeSpec): number => {
-                        if (
-                            candidate.role === 'textBlock' &&
-                            (candidate.htmlTag === 'p' || candidate.name === 'paragraph')
-                        ) {
-                            return 0;
-                        }
-                        return candidate.role === 'textBlock' ? 1 : 2;
-                    };
-                    return priority(left) - priority(right) || left.name.localeCompare(right.name);
-                });
-                for (const candidate of candidates) {
                     const constructed = constructNode(candidate, visiting, depth + 1);
                     if (constructed) return constructed;
                 }
@@ -331,7 +489,10 @@ export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): D
         );
         visiting.delete(node.name);
         if (!children) return undefined;
-        if (budget.nodes >= DEFAULT_CONTENT_MAX_NODES) return undefined;
+        if (budget.nodes >= resolvedLimits.maxDocumentNodes) {
+            budget.exhausted = true;
+            return undefined;
+        }
         budget.nodes += 1;
 
         const result: DocumentJSON = { type: node.name };
@@ -344,26 +505,49 @@ export function defaultEmptyDocument(schema: SchemaDefinition = tiptapSchema): D
 
     const document = constructNode(docNode, new Set(), 0);
     if (!document) {
+        if (budget.exhausted || budget.work >= workLimit) {
+            throw schemaBoundaryError(workLimit, workLimit + 1);
+        }
         throw new Error(`schema cannot construct a default document for '${docNode.name}'`);
     }
     return document;
 }
 
+export function resolveDocumentDescriptor(
+    schema?: SchemaDefinition,
+    limits?: DocumentDescriptorLimits
+): ResolvedDocumentSchema {
+    const resolvedLimits = resolveDescriptorLimits(limits);
+    const resolvedSchema = resolveDocumentSchema(schema, resolvedLimits);
+    const documentNode = resolvedSchema.nodes.find((node) => node.role === 'doc');
+    if (!documentNode) {
+        throw new NativeEditorBoundaryError('SCHEMA_INVALID', 'schema has no document-role node');
+    }
+    return {
+        schema: resolvedSchema,
+        documentNodeName: documentNode.name,
+        emptyDocument: defaultEmptyDocument(resolvedSchema, resolvedLimits),
+    };
+}
+
 export function normalizeDocumentJson(
     doc: DocumentJSON,
-    schema: SchemaDefinition = tiptapSchema
+    schemaOrDescriptor: SchemaDefinition | ResolvedDocumentSchema = tiptapSchema,
+    limits?: DocumentDescriptorLimits
 ): DocumentJSON {
-    const resolvedSchema = resolveDocumentSchema(schema);
-    const docNode = resolvedSchema.nodes.find((node) => node.role === 'doc');
+    const descriptor =
+        'documentNodeName' in schemaOrDescriptor
+            ? schemaOrDescriptor
+            : resolveDocumentDescriptor(schemaOrDescriptor, limits);
     const root = doc as { type?: unknown; content?: unknown } | null;
-    if (root?.type !== docNode?.name) {
+    if (root?.type !== descriptor.documentNodeName) {
         return doc;
     }
     const content = root?.content;
     if (Array.isArray(content) && content.length > 0) {
         return doc;
     }
-    return defaultEmptyDocument(resolvedSchema);
+    return descriptor.emptyDocument;
 }
 
 export const prosemirrorSchema: SchemaDefinition = {

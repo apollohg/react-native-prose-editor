@@ -164,6 +164,7 @@ let mockEditorIdCounter = 0;
 const mockNativeModule: Record<string, jest.Mock> = {};
 
 function resetMockNativeModule() {
+    delete mockNativeModule.editorCreateResult;
     mockEditorIdCounter = 0;
     mockNativeModule.editorCreate = jest.fn((_configJson: string) => ++mockEditorIdCounter);
     mockNativeModule.editorDestroy = jest.fn();
@@ -276,11 +277,9 @@ import {
     NativeCollaborationBridge,
     NativeEditorBridge,
     _resetNativeModuleCache,
+    parseEditorUpdateJson,
 } from '../NativeEditorBridge';
-import {
-    DEFAULT_EDITOR_RESOURCE_LIMITS,
-    resolveEditorResourceLimits,
-} from '../ResourceLimits';
+import { DEFAULT_EDITOR_RESOURCE_LIMITS, resolveEditorResourceLimits } from '../ResourceLimits';
 import { NativeEditorBoundaryError, parseNativeBoundaryError } from '../NativeEditorBoundaryError';
 import {
     HARD_EDITOR_IMAGE_LOADING_POLICY,
@@ -331,12 +330,61 @@ describe('NativeEditorBridge', () => {
             expect(parseNativeBoundaryError({ error: 'legacy error' })).toBeNull();
         });
 
-        it('rejects an unknown structured native boundary error code', () => {
+        it('preserves unknown structured native boundary error codes', () => {
             expect(
                 parseNativeBoundaryError({
-                    error: { code: 'NOT_A_REAL_BOUNDARY_CODE', message: 'unknown' },
+                    error: { code: 'FUTURE_NATIVE_BOUNDARY_CODE', message: 'unknown' },
                 })
-            ).toBeNull();
+            ).toMatchObject({
+                name: 'NativeEditorBoundaryError',
+                code: 'FUTURE_NATIVE_BOUNDARY_CODE',
+                message: 'unknown',
+            });
+        });
+
+        it('maps structured editor update envelopes and keeps legacy flat errors compatible', () => {
+            expect(() =>
+                parseEditorUpdateJson(
+                    JSON.stringify({
+                        error: {
+                            code: 'DOCUMENT_LIMIT_EXCEEDED',
+                            message: 'too many nodes',
+                            limit: 10,
+                            actual: 11,
+                        },
+                    })
+                )
+            ).toThrow(
+                expect.objectContaining({
+                    name: 'NativeEditorBoundaryError',
+                    code: 'DOCUMENT_LIMIT_EXCEEDED',
+                    limit: 10,
+                    actual: 11,
+                })
+            );
+            expect(() => parseEditorUpdateJson(JSON.stringify({ error: 'legacy error' }))).toThrow(
+                'NativeEditorBridge: legacy error'
+            );
+        });
+
+        it('uses the structured editor creation result when the native module exposes it', () => {
+            mockNativeModule.editorCreateResult = jest.fn(() =>
+                JSON.stringify({
+                    error: {
+                        code: 'CONFIG_INVALID',
+                        message: 'invalid editor config',
+                    },
+                })
+            );
+
+            expect(() => NativeEditorBridge.create()).toThrow(
+                expect.objectContaining({
+                    name: 'NativeEditorBoundaryError',
+                    code: 'CONFIG_INVALID',
+                    message: 'invalid editor config',
+                })
+            );
+            expect(mockNativeModule.editorCreate).not.toHaveBeenCalled();
         });
 
         it('accepts image policy values at their exact hard ceilings', () => {

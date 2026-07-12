@@ -75,6 +75,7 @@ import {
     IMAGE_NODE_NAME,
     buildImageFragmentJson,
     normalizeDocumentJson,
+    resolveDocumentDescriptor,
     tiptapSchema,
     type ImageNodeAttributes,
     type SchemaDefinition,
@@ -761,13 +762,16 @@ function computeRenderedTextLength(elements: RenderElement[]): number {
     let blockCount = 0;
     for (const el of elements) {
         if (el.type === 'blockStart' && el.listContext) {
-            len += el.listContext.kind === 'task'
-                ? unicodeScalarCount(
-                      el.listContext.checked ? TASK_LIST_MARKER_CHECKED : TASK_LIST_MARKER_UNCHECKED
-                  )
-                : el.listContext.ordered
-                  ? unicodeScalarCount(orderedListMarker(el.listContext.index))
-                  : unicodeScalarCount(UNORDERED_LIST_MARKER);
+            len +=
+                el.listContext.kind === 'task'
+                    ? unicodeScalarCount(
+                          el.listContext.checked
+                              ? TASK_LIST_MARKER_CHECKED
+                              : TASK_LIST_MARKER_UNCHECKED
+                      )
+                    : el.listContext.ordered
+                      ? unicodeScalarCount(orderedListMarker(el.listContext.index))
+                      : unicodeScalarCount(UNORDERED_LIST_MARKER);
         } else if (el.type === 'textRun' && el.text) {
             len += unicodeScalarCount(el.text);
         } else if (
@@ -1370,18 +1374,25 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             (addons?.mentions?.suggestions ?? []).map((suggestion) => [suggestion.key, suggestion])
         );
 
-        const bridgeSchema =
-            addons?.mentions != null ? withMentionsSchema(schema ?? tiptapSchema) : schema;
-        const documentSchema = bridgeSchema ?? tiptapSchema;
-        const serializedSchemaJson = useSerializedValue(bridgeSchema, (nextSchema) =>
-            stringifyCachedJson(nextSchema)
+        const hasMentionsAddon = addons?.mentions != null;
+        const bridgeSchema = useMemo(
+            () => (hasMentionsAddon ? withMentionsSchema(schema ?? tiptapSchema) : schema),
+            [hasMentionsAddon, schema]
+        );
+        const documentDescriptor = useMemo(
+            () => resolveDocumentDescriptor(bridgeSchema, resolvedResourceLimits),
+            [bridgeSchema, resolvedResourceLimits]
+        );
+        const serializedSchemaJson = useSerializedValue(
+            bridgeSchema == null ? undefined : documentDescriptor.schema,
+            (nextSchema) => stringifyCachedJson(nextSchema)
         );
         const serializedInitialJson = useSerializedValue(initialJSON, (doc) =>
-            stringifyCachedJson(normalizeDocumentJson(doc, documentSchema))
+            stringifyCachedJson(normalizeDocumentJson(doc, documentDescriptor))
         );
         const serializedValueJson = useSerializedValue(
             valueJSON,
-            (doc) => stringifyCachedJson(normalizeDocumentJson(doc, documentSchema)),
+            (doc) => stringifyCachedJson(normalizeDocumentJson(doc, documentDescriptor)),
             valueJSONRevision
         );
         const themeJson = useSerializedValue(theme, serializeEditorTheme);
@@ -1444,44 +1455,50 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             [setMentionQueryEventState]
         );
 
-        const syncStateFromUpdate = useCallback((update: EditorUpdate | null) => {
-            if (!update) return;
-            activeStateRef.current = update.activeState;
-            setActiveState(update.activeState);
-            setHistoryState(update.historyState);
-            selectionRef.current = update.selection;
-            renderedTextLengthRef.current = computeRenderedTextLength(update.renderElements);
-            if (typeof update.documentVersion === 'number') {
-                const previousDocumentVersion = documentVersionRef.current;
-                documentVersionRef.current = update.documentVersion;
-                if (
-                    previousDocumentVersion == null ||
-                    update.documentVersion > previousDocumentVersion
-                ) {
-                    clearStaleMentionQueryForDocumentVersion(update.documentVersion);
+        const syncStateFromUpdate = useCallback(
+            (update: EditorUpdate | null) => {
+                if (!update) return;
+                activeStateRef.current = update.activeState;
+                setActiveState(update.activeState);
+                setHistoryState(update.historyState);
+                selectionRef.current = update.selection;
+                renderedTextLengthRef.current = computeRenderedTextLength(update.renderElements);
+                if (typeof update.documentVersion === 'number') {
+                    const previousDocumentVersion = documentVersionRef.current;
+                    documentVersionRef.current = update.documentVersion;
+                    if (
+                        previousDocumentVersion == null ||
+                        update.documentVersion > previousDocumentVersion
+                    ) {
+                        clearStaleMentionQueryForDocumentVersion(update.documentVersion);
+                    }
                 }
-            }
-            flushBlockedNativeCommandRetry();
-        }, [clearStaleMentionQueryForDocumentVersion, flushBlockedNativeCommandRetry]);
+                flushBlockedNativeCommandRetry();
+            },
+            [clearStaleMentionQueryForDocumentVersion, flushBlockedNativeCommandRetry]
+        );
 
-        const syncSelectionStateFromUpdate = useCallback((update: EditorUpdate | null) => {
-            if (!update) return;
-            activeStateRef.current = update.activeState;
-            setActiveState(update.activeState);
-            setHistoryState(update.historyState);
-            selectionRef.current = update.selection;
-            if (typeof update.documentVersion === 'number') {
-                const previousDocumentVersion = documentVersionRef.current;
-                documentVersionRef.current = update.documentVersion;
-                if (
-                    previousDocumentVersion == null ||
-                    update.documentVersion > previousDocumentVersion
-                ) {
-                    clearStaleMentionQueryForDocumentVersion(update.documentVersion);
+        const syncSelectionStateFromUpdate = useCallback(
+            (update: EditorUpdate | null) => {
+                if (!update) return;
+                activeStateRef.current = update.activeState;
+                setActiveState(update.activeState);
+                setHistoryState(update.historyState);
+                selectionRef.current = update.selection;
+                if (typeof update.documentVersion === 'number') {
+                    const previousDocumentVersion = documentVersionRef.current;
+                    documentVersionRef.current = update.documentVersion;
+                    if (
+                        previousDocumentVersion == null ||
+                        update.documentVersion > previousDocumentVersion
+                    ) {
+                        clearStaleMentionQueryForDocumentVersion(update.documentVersion);
+                    }
                 }
-            }
-            flushBlockedNativeCommandRetry();
-        }, [clearStaleMentionQueryForDocumentVersion, flushBlockedNativeCommandRetry]);
+                flushBlockedNativeCommandRetry();
+            },
+            [clearStaleMentionQueryForDocumentVersion, flushBlockedNativeCommandRetry]
+        );
 
         const emitContentCallbacksForUpdate = useCallback(
             (update: EditorUpdate | null, previousDocumentVersion: number | null) => {
@@ -1531,18 +1548,21 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             setPendingNativeUpdate(next);
         }, [nextNativeUpdateRevision]);
 
-        const queuePendingNativeResetUpdate = useCallback((updateJson: string) => {
-            if (Platform.OS !== 'android') return;
-            const editorId = bridgeRef.current?.editorId;
-            const revision = nextNativeUpdateRevision();
-            const next = {
-                json: updateJson,
-                editorId,
-                revision,
-            };
-            pendingNativeResetUpdateInFlightRef.current = { editorId, revision };
-            setPendingNativeResetUpdate(next);
-        }, [nextNativeUpdateRevision]);
+        const queuePendingNativeResetUpdate = useCallback(
+            (updateJson: string) => {
+                if (Platform.OS !== 'android') return;
+                const editorId = bridgeRef.current?.editorId;
+                const revision = nextNativeUpdateRevision();
+                const next = {
+                    json: updateJson,
+                    editorId,
+                    revision,
+                };
+                pendingNativeResetUpdateInFlightRef.current = { editorId, revision };
+                setPendingNativeResetUpdate(next);
+            },
+            [nextNativeUpdateRevision]
+        );
 
         const consumeBlockedCommandInfoForRetry = useCallback(
             (bridge: NativeEditorBridge): CommandBlockedInfo => {
@@ -2005,6 +2025,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                           schemaJson: serializedSchemaJson,
                           allowBase64Images,
                           resourceLimits: resolvedResourceLimits,
+                          documentDescriptor,
                       }
                     : undefined;
             const bridge = NativeEditorBridge.create(bridgeConfig);
@@ -2314,10 +2335,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                             return;
                         }
                     }
-                    const nativeUpdate = bridge.parseUpdateJson(
-                        event.nativeEvent.updateJson,
-                        { rejectSameDocumentVersion: true }
-                    );
+                    const nativeUpdate = bridge.parseUpdateJson(event.nativeEvent.updateJson, {
+                        rejectSameDocumentVersion: true,
+                    });
                     if (!nativeUpdate) return;
                     syncNativeUpdateFromBridge(nativeUpdate, previousDocumentVersion);
                 } catch {
@@ -2344,10 +2364,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 }
                 let currentState: EditorUpdate | null = null;
                 if (typeof stateJson === 'string' && stateJson.length > 0) {
-                    if (
-                        Platform.OS === 'android' &&
-                        typeof currentDocumentVersion === 'number'
-                    ) {
+                    if (Platform.OS === 'android' && typeof currentDocumentVersion === 'number') {
                         const stateDocumentVersion = documentVersionFromUpdateJson(stateJson);
                         if (
                             typeof stateDocumentVersion !== 'number' ||
@@ -2640,10 +2657,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 }
                 if (scope.mentionQuery) {
                     const mentionQueryEditorId = mentionQueryEditorIdRef.current;
-                    if (
-                        mentionQueryEditorId != null &&
-                        mentionQueryEditorId !== scope.editorId
-                    ) {
+                    if (mentionQueryEditorId != null && mentionQueryEditorId !== scope.editorId) {
                         return false;
                     }
                     const currentQuery = mentionQueryEventRef.current;
@@ -2660,10 +2674,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 }
                 if (scope.mentionRange) {
                     const mentionQueryEditorId = mentionQueryEditorIdRef.current;
-                    if (
-                        mentionQueryEditorId != null &&
-                        mentionQueryEditorId !== scope.editorId
-                    ) {
+                    if (mentionQueryEditorId != null && mentionQueryEditorId !== scope.editorId) {
                         return false;
                     }
                     const currentQuery = mentionQueryEventRef.current;
@@ -2678,10 +2689,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 }
                 if (scope.nativeMentionSelectRequest) {
                     const mentionQueryEditorId = mentionQueryEditorIdRef.current;
-                    if (
-                        mentionQueryEditorId != null &&
-                        mentionQueryEditorId !== scope.editorId
-                    ) {
+                    if (mentionQueryEditorId != null && mentionQueryEditorId !== scope.editorId) {
                         return false;
                     }
                     if (
@@ -2782,15 +2790,18 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     }
                     return (
                         bridgeRef.current?.insertContentJson(
-                            buildImageFragmentJson({
-                                src: trimmedSrc,
-                                ...(attrs ?? {}),
-                            })
+                            buildImageFragmentJson(
+                                {
+                                    src: trimmedSrc,
+                                    ...(attrs ?? {}),
+                                },
+                                documentDescriptor
+                            )
                         ) ?? null
                     );
                 });
             },
-            [allowBase64Images, restoreSelection, runAndApply]
+            [allowBase64Images, documentDescriptor, restoreSelection, runAndApply]
         );
 
         const openLinkRequest = useCallback(() => {
@@ -2890,16 +2901,20 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                             bridgeRef.current?.insertContentJsonAtSelectionScalar(
                                 scalarSelection.anchor,
                                 scalarSelection.head,
-                                buildImageFragmentJson({
-                                    src: trimmedSrc,
-                                    ...(attrs ?? {}),
-                                })
+                                buildImageFragmentJson(
+                                    {
+                                        src: trimmedSrc,
+                                        ...(attrs ?? {}),
+                                    },
+                                    documentDescriptor
+                                )
                             ) ?? null
                     );
                 },
             });
         }, [
             allowBase64Images,
+            documentDescriptor,
             isAsyncRequestCurrent,
             onRequestImage,
             runAndApplyWithCommandRetry,
@@ -2939,12 +2954,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 }
                 onToolbarAction?.(event.nativeEvent.key);
             },
-            [
-                onToolbarAction,
-                openImageRequest,
-                openLinkRequest,
-                syncPreflightUpdateFromNativeEvent,
-            ]
+            [onToolbarAction, openImageRequest, openLinkRequest, syncPreflightUpdateFromNativeEvent]
         );
 
         const resolveMentionSelectionAttrs = useCallback(
@@ -3056,7 +3066,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                                             ? { documentVersion: mentionQuery.documentVersion }
                                             : {}),
                                     });
-                                    return buildMentionFragmentJson(attrs);
+                                    return buildMentionFragmentJson(attrs, documentDescriptor);
                                 }
                             ) ?? null,
                         {
@@ -3095,6 +3105,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 }
             },
             [
+                documentDescriptor,
                 isCommandRetryScopeCurrent,
                 resolveMentionInsertionAttrs,
                 runAndApply,
@@ -3215,7 +3226,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                                         };
                                         const attrs = resolveMentionInsertionAttrs(selectionEvent);
                                         finalAttrs = attrs;
-                                        return buildMentionFragmentJson(attrs);
+                                        return buildMentionFragmentJson(attrs, documentDescriptor);
                                     }
                                 ) ?? null
                             );
@@ -3251,6 +3262,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 }
             },
             [
+                documentDescriptor,
                 resolveMentionInsertionAttrs,
                 runAndApplyWithCommandRetry,
                 setMentionQueryEventState,
@@ -3316,22 +3328,18 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     runAndApply(() => bridgeRef.current?.insertContentJson(doc) ?? null);
                 },
                 setContent(html: string) {
-                    runPersistentContentCommand(
-                        () => bridgeRef.current?.replaceHtml(html) ?? null
-                    );
+                    runPersistentContentCommand(() => bridgeRef.current?.replaceHtml(html) ?? null);
                 },
                 setContentJson(doc: DocumentJSON) {
                     const jsonString = stringifyCachedJson(
-                        normalizeDocumentJson(doc, documentSchema)
+                        normalizeDocumentJson(doc, documentDescriptor)
                     );
                     runPersistentContentCommand(
                         () => bridgeRef.current?.replaceJsonString(jsonString) ?? null
                     );
                 },
                 clearContent() {
-                    const jsonString = stringifyCachedJson(
-                        normalizeDocumentJson({ type: 'doc', content: [] }, documentSchema)
-                    );
+                    const jsonString = stringifyCachedJson(documentDescriptor.emptyDocument);
                     resetContentJsonString(jsonString);
                 },
                 getContent(): string {
@@ -3377,7 +3385,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 },
             }),
             [
-                documentSchema,
+                documentDescriptor,
                 insertImage,
                 prepareBridgeForExternalContentRead,
                 runAndApply,

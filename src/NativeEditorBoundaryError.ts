@@ -19,18 +19,11 @@ export const NATIVE_EDITOR_BOUNDARY_ERROR_CODES = [
     'IMAGE_REQUEST_TIMEOUT',
 ] as const;
 
-export type NativeEditorBoundaryErrorCode =
+export type KnownNativeEditorBoundaryErrorCode =
     (typeof NATIVE_EDITOR_BOUNDARY_ERROR_CODES)[number];
 
-const NATIVE_EDITOR_BOUNDARY_ERROR_CODE_SET: ReadonlySet<string> = new Set(
-    NATIVE_EDITOR_BOUNDARY_ERROR_CODES
-);
-
-function isNativeEditorBoundaryErrorCode(
-    value: unknown
-): value is NativeEditorBoundaryErrorCode {
-    return typeof value === 'string' && NATIVE_EDITOR_BOUNDARY_ERROR_CODE_SET.has(value);
-}
+/** Known codes remain suggested while future native codes can cross the boundary losslessly. */
+export type NativeEditorBoundaryErrorCode = KnownNativeEditorBoundaryErrorCode | (string & {});
 
 export class NativeEditorBoundaryError extends Error {
     constructor(
@@ -49,10 +42,7 @@ export function parseNativeBoundaryError(value: unknown): NativeEditorBoundaryEr
     const envelope = value as { error?: Record<string, unknown> };
     const nativeError = envelope?.error;
     const code = nativeError?.code;
-    if (
-        !isNativeEditorBoundaryErrorCode(code) ||
-        typeof nativeError?.message !== 'string'
-    ) {
+    if (typeof code !== 'string' || typeof nativeError?.message !== 'string') {
         return null;
     }
     return new NativeEditorBoundaryError(

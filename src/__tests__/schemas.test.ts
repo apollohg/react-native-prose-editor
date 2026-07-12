@@ -1,11 +1,15 @@
 import { acceptingContentSymbols } from '../contentExpression';
 import {
+    buildDocumentFragmentJson,
     defaultEmptyDocument,
     normalizeDocumentJson,
+    resolveDocumentDescriptor,
     resolveDocumentSchema,
     tiptapSchema,
     type SchemaDefinition,
 } from '../schemas';
+import { buildImageFragmentJson } from '../schemas';
+import { buildMentionFragmentJson } from '../addons';
 
 const GROUPED_RANGE_SCHEMA: SchemaDefinition = {
     nodes: [
@@ -180,5 +184,48 @@ describe('schema-aware document normalization', () => {
 
     it('retains a valid custom schema', () => {
         expect(resolveDocumentSchema(articleSchema)).toBe(articleSchema);
+    });
+
+    it('resolves one custom-root descriptor for empty documents and fragments', () => {
+        const descriptor = resolveDocumentDescriptor(articleSchema);
+
+        expect(descriptor).toMatchObject({
+            schema: articleSchema,
+            documentNodeName: 'article',
+            emptyDocument: { type: 'article', content: [{ type: 'title' }] },
+        });
+        expect(buildDocumentFragmentJson([{ type: 'title' }], descriptor)).toEqual({
+            type: 'article',
+            content: [{ type: 'title' }],
+        });
+        expect(buildImageFragmentJson({ src: 'https://example.test/a.png' }, descriptor).type).toBe(
+            'article'
+        );
+        expect(buildMentionFragmentJson({ label: '@a' }, descriptor).type).toBe('article');
+    });
+
+    it('rejects schema node and expression work before resolving a descriptor', () => {
+        const tooManyNodes: SchemaDefinition = {
+            nodes: [
+                { name: 'article', content: 'title', role: 'doc' },
+                { name: 'title', content: '', role: 'textBlock' },
+                { name: 'text', content: '', role: 'text' },
+            ],
+            marks: [],
+        };
+
+        expect(() =>
+            resolveDocumentDescriptor(tooManyNodes, {
+                maxSchemaNodes: 2,
+                maxSchemaExpressionBytes: 1024,
+            })
+        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 2, actual: 3 }));
+
+        expect(() =>
+            resolveDocumentDescriptor(articleSchema, {
+                maxSchemaNodes: 10,
+                maxSchemaExpressionBytes: 5,
+            })
+        ).toThrow(expect.objectContaining({ code: 'SCHEMA_INVALID', limit: 5 }));
     });
 });

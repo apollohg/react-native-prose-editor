@@ -5,6 +5,7 @@ import {
     type EditorImageLoadingPolicy,
 } from './ImageLoadingPolicy';
 import { resolveEditorResourceLimits, type EditorResourceLimits } from './ResourceLimits';
+import { parseNativeBoundaryError } from './NativeEditorBoundaryError';
 import {
     type NativeSyntheticEvent,
     PixelRatio,
@@ -14,11 +15,7 @@ import {
 } from 'react-native';
 
 import { withMentionsSchema } from './addons';
-import {
-    serializeEditorTheme,
-    type EditorMentionTheme,
-    type EditorTheme,
-} from './EditorTheme';
+import { serializeEditorTheme, type EditorMentionTheme, type EditorTheme } from './EditorTheme';
 import type { DocumentJSON, RenderElement } from './NativeEditorBridge';
 import {
     getHeightCache,
@@ -28,7 +25,9 @@ import {
 } from './heightCache';
 import {
     normalizeDocumentJson,
+    resolveDocumentDescriptor,
     tiptapSchema,
+    type ResolvedDocumentSchema,
     type SchemaDefinition,
 } from './schemas';
 
@@ -49,9 +48,7 @@ interface NativeProseViewerViewProps {
     onContentHeightChange?: (
         event: NativeSyntheticEvent<NativeProseViewerContentHeightEvent>
     ) => void;
-    onPressLink?: (
-        event: NativeSyntheticEvent<NativeProseViewerLinkPressNativeEvent>
-    ) => void;
+    onPressLink?: (event: NativeSyntheticEvent<NativeProseViewerLinkPressNativeEvent>) => void;
     onPressMention?: (
         event: NativeSyntheticEvent<NativeProseViewerMentionPressNativeEvent>
     ) => void;
@@ -77,8 +74,7 @@ export interface NativeProseViewerMentionRenderContext {
     attrs: Record<string, unknown>;
 }
 
-export interface NativeProseViewerMentionPressEvent
-    extends NativeProseViewerMentionRenderContext {}
+export interface NativeProseViewerMentionPressEvent extends NativeProseViewerMentionRenderContext {}
 
 export interface NativeProseViewerLinkPressEvent {
     href: string;
@@ -131,9 +127,7 @@ interface NativeProseViewerHtmlProps extends NativeProseViewerBaseProps {
     contentJSON?: never;
 }
 
-export type NativeProseViewerProps =
-    | NativeProseViewerJsonProps
-    | NativeProseViewerHtmlProps;
+export type NativeProseViewerProps = NativeProseViewerJsonProps | NativeProseViewerHtmlProps;
 
 const NativeProseViewerView = requireNativeViewManager(
     'NativeEditor',
@@ -144,8 +138,7 @@ let nativeProseViewerModule: NativeProseViewerModule | null = null;
 
 function getNativeProseViewerModule(): NativeProseViewerModule {
     if (!nativeProseViewerModule) {
-        nativeProseViewerModule =
-            requireNativeModule<NativeProseViewerModule>('NativeEditor');
+        nativeProseViewerModule = requireNativeModule<NativeProseViewerModule>('NativeEditor');
     }
     return nativeProseViewerModule;
 }
@@ -205,8 +198,7 @@ function resolveConfiguredMentionPrefix(
     prefix: NativeProseViewerMentionPrefix | undefined,
     mention: NativeProseViewerMentionRenderContext
 ): string | undefined {
-    const rawPrefix =
-        typeof prefix === 'function' ? prefix(mention) : prefix;
+    const rawPrefix = typeof prefix === 'function' ? prefix(mention) : prefix;
     return typeof rawPrefix === 'string' && rawPrefix.length > 0 ? rawPrefix : undefined;
 }
 
@@ -362,8 +354,7 @@ function applyResolvedMentionRendering(
         }
 
         if (mention.mentionTheme && Object.keys(mention.mentionTheme).length > 0) {
-            nextElement =
-                nextElement === renderElement ? { ...nextElement } : nextElement;
+            nextElement = nextElement === renderElement ? { ...nextElement } : nextElement;
             nextElement.mentionTheme = mention.mentionTheme;
             didChange = true;
         }
@@ -542,7 +533,7 @@ function collapseTrailingEmptyParagraphRenderElements(renderJson: string): strin
 
 function serializeDocumentInput(
     document: NativeProseViewerContent,
-    schema: SchemaDefinition
+    descriptor: ResolvedDocumentSchema
 ): {
     normalizedDocument: DocumentJSON | null;
     serializedContentJson: string;
@@ -550,7 +541,7 @@ function serializeDocumentInput(
     if (typeof document === 'string') {
         try {
             const parsed = JSON.parse(document) as DocumentJSON;
-            const normalizedDocument = normalizeDocumentJson(parsed, schema);
+            const normalizedDocument = normalizeDocumentJson(parsed, descriptor);
             return {
                 normalizedDocument,
                 serializedContentJson: stringifyCachedJson(normalizedDocument),
@@ -563,29 +554,29 @@ function serializeDocumentInput(
         }
     }
 
-    const normalizedDocument = normalizeDocumentJson(document, schema);
+    const normalizedDocument = normalizeDocumentJson(document, descriptor);
     return {
         normalizedDocument,
         serializedContentJson: stringifyCachedJson(normalizedDocument),
     };
 }
 
-function extractRenderError(json: string): string | null {
+function extractRenderError(json: string): Error | null {
     try {
         const parsed = JSON.parse(json) as unknown;
         if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
             return null;
         }
+        const boundaryError = parseNativeBoundaryError(parsed);
+        if (boundaryError) return boundaryError;
         const error = (parsed as Record<string, unknown>).error;
-        return typeof error === 'string' ? error : null;
+        return typeof error === 'string' ? new Error(error) : null;
     } catch {
         return null;
     }
 }
 
-export function NativeProseViewer({
-    ...props
-}: NativeProseViewerProps) {
+export function NativeProseViewer({ ...props }: NativeProseViewerProps) {
     const {
         contentRevision,
         contentJSONRevision,
@@ -606,9 +597,17 @@ export function NativeProseViewer({
     const contentJSON = 'contentJSON' in props ? props.contentJSON : undefined;
     const contentHTML = 'contentHTML' in props ? props.contentHTML : undefined;
     const resolvedContentRevision = contentRevision ?? contentJSONRevision;
-    const documentSchema = useMemo(
-        () => withMentionsSchema(schema ?? tiptapSchema),
-        [schema]
+    const resolvedResourceLimits = useMemo(
+        () => resolveEditorResourceLimits(resourceLimits),
+        [resourceLimits]
+    );
+    const documentDescriptor = useMemo(
+        () =>
+            resolveDocumentDescriptor(
+                withMentionsSchema(schema ?? tiptapSchema),
+                resolvedResourceLimits
+            ),
+        [resolvedResourceLimits, schema]
     );
     const { normalizedDocument, serializedContentJson } = useMemo(() => {
         if (contentJSON === undefined) {
@@ -617,8 +616,8 @@ export function NativeProseViewer({
                 serializedContentJson: null,
             };
         }
-        return serializeDocumentInput(contentJSON, documentSchema);
-    }, [contentJSON, resolvedContentRevision, documentSchema]);
+        return serializeDocumentInput(contentJSON, documentDescriptor);
+    }, [contentJSON, resolvedContentRevision, documentDescriptor]);
     const themeJson = useMemo(() => serializeEditorTheme(theme), [theme]);
     const imageLoadingPolicyJson = useMemo(
         () => serializeEditorImageLoadingPolicy(imageLoadingPolicy),
@@ -628,54 +627,39 @@ export function NativeProseViewer({
         () =>
             normalizedDocument == null
                 ? new Map<number, ResolvedMentionPayload>()
-                : collectMentionPayloadsByDocPos(
-                      normalizedDocument,
-                      addons?.mentions
-                  ),
+                : collectMentionPayloadsByDocPos(normalizedDocument, addons?.mentions),
         [addons?.mentions, normalizedDocument]
     );
     const renderJson = useMemo(() => {
         const configJson = JSON.stringify({
-            schema: documentSchema,
+            schema: documentDescriptor.schema,
             ...(allowBase64Images ? { allowBase64Images } : {}),
-            ...(resourceLimits
-                ? { resourceLimits: resolveEditorResourceLimits(resourceLimits) }
-                : {}),
+            ...(resourceLimits ? { resourceLimits: resolvedResourceLimits } : {}),
         });
         const nextRenderJson =
             serializedContentJson != null
-                ? getNativeProseViewerModule().renderDocumentJson(
-                      configJson,
-                      serializedContentJson
-                  )
-                : getNativeProseViewerModule().renderDocumentHtml(
-                      configJson,
-                      contentHTML ?? ''
-                  );
+                ? getNativeProseViewerModule().renderDocumentJson(configJson, serializedContentJson)
+                : getNativeProseViewerModule().renderDocumentHtml(configJson, contentHTML ?? '');
         const renderError = extractRenderError(nextRenderJson);
         if (renderError != null) {
-            console.error(`NativeProseViewer: ${renderError}`);
+            console.error(`NativeProseViewer: ${renderError.message}`);
             return '[]';
         }
         if (looksLikeRenderElementsJson(nextRenderJson)) {
             const collapsedRenderJson = collapseTrailingEmptyParagraphs
                 ? collapseTrailingEmptyParagraphRenderElements(nextRenderJson)
                 : nextRenderJson;
-            return applyResolvedMentionRendering(
-                collapsedRenderJson,
-                mentionPayloadsByDocPos
-            );
+            return applyResolvedMentionRendering(collapsedRenderJson, mentionPayloadsByDocPos);
         }
-        console.error(
-            'NativeProseViewer: native renderDocumentJson returned an invalid payload.'
-        );
+        console.error('NativeProseViewer: native renderDocumentJson returned an invalid payload.');
         return '[]';
     }, [
         allowBase64Images,
         collapseTrailingEmptyParagraphs,
         contentHTML,
-        documentSchema,
+        documentDescriptor,
         mentionPayloadsByDocPos,
+        resolvedResourceLimits,
         resourceLimits,
         serializedContentJson,
     ]);
@@ -691,13 +675,10 @@ export function NativeProseViewer({
         setContentHeight(null);
     }, [contentId]);
 
-    const renderJsonHash = useMemo(
-        () => computeRenderJsonHash(renderJson),
-        [renderJson]
-    );
+    const renderJsonHash = useMemo(() => computeRenderJsonHash(renderJson), [renderJson]);
 
     const layoutContextKey = useMemo(
-        () => containerWidth != null ? computeLayoutContextKey(themeJson, containerWidth) : null,
+        () => (containerWidth != null ? computeLayoutContextKey(themeJson, containerWidth) : null),
         [themeJson, containerWidth]
     );
 
@@ -721,17 +702,13 @@ export function NativeProseViewer({
     }, [contentId, containerWidth, renderJson, themeJson, layoutContextKey, renderJsonHash]);
 
     const handleContentHeightChange = useCallback(
-        (
-            event: NativeSyntheticEvent<NativeProseViewerContentHeightEvent>
-        ) => {
+        (event: NativeSyntheticEvent<NativeProseViewerContentHeightEvent>) => {
             const density = Platform.OS === 'android' ? PixelRatio.get() : 1;
             const nextHeight = Math.ceil(event.nativeEvent.contentHeight / density);
             if (nextHeight < 0) return;
             if (nextHeight === 0 && !renderJsonIsCollapsedEmpty) return;
             if (nextHeight === 0) {
-                setContentHeight((currentHeight) =>
-                    currentHeight === 0 ? currentHeight : 0
-                );
+                setContentHeight((currentHeight) => (currentHeight === 0 ? currentHeight : 0));
                 return;
             }
             setContentHeight((currentHeight) =>
@@ -745,9 +722,7 @@ export function NativeProseViewer({
     );
 
     const handlePressMention = useCallback(
-        (
-            event: NativeSyntheticEvent<NativeProseViewerMentionPressNativeEvent>
-        ) => {
+        (event: NativeSyntheticEvent<NativeProseViewerMentionPressNativeEvent>) => {
             if (!mentionPressHandler) return;
 
             const { docPos, label } = event.nativeEvent;
@@ -781,11 +756,7 @@ export function NativeProseViewer({
         } else if (preMeasuredHeight != null && preMeasuredHeight > 0) {
             measuredStyle = { minHeight: preMeasuredHeight };
         }
-        return [
-            { minHeight: renderJsonIsCollapsedEmpty ? 0 : 1 },
-            style,
-            measuredStyle,
-        ];
+        return [{ minHeight: renderJsonIsCollapsedEmpty ? 0 : 1 }, style, measuredStyle];
     }, [contentHeight, preMeasuredHeight, renderJsonIsCollapsedEmpty, style]);
 
     return (
@@ -800,9 +771,7 @@ export function NativeProseViewer({
             onContentHeightChange={handleContentHeightChange}
             onPressLink={typeof onPressLink === 'function' ? handlePressLink : undefined}
             onPressMention={
-                typeof mentionPressHandler === 'function'
-                    ? handlePressMention
-                    : undefined
+                typeof mentionPressHandler === 'function' ? handlePressMention : undefined
             }
         />
     );
