@@ -106,10 +106,14 @@ validate_archive_architectures() {
       ar -x "$thin_archive"
       nm -gU ./*.o >/dev/null 2>&1
     ) || fail "$label $architecture archive contains an unreadable Mach-O object member"
+    local architecture_nm_output
+    architecture_nm_output="$(nm -gU "$thin_archive" 2>&1)" || \
+      fail "$label $architecture archive symbols cannot be read: $architecture_nm_output"
+    require_structured_create_symbols \
+      "$thin_archive" \
+      "$architecture_nm_output" \
+      "$label $architecture archive"
   done
-  local nm_output
-  nm_output="$(nm -gU "$archive_path" 2>&1)" || fail "$label archive symbols cannot be read: $nm_output"
-  require_structured_create_symbols "$archive_path" "$nm_output" "$label archive"
 }
 
 validate_xcframework() {

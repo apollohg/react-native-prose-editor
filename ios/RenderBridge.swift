@@ -354,20 +354,21 @@ final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionDataDeleg
         let request = URLRequest(url: url)
         let task = session.dataTask(with: request)
         self.task = task
-        let timeoutController = ImageRequestTimeoutController(
-            connectTimeout: policy.connectTimeout,
-            readTimeout: policy.readTimeout,
-            requestTimeout: policy.requestTimeout,
-            schedule: { delay, action in
-                DispatchImageTimeoutTask(delay: delay, action: action)
-            },
-            onTimeout: { [weak self] in
-                self?.finish(.failure(URLError(.timedOut)))
-            }
-        )
-        self.timeoutController = timeoutController
-        timeoutController.start()
+        startTimeoutController { delay, action in
+            DispatchImageTimeoutTask(delay: delay, action: action)
+        }
         task.resume()
+    }
+
+    init(
+        policy: ImageLoadingPolicy,
+        timeoutSchedule: @escaping ImageRequestTimeoutController.Schedule,
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) {
+        self.policy = policy
+        self.completion = completion
+        super.init()
+        startTimeoutController(schedule: timeoutSchedule)
     }
 
     static func configuration(policy: ImageLoadingPolicy) -> URLSessionConfiguration {
@@ -395,12 +396,24 @@ final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionDataDeleg
             finish(.failure(URLError(.dataLengthExceedsMaximum)))
             return
         }
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            completionHandler(.cancel)
+            return
+        }
+        let timeoutController = self.timeoutController
+        lock.unlock()
         timeoutController?.receivedResponse()
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
         let exceedsLimit = Self.wouldExceedLimit(
             currentCount: buffer.count,
             incomingCount: data.count,
@@ -409,6 +422,7 @@ final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionDataDeleg
         if !exceedsLimit {
             buffer.append(data)
         }
+        let timeoutController = exceedsLimit ? nil : self.timeoutController
         lock.unlock()
         guard !exceedsLimit else {
             finish(.failure(URLError(.dataLengthExceedsMaximum)))
@@ -440,6 +454,28 @@ final class URLSessionImageTask: NSObject, ImageLoadingTask, URLSessionDataDeleg
         guard currentCount >= 0, incomingCount >= 0, maxBytes >= 0 else { return true }
         guard incomingCount <= maxBytes else { return true }
         return currentCount > maxBytes - incomingCount
+    }
+
+    private func startTimeoutController(
+        schedule: @escaping ImageRequestTimeoutController.Schedule
+    ) {
+        let timeoutController = ImageRequestTimeoutController(
+            connectTimeout: policy.connectTimeout,
+            readTimeout: policy.readTimeout,
+            requestTimeout: policy.requestTimeout,
+            schedule: schedule,
+            onTimeout: { [weak self] in
+                self?.finish(.failure(URLError(.timedOut)))
+            }
+        )
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        self.timeoutController = timeoutController
+        lock.unlock()
+        timeoutController.start()
     }
 
     private func finish(_ result: Result<Data, Error>, deliver: Bool = true) {

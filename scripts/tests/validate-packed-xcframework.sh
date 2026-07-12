@@ -94,6 +94,19 @@ ar -rcs "$fixture_root/unrelated.a" "$fixture_root/unrelated.o"
 cp "$fixture_root/unrelated.a" "$missing_symbol_fixture/ios-arm64/libeditor_core.a"
 assert_rejected "$missing_symbol_fixture" "an architecture-correct archive without structured-create symbols"
 
+mixed_symbol_fixture="$fixture_root/mixed per-architecture symbols.xcframework"
+cp -R "$repo_root/ios/EditorCore.xcframework" "$mixed_symbol_fixture"
+xcrun clang -target x86_64-apple-ios15.1-simulator -c "$fixture_root/unrelated.c" \
+  -o "$fixture_root/unrelated-x86_64.o"
+ar -rcs "$fixture_root/unrelated-x86_64.a" "$fixture_root/unrelated-x86_64.o"
+lipo -create \
+  "$repo_root/ios/EditorCore.xcframework/ios-arm64/libeditor_core.a" \
+  "$fixture_root/unrelated-x86_64.a" \
+  -output "$mixed_symbol_fixture/ios-arm64_x86_64-simulator/libeditor_core.a"
+assert_rejected \
+  "$mixed_symbol_fixture" \
+  "a fat archive whose structured-create symbols exist only in its arm64 slice"
+
 "$validator" --validate-android-library \
   "$repo_root/rust/android/x86_64/libeditor_core.so" x86_64
 if "$validator" --validate-android-library \

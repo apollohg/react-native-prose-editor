@@ -278,6 +278,72 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(configuration.timeoutIntervalForResource, 60)
     }
 
+    func testURLSessionTimeoutRaceDeliversOnceAndCannotRearmAfterTerminalState() {
+        for _ in 0..<100 {
+            let scheduler = ConcurrentImageTimeoutScheduler()
+            let completionLock = NSLock()
+            var completionCount = 0
+            let task = URLSessionImageTask(
+                policy: imagePolicy(connectTimeout: 10, readTimeout: 20, requestTimeout: 60),
+                timeoutSchedule: scheduler.schedule
+            ) { _ in
+                completionLock.lock()
+                completionCount += 1
+                completionLock.unlock()
+            }
+            let dataTask = URLSession.shared.dataTask(with: URL(string: "https://example.com")!)
+            let group = DispatchGroup()
+            let queue = DispatchQueue(label: "URLSessionImageTask.timeout-race", attributes: .concurrent)
+
+            group.enter()
+            queue.async {
+                scheduler.fire(delay: 60)
+                group.leave()
+            }
+            group.enter()
+            queue.async {
+                let response = URLResponse(
+                    url: dataTask.originalRequest!.url!,
+                    mimeType: "image/png",
+                    expectedContentLength: 1,
+                    textEncodingName: nil
+                )
+                task.urlSession(
+                    URLSession.shared,
+                    dataTask: dataTask,
+                    didReceive: response,
+                    completionHandler: { _ in }
+                )
+                task.urlSession(URLSession.shared, dataTask: dataTask, didReceive: Data([1]))
+                group.leave()
+            }
+            XCTAssertEqual(group.wait(timeout: .now() + 1), .success)
+
+            completionLock.lock()
+            let terminalCount = completionCount
+            completionLock.unlock()
+            XCTAssertEqual(terminalCount, 1)
+            XCTAssertEqual(scheduler.pendingCount, 0)
+
+            let scheduledAtTerminal = scheduler.totalCount
+            let response = URLResponse(
+                url: dataTask.originalRequest!.url!,
+                mimeType: "image/png",
+                expectedContentLength: 1,
+                textEncodingName: nil
+            )
+            task.urlSession(
+                URLSession.shared,
+                dataTask: dataTask,
+                didReceive: response,
+                completionHandler: { _ in }
+            )
+            task.urlSession(URLSession.shared, dataTask: dataTask, didReceive: Data([2]))
+            XCTAssertEqual(scheduler.totalCount, scheduledAtTerminal)
+            XCTAssertEqual(scheduler.pendingCount, 0)
+        }
+    }
+
     func testImageCacheEvictsLeastRecentlyUsedEntriesByDecodedCost() {
         let cache = RenderImageCostCache(costLimit: 10)
         let image = onePixelImage()
@@ -3243,6 +3309,65 @@ private final class ManualImageTimeoutScheduler {
 
     func fireAllActive() {
         tasks.filter { !$0.cancelled }.forEach { $0.action() }
+    }
+}
+
+private final class ConcurrentImageTimeoutScheduler {
+    private final class ScheduledTask: ImageLoadingTask {
+        let delay: TimeInterval
+        let action: () -> Void
+        private let lock = NSLock()
+        private var cancelled = false
+
+        init(delay: TimeInterval, action: @escaping () -> Void) {
+            self.delay = delay
+            self.action = action
+        }
+
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            lock.unlock()
+        }
+
+        var isCancelled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return cancelled
+        }
+    }
+
+    private let lock = NSLock()
+    private var tasks: [ScheduledTask] = []
+
+    lazy var schedule: (TimeInterval, @escaping () -> Void) -> ImageLoadingTask = {
+        [weak self] delay, action in
+        let task = ScheduledTask(delay: delay, action: action)
+        guard let self else { return task }
+        self.lock.lock()
+        self.tasks.append(task)
+        self.lock.unlock()
+        return task
+    }
+
+    var totalCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return tasks.count
+    }
+
+    var pendingCount: Int {
+        lock.lock()
+        let snapshot = tasks
+        lock.unlock()
+        return snapshot.filter { !$0.isCancelled }.count
+    }
+
+    func fire(delay: TimeInterval) {
+        lock.lock()
+        let task = tasks.first { $0.delay == delay && !$0.isCancelled }
+        lock.unlock()
+        task?.action()
     }
 }
 
