@@ -39,6 +39,11 @@ export interface MarkSpec {
     attrs?: Record<string, AttrSpec>;
     excludes?: string;
     /**
+     * Serializer tag for a custom mark. Native accepts only the inert allowlist:
+     * span, strong, em, u, s, code, a, sub, sup, mark.
+     */
+    htmlTag?: 'span' | 'strong' | 'em' | 'u' | 's' | 'code' | 'a' | 'sub' | 'sup' | 'mark';
+    /**
      * Opt-in escape hatch: when `true`, JSON ingestion (`set_json` /
      * `insert_content_json`) admits attrs on this mark that are not declared
      * in `attrs`, instead of filtering them out. Default `false`. Mirrors
@@ -359,7 +364,10 @@ export function resolveDocumentSchema(
     limits?: DocumentDescriptorLimits
 ): SchemaDefinition {
     if (schema == null) return tiptapSchema;
-    if (!Array.isArray(schema.nodes) || !Array.isArray(schema.marks)) return tiptapSchema;
+    if (!Array.isArray(schema.nodes)) return tiptapSchema;
+    if (!Array.isArray(schema.marks)) {
+        schema = { ...schema, marks: [] };
+    }
 
     const resolvedLimits = resolveDescriptorLimits(limits);
     if (schema.nodes.length > resolvedLimits.maxSchemaNodes) {
@@ -405,6 +413,10 @@ export function resolveDocumentSchema(
             mark == null ||
             typeof mark.name !== 'string' ||
             mark.name.length === 0 ||
+            (mark.htmlTag != null &&
+                !['span', 'strong', 'em', 'u', 's', 'code', 'a', 'sub', 'sup', 'mark'].includes(
+                    mark.htmlTag
+                )) ||
             markNames.has(mark.name)
         ) {
             return tiptapSchema;

@@ -1,7 +1,11 @@
 import { requireNativeModule } from 'expo-modules-core';
 import { Platform } from 'react-native';
 import type { EditorMentionTheme } from './EditorTheme';
-import { resolveEditorResourceLimits, type EditorResourceLimits } from './ResourceLimits';
+import {
+    resolveEditorResourceLimits,
+    type EditorResourceLimits,
+    type ResolvedEditorResourceLimits,
+} from './ResourceLimits';
 import {
     normalizeDocumentJson,
     resolveDocumentDescriptor,
@@ -15,6 +19,61 @@ const ERR_NATIVE_RESPONSE = 'NativeEditorBridge: invalid JSON response from nati
 const ERR_INVALID_ENCODED_STATE = 'NativeEditorBridge: invalid encoded collaboration state';
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const MAX_NATIVE_LENGTH = 0xffff_ffff;
+
+function utf8ByteLengthUpTo(value: string, limit: number): number {
+    let bytes = 0;
+    for (let index = 0; index < value.length; index += 1) {
+        const code = value.charCodeAt(index);
+        if (code <= 0x7f) bytes += 1;
+        else if (code <= 0x7ff) bytes += 2;
+        else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+            const low = value.charCodeAt(index + 1);
+            if (low >= 0xdc00 && low <= 0xdfff) {
+                bytes += 4;
+                index += 1;
+            } else bytes += 3;
+        } else bytes += 3;
+        if (bytes > limit) return bytes;
+    }
+    return bytes;
+}
+
+function assertInputStringWithinLimit(value: string, limit: number): void {
+    const actual = utf8ByteLengthUpTo(value, limit);
+    if (actual > limit) {
+        throw new NativeEditorBoundaryError(
+            'INPUT_LIMIT_EXCEEDED',
+            `input exceeds limit ${limit}: ${actual}`,
+            limit,
+            actual
+        );
+    }
+}
+
+function assertCountWithinLimit(actual: number, limit: number): void {
+    if (actual > limit) {
+        throw new NativeEditorBoundaryError(
+            'INPUT_LIMIT_EXCEEDED',
+            `input exceeds limit ${limit}: ${actual}`,
+            limit,
+            actual
+        );
+    }
+}
+
+function encodedStateByteLength(encodedState: EncodedCollaborationStateInput): number {
+    if (typeof encodedState !== 'string') return encodedState.length;
+    let symbols = 0;
+    let padding = 0;
+    for (let index = 0; index < encodedState.length; index += 1) {
+        const char = encodedState[index];
+        if (/\s/.test(char)) continue;
+        symbols += 1;
+        padding = char === '=' ? padding + 1 : 0;
+    }
+    if (symbols === 0) return 0;
+    return Math.max(0, Math.floor((symbols * 3) / 4) - Math.min(padding, 2));
+}
 
 export interface NativeEditorModule {
     editorCreateResult(configJson: string): string;
@@ -455,7 +514,7 @@ function parseCollaborationPeersJson(json: string): CollaborationPeer[] {
     }
 }
 
-function parseByteArrayJson(json: string): Uint8Array {
+function parseByteArrayJson(json: string, limit?: number): Uint8Array {
     if (!json || json === '[]') return new Uint8Array();
     try {
         const parsed = JSON.parse(json) as unknown;
@@ -464,6 +523,7 @@ function parseByteArrayJson(json: string): Uint8Array {
         if (!Array.isArray(parsed)) {
             throw new Error(ERR_NATIVE_RESPONSE);
         }
+        if (limit != null) assertCountWithinLimit(parsed.length, limit);
         return Uint8Array.from(parsed as number[]);
     } catch (e) {
         rethrowParsedNativeError(e);
@@ -685,10 +745,16 @@ export class NativeEditorBridge {
     private _lastCommandPreflightUpdate: EditorUpdate | null = null;
     private _lastAcceptedUpdateJson: string | null = null;
     private _hasSeenDocumentVersion = false;
+    private readonly _resourceLimits: ResolvedEditorResourceLimits;
 
-    private constructor(editorId: number, descriptor: ResolvedDocumentSchema) {
+    private constructor(
+        editorId: number,
+        descriptor: ResolvedDocumentSchema,
+        resourceLimits: ResolvedEditorResourceLimits
+    ) {
         this._editorId = editorId;
         this._documentDescriptor = descriptor;
+        this._resourceLimits = resourceLimits;
     }
 
     /** Create a new editor instance backed by the Rust engine. */
@@ -701,6 +767,7 @@ export class NativeEditorBridge {
         documentDescriptor?: ResolvedDocumentSchema;
     }): NativeEditorBridge {
         const configObj: Record<string, unknown> = {};
+        const resolvedResourceLimits = resolveEditorResourceLimits(config?.resourceLimits);
         let parsedSchema: SchemaDefinition | undefined;
         if (config?.maxLength != null) {
             if (
@@ -716,6 +783,7 @@ export class NativeEditorBridge {
             configObj.allowBase64Images = config.allowBase64Images;
         }
         if (config?.schemaJson != null) {
+            assertInputStringWithinLimit(config.schemaJson, resolvedResourceLimits.maxInputBytes);
             try {
                 parsedSchema = JSON.parse(config.schemaJson) as SchemaDefinition;
                 configObj.schema = parsedSchema;
@@ -727,15 +795,16 @@ export class NativeEditorBridge {
             configObj.resourceLimits = resolveEditorResourceLimits(config.resourceLimits);
         }
         const descriptor =
-            config?.documentDescriptor ??
-            resolveDocumentDescriptor(parsedSchema, config?.resourceLimits);
+            parsedSchema == null && config?.documentDescriptor != null
+                ? config.documentDescriptor
+                : resolveDocumentDescriptor(parsedSchema, config?.resourceLimits);
         const nativeModule = getNativeModule();
         const configJson = JSON.stringify(configObj);
         const id = parseEditorId(nativeModule.editorCreateResult(configJson));
         if (!Number.isSafeInteger(id) || id <= 0) {
             throw new Error('NativeEditorBridge: native editor creation failed');
         }
-        return new NativeEditorBridge(id, descriptor);
+        return new NativeEditorBridge(id, descriptor, resolvedResourceLimits);
     }
 
     /** The underlying native editor ID. */
@@ -830,6 +899,7 @@ export class NativeEditorBridge {
     /** Set content from a serialized ProseMirror JSON string. Returns render elements. */
     setJsonString(jsonString: string): RenderElement[] {
         this.assertNotDestroyed();
+        assertInputStringWithinLimit(jsonString, this._resourceLimits.maxInputBytes);
         this.invalidateContentCaches();
         this._renderBlocksCache = null;
         const normalizedJsonString = normalizeDocumentJsonString(
@@ -1196,6 +1266,7 @@ export class NativeEditorBridge {
     /** Replace entire document with a serialized JSON transaction. */
     replaceJsonString(jsonString: string): EditorUpdate | null {
         this.assertNotDestroyed();
+        assertInputStringWithinLimit(jsonString, this._resourceLimits.maxInputBytes);
         const normalizedJsonString = normalizeDocumentJsonString(
             jsonString,
             this._documentDescriptor
@@ -1487,9 +1558,11 @@ export class NativeEditorBridge {
 export class NativeCollaborationBridge {
     private _sessionId: number;
     private _destroyed = false;
+    private readonly _resourceLimits: ResolvedEditorResourceLimits;
 
-    private constructor(sessionId: number) {
+    private constructor(sessionId: number, resourceLimits: ResolvedEditorResourceLimits) {
         this._sessionId = sessionId;
+        this._resourceLimits = resourceLimits;
     }
 
     static create(config?: {
@@ -1511,6 +1584,19 @@ export class NativeCollaborationBridge {
             throw new Error('NativeEditorBridge: invalid maxLength');
         }
         const { initialEncodedState, resourceLimits, ...normalizedConfig } = config ?? {};
+        const resolvedResourceLimits = resolveEditorResourceLimits(resourceLimits);
+        if (initialEncodedState != null) {
+            assertCountWithinLimit(
+                encodedStateByteLength(initialEncodedState),
+                resolvedResourceLimits.maxEncodedStateBytes
+            );
+        }
+        if (normalizedConfig.initialDocumentJson != null) {
+            assertInputStringWithinLimit(
+                JSON.stringify(normalizedConfig.initialDocumentJson),
+                resolvedResourceLimits.maxInputBytes
+            );
+        }
         const resolvedConfig =
             resourceLimits == null
                 ? normalizedConfig
@@ -1526,7 +1612,7 @@ export class NativeCollaborationBridge {
         if (!Number.isSafeInteger(id) || id <= 0) {
             throw new Error('NativeEditorBridge: native collaboration creation failed');
         }
-        const bridge = new NativeCollaborationBridge(id);
+        const bridge = new NativeCollaborationBridge(id, resolvedResourceLimits);
         if (initialEncodedState != null) {
             try {
                 bridge.replaceEncodedState(initialEncodedState);
@@ -1563,7 +1649,7 @@ export class NativeCollaborationBridge {
         this.assertNotDestroyed();
         const json = getNativeModule().collaborationSessionGetEncodedState(this._sessionId);
         throwIfNativeBoundaryError(json);
-        return parseByteArrayJson(json);
+        return parseByteArrayJson(json, this._resourceLimits.maxEncodedStateBytes);
     }
 
     getEncodedStateBase64(): string {
@@ -1579,24 +1665,30 @@ export class NativeCollaborationBridge {
 
     start(): CollaborationResult {
         this.assertNotDestroyed();
-        return parseCollaborationResultJson(
+        return this.parseBoundedResult(
             getNativeModule().collaborationSessionStart(this._sessionId)
         );
     }
 
     applyLocalDocumentJson(doc: DocumentJSON): CollaborationResult {
         this.assertNotDestroyed();
-        return parseCollaborationResultJson(
+        const json = JSON.stringify(doc);
+        assertInputStringWithinLimit(json, this._resourceLimits.maxInputBytes);
+        return this.parseBoundedResult(
             getNativeModule().collaborationSessionApplyLocalDocumentJson(
                 this._sessionId,
-                JSON.stringify(doc)
+                json
             )
         );
     }
 
     applyEncodedState(encodedState: EncodedCollaborationStateInput): CollaborationResult {
         this.assertNotDestroyed();
-        return parseCollaborationResultJson(
+        assertCountWithinLimit(
+            encodedStateByteLength(encodedState),
+            this._resourceLimits.maxEncodedStateBytes
+        );
+        return this.parseBoundedResult(
             getNativeModule().collaborationSessionApplyEncodedState(
                 this._sessionId,
                 JSON.stringify(normalizeEncodedStateInput(encodedState))
@@ -1606,7 +1698,11 @@ export class NativeCollaborationBridge {
 
     replaceEncodedState(encodedState: EncodedCollaborationStateInput): CollaborationResult {
         this.assertNotDestroyed();
-        return parseCollaborationResultJson(
+        assertCountWithinLimit(
+            encodedStateByteLength(encodedState),
+            this._resourceLimits.maxEncodedStateBytes
+        );
+        return this.parseBoundedResult(
             getNativeModule().collaborationSessionReplaceEncodedState(
                 this._sessionId,
                 JSON.stringify(normalizeEncodedStateInput(encodedState))
@@ -1616,7 +1712,8 @@ export class NativeCollaborationBridge {
 
     handleMessage(bytes: readonly number[]): CollaborationResult {
         this.assertNotDestroyed();
-        return parseCollaborationResultJson(
+        assertCountWithinLimit(bytes.length, this._resourceLimits.maxCollaborationMessageBytes);
+        return this.parseBoundedResult(
             getNativeModule().collaborationSessionHandleMessage(
                 this._sessionId,
                 JSON.stringify(Array.from(bytes))
@@ -1626,7 +1723,7 @@ export class NativeCollaborationBridge {
 
     setLocalAwareness(state: Record<string, unknown>): CollaborationResult {
         this.assertNotDestroyed();
-        return parseCollaborationResultJson(
+        return this.parseBoundedResult(
             getNativeModule().collaborationSessionSetLocalAwareness(
                 this._sessionId,
                 JSON.stringify(state)
@@ -1636,7 +1733,7 @@ export class NativeCollaborationBridge {
 
     clearLocalAwareness(): CollaborationResult {
         this.assertNotDestroyed();
-        return parseCollaborationResultJson(
+        return this.parseBoundedResult(
             getNativeModule().collaborationSessionClearLocalAwareness(this._sessionId)
         );
     }
@@ -1645,5 +1742,16 @@ export class NativeCollaborationBridge {
         if (this._destroyed) {
             throw new Error(ERR_DESTROYED);
         }
+    }
+
+    private parseBoundedResult(json: string): CollaborationResult {
+        const result = parseCollaborationResultJson(json);
+        for (const message of result.messages) {
+            assertCountWithinLimit(
+                message.length,
+                this._resourceLimits.maxCollaborationMessageBytes
+            );
+        }
+        return result;
     }
 }

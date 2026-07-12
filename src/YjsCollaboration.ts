@@ -10,7 +10,12 @@ import {
     encodeCollaborationStateBase64,
 } from './NativeEditorBridge';
 import type { RemoteSelectionDecoration } from './NativeRichTextEditor';
-import type { EditorResourceLimits } from './ResourceLimits';
+import {
+    resolveEditorResourceLimits,
+    type EditorResourceLimits,
+    type ResolvedEditorResourceLimits,
+} from './ResourceLimits';
+import { NativeEditorBoundaryError } from './NativeEditorBoundaryError';
 import {
     normalizeDocumentJson,
     resolveDocumentDescriptor,
@@ -197,17 +202,50 @@ function localAwarenessEquals(left: LocalAwarenessState, right: LocalAwarenessSt
     );
 }
 
-function normalizeMessageBytes(data: unknown): number[] | null {
+function limitedUtf8ByteLength(value: string, limit: number): number {
+    let bytes = 0;
+    for (let index = 0; index < value.length; index += 1) {
+        const code = value.charCodeAt(index);
+        if (code <= 0x7f) bytes += 1;
+        else if (code <= 0x7ff) bytes += 2;
+        else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+            const low = value.charCodeAt(index + 1);
+            if (low >= 0xdc00 && low <= 0xdfff) {
+                bytes += 4;
+                index += 1;
+            } else bytes += 3;
+        } else bytes += 3;
+        if (bytes > limit) return bytes;
+    }
+    return bytes;
+}
+
+function messageLimitError(limit: number, actual: number): NativeEditorBoundaryError {
+    return new NativeEditorBoundaryError(
+        'INPUT_LIMIT_EXCEEDED',
+        `collaboration message exceeds limit ${limit}: ${actual}`,
+        limit,
+        actual
+    );
+}
+
+function normalizeMessageBytes(data: unknown, limit: number): number[] | null {
     if (data instanceof ArrayBuffer) {
+        if (data.byteLength > limit) throw messageLimitError(limit, data.byteLength);
         return Array.from(new Uint8Array(data));
     }
     if (ArrayBuffer.isView(data)) {
+        if (data.byteLength > limit) throw messageLimitError(limit, data.byteLength);
         return Array.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
     }
     if (typeof data === 'string') {
+        const inputBytes = limitedUtf8ByteLength(data, limit);
+        if (inputBytes > limit) throw messageLimitError(limit, inputBytes);
         try {
             const parsed = JSON.parse(data) as number[];
-            return Array.isArray(parsed) ? parsed : null;
+            if (!Array.isArray(parsed)) return null;
+            if (parsed.length > limit) throw messageLimitError(limit, parsed.length);
+            return parsed;
         } catch {
             return null;
         }
@@ -308,8 +346,35 @@ function peersToRemoteSelections(peers: readonly CollaborationPeer[]): RemoteSel
     });
 }
 
-function encodeInitialStateKey(encodedState: EncodedCollaborationStateInput | undefined): string {
+function encodedStateInputLength(encodedState: EncodedCollaborationStateInput): number {
+    if (typeof encodedState !== 'string') return encodedState.length;
+    let symbols = 0;
+    let padding = 0;
+    for (let index = 0; index < encodedState.length; index += 1) {
+        const char = encodedState[index];
+        if (/\s/.test(char)) continue;
+        symbols += 1;
+        padding = char === '=' ? padding + 1 : 0;
+    }
+    return symbols === 0
+        ? 0
+        : Math.max(0, Math.floor((symbols * 3) / 4) - Math.min(padding, 2));
+}
+
+function encodeInitialStateKey(
+    encodedState: EncodedCollaborationStateInput | undefined,
+    limits: ResolvedEditorResourceLimits
+): string {
     if (encodedState == null) return '';
+    const actual = encodedStateInputLength(encodedState);
+    if (actual > limits.maxEncodedStateBytes) {
+        throw new NativeEditorBoundaryError(
+            'INPUT_LIMIT_EXCEEDED',
+            `encoded state exceeds limit ${limits.maxEncodedStateBytes}: ${actual}`,
+            limits.maxEncodedStateBytes,
+            actual
+        );
+    }
     return encodeCollaborationStateBase64(encodedState);
 }
 
@@ -318,6 +383,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     private readonly callbacks: MutableCallbacks;
     private readonly createWebSocket: () => WebSocket;
     private readonly retryIntervalMs?: YjsRetryInterval | false;
+    private readonly resourceLimits: ResolvedEditorResourceLimits;
     private socket: WebSocket | null = null;
     private destroyed = false;
     private retryAttempt = 0;
@@ -339,6 +405,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.callbacks = callbacks;
         this.createWebSocket = options.createWebSocket;
         this.retryIntervalMs = options.retryIntervalMs;
+        this.resourceLimits = resolveEditorResourceLimits(options.resourceLimits);
         this.localAwarenessState = {
             user: options.localAwareness,
             focused: false,
@@ -453,22 +520,16 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
 
         socket.onmessage = (event) => {
             if (this.destroyed || this.socket !== socket) return;
-            const bytes = normalizeMessageBytes(event.data);
-            if (!bytes) return;
-            if (readFirstVarUint(bytes) === Y_WEBSOCKET_MESSAGE_QUERY_AWARENESS) {
-                try {
-                    this.commitLocalAwareness();
-                } catch (error) {
-                    this.handleTransportFailure(
-                        error instanceof Error
-                            ? error
-                            : new Error('Yjs collaboration protocol error'),
-                        socket
-                    );
-                }
-                return;
-            }
             try {
+                const bytes = normalizeMessageBytes(
+                    event.data,
+                    this.resourceLimits.maxCollaborationMessageBytes
+                );
+                if (!bytes) return;
+                if (readFirstVarUint(bytes) === Y_WEBSOCKET_MESSAGE_QUERY_AWARENESS) {
+                    this.commitLocalAwareness();
+                    return;
+                }
                 if (this.pendingAwarenessTimer != null) {
                     this.commitLocalAwareness();
                 }
@@ -777,7 +838,11 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
     createWebSocketRef.current = options.createWebSocket;
 
     const controllerRef = useRef<YjsCollaborationControllerImpl | null>(null);
-    const initialEncodedStateKey = encodeInitialStateKey(options.initialEncodedState);
+    const resolvedResourceLimits = resolveEditorResourceLimits(options.resourceLimits);
+    const initialEncodedStateKey = encodeInitialStateKey(
+        options.initialEncodedState,
+        resolvedResourceLimits
+    );
     const localAwarenessKey = JSON.stringify(options.localAwareness);
     const schemaKey = JSON.stringify(options.schema ?? null);
     const resourceLimitsKey = JSON.stringify(options.resourceLimits ?? null);

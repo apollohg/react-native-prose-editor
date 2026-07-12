@@ -275,6 +275,42 @@ describe('NativeProseViewer', () => {
         });
     });
 
+    it('uses the custom document root when resolving mention positions', () => {
+        const onPress = jest.fn();
+        const schema = {
+            nodes: [
+                { name: 'article', content: 'title+', role: 'doc' },
+                { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
+                { name: 'text', content: '', group: 'inline', role: 'text' },
+            ],
+            marks: [],
+        };
+        const { getByTestId } = render(
+            <NativeProseViewer
+                schema={schema}
+                contentJSON={{
+                    type: 'article',
+                    content: [
+                        {
+                            type: 'title',
+                            content: [{ type: 'mention', attrs: { id: '1', label: '@a' } }],
+                        },
+                    ],
+                }}
+                addons={{ mentions: { onPress } }}
+            />
+        );
+
+        fireEvent(getByTestId('native-prose-viewer'), 'onPressMention', {
+            nativeEvent: { docPos: 1, label: '@a' },
+        });
+        expect(onPress).toHaveBeenCalledWith({
+            docPos: 1,
+            label: '@a',
+            attrs: { id: '1', label: '@a' },
+        });
+    });
+
     it('applies mention prefixes and per-mention theme overrides before rendering', () => {
         const onPress = jest.fn();
         mockRenderDocumentJson.mockReturnValueOnce(

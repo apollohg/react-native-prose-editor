@@ -624,7 +624,8 @@ function findAutoLinkCandidateInInlineBlock(
 
 function findAutoLinkCandidateInDocument(
     document: DocumentJSON,
-    cursorDocPos: number
+    cursorDocPos: number,
+    documentNodeName: string
 ): AutoLinkCandidate | null {
     const visit = (
         node: unknown,
@@ -643,7 +644,7 @@ function findAutoLinkCandidateInDocument(
             return { candidate: null, nextPos: pos + unicodeScalarCount(text) };
         }
 
-        if (isRoot && nodeType === 'doc') {
+        if (isRoot && nodeType === documentNodeName) {
             let nextPos = pos;
             for (const child of content) {
                 const result = visit(child, nextPos);
@@ -1717,7 +1718,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     const cursorDocPos = candidateUpdate.selection.head;
                     const candidate = findAutoLinkCandidateInDocument(
                         bridgeRef.current.getJson(),
-                        cursorDocPos
+                        cursorDocPos,
+                        documentDescriptor.documentNodeName
                     );
                     if (!candidate) {
                         return candidateUpdate;
@@ -1768,7 +1770,11 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
 
                 return applyAutoLink(update, true);
             },
-            [autoDetectLinks, consumeBlockedCommandForRetry]
+            [
+                autoDetectLinks,
+                consumeBlockedCommandForRetry,
+                documentDescriptor.documentNodeName,
+            ]
         );
 
         const syncNativeUpdateFromBridge = useCallback(

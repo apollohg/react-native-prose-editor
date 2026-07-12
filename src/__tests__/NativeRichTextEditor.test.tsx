@@ -5879,6 +5879,38 @@ describe('NativeRichTextEditor', () => {
             expect(mockApplyEditorUpdate).toHaveBeenCalledWith(MOCK_AUTO_LINKED_UPDATE_JSON);
         });
 
+        it('uses a custom document root when calculating auto-link positions', () => {
+            mockNativeModule.editorGetJson.mockReturnValueOnce(
+                JSON.stringify({
+                    type: 'article',
+                    content: [
+                        {
+                            type: 'title',
+                            content: [{ type: 'text', text: 'Visit https://example.com ' }],
+                        },
+                    ],
+                })
+            );
+            mockNativeModule.editorSetMarkAtSelectionScalar.mockReturnValueOnce(
+                MOCK_AUTO_LINKED_UPDATE_JSON
+            );
+            mockNativeModule.editorGetSelectionState.mockReturnValueOnce(
+                MOCK_AUTO_LINKED_UPDATE_JSON
+            );
+            const { getByTestId } = render(
+                <NativeRichTextEditor schema={ARTICLE_SCHEMA} autoDetectLinks />
+            );
+
+            act(() => {
+                getByTestId('native-editor-view').props.onEditorUpdate({
+                    nativeEvent: { updateJson: MOCK_AUTO_LINK_SOURCE_UPDATE_JSON },
+                });
+            });
+
+            expect(mockNativeModule.editorDocToScalar).toHaveBeenNthCalledWith(1, 1, 7);
+            expect(mockNativeModule.editorDocToScalar).toHaveBeenNthCalledWith(2, 1, 26);
+        });
+
         it('retries autolink when explicit mark command is canceled by a native preflight', () => {
             const linkedDoc = {
                 type: 'doc',

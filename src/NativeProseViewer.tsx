@@ -243,7 +243,8 @@ interface ResolvedMentionPayload extends NativeProseViewerMentionRenderContext {
 
 function collectMentionPayloadsByDocPos(
     document: DocumentJSON,
-    mentionsAddon: NativeProseViewerMentionsAddonConfig | undefined
+    mentionsAddon: NativeProseViewerMentionsAddonConfig | undefined,
+    documentNodeName: string
 ): Map<number, ResolvedMentionPayload> {
     const mentions = new Map<number, ResolvedMentionPayload>();
     const effectiveMentionPrefix = mentionsAddon?.prefix;
@@ -290,7 +291,7 @@ function collectMentionPayloadsByDocPos(
             });
         }
 
-        if (isRoot && nodeType === 'doc') {
+        if (isRoot && nodeType === documentNodeName) {
             let nextPos = pos;
             for (const child of content) {
                 nextPos = visit(child, nextPos);
@@ -642,8 +643,12 @@ export function NativeProseViewer({ ...props }: NativeProseViewerProps) {
         () =>
             normalizedDocument == null
                 ? new Map<number, ResolvedMentionPayload>()
-                : collectMentionPayloadsByDocPos(normalizedDocument, addons?.mentions),
-        [addons?.mentions, normalizedDocument]
+                : collectMentionPayloadsByDocPos(
+                      normalizedDocument,
+                      addons?.mentions,
+                      documentDescriptor.documentNodeName
+                  ),
+        [addons?.mentions, documentDescriptor.documentNodeName, normalizedDocument]
     );
     const renderJson = useMemo(() => {
         const configJson = JSON.stringify({

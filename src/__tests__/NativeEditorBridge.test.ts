@@ -287,6 +287,7 @@ import {
     resolveEditorImageLoadingPolicy,
 } from '../ImageLoadingPolicy';
 import { Platform } from 'react-native';
+import { resolveDocumentDescriptor } from '../schemas';
 
 // ─── Tests ──────────────────────────────────────────────────────
 
@@ -420,6 +421,26 @@ describe('NativeEditorBridge', () => {
             bridge.destroy();
         });
 
+        it('rejects oversized schema JSON before parsing or calling native', () => {
+            const parse = jest.spyOn(JSON, 'parse');
+
+            expect(() =>
+                NativeEditorBridge.create({
+                    schemaJson: '{'.repeat(9),
+                    resourceLimits: { maxInputBytes: 8 },
+                })
+            ).toThrow(
+                expect.objectContaining({
+                    code: 'INPUT_LIMIT_EXCEEDED',
+                    limit: 8,
+                    actual: 9,
+                })
+            );
+            expect(parse).not.toHaveBeenCalled();
+            expect(mockNativeModule.editorCreateResult).not.toHaveBeenCalled();
+            parse.mockRestore();
+        });
+
         it('creates a bridge with empty config (no options)', () => {
             const bridge = NativeEditorBridge.create();
 
@@ -480,6 +501,29 @@ describe('NativeEditorBridge', () => {
             bridge.destroy();
         });
 
+        it('derives normalization from the schema sent to native when a descriptor mismatches', () => {
+            const schemaJson = JSON.stringify({
+                nodes: [
+                    { name: 'article', content: 'title+', role: 'doc' },
+                    { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
+                    { name: 'text', content: '', group: 'inline', role: 'text' },
+                ],
+                marks: [],
+            });
+            const bridge = NativeEditorBridge.create({
+                schemaJson,
+                documentDescriptor: resolveDocumentDescriptor(),
+            });
+
+            bridge.setJsonString(JSON.stringify({ type: 'article', content: [] }));
+
+            expect(mockNativeModule.editorSetJson).toHaveBeenCalledWith(
+                1,
+                JSON.stringify({ type: 'article', content: [{ type: 'title' }] })
+            );
+            bridge.destroy();
+        });
+
         it('creates a bridge with allowBase64Images in config', () => {
             const bridge = NativeEditorBridge.create({ allowBase64Images: true });
 
@@ -535,6 +579,76 @@ describe('NativeEditorBridge', () => {
     });
 
     describe('NativeCollaborationBridge', () => {
+        it('rejects oversized initial and subsequent encoded state atomically', () => {
+            expect(() =>
+                NativeCollaborationBridge.create({
+                    initialEncodedState: Uint8Array.from([1, 2, 3]),
+                    resourceLimits: { maxEncodedStateBytes: 2 },
+                })
+            ).toThrow(
+                expect.objectContaining({
+                    code: 'INPUT_LIMIT_EXCEEDED',
+                    limit: 2,
+                    actual: 3,
+                })
+            );
+            expect(mockNativeModule.collaborationSessionCreate).not.toHaveBeenCalled();
+
+            const bridge = NativeCollaborationBridge.create({
+                resourceLimits: { maxEncodedStateBytes: 2 },
+            });
+            expect(() => bridge.applyEncodedState('AQID')).toThrow(
+                expect.objectContaining({ code: 'INPUT_LIMIT_EXCEEDED', limit: 2, actual: 3 })
+            );
+            expect(mockNativeModule.collaborationSessionApplyEncodedState).not.toHaveBeenCalled();
+            bridge.destroy();
+        });
+
+        it('rejects oversized document and message inputs before copying or calling native', () => {
+            const bridge = NativeCollaborationBridge.create({
+                resourceLimits: {
+                    maxInputBytes: 8,
+                    maxCollaborationMessageBytes: 2,
+                },
+            });
+
+            expect(() => bridge.applyLocalDocumentJson({ type: 'doc' })).toThrow(
+                expect.objectContaining({ code: 'INPUT_LIMIT_EXCEEDED', limit: 8 })
+            );
+            expect(() => bridge.handleMessage([1, 2, 3])).toThrow(
+                expect.objectContaining({
+                    code: 'INPUT_LIMIT_EXCEEDED',
+                    limit: 2,
+                    actual: 3,
+                })
+            );
+            expect(
+                mockNativeModule.collaborationSessionApplyLocalDocumentJson
+            ).not.toHaveBeenCalled();
+            expect(mockNativeModule.collaborationSessionHandleMessage).not.toHaveBeenCalled();
+            bridge.destroy();
+        });
+
+        it('rejects oversized state and protocol messages returned by native before copying', () => {
+            const bridge = NativeCollaborationBridge.create({
+                resourceLimits: {
+                    maxEncodedStateBytes: 2,
+                    maxCollaborationMessageBytes: 2,
+                },
+            });
+            mockNativeModule.collaborationSessionGetEncodedState.mockReturnValueOnce('[1,2,3]');
+            expect(() => bridge.getEncodedState()).toThrow(
+                expect.objectContaining({ code: 'INPUT_LIMIT_EXCEEDED', limit: 2, actual: 3 })
+            );
+
+            mockNativeModule.collaborationSessionStart.mockReturnValueOnce(
+                JSON.stringify({ messages: [[1, 2, 3]], documentChanged: false, peersChanged: false })
+            );
+            expect(() => bridge.start()).toThrow(
+                expect.objectContaining({ code: 'INPUT_LIMIT_EXCEEDED', limit: 2, actual: 3 })
+            );
+            bridge.destroy();
+        });
         it('creates a collaboration session and starts sync', () => {
             const bridge = NativeCollaborationBridge.create({
                 clientId: 7,
@@ -741,6 +855,24 @@ describe('NativeEditorBridge', () => {
                 JSON.stringify(TITLE_EMPTY_DOC)
             );
 
+            bridge.destroy();
+        });
+
+        it('rejects oversized serialized JSON before parsing or calling native', () => {
+            const bridge = NativeEditorBridge.create({ resourceLimits: { maxInputBytes: 8 } });
+            mockNativeModule.editorSetJson.mockClear();
+            const parse = jest.spyOn(JSON, 'parse');
+
+            expect(() => bridge.setJsonString('{'.repeat(9))).toThrow(
+                expect.objectContaining({
+                    code: 'INPUT_LIMIT_EXCEEDED',
+                    limit: 8,
+                    actual: 9,
+                })
+            );
+            expect(parse).not.toHaveBeenCalled();
+            expect(mockNativeModule.editorSetJson).not.toHaveBeenCalled();
+            parse.mockRestore();
             bridge.destroy();
         });
     });
@@ -1113,6 +1245,19 @@ describe('NativeEditorBridge', () => {
                 JSON.stringify(TITLE_EMPTY_DOC)
             );
 
+            bridge.destroy();
+        });
+
+        it('rejects oversized serialized replacements before preflight or native mutation', () => {
+            const bridge = NativeEditorBridge.create({ resourceLimits: { maxInputBytes: 8 } });
+            mockNativeModule.editorPrepareForCommand.mockClear();
+            mockNativeModule.editorReplaceJson.mockClear();
+
+            expect(() => bridge.replaceJsonString('{'.repeat(9))).toThrow(
+                expect.objectContaining({ code: 'INPUT_LIMIT_EXCEEDED', limit: 8, actual: 9 })
+            );
+            expect(mockNativeModule.editorPrepareForCommand).not.toHaveBeenCalled();
+            expect(mockNativeModule.editorReplaceJson).not.toHaveBeenCalled();
             bridge.destroy();
         });
     });

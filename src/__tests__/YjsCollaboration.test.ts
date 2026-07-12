@@ -191,6 +191,10 @@ class MockWebSocket {
     receive(bytes: number[]): void {
         this.onmessage?.({ data: Uint8Array.from(bytes).buffer });
     }
+
+    receiveData(data: unknown): void {
+        this.onmessage?.({ data });
+    }
 }
 
 describe('YjsCollaboration', () => {
@@ -1243,6 +1247,60 @@ describe('YjsCollaboration', () => {
             maxCollaborationMessageBytes: 1024,
             maxEncodedStateBytes: 50 * 1024 * 1024,
         });
+    });
+
+    it('rejects oversized query-awareness and string messages before fast paths or parsing', () => {
+        const sockets: MockWebSocket[] = [];
+        const onError = jest.fn();
+        const controller = createYjsCollaborationController({
+            documentId: 'doc-ingress-limit',
+            connect: false,
+            createWebSocket: () => {
+                const socket = new MockWebSocket();
+                sockets.push(socket);
+                return socket as unknown as WebSocket;
+            },
+            resourceLimits: { maxCollaborationMessageBytes: 2 },
+            localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
+            onError,
+        });
+
+        controller.connect();
+        sockets[0].open();
+        const awarenessCalls = mockNativeModule.collaborationSessionSetLocalAwareness.mock.calls
+            .length;
+        sockets[0].receive([3, 0, 0]);
+
+        expect(controller.state.lastError).toMatchObject({
+            name: 'NativeEditorBoundaryError',
+            code: 'INPUT_LIMIT_EXCEEDED',
+            limit: 2,
+            actual: 3,
+        });
+        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledTimes(
+            awarenessCalls
+        );
+        expect(mockNativeModule.collaborationSessionHandleMessage).not.toHaveBeenCalled();
+        expect(onError).toHaveBeenCalledTimes(1);
+
+        const second = createYjsCollaborationController({
+            documentId: 'doc-string-limit',
+            connect: false,
+            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            resourceLimits: { maxCollaborationMessageBytes: 2 },
+            localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
+        });
+        second.connect();
+        const secondSocket = (second as unknown as { socket: MockWebSocket }).socket;
+        secondSocket.open();
+        const parse = jest.spyOn(JSON, 'parse');
+        secondSocket.receiveData('[3,0,0]');
+        expect(parse).not.toHaveBeenCalled();
+        expect(second.state.lastError).toMatchObject({ code: 'INPUT_LIMIT_EXCEEDED' });
+        parse.mockRestore();
+
+        controller.destroy();
+        second.destroy();
     });
 
     it('passes a custom fragment name through to the native collaboration session', () => {

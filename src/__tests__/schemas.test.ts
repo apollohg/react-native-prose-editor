@@ -186,6 +186,30 @@ describe('schema-aware document normalization', () => {
         expect(resolveDocumentSchema(articleSchema)).toBe(articleSchema);
     });
 
+    it('matches native by treating a non-array marks field as an empty mark list', () => {
+        const malformedMarks = { ...articleSchema, marks: {} } as unknown as SchemaDefinition;
+        const resolved = resolveDocumentSchema(malformedMarks);
+
+        expect(resolved.nodes[0].name).toBe('article');
+        expect(resolved.marks).toEqual([]);
+        expect(resolveDocumentDescriptor(malformedMarks).documentNodeName).toBe('article');
+    });
+
+    it('exposes approved custom mark HTML tags and rejects executable tags', () => {
+        const approved: SchemaDefinition = {
+            ...articleSchema,
+            marks: [{ name: 'highlight', htmlTag: 'mark' }],
+        };
+        expect(resolveDocumentSchema(approved)).toBe(approved);
+
+        expect(
+            resolveDocumentSchema({
+                ...articleSchema,
+                marks: [{ name: 'danger', htmlTag: 'script' }],
+            } as unknown as SchemaDefinition)
+        ).toBe(tiptapSchema);
+    });
+
     it('resolves one custom-root descriptor for empty documents and fragments', () => {
         const descriptor = resolveDocumentDescriptor(articleSchema);
 
