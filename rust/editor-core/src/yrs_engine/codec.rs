@@ -195,6 +195,11 @@ fn attrs_to_marks(attrs: Option<Box<Attrs>>) -> Vec<Value> {
         }
         marks.push(Value::Object(object));
     }
+    marks.sort_by(|left, right| {
+        let left_name = left.get("type").and_then(Value::as_str).unwrap_or("");
+        let right_name = right.get("type").and_then(Value::as_str).unwrap_or("");
+        left_name.cmp(right_name)
+    });
     marks
 }
 

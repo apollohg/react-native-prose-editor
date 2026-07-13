@@ -1,8 +1,10 @@
 use editor_core::boundary::ResourceLimits;
 use editor_core::schema::Schema;
+use editor_core::serialize::FromHtmlOptions;
 use editor_core::tiptap_schema;
 use editor_core::yrs_engine::{
-    DocumentScope, InitializationMode, YrsDocumentEngine, YrsEngineConfig,
+    DocumentScope, EngineCommit, InitializationMode, TransactionOrigin, YrsDocumentEngine,
+    YrsEngineConfig,
 };
 use yrs::types::xml::XmlFragment;
 use yrs::updates::decoder::Decode;
@@ -42,6 +44,29 @@ fn custom_root_schema() -> Schema {
         "marks": []
     }))
     .unwrap()
+}
+
+#[derive(Debug, PartialEq)]
+struct EngineAudit {
+    ready: bool,
+    client_id: u64,
+    revision: u64,
+    last_origin: Option<TransactionOrigin>,
+    document_json: Option<serde_json::Value>,
+    document_html: Option<String>,
+    encoded_state: Vec<u8>,
+}
+
+fn audit(engine: &YrsDocumentEngine) -> EngineAudit {
+    EngineAudit {
+        ready: engine.is_ready(),
+        client_id: engine.client_id(),
+        revision: engine.revision(),
+        last_origin: engine.last_committed_origin(),
+        document_json: engine.document_json(),
+        document_html: engine.document_html(),
+        encoded_state: engine.encoded_state().unwrap(),
+    }
 }
 
 #[test]
@@ -139,4 +164,402 @@ fn local_empty_rejects_seeded_state_above_the_encoded_state_limit() {
     assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
     assert_eq!(error.limit, Some(1));
     assert!(error.actual.unwrap() > 1);
+}
+
+#[test]
+fn changed_json_import_swaps_the_candidate_and_commits_once() {
+    let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+    let before = audit(&engine);
+
+    let commit = engine
+        .import_json(
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Hello"}]}]}"#,
+            TransactionOrigin::LocalApi,
+        )
+        .unwrap();
+
+    assert_eq!(
+        commit,
+        EngineCommit {
+            changed: true,
+            revision: 1,
+        }
+    );
+    assert_eq!(engine.revision(), 1);
+    assert_eq!(
+        engine.last_committed_origin(),
+        Some(TransactionOrigin::LocalApi)
+    );
+    assert_ne!(engine.client_id(), before.client_id);
+    assert_ne!(engine.encoded_state().unwrap(), before.encoded_state);
+    assert_eq!(engine.document_html().as_deref(), Some("<p>Hello</p>"));
+    assert_eq!(
+        engine.document_json(),
+        Some(serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{"type": "text", "text": "Hello"}]
+            }]
+        }))
+    );
+}
+
+#[test]
+fn no_op_json_import_preserves_revision_client_and_origin() {
+    let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+    engine
+        .import_html(
+            "<p>Committed</p>",
+            &FromHtmlOptions::default(),
+            TransactionOrigin::LocalApi,
+        )
+        .unwrap();
+    let before = audit(&engine);
+    let commit = engine
+        .import_json(
+            &engine.document_json().unwrap().to_string(),
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+
+    assert_eq!(
+        commit,
+        EngineCommit {
+            changed: false,
+            revision: 1,
+        }
+    );
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
+fn json_and_html_multi_mark_imports_are_deterministic_canonical_no_ops() {
+    let input = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"marked","marks":[{"type":"italic"},{"type":"bold"}]}]}]}"#;
+
+    for _ in 0..64 {
+        let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+        engine
+            .import_json(input, TransactionOrigin::DocumentImport)
+            .unwrap();
+        let before = audit(&engine);
+        let commit = engine
+            .import_json(
+                &engine.document_json().unwrap().to_string(),
+                TransactionOrigin::LocalApi,
+            )
+            .unwrap();
+
+        assert!(!commit.changed);
+        assert_eq!(audit(&engine), before);
+        assert_eq!(
+            engine.document_json().unwrap()["content"][0]["content"][0]["marks"],
+            serde_json::json!([{"type": "bold"}, {"type": "italic"}])
+        );
+    }
+
+    let mut html_engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+    let mut json_engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+    let options = FromHtmlOptions::default();
+
+    let html_commit = html_engine
+        .import_html(
+            "<p>Hello <strong>world</strong></p>",
+            &options,
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+    let json_commit = json_engine
+        .import_json(
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Hello "},{"type":"text","text":"world","marks":[{"type":"bold"}]}]}]}"#,
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+
+    assert_eq!(html_commit, json_commit);
+    assert_eq!(html_engine.document(), json_engine.document());
+    assert_eq!(html_engine.document_json(), json_engine.document_json());
+    assert_eq!(html_engine.document_html(), json_engine.document_html());
+
+    let before = audit(&html_engine);
+    let error = html_engine
+        .import_html(
+            "<marquee>unknown</marquee>",
+            &FromHtmlOptions {
+                strict: true,
+                allow_base64_images: false,
+            },
+            TransactionOrigin::LocalInput,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "DOCUMENT_INVALID");
+    assert_eq!(audit(&html_engine), before);
+
+    for _ in 0..64 {
+        let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+        engine
+            .import_html(
+                "<p><em><strong>marked</strong></em></p>",
+                &FromHtmlOptions::default(),
+                TransactionOrigin::DocumentImport,
+            )
+            .unwrap();
+        let before = audit(&engine);
+        let canonical_html = engine.document_html().unwrap();
+        let commit = engine
+            .import_html(
+                &canonical_html,
+                &FromHtmlOptions::default(),
+                TransactionOrigin::LocalApi,
+            )
+            .unwrap();
+
+        assert!(!commit.changed);
+        assert_eq!(audit(&engine), before);
+        assert_eq!(
+            engine.document_html().as_deref(),
+            Some("<p><strong><em>marked</em></strong></p>")
+        );
+    }
+}
+
+#[test]
+fn non_strict_html_import_preserves_opaque_tags_and_is_a_canonical_no_op() {
+    let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+    let expected = r#"<p><widget kind="warning">preserve me</widget></p>"#;
+
+    engine
+        .import_html(
+            r#"<widget kind="warning">preserve me</widget>"#,
+            &FromHtmlOptions::default(),
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+    assert_eq!(engine.document_html().as_deref(), Some(expected));
+
+    let before = audit(&engine);
+    let commit = engine
+        .import_html(
+            expected,
+            &FromHtmlOptions::default(),
+            TransactionOrigin::LocalApi,
+        )
+        .unwrap();
+    assert!(!commit.changed);
+    assert_eq!(audit(&engine), before);
+
+    let before = audit(&engine);
+    let exported_json = engine.document_json().unwrap().to_string();
+    let commit = engine
+        .import_json(&exported_json, TransactionOrigin::RemoteSync)
+        .unwrap();
+    assert!(!commit.changed);
+    assert_eq!(audit(&engine), before);
+    assert_eq!(engine.document_html().as_deref(), Some(expected));
+}
+
+#[test]
+fn public_json_cannot_forge_the_reserved_html_opaque_node() {
+    let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+    let before = audit(&engine);
+
+    let error = engine
+        .import_json(
+            r#"{"type":"doc","content":[{"type":"__opaque","attrs":{"forged":true}}]}"#,
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code, "CODEC_INVARIANT_FAILED");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({ "phase": "candidateDerivation" }))
+    );
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
+fn awaiting_engine_import_becomes_ready_with_one_commit() {
+    let mut engine = YrsDocumentEngine::new(YrsEngineConfig {
+        initialization_mode: InitializationMode::AwaitRemote,
+        ..local_config(tiptap_schema())
+    })
+    .unwrap();
+    let before_client_id = engine.client_id();
+
+    let commit = engine
+        .import_html(
+            "<p>Remote</p>",
+            &FromHtmlOptions::default(),
+            TransactionOrigin::RemoteSync,
+        )
+        .unwrap();
+
+    assert_eq!(
+        commit,
+        EngineCommit {
+            changed: true,
+            revision: 1,
+        }
+    );
+    assert!(engine.is_ready());
+    assert_ne!(engine.client_id(), before_client_id);
+    assert_eq!(
+        engine.last_committed_origin(),
+        Some(TransactionOrigin::RemoteSync)
+    );
+    assert_eq!(engine.document_html().as_deref(), Some("<p>Remote</p>"));
+}
+
+#[test]
+fn custom_root_imports_export_the_schema_doc_role() {
+    let mut config = local_config(custom_root_schema());
+    config.fragment_name = "article-content".to_string();
+    let mut engine = YrsDocumentEngine::new(config).unwrap();
+
+    let commit = engine
+        .import_json(
+            r#"{"type":"article","content":[{"type":"body","content":[{"type":"text","text":"Custom"}]}]}"#,
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+
+    assert!(commit.changed);
+    assert_eq!(
+        engine.document_html().as_deref(),
+        Some("<section>Custom</section>")
+    );
+    assert_eq!(engine.document_json().unwrap()["type"], "article");
+
+    let html_commit = engine
+        .import_html(
+            "<section>Updated</section>",
+            &FromHtmlOptions::default(),
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+    assert_eq!(html_commit.revision, 2);
+    assert_eq!(engine.document_json().unwrap()["type"], "article");
+    assert_eq!(
+        engine.document_html().as_deref(),
+        Some("<section>Updated</section>")
+    );
+
+    let replay = Doc::new();
+    replay
+        .transact_mut()
+        .apply_update(Update::decode_v1(&engine.encoded_state().unwrap()).unwrap())
+        .unwrap();
+    let txn = replay.transact();
+    assert!(txn.get_xml_fragment("article-content").is_some());
+    assert!(txn.get_xml_fragment("prosemirror").is_none());
+}
+
+#[test]
+fn opaque_json_import_preserves_the_legacy_canonical_payload() {
+    let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+    let opaque = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "callout",
+            "attrs": {
+                "kind": "warning",
+                "metadata": [true, null, {"rank": 2}]
+            },
+            "content": [{"type": "text", "text": "preserve me"}]
+        }]
+    });
+
+    let commit = engine
+        .import_json(&opaque.to_string(), TransactionOrigin::DocumentImport)
+        .unwrap();
+
+    assert!(commit.changed);
+    assert_eq!(engine.document_json(), Some(opaque));
+}
+
+#[test]
+fn rejected_import_is_completely_atomic() {
+    let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+    let before = audit(&engine);
+    let error = engine
+        .import_json(r#"{"type":"paragraph"}"#, TransactionOrigin::DocumentImport)
+        .unwrap_err();
+
+    assert_eq!(error.code, "DOCUMENT_INVALID");
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
+fn bounded_and_malformed_imports_preserve_the_full_audit_state() {
+    let mut config = local_config(tiptap_schema());
+    config.resource_limits.max_input_bytes = 16;
+    let mut engine = YrsDocumentEngine::new(config).unwrap();
+    let before = audit(&engine);
+
+    let error = engine
+        .import_json(
+            r#"{"type":"doc","content":[]}"#,
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
+    assert_eq!(error.limit, Some(16));
+    assert_eq!(audit(&engine), before);
+
+    let error = engine
+        .import_json("{", TransactionOrigin::DocumentImport)
+        .unwrap_err();
+    assert_eq!(error.code, "DOCUMENT_INVALID");
+    assert_eq!(audit(&engine), before);
+
+    let error = engine
+        .import_html(
+            "<p>this HTML input is too long</p>",
+            &FromHtmlOptions::default(),
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
+fn traversal_and_encoded_output_import_limits_are_atomic() {
+    let mut traversal_config = local_config(tiptap_schema());
+    traversal_config.resource_limits.max_document_nodes = 2;
+    let mut traversal_engine = YrsDocumentEngine::new(traversal_config).unwrap();
+    let traversal_before = audit(&traversal_engine);
+    let error = traversal_engine
+        .import_json(
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"three"}]}]}"#,
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(audit(&traversal_engine), traversal_before);
+
+    let probe = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+    let mut encoded_config = local_config(tiptap_schema());
+    encoded_config.resource_limits.max_encoded_state_bytes = probe.encoded_state().unwrap().len();
+    let mut encoded_engine = YrsDocumentEngine::new(encoded_config).unwrap();
+    let encoded_before = audit(&encoded_engine);
+    let oversized_text = "x".repeat(1_024);
+    let input = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "paragraph",
+            "content": [{"type": "text", "text": oversized_text}]
+        }]
+    })
+    .to_string();
+    let error = encoded_engine
+        .import_json(&input, TransactionOrigin::DocumentImport)
+        .unwrap_err();
+    assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({ "phase": "candidateDerivation" }))
+    );
+    assert_eq!(audit(&encoded_engine), encoded_before);
 }

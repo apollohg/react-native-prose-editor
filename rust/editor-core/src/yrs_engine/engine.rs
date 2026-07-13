@@ -1,11 +1,12 @@
 use serde_json::json;
 use yrs::{Doc, OffsetKind, Options, ReadTxn, StateVector, Transact, WriteTxn};
 
-use crate::boundary::ResourceLimits;
-use crate::model::Document;
-use crate::schema::{schema_fingerprint, Schema};
+use crate::boundary::{BoundedInput, InputKind, ResourceLimits};
+use crate::model::{Document, Fragment, Node};
+use crate::schema::{schema_fingerprint, NodeRole, Schema};
 use crate::serialize::{
-    from_prosemirror_json_with_limits, to_html, to_prosemirror_json, UnknownTypeMode,
+    from_html_with_limits, from_prosemirror_json_with_limits, to_html, to_prosemirror_json,
+    FromHtmlOptions, JsonParseError, ParseError, UnknownTypeMode,
 };
 use crate::transform::DocumentValidator;
 
@@ -24,6 +25,12 @@ pub struct YrsEngineConfig {
     pub initialization_mode: InitializationMode,
     pub resource_limits: ResourceLimits,
     pub scope: Option<DocumentScope>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineCommit {
+    pub changed: bool,
+    pub revision: u64,
 }
 
 enum EngineDocumentState {
@@ -137,6 +144,287 @@ impl YrsDocumentEngine {
     pub fn resource_limits(&self) -> &ResourceLimits {
         &self.resource_limits
     }
+
+    pub fn import_json(
+        &mut self,
+        input: &str,
+        origin: TransactionOrigin,
+    ) -> YrsEngineResult<EngineCommit> {
+        let input = BoundedInput::new(input, InputKind::DocumentJson, &self.resource_limits)?;
+        let value = serde_json::from_str(input.as_str())
+            .map_err(|error| YrsEngineError::parse("DOCUMENT_INVALID", error))?;
+        if let EngineDocumentState::Ready { canonical_json, .. } = &self.state {
+            if canonical_json == &value {
+                return Ok(EngineCommit {
+                    changed: false,
+                    revision: self.revision,
+                });
+            }
+        }
+        let document = from_prosemirror_json_with_limits(
+            &value,
+            &self.schema,
+            UnknownTypeMode::Preserve,
+            &self.resource_limits,
+        )
+        .map_err(map_json_import_error)?;
+        validate_import_document(&document, &self.schema, &self.resource_limits)?;
+
+        let candidate = self.build_candidate_from_document(document, origin)?;
+        Ok(self.commit_candidate(candidate, origin))
+    }
+
+    pub fn import_html(
+        &mut self,
+        input: &str,
+        options: &FromHtmlOptions,
+        origin: TransactionOrigin,
+    ) -> YrsEngineResult<EngineCommit> {
+        let input = BoundedInput::new(input, InputKind::Html, &self.resource_limits)?;
+        let document =
+            from_html_with_limits(input.as_str(), &self.schema, options, &self.resource_limits)
+                .map_err(map_html_import_error)?;
+        validate_import_document(&document, &self.schema, &self.resource_limits)?;
+
+        let candidate = self.build_candidate_from_document(document, origin)?;
+        Ok(self.commit_candidate(candidate, origin))
+    }
+
+    fn build_candidate_from_document(
+        &self,
+        document: Document,
+        origin: TransactionOrigin,
+    ) -> YrsEngineResult<CandidateDocument> {
+        let source_document = normalize_document_mark_order(&document);
+        DocumentValidator::validate(&source_document, &self.schema, &self.resource_limits)
+            .map_err(|error| {
+                candidate_invariant_parse_error(error, "normalized source document is invalid")
+            })?;
+        let canonical_json = to_prosemirror_json(&source_document, &self.schema);
+        let empty_json = json!({
+            "type": self.schema.doc_node_type(),
+            "content": [],
+        });
+        let doc = utf16_doc();
+        let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
+        {
+            let mut txn = doc.transact_mut_with(origin.as_yrs_origin());
+            let fragment = txn.get_or_insert_xml_fragment(self.fragment_name.as_str());
+            codec.apply_json(&fragment, &mut txn, &empty_json, &canonical_json)?;
+        }
+
+        let derived_json = {
+            let txn = doc.transact();
+            let fragment = txn
+                .get_xml_fragment(self.fragment_name.as_str())
+                .ok_or_else(candidate_invariant_error)?;
+            codec.read_json(&fragment, &txn)?
+        };
+        let derived_document = from_prosemirror_json_with_limits(
+            &derived_json,
+            &self.schema,
+            UnknownTypeMode::Preserve,
+            &self.resource_limits,
+        )
+        .map_err(|error| candidate_invariant_parse_error(error, "derived document is invalid"))?;
+        let derived_document = rehydrate_reserved_html_opaque(&derived_document);
+        DocumentValidator::validate(&derived_document, &self.schema, &self.resource_limits)
+            .map_err(|error| {
+                candidate_invariant_parse_error(error, "derived document is invalid")
+            })?;
+        if derived_document != source_document {
+            return Err(candidate_invariant_parse_error(
+                "derived document does not match the validated import",
+                "candidate codec round-trip changed the document",
+            ));
+        }
+        encode_candidate_state_bounded(&doc, &self.resource_limits)?;
+        let canonical_json = to_prosemirror_json(&derived_document, &self.schema);
+
+        Ok(CandidateDocument {
+            doc,
+            state: EngineDocumentState::Ready {
+                document: derived_document,
+                canonical_json,
+            },
+        })
+    }
+
+    fn commit_candidate(
+        &mut self,
+        candidate: CandidateDocument,
+        origin: TransactionOrigin,
+    ) -> EngineCommit {
+        let candidate_document = match &candidate.state {
+            EngineDocumentState::Ready { document, .. } => document,
+            EngineDocumentState::AwaitingRemote => {
+                unreachable!("imports always build ready candidates")
+            }
+        };
+        let unchanged = match &self.state {
+            EngineDocumentState::Ready { document, .. } => document == candidate_document,
+            EngineDocumentState::AwaitingRemote => false,
+        };
+        if unchanged {
+            return EngineCommit {
+                changed: false,
+                revision: self.revision,
+            };
+        }
+
+        self.doc = candidate.doc;
+        self.state = candidate.state;
+        self.revision = self.revision.saturating_add(1);
+        self.last_committed_origin = Some(origin);
+        EngineCommit {
+            changed: true,
+            revision: self.revision,
+        }
+    }
+}
+
+fn normalize_document_mark_order(document: &Document) -> Document {
+    Document::new(normalize_node_mark_order(document.root()))
+}
+
+fn normalize_node_mark_order(node: &Node) -> Node {
+    if node.is_text() {
+        let mut marks = node.marks().to_vec();
+        marks.sort_by(|left, right| left.mark_type().cmp(right.mark_type()));
+        return Node::text(node.text_str().unwrap_or_default().to_string(), marks);
+    }
+    if node.is_void() {
+        return Node::void(node.node_type().to_string(), node.attrs().clone());
+    }
+    let children = node
+        .content()
+        .into_iter()
+        .flat_map(Fragment::iter)
+        .map(normalize_node_mark_order)
+        .collect();
+    Node::element(
+        node.node_type().to_string(),
+        node.attrs().clone(),
+        Fragment::from(children),
+    )
+}
+
+fn rehydrate_reserved_html_opaque(document: &Document) -> Document {
+    Document::new(rehydrate_reserved_html_opaque_node(document.root()))
+}
+
+fn rehydrate_reserved_html_opaque_node(node: &Node) -> Node {
+    if let Some(attrs) = reserved_html_opaque_attrs(node) {
+        return Node::void("__opaque".to_string(), attrs);
+    }
+    if node.is_text() {
+        return Node::text(
+            node.text_str().unwrap_or_default().to_string(),
+            node.marks().to_vec(),
+        );
+    }
+    if node.is_void() {
+        return Node::void(node.node_type().to_string(), node.attrs().clone());
+    }
+    let children = node
+        .content()
+        .into_iter()
+        .flat_map(Fragment::iter)
+        .map(rehydrate_reserved_html_opaque_node)
+        .collect();
+    Node::element(
+        node.node_type().to_string(),
+        node.attrs().clone(),
+        Fragment::from(children),
+    )
+}
+
+fn reserved_html_opaque_attrs(
+    node: &Node,
+) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+    if node.node_type() != "__opaque_json" {
+        return None;
+    }
+    let original = node.attrs().get("original_json")?.as_object()?;
+    if original.get("type")?.as_str()? != "__opaque" {
+        return None;
+    }
+    let attrs = original.get("attrs")?.as_object()?;
+    Some(
+        attrs
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect(),
+    )
+}
+
+fn validate_import_document(
+    document: &Document,
+    schema: &Schema,
+    resource_limits: &ResourceLimits,
+) -> YrsEngineResult<()> {
+    let root_has_doc_role = schema
+        .node(document.root().node_type())
+        .is_some_and(|spec| matches!(spec.role, NodeRole::Doc));
+    if !root_has_doc_role {
+        return Err(YrsEngineError::new(
+            "DOCUMENT_INVALID",
+            format!(
+                "document root '{}' does not have the doc role",
+                document.root().node_type()
+            ),
+        ));
+    }
+    DocumentValidator::validate(document, schema, resource_limits)
+        .map(|_| ())
+        .map_err(map_import_validation_error)
+}
+
+fn map_json_import_error(error: JsonParseError) -> YrsEngineError {
+    match error {
+        JsonParseError::ResourceLimit { limit, actual } => {
+            YrsEngineError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, actual)
+        }
+        other => YrsEngineError::parse("DOCUMENT_INVALID", other),
+    }
+}
+
+fn map_html_import_error(error: ParseError) -> YrsEngineError {
+    match error {
+        ParseError::ResourceLimit { limit, actual } => {
+            YrsEngineError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, actual)
+        }
+        other => YrsEngineError::parse("DOCUMENT_INVALID", other),
+    }
+}
+
+fn map_import_validation_error(error: crate::boundary::BoundaryError) -> YrsEngineError {
+    if error.code == "DOCUMENT_LIMIT_EXCEEDED" {
+        error.into()
+    } else {
+        YrsEngineError {
+            code: "DOCUMENT_INVALID",
+            message: error.message,
+            limit: error.limit,
+            actual: error.actual,
+            details: error.details,
+        }
+    }
+}
+
+fn candidate_invariant_error() -> YrsEngineError {
+    candidate_invariant_parse_error(
+        "candidate Yrs fragment is missing",
+        "candidate Yrs fragment is missing",
+    )
+}
+
+fn candidate_invariant_parse_error(
+    error: impl std::fmt::Display,
+    message: &'static str,
+) -> YrsEngineError {
+    YrsEngineError::new("CODEC_INVARIANT_FAILED", format!("{message}: {error}"))
+        .with_details(json!({ "phase": "candidateDerivation" }))
 }
 
 fn build_local_empty_candidate(
@@ -232,6 +520,28 @@ fn encode_state_bounded(doc: &Doc, resource_limits: &ResourceLimits) -> YrsEngin
         ));
     }
     Ok(encoded_state)
+}
+
+fn encode_candidate_state_bounded(
+    doc: &Doc,
+    resource_limits: &ResourceLimits,
+) -> YrsEngineResult<Vec<u8>> {
+    encode_state_bounded(doc, resource_limits).map_err(|error| {
+        if error.code == "INPUT_LIMIT_EXCEEDED" {
+            YrsEngineError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                error
+                    .limit
+                    .unwrap_or(resource_limits.max_encoded_state_bytes),
+                error
+                    .actual
+                    .unwrap_or(resource_limits.max_encoded_state_bytes),
+            )
+            .with_details(json!({ "phase": "candidateDerivation" }))
+        } else {
+            error
+        }
+    })
 }
 
 #[cfg(test)]
