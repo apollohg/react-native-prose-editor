@@ -608,14 +608,13 @@ impl<'a> JsonPreflight<'a> {
 
         let source = std::str::from_utf8(&self.bytes[start..self.offset])
             .map_err(|_| self.invalid_json())?;
-        let accepted = if fractional {
+        let accepted = if fractional || negative {
             source.parse::<f64>().is_ok_and(|number| number.is_finite())
-        } else if negative {
-            source.parse::<i64>().is_ok()
         } else {
-            source
-                .parse::<u64>()
-                .is_ok_and(|number| number <= i64::MAX as u64)
+            match source.parse::<u64>() {
+                Ok(number) => number <= i64::MAX as u64,
+                Err(_) => source.parse::<f64>().is_ok_and(|number| number.is_finite()),
+            }
         };
         if accepted {
             Ok(())
@@ -933,6 +932,8 @@ mod tests {
             "false",
             r#""escaped\n\uD83D\uDE00""#,
             "-1",
+            "-9223372036854775809",
+            "18446744073709551616",
             "1.5",
             "1e2",
             r#"[true,false,null,{"x":"value"}]"#,
@@ -947,6 +948,7 @@ mod tests {
             r#""\uD800""#,
             "1e400",
             "9223372036854775808",
+            "18446744073709551615",
         ] {
             assert!(Any::from_json(value).is_err(), "{value}");
             let error = preflight_update_v1(&json_update(5, None, value), &limits).unwrap_err();
