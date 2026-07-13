@@ -1,4 +1,5 @@
 use serde_json::json;
+use std::collections::HashSet;
 use yrs::updates::decoder::Decode;
 use yrs::Update;
 use yrs::{Doc, OffsetKind, Options, ReadTxn, StateVector, Transact, WriteTxn};
@@ -62,7 +63,7 @@ impl ValidatedImportDocument {
         schema: &Schema,
         resource_limits: &ResourceLimits,
     ) -> YrsEngineResult<Self> {
-        let document = normalize_document_mark_order(&document);
+        validate_yrs_mark_representation(&document, schema)?;
         validate_import_document(&document, schema, resource_limits)?;
         let canonical_json = to_prosemirror_json(&document, schema);
         Ok(Self {
@@ -93,6 +94,7 @@ impl YrsDocumentEngine {
             resource_limits,
             scope,
         } = config;
+        validate_config_metadata(&fragment_name, scope.as_ref(), &resource_limits)?;
         let schema_fingerprint = schema_fingerprint(&schema);
         let candidate = match initialization_mode {
             InitializationMode::LocalEmpty => {
@@ -199,6 +201,13 @@ impl YrsDocumentEngine {
                 )
                 .with_details(json!({ "field": "encodedState" }))
             })?;
+        validate_snapshot_envelope_output(
+            scope,
+            &self.fragment_name,
+            &self.schema_fingerprint,
+            encoded_state.len(),
+            &self.resource_limits,
+        )?;
 
         Ok(DocumentSnapshot {
             format_version: SNAPSHOT_FORMAT_VERSION,
@@ -229,7 +238,7 @@ impl YrsDocumentEngine {
                 snapshot_parse_error("COLLABORATION_DECODE_FAILED", error, "encodedState")
             })?;
             let durable_state = update.state_vector();
-            let candidate_doc = utf16_snapshot_doc(&durable_state, self.client_id());
+            let candidate_doc = fresh_utf16_doc_excluding(&durable_state, self.client_id());
             candidate_doc
                 .transact_mut_with(TransactionOrigin::SnapshotRestore.as_yrs_origin())
                 .apply_update(update)
@@ -287,9 +296,10 @@ impl YrsDocumentEngine {
             },
         };
 
+        let next_revision = self.next_revision()?;
         self.doc = candidate.doc;
         self.state = candidate.state;
-        self.revision = self.revision.saturating_add(1);
+        self.revision = next_revision;
         self.last_committed_origin = Some(TransactionOrigin::SnapshotRestore);
         Ok(EngineCommit {
             changed: true,
@@ -389,7 +399,7 @@ impl YrsDocumentEngine {
         let source = ValidatedImportDocument::new(document, &self.schema, &self.resource_limits)?;
 
         let candidate = self.build_candidate_from_document(source, origin)?;
-        Ok(self.commit_candidate(candidate, origin))
+        self.commit_candidate(candidate, origin)
     }
 
     pub fn import_html(
@@ -405,7 +415,7 @@ impl YrsDocumentEngine {
         let source = ValidatedImportDocument::new(document, &self.schema, &self.resource_limits)?;
 
         let candidate = self.build_candidate_from_document(source, origin)?;
-        Ok(self.commit_candidate(candidate, origin))
+        self.commit_candidate(candidate, origin)
     }
 
     fn build_candidate_from_document(
@@ -421,7 +431,8 @@ impl YrsDocumentEngine {
             "type": self.schema.doc_node_type(),
             "content": [],
         });
-        let doc = utf16_doc();
+        let durable_state = self.doc.transact().state_vector();
+        let doc = fresh_utf16_doc_excluding(&durable_state, self.client_id());
         let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
         {
             let mut txn = doc.transact_mut_with(origin.as_yrs_origin());
@@ -469,7 +480,7 @@ impl YrsDocumentEngine {
         &mut self,
         candidate: CandidateDocument,
         origin: TransactionOrigin,
-    ) -> EngineCommit {
+    ) -> YrsEngineResult<EngineCommit> {
         let candidate_document = match &candidate.state {
             EngineDocumentState::Ready { document, .. } => document,
             EngineDocumentState::AwaitingRemote => {
@@ -481,20 +492,31 @@ impl YrsDocumentEngine {
             EngineDocumentState::AwaitingRemote => false,
         };
         if unchanged {
-            return EngineCommit {
+            return Ok(EngineCommit {
                 changed: false,
                 revision: self.revision,
-            };
+            });
         }
 
+        let next_revision = self.next_revision()?;
         self.doc = candidate.doc;
         self.state = candidate.state;
-        self.revision = self.revision.saturating_add(1);
+        self.revision = next_revision;
         self.last_committed_origin = Some(origin);
-        EngineCommit {
+        Ok(EngineCommit {
             changed: true,
             revision: self.revision,
-        }
+        })
+    }
+
+    fn next_revision(&self) -> YrsEngineResult<u64> {
+        self.revision.checked_add(1).ok_or_else(|| {
+            YrsEngineError::new(
+                "REVISION_OVERFLOW",
+                "document revision cannot be incremented",
+            )
+            .with_details(json!({ "field": "revision" }))
+        })
     }
 }
 
@@ -519,30 +541,109 @@ fn snapshot_derived_error(mut error: YrsEngineError, field: &'static str) -> Yrs
     error
 }
 
-fn normalize_document_mark_order(document: &Document) -> Document {
-    Document::new(normalize_node_mark_order(document.root()))
+fn validate_yrs_mark_representation(document: &Document, schema: &Schema) -> YrsEngineResult<()> {
+    fn visit(node: &Node, schema: &Schema) -> YrsEngineResult<()> {
+        if node.is_text() {
+            let mut seen = HashSet::new();
+            let mut previous_rank = None;
+            for mark in node.marks() {
+                if !seen.insert(mark.mark_type()) {
+                    return Err(YrsEngineError::new(
+                        "DOCUMENT_INVALID",
+                        "duplicate same-type marks cannot be represented by standard Yjs attributes",
+                    )
+                    .with_details(json!({
+                        "field": "marks",
+                        "markType": mark.mark_type(),
+                        "reason": "duplicateType",
+                    })));
+                }
+                let rank = schema.mark_rank(mark.mark_type()).unwrap_or(usize::MAX);
+                if previous_rank.is_some_and(|previous| rank < previous) {
+                    return Err(YrsEngineError::new(
+                        "DOCUMENT_INVALID",
+                        "mark order does not match ProseMirror schema rank",
+                    )
+                    .with_details(json!({
+                        "field": "marks",
+                        "reason": "nonCanonicalOrder",
+                    })));
+                }
+                previous_rank = Some(rank);
+            }
+        }
+        if let Some(content) = node.content() {
+            for child in content.iter() {
+                visit(child, schema)?;
+            }
+        }
+        Ok(())
+    }
+    visit(document.root(), schema)
 }
 
-fn normalize_node_mark_order(node: &Node) -> Node {
-    if node.is_text() {
-        let mut marks = node.marks().to_vec();
-        marks.sort_by(|left, right| left.mark_type().cmp(right.mark_type()));
-        return Node::text(node.text_str().unwrap_or_default().to_string(), marks);
+fn validate_config_metadata(
+    fragment_name: &str,
+    scope: Option<&DocumentScope>,
+    limits: &ResourceLimits,
+) -> YrsEngineResult<()> {
+    let fields = [
+        ("fragmentName", fragment_name.len()),
+        (
+            "documentId",
+            scope.map(|scope| scope.document_id.len()).unwrap_or(0),
+        ),
+        (
+            "lineageId",
+            scope.map(|scope| scope.lineage_id.len()).unwrap_or(0),
+        ),
+    ];
+    for (field, actual) in fields {
+        if actual > limits.max_input_bytes {
+            return Err(YrsEngineError::limit(
+                "INPUT_LIMIT_EXCEEDED",
+                limits.max_input_bytes,
+                actual,
+            )
+            .with_details(json!({ "field": field })));
+        }
     }
-    if node.is_void() {
-        return Node::void(node.node_type().to_string(), node.attrs().clone());
-    }
-    let children = node
-        .content()
+    let total = fields
         .into_iter()
-        .flat_map(Fragment::iter)
-        .map(normalize_node_mark_order)
-        .collect();
-    Node::element(
-        node.node_type().to_string(),
-        node.attrs().clone(),
-        Fragment::from(children),
-    )
+        .fold(0usize, |total, (_, bytes)| total.saturating_add(bytes));
+    if total > limits.max_input_bytes {
+        return Err(
+            YrsEngineError::limit("INPUT_LIMIT_EXCEEDED", limits.max_input_bytes, total)
+                .with_details(json!({ "field": "metadata" })),
+        );
+    }
+    Ok(())
+}
+
+fn validate_snapshot_envelope_output(
+    scope: &DocumentScope,
+    fragment_name: &str,
+    schema_fingerprint: &str,
+    encoded_state_bytes: usize,
+    limits: &ResourceLimits,
+) -> YrsEngineResult<()> {
+    let metadata_bytes = scope
+        .document_id
+        .len()
+        .saturating_add(scope.lineage_id.len())
+        .saturating_add(fragment_name.len())
+        .saturating_add(schema_fingerprint.len());
+    let actual = metadata_bytes.saturating_add(encoded_state_bytes);
+    let limit = limits
+        .max_input_bytes
+        .saturating_add(limits.max_encoded_state_bytes);
+    if actual > limit {
+        return Err(
+            YrsEngineError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, actual)
+                .with_details(json!({ "phase": "snapshotExport" })),
+        );
+    }
+    Ok(())
 }
 
 fn rehydrate_reserved_html_opaque(document: &Document) -> Document {
@@ -741,9 +842,17 @@ fn utf16_doc() -> Doc {
     Doc::with_options(options)
 }
 
-fn utf16_snapshot_doc(durable_state: &StateVector, previous_client_id: u64) -> Doc {
+fn fresh_utf16_doc_excluding(durable_state: &StateVector, previous_client_id: u64) -> Doc {
+    fresh_utf16_doc_excluding_with(durable_state, previous_client_id, utf16_doc)
+}
+
+fn fresh_utf16_doc_excluding_with(
+    durable_state: &StateVector,
+    previous_client_id: u64,
+    mut candidate: impl FnMut() -> Doc,
+) -> Doc {
     loop {
-        let doc = utf16_doc();
+        let doc = candidate();
         if doc.client_id() != previous_client_id && !durable_state.contains_client(&doc.client_id())
         {
             return doc;
@@ -798,7 +907,9 @@ mod tests {
     use serde_json::json;
     use yrs::OffsetKind;
 
-    use super::{utf16_doc, ValidatedImportDocument};
+    use yrs::{Doc, Options, StateVector};
+
+    use super::{fresh_utf16_doc_excluding_with, utf16_doc, ValidatedImportDocument};
 
     #[test]
     fn utf16_doc_preserves_fresh_client_ids_and_uses_utf16_offsets() {
@@ -811,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn validated_import_source_reuses_one_normalized_canonical_result() {
+    fn validated_import_source_reuses_one_schema_ranked_canonical_result() {
         let schema = tiptap_schema();
         let limits = ResourceLimits::default();
         let input = json!({
@@ -821,7 +932,7 @@ mod tests {
                 "content": [{
                     "type": "text",
                     "text": "ordered",
-                    "marks": [{ "type": "italic" }, { "type": "bold" }]
+                    "marks": [{ "type": "bold" }, { "type": "italic" }]
                 }]
             }]
         });
@@ -847,5 +958,88 @@ mod tests {
             validated.canonical_json,
             crate::serialize::to_prosemirror_json(&validated.document, &schema)
         );
+    }
+
+    #[test]
+    fn collision_excluding_candidate_selection_retries_live_and_durable_ids() {
+        let durable = StateVector::from_iter([(7_u64, 1_u32)]);
+        let mut ids = [5_u64, 7_u64, 11_u64].into_iter();
+        let selected = fresh_utf16_doc_excluding_with(&durable, 5, || {
+            Doc::with_options(Options {
+                client_id: ids.next().unwrap(),
+                offset_kind: OffsetKind::Utf16,
+                ..Options::default()
+            })
+        });
+
+        assert_eq!(selected.client_id(), 11);
+    }
+
+    #[test]
+    fn revision_overflow_rejects_before_candidate_swap() {
+        let mut engine =
+            crate::yrs_engine::YrsDocumentEngine::new(crate::yrs_engine::YrsEngineConfig {
+                schema: tiptap_schema(),
+                fragment_name: "prosemirror".into(),
+                initialization_mode: crate::yrs_engine::InitializationMode::LocalEmpty,
+                resource_limits: ResourceLimits::default(),
+                scope: None,
+            })
+            .unwrap();
+        engine.revision = u64::MAX;
+        let before_client = engine.client_id();
+        let before_json = engine.document_json();
+        let before_state = engine.encoded_state().unwrap();
+
+        let error = engine
+            .import_json(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"changed"}]}]}"#,
+                crate::yrs_engine::TransactionOrigin::DocumentImport,
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, "REVISION_OVERFLOW");
+        assert_eq!(engine.revision(), u64::MAX);
+        assert_eq!(engine.client_id(), before_client);
+        assert_eq!(engine.document_json(), before_json);
+        assert_eq!(engine.encoded_state().unwrap(), before_state);
+    }
+
+    #[test]
+    fn snapshot_export_envelope_budget_has_exact_and_over_boundaries_without_mutation() {
+        let mut engine =
+            crate::yrs_engine::YrsDocumentEngine::new(crate::yrs_engine::YrsEngineConfig {
+                schema: tiptap_schema(),
+                fragment_name: "prosemirror".into(),
+                initialization_mode: crate::yrs_engine::InitializationMode::LocalEmpty,
+                resource_limits: ResourceLimits::default(),
+                scope: Some(crate::yrs_engine::DocumentScope {
+                    document_id: "doc".into(),
+                    lineage_id: "lineage".into(),
+                }),
+            })
+            .unwrap();
+        let state = engine.encoded_state().unwrap();
+        let metadata_bytes =
+            "doc".len() + "lineage".len() + "prosemirror".len() + engine.schema_fingerprint().len();
+        engine.resource_limits.max_input_bytes = metadata_bytes;
+        engine.resource_limits.max_encoded_state_bytes = state.len();
+        assert!(engine.export_snapshot().is_ok());
+
+        let before_revision = engine.revision();
+        let before_client = engine.client_id();
+        let before_json = engine.document_json();
+        engine.resource_limits.max_input_bytes = metadata_bytes - 1;
+        let error = engine.export_snapshot().unwrap_err();
+
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({"phase": "snapshotExport"}))
+        );
+        assert_eq!(engine.revision(), before_revision);
+        assert_eq!(engine.client_id(), before_client);
+        assert_eq!(engine.document_json(), before_json);
+        assert_eq!(engine.encoded_state().unwrap(), state);
     }
 }

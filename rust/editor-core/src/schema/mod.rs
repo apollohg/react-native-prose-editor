@@ -46,6 +46,7 @@ impl SchemaValidationError {
 pub struct Schema {
     nodes: HashMap<String, NodeSpec>,
     marks: HashMap<String, MarkSpec>,
+    mark_order: Vec<String>,
     node_html_tags: HashMap<String, String>,
     mark_html_tags: HashMap<String, String>,
     preferred_text_block_name: Option<String>,
@@ -331,6 +332,7 @@ impl Schema {
             .min_by_key(|node| node.name.as_str())
             .map(|node| node.name.clone());
 
+        let mark_order = marks.iter().map(|mark| mark.name.clone()).collect();
         let schema = Self {
             nodes: nodes
                 .into_iter()
@@ -340,6 +342,7 @@ impl Schema {
                 .into_iter()
                 .map(|mark| (mark.name.clone(), mark))
                 .collect(),
+            mark_order,
             node_html_tags,
             mark_html_tags,
             preferred_text_block_name,
@@ -488,6 +491,13 @@ impl Schema {
         self.marks.get(name)
     }
 
+    /// Return the ProseMirror schema rank for a mark type.
+    pub fn mark_rank(&self, name: &str) -> Option<usize> {
+        self.mark_order
+            .iter()
+            .position(|candidate| candidate == name)
+    }
+
     pub fn symbol_accepts_opaque_placement(&self, symbol: &str, placement: &str) -> bool {
         let mask = self.symbol_role_masks.get(symbol).copied().unwrap_or(0);
         match placement {
@@ -624,7 +634,9 @@ impl Schema {
 
     /// Iterate over all mark specs.
     pub fn all_marks(&self) -> impl Iterator<Item = &MarkSpec> {
-        self.marks.values()
+        self.mark_order
+            .iter()
+            .filter_map(|name| self.marks.get(name))
     }
 
     /// Return the list of mark names that can be toggled at the given node.

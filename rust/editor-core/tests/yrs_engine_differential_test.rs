@@ -306,6 +306,9 @@ struct EngineAudit {
     document_json: Option<serde_json::Value>,
     document_html: Option<String>,
     encoded_state: Vec<u8>,
+    scope: Option<DocumentScope>,
+    fragment_name: String,
+    schema_fingerprint: String,
 }
 
 fn audit(engine: &YrsDocumentEngine) -> EngineAudit {
@@ -317,7 +320,91 @@ fn audit(engine: &YrsDocumentEngine) -> EngineAudit {
         document_json: engine.document_json(),
         document_html: engine.document_html(),
         encoded_state: engine.encoded_state().unwrap(),
+        scope: engine.scope().cloned(),
+        fragment_name: engine.fragment_name().to_string(),
+        schema_fingerprint: engine.schema_fingerprint().to_string(),
     }
+}
+
+#[test]
+fn legacy_mark_order_is_pinned_and_non_schema_order_is_rejected_atomically() {
+    let schema = tiptap_schema();
+    let input = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "paragraph",
+            "content": [{
+                "type": "text",
+                "text": "marked",
+                "marks": [{"type": "italic"}, {"type": "bold"}]
+            }]
+        }]
+    });
+    let legacy = from_prosemirror_json_with_limits(
+        &input,
+        &schema,
+        UnknownTypeMode::Preserve,
+        &ResourceLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(to_prosemirror_json(&legacy, &schema), input);
+    assert_eq!(
+        to_html(&legacy, &schema),
+        "<p><em><strong>marked</strong></em></p>"
+    );
+
+    let mut engine = YrsDocumentEngine::new(local_config(schema)).unwrap();
+    let before = audit(&engine);
+    let error = engine
+        .import_json(&input.to_string(), TransactionOrigin::DocumentImport)
+        .unwrap_err();
+
+    assert_eq!(error.code, "DOCUMENT_INVALID");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({"field": "marks", "reason": "nonCanonicalOrder"}))
+    );
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
+fn duplicate_same_type_marks_are_rejected_before_yrs_write_atomically() {
+    let schema = tiptap_schema();
+    let input = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "paragraph",
+            "content": [{
+                "type": "text",
+                "text": "links",
+                "marks": [
+                    {"type": "link", "attrs": {"href": "https://one.test"}},
+                    {"type": "link", "attrs": {"href": "https://two.test"}}
+                ]
+            }]
+        }]
+    });
+    let legacy = from_prosemirror_json_with_limits(
+        &input,
+        &schema,
+        UnknownTypeMode::Preserve,
+        &ResourceLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(to_prosemirror_json(&legacy, &schema), input);
+
+    let mut engine = YrsDocumentEngine::new(local_config(schema)).unwrap();
+    let before = audit(&engine);
+    let error = engine
+        .import_json(&input.to_string(), TransactionOrigin::DocumentImport)
+        .unwrap_err();
+
+    assert_eq!(error.code, "DOCUMENT_INVALID");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({"field": "marks", "markType": "link", "reason": "duplicateType"}))
+    );
+    assert_eq!(audit(&engine), before);
 }
 
 #[test]
@@ -486,7 +573,7 @@ fn no_op_json_import_preserves_revision_client_and_origin() {
 
 #[test]
 fn json_and_html_multi_mark_imports_are_deterministic_canonical_no_ops() {
-    let input = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"marked","marks":[{"type":"italic"},{"type":"bold"}]}]}]}"#;
+    let input = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"marked","marks":[{"type":"bold"},{"type":"italic"}]}]}]}"#;
 
     for _ in 0..64 {
         let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
@@ -550,7 +637,7 @@ fn json_and_html_multi_mark_imports_are_deterministic_canonical_no_ops() {
         let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
         engine
             .import_html(
-                "<p><em><strong>marked</strong></em></p>",
+                "<p><strong><em>marked</em></strong></p>",
                 &FromHtmlOptions::default(),
                 TransactionOrigin::DocumentImport,
             )

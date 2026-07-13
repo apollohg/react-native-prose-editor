@@ -185,6 +185,7 @@ function canonicalResolvedSchema(schema: SchemaDefinition): CanonicalObject {
             'marks',
             canonicalMap(resolved.marks.map((mark) => [mark.name, canonicalMark(mark)] as const)),
         ],
+        ['markOrder', resolved.marks.map((mark) => mark.name)],
         ['nodeHtmlTags', firstHtmlTags(resolved.nodes)],
         ['markHtmlTags', firstHtmlTags(resolved.marks)],
         ['preferredTextBlockName', preferredTextBlockName(resolved.nodes)],

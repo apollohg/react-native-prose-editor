@@ -20,6 +20,9 @@ struct EngineAudit {
     document_json: Option<serde_json::Value>,
     document_html: Option<String>,
     encoded_state: Vec<u8>,
+    scope: Option<DocumentScope>,
+    fragment_name: String,
+    schema_fingerprint: String,
 }
 
 fn audit(engine: &YrsDocumentEngine) -> EngineAudit {
@@ -31,6 +34,43 @@ fn audit(engine: &YrsDocumentEngine) -> EngineAudit {
         document_json: engine.document_json(),
         document_html: engine.document_html(),
         encoded_state: engine.encoded_state().unwrap(),
+        scope: engine.scope().cloned(),
+        fragment_name: engine.fragment_name().to_string(),
+        schema_fingerprint: engine.schema_fingerprint().to_string(),
+    }
+}
+
+#[test]
+fn construction_rejects_scope_and_fragment_metadata_over_the_configured_budget() {
+    for (field, configure) in [
+        ("fragmentName", 0_u8),
+        ("documentId", 1_u8),
+        ("lineageId", 2_u8),
+    ] {
+        let mut candidate = config(
+            tiptap_schema(),
+            ResourceLimits {
+                max_input_bytes: 4,
+                ..ResourceLimits::default()
+            },
+            InitializationMode::LocalEmpty,
+        );
+        candidate.fragment_name = "f".into();
+        candidate.scope.as_mut().unwrap().document_id = "d".into();
+        candidate.scope.as_mut().unwrap().lineage_id = "l".into();
+        match configure {
+            0 => candidate.fragment_name = "12345".into(),
+            1 => candidate.scope.as_mut().unwrap().document_id = "12345".into(),
+            _ => candidate.scope.as_mut().unwrap().lineage_id = "12345".into(),
+        }
+        let error = match YrsDocumentEngine::new(candidate) {
+            Ok(_) => panic!("{field}: oversized metadata should be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED", "{field}");
+        assert_eq!(error.limit, Some(4), "{field}");
+        assert_eq!(error.actual, Some(5), "{field}");
+        assert_eq!(error.details, Some(serde_json::json!({"field": field})));
     }
 }
 

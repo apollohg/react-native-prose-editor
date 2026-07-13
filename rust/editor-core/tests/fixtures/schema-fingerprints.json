@@ -123,7 +123,7 @@
                     { "name": "link", "attrs": { "href": {} } }
                 ]
             },
-            "expectedFingerprint": "062c186c1b9c9541314164a087cb7908c84bae58d8c82bb9af4f86d68b882e65"
+            "expectedFingerprint": "ff51b8ac0b43b42e60ab4d0f90ac65be0d4ae31e66f60c8704d8990d1ad48b72"
         },
         {
             "name": "ProseMirror snake-case schema",
@@ -248,7 +248,7 @@
                     { "name": "link", "attrs": { "href": {} } }
                 ]
             },
-            "expectedFingerprint": "456d83696f39dd520e9771424c30b4e4b8bc09a144bb89a0f6c507d866a8a86c"
+            "expectedFingerprint": "bd1254970f5558f26a441e8ea46ec4dd39055af30939d840fbe7ce61ced7d56c"
         },
         {
             "name": "custom root schema",
@@ -266,7 +266,7 @@
                 ],
                 "marks": [{ "name": "highlight", "htmlTag": "mark" }]
             },
-            "expectedFingerprint": "b16651120fb5bf5238846ff70f735cfd418ee2c10e4ad6b0c37edc9b6c04400d"
+            "expectedFingerprint": "418a893dc8a4c6b1ff6b9d3ba8aecc75cba020b10d0ea62e8fdf34ea2500ca2a"
         },
         {
             "name": "nested attribute defaults",
@@ -293,7 +293,7 @@
                 ],
                 "marks": []
             },
-            "expectedFingerprint": "0ecbd338a50d6d9588fccb50715750252166a0b127ba6197296d7172203d3eaa"
+            "expectedFingerprint": "dfe0ded474d6a34ce02f993680803418e9247a6812996fe8645a86177bc216ed"
         },
         {
             "name": "duplicate HTML-tag precedence",
@@ -321,7 +321,7 @@
                     { "name": "annotation", "htmlTag": "mark" }
                 ]
             },
-            "expectedFingerprint": "f2e69dc83c24d8f5ef121f72c1f1e423a07ab52f01d53aca8e9ad0dd8ec937ce"
+            "expectedFingerprint": "9dc8d3df2760d49f22406a7d025c92b127e0e84e537fd2941ff14df14af4e8fd"
         },
         {
             "name": "explicit-null default",
@@ -333,7 +333,7 @@
                 ],
                 "marks": [{ "name": "custom", "attrs": { "value": { "default": null } } }]
             },
-            "expectedFingerprint": "a90660eb659e13e220c85a585ffecf7370efc4fb0f3bb86009f6696d7e9578ee"
+            "expectedFingerprint": "a6bbb8f6481c5e9e0154405e5dbdd024d22767db0e5f4ada83417f4a259abea9"
         },
         {
             "name": "missing default",
@@ -345,7 +345,7 @@
                 ],
                 "marks": [{ "name": "custom", "attrs": { "value": {} } }]
             },
-            "expectedFingerprint": "5c6642305052349c5add8f3af1be226338f5d03bcafa54a73b0a6ff9ed3ccd2a"
+            "expectedFingerprint": "439be6b0bad6e142bb4c5f228b837271c49b453b91915ef41b1cea25393c97c0"
         },
         {
             "name": "portable scalar keys and binary64 numbers",
@@ -372,7 +372,7 @@
                     }
                 ]
             },
-            "expectedFingerprint": "b2f2c1f71c09d1d0bbe89762e2aafa0e1d6b7628a07e77d67fdc4bc5856553e5"
+            "expectedFingerprint": "c11360106662640beb4f7ab8d3b39721967df7ac83a72070e9c36694c81d0599"
         }
     ],
     "equivalentSchemas": [
@@ -430,7 +430,7 @@
                     ]
                 }
             ],
-            "expectedFingerprint": "16ab872d59a9ab5c8216b1d5c6b6cdf89ada71bfb5158852acef2f791134a430"
+            "expectedFingerprint": "b18cb0ed561b3c44ada39979f6ab2071ec92248b34a49010e9588eacfaccb5aa"
         }
     ]
 }

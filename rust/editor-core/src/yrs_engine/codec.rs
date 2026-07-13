@@ -34,7 +34,7 @@ impl<'a> YrsDocumentCodec<'a> {
         budget.admit_node(1)?;
         let mut content = Vec::new();
         for child in fragment.children(txn) {
-            append_xml_out_json(child, txn, 2, &mut budget, &mut content)?;
+            append_xml_out_json(child, txn, self.schema, 2, &mut budget, &mut content)?;
         }
         Ok(json!({
             "type": self.schema.doc_node_type(),
@@ -103,17 +103,20 @@ impl<'a> ConversionBudget<'a> {
 fn append_xml_out_json<T: ReadTxn>(
     node: XmlOut,
     txn: &T,
+    schema: &Schema,
     depth: usize,
     budget: &mut ConversionBudget<'_>,
     output: &mut Vec<Value>,
 ) -> YrsEngineResult<()> {
     match node {
-        XmlOut::Element(element) => output.push(xml_element_to_json(&element, txn, depth, budget)?),
-        XmlOut::Text(text) => append_xml_text_json(&text, txn, depth, budget, output)?,
+        XmlOut::Element(element) => {
+            output.push(xml_element_to_json(&element, txn, schema, depth, budget)?)
+        }
+        XmlOut::Text(text) => append_xml_text_json(&text, txn, schema, depth, budget, output)?,
         XmlOut::Fragment(fragment) => {
             budget.admit_traversal_depth(depth)?;
             for child in fragment.children(txn) {
-                append_xml_out_json(child, txn, depth + 1, budget, output)?;
+                append_xml_out_json(child, txn, schema, depth + 1, budget, output)?;
             }
         }
     }
@@ -123,6 +126,7 @@ fn append_xml_out_json<T: ReadTxn>(
 fn xml_element_to_json<T: ReadTxn>(
     element: &XmlElementRef,
     txn: &T,
+    schema: &Schema,
     depth: usize,
     budget: &mut ConversionBudget<'_>,
 ) -> YrsEngineResult<Value> {
@@ -140,7 +144,7 @@ fn xml_element_to_json<T: ReadTxn>(
 
     let mut children = Vec::new();
     for child in element.children(txn) {
-        append_xml_out_json(child, txn, depth + 1, budget, &mut children)?;
+        append_xml_out_json(child, txn, schema, depth + 1, budget, &mut children)?;
     }
     if !children.is_empty() {
         object.insert("content".to_string(), Value::Array(children));
@@ -152,6 +156,7 @@ fn xml_element_to_json<T: ReadTxn>(
 fn append_xml_text_json<T: ReadTxn>(
     text: &XmlTextRef,
     txn: &T,
+    schema: &Schema,
     depth: usize,
     budget: &mut ConversionBudget<'_>,
     output: &mut Vec<Value>,
@@ -170,7 +175,7 @@ fn append_xml_text_json<T: ReadTxn>(
         let mut object = Map::new();
         object.insert("type".to_string(), Value::String("text".to_string()));
         object.insert("text".to_string(), Value::String(text_value));
-        let marks = attrs_to_marks(diff.attributes.as_deref());
+        let marks = attrs_to_marks(diff.attributes.as_deref(), schema);
         if !marks.is_empty() {
             object.insert("marks".to_string(), Value::Array(marks));
         }
@@ -179,7 +184,7 @@ fn append_xml_text_json<T: ReadTxn>(
     Ok(())
 }
 
-fn attrs_to_marks(attrs: Option<&Attrs>) -> Vec<Value> {
+fn attrs_to_marks(attrs: Option<&Attrs>, schema: &Schema) -> Vec<Value> {
     let mut marks = Vec::new();
     let Some(attrs) = attrs else {
         return marks;
@@ -198,7 +203,11 @@ fn attrs_to_marks(attrs: Option<&Attrs>) -> Vec<Value> {
     marks.sort_by(|left, right| {
         let left_name = left.get("type").and_then(Value::as_str).unwrap_or("");
         let right_name = right.get("type").and_then(Value::as_str).unwrap_or("");
-        left_name.cmp(right_name)
+        schema
+            .mark_rank(left_name)
+            .unwrap_or(usize::MAX)
+            .cmp(&schema.mark_rank(right_name).unwrap_or(usize::MAX))
+            .then_with(|| left_name.cmp(right_name))
     });
     marks
 }
@@ -678,7 +687,7 @@ mod tests {
 
         let attrs = marks_to_attrs(Some(&marks));
         assert_eq!(
-            attrs_to_marks(Some(&attrs)),
+            attrs_to_marks(Some(&attrs), &tiptap_schema()),
             vec![
                 json!({ "type": "bold" }),
                 json!({ "type": "italic" }),

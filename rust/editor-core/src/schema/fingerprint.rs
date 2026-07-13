@@ -9,6 +9,7 @@ use super::{AttrSpec, MarkSpec, NodeRole, NodeSpec, Schema};
 struct CanonicalSchema<'a> {
     nodes: BTreeMap<&'a str, CanonicalNode<'a>>,
     marks: BTreeMap<&'a str, CanonicalMark<'a>>,
+    mark_order: Vec<&'a str>,
     node_html_tags: BTreeMap<&'a str, &'a str>,
     mark_html_tags: BTreeMap<&'a str, &'a str>,
     preferred_text_block_name: Option<&'a str>,
@@ -160,6 +161,7 @@ impl<'a> From<&'a Schema> for CanonicalSchema<'a> {
                 .iter()
                 .map(|(name, spec)| (name.as_str(), CanonicalMark::from(spec)))
                 .collect(),
+            mark_order: schema.mark_order.iter().map(String::as_str).collect(),
             node_html_tags: schema
                 .node_html_tags
                 .iter()
@@ -368,6 +370,31 @@ mod tests {
             schema_fingerprint(&schema_with_duplicate_tag("alpha")),
             schema_fingerprint(&schema_with_duplicate_tag("beta"))
         );
+    }
+
+    #[test]
+    fn fingerprint_preserves_schema_mark_rank() {
+        let schema = |marks| {
+            Schema::from_json(&serde_json::json!({
+                "nodes": [
+                    { "name": "doc", "content": "paragraph", "role": "doc" },
+                    { "name": "paragraph", "content": "text*", "role": "textBlock" },
+                    { "name": "text", "content": "", "role": "text" }
+                ],
+                "marks": marks
+            }))
+            .unwrap()
+        };
+        let first = schema(serde_json::json!([
+            {"name": "bold"},
+            {"name": "italic"}
+        ]));
+        let second = schema(serde_json::json!([
+            {"name": "italic"},
+            {"name": "bold"}
+        ]));
+
+        assert_ne!(schema_fingerprint(&first), schema_fingerprint(&second));
     }
 
     #[test]

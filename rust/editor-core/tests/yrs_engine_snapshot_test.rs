@@ -56,6 +56,9 @@ struct EngineAudit {
     last_origin: Option<TransactionOrigin>,
     document_json: Option<serde_json::Value>,
     encoded_state: Vec<u8>,
+    scope: Option<DocumentScope>,
+    fragment_name: String,
+    schema_fingerprint: String,
 }
 
 fn audit(engine: &YrsDocumentEngine) -> EngineAudit {
@@ -66,6 +69,9 @@ fn audit(engine: &YrsDocumentEngine) -> EngineAudit {
         last_origin: engine.last_committed_origin(),
         document_json: engine.document_json(),
         encoded_state: engine.encoded_state().unwrap(),
+        scope: engine.scope().cloned(),
+        fragment_name: engine.fragment_name().to_string(),
+        schema_fingerprint: engine.schema_fingerprint().to_string(),
     }
 }
 
@@ -230,8 +236,13 @@ fn metadata_and_encoded_state_limits_precede_decode() {
     let source = populated_scoped_engine();
     let snapshot = source.export_snapshot().unwrap();
 
+    let metadata_limit = snapshot.document_id.len()
+        + snapshot.lineage_id.len()
+        + snapshot.fragment_name.len()
+        + snapshot.schema_fingerprint.len()
+        - 1;
     let metadata_limits = ResourceLimits {
-        max_input_bytes: 1,
+        max_input_bytes: metadata_limit,
         ..ResourceLimits::default()
     };
     let mut metadata_target = YrsDocumentEngine::new(engine_config(
@@ -247,7 +258,7 @@ fn metadata_and_encoded_state_limits_precede_decode() {
     let error = metadata_target.restore_snapshot(&malformed).unwrap_err();
     assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
     assert_field(&error, "metadata");
-    assert_eq!(error.limit, Some(1));
+    assert_eq!(error.limit, Some(metadata_limit));
     assert_eq!(audit(&metadata_target), metadata_before);
 
     let encoded_limit = 1_024;
