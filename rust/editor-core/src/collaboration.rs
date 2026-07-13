@@ -3,22 +3,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
-use serde_json::{json, Map, Value};
-use yrs::any::Any;
+use serde_json::{json, Value};
 use yrs::branch::{Branch, BranchPtr};
 use yrs::sync::awareness::{Awareness, AwarenessUpdate};
 use yrs::sync::protocol::{DefaultProtocol, Message, Protocol, SyncMessage};
-use yrs::types::text::{Text, YChange};
-use yrs::types::xml::{
-    Xml, XmlElementPrelim, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut, XmlTextPrelim,
-    XmlTextRef,
-};
-use yrs::types::{Attrs, ToJson};
+use yrs::types::xml::{XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut, XmlTextRef};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
 use yrs::{
     Assoc, Doc, GetString, OffsetKind, Options, ReadTxn, StateVector, StickyIndex, Transact,
-    TransactionMut, Update, WriteTxn,
+    Update, WriteTxn,
 };
 
 use crate::boundary::{BoundaryError, BoundaryResult, BoundedInput, InputKind, ResourceLimits};
@@ -26,6 +20,7 @@ use crate::schema::presets::tiptap_schema;
 use crate::schema::Schema;
 use crate::serialize::{from_prosemirror_json_with_limits, UnknownTypeMode};
 use crate::transform::DocumentValidator;
+use crate::yrs_engine::YrsDocumentCodec;
 
 pub type CollaborationSessionId = u64;
 
@@ -435,20 +430,17 @@ impl CollaborationSession {
         let previous_state_vector = candidate.doc.transact().state_vector();
 
         {
-            let current_children = candidate
-                .cached_document_json
-                .get("content")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            let next_children = next_json
-                .get("content")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+            let codec = YrsDocumentCodec::new(&candidate.schema, &candidate.resource_limits);
             let mut txn = candidate.doc.transact_mut();
             let fragment = txn.get_or_insert_xml_fragment(candidate.fragment_name.as_str());
-            apply_children(&fragment, &mut txn, current_children, next_children);
+            codec
+                .apply_json(
+                    &fragment,
+                    &mut txn,
+                    &candidate.cached_document_json,
+                    &next_json,
+                )
+                .map_err(BoundaryError::from)?;
         }
 
         candidate.refresh_cached_document_json()?;
@@ -633,18 +625,21 @@ impl CollaborationSession {
     }
 
     fn replace_document(&mut self, next_json: Value) -> BoundaryResult<()> {
+        let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
         let mut txn = self.doc.transact_mut();
         let fragment = txn.get_or_insert_xml_fragment(self.fragment_name.as_str());
         let len = fragment.len(&txn);
         if len > 0 {
             fragment.remove_range(&mut txn, 0, len);
         }
-        if let Some(content) = next_json.get("content").and_then(Value::as_array) {
-            for node in content {
-                let next_index = fragment.len(&txn);
-                insert_json_node(&fragment, &mut txn, next_index, node);
-            }
-        }
+        codec
+            .apply_json(
+                &fragment,
+                &mut txn,
+                &empty_document_json(&self.document_root_type),
+                &next_json,
+            )
+            .map_err(BoundaryError::from)?;
         drop(txn);
         self.refresh_cached_document_json()?;
         self.refresh_cached_peers();
@@ -677,16 +672,10 @@ impl CollaborationSession {
 
     fn refresh_cached_document_json(&mut self) -> BoundaryResult<bool> {
         let txn = self.doc.transact();
+        let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
         let next_document_json = txn
             .get_xml_fragment(self.fragment_name.as_str())
-            .map(|fragment| {
-                xml_fragment_to_document_json_with_limits(
-                    &fragment,
-                    &txn,
-                    &self.document_root_type,
-                    &self.resource_limits,
-                )
-            })
+            .map(|fragment| codec.read_json(&fragment, &txn))
             .transpose()?
             .unwrap_or_else(|| empty_document_json(&self.document_root_type));
         if next_document_json == self.cached_document_json {
@@ -1155,10 +1144,6 @@ fn scalar_len(value: &str) -> u32 {
     value.chars().count() as u32
 }
 
-fn utf16_len(value: &str) -> u32 {
-    value.encode_utf16().count() as u32
-}
-
 fn scalar_offset_to_utf16(value: &str, scalar_offset: u32) -> Option<u32> {
     let mut scalar_count = 0u32;
     let mut utf16_count = 0u32;
@@ -1235,562 +1220,58 @@ fn encode_message_bounded(message: Message, limits: &ResourceLimits) -> Boundary
     Ok(encoded)
 }
 
-#[derive(Debug)]
-struct CollaborationConversionBudget<'a> {
-    limits: &'a ResourceLimits,
-    nodes: usize,
-}
-
-impl<'a> CollaborationConversionBudget<'a> {
-    fn new(limits: &'a ResourceLimits) -> Self {
-        Self { limits, nodes: 0 }
-    }
-
-    fn admit_node(&mut self, depth: usize) -> BoundaryResult<()> {
-        self.nodes = self.nodes.saturating_add(1);
-        if self.nodes > self.limits.max_document_nodes {
-            return Err(BoundaryError::limit(
-                "DOCUMENT_LIMIT_EXCEEDED",
-                self.limits.max_document_nodes,
-                self.nodes,
-            ));
-        }
-        if depth > self.limits.max_document_depth {
-            return Err(BoundaryError::limit(
-                "DOCUMENT_LIMIT_EXCEEDED",
-                self.limits.max_document_depth,
-                depth,
-            ));
-        }
-        Ok(())
-    }
-
-    fn admit_traversal_depth(&self, depth: usize) -> BoundaryResult<()> {
-        if depth > self.limits.max_document_depth {
-            return Err(BoundaryError::limit(
-                "DOCUMENT_LIMIT_EXCEEDED",
-                self.limits.max_document_depth,
-                depth,
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-fn xml_fragment_to_document_json<T: ReadTxn>(
-    fragment: &XmlFragmentRef,
-    txn: &T,
-    document_root_type: &str,
-) -> Value {
-    xml_fragment_to_document_json_with_limits(
-        fragment,
-        txn,
-        document_root_type,
-        &ResourceLimits::default(),
-    )
-    .expect("test collaboration document should be within default limits")
-}
-
-fn xml_fragment_to_document_json_with_limits<T: ReadTxn>(
-    fragment: &XmlFragmentRef,
-    txn: &T,
-    document_root_type: &str,
-    limits: &ResourceLimits,
-) -> BoundaryResult<Value> {
-    let mut budget = CollaborationConversionBudget::new(limits);
-    budget.admit_node(1)?;
-    let mut content = Vec::new();
-    for child in fragment.children(txn) {
-        append_xml_out_json(child, txn, 2, &mut budget, &mut content)?;
-    }
-    Ok(json!({
-        "type": document_root_type,
-        "content": content,
-    }))
-}
-
-fn append_xml_out_json<T: ReadTxn>(
-    node: XmlOut,
-    txn: &T,
-    depth: usize,
-    budget: &mut CollaborationConversionBudget<'_>,
-    output: &mut Vec<Value>,
-) -> BoundaryResult<()> {
-    match node {
-        XmlOut::Element(element) => output.push(xml_element_to_json(
-            &element, txn, depth, budget,
-        )?),
-        XmlOut::Text(text) => append_xml_text_json(&text, txn, depth, budget, output)?,
-        XmlOut::Fragment(fragment) => {
-            budget.admit_traversal_depth(depth)?;
-            for child in fragment.children(txn) {
-                append_xml_out_json(child, txn, depth + 1, budget, output)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn xml_element_to_json<T: ReadTxn>(
-    element: &XmlElementRef,
-    txn: &T,
-    depth: usize,
-    budget: &mut CollaborationConversionBudget<'_>,
-) -> BoundaryResult<Value> {
-    budget.admit_node(depth)?;
-    let mut object = Map::new();
-    let mut attrs = element
-        .attributes(txn)
-        .map(|(key, value)| (key.to_string(), any_to_json(&value.to_json(txn))))
-        .collect::<Map<String, Value>>();
-    let node_type = collaboration_json_node_type_for_element(element.tag(), &mut attrs);
-    object.insert("type".to_string(), Value::String(node_type));
-    if !attrs.is_empty() {
-        object.insert("attrs".to_string(), Value::Object(attrs));
-    }
-
-    let mut children = Vec::new();
-    for child in element.children(txn) {
-        append_xml_out_json(child, txn, depth + 1, budget, &mut children)?;
-    }
-    if !children.is_empty() {
-        object.insert("content".to_string(), Value::Array(children));
-    }
-
-    Ok(Value::Object(object))
-}
-
-fn append_xml_text_json<T: ReadTxn>(
-    text: &XmlTextRef,
-    txn: &T,
-    depth: usize,
-    budget: &mut CollaborationConversionBudget<'_>,
-    output: &mut Vec<Value>,
-) -> BoundaryResult<()> {
-    for diff in text.diff(txn, YChange::identity) {
-        let yrs::Out::Any(any) = diff.insert else {
-            continue;
-        };
-        let Value::String(text_value) = any_to_json(&any) else {
-            continue;
-        };
-        if text_value.is_empty() {
-            continue;
-        }
-        budget.admit_node(depth)?;
-        let mut object = Map::new();
-        object.insert("type".to_string(), Value::String("text".to_string()));
-        object.insert("text".to_string(), Value::String(text_value));
-        let marks = attrs_to_marks(diff.attributes.clone());
-        if !marks.is_empty() {
-            object.insert("marks".to_string(), Value::Array(marks));
-        }
-        output.push(Value::Object(object));
-    }
-    Ok(())
-}
-
-fn attrs_to_marks(attrs: Option<Box<Attrs>>) -> Vec<Value> {
-    let mut marks = Vec::new();
-    let Some(attrs) = attrs else {
-        return marks;
-    };
-    for (name, value) in attrs.iter() {
-        let mut object = Map::new();
-        object.insert("type".to_string(), Value::String(name.to_string()));
-        match any_to_json(value) {
-            Value::Bool(true) => {}
-            Value::Null => {}
-            other => {
-                object.insert("attrs".to_string(), other);
-            }
-        }
-        marks.push(Value::Object(object));
-    }
-    marks
-}
-
-fn apply_children<P: XmlFragment>(
-    parent: &P,
-    txn: &mut TransactionMut<'_>,
-    old_children: &[Value],
-    new_children: &[Value],
-) {
-    let mut prefix = 0usize;
-    while prefix < old_children.len()
-        && prefix < new_children.len()
-        && nodes_are_compatible(&old_children[prefix], &new_children[prefix])
-    {
-        apply_child_at(
-            parent,
-            txn,
-            prefix as u32,
-            &old_children[prefix],
-            &new_children[prefix],
-        );
-        prefix += 1;
-    }
-
-    let mut old_suffix = old_children.len();
-    let mut new_suffix = new_children.len();
-    while old_suffix > prefix
-        && new_suffix > prefix
-        && nodes_are_compatible(&old_children[old_suffix - 1], &new_children[new_suffix - 1])
-    {
-        old_suffix -= 1;
-        new_suffix -= 1;
-    }
-
-    let old_mid_len = old_suffix.saturating_sub(prefix) as u32;
-    if old_mid_len > 0 {
-        parent.remove_range(txn, prefix as u32, old_mid_len);
-    }
-
-    for (offset, node) in new_children[prefix..new_suffix].iter().enumerate() {
-        insert_json_node(parent, txn, prefix as u32 + offset as u32, node);
-    }
-
-    let suffix_len = old_children.len().saturating_sub(old_suffix);
-    for offset in 0..suffix_len {
-        let new_index = new_suffix + offset;
-        let parent_index = (new_suffix + offset) as u32;
-        apply_child_at(
-            parent,
-            txn,
-            parent_index,
-            &old_children[old_suffix + offset],
-            &new_children[new_index],
-        );
-    }
-}
-
-fn apply_child_at<P: XmlFragment>(
-    parent: &P,
-    txn: &mut TransactionMut<'_>,
-    index: u32,
-    old_node: &Value,
-    new_node: &Value,
-) {
-    let Some(current) = parent.get(txn, index) else {
-        return;
-    };
-
-    match current {
-        XmlOut::Element(element) => apply_element_node(&element, txn, old_node, new_node),
-        XmlOut::Text(text) => apply_text_node(&text, txn, old_node, new_node),
-        _ => {}
-    }
-}
-
-fn apply_element_node(
-    element: &XmlElementRef,
-    txn: &mut TransactionMut<'_>,
-    old_node: &Value,
-    new_node: &Value,
-) {
-    let old_attrs = old_node.get("attrs").and_then(Value::as_object);
-    let new_attrs = new_node.get("attrs").and_then(Value::as_object);
-
-    if old_attrs != new_attrs {
-        let existing = element
-            .attributes(txn)
-            .map(|(key, _)| key.to_string())
-            .collect::<Vec<_>>();
-        for key in existing {
-            element.remove_attribute(txn, &key);
-        }
-        if let Some(attrs) = new_attrs {
-            for (key, value) in attrs {
-                element.insert_attribute(txn, key.as_str(), json_to_any(value));
-            }
-        }
-    }
-
-    let old_children = old_node
-        .get("content")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let new_children = new_node
-        .get("content")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    apply_children(element, txn, old_children, new_children);
-}
-
-fn apply_text_node(
-    text: &XmlTextRef,
-    txn: &mut TransactionMut<'_>,
-    old_node: &Value,
-    new_node: &Value,
-) {
-    let old_marks = normalize_marks(old_node.get("marks").and_then(Value::as_array));
-    let new_marks = normalize_marks(new_node.get("marks").and_then(Value::as_array));
-    let old_text = old_node.get("text").and_then(Value::as_str).unwrap_or("");
-    let new_text = new_node.get("text").and_then(Value::as_str).unwrap_or("");
-
-    if old_marks != new_marks {
-        let len = text.len(txn);
-        if len > 0 {
-            text.remove_range(txn, 0, len);
-        }
-        if !new_text.is_empty() {
-            text.insert_with_attributes(txn, 0, new_text, marks_to_attrs(&new_marks));
-        }
-        return;
-    }
-
-    let (prefix, old_suffix, new_suffix) = shared_text_bounds(old_text, new_text);
-    let prefix_utf16 = utf16_len(&old_text[..prefix]);
-    let remove_len = utf16_len(&old_text[prefix..old_suffix]);
-    if remove_len > 0 {
-        text.remove_range(txn, prefix_utf16, remove_len);
-    }
-
-    let insert_text = &new_text[prefix..new_suffix];
-    if !insert_text.is_empty() {
-        text.insert_with_attributes(txn, prefix_utf16, insert_text, marks_to_attrs(&new_marks));
-    }
-}
-
-fn shared_text_bounds(old_text: &str, new_text: &str) -> (usize, usize, usize) {
-    let mut prefix = 0usize;
-    let mut old_iter = old_text.char_indices().peekable();
-    let mut new_iter = new_text.char_indices().peekable();
-
-    while let (Some((old_index, old_char)), Some((new_index, new_char))) =
-        (old_iter.peek().copied(), new_iter.peek().copied())
-    {
-        if old_char != new_char || old_index != prefix || new_index != prefix {
-            break;
-        }
-        prefix += old_char.len_utf8();
-        old_iter.next();
-        new_iter.next();
-    }
-
-    let mut old_suffix = old_text.len();
-    let mut new_suffix = new_text.len();
-    let old_tail = old_text[prefix..].chars().rev().collect::<Vec<_>>();
-    let new_tail = new_text[prefix..].chars().rev().collect::<Vec<_>>();
-    for (old_char, new_char) in old_tail.iter().zip(new_tail.iter()) {
-        if old_char != new_char {
-            break;
-        }
-        old_suffix -= old_char.len_utf8();
-        new_suffix -= new_char.len_utf8();
-    }
-
-    (prefix, old_suffix, new_suffix)
-}
-
-fn insert_json_node<P: XmlFragment>(
-    parent: &P,
-    txn: &mut TransactionMut<'_>,
-    index: u32,
-    node: &Value,
-) {
-    let node_type = node.get("type").and_then(Value::as_str).unwrap_or("");
-    if node_type == "text" {
-        let text_value = node.get("text").and_then(Value::as_str).unwrap_or("");
-        let text = parent.insert(txn, index, XmlTextPrelim::new(""));
-        if !text_value.is_empty() {
-            text.insert_with_attributes(
-                txn,
-                0,
-                text_value,
-                marks_to_attrs(&normalize_marks(
-                    node.get("marks").and_then(Value::as_array),
-                )),
-            );
-        }
-        return;
-    }
-
-    let mut attrs = node
-        .get("attrs")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let element_name = collaboration_element_name_for_json_node(node_type, &mut attrs);
-    let element = parent.insert(txn, index, XmlElementPrelim::empty(element_name.as_str()));
-    for (key, value) in &attrs {
-        element.insert_attribute(txn, key.as_str(), json_to_any(value));
-    }
-    if let Some(children) = node.get("content").and_then(Value::as_array) {
-        for child in children {
-            let next_index = element.len(txn);
-            insert_json_node(&element, txn, next_index, child);
-        }
-    }
-}
-
-fn collaboration_json_node_type_for_element(tag: &str, attrs: &mut Map<String, Value>) -> String {
-    if tag == "heading" {
-        if let Some(level) = parse_heading_level_value(attrs.get("level")) {
-            attrs.remove("level");
-            return format!("h{level}");
-        }
-    }
-
-    tag.to_string()
-}
-
-fn collaboration_element_name_for_json_node(
-    node_type: &str,
-    attrs: &mut Map<String, Value>,
-) -> String {
-    if let Some(level) = heading_level_from_internal_node_type(node_type) {
-        attrs.insert("level".to_string(), Value::Number(u64::from(level).into()));
-        return "heading".to_string();
-    }
-
-    node_type.to_string()
-}
-
-fn heading_level_from_internal_node_type(node_type: &str) -> Option<u8> {
-    let suffix = node_type.strip_prefix('h')?;
-    if suffix.len() != 1 {
-        return None;
-    }
-    let level = suffix.parse::<u8>().ok()?;
-    if (1..=6).contains(&level) {
-        Some(level)
-    } else {
-        None
-    }
-}
-
-fn parse_heading_level_value(value: Option<&Value>) -> Option<u8> {
-    let value = value?;
-    let level = match value {
-        Value::Number(number) => {
-            if let Some(value) = number.as_u64() {
-                u8::try_from(value).ok()?
-            } else if let Some(value) = number.as_i64() {
-                u8::try_from(value).ok()?
-            } else if let Some(value) = number.as_f64() {
-                if !value.is_finite() || value.fract() != 0.0 {
-                    return None;
-                }
-                let rounded = value as i64;
-                u8::try_from(rounded).ok()?
-            } else {
-                return None;
-            }
-        }
-        Value::String(value) => value.parse::<u8>().ok()?,
-        _ => return None,
-    };
-
-    if (1..=6).contains(&level) {
-        Some(level)
-    } else {
-        None
-    }
-}
-
-fn normalize_marks(marks: Option<&Vec<Value>>) -> Vec<Value> {
-    let mut normalized = marks.cloned().unwrap_or_default();
-    normalized.sort_by(|left, right| {
-        let left_name = left.get("type").and_then(Value::as_str).unwrap_or("");
-        let right_name = right.get("type").and_then(Value::as_str).unwrap_or("");
-        left_name.cmp(right_name)
-    });
-    normalized
-}
-
-fn marks_to_attrs(marks: &[Value]) -> Attrs {
-    let mut attrs = Attrs::default();
-    for mark in marks {
-        let Some(mark_type) = mark.get("type").and_then(Value::as_str) else {
-            continue;
-        };
-        let value = mark
-            .get("attrs")
-            .map(json_to_any)
-            .unwrap_or_else(|| Any::Bool(true));
-        attrs.insert(mark_type.into(), value);
-    }
-    attrs
-}
-
-fn nodes_are_compatible(old_node: &Value, new_node: &Value) -> bool {
-    let old_type = old_node.get("type").and_then(Value::as_str);
-    let new_type = new_node.get("type").and_then(Value::as_str);
-    if old_type != new_type {
-        return false;
-    }
-
-    match old_type {
-        Some("text") => {
-            normalize_marks(old_node.get("marks").and_then(Value::as_array))
-                == normalize_marks(new_node.get("marks").and_then(Value::as_array))
-        }
-        Some(_) => true,
-        None => false,
-    }
-}
-
-fn json_to_any(value: &Value) -> Any {
-    match value {
-        Value::Null => Any::Null,
-        Value::Bool(value) => Any::Bool(*value),
-        Value::Number(number) => {
-            if let Some(value) = number.as_i64() {
-                Any::BigInt(value)
-            } else if let Some(value) = number.as_u64() {
-                Any::Number(value as f64)
-            } else if let Some(value) = number.as_f64() {
-                Any::Number(value)
-            } else {
-                Any::Null
-            }
-        }
-        Value::String(value) => Any::String(value.clone().into()),
-        Value::Array(values) => Any::Array(values.iter().map(json_to_any).collect()),
-        Value::Object(values) => Any::Map(Arc::new(
-            values
-                .iter()
-                .map(|(key, value)| (key.clone(), json_to_any(value)))
-                .collect(),
-        )),
-    }
-}
-
-fn any_to_json(value: &Any) -> Value {
-    match value {
-        Any::Null => Value::Null,
-        Any::Undefined => Value::Null,
-        Any::Bool(value) => Value::Bool(*value),
-        Any::Number(value) => serde_json::Number::from_f64(*value)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
-        Any::BigInt(value) => Value::Number((*value).into()),
-        Any::String(value) => Value::String(value.to_string()),
-        Any::Buffer(value) => Value::Array(
-            value
-                .iter()
-                .map(|byte| Value::Number((*byte).into()))
-                .collect(),
-        ),
-        Any::Array(values) => Value::Array(values.iter().map(any_to_json).collect()),
-        Any::Map(values) => Value::Object(
-            values
-                .iter()
-                .map(|(key, value)| (key.to_string(), any_to_json(value)))
-                .collect(),
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use yrs::IndexedSequence;
+    use yrs::any::Any;
+    use yrs::types::xml::{XmlElementPrelim, XmlTextPrelim};
+    use yrs::types::{Attrs, ToJson};
+    use yrs::{IndexedSequence, Text, TransactionMut, Xml};
+
+    fn xml_fragment_to_document_json<T: ReadTxn>(
+        fragment: &XmlFragmentRef,
+        txn: &T,
+        document_root_type: &str,
+    ) -> Value {
+        let schema = tiptap_schema();
+        assert_eq!(schema.doc_node_type(), document_root_type);
+        YrsDocumentCodec::new(&schema, &ResourceLimits::default())
+            .read_json(fragment, txn)
+            .expect("test collaboration document should be within default limits")
+    }
+
+    fn insert_json_node(
+        fragment: &XmlFragmentRef,
+        txn: &mut TransactionMut<'_>,
+        index: u32,
+        node: &Value,
+    ) {
+        let schema = tiptap_schema();
+        let limits = ResourceLimits::default();
+        let codec = YrsDocumentCodec::new(&schema, &limits);
+        let current = codec
+            .read_json(fragment, txn)
+            .expect("test collaboration document should be within default limits");
+        let mut next = current.clone();
+        next.get_mut("content")
+            .and_then(Value::as_array_mut)
+            .expect("codec document should have content")
+            .insert(index as usize, node.clone());
+        codec
+            .apply_json(fragment, txn, &current, &next)
+            .expect("test collaboration document should be within default limits");
+    }
+
+    fn normalize_marks(marks: Option<&Vec<Value>>) -> Vec<Value> {
+        let mut normalized = marks.cloned().unwrap_or_default();
+        normalized.sort_by(|left, right| {
+            let left_name = left.get("type").and_then(Value::as_str).unwrap_or("");
+            let right_name = right.get("type").and_then(Value::as_str).unwrap_or("");
+            left_name.cmp(right_name)
+        });
+        normalized
+    }
 
     fn apply_messages_to_peer(peer: &Awareness, messages: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
         let protocol = DefaultProtocol;
@@ -2053,12 +1534,12 @@ mod tests {
         };
 
         assert_eq!(heading.tag().as_ref(), "heading");
-        assert_eq!(
+        assert!(matches!(
             heading
                 .get_attribute(&txn, "level")
-                .map(|value| any_to_json(&value.to_json(&txn))),
-            Some(json!(2))
-        );
+                .map(|value| value.to_json(&txn)),
+            Some(Any::BigInt(2))
+        ));
     }
 
     #[test]
@@ -3538,6 +3019,28 @@ mod tests {
             assert_eq!(target.document_json(), before_json);
             assert_eq!(target.encoded_state(), before_state);
         }
+    }
+
+    #[test]
+    fn local_codec_limit_errors_preserve_structured_boundary_fields() {
+        let mut session = CollaborationSession::try_new(
+            r#"{"clientId":1,"resourceLimits":{"maxDocumentNodes":2}}"#,
+        )
+        .unwrap();
+
+        let error = session
+            .apply_local_document(json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{ "type": "text", "text": "third node" }]
+                }]
+            }))
+            .unwrap_err();
+
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(error.limit, Some(2));
+        assert_eq!(error.actual, Some(3));
     }
 
     #[test]
