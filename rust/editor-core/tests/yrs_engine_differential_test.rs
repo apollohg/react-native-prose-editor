@@ -1,6 +1,11 @@
+use std::collections::HashMap;
+
 use editor_core::boundary::ResourceLimits;
-use editor_core::schema::Schema;
-use editor_core::serialize::FromHtmlOptions;
+use editor_core::schema::{AttrSpec, NodeRole, NodeSpec, Schema};
+use editor_core::serialize::{
+    from_prosemirror_json_with_limits, to_html, to_prosemirror_json, FromHtmlOptions,
+    UnknownTypeMode,
+};
 use editor_core::tiptap_schema;
 use editor_core::yrs_engine::{
     DocumentScope, EngineCommit, InitializationMode, TransactionOrigin, YrsDocumentEngine,
@@ -9,6 +14,26 @@ use editor_core::yrs_engine::{
 use yrs::types::xml::XmlFragment;
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, ReadTxn, Transact, Update};
+
+#[derive(Debug, serde::Deserialize)]
+struct FixtureCorpus {
+    fixtures: Vec<DocumentFixture>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentFixture {
+    name: String,
+    schema: String,
+    fragment_name: Option<String>,
+    document: serde_json::Value,
+}
+
+fn fixtures() -> Vec<DocumentFixture> {
+    serde_json::from_str::<FixtureCorpus>(include_str!("fixtures/yrs-documents.json"))
+        .expect("Yrs fixture corpus must be valid JSON")
+        .fixtures
+}
 
 fn local_config(schema: Schema) -> YrsEngineConfig {
     YrsEngineConfig {
@@ -44,6 +69,232 @@ fn custom_root_schema() -> Schema {
         "marks": []
     }))
     .unwrap()
+}
+
+fn extended_schema() -> Schema {
+    let base = tiptap_schema();
+    let mut nodes: Vec<NodeSpec> = base.all_nodes().cloned().collect();
+    nodes.extend([
+        NodeSpec {
+            name: "taskList".to_string(),
+            content: editor_core::schema::content_rule::ContentRule::parse("taskItem+").unwrap(),
+            group: Some("block".to_string()),
+            attrs: HashMap::new(),
+            role: NodeRole::List { ordered: false },
+            html_tag: Some("ul".to_string()),
+            is_void: false,
+            allow_undeclared_attrs: false,
+        },
+        NodeSpec {
+            name: "taskItem".to_string(),
+            content: editor_core::schema::content_rule::ContentRule::parse("paragraph block*")
+                .unwrap(),
+            group: None,
+            attrs: HashMap::from([(
+                "checked".to_string(),
+                AttrSpec {
+                    default: Some(serde_json::Value::Bool(false)),
+                    has_default: true,
+                },
+            )]),
+            role: NodeRole::ListItem,
+            html_tag: Some("li".to_string()),
+            is_void: false,
+            allow_undeclared_attrs: false,
+        },
+        NodeSpec {
+            name: "mention".to_string(),
+            content: editor_core::schema::content_rule::ContentRule::parse("").unwrap(),
+            group: Some("inline".to_string()),
+            attrs: HashMap::from([(
+                "label".to_string(),
+                AttrSpec {
+                    default: Some(serde_json::Value::Null),
+                    has_default: true,
+                },
+            )]),
+            role: NodeRole::Inline,
+            html_tag: None,
+            is_void: true,
+            allow_undeclared_attrs: true,
+        },
+    ]);
+    let marks = base.all_marks().cloned().collect();
+    Schema::new(nodes, marks)
+}
+
+fn schema_for(name: &str) -> Schema {
+    match name {
+        "tiptap" => tiptap_schema(),
+        "customRoot" => custom_root_schema(),
+        "extended" => extended_schema(),
+        other => panic!("unknown fixture schema: {other}"),
+    }
+}
+
+#[test]
+fn shared_document_fixtures_match_legacy_json_and_html() {
+    let fixtures = fixtures();
+    let required_names = [
+        "canonical-empty-tiptap-document",
+        "canonical-empty-custom-root-document",
+        "all-built-in-heading-levels",
+        "all-built-in-marks",
+        "blockquote-with-multiple-blocks",
+        "bullet-list",
+        "ordered-list-default-and-non-default-start",
+        "task-list-default-and-checked-attrs",
+        "nested-bullet-ordered-and-task-lists",
+        "required-and-default-image-attrs",
+        "inline-and-block-void-nodes",
+        "mention-with-undeclared-application-attrs",
+        "opaque-unknown-inline-node-with-nested-original-json",
+        "opaque-unknown-block-node-with-nested-original-json",
+        "emoji-and-zwj-sequences",
+        "combining-mark-sequences",
+        "right-to-left-text",
+        "mixed-utf16-and-scalar-boundaries",
+    ];
+    assert_eq!(fixtures.len(), required_names.len());
+    for name in required_names {
+        assert!(
+            fixtures.iter().any(|fixture| fixture.name == name),
+            "required Yrs fixture is missing: {name}"
+        );
+    }
+
+    for fixture in fixtures {
+        let schema = schema_for(&fixture.schema);
+        let legacy = from_prosemirror_json_with_limits(
+            &fixture.document,
+            &schema,
+            UnknownTypeMode::Preserve,
+            &ResourceLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("{} legacy parse failed: {error}", fixture.name));
+        let expected_json = to_prosemirror_json(&legacy, &schema);
+        let expected_html = to_html(&legacy, &schema);
+        let mut config = local_config(schema);
+        if let Some(fragment_name) = &fixture.fragment_name {
+            config.fragment_name.clone_from(fragment_name);
+        }
+        let mut engine = YrsDocumentEngine::new(config).unwrap();
+        engine
+            .import_json(
+                &fixture.document.to_string(),
+                TransactionOrigin::DocumentImport,
+            )
+            .unwrap_or_else(|error| panic!("{} engine import failed: {error}", fixture.name));
+        assert_eq!(
+            engine.document_json().unwrap(),
+            expected_json,
+            "{}",
+            fixture.name
+        );
+        assert_eq!(
+            engine.document_html().unwrap(),
+            expected_html,
+            "{}",
+            fixture.name
+        );
+    }
+}
+
+#[test]
+fn opaque_inline_and_block_fixtures_survive_cross_engine_snapshots() {
+    let opaque_fixtures = fixtures()
+        .into_iter()
+        .filter(|fixture| fixture.name.starts_with("opaque-unknown-"))
+        .collect::<Vec<_>>();
+    assert_eq!(opaque_fixtures.len(), 2);
+
+    for fixture in opaque_fixtures {
+        let fragment_name = fixture
+            .fragment_name
+            .clone()
+            .unwrap_or_else(|| "prosemirror".to_string());
+        let scoped_config = |schema| YrsEngineConfig {
+            fragment_name: fragment_name.clone(),
+            scope: Some(DocumentScope {
+                document_id: format!("{}-document", fixture.name),
+                lineage_id: "fixture-lineage".to_string(),
+            }),
+            ..local_config(schema)
+        };
+        let mut source =
+            YrsDocumentEngine::new(scoped_config(schema_for(&fixture.schema))).unwrap();
+        source
+            .import_json(
+                &fixture.document.to_string(),
+                TransactionOrigin::DocumentImport,
+            )
+            .unwrap();
+        let expected_json = source.document_json().unwrap();
+        let expected_html = source.document_html().unwrap();
+        let snapshot = source.export_snapshot().unwrap();
+        let mut target =
+            YrsDocumentEngine::new(scoped_config(schema_for(&fixture.schema))).unwrap();
+
+        target.restore_snapshot(&snapshot).unwrap();
+
+        assert_eq!(
+            target.document_json().unwrap(),
+            expected_json,
+            "{}",
+            fixture.name
+        );
+        assert_eq!(
+            target.document_html().unwrap(),
+            expected_html,
+            "{}",
+            fixture.name
+        );
+    }
+}
+
+fn arb_document() -> impl proptest::strategy::Strategy<Value = serde_json::Value> {
+    use proptest::prelude::*;
+
+    let text = "[A-Za-z0-9 😀éאב]{0,64}";
+    prop::collection::vec(
+        text.prop_map(|value| {
+            serde_json::json!({
+                "type": "paragraph",
+                "content": if value.is_empty() {
+                    Vec::<serde_json::Value>::new()
+                } else {
+                    vec![serde_json::json!({"type": "text", "text": value})]
+                }
+            })
+        }),
+        1..24,
+    )
+    .prop_map(|content| {
+        serde_json::json!({
+            "type": "doc",
+            "content": content
+        })
+    })
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config {
+        cases: 256,
+        max_shrink_iters: 4_096,
+        ..proptest::test_runner::Config::default()
+    })]
+    #[test]
+    fn bounded_valid_documents_round_trip(document in arb_document()) {
+        let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+        engine
+            .import_json(&document.to_string(), TransactionOrigin::DocumentImport)
+            .unwrap();
+        let first = engine.document_json().unwrap();
+        engine
+            .import_json(&first.to_string(), TransactionOrigin::DocumentImport)
+            .unwrap();
+        proptest::prop_assert_eq!(engine.document_json().unwrap(), first);
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -539,9 +790,9 @@ fn traversal_and_encoded_output_import_limits_are_atomic() {
     assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
     assert_eq!(audit(&traversal_engine), traversal_before);
 
-    let probe = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
     let mut encoded_config = local_config(tiptap_schema());
-    encoded_config.resource_limits.max_encoded_state_bytes = probe.encoded_state().unwrap().len();
+    encoded_config.initialization_mode = InitializationMode::AwaitRemote;
+    encoded_config.resource_limits.max_encoded_state_bytes = 1;
     let mut encoded_engine = YrsDocumentEngine::new(encoded_config).unwrap();
     let encoded_before = audit(&encoded_engine);
     let oversized_text = "x".repeat(1_024);

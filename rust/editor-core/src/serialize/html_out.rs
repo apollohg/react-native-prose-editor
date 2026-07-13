@@ -157,7 +157,8 @@ fn serialize_mention_node(node: &Node, buf: &mut String) {
         .filter(|value| !value.is_empty())
         .unwrap_or("@mention");
     let visible_label = crate::render::mention_label_with_trigger(label, attrs);
-    let attrs_json = serde_json::to_string(attrs).unwrap_or_else(|_| "{}".to_string());
+    let sorted_attrs = attrs.iter().collect::<std::collections::BTreeMap<_, _>>();
+    let attrs_json = serde_json::to_string(&sorted_attrs).unwrap_or_else(|_| "{}".to_string());
 
     buf.push_str("<span data-native-editor-mention=\"true\" data-native-editor-mention-attrs=\"");
     escape_html(&attrs_json, buf);

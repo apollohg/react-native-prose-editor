@@ -1,0 +1,365 @@
+use editor_core::boundary::ResourceLimits;
+use editor_core::schema::Schema;
+use editor_core::tiptap_schema;
+use editor_core::yrs_engine::{
+    DocumentScope, InitializationMode, TransactionOrigin, YrsDocumentEngine, YrsEngineConfig,
+};
+use yrs::types::xml::{XmlElementPrelim, XmlFragment};
+use yrs::{Doc, ReadTxn, StateVector, Transact, WriteTxn};
+
+#[derive(Debug, PartialEq)]
+struct EngineAudit {
+    ready: bool,
+    client_id: u64,
+    revision: u64,
+    last_origin: Option<TransactionOrigin>,
+    document_json: Option<serde_json::Value>,
+    document_html: Option<String>,
+    encoded_state: Vec<u8>,
+}
+
+fn audit(engine: &YrsDocumentEngine) -> EngineAudit {
+    EngineAudit {
+        ready: engine.is_ready(),
+        client_id: engine.client_id(),
+        revision: engine.revision(),
+        last_origin: engine.last_committed_origin(),
+        document_json: engine.document_json(),
+        document_html: engine.document_html(),
+        encoded_state: engine.encoded_state().unwrap(),
+    }
+}
+
+fn config(
+    schema: Schema,
+    limits: ResourceLimits,
+    initialization_mode: InitializationMode,
+) -> YrsEngineConfig {
+    YrsEngineConfig {
+        schema,
+        fragment_name: "prosemirror".to_string(),
+        initialization_mode,
+        resource_limits: limits,
+        scope: Some(DocumentScope {
+            document_id: "resource-doc".to_string(),
+            lineage_id: "resource-lineage".to_string(),
+        }),
+    }
+}
+
+fn engine_with_limits(limits: ResourceLimits) -> YrsDocumentEngine {
+    YrsDocumentEngine::new(config(
+        tiptap_schema(),
+        limits,
+        InitializationMode::LocalEmpty,
+    ))
+    .unwrap()
+}
+
+fn assert_limit_error(
+    error: &editor_core::yrs_engine::YrsEngineError,
+    code: &'static str,
+    limit: usize,
+    actual: usize,
+) {
+    assert_eq!(error.code, code);
+    assert_eq!(error.limit, Some(limit));
+    assert_eq!(error.actual, Some(actual));
+}
+
+#[test]
+fn input_bytes_accept_exact_and_one_above_limits_and_reject_one_below_atomically() {
+    let input = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"boundary"}]}]}"#;
+    let actual = input.len();
+
+    let mut rejected = engine_with_limits(ResourceLimits {
+        max_input_bytes: actual - 1,
+        ..ResourceLimits::default()
+    });
+    let before = audit(&rejected);
+    let error = rejected
+        .import_json(input, TransactionOrigin::DocumentImport)
+        .unwrap_err();
+    assert_limit_error(&error, "INPUT_LIMIT_EXCEEDED", actual - 1, actual);
+    assert_eq!(audit(&rejected), before);
+
+    for limit in [actual, actual + 1] {
+        let mut accepted = engine_with_limits(ResourceLimits {
+            max_input_bytes: limit,
+            ..ResourceLimits::default()
+        });
+        accepted
+            .import_json(input, TransactionOrigin::DocumentImport)
+            .unwrap();
+        assert_eq!(accepted.document_html().as_deref(), Some("<p>boundary</p>"));
+    }
+}
+
+#[test]
+fn document_nodes_accept_exact_and_one_above_limits_and_reject_one_below_atomically() {
+    let input = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"three"}]}]}"#;
+
+    let mut rejected = engine_with_limits(ResourceLimits {
+        max_document_nodes: 2,
+        ..ResourceLimits::default()
+    });
+    let before = audit(&rejected);
+    let error = rejected
+        .import_json(input, TransactionOrigin::DocumentImport)
+        .unwrap_err();
+    assert_limit_error(&error, "DOCUMENT_LIMIT_EXCEEDED", 2, 3);
+    assert_eq!(audit(&rejected), before);
+
+    for limit in [3, 4] {
+        let mut accepted = engine_with_limits(ResourceLimits {
+            max_document_nodes: limit,
+            ..ResourceLimits::default()
+        });
+        accepted
+            .import_json(input, TransactionOrigin::DocumentImport)
+            .unwrap();
+        assert_eq!(accepted.document_html().as_deref(), Some("<p>three</p>"));
+    }
+}
+
+#[test]
+fn document_depth_accepts_exact_and_one_above_limits_and_rejects_one_below_atomically() {
+    let input = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"depth three"}]}]}"#;
+
+    let mut rejected = engine_with_limits(ResourceLimits {
+        max_document_depth: 2,
+        ..ResourceLimits::default()
+    });
+    let before = audit(&rejected);
+    let error = rejected
+        .import_json(input, TransactionOrigin::DocumentImport)
+        .unwrap_err();
+    assert_limit_error(&error, "DOCUMENT_LIMIT_EXCEEDED", 2, 3);
+    assert_eq!(audit(&rejected), before);
+
+    for limit in [3, 4] {
+        let mut accepted = engine_with_limits(ResourceLimits {
+            max_document_depth: limit,
+            ..ResourceLimits::default()
+        });
+        accepted
+            .import_json(input, TransactionOrigin::DocumentImport)
+            .unwrap();
+        assert_eq!(
+            accepted.document_html().as_deref(),
+            Some("<p>depth three</p>")
+        );
+    }
+}
+
+#[test]
+fn schema_node_and_expression_work_use_exact_configured_boundaries() {
+    let schema_json = serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "paragraph", "role": "doc" },
+            { "name": "paragraph", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    });
+
+    let node_error = Schema::from_json_with_limits(
+        &schema_json,
+        &ResourceLimits {
+            max_schema_nodes: 2,
+            ..ResourceLimits::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(node_error.code, "SCHEMA_INVALID");
+    assert_eq!(node_error.limit, Some(2));
+    assert_eq!(node_error.actual, Some(3));
+
+    let expression_bytes = "paragraph".len() + "text*".len();
+    let expression_error = Schema::from_json_with_limits(
+        &schema_json,
+        &ResourceLimits {
+            max_schema_expression_bytes: expression_bytes - 1,
+            ..ResourceLimits::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(expression_error.code, "SCHEMA_INVALID");
+    assert_eq!(expression_error.limit, Some(expression_bytes - 1));
+    assert_eq!(expression_error.actual, Some(expression_bytes));
+
+    for (node_limit, expression_limit) in [(3, expression_bytes), (4, expression_bytes + 1)] {
+        let limits = ResourceLimits {
+            max_schema_nodes: node_limit,
+            max_schema_expression_bytes: expression_limit,
+            ..ResourceLimits::default()
+        };
+        let schema = Schema::from_json_with_limits(&schema_json, &limits).unwrap();
+        let engine = YrsDocumentEngine::new(config(
+            schema,
+            limits.clone(),
+            InitializationMode::LocalEmpty,
+        ))
+        .unwrap();
+        assert_eq!(engine.resource_limits(), &limits);
+        assert_eq!(engine.document_html().as_deref(), Some("<p></p>"));
+    }
+}
+
+#[test]
+fn encoded_state_accepts_exact_and_one_above_limits_and_rejects_one_below_atomically() {
+    let mut source = engine_with_limits(ResourceLimits::default());
+    source
+        .import_json(
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"encoded boundary"}]}]}"#,
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+    let snapshot = source.export_snapshot().unwrap();
+    let actual = snapshot.encoded_state.len();
+
+    let mut rejected = YrsDocumentEngine::new(config(
+        tiptap_schema(),
+        ResourceLimits {
+            max_encoded_state_bytes: actual - 1,
+            ..ResourceLimits::default()
+        },
+        InitializationMode::AwaitRemote,
+    ))
+    .unwrap();
+    let before = audit(&rejected);
+    let error = rejected.restore_snapshot(&snapshot).unwrap_err();
+    assert_limit_error(&error, "DOCUMENT_LIMIT_EXCEEDED", actual - 1, actual);
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({ "field": "encodedState" }))
+    );
+    assert_eq!(audit(&rejected), before);
+
+    for limit in [actual, actual + 1] {
+        let mut accepted = YrsDocumentEngine::new(config(
+            tiptap_schema(),
+            ResourceLimits {
+                max_encoded_state_bytes: limit,
+                ..ResourceLimits::default()
+            },
+            InitializationMode::AwaitRemote,
+        ))
+        .unwrap();
+        accepted.restore_snapshot(&snapshot).unwrap();
+        assert_eq!(accepted.document_json(), source.document_json());
+    }
+}
+
+#[test]
+fn hostile_wide_deep_and_large_opaque_documents_are_rejected_atomically() {
+    let wide = serde_json::json!({
+        "type": "doc",
+        "content": (0..1_000)
+            .map(|_| serde_json::json!({ "type": "paragraph" }))
+            .collect::<Vec<_>>()
+    });
+    let mut wide_engine = engine_with_limits(ResourceLimits {
+        max_document_nodes: 1_000,
+        ..ResourceLimits::default()
+    });
+    let before = audit(&wide_engine);
+    let error = wide_engine
+        .import_json(&wide.to_string(), TransactionOrigin::DocumentImport)
+        .unwrap_err();
+    assert_limit_error(&error, "DOCUMENT_LIMIT_EXCEEDED", 1_000, 1_001);
+    assert_eq!(audit(&wide_engine), before);
+
+    let deep_doc = Doc::new();
+    {
+        let mut transaction = deep_doc.transact_mut();
+        let fragment = transaction.get_or_insert_xml_fragment("prosemirror");
+        let mut parent =
+            fragment.push_back(&mut transaction, XmlElementPrelim::empty("blockquote"));
+        for _ in 1..300 {
+            parent = parent.push_back(&mut transaction, XmlElementPrelim::empty("blockquote"));
+        }
+        parent.push_back(&mut transaction, XmlElementPrelim::empty("paragraph"));
+    }
+    let mut deep_engine = engine_with_limits(ResourceLimits::default());
+    let before = audit(&deep_engine);
+    let mut deep_snapshot = deep_engine.export_snapshot().unwrap();
+    deep_snapshot.encoded_state = deep_doc
+        .transact()
+        .encode_state_as_update_v1(&StateVector::default());
+    let error = deep_engine.restore_snapshot(&deep_snapshot).unwrap_err();
+    assert_limit_error(&error, "DOCUMENT_LIMIT_EXCEEDED", 256, 257);
+    assert_eq!(audit(&deep_engine), before);
+
+    let opaque = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "opaqueBlock",
+            "attrs": {
+                "original": {
+                    "payload": "x".repeat(8_192),
+                    "nested": [{ "flags": [true, false, null] }]
+                }
+            }
+        }]
+    })
+    .to_string();
+    let mut opaque_engine = engine_with_limits(ResourceLimits {
+        max_input_bytes: opaque.len() - 1,
+        ..ResourceLimits::default()
+    });
+    let before = audit(&opaque_engine);
+    let error = opaque_engine
+        .import_json(&opaque, TransactionOrigin::DocumentImport)
+        .unwrap_err();
+    assert_limit_error(
+        &error,
+        "INPUT_LIMIT_EXCEEDED",
+        opaque.len() - 1,
+        opaque.len(),
+    );
+    assert_eq!(audit(&opaque_engine), before);
+}
+
+#[test]
+fn malformed_update_v1_seed_corpus_never_unwinds_and_is_fully_atomic() {
+    let seeds: &[(&str, &[u8])] = &[
+        ("empty", &[]),
+        ("truncated-update", &[1]),
+        (
+            "overlong-varint",
+            &[
+                0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00,
+            ],
+        ),
+        (
+            "invalid-client-clock",
+            &[1, 1, 1, 0xff, 0xff, 0xff, 0xff, 0x7f],
+        ),
+        ("small-declared-length-bomb", &[1, 1, 1, 0, 0x7f]),
+        ("truncated-delete-set", &[0, 1, 1]),
+    ];
+
+    for (name, encoded_state) in seeds {
+        let mut engine = engine_with_limits(ResourceLimits::default());
+        let before = audit(&engine);
+        let mut snapshot = engine.export_snapshot().unwrap();
+        snapshot.encoded_state = encoded_state.to_vec();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            engine.restore_snapshot(&snapshot)
+        }));
+        let error = result
+            .unwrap_or_else(|_| panic!("{name}: snapshot restore unwound"))
+            .unwrap_err();
+        assert_eq!(error.code, "COLLABORATION_DECODE_FAILED", "{name}");
+        assert_eq!(error.limit, None, "{name}");
+        assert_eq!(error.actual, None, "{name}");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({ "field": "encodedState" })),
+            "{name}"
+        );
+        assert_eq!(audit(&engine), before, "{name}");
+    }
+}
