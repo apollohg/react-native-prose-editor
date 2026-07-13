@@ -1,0 +1,57 @@
+{
+    "schemaVersion": 1,
+    "benchmarkGroup": "yrs-foundation",
+    "measurement": {
+        "sampleCount": 5,
+        "aggregation": "median of five standard-run p50Ms values",
+        "command": "cargo bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --json --filter yrs-foundation",
+        "rustcVersion": "rustc 1.93.1 (01f6ddf75 2026-02-11) (Homebrew)",
+        "hostArchitecture": "arm64",
+        "hostOperatingSystem": "Darwin 26.5.1",
+        "commit": "744c18263f162ae5bce9525a60690696282bf654",
+        "workingTree": "Task 8 benchmark changes present and uncommitted",
+        "environment": "Local empirical measurement; host stability and load isolation were not independently verified"
+    },
+    "results": [
+        {
+            "name": "legacy.json_import.article.1x",
+            "p50Ms": 0.682292
+        },
+        {
+            "name": "yrs.json_import.article.1x",
+            "p50Ms": 2.835667
+        },
+        {
+            "name": "legacy.json_export.article.1x",
+            "p50Ms": 0.1595
+        },
+        {
+            "name": "yrs.json_export.article.1x",
+            "p50Ms": 0.152458
+        },
+        {
+            "name": "yrs.json_import.article.2x",
+            "p50Ms": 5.761083
+        },
+        {
+            "name": "yrs.json_export.article.2x",
+            "p50Ms": 0.324333
+        },
+        {
+            "name": "yrs.candidate_validation.article.1x",
+            "p50Ms": 0.17304199999999997
+        },
+        {
+            "name": "yrs.encoded_state.article.1x",
+            "p50Ms": 0.092875
+        },
+        {
+            "name": "yrs.json_import.opaque_large.1x",
+            "p50Ms": 0.10183299999999999
+        },
+        {
+            "name": "yrs.json_import.opaque_large.2x",
+            "p50Ms": 0.185333
+        }
+    ]
+}

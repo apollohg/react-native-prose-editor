@@ -2,10 +2,15 @@ use std::env;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use editor_core::boundary::ResourceLimits;
 use editor_core::collaboration::CollaborationSession;
 use editor_core::editor::Editor;
 use editor_core::intercept::InterceptorPipeline;
 use editor_core::schema::presets::tiptap_schema;
+use editor_core::transform::DocumentValidator;
+use editor_core::yrs_engine::{
+    InitializationMode, TransactionOrigin, YrsDocumentEngine, YrsEngineConfig,
+};
 use serde_json::{json, Value};
 
 #[derive(Clone, Copy)]
@@ -34,6 +39,7 @@ impl BenchMode {
                 typing_burst: 24,
                 selection_scrub_points: 48,
                 awareness_peer_count: 12,
+                opaque_payload_bytes: 32 * 1024,
             },
             Self::Standard => BenchProfile {
                 warmup_iterations: 4,
@@ -45,6 +51,7 @@ impl BenchMode {
                 typing_burst: 64,
                 selection_scrub_points: 160,
                 awareness_peer_count: 32,
+                opaque_payload_bytes: 256 * 1024,
             },
         }
     }
@@ -61,6 +68,7 @@ struct BenchProfile {
     typing_burst: usize,
     selection_scrub_points: usize,
     awareness_peer_count: usize,
+    opaque_payload_bytes: usize,
 }
 
 struct BenchOptions {
@@ -87,9 +95,212 @@ fn main() {
     let options = parse_options();
     let profile = options.mode.profile();
     let article_doc = build_article_document(profile.article_blocks, profile.paragraph_chars);
+    let article_doc_2x =
+        build_article_document(profile.article_blocks * 2, profile.paragraph_chars);
+    let article_json =
+        serde_json::to_string(&article_doc).expect("article benchmark fixture should serialize");
+    let article_json_2x = serde_json::to_string(&article_doc_2x)
+        .expect("2x article benchmark fixture should serialize");
+    let opaque_doc = build_opaque_document(profile.opaque_payload_bytes);
+    let opaque_doc_2x = build_opaque_document(profile.opaque_payload_bytes * 2);
+    let opaque_json =
+        serde_json::to_string(&opaque_doc).expect("opaque benchmark fixture should serialize");
+    let opaque_json_2x = serde_json::to_string(&opaque_doc_2x)
+        .expect("2x opaque benchmark fixture should serialize");
+    let candidate_document = yrs_engine_with_document(&article_json)
+        .document()
+        .expect("populated Yrs benchmark engine should be ready")
+        .clone();
     let edited_article_doc = build_edited_article_document(&article_doc);
 
     let mut results = Vec::new();
+
+    push_case(
+        &mut results,
+        &options,
+        bench_case(
+            "legacy.json_import.article.1x",
+            "yrs-foundation",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || (empty_editor(), article_doc.clone()),
+            |(editor, document)| {
+                black_box(
+                    editor
+                        .set_json(document)
+                        .expect("legacy JSON import benchmark should succeed"),
+                );
+            },
+        ),
+    );
+
+    push_case(
+        &mut results,
+        &options,
+        bench_case(
+            "yrs.json_import.article.1x",
+            "yrs-foundation",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || (empty_yrs_engine(), article_json.clone()),
+            |(engine, document)| {
+                black_box(
+                    engine
+                        .import_json(document, TransactionOrigin::DocumentImport)
+                        .expect("Yrs JSON import benchmark should succeed"),
+                );
+            },
+        ),
+    );
+
+    push_case(
+        &mut results,
+        &options,
+        bench_case(
+            "legacy.json_export.article.1x",
+            "yrs-foundation",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || editor_with_document(&article_doc),
+            |editor| black_box(editor.get_json()),
+        ),
+    );
+
+    push_case(
+        &mut results,
+        &options,
+        bench_case(
+            "yrs.json_export.article.1x",
+            "yrs-foundation",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || yrs_engine_with_document(&article_json),
+            |engine| black_box(engine.document_json()),
+        ),
+    );
+
+    push_case(
+        &mut results,
+        &options,
+        bench_case(
+            "yrs.json_import.article.2x",
+            "yrs-foundation",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || (empty_yrs_engine(), article_json_2x.clone()),
+            |(engine, document)| {
+                black_box(
+                    engine
+                        .import_json(document, TransactionOrigin::DocumentImport)
+                        .expect("2x Yrs JSON import benchmark should succeed"),
+                );
+            },
+        ),
+    );
+
+    push_case(
+        &mut results,
+        &options,
+        bench_case(
+            "yrs.json_export.article.2x",
+            "yrs-foundation",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || yrs_engine_with_document(&article_json_2x),
+            |engine| black_box(engine.document_json()),
+        ),
+    );
+
+    push_case(
+        &mut results,
+        &options,
+        bench_case(
+            "yrs.candidate_validation.article.1x",
+            "yrs-foundation",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                (
+                    candidate_document.clone(),
+                    tiptap_schema(),
+                    ResourceLimits::default(),
+                )
+            },
+            |(document, schema, limits)| {
+                black_box(
+                    DocumentValidator::validate(document, schema, limits)
+                        .expect("Yrs candidate validation benchmark should succeed"),
+                );
+            },
+        ),
+    );
+
+    push_case(
+        &mut results,
+        &options,
+        bench_case(
+            "yrs.encoded_state.article.1x",
+            "yrs-foundation",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || yrs_engine_with_document(&article_json),
+            |engine| {
+                black_box(
+                    engine
+                        .encoded_state()
+                        .expect("Yrs encoded-state benchmark should succeed"),
+                );
+            },
+        ),
+    );
+
+    push_case(
+        &mut results,
+        &options,
+        bench_case(
+            "yrs.json_import.opaque_large.1x",
+            "yrs-foundation",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || (empty_yrs_engine(), opaque_json.clone()),
+            |(engine, document)| {
+                black_box(
+                    engine
+                        .import_json(document, TransactionOrigin::DocumentImport)
+                        .expect("large opaque Yrs import benchmark should succeed"),
+                );
+            },
+        ),
+    );
+
+    push_case(
+        &mut results,
+        &options,
+        bench_case(
+            "yrs.json_import.opaque_large.2x",
+            "yrs-foundation",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || (empty_yrs_engine(), opaque_json_2x.clone()),
+            |(engine, document)| {
+                black_box(
+                    engine
+                        .import_json(document, TransactionOrigin::DocumentImport)
+                        .expect("2x large opaque Yrs import benchmark should succeed"),
+                );
+            },
+        ),
+    );
 
     push_case(
         &mut results,
@@ -697,6 +908,7 @@ fn print_json_summary(mode: BenchMode, profile: BenchProfile, results: &[BenchRe
             "typingBurst": profile.typing_burst,
             "selectionScrubPoints": profile.selection_scrub_points,
             "awarenessPeerCount": profile.awareness_peer_count,
+            "opaquePayloadBytes": profile.opaque_payload_bytes,
         },
         "results": results.iter().map(|result| {
             json!({
@@ -729,6 +941,25 @@ fn editor_with_document(doc: &Value) -> Editor {
         .set_json(doc)
         .expect("benchmark fixture document should parse");
     editor
+}
+
+fn empty_yrs_engine() -> YrsDocumentEngine {
+    YrsDocumentEngine::new(YrsEngineConfig {
+        schema: tiptap_schema(),
+        fragment_name: "prosemirror".to_string(),
+        initialization_mode: InitializationMode::LocalEmpty,
+        resource_limits: ResourceLimits::default(),
+        scope: None,
+    })
+    .expect("Yrs benchmark engine should initialize")
+}
+
+fn yrs_engine_with_document(document: &str) -> YrsDocumentEngine {
+    let mut engine = empty_yrs_engine();
+    engine
+        .import_json(document, TransactionOrigin::DocumentImport)
+        .expect("Yrs benchmark fixture document should import");
+    engine
 }
 
 fn collaboration_session_with_document(doc: &Value) -> CollaborationSession {
@@ -850,6 +1081,18 @@ fn build_article_document(block_count: usize, paragraph_chars: usize) -> Value {
     json!({
         "type": "doc",
         "content": content
+    })
+}
+
+fn build_opaque_document(payload_bytes: usize) -> Value {
+    json!({
+        "type": "doc",
+        "content": [{
+            "type": "benchmarkOpaqueBlock",
+            "attrs": {
+                "payload": "x".repeat(payload_bytes),
+            },
+        }],
     })
 }
 
