@@ -339,6 +339,7 @@ import {
     _resetEditorToolbarFrameRegistryForTests,
     _setEditorToolbarFrameForTests,
 } from '../EditorToolbar';
+import * as EditorToolbarModule from '../EditorToolbar';
 import { _resetNativeModuleCache } from '../NativeEditorBridge';
 
 // ─── Tests ──────────────────────────────────────────────────────
@@ -7888,6 +7889,35 @@ describe('NativeRichTextEditor', () => {
             expect(getByTestId('editor-toolbar-mention-suggestion-u1')).toBeTruthy();
             expect(queryByTestId('editor-toolbar-mention-suggestion-u2')).toBeNull();
 
+            const setMentionStateSpy = jest.spyOn(
+                EditorToolbarModule,
+                'setEditorToolbarMentionState'
+            );
+            setMentionStateSpy.mockClear();
+
+            act(() => {
+                getByTestId('native-editor-view').props.onAddonEvent({
+                    nativeEvent: {
+                        eventJson: JSON.stringify({
+                            type: 'mentionsQueryChange',
+                            query: 'alic',
+                            trigger: '@',
+                            range: { anchor: 3, head: 8 },
+                            isActive: true,
+                        }),
+                    },
+                });
+            });
+
+            expect(setMentionStateSpy).toHaveBeenCalledWith(
+                1,
+                expect.objectContaining({
+                    suggestions: [expect.objectContaining({ key: 'u1' })],
+                })
+            );
+            expect(setMentionStateSpy).not.toHaveBeenCalledWith(1, null);
+            setMentionStateSpy.mockRestore();
+
             const suggestionListStyle = StyleSheet.flatten(
                 getByTestId('editor-toolbar-mention-suggestions').props.style
             );
@@ -7916,7 +7946,7 @@ describe('NativeRichTextEditor', () => {
             expect(mockNativeModule.editorInsertContentJsonAtSelectionScalar).toHaveBeenCalledWith(
                 1,
                 3,
-                7,
+                8,
                 JSON.stringify({
                     type: 'doc',
                     content: [

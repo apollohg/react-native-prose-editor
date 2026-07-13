@@ -8,6 +8,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -411,6 +412,33 @@ class NativeToolbarTest {
         assertTrue(didChange)
         assertTrue(toolbar.isShowingMentionSuggestions)
         assertEquals("@alice", toolbar.mentionChipAtForTesting(0)?.titleTextForTesting())
+    }
+
+    @Test
+    fun `toolbar keeps retained mention chips mounted while query narrows`() {
+        val context = RuntimeEnvironment.getApplication()
+        val toolbar = EditorKeyboardToolbarView(context)
+        val alice = NativeMentionSuggestion(
+            key = "alice",
+            title = "Alice Chen",
+            subtitle = "Design",
+            label = "alice",
+            attrs = org.json.JSONObject().put("id", "user_alice")
+        )
+        val ben = NativeMentionSuggestion(
+            key = "ben",
+            title = "Ben Ortiz",
+            subtitle = "Engineering",
+            label = "ben",
+            attrs = org.json.JSONObject().put("id", "user_ben")
+        )
+
+        toolbar.setMentionSuggestions(listOf(alice, ben), trigger = "@")
+        val retainedChip = toolbar.mentionChipAtForTesting(0)
+
+        toolbar.setMentionSuggestions(listOf(alice), trigger = "@")
+
+        assertSame(retainedChip, toolbar.mentionChipAtForTesting(0))
     }
 
     @Test

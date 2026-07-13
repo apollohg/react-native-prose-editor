@@ -1032,14 +1032,15 @@ final class EditorAccessoryToolbarView: UIInputView {
         trigger: String = "@"
     ) -> Bool {
         let hadSuggestions = !mentionButtons.isEmpty
-
-        mentionButtons.forEach { button in
-            mentionStackView.removeArrangedSubview(button)
-            button.removeFromSuperview()
+        var existingButtonsByKey: [String: MentionSuggestionChipButton] = [:]
+        for button in mentionButtons where existingButtonsByKey[button.suggestion.key] == nil {
+            existingButtonsByKey[button.suggestion.key] = button
         }
-        mentionButtons.removeAll()
-
-        for suggestion in suggestions.prefix(8) {
+        let nextButtons = suggestions.prefix(8).map { suggestion in
+            if let button = existingButtonsByKey.removeValue(forKey: suggestion.key) {
+                button.update(suggestion: suggestion, trigger: trigger)
+                return button
+            }
             let button = MentionSuggestionChipButton(
                 suggestion: suggestion,
                 trigger: trigger,
@@ -1047,9 +1048,25 @@ final class EditorAccessoryToolbarView: UIInputView {
                 toolbarAppearance: resolvedAppearance
             )
             button.addTarget(self, action: #selector(handleSelectMentionSuggestion(_:)), for: .touchUpInside)
-            mentionButtons.append(button)
-            mentionStackView.addArrangedSubview(button)
+            return button
         }
+
+        for button in mentionButtons where !nextButtons.contains(where: { $0 === button }) {
+            mentionStackView.removeArrangedSubview(button)
+            button.removeFromSuperview()
+        }
+        for (index, button) in nextButtons.enumerated() {
+            if mentionStackView.arrangedSubviews.indices.contains(index),
+               mentionStackView.arrangedSubviews[index] === button
+            {
+                continue
+            }
+            if mentionStackView.arrangedSubviews.contains(where: { $0 === button }) {
+                mentionStackView.removeArrangedSubview(button)
+            }
+            mentionStackView.insertArrangedSubview(button, at: index)
+        }
+        mentionButtons = nextButtons
 
         let hasSuggestions = !mentionButtons.isEmpty
         mentionScrollView.isHidden = !hasSuggestions

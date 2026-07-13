@@ -812,6 +812,31 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(toolbar.mentionButtonAtForTesting(0)?.titleTextForTesting(), "@alice")
     }
 
+    func testAccessoryToolbarKeepsRetainedMentionButtonsMountedWhileQueryNarrows() {
+        let toolbar = EditorAccessoryToolbarView(frame: .zero)
+        let alice = NativeMentionSuggestion(dictionary: [
+            "key": "alice",
+            "title": "Alice Chen",
+            "subtitle": "Design",
+            "label": "alice",
+            "attrs": ["label": "alice"],
+        ])!
+        let ben = NativeMentionSuggestion(dictionary: [
+            "key": "ben",
+            "title": "Ben Ortiz",
+            "subtitle": "Engineering",
+            "label": "ben",
+            "attrs": ["label": "ben"],
+        ])!
+
+        _ = toolbar.setMentionSuggestions([alice, ben], trigger: "@")
+        let retainedButton = toolbar.mentionButtonAtForTesting(0)
+
+        _ = toolbar.setMentionSuggestions([alice], trigger: "@")
+
+        XCTAssertTrue(toolbar.mentionButtonAtForTesting(0) === retainedButton)
+    }
+
     func testNativeEditorUsesZeroHeightAccessoryPlaceholderWhenToolbarIsInline() {
         let view = NativeEditorExpoView()
 

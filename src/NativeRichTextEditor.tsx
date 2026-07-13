@@ -3483,7 +3483,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
 
             if (!shouldPublishStandaloneMentionSuggestions || mentionQueryEvent == null) {
                 setEditorToolbarMentionState(editorInstanceId, null);
-                return () => setEditorToolbarMentionState(editorInstanceId, null);
+                return;
             }
 
             setEditorToolbarMentionState(editorInstanceId, {
@@ -3493,7 +3493,6 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 suggestionThemes: activeMentionSuggestionThemes,
                 onSelectSuggestion: handleInlineMentionSuggestionPress,
             });
-            return () => setEditorToolbarMentionState(editorInstanceId, null);
         }, [
             activeMentionSuggestions,
             activeMentionSuggestionThemes,
@@ -3504,6 +3503,12 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             mentionQueryEvent,
             shouldPublishStandaloneMentionSuggestions,
         ]);
+        useEffect(() => {
+            if (editorInstanceId === 0) {
+                return;
+            }
+            return () => setEditorToolbarMentionState(editorInstanceId, null);
+        }, [editorInstanceId]);
 
         if (!isReady) return null;
 

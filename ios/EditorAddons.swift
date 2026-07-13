@@ -145,11 +145,11 @@ final class MentionSuggestionChipButton: UIButton {
     private let titleLabelView = UILabel()
     private let subtitleLabelView = UILabel()
     private let stackView = UIStackView()
-    private let displayLabel: String
+    private var displayLabel: String
     private var theme: EditorMentionTheme?
     private var toolbarAppearance: EditorToolbarAppearance = .custom
 
-    let suggestion: NativeMentionSuggestion
+    private(set) var suggestion: NativeMentionSuggestion
 
     init(
         suggestion: NativeMentionSuggestion,
@@ -209,6 +209,15 @@ final class MentionSuggestionChipButton: UIButton {
 
     required init?(coder: NSCoder) {
         return nil
+    }
+
+    func update(suggestion: NativeMentionSuggestion, trigger: String) {
+        self.suggestion = suggestion
+        displayLabel = suggestion.displayLabel(trigger: trigger)
+        titleLabelView.text = displayLabel
+        subtitleLabelView.text = suggestion.subtitle
+        subtitleLabelView.isHidden = suggestion.subtitle == nil
+        updateAppearance(highlighted: isHighlighted)
     }
 
     func apply(theme: EditorMentionTheme?, toolbarAppearance: EditorToolbarAppearance = .custom) {

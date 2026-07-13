@@ -630,7 +630,13 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
         val hadSuggestions = isShowingMentionSuggestions
         mentionTrigger = trigger
         mentionSuggestions = suggestions.take(8)
-        rebuildContent(preserveScrollPosition = hadSuggestions == isShowingMentionSuggestions)
+        if (hadSuggestions && isShowingMentionSuggestions) {
+            updateMentionSuggestionsInPlace()
+            updateChrome()
+            applyState(state)
+        } else {
+            rebuildContent(preserveScrollPosition = hadSuggestions == isShowingMentionSuggestions)
+        }
         return hadSuggestions != isShowingMentionSuggestions
     }
 
@@ -765,6 +771,39 @@ internal class EditorKeyboardToolbarView(context: Context) : HorizontalScrollVie
             mentionChips.add(chip)
             contentRow.addView(chip)
         }
+    }
+
+    private fun updateMentionSuggestionsInPlace() {
+        val existingByKey = mentionChips.associateBy { it.suggestion.key }.toMutableMap()
+        val nextChips = mentionSuggestions.map { suggestion ->
+            existingByKey.remove(suggestion.key)?.also {
+                it.updateSuggestion(suggestion, mentionTrigger)
+            } ?: MentionSuggestionChipView(context, suggestion, mentionTrigger)
+        }
+
+        mentionChips.filterNot { existing -> nextChips.any { it === existing } }.forEach {
+            contentRow.removeView(it)
+        }
+        nextChips.forEachIndexed { index, chip ->
+            if (chip.layoutParams !is LinearLayout.LayoutParams) {
+                chip.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    marginEnd = dp(8)
+                }
+            }
+            chip.applyTheme(mentionTheme, theme?.appearance ?: EditorToolbarAppearance.CUSTOM)
+            chip.setOnClickListener { onSelectMentionSuggestion?.invoke(chip.suggestion) }
+            if (chip.parent == null) {
+                contentRow.addView(chip, index)
+            } else if (contentRow.indexOfChild(chip) != index) {
+                contentRow.removeView(chip)
+                contentRow.addView(chip, index)
+            }
+        }
+        mentionChips.clear()
+        mentionChips.addAll(nextChips)
     }
 
     private fun compactItems(items: List<NativeToolbarItem>): List<NativeToolbarItem> {
@@ -1188,14 +1227,17 @@ private fun withAlpha(color: Int, alphaFraction: Float): Int {
 
 internal class MentionSuggestionChipView(
     context: Context,
-    val suggestion: NativeMentionSuggestion,
-    private val trigger: String = "@"
+    suggestion: NativeMentionSuggestion,
+    trigger: String = "@"
 ) : LinearLayout(context) {
     private val titleView = AppCompatTextView(context)
     private val subtitleView = AppCompatTextView(context)
     private var theme: EditorMentionTheme? = null
     private var toolbarAppearance: EditorToolbarAppearance = EditorToolbarAppearance.CUSTOM
     private val density = resources.displayMetrics.density
+    var suggestion: NativeMentionSuggestion = suggestion
+        private set
+    private var trigger: String = trigger
 
     init {
         orientation = VERTICAL
@@ -1238,6 +1280,14 @@ internal class MentionSuggestionChipView(
         }
 
         applyTheme(null)
+    }
+
+    fun updateSuggestion(suggestion: NativeMentionSuggestion, trigger: String) {
+        this.suggestion = suggestion
+        this.trigger = trigger
+        titleView.text = suggestion.displayLabel(trigger)
+        subtitleView.text = suggestion.subtitle
+        subtitleView.visibility = if (suggestion.subtitle.isNullOrBlank()) View.GONE else View.VISIBLE
     }
 
     fun applyTheme(
