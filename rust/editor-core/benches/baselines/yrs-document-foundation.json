@@ -3,55 +3,59 @@
     "benchmarkGroup": "yrs-foundation",
     "measurement": {
         "sampleCount": 5,
-        "aggregation": "median of five standard-run p50Ms values",
+        "aggregation": "median of five post-optimization standard-run p50Ms values",
         "command": "cargo bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --json --filter yrs-foundation",
         "rustcVersion": "rustc 1.93.1 (01f6ddf75 2026-02-11) (Homebrew)",
+        "hostModel": "MacBook Pro Mac16,5",
+        "hostChip": "Apple M4 Max",
+        "hostCpuCores": 16,
+        "hostMemoryGb": 48,
         "hostArchitecture": "arm64",
-        "hostOperatingSystem": "Darwin 26.5.1",
-        "commit": "744c18263f162ae5bce9525a60690696282bf654",
-        "workingTree": "Task 8 benchmark changes present and uncommitted",
-        "environment": "Local empirical measurement; host stability and load isolation were not independently verified"
+        "hostOperatingSystem": "macOS 26.5.1 (25F80)",
+        "commit": "e2032b490a08ff0c5a92ad31577685d79881d2f7",
+        "workingTree": "Task 8 performance-contract checker changes present during measurement",
+        "environment": "Designated Phase 1 Rust benchmark host; best-effort load isolation without an exclusive scheduler"
     },
     "results": [
         {
             "name": "legacy.json_import.article.1x",
-            "p50Ms": 0.682292
+            "p50Ms": 0.465875
         },
         {
             "name": "yrs.json_import.article.1x",
-            "p50Ms": 2.835667
+            "p50Ms": 1.959625
         },
         {
             "name": "legacy.json_export.article.1x",
-            "p50Ms": 0.1595
+            "p50Ms": 0.15645799999999999
         },
         {
             "name": "yrs.json_export.article.1x",
-            "p50Ms": 0.152458
+            "p50Ms": 0.15425
         },
         {
             "name": "yrs.json_import.article.2x",
-            "p50Ms": 5.761083
+            "p50Ms": 3.9392910000000003
         },
         {
             "name": "yrs.json_export.article.2x",
-            "p50Ms": 0.324333
+            "p50Ms": 0.37041599999999997
         },
         {
             "name": "yrs.candidate_validation.article.1x",
-            "p50Ms": 0.17304199999999997
+            "p50Ms": 0.179958
         },
         {
             "name": "yrs.encoded_state.article.1x",
-            "p50Ms": 0.092875
+            "p50Ms": 0.09475
         },
         {
             "name": "yrs.json_import.opaque_large.1x",
-            "p50Ms": 0.10183299999999999
+            "p50Ms": 0.08237499999999999
         },
         {
             "name": "yrs.json_import.opaque_large.2x",
-            "p50Ms": 0.185333
+            "p50Ms": 0.155916
         }
     ]
 }
