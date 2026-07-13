@@ -1,5 +1,10 @@
 pub mod content_rule;
+#[allow(dead_code)]
+mod fingerprint;
 pub mod presets;
+
+#[allow(unused_imports)]
+pub(crate) use fingerprint::schema_fingerprint;
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};

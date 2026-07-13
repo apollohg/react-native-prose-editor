@@ -1,0 +1,409 @@
+{
+    "fingerprints": [
+        {
+            "name": "default Tiptap schema",
+            "schema": {
+                "nodes": [
+                    { "name": "doc", "content": "block+", "role": "doc" },
+                    {
+                        "name": "paragraph",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "p"
+                    },
+                    {
+                        "name": "h1",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h1"
+                    },
+                    {
+                        "name": "h2",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h2"
+                    },
+                    {
+                        "name": "h3",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h3"
+                    },
+                    {
+                        "name": "h4",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h4"
+                    },
+                    {
+                        "name": "h5",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h5"
+                    },
+                    {
+                        "name": "h6",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h6"
+                    },
+                    {
+                        "name": "blockquote",
+                        "content": "block+",
+                        "group": "block",
+                        "role": "block",
+                        "htmlTag": "blockquote"
+                    },
+                    {
+                        "name": "bulletList",
+                        "content": "listItem+",
+                        "group": "block",
+                        "role": "list",
+                        "htmlTag": "ul"
+                    },
+                    {
+                        "name": "orderedList",
+                        "content": "listItem+",
+                        "group": "block",
+                        "attrs": { "start": { "default": 1 } },
+                        "role": "list",
+                        "htmlTag": "ol"
+                    },
+                    {
+                        "name": "listItem",
+                        "content": "paragraph block*",
+                        "role": "listItem",
+                        "htmlTag": "li"
+                    },
+                    {
+                        "name": "hardBreak",
+                        "content": "",
+                        "group": "inline",
+                        "role": "hardBreak",
+                        "htmlTag": "br",
+                        "isVoid": true
+                    },
+                    {
+                        "name": "horizontalRule",
+                        "content": "",
+                        "group": "block",
+                        "role": "block",
+                        "htmlTag": "hr",
+                        "isVoid": true
+                    },
+                    {
+                        "name": "image",
+                        "content": "",
+                        "group": "block",
+                        "attrs": {
+                            "src": {},
+                            "alt": { "default": null },
+                            "title": { "default": null },
+                            "width": { "default": null },
+                            "height": { "default": null }
+                        },
+                        "role": "block",
+                        "htmlTag": "img",
+                        "isVoid": true
+                    },
+                    { "name": "text", "content": "", "group": "inline", "role": "text" }
+                ],
+                "marks": [
+                    { "name": "bold" },
+                    { "name": "italic" },
+                    { "name": "underline" },
+                    { "name": "strike" },
+                    { "name": "link", "attrs": { "href": {} } }
+                ]
+            },
+            "expectedFingerprint": "22baf362700ddecbc2eb1fd57df331074b9d5af366958fb1b6ae64b3a0b8102a"
+        },
+        {
+            "name": "ProseMirror snake-case schema",
+            "schema": {
+                "nodes": [
+                    { "name": "doc", "content": "block+", "role": "doc" },
+                    {
+                        "name": "paragraph",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "p"
+                    },
+                    {
+                        "name": "h1",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h1"
+                    },
+                    {
+                        "name": "h2",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h2"
+                    },
+                    {
+                        "name": "h3",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h3"
+                    },
+                    {
+                        "name": "h4",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h4"
+                    },
+                    {
+                        "name": "h5",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h5"
+                    },
+                    {
+                        "name": "h6",
+                        "content": "inline*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "h6"
+                    },
+                    {
+                        "name": "blockquote",
+                        "content": "block+",
+                        "group": "block",
+                        "role": "block",
+                        "htmlTag": "blockquote"
+                    },
+                    {
+                        "name": "bullet_list",
+                        "content": "list_item+",
+                        "group": "block",
+                        "role": "list",
+                        "htmlTag": "ul"
+                    },
+                    {
+                        "name": "ordered_list",
+                        "content": "list_item+",
+                        "group": "block",
+                        "attrs": { "start": { "default": 1 } },
+                        "role": "list",
+                        "htmlTag": "ol"
+                    },
+                    {
+                        "name": "list_item",
+                        "content": "paragraph block*",
+                        "role": "listItem",
+                        "htmlTag": "li"
+                    },
+                    {
+                        "name": "hard_break",
+                        "content": "",
+                        "group": "inline",
+                        "role": "hardBreak",
+                        "htmlTag": "br",
+                        "isVoid": true
+                    },
+                    {
+                        "name": "horizontal_rule",
+                        "content": "",
+                        "group": "block",
+                        "role": "block",
+                        "htmlTag": "hr",
+                        "isVoid": true
+                    },
+                    {
+                        "name": "image",
+                        "content": "",
+                        "group": "block",
+                        "attrs": {
+                            "src": {},
+                            "alt": { "default": null },
+                            "title": { "default": null },
+                            "width": { "default": null },
+                            "height": { "default": null }
+                        },
+                        "role": "block",
+                        "htmlTag": "img",
+                        "isVoid": true
+                    },
+                    { "name": "text", "content": "", "group": "inline", "role": "text" }
+                ],
+                "marks": [
+                    { "name": "bold" },
+                    { "name": "italic" },
+                    { "name": "underline" },
+                    { "name": "strike" },
+                    { "name": "link", "attrs": { "href": {} } }
+                ]
+            },
+            "expectedFingerprint": "8f3c69be0787cff4a0d39c8e008bcdfe6c19ea6ee0b3af51736ee5a533a47c7d"
+        },
+        {
+            "name": "custom root schema",
+            "schema": {
+                "nodes": [
+                    { "name": "article", "content": "body+", "role": "doc" },
+                    {
+                        "name": "body",
+                        "content": "inline*",
+                        "group": "body",
+                        "role": "textBlock",
+                        "htmlTag": "section"
+                    },
+                    { "name": "words", "content": "", "group": "inline", "role": "text" }
+                ],
+                "marks": [{ "name": "highlight", "htmlTag": "mark" }]
+            },
+            "expectedFingerprint": "b16651120fb5bf5238846ff70f735cfd418ee2c10e4ad6b0c37edc9b6c04400d"
+        },
+        {
+            "name": "nested attribute defaults",
+            "schema": {
+                "nodes": [
+                    { "name": "doc", "content": "paragraph", "role": "doc" },
+                    {
+                        "name": "paragraph",
+                        "content": "text*",
+                        "group": "secondary block block",
+                        "attrs": {
+                            "settings": {
+                                "default": {
+                                    "alignment": "start",
+                                    "decorations": [{ "color": "blue", "weight": 700 }],
+                                    "spacing": { "after": 8, "before": 4 }
+                                }
+                            }
+                        },
+                        "role": "textBlock",
+                        "htmlTag": "p"
+                    },
+                    { "name": "text", "content": "", "group": "inline", "role": "text" }
+                ],
+                "marks": []
+            },
+            "expectedFingerprint": "c15fa443c147e334699bb42d51028ccdc4784dda1f8ac26a0c93bf3f56672ac0"
+        },
+        {
+            "name": "duplicate HTML-tag precedence",
+            "schema": {
+                "nodes": [
+                    { "name": "doc", "content": "block+", "role": "doc" },
+                    {
+                        "name": "callout",
+                        "content": "text*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "p"
+                    },
+                    {
+                        "name": "paragraph",
+                        "content": "text*",
+                        "group": "block",
+                        "role": "textBlock",
+                        "htmlTag": "p"
+                    },
+                    { "name": "text", "content": "", "group": "inline", "role": "text" }
+                ],
+                "marks": [
+                    { "name": "highlight", "htmlTag": "mark" },
+                    { "name": "annotation", "htmlTag": "mark" }
+                ]
+            },
+            "expectedFingerprint": "f2e69dc83c24d8f5ef121f72c1f1e423a07ab52f01d53aca8e9ad0dd8ec937ce"
+        },
+        {
+            "name": "explicit-null default",
+            "schema": {
+                "nodes": [
+                    { "name": "doc", "content": "paragraph", "role": "doc" },
+                    { "name": "paragraph", "content": "text*", "role": "textBlock" },
+                    { "name": "text", "content": "", "role": "text" }
+                ],
+                "marks": [{ "name": "custom", "attrs": { "value": { "default": null } } }]
+            },
+            "expectedFingerprint": "0d6e6385268e13a129990b604e414f32012990a881e00749e854adc14f954a9e"
+        },
+        {
+            "name": "missing default",
+            "schema": {
+                "nodes": [
+                    { "name": "doc", "content": "paragraph", "role": "doc" },
+                    { "name": "paragraph", "content": "text*", "role": "textBlock" },
+                    { "name": "text", "content": "", "role": "text" }
+                ],
+                "marks": [{ "name": "custom", "attrs": { "value": {} } }]
+            },
+            "expectedFingerprint": "d4b3ae5623a038ac420bcb3454e518e47156a3a45cf5445ff00c53546a92eed5"
+        }
+    ],
+    "equivalentSchemas": [
+        {
+            "name": "permuted schema and nested-default keys",
+            "schemas": [
+                {
+                    "nodes": [
+                        { "name": "doc", "content": "paragraph", "role": "doc" },
+                        {
+                            "name": "paragraph",
+                            "content": "text*",
+                            "group": "block secondary block",
+                            "attrs": {
+                                "alignment": { "default": "start" },
+                                "metadata": {
+                                    "default": {
+                                        "a": { "c": 3, "d": 4 },
+                                        "z": [{ "a": 1, "b": 2 }]
+                                    }
+                                }
+                            },
+                            "role": "textBlock",
+                            "htmlTag": "p"
+                        },
+                        { "name": "text", "content": "", "group": "inline", "role": "text" }
+                    ],
+                    "marks": [
+                        { "name": "custom", "attrs": { "alpha": {}, "omega": { "default": true } } }
+                    ]
+                },
+                {
+                    "marks": [
+                        { "attrs": { "omega": { "default": true }, "alpha": {} }, "name": "custom" }
+                    ],
+                    "nodes": [
+                        { "role": "text", "group": "inline", "content": "", "name": "text" },
+                        {
+                            "htmlTag": "p",
+                            "role": "textBlock",
+                            "attrs": {
+                                "metadata": {
+                                    "default": {
+                                        "z": [{ "b": 2, "a": 1 }],
+                                        "a": { "d": 4, "c": 3 }
+                                    }
+                                },
+                                "alignment": { "default": "start" }
+                            },
+                            "group": "secondary block",
+                            "content": "text*",
+                            "name": "paragraph"
+                        },
+                        { "role": "doc", "content": "paragraph", "name": "doc" }
+                    ]
+                }
+            ],
+            "expectedFingerprint": "22d042aa957d01949ec8cd97f6e48ae30433a4da8c9a83db3cc3e39a3d5271f5"
+        }
+    ]
+}

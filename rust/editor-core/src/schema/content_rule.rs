@@ -65,6 +65,8 @@ impl WorkBudget {
 /// and repetition) instead of interpreting a linearized representation.
 #[derive(Debug, Clone)]
 pub struct ContentRule {
+    #[allow(dead_code)]
+    source: String,
     states: Vec<State>,
     start: usize,
     accept: usize,
@@ -120,11 +122,17 @@ impl ContentRule {
         let mut compiler = Compiler::new(budget);
         let (start, accept) = compiler.compile(&expression)?;
         Ok(Self {
+            source: source.trim().to_string(),
             states: compiler.states,
             start,
             accept,
             symbols,
         })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn source(&self) -> &str {
+        &self.source
     }
 
     /// Whether this expression contains no symbols (the empty content rule).
