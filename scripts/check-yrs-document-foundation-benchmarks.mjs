@@ -19,12 +19,14 @@ const REQUIRED_CASES = [
 ];
 
 const RATIO_GATES = [
-    ['yrs.json_import.article.1x', 'legacy.json_import.article.1x', 3.0],
+    ['yrs.json_import.article.1x', 'legacy.json_import.article.1x', 5.0],
     ['yrs.json_export.article.1x', 'legacy.json_export.article.1x', 3.0],
     ['yrs.json_import.article.2x', 'yrs.json_import.article.1x', 2.5],
     ['yrs.json_export.article.2x', 'yrs.json_export.article.1x', 2.5],
     ['yrs.json_import.opaque_large.2x', 'yrs.json_import.opaque_large.1x', 2.5],
 ];
+
+const ABSOLUTE_GATES = [['yrs.json_import.article.1x', 2.5]];
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -161,6 +163,16 @@ function assertRatio(benchmark, caseName, comparisonName, allowedRatio) {
     }
 }
 
+function assertAbsoluteCeiling(benchmark, caseName, allowedMs) {
+    const measured = benchmark.get(caseName);
+    if (measured > allowedMs) {
+        throw new Error(
+            `${caseName}: measured p50=${formatNumber(measured)} ms, ` +
+                `allowed p50=${formatNumber(allowedMs)} ms`
+        );
+    }
+}
+
 function assertBaselineRatio(benchmark, baseline, caseName, allowedRatio) {
     const measured = benchmark.get(caseName);
     const comparison = baseline.get(caseName);
@@ -178,6 +190,9 @@ function checkBenchmarks(input, baseline) {
     const benchmark = indexResults(input, 'input');
     for (const [caseName, comparisonName, allowedRatio] of RATIO_GATES) {
         assertRatio(benchmark, caseName, comparisonName, allowedRatio);
+    }
+    for (const [caseName, allowedMs] of ABSOLUTE_GATES) {
+        assertAbsoluteCeiling(benchmark, caseName, allowedMs);
     }
 
     if (baseline) {

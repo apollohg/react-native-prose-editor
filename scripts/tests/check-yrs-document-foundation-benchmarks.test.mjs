@@ -45,11 +45,11 @@ function runChecker(input, baseline = benchmark()) {
 
 test('accepts benchmark results at every exact threshold', () => {
     const input = benchmark({
-        'legacy.json_import.article.1x': 1,
-        'yrs.json_import.article.1x': 3,
+        'legacy.json_import.article.1x': 0.5,
+        'yrs.json_import.article.1x': 2.5,
         'legacy.json_export.article.1x': 2,
         'yrs.json_export.article.1x': 6,
-        'yrs.json_import.article.2x': 7.5,
+        'yrs.json_import.article.2x': 6.25,
         'yrs.json_export.article.2x': 15,
         'yrs.json_import.opaque_large.1x': 4,
         'yrs.json_import.opaque_large.2x': 10,
@@ -64,20 +64,47 @@ test('accepts benchmark results at every exact threshold', () => {
     assert.match(result.stdout, /10 benchmark cases passed/);
 });
 
-test('ratio failures report the case, p50 values, actual ratio, and allowed ratio', () => {
+test('rejects import ratios above five even when the absolute ceiling passes', () => {
     const input = benchmark({
-        'legacy.json_import.article.1x': 2,
-        'yrs.json_import.article.1x': 6.2,
+        'legacy.json_import.article.1x': 0.4,
+        'yrs.json_import.article.1x': 2.1,
+    });
+
+    const result = runChecker(input, input);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /actual ratio=5\.25/);
+    assert.match(result.stderr, /allowed ratio=5/);
+});
+
+test('rejects import p50 above 2.5 ms even when the relative ratio passes', () => {
+    const input = benchmark({
+        'legacy.json_import.article.1x': 1,
+        'yrs.json_import.article.1x': 2.500001,
     });
 
     const result = runChecker(input, input);
 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /yrs\.json_import\.article\.1x/);
-    assert.match(result.stderr, /measured p50=6\.2/);
-    assert.match(result.stderr, /comparison p50=2/);
-    assert.match(result.stderr, /actual ratio=3\.1/);
-    assert.match(result.stderr, /allowed ratio=3/);
+    assert.match(result.stderr, /measured p50=2\.500001 ms/);
+    assert.match(result.stderr, /allowed p50=2\.5 ms/);
+});
+
+test('ratio failures report the case, p50 values, actual ratio, and allowed ratio', () => {
+    const input = benchmark({
+        'legacy.json_import.article.1x': 0.4,
+        'yrs.json_import.article.1x': 2.04,
+    });
+
+    const result = runChecker(input, input);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /yrs\.json_import\.article\.1x/);
+    assert.match(result.stderr, /measured p50=2\.04/);
+    assert.match(result.stderr, /comparison p50=0\.4/);
+    assert.match(result.stderr, /actual ratio=5\.1/);
+    assert.match(result.stderr, /allowed ratio=5/);
 });
 
 test('baseline regression failures use the same actionable diagnostics', () => {
