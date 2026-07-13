@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -19,7 +20,10 @@ pub enum JsonParseError {
     UnknownType(String),
     /// A mark is never eligible for opaque preservation.
     UnknownMark(String),
-    ResourceLimit { limit: usize, actual: usize },
+    ResourceLimit {
+        limit: usize,
+        actual: usize,
+    },
     /// The JSON structure is invalid (e.g. missing "type" field).
     InvalidStructure(String),
 }
@@ -88,7 +92,7 @@ pub fn from_prosemirror_json_with_limits(
 ) -> Result<Document, JsonParseError> {
     let normalized = normalize_json_aliases(json);
     let mut budget = ParseBudget::new(limits.max_document_nodes);
-    let root = parse_node(&normalized, schema, mode, "block", &mut budget)?;
+    let root = parse_node(normalized.as_ref(), schema, mode, "block", &mut budget)?;
     Ok(Document::new(root))
 }
 
@@ -324,7 +328,10 @@ fn resolve_opaque_placements(
     schema: &Schema,
     budget: &WorkBudget,
 ) -> Result<Vec<Node>, JsonParseError> {
-    if !children.iter().any(|node| node.node_type() == "__opaque_json") {
+    if !children
+        .iter()
+        .any(|node| node.node_type() == "__opaque_json")
+    {
         return Ok(children);
     }
     let choices = parent
@@ -366,11 +373,7 @@ fn resolve_opaque_placements(
     Ok(children)
 }
 
-fn placement_choice(
-    child: &Node,
-    symbol: &str,
-    schema: &Schema,
-) -> Option<PlacementChoice> {
+fn placement_choice(child: &Node, symbol: &str, schema: &Schema) -> Option<PlacementChoice> {
     if child.node_type() != "__opaque_json" {
         return schema
             .node_matches_symbol(child.node_type(), symbol)
@@ -404,27 +407,71 @@ fn build_opaque_json_node(type_name: &str, original_json: &Value, placement: &st
     Node::void("__opaque_json".to_string(), attrs)
 }
 
-fn normalize_json_aliases(value: &Value) -> Value {
+fn normalize_json_aliases(value: &Value) -> Cow<'_, Value> {
     match value {
-        Value::Array(values) => Value::Array(values.iter().map(normalize_json_aliases).collect()),
-        Value::Object(object) => normalize_json_object_aliases(object),
-        other => other.clone(),
+        Value::Array(values) => normalize_json_array_aliases(value, values),
+        Value::Object(object) => normalize_json_object_aliases(value, object),
+        _ => Cow::Borrowed(value),
     }
 }
 
-fn normalize_json_object_aliases(object: &Map<String, Value>) -> Value {
-    let mut normalized = object
-        .iter()
-        .map(|(key, value)| (key.clone(), normalize_json_aliases(value)))
-        .collect::<Map<String, Value>>();
+fn normalize_json_array_aliases<'a>(value: &'a Value, values: &'a [Value]) -> Cow<'a, Value> {
+    let mut normalized = None;
+    for (index, child) in values.iter().enumerate() {
+        match (normalized.as_mut(), normalize_json_aliases(child)) {
+            (None, Cow::Borrowed(_)) => {}
+            (None, Cow::Owned(child)) => {
+                let mut next = Vec::with_capacity(values.len());
+                next.extend_from_slice(&values[..index]);
+                next.push(child);
+                normalized = Some(next);
+            }
+            (Some(next), Cow::Borrowed(child)) => next.push(child.clone()),
+            (Some(next), Cow::Owned(child)) => next.push(child),
+        }
+    }
 
-    let type_name = normalized.get("type").and_then(Value::as_str);
+    normalized
+        .map(|values| Cow::Owned(Value::Array(values)))
+        .unwrap_or(Cow::Borrowed(value))
+}
+
+fn normalize_json_object_aliases<'a>(
+    value: &'a Value,
+    object: &'a Map<String, Value>,
+) -> Cow<'a, Value> {
+    let mut normalized = None;
+    for (index, (key, child)) in object.iter().enumerate() {
+        match (normalized.as_mut(), normalize_json_aliases(child)) {
+            (None, Cow::Borrowed(_)) => {}
+            (None, Cow::Owned(child)) => {
+                let mut next = Map::with_capacity(object.len());
+                next.extend(
+                    object
+                        .iter()
+                        .take(index)
+                        .map(|(key, value)| (key.clone(), value.clone())),
+                );
+                next.insert(key.clone(), child);
+                normalized = Some(next);
+            }
+            (Some(next), Cow::Borrowed(child)) => {
+                next.insert(key.clone(), child.clone());
+            }
+            (Some(next), Cow::Owned(child)) => {
+                next.insert(key.clone(), child);
+            }
+        }
+    }
+
+    let type_name = object.get("type").and_then(Value::as_str);
     if type_name == Some("heading") {
-        let level = normalized
+        let level = object
             .get("attrs")
             .and_then(Value::as_object)
             .and_then(|attrs| parse_heading_level_value(attrs.get("level")));
         if let Some(level) = level {
+            let normalized = normalized.get_or_insert_with(|| object.clone());
             normalized.insert("type".to_string(), Value::String(format!("h{level}")));
             if let Some(Value::Object(attrs)) = normalized.get_mut("attrs") {
                 attrs.remove("level");
@@ -435,7 +482,9 @@ fn normalize_json_object_aliases(object: &Map<String, Value>) -> Value {
         }
     }
 
-    Value::Object(normalized)
+    normalized
+        .map(|object| Cow::Owned(Value::Object(object)))
+        .unwrap_or(Cow::Borrowed(value))
 }
 
 fn parse_heading_level_value(value: Option<&Value>) -> Option<u8> {
@@ -450,5 +499,74 @@ fn parse_heading_level_value(value: Option<&Value>) -> Option<u8> {
         Some(level)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use serde_json::json;
+
+    use super::normalize_json_aliases;
+
+    #[test]
+    fn canonical_json_alias_normalization_borrows_the_original_tree() {
+        let canonical = json!({
+            "type": "doc",
+            "content": [{
+                "type": "h2",
+                "content": [{ "type": "text", "text": "Already canonical" }]
+            }, {
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "No aliases" }]
+            }]
+        });
+
+        assert!(matches!(
+            normalize_json_aliases(&canonical),
+            Cow::Borrowed(value) if std::ptr::eq(value, &canonical)
+        ));
+    }
+
+    #[test]
+    fn legacy_heading_alias_normalization_preserves_recursive_rewrites() {
+        let legacy = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "attrs": {
+                    "metadata": {
+                        "type": "heading",
+                        "attrs": { "level": "3", "id": "nested" }
+                    }
+                }
+            }, {
+                "type": "heading",
+                "attrs": { "level": 2, "id": "visible" },
+                "content": [{ "type": "text", "text": "Legacy" }]
+            }]
+        });
+        let expected = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "attrs": {
+                    "metadata": {
+                        "type": "h3",
+                        "attrs": { "id": "nested" }
+                    }
+                }
+            }, {
+                "type": "h2",
+                "attrs": { "id": "visible" },
+                "content": [{ "type": "text", "text": "Legacy" }]
+            }]
+        });
+
+        assert_eq!(
+            normalize_json_aliases(&legacy),
+            Cow::Owned::<serde_json::Value>(expected)
+        );
     }
 }

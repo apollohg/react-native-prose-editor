@@ -170,7 +170,7 @@ fn append_xml_text_json<T: ReadTxn>(
         let mut object = Map::new();
         object.insert("type".to_string(), Value::String("text".to_string()));
         object.insert("text".to_string(), Value::String(text_value));
-        let marks = attrs_to_marks(diff.attributes.clone());
+        let marks = attrs_to_marks(diff.attributes.as_deref());
         if !marks.is_empty() {
             object.insert("marks".to_string(), Value::Array(marks));
         }
@@ -179,12 +179,12 @@ fn append_xml_text_json<T: ReadTxn>(
     Ok(())
 }
 
-fn attrs_to_marks(attrs: Option<Box<Attrs>>) -> Vec<Value> {
+fn attrs_to_marks(attrs: Option<&Attrs>) -> Vec<Value> {
     let mut marks = Vec::new();
     let Some(attrs) = attrs else {
         return marks;
     };
-    for (name, value) in attrs.iter() {
+    for (name, value) in attrs {
         let mut object = Map::new();
         object.insert("type".to_string(), Value::String(name.to_string()));
         match any_to_json(value) {
@@ -353,7 +353,7 @@ fn apply_text_node(
             text.remove_range(txn, 0, len);
         }
         if !new_text.is_empty() {
-            text.insert_with_attributes(txn, 0, new_text, marks_to_attrs(&new_marks));
+            text.insert_with_attributes(txn, 0, new_text, marks_to_attrs(Some(&new_marks)));
         }
         return;
     }
@@ -367,7 +367,12 @@ fn apply_text_node(
 
     let insert_text = &new_text[prefix..new_suffix];
     if !insert_text.is_empty() {
-        text.insert_with_attributes(txn, prefix_utf16, insert_text, marks_to_attrs(&new_marks));
+        text.insert_with_attributes(
+            txn,
+            prefix_utf16,
+            insert_text,
+            marks_to_attrs(Some(&new_marks)),
+        );
     }
 }
 
@@ -420,9 +425,7 @@ fn insert_json_node<P: XmlFragment>(
                 txn,
                 0,
                 text_value,
-                marks_to_attrs(&normalize_marks(
-                    node.get("marks").and_then(Value::as_array),
-                )),
+                marks_to_attrs(node.get("marks").and_then(Value::as_array)),
             );
         }
         return Ok(());
@@ -510,8 +513,11 @@ fn normalize_marks(marks: Option<&Vec<Value>>) -> Vec<Value> {
     normalized
 }
 
-fn marks_to_attrs(marks: &[Value]) -> Attrs {
+fn marks_to_attrs(marks: Option<&Vec<Value>>) -> Attrs {
     let mut attrs = Attrs::default();
+    let Some(marks) = marks else {
+        return attrs;
+    };
     for mark in marks {
         let Some(mark_type) = mark.get("type").and_then(Value::as_str) else {
             continue;
@@ -595,7 +601,7 @@ fn any_to_json(value: &Any) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::YrsDocumentCodec;
+    use super::{attrs_to_marks, marks_to_attrs, YrsDocumentCodec};
     use crate::boundary::ResourceLimits;
     use crate::schema::presets::tiptap_schema;
     use serde_json::{json, Value};
@@ -654,6 +660,93 @@ mod tests {
         });
 
         assert_eq!(round_trip(next.clone()), next);
+    }
+
+    #[test]
+    fn borrowed_mark_conversion_preserves_exact_sorted_attrs() {
+        let marks = vec![
+            json!({ "type": "italic" }),
+            json!({
+                "type": "link",
+                "attrs": {
+                    "href": "https://example.test/😀",
+                    "title": "e\u{301} אב"
+                }
+            }),
+            json!({ "type": "bold" }),
+        ];
+
+        let attrs = marks_to_attrs(Some(&marks));
+        assert_eq!(
+            attrs_to_marks(Some(&attrs)),
+            vec![
+                json!({ "type": "bold" }),
+                json!({ "type": "italic" }),
+                json!({
+                    "type": "link",
+                    "attrs": {
+                        "href": "https://example.test/😀",
+                        "title": "e\u{301} אב"
+                    }
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn shared_codec_preserves_multimark_unicode_and_opaque_payload_exactly() {
+        let input = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "A😀e\u{301} אב",
+                    "marks": [
+                        { "type": "italic" },
+                        { "type": "link", "attrs": { "href": "https://example.test/😀" } },
+                        { "type": "bold" }
+                    ]
+                }]
+            }, {
+                "type": "__opaque_json",
+                "attrs": {
+                    "original_type": "callout",
+                    "opaque_placement": "block",
+                    "original_json": {
+                        "type": "callout",
+                        "attrs": { "payload": ["😀", "e\u{301}", "אב", null] }
+                    }
+                }
+            }]
+        });
+        let expected = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "A😀e\u{301} אב",
+                    "marks": [
+                        { "type": "bold" },
+                        { "type": "italic" },
+                        { "type": "link", "attrs": { "href": "https://example.test/😀" } }
+                    ]
+                }]
+            }, {
+                "type": "__opaque_json",
+                "attrs": {
+                    "original_type": "callout",
+                    "opaque_placement": "block",
+                    "original_json": {
+                        "type": "callout",
+                        "attrs": { "payload": ["😀", "e\u{301}", "אב", null] }
+                    }
+                }
+            }]
+        });
+
+        assert_eq!(round_trip(input), expected);
     }
 
     #[test]

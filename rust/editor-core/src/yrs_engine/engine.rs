@@ -51,6 +51,27 @@ struct CandidateDocument {
     state: EngineDocumentState,
 }
 
+struct ValidatedImportDocument {
+    document: Document,
+    canonical_json: serde_json::Value,
+}
+
+impl ValidatedImportDocument {
+    fn new(
+        document: Document,
+        schema: &Schema,
+        resource_limits: &ResourceLimits,
+    ) -> YrsEngineResult<Self> {
+        let document = normalize_document_mark_order(&document);
+        validate_import_document(&document, schema, resource_limits)?;
+        let canonical_json = to_prosemirror_json(&document, schema);
+        Ok(Self {
+            document,
+            canonical_json,
+        })
+    }
+}
+
 pub struct YrsDocumentEngine {
     doc: Doc,
     fragment_name: String,
@@ -365,9 +386,9 @@ impl YrsDocumentEngine {
             &self.resource_limits,
         )
         .map_err(map_json_import_error)?;
-        validate_import_document(&document, &self.schema, &self.resource_limits)?;
+        let source = ValidatedImportDocument::new(document, &self.schema, &self.resource_limits)?;
 
-        let candidate = self.build_candidate_from_document(document, origin)?;
+        let candidate = self.build_candidate_from_document(source, origin)?;
         Ok(self.commit_candidate(candidate, origin))
     }
 
@@ -381,23 +402,21 @@ impl YrsDocumentEngine {
         let document =
             from_html_with_limits(input.as_str(), &self.schema, options, &self.resource_limits)
                 .map_err(map_html_import_error)?;
-        validate_import_document(&document, &self.schema, &self.resource_limits)?;
+        let source = ValidatedImportDocument::new(document, &self.schema, &self.resource_limits)?;
 
-        let candidate = self.build_candidate_from_document(document, origin)?;
+        let candidate = self.build_candidate_from_document(source, origin)?;
         Ok(self.commit_candidate(candidate, origin))
     }
 
     fn build_candidate_from_document(
         &self,
-        document: Document,
+        source: ValidatedImportDocument,
         origin: TransactionOrigin,
     ) -> YrsEngineResult<CandidateDocument> {
-        let source_document = normalize_document_mark_order(&document);
-        DocumentValidator::validate(&source_document, &self.schema, &self.resource_limits)
-            .map_err(|error| {
-                candidate_invariant_parse_error(error, "normalized source document is invalid")
-            })?;
-        let canonical_json = to_prosemirror_json(&source_document, &self.schema);
+        let ValidatedImportDocument {
+            document: source_document,
+            canonical_json,
+        } = source;
         let empty_json = json!({
             "type": self.schema.doc_node_type(),
             "content": [],
@@ -436,7 +455,6 @@ impl YrsDocumentEngine {
             ));
         }
         encode_candidate_state_bounded(&doc, &self.resource_limits)?;
-        let canonical_json = to_prosemirror_json(&derived_document, &self.schema);
 
         Ok(CandidateDocument {
             doc,
@@ -774,9 +792,13 @@ fn encode_candidate_state_bounded(
 
 #[cfg(test)]
 mod tests {
+    use crate::boundary::ResourceLimits;
+    use crate::schema::presets::tiptap_schema;
+    use crate::serialize::{from_prosemirror_json, UnknownTypeMode};
+    use serde_json::json;
     use yrs::OffsetKind;
 
-    use super::utf16_doc;
+    use super::{utf16_doc, ValidatedImportDocument};
 
     #[test]
     fn utf16_doc_preserves_fresh_client_ids_and_uses_utf16_offsets() {
@@ -786,5 +808,44 @@ mod tests {
         assert_eq!(first.offset_kind(), OffsetKind::Utf16);
         assert_eq!(second.offset_kind(), OffsetKind::Utf16);
         assert_ne!(first.client_id(), second.client_id());
+    }
+
+    #[test]
+    fn validated_import_source_reuses_one_normalized_canonical_result() {
+        let schema = tiptap_schema();
+        let limits = ResourceLimits::default();
+        let input = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "ordered",
+                    "marks": [{ "type": "italic" }, { "type": "bold" }]
+                }]
+            }]
+        });
+        let parsed = from_prosemirror_json(&input, &schema, UnknownTypeMode::Preserve).unwrap();
+
+        let validated = ValidatedImportDocument::new(parsed, &schema, &limits).unwrap();
+
+        assert_eq!(
+            validated.canonical_json,
+            json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": "ordered",
+                        "marks": [{ "type": "bold" }, { "type": "italic" }]
+                    }]
+                }]
+            })
+        );
+        assert_eq!(
+            validated.canonical_json,
+            crate::serialize::to_prosemirror_json(&validated.document, &schema)
+        );
     }
 }
