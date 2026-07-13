@@ -48,20 +48,25 @@ function runChecker(input, baseline = benchmark()) {
     });
 }
 
-test('executes exactly five samples and returns per-case medians', () => {
+test('retains five exact raw samples alongside an independently constructed aggregate', () => {
     const calls = [];
     const samples = [5, 1, 4, 2, 3].map((p50Ms) =>
         benchmark({ 'yrs.candidate_validation.article.1x': p50Ms })
     );
 
-    const aggregated = runBenchmarkSamples((sampleNumber) => {
+    const evidence = runBenchmarkSamples((sampleNumber) => {
         calls.push(sampleNumber);
         return samples[sampleNumber - 1];
     });
 
     assert.deepEqual(calls, [1, 2, 3, 4, 5]);
+    assert.deepEqual(evidence.samples, samples);
+    evidence.samples.forEach((sample, index) => assert.strictEqual(sample, samples[index]));
+    assert.equal(samples.includes(evidence.aggregate), false);
     assert.equal(
-        aggregated.results.find(({ name }) => name === 'yrs.candidate_validation.article.1x').p50Ms,
+        evidence.aggregate.results.find(
+            ({ name }) => name === 'yrs.candidate_validation.article.1x'
+        ).p50Ms,
         3
     );
 });

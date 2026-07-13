@@ -122,7 +122,10 @@ export function runBenchmarkSamples(sampleRunner = runBenchmarkSample) {
             throw new Error(`sample ${sampleNumber}: ${message}`);
         }
     }
-    return aggregateBenchmarkSamples(samples);
+    return {
+        samples,
+        aggregate: aggregateBenchmarkSamples(samples),
+    };
 }
 
 function indexResults(payload, label) {
@@ -244,13 +247,24 @@ function checkBenchmarks(input, baseline) {
 function main() {
     try {
         const options = parseArguments(process.argv.slice(2));
-        const input = options.run
-            ? runBenchmarkSamples()
+        const benchmarkRun = options.run ? runBenchmarkSamples() : undefined;
+        const input = benchmarkRun
+            ? benchmarkRun.aggregate
             : readJsonFile(options.inputPath, 'input');
         const baseline = options.baselinePath
             ? readJsonFile(options.baselinePath, 'baseline')
             : undefined;
         const caseCount = checkBenchmarks(input, baseline);
+        if (benchmarkRun) {
+            console.log(
+                JSON.stringify({
+                    evidenceType: 'yrs-foundation-five-run-median',
+                    sampleCount: benchmarkRun.samples.length,
+                    rawSamples: benchmarkRun.samples,
+                    medianAggregate: benchmarkRun.aggregate,
+                })
+            );
+        }
         console.log(
             options.run
                 ? `${caseCount} benchmark cases from five standard samples aggregated by per-case median passed all Yrs foundation gates`
