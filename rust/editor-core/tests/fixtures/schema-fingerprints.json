@@ -123,7 +123,7 @@
                     { "name": "link", "attrs": { "href": {} } }
                 ]
             },
-            "expectedFingerprint": "22baf362700ddecbc2eb1fd57df331074b9d5af366958fb1b6ae64b3a0b8102a"
+            "expectedFingerprint": "062c186c1b9c9541314164a087cb7908c84bae58d8c82bb9af4f86d68b882e65"
         },
         {
             "name": "ProseMirror snake-case schema",
@@ -248,7 +248,7 @@
                     { "name": "link", "attrs": { "href": {} } }
                 ]
             },
-            "expectedFingerprint": "8f3c69be0787cff4a0d39c8e008bcdfe6c19ea6ee0b3af51736ee5a533a47c7d"
+            "expectedFingerprint": "456d83696f39dd520e9771424c30b4e4b8bc09a144bb89a0f6c507d866a8a86c"
         },
         {
             "name": "custom root schema",
@@ -293,7 +293,7 @@
                 ],
                 "marks": []
             },
-            "expectedFingerprint": "c15fa443c147e334699bb42d51028ccdc4784dda1f8ac26a0c93bf3f56672ac0"
+            "expectedFingerprint": "0ecbd338a50d6d9588fccb50715750252166a0b127ba6197296d7172203d3eaa"
         },
         {
             "name": "duplicate HTML-tag precedence",
@@ -333,7 +333,7 @@
                 ],
                 "marks": [{ "name": "custom", "attrs": { "value": { "default": null } } }]
             },
-            "expectedFingerprint": "0d6e6385268e13a129990b604e414f32012990a881e00749e854adc14f954a9e"
+            "expectedFingerprint": "a90660eb659e13e220c85a585ffecf7370efc4fb0f3bb86009f6696d7e9578ee"
         },
         {
             "name": "missing default",
@@ -345,7 +345,34 @@
                 ],
                 "marks": [{ "name": "custom", "attrs": { "value": {} } }]
             },
-            "expectedFingerprint": "d4b3ae5623a038ac420bcb3454e518e47156a3a45cf5445ff00c53546a92eed5"
+            "expectedFingerprint": "5c6642305052349c5add8f3af1be226338f5d03bcafa54a73b0a6ff9ed3ccd2a"
+        },
+        {
+            "name": "portable scalar keys and binary64 numbers",
+            "schema": {
+                "nodes": [
+                    { "name": "doc", "content": "paragraph", "role": "doc" },
+                    { "name": "paragraph", "content": "text*", "role": "textBlock" },
+                    { "name": "text", "content": "", "role": "text" }
+                ],
+                "marks": [
+                    {
+                        "name": "custom",
+                        "attrs": {
+                            "integerKeys": {
+                                "default": { "2": "two", "10": "ten" }
+                            },
+                            "unicodeKeys": {
+                                "default": { "": "BMP", "𐀀": "non-BMP" }
+                            },
+                            "exponentNumber": { "default": 1e20 },
+                            "integralFloat": { "default": 1.0 },
+                            "negativeZero": { "default": -0.0 }
+                        }
+                    }
+                ]
+            },
+            "expectedFingerprint": "b2f2c1f71c09d1d0bbe89762e2aafa0e1d6b7628a07e77d67fdc4bc5856553e5"
         }
     ],
     "equivalentSchemas": [
@@ -403,7 +430,7 @@
                     ]
                 }
             ],
-            "expectedFingerprint": "22d042aa957d01949ec8cd97f6e48ae30433a4da8c9a83db3cc3e39a3d5271f5"
+            "expectedFingerprint": "16ab872d59a9ab5c8216b1d5c6b6cdf89ada71bfb5158852acef2f791134a430"
         }
     ]
 }

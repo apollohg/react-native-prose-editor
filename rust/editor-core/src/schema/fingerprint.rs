@@ -46,11 +46,11 @@ struct CanonicalAttr {
 }
 
 #[derive(Serialize)]
-#[serde(untagged)]
+#[serde(tag = "type", content = "value", rename_all = "camelCase")]
 enum CanonicalJsonValue {
     Null,
     Bool(bool),
-    Number(serde_json::Number),
+    Number(String),
     String(String),
     Array(Vec<CanonicalJsonValue>),
     Object(BTreeMap<String, CanonicalJsonValue>),
@@ -61,7 +61,13 @@ impl From<&serde_json::Value> for CanonicalJsonValue {
         match value {
             serde_json::Value::Null => Self::Null,
             serde_json::Value::Bool(value) => Self::Bool(*value),
-            serde_json::Value::Number(value) => Self::Number(value.clone()),
+            serde_json::Value::Number(value) => {
+                let value = value
+                    .as_f64()
+                    .expect("JSON numbers are representable as finite binary64 values");
+                let normalized = if value == 0.0 { 0.0 } else { value };
+                Self::Number(format!("{:016x}", normalized.to_bits()))
+            }
             serde_json::Value::String(value) => Self::String(value.clone()),
             serde_json::Value::Array(values) => {
                 Self::Array(values.iter().map(CanonicalJsonValue::from).collect())
