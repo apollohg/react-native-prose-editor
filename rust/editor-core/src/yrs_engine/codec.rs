@@ -597,8 +597,10 @@ mod tests {
     use yrs::{Doc, OffsetKind, Options, ReadTxn, Transact, WriteTxn};
 
     fn utf16_doc() -> Doc {
-        let mut options = Options::default();
-        options.offset_kind = OffsetKind::Utf16;
+        let options = Options {
+            offset_kind: OffsetKind::Utf16,
+            ..Default::default()
+        };
         Doc::with_options(options)
     }
 
@@ -717,8 +719,10 @@ mod tests {
                 "content": [{ "type": "text", "text": "three nodes" }]
             }]
         });
-        let mut exact_limits = ResourceLimits::default();
-        exact_limits.max_document_nodes = 3;
+        let exact_limits = ResourceLimits {
+            max_document_nodes: 3,
+            ..Default::default()
+        };
         let exact_codec = YrsDocumentCodec::new(&schema, &exact_limits);
         let doc = utf16_doc();
         {
@@ -768,8 +772,10 @@ mod tests {
                 "content": [{ "type": "text", "text": "depth three" }]
             }]
         });
-        let mut exact_limits = ResourceLimits::default();
-        exact_limits.max_document_depth = 3;
+        let exact_limits = ResourceLimits {
+            max_document_depth: 3,
+            ..Default::default()
+        };
         let exact_codec = YrsDocumentCodec::new(&schema, &exact_limits);
         let doc = utf16_doc();
         {
