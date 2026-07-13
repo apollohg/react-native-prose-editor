@@ -13,6 +13,7 @@ use crate::serialize::{
 };
 use crate::transform::DocumentValidator;
 
+use super::update_preflight::preflight_update_v1;
 use super::{
     DocumentScope, DocumentSnapshot, TransactionOrigin, YrsDocumentCodec, YrsEngineError,
     YrsEngineResult, SNAPSHOT_FORMAT_VERSION,
@@ -233,7 +234,37 @@ impl YrsDocumentEngine {
             });
         }
 
-        let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        preflight_update_v1(&snapshot.encoded_state, &self.resource_limits)?;
+        let candidate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.build_snapshot_candidate(snapshot)
+        }));
+        let candidate = match candidate {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(snapshot_error(
+                    "COLLABORATION_DECODE_FAILED",
+                    "Yrs rejected the encoded snapshot state",
+                    "encodedState",
+                ))
+            }
+        };
+
+        let next_revision = self.next_revision()?;
+        self.doc = candidate.doc;
+        self.state = candidate.state;
+        self.revision = next_revision;
+        self.last_committed_origin = Some(TransactionOrigin::SnapshotRestore);
+        Ok(EngineCommit {
+            changed: true,
+            revision: self.revision,
+        })
+    }
+
+    fn build_snapshot_candidate(
+        &self,
+        snapshot: &DocumentSnapshot,
+    ) -> YrsEngineResult<CandidateDocument> {
+        let candidate_doc = {
             let update = Update::decode_v1(&snapshot.encoded_state).map_err(|error| {
                 snapshot_parse_error("COLLABORATION_DECODE_FAILED", error, "encodedState")
             })?;
@@ -245,17 +276,7 @@ impl YrsDocumentEngine {
                 .map_err(|error| {
                     snapshot_parse_error("COLLABORATION_DECODE_FAILED", error, "encodedState")
                 })?;
-            Ok::<Doc, YrsEngineError>(candidate_doc)
-        }));
-        let candidate_doc = match applied {
-            Ok(result) => result?,
-            Err(_) => {
-                return Err(snapshot_error(
-                    "COLLABORATION_DECODE_FAILED",
-                    "Yrs rejected the encoded snapshot state",
-                    "encodedState",
-                ))
-            }
+            candidate_doc
         };
 
         let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
@@ -288,22 +309,12 @@ impl YrsDocumentEngine {
         encode_candidate_state_bounded(&candidate_doc, &self.resource_limits)
             .map_err(|error| snapshot_derived_error(error, "encodedState"))?;
         let canonical_json = to_prosemirror_json(&derived_document, &self.schema);
-        let candidate = CandidateDocument {
+        Ok(CandidateDocument {
             doc: candidate_doc,
             state: EngineDocumentState::Ready {
                 document: derived_document,
                 canonical_json,
             },
-        };
-
-        let next_revision = self.next_revision()?;
-        self.doc = candidate.doc;
-        self.state = candidate.state;
-        self.revision = next_revision;
-        self.last_committed_origin = Some(TransactionOrigin::SnapshotRestore);
-        Ok(EngineCommit {
-            changed: true,
-            revision: self.revision,
         })
     }
 
@@ -537,7 +548,12 @@ fn snapshot_parse_error(
 }
 
 fn snapshot_derived_error(mut error: YrsEngineError, field: &'static str) -> YrsEngineError {
-    error.details = Some(json!({ "field": field }));
+    let mut details = match error.details.take() {
+        Some(serde_json::Value::Object(details)) => details,
+        _ => serde_json::Map::new(),
+    };
+    details.insert("field".into(), serde_json::Value::String(field.into()));
+    error.details = Some(serde_json::Value::Object(details));
     error
 }
 

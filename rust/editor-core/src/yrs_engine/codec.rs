@@ -69,11 +69,18 @@ impl<'a> YrsDocumentCodec<'a> {
 struct ConversionBudget<'a> {
     limits: &'a ResourceLimits,
     nodes: usize,
+    any_work: usize,
+    output_bytes: usize,
 }
 
 impl<'a> ConversionBudget<'a> {
     fn new(limits: &'a ResourceLimits) -> Self {
-        Self { limits, nodes: 0 }
+        Self {
+            limits,
+            nodes: 0,
+            any_work: 0,
+            output_bytes: 0,
+        }
     }
 
     fn admit_node(&mut self, depth: usize) -> YrsEngineResult<()> {
@@ -95,6 +102,48 @@ impl<'a> ConversionBudget<'a> {
                 self.limits.max_document_depth,
                 depth,
             ));
+        }
+        Ok(())
+    }
+
+    fn admit_any(&mut self, depth: usize, amount: usize) -> YrsEngineResult<()> {
+        if depth > self.limits.max_document_depth {
+            return Err(YrsEngineError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.limits.max_document_depth,
+                depth,
+            )
+            .with_details(json!({
+                "phase": "candidateMaterialization",
+                "dimension": "anyDepth"
+            })));
+        }
+        self.any_work = self.any_work.saturating_add(amount);
+        let limit = self.limits.max_document_nodes.saturating_mul(128);
+        if self.any_work > limit {
+            return Err(
+                YrsEngineError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, self.any_work)
+                    .with_details(json!({
+                        "phase": "candidateMaterialization",
+                        "dimension": "anyWork"
+                    })),
+            );
+        }
+        Ok(())
+    }
+
+    fn charge_output(&mut self, bytes: usize) -> YrsEngineResult<()> {
+        self.output_bytes = self.output_bytes.saturating_add(bytes);
+        if self.output_bytes > self.limits.max_input_bytes {
+            return Err(YrsEngineError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.limits.max_input_bytes,
+                self.output_bytes,
+            )
+            .with_details(json!({
+                "phase": "candidateMaterialization",
+                "dimension": "outputBytes"
+            })));
         }
         Ok(())
     }
@@ -132,10 +181,13 @@ fn xml_element_to_json<T: ReadTxn>(
 ) -> YrsEngineResult<Value> {
     budget.admit_node(depth)?;
     let mut object = Map::new();
-    let mut attrs = element
-        .attributes(txn)
-        .map(|(key, value)| (key.to_string(), any_to_json(&value.to_json(txn))))
-        .collect::<Map<String, Value>>();
+    let mut attrs = Map::new();
+    for (key, value) in element.attributes(txn) {
+        attrs.insert(
+            key.to_string(),
+            any_to_json(&value.to_json(txn), budget, 1)?,
+        );
+    }
     let node_type = json_node_type_for_element(element.tag(), &mut attrs);
     object.insert("type".to_string(), Value::String(node_type));
     if !attrs.is_empty() {
@@ -165,7 +217,7 @@ fn append_xml_text_json<T: ReadTxn>(
         let yrs::Out::Any(any) = diff.insert else {
             continue;
         };
-        let Value::String(text_value) = any_to_json(&any) else {
+        let Value::String(text_value) = any_to_json(&any, budget, 1)? else {
             continue;
         };
         if text_value.is_empty() {
@@ -175,7 +227,7 @@ fn append_xml_text_json<T: ReadTxn>(
         let mut object = Map::new();
         object.insert("type".to_string(), Value::String("text".to_string()));
         object.insert("text".to_string(), Value::String(text_value));
-        let marks = attrs_to_marks(diff.attributes.as_deref(), schema);
+        let marks = attrs_to_marks(diff.attributes.as_deref(), schema, budget)?;
         if !marks.is_empty() {
             object.insert("marks".to_string(), Value::Array(marks));
         }
@@ -184,15 +236,19 @@ fn append_xml_text_json<T: ReadTxn>(
     Ok(())
 }
 
-fn attrs_to_marks(attrs: Option<&Attrs>, schema: &Schema) -> Vec<Value> {
+fn attrs_to_marks(
+    attrs: Option<&Attrs>,
+    schema: &Schema,
+    budget: &mut ConversionBudget<'_>,
+) -> YrsEngineResult<Vec<Value>> {
     let mut marks = Vec::new();
     let Some(attrs) = attrs else {
-        return marks;
+        return Ok(marks);
     };
     for (name, value) in attrs {
         let mut object = Map::new();
         object.insert("type".to_string(), Value::String(name.to_string()));
-        match any_to_json(value) {
+        match any_to_json(value, budget, 1)? {
             Value::Bool(true) | Value::Null => {}
             other => {
                 object.insert("attrs".to_string(), other);
@@ -209,7 +265,7 @@ fn attrs_to_marks(attrs: Option<&Attrs>, schema: &Schema) -> Vec<Value> {
             .cmp(&schema.mark_rank(right_name).unwrap_or(usize::MAX))
             .then_with(|| left_name.cmp(right_name))
     });
-    marks
+    Ok(marks)
 }
 
 fn apply_children<P: XmlFragment>(
@@ -583,34 +639,94 @@ fn json_to_any(value: &Value) -> Any {
     }
 }
 
-fn any_to_json(value: &Any) -> Value {
+#[cfg(test)]
+fn any_to_json_bounded(value: &Any, limits: &ResourceLimits) -> YrsEngineResult<Value> {
+    let mut budget = ConversionBudget::new(limits);
+    any_to_json(value, &mut budget, 1)
+}
+
+fn any_to_json(
+    value: &Any,
+    budget: &mut ConversionBudget<'_>,
+    depth: usize,
+) -> YrsEngineResult<Value> {
+    budget.admit_any(depth, 1)?;
     match value {
-        Any::Null | Any::Undefined => Value::Null,
-        Any::Bool(value) => Value::Bool(*value),
-        Any::Number(value) => serde_json::Number::from_f64(*value)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
-        Any::BigInt(value) => Value::Number((*value).into()),
-        Any::String(value) => Value::String(value.to_string()),
-        Any::Buffer(value) => Value::Array(
-            value
-                .iter()
-                .map(|byte| Value::Number((*byte).into()))
-                .collect(),
-        ),
-        Any::Array(values) => Value::Array(values.iter().map(any_to_json).collect()),
-        Any::Map(values) => Value::Object(
-            values
-                .iter()
-                .map(|(key, value)| (key.to_string(), any_to_json(value)))
-                .collect(),
-        ),
+        Any::Null | Any::Undefined => {
+            budget.charge_output(4)?;
+            Ok(Value::Null)
+        }
+        Any::Bool(value) => {
+            budget.charge_output(if *value { 4 } else { 5 })?;
+            Ok(Value::Bool(*value))
+        }
+        Any::Number(value) => {
+            let number = serde_json::Number::from_f64(*value);
+            let bytes = number.as_ref().map_or(4, |number| number.to_string().len());
+            budget.charge_output(bytes)?;
+            Ok(number.map(Value::Number).unwrap_or(Value::Null))
+        }
+        Any::BigInt(value) => {
+            budget.charge_output(value.to_string().len())?;
+            Ok(Value::Number((*value).into()))
+        }
+        Any::String(value) => {
+            budget.charge_output(json_string_len(value))?;
+            Ok(Value::String(value.to_string()))
+        }
+        Any::Buffer(value) => {
+            budget.admit_any(depth, value.len())?;
+            budget.charge_output(2usize.saturating_add(value.len().saturating_sub(1)))?;
+            let mut output = Vec::new();
+            for byte in value.iter() {
+                budget.charge_output(decimal_u8_len(*byte))?;
+                output.push(Value::Number((*byte).into()));
+            }
+            Ok(Value::Array(output))
+        }
+        Any::Array(values) => {
+            budget.charge_output(2usize.saturating_add(values.len().saturating_sub(1)))?;
+            let mut output = Vec::new();
+            for value in values.iter() {
+                output.push(any_to_json(value, budget, depth + 1)?);
+            }
+            Ok(Value::Array(output))
+        }
+        Any::Map(values) => {
+            budget.charge_output(2usize.saturating_add(values.len().saturating_sub(1)))?;
+            let mut output = Map::new();
+            for (key, value) in values.iter() {
+                budget.charge_output(json_string_len(key).saturating_add(1))?;
+                output.insert(key.to_string(), any_to_json(value, budget, depth + 1)?);
+            }
+            Ok(Value::Object(output))
+        }
+    }
+}
+
+fn json_string_len(value: &str) -> usize {
+    value.chars().fold(2usize, |bytes, character| {
+        bytes.saturating_add(match character {
+            '"' | '\\' | '\u{0008}' | '\u{000c}' | '\n' | '\r' | '\t' => 2,
+            character if character <= '\u{001f}' => 6,
+            character => character.len_utf8(),
+        })
+    })
+}
+
+fn decimal_u8_len(value: u8) -> usize {
+    if value >= 100 {
+        3
+    } else if value >= 10 {
+        2
+    } else {
+        1
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{attrs_to_marks, marks_to_attrs, YrsDocumentCodec};
+    use super::{any_to_json_bounded, attrs_to_marks, marks_to_attrs, YrsDocumentCodec};
     use crate::boundary::ResourceLimits;
     use crate::schema::presets::tiptap_schema;
     use serde_json::{json, Value};
@@ -686,8 +802,11 @@ mod tests {
         ];
 
         let attrs = marks_to_attrs(Some(&marks));
+        let schema = tiptap_schema();
+        let limits = ResourceLimits::default();
+        let mut budget = super::ConversionBudget::new(&limits);
         assert_eq!(
-            attrs_to_marks(Some(&attrs), &tiptap_schema()),
+            attrs_to_marks(Some(&attrs), &schema, &mut budget).unwrap(),
             vec![
                 json!({ "type": "bold" }),
                 json!({ "type": "italic" }),
@@ -920,5 +1039,71 @@ mod tests {
             assert_eq!(error.limit, Some(2));
             assert_eq!(error.actual, Some(3));
         }
+    }
+
+    #[test]
+    fn any_materialization_has_exact_depth_work_and_output_boundaries() {
+        let nested = yrs::Any::Array(vec![yrs::Any::Array(vec![yrs::Any::Null].into())].into());
+        let exact_depth = ResourceLimits {
+            max_document_depth: 3,
+            ..ResourceLimits::default()
+        };
+        assert_eq!(
+            any_to_json_bounded(&nested, &exact_depth).unwrap(),
+            serde_json::json!([[null]])
+        );
+        let depth_error = any_to_json_bounded(
+            &nested,
+            &ResourceLimits {
+                max_document_depth: 2,
+                ..ResourceLimits::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(depth_error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(depth_error.limit, Some(2));
+        assert_eq!(depth_error.actual, Some(3));
+
+        let exact_output = ResourceLimits {
+            max_input_bytes: 3,
+            ..ResourceLimits::default()
+        };
+        assert_eq!(
+            any_to_json_bounded(&yrs::Any::String("x".into()), &exact_output).unwrap(),
+            serde_json::json!("x")
+        );
+        let output_error = any_to_json_bounded(
+            &yrs::Any::String("x".into()),
+            &ResourceLimits {
+                max_input_bytes: 2,
+                ..ResourceLimits::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(output_error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(output_error.limit, Some(2));
+        assert_eq!(output_error.actual, Some(3));
+
+        let exact_items = yrs::Any::Array(vec![yrs::Any::Null; 127].into());
+        assert!(any_to_json_bounded(
+            &exact_items,
+            &ResourceLimits {
+                max_document_nodes: 1,
+                ..ResourceLimits::default()
+            }
+        )
+        .is_ok());
+        let over_items = yrs::Any::Array(vec![yrs::Any::Null; 128].into());
+        let work_error = any_to_json_bounded(
+            &over_items,
+            &ResourceLimits {
+                max_document_nodes: 1,
+                ..ResourceLimits::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(work_error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(work_error.limit, Some(128));
+        assert_eq!(work_error.actual, Some(129));
     }
 }

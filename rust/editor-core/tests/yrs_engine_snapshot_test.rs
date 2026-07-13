@@ -298,7 +298,14 @@ fn malformed_encoded_state_is_panic_contained_and_atomic() {
         .expect("snapshot restore must not unwind")
         .unwrap_err();
     assert_eq!(error.code, "COLLABORATION_DECODE_FAILED");
-    assert_field(&error, "encodedState");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({
+            "field": "encodedState",
+            "phase": "updatePreflight",
+            "reason": "truncated"
+        }))
+    );
     assert_eq!(audit(&engine), before);
 }
 
@@ -322,7 +329,14 @@ fn awaiting_empty_state_does_not_bypass_snapshot_decode_as_a_no_op() {
     let error = awaiting.restore_snapshot(&snapshot).unwrap_err();
 
     assert_eq!(error.code, "COLLABORATION_DECODE_FAILED");
-    assert_field(&error, "encodedState");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({
+            "field": "encodedState",
+            "phase": "updatePreflight",
+            "reason": "truncated"
+        }))
+    );
     assert_eq!(audit(&awaiting), before);
 }
 

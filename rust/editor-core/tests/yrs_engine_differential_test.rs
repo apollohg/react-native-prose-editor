@@ -252,49 +252,135 @@ fn opaque_inline_and_block_fixtures_survive_cross_engine_snapshots() {
     }
 }
 
-fn arb_document() -> impl proptest::strategy::Strategy<Value = serde_json::Value> {
+fn arb_document() -> impl proptest::strategy::Strategy<Value = (u8, serde_json::Value)> {
     use proptest::prelude::*;
 
-    let text = "[A-Za-z0-9 😀éאב]{0,64}";
-    prop::collection::vec(
-        text.prop_map(|value| {
-            serde_json::json!({
+    (0_u8..7, "[A-Za-z0-9 😀éאב]{1,32}", 1_u8..5, any::<bool>()).prop_map(
+        |(variant, text, ordinal, flag)| {
+            let paragraph = || serde_json::json!({
                 "type": "paragraph",
-                "content": if value.is_empty() {
-                    Vec::<serde_json::Value>::new()
-                } else {
-                    vec![serde_json::json!({"type": "text", "text": value})]
-                }
-            })
-        }),
-        1..24,
+                "content": [{"type": "text", "text": text}]
+            });
+            let document = match variant {
+                0 => serde_json::json!({
+                    "type": "doc",
+                    "content": [paragraph(), paragraph()]
+                }),
+                1 => serde_json::json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "bulletList",
+                        "content": [{
+                            "type": "listItem",
+                            "content": [paragraph(), {
+                                "type": "orderedList",
+                                "attrs": {"start": ordinal},
+                                "content": [{"type": "listItem", "content": [paragraph()]}]
+                            }]
+                        }]
+                    }]
+                }),
+                2 => serde_json::json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "taskList",
+                        "content": [{
+                            "type": "taskItem",
+                            "attrs": {"checked": flag},
+                            "content": [paragraph()]
+                        }]
+                    }]
+                }),
+                3 => serde_json::json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{
+                            "type": "text",
+                            "text": text,
+                            "marks": [
+                                {"type": "bold"},
+                                {"type": "italic"},
+                                {"type": "link", "attrs": {"href": format!("https://example.test/{ordinal}")}}
+                            ]
+                        }]
+                    }]
+                }),
+                4 => serde_json::json!({
+                    "type": "doc",
+                    "content": [
+                        {"type": "paragraph", "content": [
+                            {"type": "text", "text": text},
+                            {"type": "hardBreak"}
+                        ]},
+                        {"type": "image", "attrs": {"src": format!("https://example.test/{ordinal}.png")}},
+                        {"type": "horizontalRule"}
+                    ]
+                }),
+                5 => serde_json::json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "generatedCallout",
+                        "attrs": {
+                            "rank": ordinal,
+                            "payload": [text, {"enabled": flag}]
+                        },
+                        "content": [{"type": "text", "text": "opaque child"}]
+                    }]
+                }),
+                _ => serde_json::json!({
+                    "type": "article",
+                    "content": [{
+                        "type": "body",
+                        "content": [{"type": "text", "text": text}]
+                    }]
+                }),
+            };
+            (variant, document)
+        },
     )
-    .prop_map(|content| {
-        serde_json::json!({
-            "type": "doc",
-            "content": content
-        })
-    })
 }
 
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config {
+#[test]
+fn bounded_valid_documents_round_trip_with_a_fixed_structural_corpus() {
+    use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+    use std::cell::Cell;
+
+    let config = Config {
         cases: 256,
         max_shrink_iters: 4_096,
-        ..proptest::test_runner::Config::default()
-    })]
-    #[test]
-    fn bounded_valid_documents_round_trip(document in arb_document()) {
-        let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
-        engine
-            .import_json(&document.to_string(), TransactionOrigin::DocumentImport)
-            .unwrap();
-        let first = engine.document_json().unwrap();
-        engine
-            .import_json(&first.to_string(), TransactionOrigin::DocumentImport)
-            .unwrap();
-        proptest::prop_assert_eq!(engine.document_json().unwrap(), first);
-    }
+        failure_persistence: None,
+        ..Config::default()
+    };
+    let rng = TestRng::from_seed(RngAlgorithm::ChaCha, &[0x59; 32]);
+    let mut runner = TestRunner::new_with_rng(config, rng);
+    let seen: [Cell<bool>; 7] = std::array::from_fn(|_| Cell::new(false));
+
+    runner
+        .run(&arb_document(), |(variant, document)| {
+            seen[usize::from(variant)].set(true);
+            let schema = match variant {
+                2 => extended_schema(),
+                6 => custom_root_schema(),
+                _ => tiptap_schema(),
+            };
+            let mut engine = YrsDocumentEngine::new(local_config(schema)).unwrap();
+            engine
+                .import_json(&document.to_string(), TransactionOrigin::DocumentImport)
+                .unwrap();
+            let first = engine.document_json().unwrap();
+            engine
+                .import_json(&first.to_string(), TransactionOrigin::DocumentImport)
+                .unwrap();
+            proptest::prop_assert_eq!(engine.document_json().unwrap(), first);
+            Ok(())
+        })
+        .unwrap();
+
+    assert!(
+        seen.iter().all(Cell::get),
+        "fixed corpus must cover all seven structural variants"
+    );
 }
 
 #[derive(Debug, PartialEq)]

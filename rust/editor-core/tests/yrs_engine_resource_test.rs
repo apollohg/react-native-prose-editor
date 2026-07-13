@@ -5,7 +5,7 @@ use editor_core::yrs_engine::{
     DocumentScope, InitializationMode, TransactionOrigin, YrsDocumentEngine, YrsEngineConfig,
 };
 use yrs::encoding::read::Read;
-use yrs::types::xml::{XmlElementPrelim, XmlFragment};
+use yrs::types::xml::{Xml, XmlElementPrelim, XmlFragment};
 use yrs::updates::decoder::{Decoder, DecoderV1};
 use yrs::{Doc, ReadTxn, StateVector, Transact, WriteTxn};
 
@@ -432,11 +432,105 @@ fn malformed_update_v1_seed_corpus_never_unwinds_and_is_fully_atomic() {
         assert_eq!(error.code, "COLLABORATION_DECODE_FAILED", "{name}");
         assert_eq!(error.limit, None, "{name}");
         assert_eq!(error.actual, None, "{name}");
+        let details = error.details.as_ref().expect("preflight details");
+        assert_eq!(details["field"], "encodedState", "{name}");
+        assert_eq!(details["phase"], "updatePreflight", "{name}");
+        assert_eq!(audit(&engine), before, "{name}");
+    }
+}
+
+#[test]
+fn structural_preflight_rejections_are_structured_and_atomic() {
+    let seeds = [
+        ("array", vec![1, 1, 1, 0, 8, 1, 0, 1, 117, 127]),
+        ("map", vec![1, 1, 1, 0, 8, 1, 0, 1, 118, 127]),
+        ("item-count", vec![1, 1, 1, 0, 8, 1, 0, 127]),
+        ("delete-ranges", vec![0, 1, 1, 127]),
+    ];
+    for (name, encoded_state) in seeds {
+        let mut engine = engine_with_limits(ResourceLimits::default());
+        let before = audit(&engine);
+        let mut snapshot = engine.export_snapshot().unwrap();
+        snapshot.encoded_state = encoded_state;
+
+        let error = engine.restore_snapshot(&snapshot).unwrap_err();
+
+        assert_eq!(error.code, "COLLABORATION_DECODE_FAILED", "{name}");
         assert_eq!(
             error.details,
-            Some(serde_json::json!({ "field": "encodedState" })),
+            Some(serde_json::json!({
+                "field": "encodedState",
+                "phase": "updatePreflight",
+                "reason": "declaredLength"
+            })),
             "{name}"
         );
         assert_eq!(audit(&engine), before, "{name}");
     }
+
+    let mut nested_any = vec![1, 1, 1, 0, 8, 1, 0, 1];
+    for _ in 0..8 {
+        nested_any.extend_from_slice(&[117, 1]);
+    }
+    nested_any.extend_from_slice(&[126, 0]);
+    let mut engine = engine_with_limits(ResourceLimits {
+        max_document_depth: 8,
+        ..ResourceLimits::default()
+    });
+    let before = audit(&engine);
+    let mut snapshot = engine.export_snapshot().unwrap();
+    snapshot.encoded_state = nested_any;
+
+    let error = engine.restore_snapshot(&snapshot).unwrap_err();
+
+    assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(error.limit, Some(8));
+    assert_eq!(error.actual, Some(9));
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
+fn snapshot_any_materialization_output_limit_is_structured_and_atomic() {
+    let limits = ResourceLimits {
+        max_input_bytes: 70,
+        ..ResourceLimits::default()
+    };
+    let mut engine = YrsDocumentEngine::new(YrsEngineConfig {
+        schema: tiptap_schema(),
+        fragment_name: "p".into(),
+        initialization_mode: InitializationMode::LocalEmpty,
+        resource_limits: limits,
+        scope: Some(DocumentScope {
+            document_id: "d".into(),
+            lineage_id: "l".into(),
+        }),
+    })
+    .unwrap();
+    let hostile = Doc::new();
+    {
+        let mut txn = hostile.transact_mut();
+        let fragment = txn.get_or_insert_xml_fragment("p");
+        let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+        paragraph.insert_attribute(&mut txn, "payload", "x".repeat(100));
+    }
+    let before = audit(&engine);
+    let mut snapshot = engine.export_snapshot().unwrap();
+    snapshot.encoded_state = hostile
+        .transact()
+        .encode_state_as_update_v1(&StateVector::default());
+
+    let error = engine.restore_snapshot(&snapshot).unwrap_err();
+
+    assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(error.limit, Some(70));
+    assert!(error.actual.is_some_and(|actual| actual > 70));
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({
+            "field": "encodedState",
+            "phase": "candidateMaterialization",
+            "dimension": "outputBytes"
+        }))
+    );
+    assert_eq!(audit(&engine), before);
 }

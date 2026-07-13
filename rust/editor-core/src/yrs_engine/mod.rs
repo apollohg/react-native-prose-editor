@@ -3,6 +3,7 @@ mod engine;
 mod error;
 mod origin;
 mod snapshot;
+mod update_preflight;
 
 pub(crate) use codec::YrsDocumentCodec;
 pub use engine::{EngineCommit, InitializationMode, YrsDocumentEngine, YrsEngineConfig};
