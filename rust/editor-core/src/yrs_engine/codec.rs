@@ -30,7 +30,30 @@ impl<'a> YrsDocumentCodec<'a> {
         fragment: &XmlFragmentRef,
         txn: &T,
     ) -> YrsEngineResult<serde_json::Value> {
-        let mut budget = ConversionBudget::new(self.limits);
+        self.read_json_with_budget(fragment, txn, ConversionBudget::new(self.limits))
+    }
+
+    pub(crate) fn read_json_from_validated_source<T: ReadTxn>(
+        &self,
+        fragment: &XmlFragmentRef,
+        txn: &T,
+    ) -> YrsEngineResult<serde_json::Value> {
+        // This document was generated locally from the validated source. Keep
+        // traversal and Any work bounds, while avoiding a redundant output-size
+        // scan that untrusted snapshot materialization still performs below.
+        self.read_json_with_budget(
+            fragment,
+            txn,
+            ConversionBudget::for_validated_source(self.limits),
+        )
+    }
+
+    fn read_json_with_budget<T: ReadTxn>(
+        &self,
+        fragment: &XmlFragmentRef,
+        txn: &T,
+        mut budget: ConversionBudget<'_>,
+    ) -> YrsEngineResult<serde_json::Value> {
         budget.admit_node(1)?;
         let mut content = Vec::new();
         for child in fragment.children(txn) {
@@ -71,6 +94,7 @@ struct ConversionBudget<'a> {
     nodes: usize,
     any_work: usize,
     output_bytes: usize,
+    charge_output: bool,
 }
 
 impl<'a> ConversionBudget<'a> {
@@ -80,6 +104,14 @@ impl<'a> ConversionBudget<'a> {
             nodes: 0,
             any_work: 0,
             output_bytes: 0,
+            charge_output: true,
+        }
+    }
+
+    fn for_validated_source(limits: &'a ResourceLimits) -> Self {
+        Self {
+            charge_output: false,
+            ..Self::new(limits)
         }
     }
 
@@ -133,6 +165,9 @@ impl<'a> ConversionBudget<'a> {
     }
 
     fn charge_output(&mut self, bytes: usize) -> YrsEngineResult<()> {
+        if !self.charge_output {
+            return Ok(());
+        }
         self.output_bytes = self.output_bytes.saturating_add(bytes);
         if self.output_bytes > self.limits.max_input_bytes {
             return Err(YrsEngineError::limit(
@@ -146,6 +181,13 @@ impl<'a> ConversionBudget<'a> {
             })));
         }
         Ok(())
+    }
+
+    fn charge_computed_output(&mut self, bytes: impl FnOnce() -> usize) -> YrsEngineResult<()> {
+        if !self.charge_output {
+            return Ok(());
+        }
+        self.charge_output(bytes())
     }
 }
 
@@ -662,16 +704,17 @@ fn any_to_json(
         }
         Any::Number(value) => {
             let number = serde_json::Number::from_f64(*value);
-            let bytes = number.as_ref().map_or(4, |number| number.to_string().len());
-            budget.charge_output(bytes)?;
+            budget.charge_computed_output(|| {
+                number.as_ref().map_or(4, |number| number.to_string().len())
+            })?;
             Ok(number.map(Value::Number).unwrap_or(Value::Null))
         }
         Any::BigInt(value) => {
-            budget.charge_output(value.to_string().len())?;
+            budget.charge_computed_output(|| value.to_string().len())?;
             Ok(Value::Number((*value).into()))
         }
         Any::String(value) => {
-            budget.charge_output(json_string_len(value))?;
+            budget.charge_computed_output(|| json_string_len(value))?;
             Ok(Value::String(value.to_string()))
         }
         Any::Buffer(value) => {
@@ -696,7 +739,7 @@ fn any_to_json(
             budget.charge_output(2usize.saturating_add(values.len().saturating_sub(1)))?;
             let mut output = Map::new();
             for (key, value) in values.iter() {
-                budget.charge_output(json_string_len(key).saturating_add(1))?;
+                budget.charge_computed_output(|| json_string_len(key).saturating_add(1))?;
                 output.insert(key.to_string(), any_to_json(value, budget, depth + 1)?);
             }
             Ok(Value::Object(output))

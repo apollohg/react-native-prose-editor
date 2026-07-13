@@ -442,8 +442,10 @@ impl YrsDocumentEngine {
             "type": self.schema.doc_node_type(),
             "content": [],
         });
-        let durable_state = self.doc.transact().state_vector();
-        let doc = fresh_utf16_doc_excluding(&durable_state, self.client_id());
+        // JSON/HTML replacement starts from a new, empty durable state. The live
+        // client remains excluded explicitly; snapshot restoration supplies its
+        // decoded durable state vector to the same constructor below.
+        let doc = fresh_utf16_doc_excluding(&StateVector::default(), self.client_id());
         let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
         {
             let mut txn = doc.transact_mut_with(origin.as_yrs_origin());
@@ -456,7 +458,7 @@ impl YrsDocumentEngine {
             let fragment = txn
                 .get_xml_fragment(self.fragment_name.as_str())
                 .ok_or_else(candidate_invariant_error)?;
-            codec.read_json(&fragment, &txn)?
+            codec.read_json_from_validated_source(&fragment, &txn)?
         };
         let derived_document = from_prosemirror_json_with_limits(
             &derived_json,
