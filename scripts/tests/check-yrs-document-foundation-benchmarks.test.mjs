@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
     aggregateBenchmarkSamples,
+    checkBenchmarkRun,
     runBenchmarkSamples,
 } from '../check-yrs-document-foundation-benchmarks.mjs';
 
@@ -69,6 +70,38 @@ test('retains five exact raw samples alongside an independently constructed aggr
         ).p50Ms,
         3
     );
+});
+
+test('writes raw evidence before aggregate gates and preserves it when a gate fails', () => {
+    const benchmarkRun = runBenchmarkSamples(() => benchmark());
+    const events = [];
+    const gateFailure = new Error('aggregate gate failed');
+
+    assert.throws(
+        () =>
+            checkBenchmarkRun(
+                benchmarkRun,
+                benchmark(),
+                (evidence) => events.push(['evidence', evidence]),
+                () => {
+                    events.push(['check']);
+                    throw gateFailure;
+                }
+            ),
+        gateFailure
+    );
+
+    assert.deepEqual(
+        events.map(([event]) => event),
+        ['evidence', 'check']
+    );
+    const evidence = events[0][1];
+    assert.equal(evidence.evidenceType, 'yrs-foundation-five-run-median');
+    assert.equal(evidence.sampleCount, 5);
+    evidence.rawSamples.forEach((sample, index) =>
+        assert.strictEqual(sample, benchmarkRun.samples[index])
+    );
+    assert.strictEqual(evidence.medianAggregate, benchmarkRun.aggregate);
 });
 
 test('an individual threshold failure is not gated when the five-sample median passes', () => {

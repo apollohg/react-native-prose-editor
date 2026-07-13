@@ -244,6 +244,21 @@ function checkBenchmarks(input, baseline) {
     return benchmark.size;
 }
 
+export function checkBenchmarkRun(
+    benchmarkRun,
+    baseline,
+    writeEvidence,
+    checker = checkBenchmarks
+) {
+    writeEvidence({
+        evidenceType: 'yrs-foundation-five-run-median',
+        sampleCount: benchmarkRun.samples.length,
+        rawSamples: benchmarkRun.samples,
+        medianAggregate: benchmarkRun.aggregate,
+    });
+    return checker(benchmarkRun.aggregate, baseline);
+}
+
 function main() {
     try {
         const options = parseArguments(process.argv.slice(2));
@@ -254,17 +269,11 @@ function main() {
         const baseline = options.baselinePath
             ? readJsonFile(options.baselinePath, 'baseline')
             : undefined;
-        const caseCount = checkBenchmarks(input, baseline);
-        if (benchmarkRun) {
-            console.log(
-                JSON.stringify({
-                    evidenceType: 'yrs-foundation-five-run-median',
-                    sampleCount: benchmarkRun.samples.length,
-                    rawSamples: benchmarkRun.samples,
-                    medianAggregate: benchmarkRun.aggregate,
-                })
-            );
-        }
+        const caseCount = benchmarkRun
+            ? checkBenchmarkRun(benchmarkRun, baseline, (evidence) =>
+                  console.log(JSON.stringify(evidence))
+              )
+            : checkBenchmarks(input, baseline);
         console.log(
             options.run
                 ? `${caseCount} benchmark cases from five standard samples aggregated by per-case median passed all Yrs foundation gates`
