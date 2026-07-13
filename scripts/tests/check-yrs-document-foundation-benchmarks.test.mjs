@@ -223,6 +223,50 @@ test('sample runner failures identify the sample and stop later samples', async 
     }
 });
 
+test('validates each sample immediately, stops before sample five, and retains prior evidence', () => {
+    const calls = [];
+    const evidence = [];
+
+    assert.throws(
+        () =>
+            runBenchmarkSamples(
+                (sampleNumber) => {
+                    calls.push(sampleNumber);
+                    return sampleNumber === 4 ? { results: [] } : benchmark();
+                },
+                (sample) => evidence.push(sample)
+            ),
+        /sample 4 is missing required case/
+    );
+
+    assert.deepEqual(calls, [1, 2, 3, 4]);
+    assert.deepEqual(
+        evidence.map(({ sampleNumber }) => sampleNumber),
+        [1, 2, 3]
+    );
+    assert.ok(evidence.every(({ evidenceType }) => evidenceType === 'yrs-foundation-raw-sample'));
+});
+
+test('retains prior raw evidence when a later Cargo sample fails', () => {
+    const evidence = [];
+
+    assert.throws(
+        () =>
+            runBenchmarkSamples(
+                (sampleNumber) => {
+                    if (sampleNumber === 3) throw new Error('Cargo benchmark exited with status 1');
+                    return benchmark();
+                },
+                (sample) => evidence.push(sample)
+            ),
+        /sample 3: Cargo benchmark exited with status 1/
+    );
+    assert.deepEqual(
+        evidence.map(({ sampleNumber }) => sampleNumber),
+        [1, 2]
+    );
+});
+
 test('accepts benchmark results at every exact threshold', () => {
     const input = benchmark({
         'legacy.json_import.article.1x': 0.5,
@@ -329,6 +373,17 @@ test('rejects missing, duplicate, non-finite, and non-positive cases cleanly', a
             assert.doesNotMatch(result.stderr, /at .*\.mjs:\d+/);
         });
     }
+});
+
+test('rejects unexpected extra benchmark cases so all reported cases are gated', () => {
+    const input = benchmark();
+    input.results.push({ name: 'yrs.uncontracted.extra', p50Ms: 1 });
+
+    const result = runChecker(input);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /unexpected benchmark case: yrs\.uncontracted\.extra/);
+    assert.doesNotMatch(result.stdout, /11 benchmark cases passed/);
 });
 
 test('rejects malformed benchmark and baseline JSON cleanly', async (t) => {

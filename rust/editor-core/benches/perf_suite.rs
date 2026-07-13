@@ -13,6 +13,9 @@ use editor_core::yrs_engine::{
 };
 use serde_json::{json, Value};
 
+#[path = "support/benchmark_filter.rs"]
+mod benchmark_filter;
+
 #[derive(Clone, Copy)]
 enum BenchMode {
     Quick,
@@ -91,6 +94,18 @@ struct BenchResult {
     mean_us_per_op: f64,
 }
 
+macro_rules! push_case {
+    (
+        $results:expr,
+        $options:expr,
+        bench_case($name:expr, $group:expr, $($arguments:tt)*),
+    ) => {
+        push_case_lazy($results, $options, $name, $group, || {
+            bench_case($name, $group, $($arguments)*)
+        })
+    };
+}
+
 fn main() {
     let options = parse_options();
     let profile = options.mode.profile();
@@ -115,7 +130,7 @@ fn main() {
 
     let mut results = Vec::new();
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -135,7 +150,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -155,7 +170,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -169,7 +184,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -183,7 +198,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -203,7 +218,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -217,7 +232,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -242,7 +257,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -262,7 +277,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -282,7 +297,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -302,7 +317,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -323,7 +338,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -339,7 +354,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -355,7 +370,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -371,7 +386,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -387,7 +402,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -411,7 +426,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -439,7 +454,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -465,7 +480,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -490,7 +505,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -515,7 +530,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -538,7 +553,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -563,7 +578,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -588,7 +603,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -613,7 +628,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -638,7 +653,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -669,7 +684,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -700,7 +715,7 @@ fn main() {
         ),
     );
 
-    push_case(
+    push_case!(
         &mut results,
         &options,
         bench_case(
@@ -783,13 +798,18 @@ fn parse_options() -> BenchOptions {
     }
 }
 
-fn push_case(results: &mut Vec<BenchResult>, options: &BenchOptions, result: BenchResult) {
-    if let Some(filter) = options.filter.as_deref() {
-        if !result.name.contains(filter) && !result.group.contains(filter) {
-            return;
-        }
+fn push_case_lazy(
+    results: &mut Vec<BenchResult>,
+    options: &BenchOptions,
+    name: &'static str,
+    group: &'static str,
+    run: impl FnOnce() -> BenchResult,
+) {
+    if let Some(result) =
+        benchmark_filter::run_if_selected(options.filter.as_deref(), name, group, run)
+    {
+        results.push(result);
     }
-    results.push(result);
 }
 
 fn bench_case<S, Setup, Run, Output>(

@@ -112,15 +112,27 @@ function runBenchmarkSample() {
     return parseJson(result.stdout.trim(), 'input');
 }
 
-export function runBenchmarkSamples(sampleRunner = runBenchmarkSample) {
+export function runBenchmarkSamples(sampleRunner = runBenchmarkSample, writeEvidence = () => {}) {
     const samples = [];
     for (let sampleNumber = 1; sampleNumber <= 5; sampleNumber += 1) {
+        let sample;
         try {
-            samples.push(sampleRunner(sampleNumber));
+            sample = sampleRunner(sampleNumber);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             throw new Error(`sample ${sampleNumber}: ${message}`);
         }
+        const label = `sample ${sampleNumber}`;
+        if (!sample || typeof sample !== 'object' || Array.isArray(sample)) {
+            throw new Error(`${label} must be a JSON object`);
+        }
+        indexResults(sample, label);
+        samples.push(sample);
+        writeEvidence({
+            evidenceType: 'yrs-foundation-raw-sample',
+            sampleNumber,
+            rawSample: sample,
+        });
     }
     return {
         samples,
@@ -141,6 +153,9 @@ function indexResults(payload, label) {
         if (typeof result.name !== 'string' || result.name.length === 0) {
             throw new Error(`${label} result at index ${index} must have a non-empty name`);
         }
+        if (!REQUIRED_CASES.includes(result.name)) {
+            throw new Error(`${label} has unexpected benchmark case: ${result.name}`);
+        }
         if (indexed.has(result.name)) {
             throw new Error(`${label} has duplicate benchmark case: ${result.name}`);
         }
@@ -158,6 +173,9 @@ function indexResults(payload, label) {
         if (!indexed.has(name)) {
             throw new Error(`${label} is missing required case: ${name}`);
         }
+    }
+    if (indexed.size !== REQUIRED_CASES.length) {
+        throw new Error(`${label} must contain exactly ${REQUIRED_CASES.length} benchmark cases`);
     }
     return indexed;
 }
@@ -262,7 +280,11 @@ export function checkBenchmarkRun(
 function main() {
     try {
         const options = parseArguments(process.argv.slice(2));
-        const benchmarkRun = options.run ? runBenchmarkSamples() : undefined;
+        const benchmarkRun = options.run
+            ? runBenchmarkSamples(runBenchmarkSample, (evidence) =>
+                  console.log(JSON.stringify(evidence))
+              )
+            : undefined;
         const input = benchmarkRun
             ? benchmarkRun.aggregate
             : readJsonFile(options.inputPath, 'input');
