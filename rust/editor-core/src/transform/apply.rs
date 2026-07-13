@@ -80,9 +80,7 @@ fn apply_insert_text(
     marks: &[Mark],
     schema: &Schema,
 ) -> Result<(Document, StepMap), TransformError> {
-    let resolved = doc
-        .resolve(pos)
-        .map_err(TransformError::OutOfBounds)?;
+    let resolved = doc.resolve(pos).map_err(TransformError::OutOfBounds)?;
     let parent = resolved.parent(doc);
 
     // The parent must be a text block (e.g. paragraph). Check via schema.
@@ -222,12 +220,8 @@ fn apply_delete_range(
         return Ok((doc.clone(), StepMap::empty()));
     }
 
-    let resolved_from = doc
-        .resolve(from)
-        .map_err(TransformError::OutOfBounds)?;
-    let resolved_to = doc
-        .resolve(to)
-        .map_err(TransformError::OutOfBounds)?;
+    let resolved_from = doc.resolve(from).map_err(TransformError::OutOfBounds)?;
+    let resolved_to = doc.resolve(to).map_err(TransformError::OutOfBounds)?;
 
     // If both endpoints are in the same parent, do the simple in-parent delete.
     if resolved_from.node_path == resolved_to.node_path {
@@ -332,12 +326,8 @@ fn apply_add_mark(
         return Ok((doc.clone(), StepMap::empty()));
     }
 
-    let resolved_from = doc
-        .resolve(from)
-        .map_err(TransformError::OutOfBounds)?;
-    let resolved_to = doc
-        .resolve(to)
-        .map_err(TransformError::OutOfBounds)?;
+    let resolved_from = doc.resolve(from).map_err(TransformError::OutOfBounds)?;
+    let resolved_to = doc.resolve(to).map_err(TransformError::OutOfBounds)?;
 
     if resolved_from.node_path != resolved_to.node_path {
         return Err(TransformError::InvalidRange(
@@ -432,12 +422,8 @@ fn apply_remove_mark(
         return Ok((doc.clone(), StepMap::empty()));
     }
 
-    let resolved_from = doc
-        .resolve(from)
-        .map_err(TransformError::OutOfBounds)?;
-    let resolved_to = doc
-        .resolve(to)
-        .map_err(TransformError::OutOfBounds)?;
+    let resolved_from = doc.resolve(from).map_err(TransformError::OutOfBounds)?;
+    let resolved_to = doc.resolve(to).map_err(TransformError::OutOfBounds)?;
 
     if resolved_from.node_path != resolved_to.node_path {
         return Err(TransformError::InvalidRange(
@@ -528,9 +514,7 @@ fn apply_split_block(
     new_attrs: &HashMap<String, serde_json::Value>,
     schema: &Schema,
 ) -> Result<(Document, StepMap), TransformError> {
-    let resolved = doc
-        .resolve(pos)
-        .map_err(TransformError::OutOfBounds)?;
+    let resolved = doc.resolve(pos).map_err(TransformError::OutOfBounds)?;
 
     // The resolved position should be inside a text block (e.g. paragraph).
     // We need to find the text block in the path and determine what to split.
@@ -712,9 +696,7 @@ fn split_children_at(parent: &Node, offset: u32) -> (Vec<Node>, Vec<Node>) {
 // ---------------------------------------------------------------------------
 
 fn apply_join_blocks(doc: &Document, pos: u32) -> Result<(Document, StepMap), TransformError> {
-    let resolved = doc
-        .resolve(pos)
-        .map_err(TransformError::OutOfBounds)?;
+    let resolved = doc.resolve(pos).map_err(TransformError::OutOfBounds)?;
 
     // The position should be at a block boundary in the parent.
     // That means it should resolve to a parent (e.g. doc or list) and the
@@ -951,9 +933,7 @@ fn apply_unwrap_from_list(
     schema: &Schema,
 ) -> Result<(Document, StepMap), TransformError> {
     // Resolve the position to find which list item we're in.
-    let resolved = doc
-        .resolve(pos)
-        .map_err(TransformError::OutOfBounds)?;
+    let resolved = doc.resolve(pos).map_err(TransformError::OutOfBounds)?;
 
     // Walk up the path to find the list item and the list.
     // The node_path gives us indices from root. We need to find a node in the
@@ -1216,9 +1196,7 @@ fn apply_insert_node(
     node: &Node,
     _schema: &Schema,
 ) -> Result<(Document, StepMap), TransformError> {
-    let resolved = doc
-        .resolve(pos)
-        .map_err(TransformError::OutOfBounds)?;
+    let resolved = doc.resolve(pos).map_err(TransformError::OutOfBounds)?;
     let parent = resolved.parent(doc);
 
     // insert_node_in_children handles both block-level (between element
@@ -1239,9 +1217,7 @@ fn apply_update_node_attrs(
     pos: u32,
     attrs: &HashMap<String, serde_json::Value>,
 ) -> Result<(Document, StepMap), TransformError> {
-    let resolved = doc
-        .resolve(pos)
-        .map_err(TransformError::OutOfBounds)?;
+    let resolved = doc.resolve(pos).map_err(TransformError::OutOfBounds)?;
     let parent = resolved.parent(doc);
     let content = parent
         .content()
@@ -1495,9 +1471,7 @@ fn resolve_list_item_context<'a>(
     pos: u32,
     schema: &Schema,
 ) -> Result<ListItemContext<'a>, TransformError> {
-    let resolved = doc
-        .resolve(pos)
-        .map_err(TransformError::OutOfBounds)?;
+    let resolved = doc.resolve(pos).map_err(TransformError::OutOfBounds)?;
     let path = &resolved.node_path;
 
     let mut current_node = doc.root();
@@ -1693,9 +1667,7 @@ fn apply_replace_range(
         )));
     }
 
-    let resolved_from = doc
-        .resolve(from)
-        .map_err(TransformError::OutOfBounds)?;
+    let resolved_from = doc.resolve(from).map_err(TransformError::OutOfBounds)?;
 
     if from == to && content.size() == 0 {
         // No-op: empty range and empty content.
@@ -1704,9 +1676,7 @@ fn apply_replace_range(
 
     // If from != to, resolve `to` and check if same parent.
     if from != to {
-        let resolved_to = doc
-            .resolve(to)
-            .map_err(TransformError::OutOfBounds)?;
+        let resolved_to = doc.resolve(to).map_err(TransformError::OutOfBounds)?;
 
         if resolved_from.node_path != resolved_to.node_path {
             // Cross-parent replace: delete across parents first, then insert.
@@ -2163,7 +2133,10 @@ impl DocumentValidator {
         {
             return Err(BoundaryError::new(
                 "DOCUMENT_INVALID",
-                format!("document root '{}' does not have the doc role", doc.root().node_type()),
+                format!(
+                    "document root '{}' does not have the doc role",
+                    doc.root().node_type()
+                ),
             ));
         }
 
@@ -2171,7 +2144,15 @@ impl DocumentValidator {
             node_count: 0,
             max_depth: 0,
         };
-        validate_node(doc.root(), schema, limits, 1, &mut stats, budget, work_limit)?;
+        validate_node(
+            doc.root(),
+            schema,
+            limits,
+            1,
+            &mut stats,
+            budget,
+            work_limit,
+        )?;
         Ok(stats)
     }
 }
@@ -2205,7 +2186,10 @@ fn validate_node(
 
     if node.is_text() {
         if schema.node(node.node_type()).is_none() {
-            return Err(BoundaryError::new("DOCUMENT_INVALID", "text node is not in the schema"));
+            return Err(BoundaryError::new(
+                "DOCUMENT_INVALID",
+                "text node is not in the schema",
+            ));
         }
         validate_marks(node, schema, budget, work_limit)?;
         return Ok(());
@@ -2264,7 +2248,8 @@ fn validate_node(
             "DOCUMENT_INVALID",
             format!(
                 "node '{}' content [{}] does not match its content expression",
-                node.node_type(), child_types
+                node.node_type(),
+                child_types
             ),
         ));
     }
@@ -2356,7 +2341,10 @@ fn consume_document_work(
 }
 
 fn validate_opaque(node: &Node) -> BoundaryResult<()> {
-    let placement = node.attrs().get("opaque_placement").and_then(|value| value.as_str());
+    let placement = node
+        .attrs()
+        .get("opaque_placement")
+        .and_then(|value| value.as_str());
     if !matches!(placement, Some("block" | "inline")) {
         return Err(BoundaryError::new(
             "DOCUMENT_INVALID",
@@ -2377,9 +2365,8 @@ fn child_matches_group(child: &Node, group: &str, schema: &Schema) -> bool {
             .attrs()
             .get("opaque_placement")
             .and_then(|value| value.as_str());
-        return placement.is_some_and(|placement| {
-            schema.symbol_accepts_opaque_placement(group, placement)
-        });
+        return placement
+            .is_some_and(|placement| schema.symbol_accepts_opaque_placement(group, placement));
     }
     schema.node_matches_symbol(child.node_type(), group)
 }

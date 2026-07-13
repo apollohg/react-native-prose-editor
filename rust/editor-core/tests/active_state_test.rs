@@ -56,7 +56,11 @@ fn code_capability_and_execution_agree_for_mixed_selection() {
     let before = editor.get_json();
 
     assert_eq!(
-        editor.get_current_state().active_state.commands.get("toggleCodeBlock"),
+        editor
+            .get_current_state()
+            .active_state
+            .commands
+            .get("toggleCodeBlock"),
         Some(&false)
     );
     editor.toggle_code_block().unwrap();
@@ -73,14 +77,19 @@ fn task_toggle_requires_declared_checked_attribute() {
             { "name": "paragraph", "content": "inline*", "role": "textBlock", "htmlTag": "p" },
             { "name": "text", "content": "", "group": "inline", "role": "text" }
         ], "marks": []
-    })).unwrap();
+    }))
+    .unwrap();
     let mut editor = Editor::new(schema, InterceptorPipeline::new(), false);
     editor.set_html("<ul><li><p>x</p></li></ul>").unwrap();
     editor.set_selection(Selection::cursor(3));
     let before = editor.get_json();
 
     assert_eq!(
-        editor.get_current_state().active_state.commands.get("toggleTaskItem"),
+        editor
+            .get_current_state()
+            .active_state
+            .commands
+            .get("toggleTaskItem"),
         Some(&false)
     );
     editor.toggle_task_item_checked().unwrap();

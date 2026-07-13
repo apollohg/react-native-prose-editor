@@ -90,25 +90,28 @@ fn walk_children(
             }
             Some(NodeRole::ListItem) => {
                 // ListItem: emit BlockStart with ListContext, walk children, emit BlockEnd
-                let list_context = list_info.as_ref().map(|(list_node_type, ordered, start, total)| {
-                    let index_0based = i as u32;
-                    let index = if *ordered {
-                        *start + index_0based
-                    } else {
-                        index_0based + 1
-                    };
-                    let (kind, checked) = task_list_marker_metadata(list_node_type, child);
-                    ListContext {
-                        ordered: *ordered,
-                        index,
-                        total: *total,
-                        start: *start,
-                        is_first: i == 0,
-                        is_last: i == (*total as usize - 1),
-                        kind,
-                        checked,
-                    }
-                });
+                let list_context =
+                    list_info
+                        .as_ref()
+                        .map(|(list_node_type, ordered, start, total)| {
+                            let index_0based = i as u32;
+                            let index = if *ordered {
+                                *start + index_0based
+                            } else {
+                                index_0based + 1
+                            };
+                            let (kind, checked) = task_list_marker_metadata(list_node_type, child);
+                            ListContext {
+                                ordered: *ordered,
+                                index,
+                                total: *total,
+                                start: *start,
+                                is_first: i == 0,
+                                is_last: i == (*total as usize - 1),
+                                kind,
+                                checked,
+                            }
+                        });
                 elements.push(RenderElement::BlockStart {
                     node_type: child.node_type().to_string(),
                     depth,

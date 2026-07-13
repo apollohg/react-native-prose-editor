@@ -126,8 +126,14 @@ fn json_mark_attrs_receive_schema_defaults() {
     )
     .unwrap();
     let output = editor_core::serialize::to_prosemirror_json(&document, &schema);
-    assert_eq!(output["content"][0]["content"][0]["marks"][0]["attrs"]["target"], "_self");
-    assert_eq!(output["content"][0]["content"][0]["marks"][0]["attrs"]["href"], "/");
+    assert_eq!(
+        output["content"][0]["content"][0]["marks"][0]["attrs"]["target"],
+        "_self"
+    );
+    assert_eq!(
+        output["content"][0]["content"][0]["marks"][0]["attrs"]["href"],
+        "/"
+    );
 }
 
 #[test]
@@ -260,11 +266,21 @@ fn ordered_list_start_is_only_parsed_when_declared() {
             { "name": "paragraph", "content": "inline*", "role": "textBlock", "htmlTag": "p" },
             { "name": "text", "content": "", "group": "inline", "role": "text" }
         ], "marks": []
-    })).unwrap();
+    }))
+    .unwrap();
     let html = "<ol start=\"7\"><li><p>x</p></li></ol>";
     let document = from_html(html, &without_start, &default_opts()).unwrap();
-    assert!(document.root().child(0).unwrap().attrs().get("start").is_none());
-    assert_eq!(to_html(&document, &without_start), "<ol><li><p>x</p></li></ol>");
+    assert!(document
+        .root()
+        .child(0)
+        .unwrap()
+        .attrs()
+        .get("start")
+        .is_none());
+    assert_eq!(
+        to_html(&document, &without_start),
+        "<ol><li><p>x</p></li></ol>"
+    );
 
     let declared = editor_core::tiptap_schema();
     let document = from_html(html, &declared, &default_opts()).unwrap();
@@ -279,7 +295,8 @@ fn non_void_empty_content_node_parses_without_opaque_inference() {
             { "name": "empty", "content": "", "role": "block" },
             { "name": "text", "content": "", "role": "text" }
         ], "marks": []
-    })).unwrap();
+    }))
+    .unwrap();
     let json = serde_json::json!({ "type": "doc", "content": [{ "type": "empty" }] });
 
     let document = from_prosemirror_json(&json, &schema, UnknownTypeMode::Preserve).unwrap();

@@ -739,9 +739,7 @@ impl Schema {
                 .collect::<Vec<_>>();
             if parent_spec.content.matches_with_budget(
                 &candidate_types,
-                |child_type, symbol| {
-                    self.node_matches_symbol(child_type, symbol)
-                },
+                |child_type, symbol| self.node_matches_symbol(child_type, symbol),
                 budget,
             )? {
                 result.push(node_spec.name.clone());
@@ -1063,19 +1061,11 @@ fn consume_schema_boundary_work(
     }
 }
 
-fn admit_schema_string(
-    value: &str,
-    budget: &WorkBudget,
-    work_limit: usize,
-) -> BoundaryResult<()> {
+fn admit_schema_string(value: &str, budget: &WorkBudget, work_limit: usize) -> BoundaryResult<()> {
     consume_schema_boundary_work(budget, value.len().saturating_add(1), work_limit)
 }
 
-fn admit_schema_groups(
-    groups: &str,
-    budget: &WorkBudget,
-    work_limit: usize,
-) -> BoundaryResult<()> {
+fn admit_schema_groups(groups: &str, budget: &WorkBudget, work_limit: usize) -> BoundaryResult<()> {
     let mut in_token = false;
     for character in groups.chars() {
         consume_schema_boundary_work(budget, character.len_utf8(), work_limit)?;
@@ -1148,9 +1138,7 @@ fn is_safe_html_tag(tag: &str) -> bool {
 fn is_safe_html_attr(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(ch) if ch.is_ascii_alphabetic() || ch == '_' || ch == ':')
-        && chars.all(|ch| {
-            ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '.' | '-')
-        })
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '.' | '-'))
 }
 
 fn content_rule_schema_error(name: &str, error: ContentRuleError) -> SchemaValidationError {

@@ -127,9 +127,11 @@ pub(crate) fn resolve_in_node(
             if pos >= inner_start && pos <= inner_end {
                 // Position is inside this child element
                 let inner_pos = pos - inner_start;
-                path.push(u32::try_from(child_idx).map_err(|_| {
-                    "DOCUMENT_LIMIT_EXCEEDED: child index exceeds u32".to_string()
-                })?);
+                path.push(
+                    u32::try_from(child_idx).map_err(|_| {
+                        "DOCUMENT_LIMIT_EXCEEDED: child index exceeds u32".to_string()
+                    })?,
+                );
                 return resolve_in_node(child, inner_pos, path);
             }
 

@@ -140,8 +140,8 @@ fn apply_awareness_snapshot(
     target: &Awareness,
     update: Result<AwarenessUpdate, yrs::sync::awareness::Error>,
 ) -> BoundaryResult<()> {
-    let update = update
-        .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
+    let update =
+        update.map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
     target
         .apply_update(update)
         .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))
@@ -421,7 +421,10 @@ impl CollaborationSession {
         peers
     }
 
-    pub fn apply_local_document(&mut self, next_json: Value) -> BoundaryResult<CollaborationResult> {
+    pub fn apply_local_document(
+        &mut self,
+        next_json: Value,
+    ) -> BoundaryResult<CollaborationResult> {
         let previous_peers_revision = self.peers_revision;
         let previous_document_revision = self.document_revision;
         let previous_document_json = self.cached_document_json.clone();
@@ -447,7 +450,10 @@ impl CollaborationSession {
         candidate.refresh_cached_peers();
         candidate.validate_cached_document()?;
         candidate.validate_encoded_state_size()?;
-        let update = candidate.doc.transact().encode_diff_v1(&previous_state_vector);
+        let update = candidate
+            .doc
+            .transact()
+            .encode_diff_v1(&previous_state_vector);
         let messages = if update.is_empty() {
             Vec::new()
         } else {
@@ -1512,17 +1518,19 @@ mod tests {
         );
         let peer = Awareness::new(Doc::with_client_id(2));
 
-        let result = session.apply_local_document(json!({
-            "type": "doc",
-            "content": [{
-                "type": "h2",
+        let result = session
+            .apply_local_document(json!({
+                "type": "doc",
                 "content": [{
-                    "type": "text",
-                    "text": "Heading",
-                    "marks": [{ "type": "bold" }]
+                    "type": "h2",
+                    "content": [{
+                        "type": "text",
+                        "text": "Heading",
+                        "marks": [{ "type": "bold" }]
+                    }]
                 }]
-            }]
-        })).unwrap();
+            }))
+            .unwrap();
         let _ = apply_messages_to_peer(&peer, result.messages);
 
         let txn = peer.doc().transact();
@@ -1693,15 +1701,17 @@ mod tests {
         let mut session = CollaborationSession::new(r#"{"clientId":1}"#);
         let peer = Awareness::new(Doc::with_client_id(2));
 
-        let session_awareness = session.set_local_awareness(json!({
-            "user": {
-                "name": "Session"
-            },
-            "selection": {
-                "anchor": 2,
-                "head": 4
-            }
-        })).unwrap();
+        let session_awareness = session
+            .set_local_awareness(json!({
+                "user": {
+                    "name": "Session"
+                },
+                "selection": {
+                    "anchor": 2,
+                    "head": 4
+                }
+            }))
+            .unwrap();
         let _ = apply_messages_to_peer(&peer, session_awareness.messages);
 
         let peer_states: HashMap<_, _> = peer
@@ -1748,15 +1758,17 @@ mod tests {
         let mut session = CollaborationSession::new(r#"{"clientId":1}"#);
         let peer = Awareness::new(Doc::with_client_id(2));
 
-        let awareness = session.set_local_awareness(json!({
-            "user": {
-                "name": "Session"
-            },
-            "selection": {
-                "anchor": 2,
-                "head": 4
-            }
-        })).unwrap();
+        let awareness = session
+            .set_local_awareness(json!({
+                "user": {
+                    "name": "Session"
+                },
+                "selection": {
+                    "anchor": 2,
+                    "head": 4
+                }
+            }))
+            .unwrap();
         let _ = apply_messages_to_peer(&peer, awareness.messages);
         let peer_states: HashMap<_, _> = peer
             .iter()
@@ -1791,16 +1803,18 @@ mod tests {
         );
         let peer = Awareness::new(Doc::with_client_id(2));
 
-        let awareness = session.set_local_awareness(json!({
-            "user": {
-                "name": "Session"
-            },
-            "selection": {
-                "anchor": 2,
-                "head": 4
-            },
-            "focused": true
-        })).unwrap();
+        let awareness = session
+            .set_local_awareness(json!({
+                "user": {
+                    "name": "Session"
+                },
+                "selection": {
+                    "anchor": 2,
+                    "head": 4
+                },
+                "focused": true
+            }))
+            .unwrap();
         let _ = apply_messages_to_peer(&peer, awareness.messages);
 
         let peer_states: HashMap<_, _> = peer
@@ -1871,16 +1885,18 @@ mod tests {
             ))))
             .expect("session should accept peer document");
 
-        session.set_local_awareness(json!({
-            "user": {
-                "name": "Session"
-            },
-            "selection": {
-                "anchor": 4,
-                "head": 4
-            },
-            "focused": true
-        })).unwrap();
+        session
+            .set_local_awareness(json!({
+                "user": {
+                    "name": "Session"
+                },
+                "selection": {
+                    "anchor": 4,
+                    "head": 4
+                },
+                "focused": true
+            }))
+            .unwrap();
 
         let remote_insert_update = {
             let mut txn = peer.doc_mut().transact_mut();
@@ -1945,16 +1961,18 @@ mod tests {
             .to_string(),
         );
 
-        session.set_local_awareness(json!({
-            "user": {
-                "name": "Session"
-            },
-            "selection": {
-                "anchor": 5,
-                "head": 5
-            },
-            "focused": true
-        })).unwrap();
+        session
+            .set_local_awareness(json!({
+                "user": {
+                    "name": "Session"
+                },
+                "selection": {
+                    "anchor": 5,
+                    "head": 5
+                },
+                "focused": true
+            }))
+            .unwrap();
 
         let result = session.apply_local_document(json!({
             "type": "doc",
@@ -2976,10 +2994,12 @@ mod tests {
         let accepted_encoded = session.encoded_state();
         let accepted_peers = session.peers();
 
-        let error = session.apply_local_document(json!({
-            "type": "doc",
-            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "😀x" }] }]
-        })).unwrap_err();
+        let error = session
+            .apply_local_document(json!({
+                "type": "doc",
+                "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "😀x" }] }]
+            }))
+            .unwrap_err();
         assert_eq!(error.code(), "MAX_LENGTH_EXCEEDED");
         assert_ne!(accepted_json, before_json);
         assert_ne!(accepted_encoded, before_encoded);
@@ -2999,17 +3019,27 @@ mod tests {
             r#"{"clientId":1,"resourceLimits":{"maxDocumentDepth":64}}"#,
         )
         .unwrap();
-        deep_source.apply_local_document(json!({ "type": "doc", "content": [deep_child] })).unwrap();
+        deep_source
+            .apply_local_document(json!({ "type": "doc", "content": [deep_child] }))
+            .unwrap();
 
         let wide_content = (0..32)
             .map(|_| json!({ "type": "paragraph" }))
             .collect::<Vec<_>>();
         let mut wide_source = CollaborationSession::try_new(r#"{"clientId":3}"#).unwrap();
-        wide_source.apply_local_document(json!({ "type": "doc", "content": wide_content })).unwrap();
+        wide_source
+            .apply_local_document(json!({ "type": "doc", "content": wide_content }))
+            .unwrap();
 
         for (config, state) in [
-            (r#"{"clientId":2,"resourceLimits":{"maxDocumentDepth":8}}"#, deep_source.encoded_state()),
-            (r#"{"clientId":4,"resourceLimits":{"maxDocumentNodes":10}}"#, wide_source.encoded_state()),
+            (
+                r#"{"clientId":2,"resourceLimits":{"maxDocumentDepth":8}}"#,
+                deep_source.encoded_state(),
+            ),
+            (
+                r#"{"clientId":4,"resourceLimits":{"maxDocumentNodes":10}}"#,
+                wide_source.encoded_state(),
+            ),
         ] {
             let mut target = CollaborationSession::try_new(config).unwrap();
             let before_json = target.document_json();
@@ -3096,11 +3126,9 @@ mod tests {
         assert_eq!(target.local_awareness_state, before_local);
 
         let empty = Awareness::new(Doc::with_client_id(99));
-        let error = apply_awareness_snapshot(
-            &empty,
-            Err(yrs::sync::awareness::Error::ClientNotFound(99)),
-        )
-        .unwrap_err();
+        let error =
+            apply_awareness_snapshot(&empty, Err(yrs::sync::awareness::Error::ClientNotFound(99)))
+                .unwrap_err();
         assert_eq!(error.code(), "COLLABORATION_APPLY_FAILED");
     }
 
@@ -3163,7 +3191,8 @@ mod tests {
         let echo_size = encode_message(Message::Sync(SyncMessage::Update(state.clone()))).len();
 
         for replace in [false, true] {
-            let mut session = session_with_local_and_remote_awareness(if replace { 32 } else { 33 });
+            let mut session =
+                session_with_local_and_remote_awareness(if replace { 32 } else { 33 });
             session.resource_limits.max_collaboration_message_bytes = echo_size - 1;
             assert!(state.len() <= session.resource_limits.max_encoded_state_bytes);
             let before = complete_snapshot(&session);

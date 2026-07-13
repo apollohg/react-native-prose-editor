@@ -22,7 +22,10 @@ pub enum ParseError {
     UnknownTag(String),
     /// The parsed content does not satisfy the schema's content rules.
     InvalidContent(String),
-    ResourceLimit { limit: usize, actual: usize },
+    ResourceLimit {
+        limit: usize,
+        actual: usize,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -69,21 +72,13 @@ fn tag_to_mark_type(tag: &str) -> Option<&'static str> {
     }
 }
 
-fn mark_from_element(
-    tag: &str,
-    elem: &scraper::node::Element,
-    schema: &Schema,
-) -> Option<Mark> {
+fn mark_from_element(tag: &str, elem: &scraper::node::Element, schema: &Schema) -> Option<Mark> {
     let mark_type = (tag == "span")
         .then(|| element_attr(elem, "data-native-editor-mark"))
         .flatten()
         .filter(|name| schema.mark(name).is_some())
         .or_else(|| tag_to_mark_type(tag).filter(|name| schema.mark(name).is_some()))
-        .or_else(|| {
-            schema
-                .mark_by_html_tag(tag)
-                .map(|spec| spec.name.as_str())
-        })?;
+        .or_else(|| schema.mark_by_html_tag(tag).map(|spec| spec.name.as_str()))?;
     let spec = schema.mark(mark_type)?;
     let mut attrs = HashMap::new();
     for (name, attr_spec) in &spec.attrs {
@@ -110,13 +105,15 @@ fn is_void_html_element(tag: &str) -> bool {
 }
 
 fn element_attr<'a>(elem: &'a scraper::node::Element, key: &str) -> Option<&'a str> {
-    elem.attrs().find_map(|(attr_key, value)| {
-        if attr_key == key {
-            Some(value)
-        } else {
-            None
-        }
-    })
+    elem.attrs().find_map(
+        |(attr_key, value)| {
+            if attr_key == key {
+                Some(value)
+            } else {
+                None
+            }
+        },
+    )
 }
 
 fn is_base64_image_source(src: &str) -> bool {
@@ -139,11 +136,7 @@ fn extract_node_attrs(
     attrs
 }
 
-fn parse_attr_value(
-    key: &str,
-    spec: &crate::schema::AttrSpec,
-    raw: &str,
-) -> serde_json::Value {
+fn parse_attr_value(key: &str, spec: &crate::schema::AttrSpec, raw: &str) -> serde_json::Value {
     if matches!(spec.default.as_ref(), Some(serde_json::Value::Bool(_))) || key == "checked" {
         let normalized = raw.trim().to_ascii_lowercase();
         if normalized.is_empty() || normalized == "checked" || normalized == "true" {
@@ -631,9 +624,7 @@ fn collect_list_items(
 ) -> Result<Vec<Node>, ParseError> {
     let mut items = Vec::new();
     let list_item_name = schema.list_item_type_for(&list_spec.name);
-    let fallback_list_item = || {
-        schema.fallback_list_item_type().map(str::to_string)
-    };
+    let fallback_list_item = || schema.fallback_list_item_type().map(str::to_string);
 
     for child in list_ref.children() {
         let val: &scraper::Node = child.value();

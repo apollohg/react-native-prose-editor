@@ -146,7 +146,10 @@ fn failed_replace_preserves_selection_and_stored_marks() {
     assert_eq!(editor.get_selection_state().selection, before_selection);
 
     editor.insert_text(2, "z").unwrap();
-    assert_eq!(editor.get_json()["content"][0]["content"][1]["marks"][0]["type"], "bold");
+    assert_eq!(
+        editor.get_json()["content"][0]["content"][1]["marks"][0]["type"],
+        "bold"
+    );
 }
 
 #[test]

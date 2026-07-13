@@ -581,7 +581,9 @@ impl Editor {
         scalar_anchor: u32,
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.toggle_blockquote())
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.toggle_blockquote()
+        })
     }
 
     /// Toggle a heading level on the current text-block selection.
@@ -624,7 +626,9 @@ impl Editor {
         scalar_head: u32,
         level: u8,
     ) -> Result<EditorUpdate, EditorError> {
-        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.toggle_heading(level))
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.toggle_heading(level)
+        })
     }
 
     /// Toggle the selected text block(s) between `codeBlock` and paragraph.
@@ -645,7 +649,9 @@ impl Editor {
         scalar_anchor: u32,
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.toggle_code_block())
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.toggle_code_block()
+        })
     }
 
     /// Wrap the selected sibling block range in a blockquote container.
@@ -1328,7 +1334,9 @@ impl Editor {
         scalar_head: u32,
         mark_name: &str,
     ) -> Result<EditorUpdate, EditorError> {
-        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.toggle_mark(mark_name))
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.toggle_mark(mark_name)
+        })
     }
 
     /// Set a mark with attrs at an explicit scalar selection supplied by the caller.
@@ -1339,7 +1347,9 @@ impl Editor {
         mark_name: &str,
         attrs: HashMap<String, serde_json::Value>,
     ) -> Result<EditorUpdate, EditorError> {
-        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.set_mark(mark_name, attrs))
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.set_mark(mark_name, attrs)
+        })
     }
 
     /// Remove a mark at an explicit scalar selection supplied by the caller.
@@ -1349,7 +1359,9 @@ impl Editor {
         scalar_head: u32,
         mark_name: &str,
     ) -> Result<EditorUpdate, EditorError> {
-        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.unset_mark(mark_name))
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.unset_mark(mark_name)
+        })
     }
 
     /// Apply a list type at an explicit scalar selection supplied by the caller.
@@ -1359,7 +1371,9 @@ impl Editor {
         scalar_head: u32,
         list_type: &str,
     ) -> Result<EditorUpdate, EditorError> {
-        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.apply_list_type(list_type))
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.apply_list_type(list_type)
+        })
     }
 
     /// Unwrap the list item at an explicit scalar selection supplied by the caller.
@@ -1380,7 +1394,9 @@ impl Editor {
         scalar_anchor: u32,
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.indent_list_item())
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.indent_list_item()
+        })
     }
 
     /// Outdent the list item at an explicit scalar selection supplied by the caller.
@@ -1389,7 +1405,9 @@ impl Editor {
         scalar_anchor: u32,
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| editor.outdent_list_item())
+        self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
+            editor.outdent_list_item()
+        })
     }
 
     /// Toggle the checked state of the task item at an explicit scalar selection.
@@ -1594,12 +1612,9 @@ impl Editor {
         if let Some(limit) = self.max_length {
             let actual = candidate.root().text_content().chars().count();
             if actual > limit as usize {
-                return Err(BoundaryError::limit(
-                    "MAX_LENGTH_EXCEEDED",
-                    limit as usize,
-                    actual,
-                )
-                .into());
+                return Err(
+                    BoundaryError::limit("MAX_LENGTH_EXCEEDED", limit as usize, actual).into(),
+                );
             }
         }
         Ok(())
@@ -2225,11 +2240,7 @@ impl Editor {
             .iter()
             .filter_map(|(name, attr)| attr.default.clone().map(|value| (name.clone(), value)))
             .collect();
-        Some(Node::element(
-            spec.name.clone(),
-            attrs,
-            Fragment::empty(),
-        ))
+        Some(Node::element(spec.name.clone(), attrs, Fragment::empty()))
     }
 
     fn preferred_split_step(
@@ -2293,9 +2304,7 @@ impl Editor {
             let attrs = spec
                 .attrs
                 .iter()
-                .filter_map(|(name, attr)| {
-                    attr.default.clone().map(|value| (name.clone(), value))
-                })
+                .filter_map(|(name, attr)| attr.default.clone().map(|value| (name.clone(), value)))
                 .collect();
             let step = Step::SplitBlock {
                 pos,
@@ -2368,11 +2377,14 @@ impl Editor {
         doc: &Document,
         pos: u32,
     ) -> Result<(Step, Selection), EditorError> {
-        let context = self.empty_blockquote_exit_context_in_document(doc, pos).ok_or_else(|| {
-            EditorError::Transform(TransformError::InvalidTarget(
-                "cannot exit blockquote outside an empty direct blockquote paragraph".to_string(),
-            ))
-        })?;
+        let context = self
+            .empty_blockquote_exit_context_in_document(doc, pos)
+            .ok_or_else(|| {
+                EditorError::Transform(TransformError::InvalidTarget(
+                    "cannot exit blockquote outside an empty direct blockquote paragraph"
+                        .to_string(),
+                ))
+            })?;
 
         let quote_content = context.quote_node.content().ok_or_else(|| {
             EditorError::Transform(TransformError::InvalidTarget(
@@ -2418,11 +2430,14 @@ impl Editor {
             ));
         }
 
-        Ok((Step::ReplaceRange {
-            from: context.replace_from,
-            to: context.replace_to,
-            content: Fragment::from(replacement),
-        }, Selection::cursor(target_cursor_pos.saturating_add(1))))
+        Ok((
+            Step::ReplaceRange {
+                from: context.replace_from,
+                to: context.replace_to,
+                content: Fragment::from(replacement),
+            },
+            Selection::cursor(target_cursor_pos.saturating_add(1)),
+        ))
     }
 
     fn empty_text_block_replace_range_at(&self, pos: u32) -> Option<(u32, u32)> {
@@ -4207,11 +4222,7 @@ impl Editor {
             return;
         };
 
-        let mut child_start = if is_root {
-            start
-        } else {
-            start + 1
-        };
+        let mut child_start = if is_root { start } else { start + 1 };
         for child in content.iter() {
             let child_end = child_start + child.node_size();
             if child_end > from && child_start < to {
@@ -4235,9 +4246,7 @@ fn preferred_text_block_node_names_for_parent(
 ) -> Result<Vec<String>, ()> {
     let accepting_groups = parent_spec.content.accepting_symbols_after_with_budget(
         prefix_child_types,
-        |child_type, symbol| {
-            schema.node_matches_symbol(child_type, symbol)
-        },
+        |child_type, symbol| schema.node_matches_symbol(child_type, symbol),
         budget,
     )?;
     if accepting_groups.is_empty() {
@@ -4269,9 +4278,7 @@ fn preferred_text_block_node_names_for_parent(
             .collect::<Vec<_>>();
         if parent_spec.content.matches_with_budget(
             &candidate_types,
-            |child_type, symbol| {
-                schema.node_matches_symbol(child_type, symbol)
-            },
+            |child_type, symbol| schema.node_matches_symbol(child_type, symbol),
             budget,
         )? {
             candidates.push(spec.name.clone());
@@ -4374,11 +4381,9 @@ impl SelectionOffset {
 
 fn map_json_parse_error(error: serialize::JsonParseError) -> EditorError {
     match error {
-        serialize::JsonParseError::UnknownMark(name) => BoundaryError::new(
-            "UNKNOWN_MARK",
-            format!("unknown mark '{name}'"),
-        )
-        .into(),
+        serialize::JsonParseError::UnknownMark(name) => {
+            BoundaryError::new("UNKNOWN_MARK", format!("unknown mark '{name}'")).into()
+        }
         serialize::JsonParseError::ResourceLimit { limit, actual } => {
             BoundaryError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, actual).into()
         }

@@ -109,10 +109,7 @@ fn collaboration_creation_and_missing_sessions_return_structured_errors() {
         editor_core::collaboration_session_get_peers_json(u64::MAX),
         editor_core::collaboration_session_start(u64::MAX),
         editor_core::collaboration_session_clear_local_awareness(u64::MAX),
-        editor_core::collaboration_session_apply_local_document_json(
-            u64::MAX,
-            "{}".to_string(),
-        ),
+        editor_core::collaboration_session_apply_local_document_json(u64::MAX, "{}".to_string()),
         editor_core::collaboration_session_apply_encoded_state(u64::MAX, "[]".to_string()),
         editor_core::collaboration_session_replace_encoded_state(u64::MAX, "[]".to_string()),
         editor_core::collaboration_session_handle_message(u64::MAX, "[]".to_string()),
@@ -543,7 +540,10 @@ fn split_uses_schema_preferred_constructible_text_block() {
     editor.set_html("<section>ab</section>").unwrap();
 
     editor.split_block_scalar(1).unwrap();
-    assert_eq!(editor.get_html(), "<section>a</section><section>b</section>");
+    assert_eq!(
+        editor.get_html(),
+        "<section>a</section><section>b</section>"
+    );
 }
 
 #[test]
@@ -587,7 +587,10 @@ fn split_skips_preferred_text_blocks_that_reject_the_split_content() {
     editor.set_html("<section>ab</section>").unwrap();
 
     editor.split_block_scalar(1).unwrap();
-    assert_eq!(editor.get_html(), "<section>a</section><section>b</section>");
+    assert_eq!(
+        editor.get_html(),
+        "<section>a</section><section>b</section>"
+    );
 }
 
 #[test]
@@ -606,7 +609,9 @@ fn delete_and_split_success_is_one_undoable_transaction() {
 
     editor.delete_and_split_scalar(0, 1).unwrap();
     assert_eq!(editor.get_html(), "<section></section><section>b</section>");
-    editor.undo().expect("one undo restores both deletion and split");
+    editor
+        .undo()
+        .expect("one undo restores both deletion and split");
     assert_eq!(editor.get_html(), "<section>ab</section>");
     assert!(!editor.can_undo());
 }
@@ -657,7 +662,9 @@ fn configured_doc_root_must_be_an_element_not_a_void_node() {
 
 #[test]
 fn document_content_matching_uses_one_resolved_work_budget() {
-    let alternatives = std::iter::repeat_n("paragraph", 400).collect::<Vec<_>>().join("|");
+    let alternatives = std::iter::repeat_n("paragraph", 400)
+        .collect::<Vec<_>>()
+        .join("|");
     let limits = ResourceLimits {
         max_document_nodes: 4,
         ..ResourceLimits::default()

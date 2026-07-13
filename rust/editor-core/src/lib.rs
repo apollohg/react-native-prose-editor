@@ -202,11 +202,9 @@ pub fn collaboration_session_get_peers_json(id: u64) -> String {
 /// Start the sync handshake for a collaboration session.
 #[uniffi::export]
 pub fn collaboration_session_start(id: u64) -> String {
-    with_collaboration_session(id, |session| {
-        match session.start() {
-            Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
-            Err(error) => error_envelope(&error),
-        }
+    with_collaboration_session(id, |session| match session.start() {
+        Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
+        Err(error) => error_envelope(&error),
     })
     .unwrap_or_else(collaboration_session_not_found)
 }
@@ -344,11 +342,9 @@ pub fn collaboration_session_set_local_awareness(id: u64, awareness_json: String
 /// Clear the local awareness payload for a collaboration session.
 #[uniffi::export]
 pub fn collaboration_session_clear_local_awareness(id: u64) -> String {
-    with_collaboration_session(id, |session| {
-        match session.clear_local_awareness() {
-            Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
-            Err(error) => error_envelope(&error),
-        }
+    with_collaboration_session(id, |session| match session.clear_local_awareness() {
+        Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()),
+        Err(error) => error_envelope(&error),
     })
     .unwrap_or_else(collaboration_session_not_found)
 }
