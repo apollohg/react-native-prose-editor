@@ -4,8 +4,12 @@ use editor_core::tiptap_schema;
 use editor_core::yrs_engine::{
     DocumentScope, InitializationMode, TransactionOrigin, YrsDocumentEngine, YrsEngineConfig,
 };
+use yrs::encoding::read::Read;
 use yrs::types::xml::{XmlElementPrelim, XmlFragment};
+use yrs::updates::decoder::{Decoder, DecoderV1};
 use yrs::{Doc, ReadTxn, StateVector, Transact, WriteTxn};
+
+const SMALL_DECLARED_LENGTH_BOMB: &[u8] = &[1, 1, 1, 0, 3, 1, 0, 0x7f];
 
 #[derive(Debug, PartialEq)]
 struct EngineAudit {
@@ -304,21 +308,47 @@ fn hostile_wide_deep_and_large_opaque_documents_are_rejected_atomically() {
         }]
     })
     .to_string();
-    let mut opaque_engine = engine_with_limits(ResourceLimits {
-        max_input_bytes: opaque.len() - 1,
+    let limits = ResourceLimits {
+        max_encoded_state_bytes: 1,
         ..ResourceLimits::default()
-    });
+    };
+    assert!(opaque.len() < limits.max_input_bytes);
+    let mut opaque_engine = YrsDocumentEngine::new(config(
+        tiptap_schema(),
+        limits,
+        InitializationMode::AwaitRemote,
+    ))
+    .unwrap();
     let before = audit(&opaque_engine);
     let error = opaque_engine
         .import_json(&opaque, TransactionOrigin::DocumentImport)
         .unwrap_err();
-    assert_limit_error(
-        &error,
-        "INPUT_LIMIT_EXCEEDED",
-        opaque.len() - 1,
-        opaque.len(),
+    assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(error.limit, Some(1));
+    assert!(error.actual.is_some_and(|actual| actual > 1));
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({ "phase": "candidateDerivation" }))
     );
     assert_eq!(audit(&opaque_engine), before);
+}
+
+#[test]
+fn declared_length_bomb_reaches_binary_payload_length() {
+    let mut decoder = DecoderV1::from(SMALL_DECLARED_LENGTH_BOMB);
+
+    assert_eq!(decoder.read_var::<u32>().unwrap(), 1, "client count");
+    assert_eq!(decoder.read_var::<u32>().unwrap(), 1, "block count");
+    assert_eq!(decoder.read_client().unwrap(), 1, "client ID");
+    assert_eq!(decoder.read_var::<u32>().unwrap(), 0, "client clock");
+    assert_eq!(decoder.read_info().unwrap(), 3, "binary content tag");
+    assert!(decoder.read_parent_info().unwrap(), "named parent");
+    assert_eq!(decoder.read_string().unwrap(), "", "empty parent name");
+    assert_eq!(decoder.read_len().unwrap(), 127, "declared binary length");
+    assert!(
+        decoder.read_exact(127).is_err(),
+        "binary payload is truncated"
+    );
 }
 
 #[test]
@@ -336,11 +366,18 @@ fn malformed_update_v1_seed_corpus_never_unwinds_and_is_fully_atomic() {
             "invalid-client-clock",
             &[1, 1, 1, 0xff, 0xff, 0xff, 0xff, 0x7f],
         ),
-        ("small-declared-length-bomb", &[1, 1, 1, 0, 0x7f]),
+        ("small-declared-length-bomb", SMALL_DECLARED_LENGTH_BOMB),
         ("truncated-delete-set", &[0, 1, 1]),
     ];
 
-    for (name, encoded_state) in seeds {
+    assert_eq!(seeds.len(), 6);
+    for (index, (name, encoded_state)) in seeds.iter().enumerate() {
+        assert!(
+            seeds[..index]
+                .iter()
+                .all(|(prior_name, prior_seed)| prior_name != name && prior_seed != encoded_state),
+            "{name}: malformed seed names and bytes must be distinct"
+        );
         let mut engine = engine_with_limits(ResourceLimits::default());
         let before = audit(&engine);
         let mut snapshot = engine.export_snapshot().unwrap();
