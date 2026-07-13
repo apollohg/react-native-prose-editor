@@ -1,4 +1,6 @@
 use serde_json::json;
+use yrs::updates::decoder::Decode;
+use yrs::Update;
 use yrs::{Doc, OffsetKind, Options, ReadTxn, StateVector, Transact, WriteTxn};
 
 use crate::boundary::{BoundedInput, InputKind, ResourceLimits};
@@ -10,7 +12,10 @@ use crate::serialize::{
 };
 use crate::transform::DocumentValidator;
 
-use super::{DocumentScope, TransactionOrigin, YrsDocumentCodec, YrsEngineError, YrsEngineResult};
+use super::{
+    DocumentScope, DocumentSnapshot, TransactionOrigin, YrsDocumentCodec, YrsEngineError,
+    YrsEngineResult, SNAPSHOT_FORMAT_VERSION,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitializationMode {
@@ -143,6 +148,198 @@ impl YrsDocumentEngine {
 
     pub fn resource_limits(&self) -> &ResourceLimits {
         &self.resource_limits
+    }
+
+    pub fn export_snapshot(&self) -> YrsEngineResult<DocumentSnapshot> {
+        let scope = self.scope.as_ref().ok_or_else(|| {
+            snapshot_error(
+                "SNAPSHOT_SCOPE_MISMATCH",
+                "document scope is required to export a snapshot",
+                "documentId",
+            )
+        })?;
+        if !self.is_ready() {
+            return Err(snapshot_error(
+                "DOCUMENT_INVALID",
+                "an awaiting document cannot be exported as a snapshot",
+                "encodedState",
+            ));
+        }
+        let encoded_state =
+            encode_state_bounded(&self.doc, &self.resource_limits).map_err(|error| {
+                YrsEngineError::limit(
+                    "DOCUMENT_LIMIT_EXCEEDED",
+                    error
+                        .limit
+                        .unwrap_or(self.resource_limits.max_encoded_state_bytes),
+                    error
+                        .actual
+                        .unwrap_or(self.resource_limits.max_encoded_state_bytes),
+                )
+                .with_details(json!({ "field": "encodedState" }))
+            })?;
+
+        Ok(DocumentSnapshot {
+            format_version: SNAPSHOT_FORMAT_VERSION,
+            document_id: scope.document_id.clone(),
+            lineage_id: scope.lineage_id.clone(),
+            fragment_name: self.fragment_name.clone(),
+            schema_fingerprint: self.schema_fingerprint.clone(),
+            encoded_state,
+        })
+    }
+
+    pub fn restore_snapshot(
+        &mut self,
+        snapshot: &DocumentSnapshot,
+    ) -> YrsEngineResult<EngineCommit> {
+        self.validate_snapshot_manifest(snapshot)?;
+
+        let current_state = encode_state_bounded(&self.doc, &self.resource_limits)?;
+        if self.is_ready() && current_state == snapshot.encoded_state {
+            return Ok(EngineCommit {
+                changed: false,
+                revision: self.revision,
+            });
+        }
+
+        let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let update = Update::decode_v1(&snapshot.encoded_state).map_err(|error| {
+                snapshot_parse_error("COLLABORATION_DECODE_FAILED", error, "encodedState")
+            })?;
+            let durable_state = update.state_vector();
+            let candidate_doc = utf16_snapshot_doc(&durable_state, self.client_id());
+            candidate_doc
+                .transact_mut_with(TransactionOrigin::SnapshotRestore.as_yrs_origin())
+                .apply_update(update)
+                .map_err(|error| {
+                    snapshot_parse_error("COLLABORATION_DECODE_FAILED", error, "encodedState")
+                })?;
+            Ok::<Doc, YrsEngineError>(candidate_doc)
+        }));
+        let candidate_doc = match applied {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(snapshot_error(
+                    "COLLABORATION_DECODE_FAILED",
+                    "Yrs rejected the encoded snapshot state",
+                    "encodedState",
+                ))
+            }
+        };
+
+        let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
+        let derived_json = {
+            let txn = candidate_doc.transact();
+            let fragment = txn
+                .get_xml_fragment(self.fragment_name.as_str())
+                .ok_or_else(|| {
+                    snapshot_error(
+                        "CODEC_INVARIANT_FAILED",
+                        "snapshot Yrs fragment is missing",
+                        "fragmentName",
+                    )
+                })?;
+            codec
+                .read_json(&fragment, &txn)
+                .map_err(|error| snapshot_derived_error(error, "encodedState"))?
+        };
+        let derived_document = from_prosemirror_json_with_limits(
+            &derived_json,
+            &self.schema,
+            UnknownTypeMode::Preserve,
+            &self.resource_limits,
+        )
+        .map_err(map_json_import_error)
+        .map_err(|error| snapshot_derived_error(error, "encodedState"))?;
+        let derived_document = rehydrate_reserved_html_opaque(&derived_document);
+        validate_import_document(&derived_document, &self.schema, &self.resource_limits)
+            .map_err(|error| snapshot_derived_error(error, "encodedState"))?;
+        encode_candidate_state_bounded(&candidate_doc, &self.resource_limits)
+            .map_err(|error| snapshot_derived_error(error, "encodedState"))?;
+        let canonical_json = to_prosemirror_json(&derived_document, &self.schema);
+        let candidate = CandidateDocument {
+            doc: candidate_doc,
+            state: EngineDocumentState::Ready {
+                document: derived_document,
+                canonical_json,
+            },
+        };
+
+        self.doc = candidate.doc;
+        self.state = candidate.state;
+        self.revision = self.revision.saturating_add(1);
+        self.last_committed_origin = Some(TransactionOrigin::SnapshotRestore);
+        Ok(EngineCommit {
+            changed: true,
+            revision: self.revision,
+        })
+    }
+
+    fn validate_snapshot_manifest(&self, snapshot: &DocumentSnapshot) -> YrsEngineResult<()> {
+        if snapshot.format_version != SNAPSHOT_FORMAT_VERSION {
+            return Err(snapshot_error(
+                "SNAPSHOT_VERSION_UNSUPPORTED",
+                format!(
+                    "unsupported snapshot format version {}",
+                    snapshot.format_version
+                ),
+                "formatVersion",
+            ));
+        }
+        let scope = self.scope.as_ref().ok_or_else(|| {
+            snapshot_error(
+                "SNAPSHOT_SCOPE_MISMATCH",
+                "document scope is required to restore a snapshot",
+                "documentId",
+            )
+        })?;
+        if snapshot.document_id != scope.document_id {
+            return Err(snapshot_error(
+                "SNAPSHOT_SCOPE_MISMATCH",
+                "snapshot document ID does not match the engine scope",
+                "documentId",
+            ));
+        }
+        if snapshot.lineage_id != scope.lineage_id {
+            return Err(snapshot_error(
+                "SNAPSHOT_LINEAGE_MISMATCH",
+                "snapshot lineage ID does not match the engine scope",
+                "lineageId",
+            ));
+        }
+        if snapshot.fragment_name != self.fragment_name {
+            return Err(snapshot_error(
+                "SNAPSHOT_FRAGMENT_MISMATCH",
+                "snapshot fragment name does not match the engine fragment",
+                "fragmentName",
+            ));
+        }
+        if snapshot.schema_fingerprint != self.schema_fingerprint {
+            return Err(snapshot_error(
+                "SNAPSHOT_SCHEMA_MISMATCH",
+                "snapshot schema fingerprint does not match the engine schema",
+                "schemaFingerprint",
+            ));
+        }
+        let metadata_bytes = snapshot.metadata_byte_len();
+        if metadata_bytes > self.resource_limits.max_input_bytes {
+            return Err(YrsEngineError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.resource_limits.max_input_bytes,
+                metadata_bytes,
+            )
+            .with_details(json!({ "field": "metadata" })));
+        }
+        if snapshot.encoded_state.len() > self.resource_limits.max_encoded_state_bytes {
+            return Err(YrsEngineError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.resource_limits.max_encoded_state_bytes,
+                snapshot.encoded_state.len(),
+            )
+            .with_details(json!({ "field": "encodedState" })));
+        }
+        Ok(())
     }
 
     pub fn import_json(
@@ -281,6 +478,27 @@ impl YrsDocumentEngine {
             revision: self.revision,
         }
     }
+}
+
+fn snapshot_error(
+    code: &'static str,
+    message: impl Into<String>,
+    field: &'static str,
+) -> YrsEngineError {
+    YrsEngineError::new(code, message).with_details(json!({ "field": field }))
+}
+
+fn snapshot_parse_error(
+    code: &'static str,
+    error: impl std::fmt::Display,
+    field: &'static str,
+) -> YrsEngineError {
+    YrsEngineError::parse(code, error).with_details(json!({ "field": field }))
+}
+
+fn snapshot_derived_error(mut error: YrsEngineError, field: &'static str) -> YrsEngineError {
+    error.details = Some(json!({ "field": field }));
+    error
 }
 
 fn normalize_document_mark_order(document: &Document) -> Document {
@@ -503,6 +721,16 @@ fn utf16_doc() -> Doc {
         ..Options::default()
     };
     Doc::with_options(options)
+}
+
+fn utf16_snapshot_doc(durable_state: &StateVector, previous_client_id: u64) -> Doc {
+    loop {
+        let doc = utf16_doc();
+        if doc.client_id() != previous_client_id && !durable_state.contains_client(&doc.client_id())
+        {
+            return doc;
+        }
+    }
 }
 
 fn encode_state_bounded(doc: &Doc, resource_limits: &ResourceLimits) -> YrsEngineResult<Vec<u8>> {

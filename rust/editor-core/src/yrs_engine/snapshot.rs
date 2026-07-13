@@ -18,6 +18,16 @@ pub struct DocumentSnapshot {
     pub encoded_state: Vec<u8>,
 }
 
+impl DocumentSnapshot {
+    pub(crate) fn metadata_byte_len(&self) -> usize {
+        self.document_id
+            .len()
+            .saturating_add(self.lineage_id.len())
+            .saturating_add(self.fragment_name.len())
+            .saturating_add(self.schema_fingerprint.len())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DocumentSnapshot, SNAPSHOT_FORMAT_VERSION};
