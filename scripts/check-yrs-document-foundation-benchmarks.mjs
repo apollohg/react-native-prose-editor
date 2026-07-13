@@ -83,7 +83,7 @@ function readJsonFile(filePath, label) {
     return parseJson(text, label);
 }
 
-function runBenchmarks() {
+function runBenchmarkSample() {
     const cargoArguments = [
         'bench',
         '--manifest-path',
@@ -110,6 +110,19 @@ function runBenchmarks() {
         );
     }
     return parseJson(result.stdout.trim(), 'input');
+}
+
+export function runBenchmarkSamples(sampleRunner = runBenchmarkSample) {
+    const samples = [];
+    for (let sampleNumber = 1; sampleNumber <= 5; sampleNumber += 1) {
+        try {
+            samples.push(sampleRunner(sampleNumber));
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`sample ${sampleNumber}: ${message}`);
+        }
+    }
+    return aggregateBenchmarkSamples(samples);
 }
 
 function indexResults(payload, label) {
@@ -144,6 +157,30 @@ function indexResults(payload, label) {
         }
     }
     return indexed;
+}
+
+export function aggregateBenchmarkSamples(samples) {
+    if (!Array.isArray(samples) || samples.length !== 5) {
+        throw new Error('expected exactly five benchmark samples');
+    }
+
+    const indexedSamples = samples.map((sample, index) => {
+        const label = `sample ${index + 1}`;
+        if (!sample || typeof sample !== 'object' || Array.isArray(sample)) {
+            throw new Error(`${label} must be a JSON object`);
+        }
+        return indexResults(sample, label);
+    });
+
+    return {
+        mode: 'standard',
+        results: REQUIRED_CASES.map((name) => {
+            const sortedValues = indexedSamples
+                .map((sample) => sample.get(name))
+                .sort((left, right) => left - right);
+            return { name, p50Ms: sortedValues[2] };
+        }),
+    };
 }
 
 function formatNumber(value) {
@@ -207,16 +244,24 @@ function checkBenchmarks(input, baseline) {
 function main() {
     try {
         const options = parseArguments(process.argv.slice(2));
-        const input = options.run ? runBenchmarks() : readJsonFile(options.inputPath, 'input');
+        const input = options.run
+            ? runBenchmarkSamples()
+            : readJsonFile(options.inputPath, 'input');
         const baseline = options.baselinePath
             ? readJsonFile(options.baselinePath, 'baseline')
             : undefined;
         const caseCount = checkBenchmarks(input, baseline);
-        console.log(`${caseCount} benchmark cases passed all Yrs foundation gates`);
+        console.log(
+            options.run
+                ? `${caseCount} benchmark cases from five standard samples aggregated by per-case median passed all Yrs foundation gates`
+                : `${caseCount} benchmark cases passed all Yrs foundation gates`
+        );
     } catch (error) {
         console.error(`Yrs foundation benchmark check failed: ${error.message}`);
         process.exitCode = 1;
     }
 }
 
-main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    main();
+}
