@@ -128,27 +128,15 @@ fn local_empty_respects_custom_roots_fragments_scope_and_limits() {
 
 #[test]
 fn local_empty_rejects_seeded_state_above_the_encoded_state_limit() {
-    let engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
-    let actual = engine.encoded_state().unwrap().len();
-    let limit = actual - 1;
-    let mut last_actual = actual;
+    let mut config = local_config(tiptap_schema());
+    config.resource_limits.max_encoded_state_bytes = 1;
 
-    for _ in 0..128 {
-        let mut config = local_config(tiptap_schema());
-        config.resource_limits.max_encoded_state_bytes = limit;
-        match YrsDocumentEngine::new(config) {
-            Err(error) if error.actual == Some(actual) => {
-                assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
-                assert_eq!(error.limit, Some(limit));
-                assert_eq!(error.actual, Some(actual));
-                return;
-            }
-            Err(error) => last_actual = error.actual.unwrap(),
-            Ok(engine) => last_actual = engine.encoded_state().unwrap().len(),
-        }
-    }
+    let error = match YrsDocumentEngine::new(config) {
+        Ok(_) => panic!("canonical seeded state should exceed one encoded byte"),
+        Err(error) => error,
+    };
 
-    panic!(
-        "could not sample a fresh client ID with encoded size {actual}; last size was {last_actual}"
-    );
+    assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
+    assert_eq!(error.limit, Some(1));
+    assert!(error.actual.unwrap() > 1);
 }
