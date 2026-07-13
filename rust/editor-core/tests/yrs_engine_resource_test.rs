@@ -490,6 +490,36 @@ fn structural_preflight_rejections_are_structured_and_atomic() {
 }
 
 #[test]
+fn json_content_work_rejection_is_structured_and_atomic() {
+    let json = b"[null,null,null]";
+    let mut encoded_state = vec![1, 1, 1, 0, 5, 1, 0, json.len() as u8];
+    encoded_state.extend_from_slice(json);
+    encoded_state.push(0);
+    let mut engine = engine_with_limits(ResourceLimits {
+        max_document_nodes: 5,
+        ..ResourceLimits::default()
+    });
+    let before = audit(&engine);
+    let mut snapshot = engine.export_snapshot().unwrap();
+    snapshot.encoded_state = encoded_state;
+
+    let error = engine.restore_snapshot(&snapshot).unwrap_err();
+
+    assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(error.limit, Some(5));
+    assert_eq!(error.actual, Some(6));
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({
+            "field": "encodedState",
+            "phase": "updatePreflight",
+            "dimension": "work"
+        }))
+    );
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
 fn snapshot_any_materialization_output_limit_is_structured_and_atomic() {
     let limits = ResourceLimits {
         max_input_bytes: 70,

@@ -27,6 +27,7 @@ struct PreflightReader<'a> {
     limits: &'a ResourceLimits,
     work: usize,
     payload: usize,
+    json_string_payload: usize,
 }
 
 impl<'a> PreflightReader<'a> {
@@ -37,6 +38,7 @@ impl<'a> PreflightReader<'a> {
             limits,
             work: 0,
             payload: 0,
+            json_string_payload: 0,
         }
     }
 
@@ -111,12 +113,13 @@ impl<'a> PreflightReader<'a> {
                     .map_err(|_| self.decode_error("stringLength"))
             }
             5 => {
-                self.read_string()?;
+                self.read_json()?;
                 Ok(1)
             }
             6 => {
-                self.read_string()?;
-                self.read_string()?;
+                let key_bytes = self.read_string()?.len();
+                self.charge_json_string_payload(key_bytes)?;
+                self.read_json()?;
                 Ok(1)
             }
             7 => {
@@ -235,6 +238,35 @@ impl<'a> PreflightReader<'a> {
     fn read_string(&mut self) -> YrsEngineResult<&'a str> {
         let bytes = self.read_buffer()?;
         std::str::from_utf8(bytes).map_err(|_| self.decode_error("invalidUtf8"))
+    }
+
+    fn read_json(&mut self) -> YrsEngineResult<()> {
+        let source = self.read_string()?;
+        let scanner = JsonPreflight::new(source, self.limits, self.work, self.json_string_payload);
+        let (work, string_payload) = scanner.scan()?;
+        self.work = work;
+        self.json_string_payload = string_payload;
+        Ok(())
+    }
+
+    fn charge_json_string_payload(&mut self, amount: usize) -> YrsEngineResult<()> {
+        self.json_string_payload = self
+            .json_string_payload
+            .checked_add(amount)
+            .ok_or_else(|| self.decode_error("jsonStringPayloadOverflow"))?;
+        if self.json_string_payload > self.limits.max_input_bytes {
+            return Err(YrsEngineError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.limits.max_input_bytes,
+                self.json_string_payload,
+            )
+            .with_details(json!({
+                "field": "encodedState",
+                "phase": "updatePreflight",
+                "dimension": "jsonStringBytes"
+            })));
+        }
+        Ok(())
     }
 
     fn read_buffer(&mut self) -> YrsEngineResult<&'a [u8]> {
@@ -379,11 +411,330 @@ impl<'a> PreflightReader<'a> {
     }
 }
 
+struct JsonPreflight<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+    limits: &'a ResourceLimits,
+    work: usize,
+    string_payload: usize,
+}
+
+impl<'a> JsonPreflight<'a> {
+    fn new(
+        source: &'a str,
+        limits: &'a ResourceLimits,
+        work: usize,
+        string_payload: usize,
+    ) -> Self {
+        Self {
+            bytes: source.as_bytes(),
+            offset: 0,
+            limits,
+            work,
+            string_payload,
+        }
+    }
+
+    fn scan(mut self) -> YrsEngineResult<(usize, usize)> {
+        self.skip_whitespace();
+        self.read_value(1)?;
+        self.skip_whitespace();
+        if self.offset != self.bytes.len() {
+            return Err(self.invalid_json());
+        }
+        Ok((self.work, self.string_payload))
+    }
+
+    fn read_value(&mut self, depth: usize) -> YrsEngineResult<()> {
+        if depth > self.limits.max_document_depth {
+            return Err(YrsEngineError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.limits.max_document_depth,
+                depth,
+            )
+            .with_details(json!({
+                "field": "encodedState",
+                "phase": "updatePreflight",
+                "dimension": "jsonDepth"
+            })));
+        }
+        self.charge_work(1)?;
+        match self.peek() {
+            Some(b'n') => self.read_literal(b"null"),
+            Some(b't') => self.read_literal(b"true"),
+            Some(b'f') => self.read_literal(b"false"),
+            Some(b'"') => self.read_string(),
+            Some(b'[') => self.read_array(depth),
+            Some(b'{') => self.read_object(depth),
+            Some(b'-' | b'0'..=b'9') => self.read_number(),
+            _ => Err(self.invalid_json()),
+        }
+    }
+
+    fn read_array(&mut self, depth: usize) -> YrsEngineResult<()> {
+        self.offset += 1;
+        self.skip_whitespace();
+        if self.consume(b']') {
+            return Ok(());
+        }
+        loop {
+            self.read_value(depth + 1)?;
+            self.skip_whitespace();
+            if self.consume(b']') {
+                return Ok(());
+            }
+            if !self.consume(b',') {
+                return Err(self.invalid_json());
+            }
+            self.skip_whitespace();
+        }
+    }
+
+    fn read_object(&mut self, depth: usize) -> YrsEngineResult<()> {
+        self.offset += 1;
+        self.skip_whitespace();
+        if self.consume(b'}') {
+            return Ok(());
+        }
+        loop {
+            if self.peek() != Some(b'"') {
+                return Err(self.invalid_json());
+            }
+            self.read_string()?;
+            self.skip_whitespace();
+            if !self.consume(b':') {
+                return Err(self.invalid_json());
+            }
+            self.skip_whitespace();
+            self.read_value(depth + 1)?;
+            self.skip_whitespace();
+            if self.consume(b'}') {
+                return Ok(());
+            }
+            if !self.consume(b',') {
+                return Err(self.invalid_json());
+            }
+            self.skip_whitespace();
+        }
+    }
+
+    fn read_string(&mut self) -> YrsEngineResult<()> {
+        if !self.consume(b'"') {
+            return Err(self.invalid_json());
+        }
+        loop {
+            let byte = self.next().ok_or_else(|| self.invalid_json())?;
+            match byte {
+                b'"' => return Ok(()),
+                0x00..=0x1f => return Err(self.invalid_json()),
+                b'\\' => self.read_escape()?,
+                _ => self.charge_string_payload(1)?,
+            }
+        }
+    }
+
+    fn read_escape(&mut self) -> YrsEngineResult<()> {
+        match self.next().ok_or_else(|| self.invalid_json())? {
+            b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => self.charge_string_payload(1),
+            b'u' => {
+                let first = self.read_hex_quad()?;
+                if (0xd800..=0xdbff).contains(&first) {
+                    if self.next() != Some(b'\\') || self.next() != Some(b'u') {
+                        return Err(self.invalid_json());
+                    }
+                    let second = self.read_hex_quad()?;
+                    if !(0xdc00..=0xdfff).contains(&second) {
+                        return Err(self.invalid_json());
+                    }
+                    self.charge_string_payload(4)
+                } else if (0xdc00..=0xdfff).contains(&first) {
+                    Err(self.invalid_json())
+                } else {
+                    let character =
+                        char::from_u32(u32::from(first)).ok_or_else(|| self.invalid_json())?;
+                    self.charge_string_payload(character.len_utf8())
+                }
+            }
+            _ => Err(self.invalid_json()),
+        }
+    }
+
+    fn read_hex_quad(&mut self) -> YrsEngineResult<u16> {
+        let mut value = 0_u16;
+        for _ in 0..4 {
+            let digit = match self.next() {
+                Some(b'0'..=b'9') => u16::from(self.bytes[self.offset - 1] - b'0'),
+                Some(b'a'..=b'f') => u16::from(self.bytes[self.offset - 1] - b'a' + 10),
+                Some(b'A'..=b'F') => u16::from(self.bytes[self.offset - 1] - b'A' + 10),
+                _ => return Err(self.invalid_json()),
+            };
+            value = (value << 4) | digit;
+        }
+        Ok(value)
+    }
+
+    fn read_number(&mut self) -> YrsEngineResult<()> {
+        let start = self.offset;
+        let negative = self.consume(b'-');
+        match self.peek() {
+            Some(b'0') => {
+                self.offset += 1;
+                if matches!(self.peek(), Some(b'0'..=b'9')) {
+                    return Err(self.invalid_json());
+                }
+            }
+            Some(b'1'..=b'9') => {
+                self.offset += 1;
+                while matches!(self.peek(), Some(b'0'..=b'9')) {
+                    self.offset += 1;
+                }
+            }
+            _ => return Err(self.invalid_json()),
+        }
+
+        let mut fractional = false;
+        if self.consume(b'.') {
+            fractional = true;
+            self.read_digits()?;
+        }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            fractional = true;
+            self.offset += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.offset += 1;
+            }
+            self.read_digits()?;
+        }
+
+        let source = std::str::from_utf8(&self.bytes[start..self.offset])
+            .map_err(|_| self.invalid_json())?;
+        let accepted = if fractional {
+            source.parse::<f64>().is_ok_and(|number| number.is_finite())
+        } else if negative {
+            source.parse::<i64>().is_ok()
+        } else {
+            source
+                .parse::<u64>()
+                .is_ok_and(|number| number <= i64::MAX as u64)
+        };
+        if accepted {
+            Ok(())
+        } else {
+            Err(self.invalid_json())
+        }
+    }
+
+    fn read_digits(&mut self) -> YrsEngineResult<()> {
+        let start = self.offset;
+        while matches!(self.peek(), Some(b'0'..=b'9')) {
+            self.offset += 1;
+        }
+        if self.offset == start {
+            Err(self.invalid_json())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn read_literal(&mut self, literal: &[u8]) -> YrsEngineResult<()> {
+        let end = self
+            .offset
+            .checked_add(literal.len())
+            .ok_or_else(|| self.invalid_json())?;
+        if self.bytes.get(self.offset..end) == Some(literal) {
+            self.offset = end;
+            Ok(())
+        } else {
+            Err(self.invalid_json())
+        }
+    }
+
+    fn charge_work(&mut self, amount: usize) -> YrsEngineResult<()> {
+        self.work = self
+            .work
+            .checked_add(amount)
+            .ok_or_else(|| self.invalid_json())?;
+        if self.work > self.limits.max_document_nodes {
+            return Err(YrsEngineError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.limits.max_document_nodes,
+                self.work,
+            )
+            .with_details(json!({
+                "field": "encodedState",
+                "phase": "updatePreflight",
+                "dimension": "work"
+            })));
+        }
+        Ok(())
+    }
+
+    fn charge_string_payload(&mut self, amount: usize) -> YrsEngineResult<()> {
+        self.string_payload = self
+            .string_payload
+            .checked_add(amount)
+            .ok_or_else(|| self.invalid_json())?;
+        if self.string_payload > self.limits.max_input_bytes {
+            return Err(YrsEngineError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.limits.max_input_bytes,
+                self.string_payload,
+            )
+            .with_details(json!({
+                "field": "encodedState",
+                "phase": "updatePreflight",
+                "dimension": "jsonStringBytes"
+            })));
+        }
+        Ok(())
+    }
+
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            self.offset += 1;
+        }
+    }
+
+    fn consume(&mut self, expected: u8) -> bool {
+        if self.peek() == Some(expected) {
+            self.offset += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn next(&mut self) -> Option<u8> {
+        let byte = self.peek()?;
+        self.offset += 1;
+        Some(byte)
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.offset).copied()
+    }
+
+    fn invalid_json(&self) -> YrsEngineError {
+        YrsEngineError::new(
+            "COLLABORATION_DECODE_FAILED",
+            "encoded snapshot JSON content failed structural preflight",
+        )
+        .with_details(json!({
+            "field": "encodedState",
+            "phase": "updatePreflight",
+            "reason": "invalidJson"
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::preflight_update_v1;
     use crate::boundary::ResourceLimits;
-    use yrs::{Doc, ReadTxn, StateVector, Text, Transact};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use yrs::types::Attrs;
+    use yrs::{Any, Doc, ReadTxn, StateVector, Text, Transact};
 
     fn any_update(any: &[u8]) -> Vec<u8> {
         let mut update = vec![1, 1, 1, 0, 8, 1, 0, 1];
@@ -399,6 +750,29 @@ mod tests {
         }
         any.push(126);
         any
+    }
+
+    fn push_var_u32(bytes: &mut Vec<u8>, mut value: u32) {
+        while value >= 0x80 {
+            bytes.push((value as u8 & 0x7f) | 0x80);
+            value >>= 7;
+        }
+        bytes.push(value as u8);
+    }
+
+    fn push_string(bytes: &mut Vec<u8>, value: &str) {
+        push_var_u32(bytes, value.len() as u32);
+        bytes.extend_from_slice(value.as_bytes());
+    }
+
+    fn json_update(tag: u8, key: Option<&str>, value: &str) -> Vec<u8> {
+        let mut update = vec![1, 1, 1, 0, tag, 1, 0];
+        if let Some(key) = key {
+            push_string(&mut update, key);
+        }
+        push_string(&mut update, value);
+        update.push(0);
+        update
     }
 
     #[test]
@@ -489,6 +863,117 @@ mod tests {
                 "dimension": "work"
             }))
         );
+    }
+
+    #[test]
+    fn json_embed_and_format_use_exact_collection_work_boundaries() {
+        let limits = ResourceLimits {
+            max_document_nodes: 5,
+            ..ResourceLimits::default()
+        };
+        preflight_update_v1(&json_update(5, None, "[null,null]"), &limits).unwrap();
+        preflight_update_v1(
+            &json_update(6, Some("mark"), r#"{"a":null,"b":null}"#),
+            &limits,
+        )
+        .unwrap();
+
+        for update in [
+            json_update(5, None, "[null,null,null]"),
+            json_update(6, Some("mark"), r#"{"a":null,"b":null,"c":null}"#),
+        ] {
+            let error = preflight_update_v1(&update, &limits).unwrap_err();
+            assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+            assert_eq!(error.limit, Some(5));
+            assert_eq!(error.actual, Some(6));
+            assert_eq!(error.details.as_ref().unwrap()["dimension"], "work");
+        }
+    }
+
+    #[test]
+    fn json_depth_and_decoded_string_payload_have_exact_boundaries() {
+        let exact_depth = ResourceLimits {
+            max_document_depth: 2,
+            ..ResourceLimits::default()
+        };
+        preflight_update_v1(&json_update(5, None, "[null]"), &exact_depth).unwrap();
+        let error =
+            preflight_update_v1(&json_update(5, None, "[[null]]"), &exact_depth).unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(error.limit, Some(2));
+        assert_eq!(error.actual, Some(3));
+        assert_eq!(error.details.as_ref().unwrap()["dimension"], "jsonDepth");
+
+        let exact_string = ResourceLimits {
+            max_input_bytes: 3,
+            ..ResourceLimits::default()
+        };
+        preflight_update_v1(&json_update(5, None, r#""abc""#), &exact_string).unwrap();
+        let over_string = ResourceLimits {
+            max_input_bytes: 2,
+            ..ResourceLimits::default()
+        };
+        let error =
+            preflight_update_v1(&json_update(5, None, r#""abc""#), &over_string).unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(error.limit, Some(2));
+        assert_eq!(error.actual, Some(3));
+        assert_eq!(
+            error.details.as_ref().unwrap()["dimension"],
+            "jsonStringBytes"
+        );
+    }
+
+    #[test]
+    fn json_preflight_matches_yrs_syntax_escapes_and_number_acceptance() {
+        let limits = ResourceLimits::default();
+        for value in [
+            "null",
+            "true",
+            "false",
+            r#""escaped\n\uD83D\uDE00""#,
+            "-1",
+            "1.5",
+            "1e2",
+            r#"[true,false,null,{"x":"value"}]"#,
+        ] {
+            Any::from_json(value).unwrap();
+            preflight_update_v1(&json_update(5, None, value), &limits).unwrap();
+        }
+
+        for value in [
+            "01",
+            r#"{"a":}"#,
+            r#""\uD800""#,
+            "1e400",
+            "9223372036854775808",
+        ] {
+            assert!(Any::from_json(value).is_err(), "{value}");
+            let error = preflight_update_v1(&json_update(5, None, value), &limits).unwrap_err();
+            assert_eq!(error.code, "COLLABORATION_DECODE_FAILED", "{value}");
+            assert_eq!(error.details.as_ref().unwrap()["reason"], "invalidJson");
+        }
+    }
+
+    #[test]
+    fn accepts_generated_standard_format_update_with_nested_json_value() {
+        let doc = Doc::new();
+        let text = doc.get_or_insert_text("text");
+        let nested = Any::Map(Arc::new(HashMap::from([(
+            "nested".to_string(),
+            Any::Array(vec![Any::Bool(true), Any::Null].into()),
+        )])));
+        text.insert_with_attributes(
+            &mut doc.transact_mut(),
+            0,
+            "formatted",
+            Attrs::from([("meta".into(), nested)]),
+        );
+        let update = doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+
+        preflight_update_v1(&update, &ResourceLimits::default()).unwrap();
     }
 
     #[test]
