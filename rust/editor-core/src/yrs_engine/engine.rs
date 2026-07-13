@@ -51,6 +51,7 @@ enum EngineDocumentState {
 struct CandidateDocument {
     doc: Doc,
     state: EngineDocumentState,
+    durable_client_ids: HashSet<u64>,
 }
 
 struct ValidatedImportDocument {
@@ -84,6 +85,7 @@ pub struct YrsDocumentEngine {
     state: EngineDocumentState,
     revision: u64,
     last_committed_origin: Option<TransactionOrigin>,
+    durable_client_ids: HashSet<u64>,
 }
 
 impl YrsDocumentEngine {
@@ -116,6 +118,7 @@ impl YrsDocumentEngine {
             state: candidate.state,
             revision: 0,
             last_committed_origin: None,
+            durable_client_ids: candidate.durable_client_ids,
         })
     }
 
@@ -252,6 +255,7 @@ impl YrsDocumentEngine {
         let next_revision = self.next_revision()?;
         self.doc = candidate.doc;
         self.state = candidate.state;
+        self.durable_client_ids = candidate.durable_client_ids;
         self.revision = next_revision;
         self.last_committed_origin = Some(TransactionOrigin::SnapshotRestore);
         Ok(EngineCommit {
@@ -264,19 +268,20 @@ impl YrsDocumentEngine {
         &self,
         snapshot: &DocumentSnapshot,
     ) -> YrsEngineResult<CandidateDocument> {
-        let candidate_doc = {
+        let (candidate_doc, durable_client_ids) = {
             let update = Update::decode_v1(&snapshot.encoded_state).map_err(|error| {
                 snapshot_parse_error("COLLABORATION_DECODE_FAILED", error, "encodedState")
             })?;
             let durable_state = update.state_vector();
-            let candidate_doc = fresh_utf16_doc_excluding(&durable_state, self.client_id());
+            let durable_client_ids = durable_state.iter().map(|(client, _)| *client).collect();
+            let candidate_doc = fresh_utf16_doc_excluding(&durable_client_ids, self.client_id());
             candidate_doc
                 .transact_mut_with(TransactionOrigin::SnapshotRestore.as_yrs_origin())
                 .apply_update(update)
                 .map_err(|error| {
                     snapshot_parse_error("COLLABORATION_DECODE_FAILED", error, "encodedState")
                 })?;
-            candidate_doc
+            (candidate_doc, durable_client_ids)
         };
 
         let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
@@ -315,6 +320,7 @@ impl YrsDocumentEngine {
                 document: derived_document,
                 canonical_json,
             },
+            durable_client_ids,
         })
     }
 
@@ -442,10 +448,7 @@ impl YrsDocumentEngine {
             "type": self.schema.doc_node_type(),
             "content": [],
         });
-        // JSON/HTML replacement starts from a new, empty durable state. The live
-        // client remains excluded explicitly; snapshot restoration supplies its
-        // decoded durable state vector to the same constructor below.
-        let doc = fresh_utf16_doc_excluding(&StateVector::default(), self.client_id());
+        let doc = fresh_utf16_doc_excluding(&self.durable_client_ids, self.client_id());
         let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
         {
             let mut txn = doc.transact_mut_with(origin.as_yrs_origin());
@@ -480,12 +483,14 @@ impl YrsDocumentEngine {
         }
         encode_candidate_state_bounded(&doc, &self.resource_limits)?;
 
+        let durable_client_ids = HashSet::from([doc.client_id()]);
         Ok(CandidateDocument {
             doc,
             state: EngineDocumentState::Ready {
                 document: derived_document,
                 canonical_json,
             },
+            durable_client_ids,
         })
     }
 
@@ -514,6 +519,7 @@ impl YrsDocumentEngine {
         let next_revision = self.next_revision()?;
         self.doc = candidate.doc;
         self.state = candidate.state;
+        self.durable_client_ids = candidate.durable_client_ids;
         self.revision = next_revision;
         self.last_committed_origin = Some(origin);
         Ok(EngineCommit {
@@ -830,12 +836,14 @@ fn build_local_empty_candidate(
     let canonical_json = to_prosemirror_json(&document, schema);
     encode_state_bounded(&doc, resource_limits)?;
 
+    let durable_client_ids = HashSet::from([doc.client_id()]);
     Ok(CandidateDocument {
         doc,
         state: EngineDocumentState::Ready {
             document,
             canonical_json,
         },
+        durable_client_ids,
     })
 }
 
@@ -849,6 +857,7 @@ fn build_await_remote_candidate(
     Ok(CandidateDocument {
         doc,
         state: EngineDocumentState::AwaitingRemote,
+        durable_client_ids: HashSet::new(),
     })
 }
 
@@ -860,19 +869,18 @@ fn utf16_doc() -> Doc {
     Doc::with_options(options)
 }
 
-fn fresh_utf16_doc_excluding(durable_state: &StateVector, previous_client_id: u64) -> Doc {
-    fresh_utf16_doc_excluding_with(durable_state, previous_client_id, utf16_doc)
+fn fresh_utf16_doc_excluding(durable_client_ids: &HashSet<u64>, previous_client_id: u64) -> Doc {
+    fresh_utf16_doc_excluding_with(durable_client_ids, previous_client_id, utf16_doc)
 }
 
 fn fresh_utf16_doc_excluding_with(
-    durable_state: &StateVector,
+    durable_client_ids: &HashSet<u64>,
     previous_client_id: u64,
     mut candidate: impl FnMut() -> Doc,
 ) -> Doc {
     loop {
         let doc = candidate();
-        if doc.client_id() != previous_client_id && !durable_state.contains_client(&doc.client_id())
-        {
+        if doc.client_id() != previous_client_id && !durable_client_ids.contains(&doc.client_id()) {
             return doc;
         }
     }
@@ -919,13 +927,16 @@ fn encode_candidate_state_bounded(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use crate::boundary::ResourceLimits;
     use crate::schema::presets::tiptap_schema;
     use crate::serialize::{from_prosemirror_json, UnknownTypeMode};
     use serde_json::json;
     use yrs::OffsetKind;
 
-    use yrs::{Doc, Options, StateVector};
+    use yrs::{updates::decoder::Decode, Update};
+    use yrs::{Doc, Options};
 
     use super::{fresh_utf16_doc_excluding_with, utf16_doc, ValidatedImportDocument};
 
@@ -980,7 +991,7 @@ mod tests {
 
     #[test]
     fn collision_excluding_candidate_selection_retries_live_and_durable_ids() {
-        let durable = StateVector::from_iter([(7_u64, 1_u32)]);
+        let durable = HashSet::from([7_u64]);
         let mut ids = [5_u64, 7_u64, 11_u64].into_iter();
         let selected = fresh_utf16_doc_excluding_with(&durable, 5, || {
             Doc::with_options(Options {
@@ -991,6 +1002,43 @@ mod tests {
         });
 
         assert_eq!(selected.client_id(), 11);
+    }
+
+    #[test]
+    fn restored_and_local_candidates_cache_all_relevant_durable_clients() {
+        let config = || crate::yrs_engine::YrsEngineConfig {
+            schema: tiptap_schema(),
+            fragment_name: "prosemirror".into(),
+            initialization_mode: crate::yrs_engine::InitializationMode::LocalEmpty,
+            resource_limits: ResourceLimits::default(),
+            scope: Some(crate::yrs_engine::DocumentScope {
+                document_id: "doc".into(),
+                lineage_id: "lineage".into(),
+            }),
+        };
+        let source = crate::yrs_engine::YrsDocumentEngine::new(config()).unwrap();
+        let snapshot = source.export_snapshot().unwrap();
+        let expected = Update::decode_v1(&snapshot.encoded_state)
+            .unwrap()
+            .state_vector()
+            .iter()
+            .map(|(client, _)| *client)
+            .collect::<HashSet<_>>();
+        let mut target = crate::yrs_engine::YrsDocumentEngine::new(config()).unwrap();
+
+        target.restore_snapshot(&snapshot).unwrap();
+        assert_eq!(target.durable_client_ids, expected);
+
+        target
+            .import_json(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"local"}]}]}"#,
+                crate::yrs_engine::TransactionOrigin::DocumentImport,
+            )
+            .unwrap();
+        assert_eq!(
+            target.durable_client_ids,
+            HashSet::from([target.client_id()])
+        );
     }
 
     #[test]

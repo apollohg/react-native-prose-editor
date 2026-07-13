@@ -1,5 +1,6 @@
 use std::env;
 use std::hint::black_box;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use editor_core::boundary::ResourceLimits;
@@ -109,24 +110,57 @@ macro_rules! push_case {
 fn main() {
     let options = parse_options();
     let profile = options.mode.profile();
-    let article_doc = build_article_document(profile.article_blocks, profile.paragraph_chars);
-    let article_doc_2x =
-        build_article_document(profile.article_blocks * 2, profile.paragraph_chars);
-    let article_json =
-        serde_json::to_string(&article_doc).expect("article benchmark fixture should serialize");
-    let article_json_2x = serde_json::to_string(&article_doc_2x)
-        .expect("2x article benchmark fixture should serialize");
-    let opaque_doc = build_opaque_document(profile.opaque_payload_bytes);
-    let opaque_doc_2x = build_opaque_document(profile.opaque_payload_bytes * 2);
-    let opaque_json =
-        serde_json::to_string(&opaque_doc).expect("opaque benchmark fixture should serialize");
-    let opaque_json_2x = serde_json::to_string(&opaque_doc_2x)
-        .expect("2x opaque benchmark fixture should serialize");
-    let candidate_document = yrs_engine_with_document(&article_json)
-        .document()
-        .expect("populated Yrs benchmark engine should be ready")
-        .clone();
-    let edited_article_doc = build_edited_article_document(&article_doc);
+    let article_doc_cell = OnceLock::new();
+    let article_doc = || {
+        article_doc_cell
+            .get_or_init(|| build_article_document(profile.article_blocks, profile.paragraph_chars))
+    };
+    let article_doc_2x_cell = OnceLock::new();
+    let article_doc_2x = || {
+        article_doc_2x_cell.get_or_init(|| {
+            build_article_document(profile.article_blocks * 2, profile.paragraph_chars)
+        })
+    };
+    let article_json_cell = OnceLock::new();
+    let article_json = || {
+        article_json_cell.get_or_init(|| {
+            serde_json::to_string(article_doc())
+                .expect("article benchmark fixture should serialize")
+        })
+    };
+    let article_json_2x_cell = OnceLock::new();
+    let article_json_2x = || {
+        article_json_2x_cell.get_or_init(|| {
+            serde_json::to_string(article_doc_2x())
+                .expect("2x article benchmark fixture should serialize")
+        })
+    };
+    let opaque_json_cell = OnceLock::new();
+    let opaque_json = || {
+        opaque_json_cell.get_or_init(|| {
+            serde_json::to_string(&build_opaque_document(profile.opaque_payload_bytes))
+                .expect("opaque benchmark fixture should serialize")
+        })
+    };
+    let opaque_json_2x_cell = OnceLock::new();
+    let opaque_json_2x = || {
+        opaque_json_2x_cell.get_or_init(|| {
+            serde_json::to_string(&build_opaque_document(profile.opaque_payload_bytes * 2))
+                .expect("2x opaque benchmark fixture should serialize")
+        })
+    };
+    let candidate_document_cell = OnceLock::new();
+    let candidate_document = || {
+        candidate_document_cell.get_or_init(|| {
+            yrs_engine_with_document(article_json())
+                .document()
+                .expect("populated Yrs benchmark engine should be ready")
+                .clone()
+        })
+    };
+    let edited_article_doc_cell = OnceLock::new();
+    let edited_article_doc =
+        || edited_article_doc_cell.get_or_init(|| build_edited_article_document(article_doc()));
 
     let mut results = Vec::new();
 
@@ -139,7 +173,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || (empty_editor(), article_doc.clone()),
+            || (empty_editor(), article_doc().clone()),
             |(editor, document)| {
                 black_box(
                     editor
@@ -159,7 +193,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || (empty_yrs_engine(), article_json.clone()),
+            || (empty_yrs_engine(), article_json().clone()),
             |(engine, document)| {
                 black_box(
                     engine
@@ -179,7 +213,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || editor_with_document(&article_doc),
+            || editor_with_document(article_doc()),
             |editor| black_box(editor.get_json()),
         ),
     );
@@ -193,7 +227,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || yrs_engine_with_document(&article_json),
+            || yrs_engine_with_document(article_json()),
             |engine| black_box(engine.document_json()),
         ),
     );
@@ -207,7 +241,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || (empty_yrs_engine(), article_json_2x.clone()),
+            || (empty_yrs_engine(), article_json_2x().clone()),
             |(engine, document)| {
                 black_box(
                     engine
@@ -227,7 +261,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || yrs_engine_with_document(&article_json_2x),
+            || yrs_engine_with_document(article_json_2x()),
             |engine| black_box(engine.document_json()),
         ),
     );
@@ -243,7 +277,7 @@ fn main() {
             1,
             || {
                 (
-                    candidate_document.clone(),
+                    candidate_document().clone(),
                     tiptap_schema(),
                     ResourceLimits::default(),
                 )
@@ -266,7 +300,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || yrs_engine_with_document(&article_json),
+            || yrs_engine_with_document(article_json()),
             |engine| {
                 black_box(
                     engine
@@ -286,7 +320,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || (empty_yrs_engine(), opaque_json.clone()),
+            || (empty_yrs_engine(), opaque_json().clone()),
             |(engine, document)| {
                 black_box(
                     engine
@@ -306,7 +340,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || (empty_yrs_engine(), opaque_json_2x.clone()),
+            || (empty_yrs_engine(), opaque_json_2x().clone()),
             |(engine, document)| {
                 black_box(
                     engine
@@ -347,7 +381,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || editor_with_document(&article_doc),
+            || editor_with_document(article_doc()),
             |editor| {
                 black_box(editor.get_current_state());
             },
@@ -363,7 +397,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || editor_with_document(&article_doc),
+            || editor_with_document(article_doc()),
             |editor| {
                 black_box(editor.get_selection_state());
             },
@@ -379,7 +413,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || editor_with_document(&article_doc),
+            || editor_with_document(article_doc()),
             |editor| {
                 black_box(editor.get_html());
             },
@@ -395,7 +429,7 @@ fn main() {
             profile.iterations,
             profile.warmup_iterations,
             1,
-            || editor_with_document(&article_doc),
+            || editor_with_document(article_doc()),
             |editor| {
                 black_box(editor.get_json());
             },
@@ -412,7 +446,7 @@ fn main() {
             profile.warmup_iterations,
             1,
             || {
-                let editor = editor_with_document(&article_doc);
+                let editor = editor_with_document(article_doc());
                 let total_scalar = editor.doc_to_scalar(editor.document().content_size());
                 (editor, total_scalar / 2)
             },
@@ -436,7 +470,7 @@ fn main() {
             profile.warmup_iterations,
             profile.typing_burst,
             || {
-                let editor = editor_with_document(&article_doc);
+                let editor = editor_with_document(article_doc());
                 let total_scalar = editor.doc_to_scalar(editor.document().content_size());
                 (editor, total_scalar / 2)
             },
@@ -464,7 +498,7 @@ fn main() {
             profile.warmup_iterations,
             1,
             || {
-                let editor = editor_with_document(&article_doc);
+                let editor = editor_with_document(article_doc());
                 let total_scalar = editor.doc_to_scalar(editor.document().content_size());
                 let anchor = total_scalar / 3;
                 let head = (anchor + profile.selection_width).min(total_scalar.max(anchor));
@@ -491,8 +525,8 @@ fn main() {
             1,
             || {
                 (
-                    editor_with_document(&article_doc),
-                    edited_article_doc.clone(),
+                    editor_with_document(article_doc()),
+                    edited_article_doc().clone(),
                 )
             },
             |(editor, next_doc)| {
@@ -515,7 +549,7 @@ fn main() {
             profile.warmup_iterations,
             profile.mapping_points,
             || {
-                let editor = editor_with_document(&article_doc);
+                let editor = editor_with_document(article_doc());
                 let positions = evenly_spaced_positions(
                     editor.document().content_size(),
                     profile.mapping_points,
@@ -540,7 +574,7 @@ fn main() {
             profile.warmup_iterations,
             profile.mapping_points,
             || {
-                let editor = editor_with_document(&article_doc);
+                let editor = editor_with_document(article_doc());
                 let total_scalar = editor.doc_to_scalar(editor.document().content_size());
                 let positions = evenly_spaced_positions(total_scalar, profile.mapping_points);
                 (editor, positions)
@@ -563,7 +597,7 @@ fn main() {
             profile.warmup_iterations,
             profile.selection_scrub_points,
             || {
-                let editor = editor_with_document(&article_doc);
+                let editor = editor_with_document(article_doc());
                 let total_scalar = editor.doc_to_scalar(editor.document().content_size());
                 let positions =
                     selection_scrub_positions(total_scalar, profile.selection_scrub_points);
@@ -588,7 +622,7 @@ fn main() {
             profile.warmup_iterations,
             profile.selection_scrub_points,
             || {
-                let editor = editor_with_document(&article_doc);
+                let editor = editor_with_document(article_doc());
                 let total_scalar = editor.doc_to_scalar(editor.document().content_size());
                 let positions =
                     selection_scrub_positions(total_scalar, profile.selection_scrub_points);
@@ -613,7 +647,7 @@ fn main() {
             profile.warmup_iterations,
             profile.selection_scrub_points,
             || {
-                let editor = editor_with_document(&article_doc);
+                let editor = editor_with_document(article_doc());
                 let total_scalar = editor.doc_to_scalar(editor.document().content_size());
                 let positions =
                     selection_scrub_positions(total_scalar, profile.selection_scrub_points);
@@ -639,8 +673,8 @@ fn main() {
             1,
             || {
                 (
-                    collaboration_session_with_document(&article_doc),
-                    edited_article_doc.clone(),
+                    collaboration_session_with_document(article_doc()),
+                    edited_article_doc().clone(),
                 )
             },
             |(session, next_doc)| {
@@ -663,10 +697,10 @@ fn main() {
             profile.warmup_iterations,
             1,
             || {
-                let mut sender = collaboration_session_with_document(&article_doc);
-                let receiver = collaboration_session_with_document(&article_doc);
+                let mut sender = collaboration_session_with_document(article_doc());
+                let receiver = collaboration_session_with_document(article_doc());
                 let message = sender
-                    .apply_local_document(edited_article_doc.clone())
+                    .apply_local_document(edited_article_doc().clone())
                     .expect("benchmark collaboration document should be valid")
                     .messages
                     .into_iter()
@@ -695,9 +729,9 @@ fn main() {
             profile.awareness_peer_count,
             || {
                 (
-                    collaboration_session_with_document(&article_doc),
+                    collaboration_session_with_document(article_doc()),
                     awareness_messages_for_document(
-                        &article_doc,
+                        article_doc(),
                         profile.awareness_peer_count,
                         profile.selection_width,
                     ),

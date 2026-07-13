@@ -43,6 +43,7 @@ impl<'a> PreflightReader<'a> {
     fn read_update(&mut self) -> YrsEngineResult<()> {
         let clients = self.read_var_u32()? as usize;
         self.require_declared_count(clients, 3)?;
+        self.charge_work(clients)?;
         for _ in 0..clients {
             let blocks = self.read_var_u32()? as usize;
             self.require_declared_count(blocks, 1)?;
@@ -94,6 +95,7 @@ impl<'a> PreflightReader<'a> {
                     .checked_add(1)
                     .ok_or_else(|| self.decode_error("declaredLength"))?;
                 self.require_declared_count(count as usize, 1)?;
+                self.charge_work(count as usize)?;
                 for _ in 0..count {
                     self.read_string()?;
                 }
@@ -207,6 +209,7 @@ impl<'a> PreflightReader<'a> {
     fn read_delete_set(&mut self) -> YrsEngineResult<()> {
         let clients = self.read_var_u32()? as usize;
         self.require_declared_count(clients, 2)?;
+        self.charge_work(clients)?;
         for _ in 0..clients {
             self.read_var_u32()?;
             let ranges = self.read_var_u32()? as usize;
@@ -285,10 +288,25 @@ impl<'a> PreflightReader<'a> {
 
     fn require_declared_count(&self, count: usize, minimum_bytes: usize) -> YrsEngineResult<()> {
         if count > self.remaining() / minimum_bytes {
-            Err(self.declared_length_error())
-        } else {
-            Ok(())
+            return Err(self.declared_length_error());
         }
+        if count > self.limits.max_document_nodes {
+            // No separate decoded-update item ceiling exists. Reuse the
+            // configurable node ceiling so compact encodings cannot amplify
+            // into attacker-sized Yrs collection allocations before the
+            // derived document is available for ordinary node validation.
+            return Err(YrsEngineError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                self.limits.max_document_nodes,
+                count,
+            )
+            .with_details(json!({
+                "field": "encodedState",
+                "phase": "updatePreflight",
+                "dimension": "collectionItems"
+            })));
+        }
+        Ok(())
     }
 
     fn charge_work(&mut self, amount: usize) -> YrsEngineResult<()> {
@@ -296,7 +314,7 @@ impl<'a> PreflightReader<'a> {
             .work
             .checked_add(amount)
             .ok_or_else(|| self.decode_error("workOverflow"))?;
-        let limit = self.limits.max_encoded_state_bytes;
+        let limit = self.limits.max_document_nodes;
         if self.work > limit {
             return Err(
                 YrsEngineError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, self.work).with_details(
@@ -428,6 +446,49 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn collection_allocations_and_aggregate_work_use_exact_node_boundaries() {
+        let collection_limits = ResourceLimits {
+            max_document_nodes: 4,
+            ..ResourceLimits::default()
+        };
+        let error = preflight_update_v1(
+            &any_update(&[117, 5, 126, 126, 126, 126, 126]),
+            &collection_limits,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(error.limit, Some(4));
+        assert_eq!(error.actual, Some(5));
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({
+                "field": "encodedState",
+                "phase": "updatePreflight",
+                "dimension": "collectionItems"
+            }))
+        );
+
+        let work_limits = ResourceLimits {
+            max_document_nodes: 5,
+            ..ResourceLimits::default()
+        };
+        preflight_update_v1(&any_update(&[117, 2, 126, 126]), &work_limits).unwrap();
+        let error =
+            preflight_update_v1(&any_update(&[117, 3, 126, 126, 126]), &work_limits).unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(error.limit, Some(5));
+        assert_eq!(error.actual, Some(6));
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({
+                "field": "encodedState",
+                "phase": "updatePreflight",
+                "dimension": "work"
+            }))
+        );
     }
 
     #[test]

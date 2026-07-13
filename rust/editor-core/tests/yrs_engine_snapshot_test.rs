@@ -390,7 +390,14 @@ fn derived_document_limits_are_atomic() {
 
     let error = target.restore_snapshot(&snapshot).unwrap_err();
     assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
-    assert_field(&error, "encodedState");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({
+            "field": "encodedState",
+            "phase": "updatePreflight",
+            "dimension": "collectionItems"
+        }))
+    );
     assert_eq!(audit(&target), before);
 }
 

@@ -2,6 +2,7 @@
 mod benchmark_filter;
 
 use std::cell::Cell;
+use std::sync::OnceLock;
 
 #[test]
 fn misses_are_lazy_while_name_and_group_matches_execute() {
@@ -20,4 +21,26 @@ fn misses_are_lazy_while_name_and_group_matches_execute() {
         assert_eq!(calls.get(), expected_calls);
         assert_eq!(result.is_some() as usize, expected_calls);
     }
+}
+
+#[test]
+fn filtered_out_case_does_not_initialize_its_case_fixture() {
+    let fixture_calls = Cell::new(0);
+    let fixture = OnceLock::new();
+
+    let result = benchmark_filter::run_if_selected(
+        Some("selected-case"),
+        "filtered-case",
+        "filtered-group",
+        || {
+            fixture.get_or_init(|| {
+                fixture_calls.set(fixture_calls.get() + 1);
+                "constructed"
+            })
+        },
+    );
+
+    assert!(result.is_none());
+    assert_eq!(fixture_calls.get(), 0);
+    assert!(fixture.get().is_none());
 }

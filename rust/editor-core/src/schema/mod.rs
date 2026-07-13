@@ -634,9 +634,7 @@ impl Schema {
 
     /// Iterate over all mark specs.
     pub fn all_marks(&self) -> impl Iterator<Item = &MarkSpec> {
-        self.mark_order
-            .iter()
-            .filter_map(|name| self.marks.get(name))
+        self.marks.values()
     }
 
     /// Return the list of mark names that can be toggled at the given node.
