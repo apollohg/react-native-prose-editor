@@ -12,6 +12,7 @@ pub mod schema;
 pub mod selection;
 pub mod serialize;
 pub mod transform;
+pub mod yrs_engine;
 
 pub use schema::presets::{prosemirror_schema, tiptap_schema};
 
