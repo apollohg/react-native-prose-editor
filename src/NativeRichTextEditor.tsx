@@ -91,6 +91,8 @@ interface NativeEditorViewHandle {
 
 interface NativeEditorViewProps {
     style?: StyleProp<ViewStyle>;
+    accessibilityLabel?: string;
+    accessibilityHint?: string;
     editorId: number;
     placeholder?: string;
     editable: boolean;
@@ -950,6 +952,10 @@ export interface ImageRequestContext {
 }
 
 export interface NativeRichTextEditorProps {
+    /** Accessible name announced for the native editable control. */
+    accessibilityLabel?: string;
+    /** Additional guidance announced for the native editable control. */
+    accessibilityHint?: string;
     /** Initial content as HTML (uncontrolled mode). */
     initialContent?: string;
     /** Initial content as ProseMirror JSON (uncontrolled mode). */
@@ -1168,6 +1174,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             initialContent,
             initialJSON,
             value,
+            accessibilityLabel,
+            accessibilityHint,
             valueJSON,
             valueJSONRevision,
             valueJSONUpdateMode = 'replace',
@@ -3801,6 +3809,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     key={DEV_NATIVE_VIEW_KEY}
                     ref={nativeViewRef}
                     style={nativeViewStyle}
+                    accessibilityLabel={accessibilityLabel}
+                    accessibilityHint={accessibilityHint}
                     editorId={editorInstanceId}
                     placeholder={placeholder}
                     editable={editable}

@@ -500,6 +500,12 @@ class NativeEditorModule : Module() {
             Prop("editable") { view: NativeEditorExpoView, editable: Boolean ->
                 view.setEditable(editable)
             }
+            Prop("accessibilityLabel") { view: NativeEditorExpoView, label: String? ->
+                view.setAccessibilityLabel(label)
+            }
+            Prop("accessibilityHint") { view: NativeEditorExpoView, hint: String? ->
+                view.setAccessibilityHint(hint)
+            }
             Prop("placeholder") { view: NativeEditorExpoView, placeholder: String ->
                 view.richTextView.editorEditText.placeholderText = placeholder
             }

@@ -589,6 +589,22 @@ describe('NativeRichTextEditor', () => {
             expect(getByTestId('native-editor-view').props.placeholder).toBe('Type here...');
         });
 
+        it('passes accessibility metadata to the native editable view', () => {
+            const { getByTestId } = render(
+                <NativeRichTextEditor
+                    accessibilityLabel='Case narrative'
+                    accessibilityHint='Required field'
+                />
+            );
+
+            expect(getByTestId('native-editor-view').props.accessibilityLabel).toBe(
+                'Case narrative'
+            );
+            expect(getByTestId('native-editor-view').props.accessibilityHint).toBe(
+                'Required field'
+            );
+        });
+
         it('passes autoFocus prop to native view (default false)', () => {
             const { getByTestId } = render(<NativeRichTextEditor />);
             expect(getByTestId('native-editor-view').props.autoFocus).toBe(false);

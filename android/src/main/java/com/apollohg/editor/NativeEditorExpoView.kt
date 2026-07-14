@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Rect
 import android.graphics.RectF
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -1041,6 +1042,16 @@ class NativeEditorExpoView(
         }
         richTextView.editorEditText.isEditable = editable
         updateKeyboardToolbarVisibility()
+    }
+
+    fun setAccessibilityLabel(label: String?) {
+        richTextView.editorEditText.contentDescription = label
+    }
+
+    fun setAccessibilityHint(hint: String?) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            richTextView.editorEditText.tooltipText = hint
+        }
     }
 
     fun setShowToolbar(showToolbar: Boolean) {

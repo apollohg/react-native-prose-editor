@@ -2501,6 +2501,14 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         updateAccessoryToolbarVisibility()
     }
 
+    func setAccessibilityLabel(_ label: String?) {
+        richTextView.textView.accessibilityLabel = label
+    }
+
+    func setAccessibilityHint(_ hint: String?) {
+        richTextView.textView.accessibilityHint = hint
+    }
+
     private func scheduleEditableRetry(_ editable: Bool) {
         pendingEditableRetryValue = editable
         pendingEditableRetryEditorId = richTextView.editorId

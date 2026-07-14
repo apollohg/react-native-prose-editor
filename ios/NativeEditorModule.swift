@@ -588,6 +588,12 @@ public class NativeEditorModule: Module {
             Prop("editable") { (view: NativeEditorExpoView, editable: Bool) in
                 view.setEditable(editable)
             }
+            Prop("accessibilityLabel") { (view: NativeEditorExpoView, label: String?) in
+                view.setAccessibilityLabel(label)
+            }
+            Prop("accessibilityHint") { (view: NativeEditorExpoView, hint: String?) in
+                view.setAccessibilityHint(hint)
+            }
             Prop("placeholder") { (view: NativeEditorExpoView, placeholder: String) in
                 view.richTextView.textView.placeholder = placeholder
             }
