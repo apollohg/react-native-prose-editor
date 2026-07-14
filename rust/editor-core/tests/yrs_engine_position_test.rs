@@ -68,6 +68,39 @@ fn rich_position_fixture() -> (Doc, Schema) {
     (doc, tiptap_schema())
 }
 
+fn rich_position_document() -> Document {
+    Document::new(Node::element(
+        "doc".into(),
+        HashMap::new(),
+        Fragment::from(vec![
+            Node::element(
+                "paragraph".into(),
+                HashMap::new(),
+                Fragment::from(vec![
+                    Node::text("A😀e\u{301}".into(), Vec::new()),
+                    Node::void("hardBreak".into(), HashMap::new()),
+                    Node::void("mention".into(), HashMap::new()),
+                    Node::text("Z".into(), Vec::new()),
+                ]),
+            ),
+            Node::void("horizontalRule".into(), HashMap::new()),
+            Node::element(
+                "bulletList".into(),
+                HashMap::new(),
+                Fragment::from(vec![Node::element(
+                    "listItem".into(),
+                    HashMap::new(),
+                    Fragment::from(vec![Node::element(
+                        "paragraph".into(),
+                        HashMap::new(),
+                        Fragment::from(vec![Node::text("nested".into(), Vec::new())]),
+                    )]),
+                )]),
+            ),
+        ]),
+    ))
+}
+
 fn custom_root_schema() -> Schema {
     Schema::from_json(&serde_json::json!({
         "nodes": [
@@ -308,6 +341,71 @@ fn revisioned_scalar_and_utf16_offsets_create_affinity_aware_relative_points() {
 
     assert!(point(2, EditorOffsetKind::Utf16, Affinity::Before).is_none());
     assert!(point(99, EditorOffsetKind::Scalar, Affinity::After).is_none());
+}
+
+#[test]
+fn revisioned_offsets_preserve_affinity_at_rendered_inter_block_break() {
+    let (yrs_doc, schema) = rich_position_fixture();
+    let document = rich_position_document();
+    let map = PositionMap::build(&document, &schema);
+    let rendered_text = "A😀e\u{301}\nmentionZ\n\u{fffc}\n• nested";
+    let txn = yrs_doc.transact();
+    let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+
+    assert_eq!(map.block(0).unwrap().scalar_len, 13);
+    assert_eq!(map.block(0).unwrap().rendered_break_after, 1);
+    assert!(map.block(1).unwrap().is_void_block);
+    assert_eq!(map.block(1).unwrap().doc_start, 9);
+    assert_eq!(rendered_text.chars().count() as u32, map.total_scalars());
+    assert_eq!(map.scalar_to_doc(13, &document), 8);
+    assert_eq!(scalar_offset_to_utf16(rendered_text, 13), Some(14));
+
+    for (kind, offset) in [
+        (EditorOffsetKind::Scalar, 13),
+        (EditorOffsetKind::Utf16, 14),
+    ] {
+        let point = |affinity| {
+            revisioned_position_to_relative_point(
+                &txn,
+                &fragment,
+                RevisionedPosition {
+                    offset,
+                    kind,
+                    affinity,
+                },
+                rendered_text,
+                &map,
+                &document,
+                &schema,
+            )
+            .unwrap()
+        };
+        let before = point(Affinity::Before);
+        let after = point(Affinity::After);
+        for point in [&before, &after] {
+            assert_eq!(
+                relative_point_to_doc_pos(&txn, &fragment, point, &schema),
+                Some(8)
+            );
+        }
+        let before_sticky = serde_json::to_value(&before.sticky).unwrap();
+        let after_sticky = serde_json::to_value(&after.sticky).unwrap();
+        assert_eq!(
+            before_sticky,
+            serde_json::json!({
+                "assoc": -1,
+                "type": { "client": 4242, "clock": 9 }
+            })
+        );
+        assert_eq!(
+            after_sticky,
+            serde_json::json!({
+                "assoc": 0,
+                "item": { "client": 4242, "clock": 10 }
+            })
+        );
+        assert_ne!(before_sticky, after_sticky);
+    }
 }
 
 fn paragraph_document(text: &str) -> Document {
