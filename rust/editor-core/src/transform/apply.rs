@@ -4,6 +4,7 @@
 //! `StepMap` recording how positions shifted.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::boundary::{BoundaryError, BoundaryResult, ResourceLimits};
 use crate::model::{Document, Fragment, Mark, Node};
@@ -67,6 +68,40 @@ pub fn apply_step(
             apply_replace_range(doc, *from, *to, content, schema)
         }
     }
+}
+
+/// Apply a semantic step and canonicalize mark order without changing the
+/// legacy `apply_step` behavior used by the production standalone editor.
+pub(crate) fn apply_step_canonical_marks(
+    doc: &Document,
+    step: &Step,
+    schema: &Schema,
+) -> Result<(Document, StepMap), TransformError> {
+    let (document, step_map) = apply_step(doc, step, schema)?;
+    Ok((
+        canonicalize_document_mark_order(&document, schema),
+        step_map,
+    ))
+}
+
+fn canonicalize_document_mark_order(document: &Document, schema: &Schema) -> Document {
+    fn canonicalize_node(node: &Node, schema: &Schema) -> Node {
+        if let Some(text) = node.text_str() {
+            let mut marks = node.marks().to_vec();
+            marks.sort_by_key(|mark| schema.mark_rank(mark.mark_type()).unwrap_or(usize::MAX));
+            return Node::text(text.to_string(), marks);
+        }
+        let Some(content) = node.content() else {
+            return node.clone();
+        };
+        let children = content
+            .iter()
+            .map(|child| canonicalize_node(child, schema))
+            .collect();
+        rebuild_element(node, children)
+    }
+
+    Document::new(canonicalize_node(document.root(), schema))
 }
 
 // ---------------------------------------------------------------------------
@@ -2155,6 +2190,79 @@ impl DocumentValidator {
         )?;
         Ok(stats)
     }
+}
+
+/// Validate that a mark set is representable by standard Yjs text attributes.
+///
+/// Yjs has one value per attribute key, so same-type duplicates are ambiguous.
+/// The order is also kept at schema rank so semantic previews remain identical
+/// to their canonical ProseMirror JSON representation.
+pub(crate) fn validate_canonical_mark_set(marks: &[Mark], schema: &Schema) -> BoundaryResult<()> {
+    let work_limit = marks.len().saturating_mul(128).max(128);
+    let budget = WorkBudget::new(work_limit);
+    let mut seen = HashSet::new();
+    let mut previous_rank = None;
+    for mark in marks {
+        if !seen.insert(mark.mark_type()) {
+            let mut error = BoundaryError::new(
+                "DOCUMENT_INVALID",
+                "duplicate same-type marks cannot be represented by standard Yjs attributes",
+            );
+            error.details = Some(serde_json::json!({
+                "field": "marks",
+                "markType": mark.mark_type(),
+                "reason": "duplicateType",
+            }));
+            return Err(error);
+        }
+        let rank = schema.mark_rank(mark.mark_type()).ok_or_else(|| {
+            BoundaryError::new(
+                "UNKNOWN_MARK",
+                format!("unknown mark '{}'", mark.mark_type()),
+            )
+        })?;
+        if previous_rank.is_some_and(|previous| rank < previous) {
+            let mut error = BoundaryError::new(
+                "DOCUMENT_INVALID",
+                "mark order does not match ProseMirror schema rank",
+            );
+            error.details = Some(serde_json::json!({
+                "field": "marks",
+                "reason": "nonCanonicalOrder",
+            }));
+            return Err(error);
+        }
+        let spec = schema
+            .mark(mark.mark_type())
+            .expect("ranked mark must have a schema spec");
+        validate_attrs(
+            mark.attrs(),
+            &spec.attrs,
+            spec.allow_undeclared_attrs,
+            mark.mark_type(),
+            &budget,
+            work_limit,
+        )?;
+        previous_rank = Some(rank);
+    }
+    Ok(())
+}
+
+/// Validate canonical mark representation throughout an immutable document.
+pub(crate) fn validate_canonical_marks(document: &Document, schema: &Schema) -> BoundaryResult<()> {
+    fn visit(node: &Node, schema: &Schema) -> BoundaryResult<()> {
+        if node.is_text() {
+            validate_canonical_mark_set(node.marks(), schema)?;
+        }
+        if let Some(content) = node.content() {
+            for child in content.iter() {
+                visit(child, schema)?;
+            }
+        }
+        Ok(())
+    }
+
+    visit(document.root(), schema)
 }
 
 fn validate_node(

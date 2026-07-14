@@ -11,8 +11,9 @@ use crate::serialize::{
     from_html_with_limits, from_prosemirror_json_with_limits, to_html, to_prosemirror_json,
     FromHtmlOptions, JsonParseError, ParseError, UnknownTypeMode,
 };
-use crate::transform::DocumentValidator;
+use crate::transform::{validate_canonical_marks, DocumentValidator};
 
+use super::compiler::{compile_transaction, CompilationContext, CompiledTransaction};
 use super::update_preflight::preflight_update_v1;
 use super::{
     DocumentScope, DocumentSnapshot, EditingLimits, TransactionOrigin, YrsDocumentCodec,
@@ -191,6 +192,28 @@ impl YrsDocumentEngine {
 
     pub fn max_length(&self) -> Option<u32> {
         self.max_length
+    }
+
+    #[allow(dead_code)] // Task 7 exposes the internal compiler through atomic application.
+    pub(crate) fn compile_typed_transaction(
+        &self,
+        transaction: super::TypedTransaction,
+    ) -> super::OperationResult<CompiledTransaction> {
+        let document = self
+            .document()
+            .ok_or_else(|| super::OperationError::engine_not_ready(transaction.request_id))?;
+        compile_transaction(
+            CompilationContext {
+                document,
+                selection: None,
+                schema: &self.schema,
+                resource_limits: &self.resource_limits,
+                editing_limits: &self.editing_limits,
+                document_revision: self.revision,
+                max_length: self.max_length,
+            },
+            transaction,
+        )
     }
 
     pub fn export_snapshot(&self) -> YrsEngineResult<DocumentSnapshot> {
@@ -585,44 +608,13 @@ fn snapshot_derived_error(mut error: YrsEngineError, field: &'static str) -> Yrs
 }
 
 fn validate_yrs_mark_representation(document: &Document, schema: &Schema) -> YrsEngineResult<()> {
-    fn visit(node: &Node, schema: &Schema) -> YrsEngineResult<()> {
-        if node.is_text() {
-            let mut seen = HashSet::new();
-            let mut previous_rank = None;
-            for mark in node.marks() {
-                if !seen.insert(mark.mark_type()) {
-                    return Err(YrsEngineError::new(
-                        "DOCUMENT_INVALID",
-                        "duplicate same-type marks cannot be represented by standard Yjs attributes",
-                    )
-                    .with_details(json!({
-                        "field": "marks",
-                        "markType": mark.mark_type(),
-                        "reason": "duplicateType",
-                    })));
-                }
-                let rank = schema.mark_rank(mark.mark_type()).unwrap_or(usize::MAX);
-                if previous_rank.is_some_and(|previous| rank < previous) {
-                    return Err(YrsEngineError::new(
-                        "DOCUMENT_INVALID",
-                        "mark order does not match ProseMirror schema rank",
-                    )
-                    .with_details(json!({
-                        "field": "marks",
-                        "reason": "nonCanonicalOrder",
-                    })));
-                }
-                previous_rank = Some(rank);
-            }
-        }
-        if let Some(content) = node.content() {
-            for child in content.iter() {
-                visit(child, schema)?;
-            }
-        }
-        Ok(())
-    }
-    visit(document.root(), schema)
+    validate_canonical_marks(document, schema).map_err(|error| YrsEngineError {
+        code: error.code,
+        message: error.message,
+        limit: error.limit,
+        actual: error.actual,
+        details: error.details,
+    })
 }
 
 fn validate_config_metadata(

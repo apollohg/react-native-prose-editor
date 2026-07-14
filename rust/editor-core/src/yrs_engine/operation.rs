@@ -187,9 +187,15 @@ impl OperationError {
         field: &'static str,
         message: impl Into<String>,
     ) -> Self {
-        Self::new("POSITION_INVALID", message, request_id)
-            .at_operation(operation_index)
-            .with_details(serde_json::json!({ "field": field }))
+        Self::position_invalid_at(request_id, Some(operation_index), field, message)
+    }
+
+    pub(crate) fn selection_position_invalid(
+        request_id: u64,
+        field: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::position_invalid_at(request_id, None, field, message)
     }
 
     pub fn transaction_invalid(
@@ -276,6 +282,17 @@ impl OperationError {
             actual: None,
             details: None,
         }
+    }
+
+    fn position_invalid_at(
+        request_id: u64,
+        operation_index: Option<usize>,
+        field: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::new("POSITION_INVALID", message, request_id)
+            .with_operation_index(operation_index)
+            .with_details(serde_json::json!({ "field": field }))
     }
 
     fn limit(

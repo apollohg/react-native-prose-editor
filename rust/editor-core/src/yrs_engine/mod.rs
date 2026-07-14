@@ -1,7 +1,10 @@
 mod codec;
+#[allow(dead_code)] // Task 7 installs compiled transactions into the live Yrs engine.
+mod compiler;
 mod editing_limits;
 mod engine;
 mod error;
+mod mutation;
 mod operation;
 mod origin;
 mod position;
@@ -23,6 +26,7 @@ pub use operation::{
 pub use origin::TransactionOrigin;
 #[cfg(test)]
 pub(crate) use position::doc_pos_to_sticky_index;
+pub(crate) use position::editor_offset_to_doc_pos;
 pub(crate) use position::{cursor_sticky_index_from_doc_pos, sticky_index_to_doc_pos};
 pub use position::{
     doc_pos_to_relative_point, relative_point_to_doc_pos, relative_selection_to_selection,

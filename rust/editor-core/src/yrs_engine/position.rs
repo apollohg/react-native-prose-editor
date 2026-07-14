@@ -87,7 +87,7 @@ pub fn revisioned_position_to_relative_point<T: ReadTxn>(
     doc_pos_to_relative_point(txn, fragment, doc_pos, position.affinity, schema)
 }
 
-fn editor_offset_to_doc_pos(
+pub(crate) fn editor_offset_to_doc_pos(
     offset: u32,
     kind: EditorOffsetKind,
     rendered_text: &str,
