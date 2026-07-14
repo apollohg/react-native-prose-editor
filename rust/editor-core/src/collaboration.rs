@@ -163,6 +163,12 @@ impl CollaborationSession {
 
     fn from_config(config: &Value, resource_limits: ResourceLimits) -> BoundaryResult<Self> {
         let client_id = config.get("clientId").and_then(Value::as_u64);
+        if client_id.is_some_and(|client_id| client_id >= 1 << 53) {
+            return Err(BoundaryError::new(
+                "CONFIG_PARSE_FAILED",
+                "clientId must be a 53-bit unsigned integer",
+            ));
+        }
         let mut doc_options = client_id
             .map(|client_id| Options::with_client_id(ClientID::new(client_id)))
             .unwrap_or_default();
@@ -1298,6 +1304,27 @@ mod tests {
             responses.extend(replies.into_iter().map(encode_message));
         }
         responses
+    }
+
+    #[test]
+    fn collaboration_session_validates_yrs_client_id_boundary() {
+        const MAX_YRS_CLIENT_ID: u64 = (1 << 53) - 1;
+
+        let session =
+            CollaborationSession::try_new(&json!({ "clientId": MAX_YRS_CLIENT_ID }).to_string())
+                .expect("the largest 53-bit client ID should be accepted");
+        assert_eq!(session.doc.client_id().get(), MAX_YRS_CLIENT_ID);
+
+        let error = match CollaborationSession::try_new(
+            &json!({ "clientId": MAX_YRS_CLIENT_ID + 1 }).to_string(),
+        ) {
+            Ok(_) => panic!("a client ID outside the Yrs 53-bit range should be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "CONFIG_PARSE_FAILED");
+
+        assert!(CollaborationSession::try_new("{}").is_ok());
+        assert!(CollaborationSession::try_new(r#"{"clientId":"not-a-u64"}"#).is_ok());
     }
 
     #[test]
