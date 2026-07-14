@@ -68,15 +68,35 @@ pub fn relative_selection_to_selection<T: ReadTxn>(
     Some(selection.normalized(document, position_map))
 }
 
-pub fn revisioned_position_to_doc_pos(
+pub fn revisioned_position_to_relative_point<T: ReadTxn>(
+    txn: &T,
+    fragment: &XmlFragmentRef,
     position: RevisionedPosition,
     rendered_text: &str,
     position_map: &PositionMap,
     document: &Document,
+    schema: &Schema,
+) -> Option<RelativePoint> {
+    let doc_pos = editor_offset_to_doc_pos(
+        position.offset,
+        position.kind,
+        rendered_text,
+        position_map,
+        document,
+    )?;
+    doc_pos_to_relative_point(txn, fragment, doc_pos, position.affinity, schema)
+}
+
+fn editor_offset_to_doc_pos(
+    offset: u32,
+    kind: EditorOffsetKind,
+    rendered_text: &str,
+    position_map: &PositionMap,
+    document: &Document,
 ) -> Option<u32> {
-    let scalar_offset = match position.kind {
-        EditorOffsetKind::Scalar => position.offset,
-        EditorOffsetKind::Utf16 => utf16_offset_to_scalar(rendered_text, position.offset)?,
+    let scalar_offset = match kind {
+        EditorOffsetKind::Scalar => offset,
+        EditorOffsetKind::Utf16 => utf16_offset_to_scalar(rendered_text, offset)?,
     };
     if scalar_offset > position_map.total_scalars() {
         return None;

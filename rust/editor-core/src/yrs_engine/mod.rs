@@ -26,7 +26,7 @@ pub(crate) use position::doc_pos_to_sticky_index;
 pub(crate) use position::{cursor_sticky_index_from_doc_pos, sticky_index_to_doc_pos};
 pub use position::{
     doc_pos_to_relative_point, relative_point_to_doc_pos, relative_selection_to_selection,
-    revisioned_position_to_doc_pos, scalar_offset_to_utf16, utf16_offset_to_scalar, RelativePoint,
-    RelativeSelection,
+    revisioned_position_to_relative_point, scalar_offset_to_utf16, utf16_offset_to_scalar,
+    RelativePoint, RelativeSelection,
 };
 pub use snapshot::{DocumentScope, DocumentSnapshot, SNAPSHOT_FORMAT_VERSION};

@@ -1,0 +1,52 @@
+{
+  "rich": {
+    "fragment_name": "prosemirror",
+    "content_size": 22,
+    "pairs": [
+      { "before": { "assoc": -1, "tname": "prosemirror" }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 0 } } },
+      { "before": { "assoc": -1, "type": { "client": 4242, "clock": 1 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 2 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 2 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 3 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 4 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 5 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 5 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 6 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 6 } }, "after": null },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 7 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 8 } } },
+      { "before": { "assoc": -1, "type": { "client": 4242, "clock": 8 } }, "after": null },
+      { "before": { "assoc": -1, "type": { "client": 4242, "clock": 9 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 10 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 10 } }, "after": null },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 0 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 11 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 11 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 12 } } },
+      { "before": { "assoc": -1, "type": { "client": 4242, "clock": 12 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 13 } } },
+      { "before": { "assoc": -1, "type": { "client": 4242, "clock": 13 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 14 } } },
+      { "before": { "assoc": -1, "type": { "client": 4242, "clock": 15 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 16 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 16 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 17 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 17 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 18 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 18 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 19 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 19 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 20 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 20 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 21 } } },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 21 } }, "after": null },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 14 } }, "after": null },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 13 } }, "after": null }
+    ]
+  },
+  "custom_root": {
+    "fragment_name": "article-content",
+    "content_size": 14,
+    "pairs": [
+      { "before": { "assoc": -1, "tname": "article-content" }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 0 } } },
+      { "before": { "assoc": -1, "type": { "client": 4343, "clock": 1 } }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 2 } } },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 2 } }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 3 } } },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 3 } }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 4 } } },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 4 } }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 5 } } },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 5 } }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 6 } } },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 7 } }, "after": null },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 0 } }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 8 } } },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 8 } }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 9 } } },
+      { "before": { "assoc": -1, "type": { "client": 4343, "clock": 10 } }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 11 } } },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 11 } }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 12 } } },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 12 } }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 13 } } },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 13 } }, "after": { "assoc": 0, "item": { "client": 4343, "clock": 14 } } },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 14 } }, "after": null },
+      { "before": { "assoc": -1, "item": { "client": 4343, "clock": 9 } }, "after": null }
+    ]
+  }
+}
