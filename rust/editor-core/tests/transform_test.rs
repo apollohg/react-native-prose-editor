@@ -2526,7 +2526,10 @@ fn replace_range_preserves_preceding_split_text_siblings() {
     let (actual, _) = transaction.apply(&document, &schema).unwrap();
 
     assert_eq!(actual.root().text_content(), "abadef");
-    assert_eq!(actual.root().child(0).unwrap().child(0).unwrap().text_str(), Some("a"));
+    assert_eq!(
+        actual.root().child(0).unwrap().child(0).unwrap().text_str(),
+        Some("a")
+    );
 }
 
 #[test]
