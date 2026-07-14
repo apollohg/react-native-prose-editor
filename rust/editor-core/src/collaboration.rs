@@ -4,15 +4,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use yrs::branch::{Branch, BranchPtr};
 use yrs::sync::awareness::{Awareness, AwarenessUpdate};
 use yrs::sync::protocol::{DefaultProtocol, Message, Protocol, SyncMessage};
-use yrs::types::xml::{XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut, XmlTextRef};
+use yrs::types::xml::XmlFragment;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
 use yrs::{
-    Assoc, ClientID, Doc, GetString, OffsetKind, Options, ReadTxn, StateVector, StickyIndex,
-    Transact, Update, WriteTxn,
+    ClientID, Doc, OffsetKind, Options, ReadTxn, StateVector, StickyIndex, Transact, Update,
+    WriteTxn,
 };
 
 use crate::boundary::{BoundaryError, BoundaryResult, BoundedInput, InputKind, ResourceLimits};
@@ -21,6 +20,7 @@ use crate::schema::Schema;
 use crate::serialize::{from_prosemirror_json_with_limits, UnknownTypeMode};
 use crate::transform::DocumentValidator;
 use crate::yrs_engine::YrsDocumentCodec;
+use crate::yrs_engine::{cursor_sticky_index_from_doc_pos, sticky_index_to_doc_pos};
 
 pub type CollaborationSessionId = u64;
 
@@ -110,7 +110,6 @@ pub struct CollaborationSession {
     awareness: Awareness,
     fragment_name: String,
     document_root_type: String,
-    void_element_tags: HashSet<String>,
     cached_document_json: Value,
     document_revision: u64,
     cached_peers: Vec<CollaborationPeer>,
@@ -184,7 +183,6 @@ impl CollaborationSession {
             Some(schema_json) => Schema::from_json_with_limits(schema_json, &resource_limits)?,
             None => tiptap_schema(),
         };
-        let void_element_tags = void_element_tags_from_schema_with_opaque(&schema);
         let document_root_type = schema.doc_node_type().to_string();
         let max_length = match config.get("maxLength") {
             Some(value) => Some(
@@ -207,7 +205,6 @@ impl CollaborationSession {
             fragment_name,
             cached_document_json: empty_document_json(&document_root_type),
             document_root_type,
-            void_element_tags,
             document_revision: 0,
             cached_peers: Vec::new(),
             cached_peer_states: HashMap::new(),
@@ -334,7 +331,6 @@ impl CollaborationSession {
             awareness,
             fragment_name: self.fragment_name.clone(),
             document_root_type: self.document_root_type.clone(),
-            void_element_tags: self.void_element_tags.clone(),
             cached_document_json: empty_document_json(&self.document_root_type),
             document_revision: 0,
             cached_peers: Vec::new(),
@@ -557,7 +553,6 @@ impl CollaborationSession {
             awareness,
             fragment_name: self.fragment_name.clone(),
             document_root_type: self.document_root_type.clone(),
-            void_element_tags: self.void_element_tags.clone(),
             cached_document_json: empty_document_json(&self.document_root_type),
             document_revision: 0,
             cached_peers: Vec::new(),
@@ -813,15 +808,10 @@ impl CollaborationSession {
             &fragment,
             anchor,
             anchor == head,
-            &self.void_element_tags,
+            &self.schema,
         )?;
-        let head_cursor = cursor_sticky_index_from_doc_pos(
-            &txn,
-            &fragment,
-            head,
-            anchor == head,
-            &self.void_element_tags,
-        )?;
+        let head_cursor =
+            cursor_sticky_index_from_doc_pos(&txn, &fragment, head, anchor == head, &self.schema)?;
         Some(json!({
             "anchor": anchor_cursor,
             "head": head_cursor,
@@ -832,366 +822,8 @@ impl CollaborationSession {
         let sticky_index: StickyIndex = serde_json::from_value(value.clone()).ok()?;
         let txn = self.doc.transact();
         let fragment = txn.get_xml_fragment(self.fragment_name.as_str())?;
-        sticky_index_to_doc_pos(&txn, &fragment, &sticky_index, &self.void_element_tags)
+        sticky_index_to_doc_pos(&txn, &fragment, &sticky_index, &self.schema)
     }
-}
-
-fn sticky_index_to_doc_pos<T: ReadTxn>(
-    txn: &T,
-    fragment: &XmlFragmentRef,
-    sticky_index: &StickyIndex,
-    void_element_tags: &HashSet<String>,
-) -> Option<u32> {
-    let offset = sticky_index.get_offset(txn)?;
-    let root_branch = BranchPtr::from(<XmlFragmentRef as AsRef<Branch>>::as_ref(fragment));
-    if offset.branch == root_branch {
-        return sequence_branch_index_to_doc_pos(
-            txn,
-            fragment.children(txn),
-            offset.index,
-            void_element_tags,
-        );
-    }
-    let mut child_start = 0u32;
-    for child in fragment.children(txn) {
-        if let Some(position) = sticky_index_to_doc_pos_in_node(
-            txn,
-            &child,
-            offset.branch,
-            offset.index,
-            child_start,
-            void_element_tags,
-        ) {
-            return Some(position);
-        }
-        child_start += xml_out_pm_size(txn, &child, void_element_tags);
-    }
-    None
-}
-
-fn sticky_index_to_doc_pos_in_node<T: ReadTxn>(
-    txn: &T,
-    node: &XmlOut,
-    target_branch: BranchPtr,
-    target_index: u32,
-    node_start: u32,
-    void_element_tags: &HashSet<String>,
-) -> Option<u32> {
-    match node {
-        XmlOut::Text(text) => {
-            let text_branch = BranchPtr::from(<XmlTextRef as AsRef<Branch>>::as_ref(text));
-            if text_branch == target_branch {
-                let text_value = text.get_string(txn);
-                let scalar_offset = utf16_offset_to_scalar(&text_value, target_index)?;
-                return Some(node_start + scalar_offset);
-            }
-            None
-        }
-        XmlOut::Element(element) => {
-            let element_branch = BranchPtr::from(<XmlElementRef as AsRef<Branch>>::as_ref(element));
-            if element_branch == target_branch {
-                let content_start = node_start + 1;
-                return sequence_branch_index_to_doc_pos(
-                    txn,
-                    element.children(txn),
-                    target_index,
-                    void_element_tags,
-                )
-                .map(|value| content_start + value);
-            }
-
-            let mut child_start = node_start + 1;
-            for child in element.children(txn) {
-                if let Some(position) = sticky_index_to_doc_pos_in_node(
-                    txn,
-                    &child,
-                    target_branch,
-                    target_index,
-                    child_start,
-                    void_element_tags,
-                ) {
-                    return Some(position);
-                }
-                child_start += xml_out_pm_size(txn, &child, void_element_tags);
-            }
-            None
-        }
-        XmlOut::Fragment(fragment) => {
-            let fragment_branch =
-                BranchPtr::from(<XmlFragmentRef as AsRef<Branch>>::as_ref(fragment));
-            if fragment_branch == target_branch {
-                return sequence_branch_index_to_doc_pos(
-                    txn,
-                    fragment.children(txn),
-                    target_index,
-                    void_element_tags,
-                )
-                .map(|value| node_start + value);
-            }
-
-            let mut child_start = node_start;
-            for child in fragment.children(txn) {
-                if let Some(position) = sticky_index_to_doc_pos_in_node(
-                    txn,
-                    &child,
-                    target_branch,
-                    target_index,
-                    child_start,
-                    void_element_tags,
-                ) {
-                    return Some(position);
-                }
-                child_start += xml_out_pm_size(txn, &child, void_element_tags);
-            }
-            None
-        }
-    }
-}
-
-fn sequence_branch_index_to_doc_pos<'a, T: ReadTxn>(
-    txn: &T,
-    children: impl Iterator<Item = XmlOut> + 'a,
-    target_index: u32,
-    void_element_tags: &HashSet<String>,
-) -> Option<u32> {
-    let mut branch_index = 0u32;
-    let mut doc_pos = 0u32;
-
-    for child in children {
-        match &child {
-            XmlOut::Text(text) => {
-                let text_value = text.get_string(txn);
-                let text_scalar_len = scalar_len(&text_value);
-                if target_index == branch_index {
-                    return Some(doc_pos);
-                }
-                branch_index += 1;
-                doc_pos += text_scalar_len;
-                if target_index == branch_index {
-                    return Some(doc_pos);
-                }
-            }
-            XmlOut::Element(_) | XmlOut::Fragment(_) => {
-                if target_index == branch_index {
-                    return Some(doc_pos);
-                }
-                branch_index += 1;
-                doc_pos += xml_out_pm_size(txn, &child, void_element_tags);
-                if target_index == branch_index {
-                    return Some(doc_pos);
-                }
-            }
-        }
-    }
-
-    if target_index == branch_index {
-        Some(doc_pos)
-    } else {
-        None
-    }
-}
-
-fn doc_pos_to_sticky_index<T: ReadTxn>(
-    txn: &T,
-    fragment: &XmlFragmentRef,
-    doc_pos: u32,
-    assoc: Assoc,
-    void_element_tags: &HashSet<String>,
-) -> Option<StickyIndex> {
-    let content_size = xml_fragment_pm_content_size(txn, fragment, void_element_tags);
-    if doc_pos > content_size {
-        return None;
-    }
-    doc_pos_to_sticky_index_in_sequence(
-        txn,
-        fragment.children(txn),
-        doc_pos,
-        assoc,
-        BranchPtr::from(<XmlFragmentRef as AsRef<Branch>>::as_ref(fragment)),
-        void_element_tags,
-    )
-}
-
-fn cursor_sticky_index_from_doc_pos<T: ReadTxn>(
-    txn: &T,
-    fragment: &XmlFragmentRef,
-    doc_pos: u32,
-    collapsed: bool,
-    void_element_tags: &HashSet<String>,
-) -> Option<StickyIndex> {
-    if !collapsed {
-        return doc_pos_to_sticky_index(txn, fragment, doc_pos, Assoc::Before, void_element_tags);
-    }
-
-    doc_pos_to_sticky_index(txn, fragment, doc_pos, Assoc::After, void_element_tags).or_else(|| {
-        doc_pos_to_sticky_index(txn, fragment, doc_pos, Assoc::Before, void_element_tags)
-    })
-}
-
-fn doc_pos_to_sticky_index_in_sequence<'a, T: ReadTxn>(
-    txn: &T,
-    children: impl Iterator<Item = XmlOut> + 'a,
-    doc_pos: u32,
-    assoc: Assoc,
-    branch: BranchPtr,
-    void_element_tags: &HashSet<String>,
-) -> Option<StickyIndex> {
-    let mut branch_index = 0u32;
-    let mut consumed_pm = 0u32;
-
-    for child in children {
-        match &child {
-            XmlOut::Text(text) => {
-                let text_value = text.get_string(txn);
-                let text_scalar_len = scalar_len(&text_value);
-                if doc_pos <= consumed_pm + text_scalar_len {
-                    let utf16_offset = scalar_offset_to_utf16(&text_value, doc_pos - consumed_pm)?;
-                    return StickyIndex::at(
-                        txn,
-                        BranchPtr::from(<XmlTextRef as AsRef<Branch>>::as_ref(text)),
-                        utf16_offset,
-                        assoc,
-                    );
-                }
-                branch_index += 1;
-                consumed_pm += text_scalar_len;
-            }
-            XmlOut::Element(element) => {
-                let child_size = xml_out_pm_size(txn, &child, void_element_tags);
-                if doc_pos == consumed_pm {
-                    return StickyIndex::at(txn, branch, branch_index, assoc);
-                }
-                if doc_pos < consumed_pm + child_size {
-                    return doc_pos_to_sticky_index_in_sequence(
-                        txn,
-                        element.children(txn),
-                        doc_pos - consumed_pm - 1,
-                        assoc,
-                        BranchPtr::from(<XmlElementRef as AsRef<Branch>>::as_ref(element)),
-                        void_element_tags,
-                    );
-                }
-                branch_index += 1;
-                consumed_pm += child_size;
-            }
-            XmlOut::Fragment(nested) => {
-                let child_size = xml_out_pm_size(txn, &child, void_element_tags);
-                if doc_pos == consumed_pm {
-                    return StickyIndex::at(txn, branch, branch_index, assoc);
-                }
-                if doc_pos < consumed_pm + child_size {
-                    return doc_pos_to_sticky_index_in_sequence(
-                        txn,
-                        nested.children(txn),
-                        doc_pos - consumed_pm,
-                        assoc,
-                        BranchPtr::from(<XmlFragmentRef as AsRef<Branch>>::as_ref(nested)),
-                        void_element_tags,
-                    );
-                }
-                branch_index += 1;
-                consumed_pm += child_size;
-            }
-        }
-    }
-
-    if doc_pos == consumed_pm {
-        StickyIndex::at(txn, branch, branch_index, assoc)
-    } else {
-        None
-    }
-}
-
-fn xml_fragment_pm_content_size<T: ReadTxn>(
-    txn: &T,
-    fragment: &XmlFragmentRef,
-    void_element_tags: &HashSet<String>,
-) -> u32 {
-    fragment
-        .children(txn)
-        .map(|child| xml_out_pm_size(txn, &child, void_element_tags))
-        .sum()
-}
-
-fn void_element_tags_from_schema(schema: &Schema) -> HashSet<String> {
-    schema
-        .all_nodes()
-        .filter(|spec| spec.is_void)
-        .map(|spec| spec.name.clone())
-        .collect()
-}
-
-fn void_element_tags_from_schema_with_opaque(schema: &Schema) -> HashSet<String> {
-    let mut tags = void_element_tags_from_schema(schema);
-    tags.extend(
-        ["__opaque", "__opaque_json", "__skip"]
-            .into_iter()
-            .map(str::to_string),
-    );
-    tags
-}
-
-fn is_void_element_tag(tag: &str, void_element_tags: &HashSet<String>) -> bool {
-    void_element_tags.contains(tag)
-}
-
-fn xml_out_pm_size<T: ReadTxn>(txn: &T, node: &XmlOut, void_element_tags: &HashSet<String>) -> u32 {
-    match node {
-        XmlOut::Text(text) => text.get_string(txn).chars().count() as u32,
-        XmlOut::Element(element) => {
-            if is_void_element_tag(element.tag(), void_element_tags) {
-                1
-            } else {
-                2 + element
-                    .children(txn)
-                    .map(|child| xml_out_pm_size(txn, &child, void_element_tags))
-                    .sum::<u32>()
-            }
-        }
-        XmlOut::Fragment(fragment) => fragment
-            .children(txn)
-            .map(|child| xml_out_pm_size(txn, &child, void_element_tags))
-            .sum(),
-    }
-}
-
-fn scalar_len(value: &str) -> u32 {
-    value.chars().count() as u32
-}
-
-fn scalar_offset_to_utf16(value: &str, scalar_offset: u32) -> Option<u32> {
-    let mut scalar_count = 0u32;
-    let mut utf16_count = 0u32;
-    if scalar_offset == 0 {
-        return Some(0);
-    }
-    for character in value.chars() {
-        scalar_count += 1;
-        utf16_count += character.len_utf16() as u32;
-        if scalar_count == scalar_offset {
-            return Some(utf16_count);
-        }
-    }
-    None
-}
-
-fn utf16_offset_to_scalar(value: &str, utf16_offset: u32) -> Option<u32> {
-    let mut scalar_count = 0u32;
-    let mut utf16_count = 0u32;
-    if utf16_offset == 0 {
-        return Some(0);
-    }
-    for character in value.chars() {
-        scalar_count += 1;
-        utf16_count += character.len_utf16() as u32;
-        if utf16_count == utf16_offset {
-            return Some(scalar_count);
-        }
-        if utf16_count > utf16_offset {
-            return None;
-        }
-    }
-    None
 }
 
 #[derive(Clone, Copy)]
@@ -1240,9 +872,11 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use yrs::any::Any;
-    use yrs::types::xml::{XmlElementPrelim, XmlTextPrelim};
+    use yrs::types::xml::{XmlElementPrelim, XmlFragmentRef, XmlOut, XmlTextPrelim};
     use yrs::types::{Attrs, ToJson};
-    use yrs::{IndexedSequence, Text, TransactionMut, Xml};
+    use yrs::{Assoc, IndexedSequence, Text, TransactionMut, Xml};
+
+    use crate::yrs_engine::doc_pos_to_sticky_index;
 
     fn client_id(value: u64) -> ClientID {
         ClientID::new(value)
@@ -2233,7 +1867,7 @@ mod tests {
             .expect("parent boundary should produce sticky index");
 
         assert_eq!(
-            sticky_index_to_doc_pos(&txn, &fragment, &boundary, &session.void_element_tags,),
+            sticky_index_to_doc_pos(&txn, &fragment, &boundary, &session.schema),
             Some(4),
             "parent index 1 is after the entire three-scalar XmlText child"
         );
@@ -2681,15 +2315,17 @@ mod tests {
             .to_string(),
         );
 
-        assert!(session.void_element_tags.contains(void_name));
+        assert!(session
+            .schema
+            .node(void_name)
+            .is_some_and(|spec| spec.is_void));
 
         let txn = session.doc.transact();
         let fragment = txn
             .get_xml_fragment("default")
             .expect("fragment should exist");
-        let sticky =
-            doc_pos_to_sticky_index(&txn, &fragment, 9, Assoc::After, &session.void_element_tags)
-                .expect("selection below custom void node should map to a sticky index");
+        let sticky = doc_pos_to_sticky_index(&txn, &fragment, 9, Assoc::After, &session.schema)
+            .expect("selection below custom void node should map to a sticky index");
         let XmlOut::Element(second_paragraph) = fragment
             .get(&txn, 2)
             .expect("second paragraph should exist")
@@ -2711,7 +2347,7 @@ mod tests {
             serde_json::to_value(&expected).expect("expected sticky index should serialize")
         );
         assert_eq!(
-            sticky_index_to_doc_pos(&txn, &fragment, &expected, &session.void_element_tags),
+            sticky_index_to_doc_pos(&txn, &fragment, &expected, &session.schema),
             Some(9)
         );
     }
