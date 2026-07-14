@@ -1821,6 +1821,7 @@ fn insert_nodes_in_children(parent: &Node, offset: u32, fragment: &Fragment) -> 
                     continue;
                 }
             }
+            new_children.push(child.clone());
             remaining_offset -= child_size;
         } else if child.is_void() {
             if remaining_offset == 0 {

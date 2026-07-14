@@ -2510,6 +2510,26 @@ fn test_replace_range_preserves_surrounding_content() {
 }
 
 #[test]
+fn replace_range_preserves_preceding_split_text_siblings() {
+    let (document, schema) = doc_and_schema(doc(vec![paragraph(vec![
+        text("a"),
+        text_with_marks("bcd", vec![bold()]),
+        text("ef"),
+    ])]));
+    let mut transaction = Transaction::new(Source::Input);
+    transaction.add_step(Step::ReplaceRange {
+        from: 3,
+        to: 4,
+        content: Fragment::from(vec![text("a")]),
+    });
+
+    let (actual, _) = transaction.apply(&document, &schema).unwrap();
+
+    assert_eq!(actual.root().text_content(), "abadef");
+    assert_eq!(actual.root().child(0).unwrap().child(0).unwrap().text_str(), Some("a"));
+}
+
+#[test]
 fn test_replace_range_with_marked_content() {
     // <doc><p>Hello</p></doc>
     // Replace "ell" (pos 2..5) with bold "ELL"
