@@ -1,7 +1,8 @@
 pub mod generate;
 pub mod incremental;
 
-use crate::model::Node;
+use crate::model::{Document, Node};
+use crate::schema::{NodeRole, Schema};
 
 /// Context for list items, providing numbering and position metadata.
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +66,66 @@ pub enum RenderElement {
     },
     /// End of a block-level container.
     BlockEnd,
+}
+
+/// Reconstruct the exact flat visible string consumed by scalar editor
+/// offsets and the position map.
+pub(crate) fn rendered_text(document: &Document, schema: &Schema) -> String {
+    let blocks = incremental::render_blocks(document, schema);
+    let elements = incremental::flatten_render_blocks(&blocks);
+    let mut text = String::new();
+    let mut pending_prefix = String::new();
+    let mut started_block = false;
+
+    let begin_block = |text: &mut String, started_block: &mut bool| {
+        if *started_block {
+            text.push('\n');
+        }
+        *started_block = true;
+    };
+
+    for element in elements {
+        match element {
+            RenderElement::BlockStart {
+                node_type,
+                list_context,
+                ..
+            } => {
+                if let Some(context) = list_context {
+                    pending_prefix = if context.kind.as_deref() == Some("task") {
+                        task_list_marker_string(context.checked.unwrap_or(false))
+                    } else {
+                        list_marker_string(context.ordered, context.index)
+                    };
+                }
+                if schema
+                    .node(&node_type)
+                    .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
+                {
+                    begin_block(&mut text, &mut started_block);
+                    text.push_str(&pending_prefix);
+                    pending_prefix.clear();
+                }
+            }
+            RenderElement::TextRun { text: value, .. } => text.push_str(&value),
+            RenderElement::VoidInline { .. } => text.push('\n'),
+            RenderElement::VoidBlock { .. } => {
+                begin_block(&mut text, &mut started_block);
+                text.push('\u{fffc}');
+            }
+            RenderElement::OpaqueInlineAtom {
+                node_type, label, ..
+            } => text.push_str(&opaque_atom_visible_string(&node_type, &label)),
+            RenderElement::OpaqueBlockAtom {
+                node_type, label, ..
+            } => {
+                begin_block(&mut text, &mut started_block);
+                text.push_str(&opaque_atom_visible_string(&node_type, &label));
+            }
+            RenderElement::BlockEnd => {}
+        }
+    }
+    text
 }
 
 /// Visible text used for an ordered or unordered list marker.

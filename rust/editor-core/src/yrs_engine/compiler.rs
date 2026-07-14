@@ -1,8 +1,7 @@
 use crate::boundary::ResourceLimits;
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::position::PositionMap;
-use crate::render::{list_marker_string, opaque_atom_visible_string, RenderElement};
-use crate::schema::{NodeRole, Schema};
+use crate::schema::Schema;
 use crate::selection::Selection;
 use crate::serialize::to_prosemirror_json;
 use crate::transform::{DocumentValidator, Step, StepMap};
@@ -93,7 +92,7 @@ pub(super) fn compile_transaction(
     )?;
 
     let base_position_map = PositionMap::build(context.document, context.schema);
-    let rendered_text = rendered_text(context.document, context.schema);
+    let rendered_text = crate::render::rendered_text(context.document, context.schema);
     let rendered_scalars = rendered_text.chars().count();
     if u32::try_from(rendered_scalars).ok() != Some(base_position_map.total_scalars()) {
         return Err(OperationError::engine_invariant_failed(
@@ -107,6 +106,7 @@ pub(super) fn compile_transaction(
     let mut operation_result = None;
     let mut input_bytes = 0usize;
     let mut undo_units_bound = 0u64;
+    let mut undo_limit_error = None;
     let mut history_class = HistoryClass::Skip;
     let records_history = transaction.history_policy != HistoryPolicy::Skip;
 
@@ -155,11 +155,12 @@ pub(super) fn compile_transaction(
                 if records_history {
                     charge_undo_bound(
                         &mut undo_units_bound,
+                        &mut undo_limit_error,
                         text.chars().count() as u64,
                         request_id,
                         operation_index,
                         context.editing_limits.max_undo_retained_units,
-                    )?;
+                    );
                 }
                 history_class = merge_history_class(history_class, HistoryClass::Insert);
             }
@@ -185,11 +186,12 @@ pub(super) fn compile_transaction(
                 if records_history {
                     charge_undo_bound(
                         &mut undo_units_bound,
+                        &mut undo_limit_error,
                         u64::from(to - from),
                         request_id,
                         operation_index,
                         context.editing_limits.max_undo_retained_units,
-                    )?;
+                    );
                 }
                 history_class = merge_history_class(history_class, HistoryClass::Delete);
             }
@@ -227,11 +229,12 @@ pub(super) fn compile_transaction(
                 if records_history {
                     charge_undo_bound(
                         &mut undo_units_bound,
+                        &mut undo_limit_error,
                         u64::from(to - from).saturating_add(u64::from(content.size())),
                         request_id,
                         operation_index,
                         context.editing_limits.max_undo_retained_units,
-                    )?;
+                    );
                 }
                 let class = if content.size() == 0 {
                     HistoryClass::Delete
@@ -282,11 +285,12 @@ pub(super) fn compile_transaction(
                 if records_history && operation_changed {
                     charge_undo_bound(
                         &mut undo_units_bound,
+                        &mut undo_limit_error,
                         u64::from(to - from),
                         request_id,
                         operation_index,
                         context.editing_limits.max_undo_retained_units,
-                    )?;
+                    );
                 }
                 history_class = merge_history_class(history_class, HistoryClass::Format);
             }
@@ -332,11 +336,12 @@ pub(super) fn compile_transaction(
                 if records_history && operation_changed {
                     charge_undo_bound(
                         &mut undo_units_bound,
+                        &mut undo_limit_error,
                         u64::from(to - from),
                         request_id,
                         operation_index,
                         context.editing_limits.max_undo_retained_units,
-                    )?;
+                    );
                 }
                 history_class = merge_history_class(history_class, HistoryClass::Format);
             }
@@ -392,11 +397,12 @@ pub(super) fn compile_transaction(
                     for _ in 0..2 {
                         charge_undo_bound(
                             &mut undo_units_bound,
+                            &mut undo_limit_error,
                             u64::from(to - from),
                             request_id,
                             operation_index,
                             context.editing_limits.max_undo_retained_units,
-                        )?;
+                        );
                     }
                 }
                 history_class = merge_history_class(history_class, HistoryClass::Format);
@@ -420,16 +426,6 @@ pub(super) fn compile_transaction(
         &preview,
         context,
     )?;
-    if undo_units_bound > context.editing_limits.max_undo_retained_units {
-        return Err(OperationError::operation_limit_exceeded(
-            request_id,
-            None,
-            "maxUndoRetainedUnits",
-            context.editing_limits.max_undo_retained_units,
-            undo_units_bound,
-        ));
-    }
-
     let selection_plan = selection_plan(
         context,
         &transaction.selection_intent,
@@ -443,6 +439,9 @@ pub(super) fn compile_transaction(
     let affected_top_level_blocks = affected_top_level_blocks(context.document, &preview);
     if preview == *context.document || transaction.history_policy == HistoryPolicy::Skip {
         history_class = HistoryClass::Skip;
+        undo_units_bound = 0;
+    } else if let Some(error) = undo_limit_error {
+        return Err(error);
     }
 
     Ok(CompiledTransaction {
@@ -573,16 +572,18 @@ fn charge_input(
 
 fn charge_undo_bound(
     charged: &mut u64,
+    pending_error: &mut Option<OperationError>,
     amount: u64,
     request_id: u64,
     operation_index: usize,
     limit: u64,
-) -> OperationResult<()> {
+) {
     let actual = charged.checked_add(amount);
     let overflowed = actual.is_none();
     let actual = actual.unwrap_or(u64::MAX);
-    if overflowed || actual > limit {
-        return Err(OperationError::operation_limit_exceeded(
+    *charged = actual;
+    if pending_error.is_none() && (overflowed || actual > limit) {
+        *pending_error = Some(OperationError::operation_limit_exceeded(
             request_id,
             Some(operation_index),
             "maxUndoRetainedUnits",
@@ -590,8 +591,6 @@ fn charge_undo_bound(
             actual,
         ));
     }
-    *charged = actual;
-    Ok(())
 }
 
 fn validate_operation_marks(
@@ -600,7 +599,7 @@ fn validate_operation_marks(
     marks: &[Mark],
     schema: &Schema,
 ) -> OperationResult<()> {
-    crate::transform::validate_canonical_mark_set(marks, schema).map_err(|error| {
+    crate::transform::validate_input_mark_set(marks, schema).map_err(|error| {
         OperationError::operation_invalid(request_id, operation_index, "marks", error.to_string())
     })
 }
@@ -687,64 +686,6 @@ fn fragment_input_bytes(fragment: &Fragment) -> usize {
     fragment
         .iter()
         .fold(0usize, |total, node| total.saturating_add(node_bytes(node)))
-}
-
-fn rendered_text(document: &Document, schema: &Schema) -> String {
-    let blocks = crate::render::incremental::render_blocks(document, schema);
-    let elements = crate::render::incremental::flatten_render_blocks(&blocks);
-    let mut text = String::new();
-    let mut pending_prefix = String::new();
-    let mut started_block = false;
-
-    let begin_block = |text: &mut String, started_block: &mut bool| {
-        if *started_block {
-            text.push('\n');
-        }
-        *started_block = true;
-    };
-
-    for element in elements {
-        match element {
-            RenderElement::BlockStart {
-                node_type,
-                list_context,
-                ..
-            } => {
-                if let Some(context) = list_context {
-                    pending_prefix = if context.kind.as_deref() == Some("task") {
-                        crate::render::task_list_marker_string(context.checked.unwrap_or(false))
-                    } else {
-                        list_marker_string(context.ordered, context.index)
-                    };
-                }
-                if schema
-                    .node(&node_type)
-                    .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
-                {
-                    begin_block(&mut text, &mut started_block);
-                    text.push_str(&pending_prefix);
-                    pending_prefix.clear();
-                }
-            }
-            RenderElement::TextRun { text: value, .. } => text.push_str(&value),
-            RenderElement::VoidInline { .. } => text.push('\n'),
-            RenderElement::VoidBlock { .. } => {
-                begin_block(&mut text, &mut started_block);
-                text.push('\u{fffc}');
-            }
-            RenderElement::OpaqueInlineAtom {
-                node_type, label, ..
-            } => text.push_str(&opaque_atom_visible_string(&node_type, &label)),
-            RenderElement::OpaqueBlockAtom {
-                node_type, label, ..
-            } => {
-                begin_block(&mut text, &mut started_block);
-                text.push_str(&opaque_atom_visible_string(&node_type, &label));
-            }
-            RenderElement::BlockEnd => {}
-        }
-    }
-    text
 }
 
 fn charge_preview_output(

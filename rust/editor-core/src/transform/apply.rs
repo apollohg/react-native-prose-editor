@@ -2192,12 +2192,26 @@ impl DocumentValidator {
     }
 }
 
-/// Validate that a mark set is representable by standard Yjs text attributes.
+/// Validate an incoming mark set before canonical schema-rank ordering.
 ///
 /// Yjs has one value per attribute key, so same-type duplicates are ambiguous.
-/// The order is also kept at schema rank so semantic previews remain identical
-/// to their canonical ProseMirror JSON representation.
+/// Valid input order is otherwise irrelevant because semantic previews
+/// canonicalize it after applying the operation.
+pub(crate) fn validate_input_mark_set(marks: &[Mark], schema: &Schema) -> BoundaryResult<()> {
+    validate_mark_set(marks, schema, false)
+}
+
+/// Validate that a mark set is canonical and representable by standard Yjs
+/// text attributes.
 pub(crate) fn validate_canonical_mark_set(marks: &[Mark], schema: &Schema) -> BoundaryResult<()> {
+    validate_mark_set(marks, schema, true)
+}
+
+fn validate_mark_set(
+    marks: &[Mark],
+    schema: &Schema,
+    require_canonical_order: bool,
+) -> BoundaryResult<()> {
     let work_limit = marks.len().saturating_mul(128).max(128);
     let budget = WorkBudget::new(work_limit);
     let mut seen = HashSet::new();
@@ -2221,7 +2235,7 @@ pub(crate) fn validate_canonical_mark_set(marks: &[Mark], schema: &Schema) -> Bo
                 format!("unknown mark '{}'", mark.mark_type()),
             )
         })?;
-        if previous_rank.is_some_and(|previous| rank < previous) {
+        if require_canonical_order && previous_rank.is_some_and(|previous| rank < previous) {
             let mut error = BoundaryError::new(
                 "DOCUMENT_INVALID",
                 "mark order does not match ProseMirror schema rank",

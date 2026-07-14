@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use crate::boundary::ResourceLimits;
 use crate::model::{Fragment, Mark, Node};
+use crate::schema::content_rule::ContentRule;
 use crate::schema::presets::tiptap_schema;
+use crate::schema::{AttrSpec, NodeRole, NodeSpec, Schema};
 use crate::selection::Selection;
 use crate::transform::{Source, Step, Transaction};
 use crate::yrs_engine::{
@@ -108,6 +110,41 @@ fn legacy(engine: &YrsDocumentEngine, steps: Vec<Step>) -> crate::model::Documen
         )
         .unwrap()
         .0
+}
+
+fn render_parity_schema() -> Schema {
+    let base = tiptap_schema();
+    let mut nodes: Vec<NodeSpec> = base.all_nodes().cloned().collect();
+    let label_attrs = HashMap::from([(
+        "label".to_string(),
+        AttrSpec {
+            default: Some(serde_json::Value::Null),
+            has_default: true,
+        },
+    )]);
+    nodes.extend([
+        NodeSpec {
+            name: "mention".into(),
+            content: ContentRule::parse("").unwrap(),
+            group: Some("inline".into()),
+            attrs: label_attrs.clone(),
+            role: NodeRole::Inline,
+            html_tag: None,
+            is_void: true,
+            allow_undeclared_attrs: true,
+        },
+        NodeSpec {
+            name: "chip".into(),
+            content: ContentRule::parse("").unwrap(),
+            group: Some("inline".into()),
+            attrs: label_attrs,
+            role: NodeRole::Inline,
+            html_tag: None,
+            is_void: true,
+            allow_undeclared_attrs: false,
+        },
+    ]);
+    Schema::new(nodes, base.all_marks().cloned().collect())
 }
 
 fn assert_preview(
@@ -351,6 +388,90 @@ fn admission_errors_have_exact_codes_and_operation_indices() {
             .compile_typed_transaction(transaction(&engine, vec![operation]))
             .unwrap_err();
         assert_eq!(error.operation_index, Some(0), "{error:?}");
+    }
+}
+
+#[test]
+fn unsorted_valid_input_marks_compile_to_canonical_legacy_previews() {
+    let engine = engine(PLAIN);
+    let bold = Mark::new("bold".into(), HashMap::new());
+    let italic = Mark::new("italic".into(), HashMap::new());
+    let unsorted = vec![italic.clone(), bold.clone()];
+    let canonical = vec![bold, italic];
+
+    assert_preview(
+        &engine,
+        TypedOperation::InsertText {
+            at: point(5),
+            text: "!".into(),
+            marks: unsorted.clone(),
+        },
+        vec![Step::InsertText {
+            pos: 6,
+            text: "!".into(),
+            marks: canonical.clone(),
+        }],
+        HistoryClass::Insert,
+    );
+
+    let unsorted_content = Fragment::from(vec![Node::text("!".into(), unsorted)]);
+    let canonical_content = Fragment::from(vec![Node::text("!".into(), canonical)]);
+    assert_preview(
+        &engine,
+        TypedOperation::ReplaceRange {
+            range: range(4, 5),
+            content: unsorted_content,
+        },
+        vec![Step::ReplaceRange {
+            from: 5,
+            to: 6,
+            content: canonical_content,
+        }],
+        HistoryClass::Structural,
+    );
+}
+
+#[test]
+fn invalid_input_marks_reject_at_their_exact_operation_index() {
+    let engine = engine(PLAIN);
+    let invalid_mark_sets = [
+        vec![
+            Mark::new("bold".into(), HashMap::new()),
+            Mark::new("bold".into(), HashMap::new()),
+        ],
+        vec![Mark::new("unknown".into(), HashMap::new())],
+        vec![Mark::new(
+            "bold".into(),
+            HashMap::from([("undeclared".into(), serde_json::json!(true))]),
+        )],
+    ];
+
+    for marks in invalid_mark_sets {
+        let invalid_operations = [
+            TypedOperation::InsertText {
+                at: point(1),
+                text: "x".into(),
+                marks: marks.clone(),
+            },
+            TypedOperation::ReplaceRange {
+                range: range(1, 2),
+                content: Fragment::from(vec![Node::text("x".into(), marks)]),
+            },
+        ];
+        for invalid_operation in invalid_operations {
+            let error = engine
+                .compile_typed_transaction(transaction(
+                    &engine,
+                    vec![
+                        TypedOperation::DeleteRange { range: range(0, 0) },
+                        invalid_operation,
+                    ],
+                ))
+                .unwrap_err();
+            assert_eq!(error.code, "OPERATION_INVALID");
+            assert_eq!(error.operation_index, Some(1));
+            assert_eq!(error.details, Some(serde_json::json!({ "field": "marks" })));
+        }
     }
 }
 
@@ -670,7 +791,7 @@ fn utf16_affinity_canonical_order_and_affected_blocks_are_deterministic() {
         r#"{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"A😀"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"B"}]}]}]}]}"#,
     );
     let schema = tiptap_schema();
-    let list_rendered = super::rendered_text(list.document().unwrap(), &schema);
+    let list_rendered = crate::render::rendered_text(list.document().unwrap(), &schema);
     assert_eq!(list_rendered, "• A😀\n• B");
     assert_eq!(
         list_rendered.chars().count() as u32,
@@ -746,6 +867,44 @@ fn utf16_affinity_canonical_order_and_affected_blocks_are_deterministic() {
         ))
         .unwrap();
     assert_eq!(compiled.affected_top_level_blocks, vec![0, 1]);
+}
+
+#[test]
+fn rendered_text_helper_matches_position_map_for_visible_atoms_and_separators() {
+    let schema = render_parity_schema();
+    let attrs = |label: &str| HashMap::from([("label".to_string(), serde_json::json!(label))]);
+    let document = crate::model::Document::new(Node::element(
+        "doc".into(),
+        HashMap::new(),
+        Fragment::from(vec![
+            Node::element(
+                "paragraph".into(),
+                HashMap::new(),
+                Fragment::from(vec![
+                    Node::text("A".into(), vec![]),
+                    Node::void("hardBreak".into(), HashMap::new()),
+                    Node::void(
+                        "mention".into(),
+                        HashMap::from([
+                            ("label".into(), serde_json::json!("Jay")),
+                            ("mentionSuggestionChar".into(), serde_json::json!("@")),
+                        ]),
+                    ),
+                    Node::void("chip".into(), attrs("C")),
+                ]),
+            ),
+            Node::void("horizontalRule".into(), HashMap::new()),
+            Node::void("widget".into(), attrs("W")),
+            Node::element("paragraph".into(), HashMap::new(), Fragment::empty()),
+        ]),
+    ));
+
+    let rendered = crate::render::rendered_text(&document, &schema);
+    assert_eq!(rendered, "A\n@Jay[C]\n\u{fffc}\n[W]\n\u{200b}");
+    assert_eq!(
+        rendered.chars().count() as u32,
+        crate::position::PositionMap::build(&document, &schema).total_scalars()
+    );
 }
 
 #[test]
@@ -865,6 +1024,75 @@ fn no_op_marks_do_not_consume_undo_or_rewrite_unrelated_text_nodes() {
     .unwrap();
     assert_eq!(compiled.preview, document);
     assert_eq!(compiled.preview.root().child(0).unwrap().child_count(), 2);
+}
+
+#[test]
+fn final_semantic_no_ops_discard_provisional_undo_work() {
+    let engine = engine(PLAIN);
+    let limits = EditingLimits {
+        max_undo_retained_units: 1,
+        ..EditingLimits::default()
+    };
+    let schema = tiptap_schema();
+    let current = Selection::cursor(6);
+    let context = super::CompilationContext {
+        document: engine.document().unwrap(),
+        selection: Some(&current),
+        schema: &schema,
+        resource_limits: engine.resource_limits(),
+        editing_limits: &limits,
+        document_revision: engine.revision(),
+        max_length: None,
+    };
+
+    let mut identical_replace = transaction(
+        &engine,
+        vec![TypedOperation::ReplaceRange {
+            range: range(0, 5),
+            content: Fragment::from(vec![Node::text("Hello".into(), vec![])]),
+        }],
+    );
+    identical_replace.selection_intent = SelectionIntent::Preserve;
+    let compiled = super::compile_transaction(context, identical_replace).unwrap();
+    assert_eq!(compiled.preview, *engine.document().unwrap());
+    assert_eq!(compiled.history_class, HistoryClass::Skip);
+    assert_eq!(compiled.undo_units_bound, 0);
+    assert_eq!(compiled.selection_plan, SelectionPlan::Preserve);
+
+    let mut cancelling = transaction(
+        &engine,
+        vec![
+            TypedOperation::DeleteRange { range: range(4, 5) },
+            TypedOperation::InsertText {
+                at: point(4),
+                text: "o".into(),
+                marks: vec![],
+            },
+        ],
+    );
+    cancelling.selection_intent = SelectionIntent::Preserve;
+    let compiled = super::compile_transaction(context, cancelling).unwrap();
+    assert_eq!(compiled.preview, *engine.document().unwrap());
+    assert_eq!(compiled.history_class, HistoryClass::Skip);
+    assert_eq!(compiled.undo_units_bound, 0);
+    assert_eq!(compiled.selection_plan, SelectionPlan::Preserve);
+
+    let changed = transaction(
+        &engine,
+        vec![
+            TypedOperation::DeleteRange { range: range(4, 5) },
+            TypedOperation::InsertText {
+                at: point(4),
+                text: "x".into(),
+                marks: vec![],
+            },
+        ],
+    );
+    let error = super::compile_transaction(context, changed).unwrap_err();
+    assert_eq!(error.code, "OPERATION_LIMIT_EXCEEDED");
+    assert_eq!(error.operation_index, Some(1));
+    assert_eq!(error.limit, Some(1));
+    assert_eq!(error.actual, Some(2));
 }
 
 #[test]

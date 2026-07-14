@@ -6,7 +6,7 @@ pub mod steps;
 pub use apply::apply_step;
 pub use apply::DocumentValidator;
 pub(crate) use apply::{
-    apply_step_canonical_marks, validate_canonical_mark_set, validate_canonical_marks,
+    apply_step_canonical_marks, validate_canonical_marks, validate_input_mark_set,
 };
 
 use std::collections::HashMap;
