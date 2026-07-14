@@ -1003,6 +1003,8 @@ fn empty_yrs_engine() -> YrsDocumentEngine {
         fragment_name: "prosemirror".to_string(),
         initialization_mode: InitializationMode::LocalEmpty,
         resource_limits: ResourceLimits::default(),
+        editing_limits: editor_core::yrs_engine::EditingLimits::default(),
+        max_length: None,
         scope: None,
     })
     .expect("Yrs benchmark engine should initialize")

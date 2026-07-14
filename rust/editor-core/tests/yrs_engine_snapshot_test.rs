@@ -20,6 +20,8 @@ fn engine_config(
         fragment_name: fragment_name.into(),
         initialization_mode: InitializationMode::LocalEmpty,
         resource_limits,
+        editing_limits: editor_core::yrs_engine::EditingLimits::default(),
+        max_length: None,
         scope: Some(DocumentScope {
             document_id: document_id.into(),
             lineage_id: lineage_id.into(),

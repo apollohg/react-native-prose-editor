@@ -84,6 +84,8 @@ fn config(
         fragment_name: "prosemirror".to_string(),
         initialization_mode,
         resource_limits: limits,
+        editing_limits: editor_core::yrs_engine::EditingLimits::default(),
+        max_length: None,
         scope: Some(DocumentScope {
             document_id: "resource-doc".to_string(),
             lineage_id: "resource-lineage".to_string(),
@@ -530,6 +532,8 @@ fn snapshot_any_materialization_output_limit_is_structured_and_atomic() {
         fragment_name: "p".into(),
         initialization_mode: InitializationMode::LocalEmpty,
         resource_limits: limits,
+        editing_limits: editor_core::yrs_engine::EditingLimits::default(),
+        max_length: None,
         scope: Some(DocumentScope {
             document_id: "d".into(),
             lineage_id: "l".into(),

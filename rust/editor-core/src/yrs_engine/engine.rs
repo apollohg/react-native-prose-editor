@@ -15,8 +15,8 @@ use crate::transform::DocumentValidator;
 
 use super::update_preflight::preflight_update_v1;
 use super::{
-    DocumentScope, DocumentSnapshot, TransactionOrigin, YrsDocumentCodec, YrsEngineError,
-    YrsEngineResult, SNAPSHOT_FORMAT_VERSION,
+    DocumentScope, DocumentSnapshot, EditingLimits, TransactionOrigin, YrsDocumentCodec,
+    YrsEngineError, YrsEngineResult, SNAPSHOT_FORMAT_VERSION,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +31,8 @@ pub struct YrsEngineConfig {
     pub fragment_name: String,
     pub initialization_mode: InitializationMode,
     pub resource_limits: ResourceLimits,
+    pub editing_limits: EditingLimits,
+    pub max_length: Option<u32>,
     pub scope: Option<DocumentScope>,
 }
 
@@ -80,6 +82,8 @@ pub struct YrsDocumentEngine {
     fragment_name: String,
     schema: Schema,
     resource_limits: ResourceLimits,
+    editing_limits: EditingLimits,
+    max_length: Option<u32>,
     scope: Option<DocumentScope>,
     schema_fingerprint: String,
     state: EngineDocumentState,
@@ -95,6 +99,8 @@ impl YrsDocumentEngine {
             fragment_name,
             initialization_mode,
             resource_limits,
+            editing_limits,
+            max_length,
             scope,
         } = config;
         validate_config_metadata(&fragment_name, scope.as_ref(), &resource_limits)?;
@@ -113,6 +119,8 @@ impl YrsDocumentEngine {
             fragment_name,
             schema,
             resource_limits,
+            editing_limits,
+            max_length,
             scope,
             schema_fingerprint,
             state: candidate.state,
@@ -175,6 +183,14 @@ impl YrsDocumentEngine {
 
     pub fn resource_limits(&self) -> &ResourceLimits {
         &self.resource_limits
+    }
+
+    pub fn editing_limits(&self) -> &EditingLimits {
+        &self.editing_limits
+    }
+
+    pub fn max_length(&self) -> Option<u32> {
+        self.max_length
     }
 
     pub fn export_snapshot(&self) -> YrsEngineResult<DocumentSnapshot> {
@@ -1015,6 +1031,8 @@ mod tests {
             fragment_name: "prosemirror".into(),
             initialization_mode: crate::yrs_engine::InitializationMode::LocalEmpty,
             resource_limits: ResourceLimits::default(),
+            editing_limits: crate::yrs_engine::EditingLimits::default(),
+            max_length: None,
             scope: Some(crate::yrs_engine::DocumentScope {
                 document_id: "doc".into(),
                 lineage_id: "lineage".into(),
@@ -1053,6 +1071,8 @@ mod tests {
                 fragment_name: "prosemirror".into(),
                 initialization_mode: crate::yrs_engine::InitializationMode::LocalEmpty,
                 resource_limits: ResourceLimits::default(),
+                editing_limits: crate::yrs_engine::EditingLimits::default(),
+                max_length: None,
                 scope: None,
             })
             .unwrap();
@@ -1083,6 +1103,8 @@ mod tests {
                 fragment_name: "prosemirror".into(),
                 initialization_mode: crate::yrs_engine::InitializationMode::LocalEmpty,
                 resource_limits: ResourceLimits::default(),
+                editing_limits: crate::yrs_engine::EditingLimits::default(),
+                max_length: None,
                 scope: Some(crate::yrs_engine::DocumentScope {
                     document_id: "doc".into(),
                     lineage_id: "lineage".into(),

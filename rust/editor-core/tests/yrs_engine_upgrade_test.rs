@@ -55,6 +55,8 @@ fn restores_equivalent_state(fixture: &Value, encoded_state: &[u8]) -> bool {
         fragment_name: FRAGMENT_NAME.into(),
         initialization_mode: InitializationMode::AwaitRemote,
         resource_limits: ResourceLimits::default(),
+        editing_limits: editor_core::yrs_engine::EditingLimits::default(),
+        max_length: None,
         scope: Some(scope.clone()),
     }) {
         Ok(engine) => engine,

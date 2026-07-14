@@ -41,6 +41,8 @@ fn local_config(schema: Schema) -> YrsEngineConfig {
         fragment_name: "prosemirror".to_string(),
         initialization_mode: InitializationMode::LocalEmpty,
         resource_limits: ResourceLimits::default(),
+        editing_limits: editor_core::yrs_engine::EditingLimits::default(),
+        max_length: None,
         scope: None,
     }
 }
@@ -543,6 +545,8 @@ fn local_empty_respects_custom_roots_fragments_scope_and_limits() {
         fragment_name: "article-content".to_string(),
         initialization_mode: InitializationMode::LocalEmpty,
         resource_limits: limits.clone(),
+        editing_limits: editor_core::yrs_engine::EditingLimits::default(),
+        max_length: None,
         scope: Some(scope.clone()),
     })
     .unwrap();

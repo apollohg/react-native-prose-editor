@@ -1,12 +1,23 @@
 mod codec;
+mod editing_limits;
 mod engine;
 mod error;
+mod operation;
 mod origin;
 mod snapshot;
 mod update_preflight;
 
 pub(crate) use codec::YrsDocumentCodec;
+pub use editing_limits::{
+    EditingLimitOverrides, EditingLimits, HARD_MAX_DERIVED_OUTPUT_BYTES,
+    HARD_MAX_OPERATIONS_PER_TRANSACTION, HARD_MAX_UNDO_GROUPS, HARD_MAX_UNDO_RETAINED_UNITS,
+};
 pub use engine::{EngineCommit, InitializationMode, YrsDocumentEngine, YrsEngineConfig};
 pub use error::{YrsEngineError, YrsEngineResult};
+pub use operation::{
+    Affinity, EditorOffsetKind, HistoryPolicy, OperationError, OperationResult, RevisionedPosition,
+    RevisionedRange, SelectionInput, SelectionIntent, TransactionCommit, TypedOperation,
+    TypedTransaction,
+};
 pub use origin::TransactionOrigin;
 pub use snapshot::{DocumentScope, DocumentSnapshot, SNAPSHOT_FORMAT_VERSION};
