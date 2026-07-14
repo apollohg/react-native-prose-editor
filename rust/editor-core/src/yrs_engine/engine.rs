@@ -154,7 +154,7 @@ impl YrsDocumentEngine {
     }
 
     pub fn client_id(&self) -> u64 {
-        self.doc.client_id()
+        self.doc.client_id().get()
     }
 
     pub fn fragment_name(&self) -> &str {
@@ -273,7 +273,10 @@ impl YrsDocumentEngine {
                 snapshot_parse_error("COLLABORATION_DECODE_FAILED", error, "encodedState")
             })?;
             let durable_state = update.state_vector();
-            let durable_client_ids = durable_state.iter().map(|(client, _)| *client).collect();
+            let durable_client_ids = durable_state
+                .iter()
+                .map(|(client, _)| client.get())
+                .collect();
             let candidate_doc = fresh_utf16_doc_excluding(&durable_client_ids, self.client_id());
             candidate_doc
                 .transact_mut_with(TransactionOrigin::SnapshotRestore.as_yrs_origin())
@@ -483,7 +486,7 @@ impl YrsDocumentEngine {
         }
         encode_candidate_state_bounded(&doc, &self.resource_limits)?;
 
-        let durable_client_ids = HashSet::from([doc.client_id()]);
+        let durable_client_ids = HashSet::from([doc.client_id().get()]);
         Ok(CandidateDocument {
             doc,
             state: EngineDocumentState::Ready {
@@ -836,7 +839,7 @@ fn build_local_empty_candidate(
     let canonical_json = to_prosemirror_json(&document, schema);
     encode_state_bounded(&doc, resource_limits)?;
 
-    let durable_client_ids = HashSet::from([doc.client_id()]);
+    let durable_client_ids = HashSet::from([doc.client_id().get()]);
     Ok(CandidateDocument {
         doc,
         state: EngineDocumentState::Ready {
@@ -880,7 +883,8 @@ fn fresh_utf16_doc_excluding_with(
 ) -> Doc {
     loop {
         let doc = candidate();
-        if doc.client_id() != previous_client_id && !durable_client_ids.contains(&doc.client_id()) {
+        let client_id = doc.client_id().get();
+        if client_id != previous_client_id && !durable_client_ids.contains(&client_id) {
             return doc;
         }
     }
@@ -936,7 +940,7 @@ mod tests {
     use yrs::OffsetKind;
 
     use yrs::{updates::decoder::Decode, Update};
-    use yrs::{Doc, Options};
+    use yrs::{ClientID, Doc, Options};
 
     use super::{fresh_utf16_doc_excluding_with, utf16_doc, ValidatedImportDocument};
 
@@ -995,13 +999,13 @@ mod tests {
         let mut ids = [5_u64, 7_u64, 11_u64].into_iter();
         let selected = fresh_utf16_doc_excluding_with(&durable, 5, || {
             Doc::with_options(Options {
-                client_id: ids.next().unwrap(),
+                client_id: ClientID::new(ids.next().unwrap()),
                 offset_kind: OffsetKind::Utf16,
                 ..Options::default()
             })
         });
 
-        assert_eq!(selected.client_id(), 11);
+        assert_eq!(selected.client_id().get(), 11);
     }
 
     #[test]
@@ -1022,7 +1026,7 @@ mod tests {
             .unwrap()
             .state_vector()
             .iter()
-            .map(|(client, _)| *client)
+            .map(|(client, _)| client.get())
             .collect::<HashSet<_>>();
         let mut target = crate::yrs_engine::YrsDocumentEngine::new(config()).unwrap();
 

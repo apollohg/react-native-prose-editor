@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use yrs::types::text::{Text, YChange};
 use yrs::types::xml::{XmlFragment, XmlOut, XmlTextRef};
 use yrs::updates::decoder::Decode;
-use yrs::{Assoc, Doc, OffsetKind, Options, ReadTxn, StickyIndex, Transact, Update};
+use yrs::{Assoc, ClientID, Doc, OffsetKind, Options, ReadTxn, StickyIndex, Transact, Update};
 
 const FIXTURE_JSON: &str = include_str!("fixtures/yrs-025-update-v1.json");
 const FRAGMENT_NAME: &str = "prosemirror";
@@ -37,7 +37,7 @@ fn fixture_encoded_state(fixture: &Value) -> Vec<u8> {
 }
 
 fn restored_yrs_document(encoded_state: &[u8]) -> Option<Doc> {
-    let mut options = Options::with_client_id(9001);
+    let mut options = Options::with_client_id(ClientID::new(9001));
     options.offset_kind = OffsetKind::Utf16;
     let doc = Doc::with_options(options);
     let update = Update::decode_v1(encoded_state).ok()?;
@@ -163,4 +163,14 @@ fn restores_yrs_025_update_with_identical_json_state_vector_and_sticky_positions
             "sticky fixture entry {expected}"
         );
     }
+}
+
+#[test]
+fn corrupted_yrs_025_update_is_not_accepted_as_equivalent() {
+    let fixture = fixture();
+    let mut encoded_state = fixture_encoded_state(&fixture);
+    let midpoint = encoded_state.len() / 2;
+    encoded_state[midpoint] ^= 0x80;
+
+    assert!(!restores_equivalent_state(&fixture, &encoded_state));
 }

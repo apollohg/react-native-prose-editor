@@ -2,6 +2,7 @@
 name = "editor-core"
 version = "0.5.25"
 edition = "2021"
+rust-version = "1.95"
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]
@@ -16,7 +17,7 @@ scraper = "0.21"
 ego-tree = "0.9"
 regex = "1"
 sha2 = "0.10"
-yrs = { version = "0.25", features = ["sync"] }
+yrs = { version = "=0.27.2", features = ["sync"] }
 
 [dev-dependencies]
 proptest = "1"

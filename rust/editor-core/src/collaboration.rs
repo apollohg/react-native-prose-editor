@@ -11,8 +11,8 @@ use yrs::types::xml::{XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut, XmlTex
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
 use yrs::{
-    Assoc, Doc, GetString, OffsetKind, Options, ReadTxn, StateVector, StickyIndex, Transact,
-    Update, WriteTxn,
+    Assoc, ClientID, Doc, GetString, OffsetKind, Options, ReadTxn, StateVector, StickyIndex,
+    Transact, Update, WriteTxn,
 };
 
 use crate::boundary::{BoundaryError, BoundaryResult, BoundedInput, InputKind, ResourceLimits};
@@ -137,7 +137,7 @@ fn check_binary_input(actual: usize, limit: usize) -> BoundaryResult<()> {
 }
 
 fn apply_awareness_snapshot(
-    target: &Awareness,
+    target: &mut Awareness,
     update: Result<AwarenessUpdate, yrs::sync::awareness::Error>,
 ) -> BoundaryResult<()> {
     let update =
@@ -163,7 +163,9 @@ impl CollaborationSession {
 
     fn from_config(config: &Value, resource_limits: ResourceLimits) -> BoundaryResult<Self> {
         let client_id = config.get("clientId").and_then(Value::as_u64);
-        let mut doc_options = client_id.map(Options::with_client_id).unwrap_or_default();
+        let mut doc_options = client_id
+            .map(|client_id| Options::with_client_id(ClientID::new(client_id)))
+            .unwrap_or_default();
         doc_options.offset_kind = OffsetKind::Utf16;
         let doc = Doc::with_options(doc_options);
         let awareness = Awareness::new(doc.clone());
@@ -312,9 +314,9 @@ impl CollaborationSession {
             .apply_update(update)
             .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
 
-        let awareness = Awareness::new(doc.clone());
+        let mut awareness = Awareness::new(doc.clone());
         if !replace {
-            apply_awareness_snapshot(&awareness, self.awareness.update())?;
+            apply_awareness_snapshot(&mut awareness, self.awareness.update())?;
         } else if let Some(local_state) = self.local_awareness_state.as_ref() {
             awareness
                 .set_local_state(local_state)
@@ -397,7 +399,7 @@ impl CollaborationSession {
     }
 
     fn collect_peers(&mut self) -> Vec<CollaborationPeer> {
-        let local_id = self.doc.client_id();
+        let local_id = self.doc.client_id().get();
         let mut seen_client_ids = HashSet::new();
         let awareness_states = self
             .awareness
@@ -407,6 +409,7 @@ impl CollaborationSession {
         let peers = awareness_states
             .into_iter()
             .map(|(client_id, raw_json)| {
+                let client_id = client_id.get();
                 seen_client_ids.insert(client_id);
                 let parsed_state = self.cached_or_normalize_peer_state(client_id, raw_json);
                 CollaborationPeer {
@@ -495,7 +498,7 @@ impl CollaborationSession {
         let protocol = DefaultProtocol;
         let mut responses = Vec::new();
         let replies = protocol
-            .handle(&candidate.awareness, &message)
+            .handle(&mut candidate.awareness, &message)
             .map_err(|error| BoundaryError::parse("COLLABORATION_DECODE_FAILED", error))?;
         for reply in replies {
             responses.push(encode_message_bounded(reply, &candidate.resource_limits)?);
@@ -540,8 +543,8 @@ impl CollaborationSession {
         doc.transact_mut()
             .apply_update(current_update)
             .map_err(|error| BoundaryError::parse("COLLABORATION_APPLY_FAILED", error))?;
-        let awareness = Awareness::new(doc.clone());
-        apply_awareness_snapshot(&awareness, self.awareness.update())?;
+        let mut awareness = Awareness::new(doc.clone());
+        apply_awareness_snapshot(&mut awareness, self.awareness.update())?;
 
         let mut candidate = Self {
             doc,
@@ -1235,6 +1238,14 @@ mod tests {
     use yrs::types::{Attrs, ToJson};
     use yrs::{IndexedSequence, Text, TransactionMut, Xml};
 
+    fn client_id(value: u64) -> ClientID {
+        ClientID::new(value)
+    }
+
+    fn doc_with_client_id(value: u64) -> Doc {
+        Doc::with_client_id(value)
+    }
+
     fn xml_fragment_to_document_json<T: ReadTxn>(
         fragment: &XmlFragmentRef,
         txn: &T,
@@ -1279,7 +1290,7 @@ mod tests {
         normalized
     }
 
-    fn apply_messages_to_peer(peer: &Awareness, messages: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+    fn apply_messages_to_peer(peer: &mut Awareness, messages: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
         let protocol = DefaultProtocol;
         let mut responses = Vec::new();
         for message in messages {
@@ -1410,7 +1421,7 @@ mod tests {
             })
             .to_string(),
         );
-        let mut peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let update = {
             let mut txn = peer.doc_mut().transact_mut();
@@ -1476,7 +1487,7 @@ mod tests {
             })
             .to_string(),
         );
-        let mut peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let update = {
             let mut txn = peer.doc_mut().transact_mut();
@@ -1516,7 +1527,7 @@ mod tests {
             })
             .to_string(),
         );
-        let peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let result = session
             .apply_local_document(json!({
@@ -1531,7 +1542,7 @@ mod tests {
                 }]
             }))
             .unwrap();
-        let _ = apply_messages_to_peer(&peer, result.messages);
+        let _ = apply_messages_to_peer(&mut peer, result.messages);
 
         let txn = peer.doc().transact();
         let fragment = txn
@@ -1629,17 +1640,17 @@ mod tests {
             })
             .to_string(),
         );
-        let peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let peer_sync_step_1 = encode_message(Message::Sync(SyncMessage::SyncStep1(
             peer.doc().transact().state_vector(),
         )));
         let session_responses = session.handle_message(peer_sync_step_1).unwrap();
-        let peer_replies = apply_messages_to_peer(&peer, session.start().unwrap().messages);
+        let peer_replies = apply_messages_to_peer(&mut peer, session.start().unwrap().messages);
         for message in peer_replies {
             let _ = session.handle_message(message).unwrap();
         }
-        let _ = apply_messages_to_peer(&peer, session_responses.messages);
+        let _ = apply_messages_to_peer(&mut peer, session_responses.messages);
 
         assert_eq!(peer_document_json(&peer), expected);
 
@@ -1648,7 +1659,7 @@ mod tests {
             .flat_map(|(id, state)| state.data.map(|data| (id, data)))
             .collect();
         assert_eq!(
-            peers.get(&1).map(|state| state.as_ref()),
+            peers.get(&client_id(1)).map(|state| state.as_ref()),
             Some(r#"{"user":{"name":"Session"}}"#)
         );
     }
@@ -1656,7 +1667,7 @@ mod tests {
     #[test]
     fn collaboration_session_applies_standard_yrs_sync_update() {
         let mut session = CollaborationSession::new(r#"{"clientId":1}"#);
-        let mut peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let update = {
             let mut txn = peer.doc_mut().transact_mut();
@@ -1699,7 +1710,7 @@ mod tests {
     #[test]
     fn collaboration_session_exchanges_awareness_with_standard_yrs_peer() {
         let mut session = CollaborationSession::new(r#"{"clientId":1}"#);
-        let peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let session_awareness = session
             .set_local_awareness(json!({
@@ -1712,14 +1723,14 @@ mod tests {
                 }
             }))
             .unwrap();
-        let _ = apply_messages_to_peer(&peer, session_awareness.messages);
+        let _ = apply_messages_to_peer(&mut peer, session_awareness.messages);
 
         let peer_states: HashMap<_, _> = peer
             .iter()
             .flat_map(|(id, state)| state.data.map(|data| (id, data)))
             .collect();
         assert_eq!(
-            peer_states.get(&1).map(|state| state.as_ref()),
+            peer_states.get(&client_id(1)).map(|state| state.as_ref()),
             Some(r#"{"selection":{"anchor":2,"head":4},"user":{"name":"Session"}}"#)
         );
 
@@ -1756,7 +1767,7 @@ mod tests {
     #[test]
     fn collaboration_session_clear_local_awareness_emits_removal_update() {
         let mut session = CollaborationSession::new(r#"{"clientId":1}"#);
-        let peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let awareness = session
             .set_local_awareness(json!({
@@ -1769,18 +1780,18 @@ mod tests {
                 }
             }))
             .unwrap();
-        let _ = apply_messages_to_peer(&peer, awareness.messages);
+        let _ = apply_messages_to_peer(&mut peer, awareness.messages);
         let peer_states: HashMap<_, _> = peer
             .iter()
             .flat_map(|(id, state)| state.data.map(|data| (id, data)))
             .collect();
-        assert!(peer_states.contains_key(&1));
+        assert!(peer_states.contains_key(&client_id(1)));
 
         let cleared = session.clear_local_awareness().unwrap();
         assert_eq!(cleared.messages.len(), 1);
-        let _ = apply_messages_to_peer(&peer, cleared.messages);
+        let _ = apply_messages_to_peer(&mut peer, cleared.messages);
 
-        assert!(peer.state::<Value>(1).is_none());
+        assert!(peer.state::<Value>(client_id(1)).is_none());
     }
 
     #[test]
@@ -1801,7 +1812,7 @@ mod tests {
             })
             .to_string(),
         );
-        let peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let awareness = session
             .set_local_awareness(json!({
@@ -1815,7 +1826,7 @@ mod tests {
                 "focused": true
             }))
             .unwrap();
-        let _ = apply_messages_to_peer(&peer, awareness.messages);
+        let _ = apply_messages_to_peer(&mut peer, awareness.messages);
 
         let peer_states: HashMap<_, _> = peer
             .iter()
@@ -1823,7 +1834,7 @@ mod tests {
             .collect();
         let state_json: Value = serde_json::from_str(
             peer_states
-                .get(&1)
+                .get(&client_id(1))
                 .expect("session awareness should sync to peer"),
         )
         .expect("session awareness JSON should decode");
@@ -1863,7 +1874,7 @@ mod tests {
             })
             .to_string(),
         );
-        let mut peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let initial_update = {
             let mut txn = peer.doc_mut().transact_mut();
@@ -2021,7 +2032,7 @@ mod tests {
             })
             .to_string(),
         );
-        let mut peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let update = {
             let mut txn = peer.doc_mut().transact_mut();
@@ -2098,7 +2109,7 @@ mod tests {
             })
             .to_string(),
         );
-        let mut peer_options = yrs::Options::with_client_id(2);
+        let mut peer_options = yrs::Options::with_client_id(client_id(2));
         peer_options.offset_kind = yrs::OffsetKind::Utf16;
         let mut peer = Awareness::new(Doc::with_options(peer_options));
 
@@ -2211,7 +2222,7 @@ mod tests {
             })
             .to_string(),
         );
-        let mut peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let update = {
             let mut txn = peer.doc_mut().transact_mut();
@@ -2338,7 +2349,7 @@ mod tests {
             panic!("expected awareness message");
         };
 
-        let peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
         peer.apply_update(update)
             .expect("peer should accept awareness update");
 
@@ -2348,7 +2359,7 @@ mod tests {
             .collect();
         let local_state: Value = serde_json::from_str(
             peer_states
-                .get(&1)
+                .get(&client_id(1))
                 .expect("local awareness should sync to peer"),
         )
         .expect("local awareness JSON should decode");
@@ -2397,7 +2408,7 @@ mod tests {
             })
             .to_string(),
         );
-        let mut peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let update = {
             let mut txn = peer.doc_mut().transact_mut();
@@ -2490,7 +2501,7 @@ mod tests {
             })
             .to_string(),
         );
-        let peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let awareness = session.set_local_awareness(json!({
             "user": {
@@ -2502,7 +2513,7 @@ mod tests {
             },
             "focused": true
         }));
-        let _ = apply_messages_to_peer(&peer, awareness.unwrap().messages);
+        let _ = apply_messages_to_peer(&mut peer, awareness.unwrap().messages);
 
         let peer_states: HashMap<_, _> = peer
             .iter()
@@ -2510,7 +2521,7 @@ mod tests {
             .collect();
         let state_json: Value = serde_json::from_str(
             peer_states
-                .get(&1)
+                .get(&client_id(1))
                 .expect("session awareness should sync to peer"),
         )
         .expect("session awareness JSON should decode");
@@ -2559,7 +2570,7 @@ mod tests {
             })
             .to_string(),
         );
-        let peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let awareness = session.set_local_awareness(json!({
             "user": {
@@ -2571,7 +2582,7 @@ mod tests {
             },
             "focused": true
         }));
-        let _ = apply_messages_to_peer(&peer, awareness.unwrap().messages);
+        let _ = apply_messages_to_peer(&mut peer, awareness.unwrap().messages);
 
         let peer_states: HashMap<_, _> = peer
             .iter()
@@ -2579,7 +2590,7 @@ mod tests {
             .collect();
         let state_json: Value = serde_json::from_str(
             peer_states
-                .get(&1)
+                .get(&client_id(1))
                 .expect("session awareness should sync to peer"),
         )
         .expect("session awareness JSON should decode");
@@ -2688,7 +2699,7 @@ mod tests {
             })
             .to_string(),
         );
-        let mut peer = Awareness::new(Doc::with_client_id(2));
+        let mut peer = Awareness::new(doc_with_client_id(2));
 
         let update = {
             let mut txn = peer.doc_mut().transact_mut();
@@ -3125,10 +3136,12 @@ mod tests {
         assert_eq!(target.peers(), before_peers);
         assert_eq!(target.local_awareness_state, before_local);
 
-        let empty = Awareness::new(Doc::with_client_id(99));
-        let error =
-            apply_awareness_snapshot(&empty, Err(yrs::sync::awareness::Error::ClientNotFound(99)))
-                .unwrap_err();
+        let mut empty = Awareness::new(doc_with_client_id(99));
+        let error = apply_awareness_snapshot(
+            &mut empty,
+            Err(yrs::sync::awareness::Error::ClientNotFound(client_id(99))),
+        )
+        .unwrap_err();
         assert_eq!(error.code(), "COLLABORATION_APPLY_FAILED");
     }
 
@@ -3168,7 +3181,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let remote = Awareness::new(Doc::with_client_id(client_id + 100));
+        let mut remote = Awareness::new(doc_with_client_id(client_id + 100));
         remote
             .set_local_state(json!({ "user": { "name": "Remote" } }))
             .unwrap();

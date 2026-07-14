@@ -379,7 +379,7 @@ fn declared_length_bomb_reaches_binary_payload_length() {
 
     assert_eq!(decoder.read_var::<u32>().unwrap(), 1, "client count");
     assert_eq!(decoder.read_var::<u32>().unwrap(), 1, "block count");
-    assert_eq!(decoder.read_client().unwrap(), 1, "client ID");
+    assert_eq!(decoder.read_client().unwrap().get(), 1, "client ID");
     assert_eq!(decoder.read_var::<u32>().unwrap(), 0, "client clock");
     assert_eq!(decoder.read_info().unwrap(), 3, "binary content tag");
     assert!(decoder.read_parent_info().unwrap(), "named parent");

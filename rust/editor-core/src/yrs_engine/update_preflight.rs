@@ -49,7 +49,7 @@ impl<'a> PreflightReader<'a> {
         for _ in 0..clients {
             let blocks = self.read_var_u32()? as usize;
             self.require_declared_count(blocks, 1)?;
-            self.read_var_u32()?; // client
+            self.read_client_id()?;
             let mut clock = self.read_var_u32()?;
             for _ in 0..blocks {
                 self.charge_work(1)?;
@@ -214,7 +214,7 @@ impl<'a> PreflightReader<'a> {
         self.require_declared_count(clients, 2)?;
         self.charge_work(clients)?;
         for _ in 0..clients {
-            self.read_var_u32()?;
+            self.read_client_id()?;
             let ranges = self.read_var_u32()? as usize;
             self.require_declared_count(ranges, 2)?;
             for _ in 0..ranges {
@@ -230,7 +230,7 @@ impl<'a> PreflightReader<'a> {
     }
 
     fn read_id(&mut self) -> YrsEngineResult<()> {
-        self.read_var_u32()?;
+        self.read_client_id()?;
         self.read_var_u32()?;
         Ok(())
     }
@@ -296,6 +296,14 @@ impl<'a> PreflightReader<'a> {
     fn read_var_u32(&mut self) -> YrsEngineResult<u32> {
         let value = self.skip_varint(5)?;
         u32::try_from(value).map_err(|_| self.decode_error("invalidVarint"))
+    }
+
+    fn read_client_id(&mut self) -> YrsEngineResult<u64> {
+        let value = self.skip_varint(8)?;
+        if value >= 1_u64 << 53 {
+            return Err(self.decode_error("invalidVarint"));
+        }
+        Ok(value)
     }
 
     fn skip_varint(&mut self, max_bytes: usize) -> YrsEngineResult<u64> {

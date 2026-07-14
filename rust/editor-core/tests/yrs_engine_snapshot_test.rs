@@ -7,7 +7,7 @@ use editor_core::yrs_engine::{
 use yrs::types::text::Text;
 use yrs::types::xml::{XmlFragment, XmlTextPrelim};
 use yrs::updates::decoder::Decode;
-use yrs::{Doc, OffsetKind, Options, ReadTxn, StateVector, Transact, Update, WriteTxn};
+use yrs::{ClientID, Doc, OffsetKind, Options, ReadTxn, StateVector, Transact, Update, WriteTxn};
 
 fn engine_config(
     document_id: &str,
@@ -471,11 +471,12 @@ fn round_trip_preserves_durable_state_vector_without_claiming_the_fresh_identity
 
     let source_vector = state_vector(&source.encoded_state().unwrap());
     let restored_vector = state_vector(&restored.encoded_state().unwrap());
+    let restored_client_id = ClientID::new(restored.client_id());
     assert_eq!(restored_vector, source_vector);
-    assert!(!restored_vector.contains_client(&restored.client_id()));
+    assert!(!restored_vector.contains_client(&restored_client_id));
 
     let local_doc = Doc::with_options(Options {
-        client_id: restored.client_id(),
+        client_id: restored_client_id,
         offset_kind: OffsetKind::Utf16,
         ..Options::default()
     });
@@ -486,7 +487,7 @@ fn round_trip_preserves_durable_state_vector_without_claiming_the_fresh_identity
     assert!(!local_doc
         .transact()
         .state_vector()
-        .contains_client(&restored.client_id()));
+        .contains_client(&restored_client_id));
     {
         let mut txn = local_doc.transact_mut();
         let text = txn.get_or_insert_text("later-local-content");
@@ -495,7 +496,7 @@ fn round_trip_preserves_durable_state_vector_without_claiming_the_fresh_identity
     assert!(local_doc
         .transact()
         .state_vector()
-        .contains_client(&restored.client_id()));
+        .contains_client(&restored_client_id));
 }
 
 #[test]
