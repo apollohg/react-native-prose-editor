@@ -7,7 +7,10 @@ use crate::serialize::to_prosemirror_json;
 use crate::transform::{DocumentValidator, Step, StepMap};
 
 use super::editing_limits::CheckedWork;
-use super::mutation::YrsMutationPlan;
+use super::mutation::{
+    estimate_update_v1_growth, mark_attr, preflight_mutation_plan, removed_mark_attr,
+    MutationCompiler, YrsMutationPlan,
+};
 use super::{
     editor_offset_to_doc_pos, Affinity, EditingLimits, HistoryPolicy, OperationError,
     OperationResult, RevisionedRange, SelectionIntent, TransactionOrigin, TypedOperation,
@@ -63,6 +66,99 @@ pub(super) fn compile_transaction(
     context: CompilationContext<'_>,
     transaction: TypedTransaction,
 ) -> OperationResult<CompiledTransaction> {
+    admit_transaction_envelope(context, &transaction)?;
+    compile_transaction_impl(context, transaction, None)
+}
+
+pub(super) fn compile_transaction_with_yrs<T: yrs::ReadTxn>(
+    context: CompilationContext<'_>,
+    transaction: TypedTransaction,
+    txn: &T,
+    fragment: &yrs::types::xml::XmlFragmentRef,
+) -> OperationResult<CompiledTransaction> {
+    let request_id = transaction.request_id;
+    let admitted_input_bytes = admit_transaction_envelope(context, &transaction)?;
+    let action_multiplier = context
+        .editing_limits
+        .max_operations_per_transaction
+        .checked_add(context.resource_limits.max_document_depth)
+        .and_then(|value| value.checked_add(2))
+        .ok_or_else(|| {
+            OperationError::operation_limit_exceeded(
+                request_id,
+                None,
+                "maxActionsPerTransaction",
+                u64::MAX,
+                u64::MAX,
+            )
+        })?;
+    let action_limit = action_multiplier
+        .checked_mul(context.resource_limits.max_document_nodes)
+        .ok_or_else(|| {
+            OperationError::operation_limit_exceeded(
+                request_id,
+                None,
+                "maxActionsPerTransaction",
+                u64::MAX,
+                u64::MAX,
+            )
+        })?;
+    let document_text_bytes = document_text_bytes(context.document).ok_or_else(|| {
+        OperationError::operation_limit_exceeded(
+            request_id,
+            None,
+            "maxInputBytes",
+            u64::try_from(context.resource_limits.max_input_bytes).unwrap_or(u64::MAX),
+            u64::MAX,
+        )
+    })?;
+    // One pass materializes each Yrs text and one pass builds its scalar/UTF-16 index.
+    // Reserve both before constructing MutationCompiler, so invalid envelopes never
+    // traverse Yrs and admitted traversal cannot outrun its transaction-wide budget.
+    let initial_scan_work = document_text_bytes.checked_mul(2).ok_or_else(|| {
+        input_limit_error(
+            request_id,
+            None,
+            context.resource_limits.max_input_bytes,
+            usize::MAX,
+        )
+    })?;
+    let charged_scan_work = admitted_input_bytes
+        .checked_add(initial_scan_work)
+        .ok_or_else(|| {
+            input_limit_error(
+                request_id,
+                None,
+                context.resource_limits.max_input_bytes,
+                usize::MAX,
+            )
+        })?;
+    if charged_scan_work > context.resource_limits.max_input_bytes {
+        return Err(input_limit_error(
+            request_id,
+            None,
+            context.resource_limits.max_input_bytes,
+            charged_scan_work,
+        ));
+    }
+    let lowering = MutationCompiler::new(
+        request_id,
+        txn,
+        fragment,
+        context.schema,
+        action_limit,
+        context.resource_limits.max_input_bytes,
+        charged_scan_work,
+    )?;
+    let compiled = compile_transaction_impl(context, transaction, Some(lowering))?;
+    preflight_mutation_plan(request_id, &compiled.mutation_plan, txn)?;
+    Ok(compiled)
+}
+
+fn admit_transaction_envelope(
+    context: CompilationContext<'_>,
+    transaction: &TypedTransaction,
+) -> OperationResult<usize> {
     let request_id = transaction.request_id;
     if transaction.base_document_revision != context.document_revision {
         return Err(OperationError::revision_mismatch(
@@ -83,13 +179,112 @@ pub(super) fn compile_transaction(
             "typed editing transactions require a local input, command, or API origin",
         ));
     }
-
     let mut work = CheckedWork::default();
     work.charge_operations(
         request_id,
         transaction.operations.len(),
         context.editing_limits.max_operations_per_transaction,
     )?;
+
+    let mut input_bytes = 0usize;
+    for (operation_index, operation) in transaction.operations.iter().enumerate() {
+        let amount = match operation {
+            TypedOperation::InsertText { text, marks, .. } => {
+                if text.is_empty() {
+                    return Err(OperationError::operation_invalid(
+                        request_id,
+                        operation_index,
+                        "text",
+                        "insert text must not be empty",
+                    ));
+                }
+                text.len().checked_add(checked_mark_set_input_bytes(
+                    request_id,
+                    operation_index,
+                    marks,
+                )?)
+            }
+            TypedOperation::DeleteRange { .. } => Some(0),
+            TypedOperation::ReplaceRange { content, .. } => Some(checked_fragment_input_bytes(
+                request_id,
+                operation_index,
+                content,
+            )?),
+            TypedOperation::AddMark { mark, .. } | TypedOperation::ReplaceMark { mark, .. } => {
+                Some(checked_mark_input_bytes(request_id, operation_index, mark)?)
+            }
+            TypedOperation::RemoveMark { mark_type, .. } => Some(mark_type.len()),
+            _ => {
+                return Err(OperationError::operation_invalid(
+                    request_id,
+                    operation_index,
+                    "operation",
+                    "operation is not supported by the text and mark compiler",
+                ));
+            }
+        }
+        .ok_or_else(|| input_work_overflow(request_id, operation_index, context))?;
+        charge_input(
+            &mut input_bytes,
+            amount,
+            request_id,
+            operation_index,
+            context.resource_limits.max_input_bytes,
+        )?;
+    }
+    Ok(input_bytes)
+}
+
+fn input_limit_error(
+    request_id: u64,
+    operation_index: Option<usize>,
+    limit: usize,
+    actual: usize,
+) -> OperationError {
+    OperationError::operation_limit_exceeded(
+        request_id,
+        operation_index,
+        "maxInputBytes",
+        u64::try_from(limit).unwrap_or(u64::MAX),
+        u64::try_from(actual).unwrap_or(u64::MAX),
+    )
+}
+
+fn document_text_bytes(document: &Document) -> Option<usize> {
+    fn node_bytes(node: &Node) -> Option<usize> {
+        let mut total = node.text_str().map_or(0, str::len);
+        if let Some(content) = node.content() {
+            for child in content.iter() {
+                total = total.checked_add(node_bytes(child)?)?;
+            }
+        }
+        Some(total)
+    }
+    node_bytes(document.root())
+}
+
+fn compile_transaction_impl(
+    context: CompilationContext<'_>,
+    transaction: TypedTransaction,
+    mut lowering: Option<MutationCompiler>,
+) -> OperationResult<CompiledTransaction> {
+    let request_id = transaction.request_id;
+    let mut work = CheckedWork::default();
+    // Revision, origin, operation count and aggregate input were admitted by the
+    // single shared envelope path before any optional Yrs target traversal.
+    debug_assert_eq!(
+        transaction.base_document_revision,
+        context.document_revision
+    );
+    debug_assert!(matches!(
+        transaction.origin,
+        TransactionOrigin::LocalInput
+            | TransactionOrigin::LocalCommand
+            | TransactionOrigin::LocalApi
+    ));
+    debug_assert!(
+        transaction.operations.len() <= context.editing_limits.max_operations_per_transaction
+    );
 
     let base_position_map = PositionMap::build(context.document, context.schema);
     let rendered_text = crate::render::rendered_text(context.document, context.schema);
@@ -104,7 +299,6 @@ pub(super) fn compile_transaction(
     let mut preview = context.document.clone();
     let mut composed_map = StepMap::empty();
     let mut operation_result = None;
-    let mut input_bytes = 0usize;
     let mut undo_units_bound = 0u64;
     let mut undo_limit_error = None;
     let mut history_class = HistoryClass::Skip;
@@ -113,22 +307,7 @@ pub(super) fn compile_transaction(
     for (operation_index, operation) in transaction.operations.iter().enumerate() {
         match operation {
             TypedOperation::InsertText { at, text, marks } => {
-                if text.is_empty() {
-                    return Err(OperationError::operation_invalid(
-                        request_id,
-                        operation_index,
-                        "text",
-                        "insert text must not be empty",
-                    ));
-                }
                 validate_operation_marks(request_id, operation_index, marks, context.schema)?;
-                charge_input(
-                    &mut input_bytes,
-                    text.len().saturating_add(mark_set_input_bytes(marks)),
-                    request_id,
-                    operation_index,
-                    context.resource_limits.max_input_bytes,
-                )?;
                 let base_pos = resolve_position(
                     request_id,
                     Some(operation_index),
@@ -149,6 +328,12 @@ pub(super) fn compile_transaction(
                         .map_err(|error| {
                         map_transform_error(request_id, operation_index, "at", error)
                     })?;
+                if lowering.is_some() {
+                    validate_preview(request_id, Some(operation_index), &next, context)?;
+                }
+                if let Some(lowering) = &mut lowering {
+                    lowering.insert(operation_index, pos, text, marks)?;
+                }
                 operation_result = Some(Selection::cursor(step_map.map_pos(pos)));
                 composed_map = composed_map.compose(&step_map);
                 preview = next;
@@ -180,6 +365,19 @@ pub(super) fn compile_transaction(
                         .map_err(|error| {
                         map_transform_error(request_id, operation_index, "range", error)
                     })?;
+                if lowering.is_some() {
+                    validate_preview(request_id, Some(operation_index), &next, context)?;
+                }
+                if let Some(lowering) = &mut lowering {
+                    let boundaries = text_boundaries(
+                        request_id,
+                        operation_index,
+                        &preview,
+                        context.schema,
+                        lowering,
+                    )?;
+                    lowering.delete(operation_index, from, to, &boundaries)?;
+                }
                 operation_result = Some(Selection::cursor(from));
                 composed_map = composed_map.compose(&step_map);
                 preview = next;
@@ -197,13 +395,6 @@ pub(super) fn compile_transaction(
             }
             TypedOperation::ReplaceRange { range, content } => {
                 validate_fragment_marks(request_id, operation_index, content, context.schema)?;
-                charge_input(
-                    &mut input_bytes,
-                    fragment_input_bytes(content),
-                    request_id,
-                    operation_index,
-                    context.resource_limits.max_input_bytes,
-                )?;
                 let (from, to) = resolve_range(
                     request_id,
                     operation_index,
@@ -223,6 +414,19 @@ pub(super) fn compile_transaction(
                         .map_err(|error| {
                         map_transform_error(request_id, operation_index, "range", error)
                     })?;
+                if lowering.is_some() {
+                    validate_preview(request_id, Some(operation_index), &next, context)?;
+                }
+                if let Some(lowering) = &mut lowering {
+                    let boundaries = text_boundaries(
+                        request_id,
+                        operation_index,
+                        &preview,
+                        context.schema,
+                        lowering,
+                    )?;
+                    lowering.replace(operation_index, from, to, &boundaries, content)?;
+                }
                 operation_result = Some(Selection::cursor(from.saturating_add(content.size())));
                 composed_map = composed_map.compose(&step_map);
                 preview = next;
@@ -252,13 +456,6 @@ pub(super) fn compile_transaction(
                     std::slice::from_ref(mark),
                     context.schema,
                 )?;
-                charge_input(
-                    &mut input_bytes,
-                    mark_input_bytes(mark),
-                    request_id,
-                    operation_index,
-                    context.resource_limits.max_input_bytes,
-                )?;
                 let (from, to) = resolve_range(
                     request_id,
                     operation_index,
@@ -278,7 +475,22 @@ pub(super) fn compile_transaction(
                         .map_err(|error| {
                         map_transform_error(request_id, operation_index, "range", error)
                     })?;
+                if lowering.is_some() {
+                    validate_preview(request_id, Some(operation_index), &next, context)?;
+                }
                 let operation_changed = next != preview;
+                if operation_changed {
+                    if let Some(lowering) = &mut lowering {
+                        let boundaries = text_boundaries(
+                            request_id,
+                            operation_index,
+                            &preview,
+                            context.schema,
+                            lowering,
+                        )?;
+                        lowering.format(operation_index, from, to, &boundaries, mark_attr(mark))?;
+                    }
+                }
                 operation_result = Some(Selection::text(from, to));
                 composed_map = composed_map.compose(&step_map);
                 preview = next;
@@ -303,13 +515,6 @@ pub(super) fn compile_transaction(
                         format!("unknown mark '{mark_type}'"),
                     ));
                 }
-                charge_input(
-                    &mut input_bytes,
-                    mark_type.len(),
-                    request_id,
-                    operation_index,
-                    context.resource_limits.max_input_bytes,
-                )?;
                 let (from, to) = resolve_range(
                     request_id,
                     operation_index,
@@ -329,7 +534,28 @@ pub(super) fn compile_transaction(
                         .map_err(|error| {
                         map_transform_error(request_id, operation_index, "range", error)
                     })?;
+                if lowering.is_some() {
+                    validate_preview(request_id, Some(operation_index), &next, context)?;
+                }
                 let operation_changed = next != preview;
+                if operation_changed {
+                    if let Some(lowering) = &mut lowering {
+                        let boundaries = text_boundaries(
+                            request_id,
+                            operation_index,
+                            &preview,
+                            context.schema,
+                            lowering,
+                        )?;
+                        lowering.format(
+                            operation_index,
+                            from,
+                            to,
+                            &boundaries,
+                            removed_mark_attr(mark_type),
+                        )?;
+                    }
+                }
                 operation_result = Some(Selection::text(from, to));
                 composed_map = composed_map.compose(&step_map);
                 preview = next;
@@ -351,13 +577,6 @@ pub(super) fn compile_transaction(
                     operation_index,
                     std::slice::from_ref(mark),
                     context.schema,
-                )?;
-                charge_input(
-                    &mut input_bytes,
-                    mark_input_bytes(mark),
-                    request_id,
-                    operation_index,
-                    context.resource_limits.max_input_bytes,
                 )?;
                 let (from, to) = resolve_range(
                     request_id,
@@ -388,7 +607,22 @@ pub(super) fn compile_transaction(
                         .map_err(|error| {
                             map_transform_error(request_id, operation_index, "range", error)
                         })?;
+                if lowering.is_some() {
+                    validate_preview(request_id, Some(operation_index), &next, context)?;
+                }
                 let operation_changed = next != preview;
+                if operation_changed {
+                    if let Some(lowering) = &mut lowering {
+                        let boundaries = text_boundaries(
+                            request_id,
+                            operation_index,
+                            &preview,
+                            context.schema,
+                            lowering,
+                        )?;
+                        lowering.format(operation_index, from, to, &boundaries, mark_attr(mark))?;
+                    }
+                }
                 let step_map = remove_map.compose(&add_map);
                 operation_result = Some(Selection::text(from, to));
                 composed_map = composed_map.compose(&step_map);
@@ -444,6 +678,17 @@ pub(super) fn compile_transaction(
         return Err(error);
     }
 
+    let lowered_plan = lowering
+        .map(|compiler| compiler.finish(transaction.operations.len().checked_sub(1)))
+        .transpose()?
+        .unwrap_or_default();
+    let mutation_plan = if preview == *context.document {
+        YrsMutationPlan::default()
+    } else {
+        lowered_plan
+    };
+    let encoded_growth_bound = estimate_update_v1_growth(request_id, &mutation_plan)?;
+
     Ok(CompiledTransaction {
         request_id,
         origin: transaction.origin,
@@ -452,12 +697,106 @@ pub(super) fn compile_transaction(
         preview,
         selection_plan,
         affected_top_level_blocks,
-        mutation_plan: YrsMutationPlan::default(),
-        // Task 5 introduces executable actions and their conservative update-v1 estimator.
-        // With an intentionally empty action vocabulary there is no executable growth yet.
-        encoded_growth_bound: 0,
+        mutation_plan,
+        encoded_growth_bound,
         undo_units_bound,
     })
+}
+
+fn text_boundaries(
+    request_id: u64,
+    operation_index: usize,
+    document: &Document,
+    schema: &Schema,
+    lowering: &mut MutationCompiler,
+) -> OperationResult<Vec<u32>> {
+    fn visit(
+        request_id: u64,
+        operation_index: usize,
+        node: &Node,
+        schema: &Schema,
+        lowering: &mut MutationCompiler,
+        position: &mut u32,
+        output: &mut Vec<u32>,
+    ) -> OperationResult<()> {
+        lowering.charge_boundary_node(operation_index)?;
+        if let Some(text) = node.text_str() {
+            output.push(*position);
+            lowering.charge_boundary_text(operation_index, text.len())?;
+            let len = u32::try_from(text.chars().count()).map_err(|_| {
+                OperationError::engine_invariant_failed(
+                    request_id,
+                    Some(operation_index),
+                    "preview text scalar length exceeds u32",
+                )
+            })?;
+            *position = position.checked_add(len).ok_or_else(|| {
+                OperationError::engine_invariant_failed(
+                    request_id,
+                    Some(operation_index),
+                    "preview text boundary overflow",
+                )
+            })?;
+            output.push(*position);
+            return Ok(());
+        }
+        if let Some(content) = node.content() {
+            let is_document = node.node_type() == schema.doc_node_type();
+            if !is_document {
+                *position = position.checked_add(1).ok_or_else(|| {
+                    OperationError::engine_invariant_failed(
+                        request_id,
+                        Some(operation_index),
+                        "preview node boundary overflow",
+                    )
+                })?;
+            }
+            for child in content.iter() {
+                visit(
+                    request_id,
+                    operation_index,
+                    child,
+                    schema,
+                    lowering,
+                    position,
+                    output,
+                )?;
+            }
+            if !is_document {
+                *position = position.checked_add(1).ok_or_else(|| {
+                    OperationError::engine_invariant_failed(
+                        request_id,
+                        Some(operation_index),
+                        "preview node boundary overflow",
+                    )
+                })?;
+            }
+        } else {
+            *position = position.checked_add(1).ok_or_else(|| {
+                OperationError::engine_invariant_failed(
+                    request_id,
+                    Some(operation_index),
+                    "preview leaf boundary overflow",
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    let mut output = Vec::new();
+    let mut position = 0u32;
+    visit(
+        request_id,
+        operation_index,
+        document.root(),
+        schema,
+        lowering,
+        &mut position,
+        &mut output,
+    )?;
+    output.sort_unstable();
+    output.dedup();
+    Ok(output)
 }
 
 fn resolve_position(
@@ -647,45 +986,139 @@ fn validate_preview_marks(
     })
 }
 
-fn mark_input_bytes(mark: &Mark) -> usize {
-    mark.mark_type().len().saturating_add(
-        serde_json::to_vec(mark.attrs())
-            .map(|attrs| attrs.len())
-            .unwrap_or(usize::MAX),
+fn input_work_overflow(
+    request_id: u64,
+    operation_index: usize,
+    context: CompilationContext<'_>,
+) -> OperationError {
+    OperationError::operation_limit_exceeded(
+        request_id,
+        Some(operation_index),
+        "maxInputBytes",
+        u64::try_from(context.resource_limits.max_input_bytes).unwrap_or(u64::MAX),
+        u64::MAX,
     )
 }
 
-fn mark_set_input_bytes(marks: &[Mark]) -> usize {
-    marks.iter().fold(0usize, |total, mark| {
-        total.saturating_add(mark_input_bytes(mark))
+fn checked_mark_input_bytes(
+    request_id: u64,
+    operation_index: usize,
+    mark: &Mark,
+) -> OperationResult<usize> {
+    let attrs = serde_json::to_vec(mark.attrs()).map_err(|error| {
+        OperationError::engine_invariant_failed(
+            request_id,
+            Some(operation_index),
+            format!("mark input serialization failed: {error}"),
+        )
+    })?;
+    mark.mark_type()
+        .len()
+        .checked_add(attrs.len())
+        .ok_or_else(|| {
+            OperationError::operation_limit_exceeded(
+                request_id,
+                Some(operation_index),
+                "maxInputBytes",
+                u64::MAX,
+                u64::MAX,
+            )
+        })
+}
+
+fn checked_mark_set_input_bytes(
+    request_id: u64,
+    operation_index: usize,
+    marks: &[Mark],
+) -> OperationResult<usize> {
+    marks.iter().try_fold(0usize, |total, mark| {
+        total
+            .checked_add(checked_mark_input_bytes(request_id, operation_index, mark)?)
+            .ok_or_else(|| {
+                OperationError::operation_limit_exceeded(
+                    request_id,
+                    Some(operation_index),
+                    "maxInputBytes",
+                    u64::MAX,
+                    u64::MAX,
+                )
+            })
     })
 }
 
-fn fragment_input_bytes(fragment: &Fragment) -> usize {
-    fn node_bytes(node: &Node) -> usize {
+fn checked_fragment_input_bytes(
+    request_id: u64,
+    operation_index: usize,
+    fragment: &Fragment,
+) -> OperationResult<usize> {
+    fn node_bytes(request_id: u64, operation_index: usize, node: &Node) -> OperationResult<usize> {
+        let attrs = serde_json::to_vec(node.attrs()).map_err(|error| {
+            OperationError::engine_invariant_failed(
+                request_id,
+                Some(operation_index),
+                format!("node input serialization failed: {error}"),
+            )
+        })?;
         let mut bytes = node
             .node_type()
             .len()
-            .saturating_add(mark_set_input_bytes(node.marks()))
-            .saturating_add(
-                serde_json::to_vec(node.attrs())
-                    .map(|attrs| attrs.len())
-                    .unwrap_or(usize::MAX),
-            );
+            .checked_add(checked_mark_set_input_bytes(
+                request_id,
+                operation_index,
+                node.marks(),
+            )?)
+            .and_then(|total| total.checked_add(attrs.len()))
+            .ok_or_else(|| {
+                OperationError::operation_limit_exceeded(
+                    request_id,
+                    Some(operation_index),
+                    "maxInputBytes",
+                    u64::MAX,
+                    u64::MAX,
+                )
+            })?;
         if let Some(text) = node.text_str() {
-            bytes = bytes.saturating_add(text.len());
+            bytes = bytes.checked_add(text.len()).ok_or_else(|| {
+                OperationError::operation_limit_exceeded(
+                    request_id,
+                    Some(operation_index),
+                    "maxInputBytes",
+                    u64::MAX,
+                    u64::MAX,
+                )
+            })?;
         }
         if let Some(content) = node.content() {
             for child in content.iter() {
-                bytes = bytes.saturating_add(node_bytes(child));
+                bytes = bytes
+                    .checked_add(node_bytes(request_id, operation_index, child)?)
+                    .ok_or_else(|| {
+                        OperationError::operation_limit_exceeded(
+                            request_id,
+                            Some(operation_index),
+                            "maxInputBytes",
+                            u64::MAX,
+                            u64::MAX,
+                        )
+                    })?;
             }
         }
-        bytes
+        Ok(bytes)
     }
 
-    fragment
-        .iter()
-        .fold(0usize, |total, node| total.saturating_add(node_bytes(node)))
+    fragment.iter().try_fold(0usize, |total, node| {
+        total
+            .checked_add(node_bytes(request_id, operation_index, node)?)
+            .ok_or_else(|| {
+                OperationError::operation_limit_exceeded(
+                    request_id,
+                    Some(operation_index),
+                    "maxInputBytes",
+                    u64::MAX,
+                    u64::MAX,
+                )
+            })
+    })
 }
 
 fn charge_preview_output(

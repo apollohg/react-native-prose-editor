@@ -13,7 +13,7 @@ use crate::serialize::{
 };
 use crate::transform::{validate_canonical_marks, DocumentValidator};
 
-use super::compiler::{compile_transaction, CompilationContext, CompiledTransaction};
+use super::compiler::{compile_transaction_with_yrs, CompilationContext, CompiledTransaction};
 use super::update_preflight::preflight_update_v1;
 use super::{
     DocumentScope, DocumentSnapshot, EditingLimits, TransactionOrigin, YrsDocumentCodec,
@@ -202,7 +202,17 @@ impl YrsDocumentEngine {
         let document = self
             .document()
             .ok_or_else(|| super::OperationError::engine_not_ready(transaction.request_id))?;
-        compile_transaction(
+        let txn = self.doc.transact();
+        let fragment = txn
+            .get_xml_fragment(self.fragment_name.as_str())
+            .ok_or_else(|| {
+                super::OperationError::engine_invariant_failed(
+                    transaction.request_id,
+                    None,
+                    "ready Yrs document fragment is missing",
+                )
+            })?;
+        compile_transaction_with_yrs(
             CompilationContext {
                 document,
                 selection: None,
@@ -213,6 +223,8 @@ impl YrsDocumentEngine {
                 max_length: self.max_length,
             },
             transaction,
+            &txn,
+            &fragment,
         )
     }
 

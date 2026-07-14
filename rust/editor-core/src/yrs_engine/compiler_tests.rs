@@ -160,8 +160,8 @@ fn assert_preview(
         .unwrap();
     assert_eq!(compiled.preview, expected);
     assert_eq!(compiled.history_class, history_class);
-    assert!(compiled.mutation_plan.actions.is_empty());
-    assert_eq!(compiled.encoded_growth_bound, 0);
+    assert!(!compiled.mutation_plan.actions.is_empty());
+    assert!(compiled.encoded_growth_bound > 0);
     assert!(!compiled.affected_top_level_blocks.is_empty());
     assert_eq!(audit(engine), before);
 }
