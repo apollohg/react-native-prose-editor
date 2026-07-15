@@ -278,21 +278,49 @@ impl YrsDocumentEngine {
         &mut self,
         request_id: u64,
     ) -> super::OperationResult<Option<super::TransactionCommit>> {
-        self.apply_history_pop(request_id, true)
+        Ok(self
+            .apply_history_pop(request_id, true, false)?
+            .map(|(commit, _)| commit))
     }
 
     pub fn redo(
         &mut self,
         request_id: u64,
     ) -> super::OperationResult<Option<super::TransactionCommit>> {
-        self.apply_history_pop(request_id, false)
+        Ok(self
+            .apply_history_pop(request_id, false, false)?
+            .map(|(commit, _)| commit))
+    }
+
+    pub fn undo_with_result(
+        &mut self,
+        request_id: u64,
+    ) -> super::OperationResult<Option<super::TypedTransactionResult>> {
+        Ok(self
+            .apply_history_pop(request_id, true, true)?
+            .and_then(|(_, result)| result))
+    }
+
+    pub fn redo_with_result(
+        &mut self,
+        request_id: u64,
+    ) -> super::OperationResult<Option<super::TypedTransactionResult>> {
+        Ok(self
+            .apply_history_pop(request_id, false, true)?
+            .and_then(|(_, result)| result))
     }
 
     fn apply_history_pop(
         &mut self,
         request_id: u64,
         undoing: bool,
-    ) -> super::OperationResult<Option<super::TransactionCommit>> {
+        with_result: bool,
+    ) -> super::OperationResult<
+        Option<(
+            super::TransactionCommit,
+            Option<super::TypedTransactionResult>,
+        )>,
+    > {
         if if undoing {
             !self.history.can_undo()
         } else {
@@ -353,7 +381,17 @@ impl YrsDocumentEngine {
             next_state_revision,
         )?;
 
+        let mut result = with_result
+            .then(|| self.prepare_history_result(request_id, &candidate_state))
+            .transpose()?;
+
         candidate_history.accept_action(request_id, action, candidate_encoded_state)?;
+        if let Some(result) = &mut result {
+            result.history_state = crate::editor_state::HistoryState {
+                can_undo: candidate_history.can_undo(),
+                can_redo: candidate_history.can_redo(),
+            };
+        }
         self.doc = candidate_doc;
         self.history = candidate_history;
         self.derived_state = Some(candidate_state);
@@ -361,13 +399,68 @@ impl YrsDocumentEngine {
         self.state_revision = next_state_revision;
         self.yrs_state_epoch = next_yrs_state_epoch;
         self.last_committed_origin = Some(TransactionOrigin::UndoRedo);
-        Ok(Some(super::TransactionCommit {
+        Ok(Some((
+            super::TransactionCommit {
+                request_id,
+                changed: true,
+                document_revision: self.revision,
+                state_revision: self.state_revision,
+                origin: TransactionOrigin::UndoRedo,
+            },
+            result,
+        )))
+    }
+
+    fn prepare_history_result(
+        &self,
+        request_id: u64,
+        candidate: &DerivedStateCache,
+    ) -> super::OperationResult<super::TypedTransactionResult> {
+        let current = self
+            .derived_state
+            .as_ref()
+            .ok_or_else(|| super::OperationError::engine_not_ready(request_id))?;
+        let selection = candidate.resolved_selection.clone();
+        let legacy_selection = candidate.legacy_selection();
+        let commands = crate::editor_state::command_applicability(
+            &candidate.document,
+            &self.schema,
+            &legacy_selection,
+        );
+        let active_state = crate::editor_state::active_state(
+            &candidate.document,
+            &self.schema,
+            &legacy_selection,
+            candidate.stored_marks.as_deref(),
+            commands,
+            &self.resource_limits,
+        );
+        let render_update = match crate::render::incremental::safe_contiguous_render_blocks_patch(
+            &current.document,
+            &candidate.document,
+            &self.schema,
+            &[],
+        ) {
+            Ok(Some(patch)) => super::RenderUpdate::Patch(patch),
+            Ok(None) => super::RenderUpdate::None,
+            Err(full) => super::RenderUpdate::Full(full),
+        };
+        let result = super::TypedTransactionResult {
             request_id,
-            changed: true,
-            document_revision: self.revision,
-            state_revision: self.state_revision,
             origin: TransactionOrigin::UndoRedo,
-        }))
+            changed: true,
+            document_revision: candidate.document_revision,
+            state_revision: candidate.state_revision,
+            selection,
+            active_state,
+            history_state: crate::editor_state::HistoryState {
+                can_undo: self.can_undo(),
+                can_redo: self.can_redo(),
+            },
+            render_update,
+        };
+        self.admit_typed_result(request_id, &result)?;
+        Ok(result)
     }
 
     fn new_history_candidate_doc(&self) -> Doc {
@@ -765,13 +858,163 @@ impl YrsDocumentEngine {
         transaction: super::TypedTransaction,
     ) -> super::OperationResult<super::TransactionCommit> {
         let compiled = self.compile_typed_transaction(transaction)?;
-        self.apply_compiled_transaction(compiled)
+        let (commit, _) = self.apply_compiled_transaction(compiled, false)?;
+        Ok(commit)
+    }
+
+    fn prepare_typed_result(
+        &self,
+        compiled: &CompiledTransaction,
+    ) -> super::OperationResult<super::TypedTransactionResult> {
+        let current = self
+            .derived_state
+            .as_ref()
+            .ok_or_else(|| super::OperationError::engine_not_ready(compiled.request_id))?;
+        let selection = match &compiled.selection_plan {
+            SelectionPlan::Preserve => current.resolved_selection.clone(),
+            SelectionPlan::Explicit(selection) | SelectionPlan::Mapped(selection) => {
+                super::derived_state::resolved_from_legacy(
+                    &compiled.preview,
+                    selection,
+                    &self.schema,
+                )
+                .ok_or_else(|| {
+                    super::OperationError::engine_invariant_failed(
+                        compiled.request_id,
+                        None,
+                        "compiled result selection cannot be resolved",
+                    )
+                })?
+            }
+        };
+        let StoredMarksPlan::Set(stored_marks) = &compiled.stored_marks_plan else {
+            return Err(super::OperationError::engine_invariant_failed(
+                compiled.request_id,
+                None,
+                "compiled result stored-mark plan is not sealed",
+            ));
+        };
+        let legacy_selection = super::derived_state::resolved_to_legacy(&selection);
+        let commands = crate::editor_state::command_applicability(
+            &compiled.preview,
+            &self.schema,
+            &legacy_selection,
+        );
+        let active_state = crate::editor_state::active_state(
+            &compiled.preview,
+            &self.schema,
+            &legacy_selection,
+            stored_marks.as_deref(),
+            commands,
+            &self.resource_limits,
+        );
+        let render_update = if current.document == compiled.preview {
+            super::RenderUpdate::None
+        } else {
+            match crate::render::incremental::safe_contiguous_render_blocks_patch(
+                &current.document,
+                &compiled.preview,
+                &self.schema,
+                &compiled.affected_top_level_blocks,
+            ) {
+                Ok(Some(patch)) => super::RenderUpdate::Patch(patch),
+                Ok(None) => super::RenderUpdate::None,
+                Err(full) => super::RenderUpdate::Full(full),
+            }
+        };
+        let result = super::TypedTransactionResult {
+            request_id: compiled.request_id,
+            origin: compiled.origin,
+            changed: current.document != compiled.preview,
+            document_revision: self.revision,
+            state_revision: self.state_revision,
+            selection,
+            active_state,
+            history_state: crate::editor_state::HistoryState {
+                can_undo: self.can_undo(),
+                can_redo: self.can_redo(),
+            },
+            render_update,
+        };
+        self.admit_typed_result(compiled.request_id, &result)?;
+        Ok(result)
+    }
+
+    fn admit_typed_result(
+        &self,
+        request_id: u64,
+        result: &super::TypedTransactionResult,
+    ) -> super::OperationResult<()> {
+        let actual = result.derived_output_bytes();
+        if actual > self.editing_limits.max_derived_output_bytes {
+            return Err(super::OperationError::document_limit_exceeded(
+                request_id,
+                None,
+                "maxDerivedOutputBytes",
+                u64::try_from(self.editing_limits.max_derived_output_bytes).unwrap_or(u64::MAX),
+                u64::try_from(actual).unwrap_or(u64::MAX),
+            ));
+        }
+        let render_elements = match &result.render_update {
+            super::RenderUpdate::None => 0,
+            super::RenderUpdate::Patch(patch) => patch.blocks.iter().map(Vec::len).sum(),
+            super::RenderUpdate::Full(blocks) => blocks.iter().map(Vec::len).sum(),
+        };
+        let render_element_limit = self.resource_limits.max_document_nodes.saturating_mul(3);
+        if render_elements > render_element_limit {
+            return Err(super::OperationError::document_limit_exceeded(
+                request_id,
+                None,
+                "maxDocumentNodes",
+                u64::try_from(render_element_limit).unwrap_or(u64::MAX),
+                u64::try_from(render_elements).unwrap_or(u64::MAX),
+            ));
+        }
+        let schema_marks = self.schema.all_marks().count();
+        let schema_nodes = self.schema.all_nodes().count();
+        let active_is_bounded = result.active_state.marks.len() <= schema_marks
+            && result.active_state.mark_attrs.len() <= schema_marks
+            && result.active_state.allowed_marks.len() <= schema_marks
+            && result.active_state.nodes.len()
+                <= self.resource_limits.max_document_depth.saturating_add(1)
+            && result.active_state.insertable_nodes.len() <= schema_nodes
+            && result.active_state.commands.len() <= 16;
+        if !active_is_bounded {
+            return Err(super::OperationError::document_limit_exceeded(
+                request_id,
+                None,
+                "maxSchemaNodes",
+                u64::try_from(schema_nodes.max(schema_marks)).unwrap_or(u64::MAX),
+                u64::MAX,
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn apply_typed_transaction_with_result(
+        &mut self,
+        transaction: super::TypedTransaction,
+    ) -> super::OperationResult<super::TypedTransactionResult> {
+        let request_id = transaction.request_id;
+        let compiled = self.compile_typed_transaction(transaction)?;
+        let (_, result) = self.apply_compiled_transaction(compiled, true)?;
+        result.ok_or_else(|| {
+            super::OperationError::engine_invariant_failed(
+                request_id,
+                None,
+                "rich typed transaction produced no result envelope",
+            )
+        })
     }
 
     fn apply_compiled_transaction(
         &mut self,
         mut compiled: CompiledTransaction,
-    ) -> super::OperationResult<super::TransactionCommit> {
+        with_result: bool,
+    ) -> super::OperationResult<(
+        super::TransactionCommit,
+        Option<super::TypedTransactionResult>,
+    )> {
         // A compiled plan owns Yrs handles after its original read transaction
         // closes. Reject a stale plan in O(1) before no-op classification or
         // any state-vector/snapshot traversal.
@@ -823,6 +1066,9 @@ impl YrsDocumentEngine {
                 "compiled stored-mark plan is not sealed",
             ));
         }
+        let mut result = with_result
+            .then(|| self.prepare_typed_result(&compiled))
+            .transpose()?;
         if preview_is_unchanged {
             let current = self.derived_state.as_ref().ok_or_else(|| {
                 super::OperationError::engine_invariant_failed(
@@ -899,13 +1145,23 @@ impl YrsDocumentEngine {
                 && next.resolved_selection == current.resolved_selection
                 && next.stored_marks == current.stored_marks
             {
-                return Ok(super::TransactionCommit {
+                let commit = super::TransactionCommit {
                     request_id: compiled.request_id,
                     changed: false,
                     document_revision: self.revision,
                     state_revision: self.state_revision,
                     origin: compiled.origin,
-                });
+                };
+                if let Some(result) = &mut result {
+                    result.changed = false;
+                    result.document_revision = self.revision;
+                    result.state_revision = self.state_revision;
+                    result.history_state = crate::editor_state::HistoryState {
+                        can_undo: self.can_undo(),
+                        can_redo: self.can_redo(),
+                    };
+                }
+                return Ok((commit, result));
             }
             let next_state_revision = checked_operation_increment(
                 compiled.request_id,
@@ -917,13 +1173,29 @@ impl YrsDocumentEngine {
             self.derived_state = Some(next);
             self.state_revision = next_state_revision;
             self.last_committed_origin = Some(compiled.origin);
-            return Ok(super::TransactionCommit {
+            let commit = super::TransactionCommit {
                 request_id: compiled.request_id,
                 changed: true,
                 document_revision: self.revision,
                 state_revision: self.state_revision,
                 origin: compiled.origin,
-            });
+            };
+            if let Some(result) = &mut result {
+                result.changed = true;
+                result.document_revision = self.revision;
+                result.state_revision = self.state_revision;
+                result.selection = self
+                    .derived_state
+                    .as_ref()
+                    .expect("selection-only result retains derived state")
+                    .resolved_selection
+                    .clone();
+                result.history_state = crate::editor_state::HistoryState {
+                    can_undo: self.can_undo(),
+                    can_redo: self.can_redo(),
+                };
+            }
+            return Ok((commit, result));
         }
 
         #[cfg(test)]
@@ -1163,13 +1435,31 @@ impl YrsDocumentEngine {
         self.state_revision = next_state_revision;
         self.yrs_state_epoch = next_yrs_state_epoch;
         self.last_committed_origin = Some(origin);
-        Ok(super::TransactionCommit {
+        let commit = super::TransactionCommit {
             request_id,
             changed: true,
             document_revision: self.revision,
             state_revision: self.state_revision,
             origin,
-        })
+        };
+        if let Some(result) = &mut result {
+            result.request_id = request_id;
+            result.origin = origin;
+            result.changed = true;
+            result.document_revision = self.revision;
+            result.state_revision = self.state_revision;
+            result.selection = self
+                .derived_state
+                .as_ref()
+                .expect("durable result retains derived state")
+                .resolved_selection
+                .clone();
+            result.history_state = crate::editor_state::HistoryState {
+                can_undo: self.can_undo(),
+                can_redo: self.can_redo(),
+            };
+        }
+        Ok((commit, result))
     }
 
     pub fn export_snapshot(&self) -> YrsEngineResult<DocumentSnapshot> {
@@ -2463,7 +2753,9 @@ mod tests {
             engine.yrs_state_epoch += 1;
             let before = atomic_audit(&engine);
 
-            let error = engine.apply_compiled_transaction(compiled).unwrap_err();
+            let error = engine
+                .apply_compiled_transaction(compiled, false)
+                .unwrap_err();
 
             assert_eq!(error.code, "ENGINE_INVARIANT_FAILED", "changed={changed}");
             assert!(error.message.contains("stale"), "changed={changed}");

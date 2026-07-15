@@ -19,6 +19,8 @@ use crate::serialize;
 use crate::transform::steps::rebuild_element;
 use crate::transform::{Source, Step, Transaction, TransformError};
 
+pub use crate::editor_state::{ActiveState, HistoryState};
+
 // ---------------------------------------------------------------------------
 // EditorError
 // ---------------------------------------------------------------------------
@@ -84,24 +86,6 @@ pub struct EditorSelectionState {
     pub active_state: ActiveState,
     pub history_state: HistoryState,
     pub document_version: u64,
-}
-
-/// Which marks and node types are active at the current selection.
-pub struct ActiveState {
-    pub marks: HashMap<String, bool>,
-    pub mark_attrs: HashMap<String, serde_json::Value>,
-    pub nodes: HashMap<String, bool>,
-    pub commands: HashMap<String, bool>,
-    /// Mark names that can be toggled at the current cursor position.
-    pub allowed_marks: Vec<String>,
-    /// Node type names that can be inserted at the current selection context.
-    pub insertable_nodes: Vec<String>,
-}
-
-/// Whether undo/redo are available.
-pub struct HistoryState {
-    pub can_undo: bool,
-    pub can_redo: bool,
 }
 
 #[derive(Clone)]
@@ -1747,39 +1731,6 @@ impl Editor {
     fn compute_active_state(&self) -> ActiveState {
         let doc = self.backend.document();
         let pos = self.selection.from(doc);
-        let marks_at = self.effective_marks_for_selection(pos, self.selection.is_empty(doc));
-        let nodes_at = self.nodes_at_pos(pos);
-
-        let mut marks = HashMap::new();
-        let mut mark_attrs = HashMap::new();
-        for mark_spec in self.schema.all_marks() {
-            let active_mark = marks_at.iter().find(|m| m.mark_type() == mark_spec.name);
-            let is_active = active_mark.is_some();
-            marks.insert(mark_spec.name.clone(), is_active);
-            if let Some(mark) = active_mark {
-                if !mark.attrs().is_empty() {
-                    mark_attrs.insert(
-                        mark_spec.name.clone(),
-                        serde_json::Value::Object(mark.attrs().clone().into_iter().collect()),
-                    );
-                }
-            }
-        }
-
-        let active_list_type = self
-            .containing_list_node_at(pos)
-            .map(|(_, node)| node.node_type().to_string());
-        let mut nodes = HashMap::new();
-        for node_name in &nodes_at {
-            let is_list_node = self.schema.is_list(node_name);
-            if is_list_node {
-                if active_list_type.as_deref() == Some(node_name.as_str()) {
-                    nodes.insert(node_name.clone(), true);
-                }
-                continue;
-            }
-            nodes.insert(node_name.clone(), true);
-        }
 
         let mut commands = HashMap::new();
         commands.insert("indentList".to_string(), self.can_indent_list_item(pos));
@@ -1801,53 +1752,6 @@ impl Editor {
                 .is_ok_and(|plan| plan.is_some()),
         );
 
-        // Compute allowed_marks and insertable_nodes based on selection type.
-        let (allowed_marks, insertable_nodes) = match &self.selection {
-            Selection::All => {
-                // All-selection: no meaningful cursor context for marks or insertion.
-                (Vec::new(), Vec::new())
-            }
-            Selection::Node { .. } => {
-                // Node selection (e.g. on a void node): no text cursor for marks,
-                // but we can still compute insertable nodes at this position.
-                let resolved = doc.resolve(pos).ok();
-                let (budget, work_limit) = self.runtime_content_budget();
-                let insertable = resolved
-                    .and_then(|r| {
-                        self.insertable_nodes_from_resolved(doc, &r, &budget, work_limit)
-                            .ok()
-                    })
-                    .unwrap_or_default();
-                (Vec::new(), insertable)
-            }
-            Selection::Text { .. } => {
-                // Text selection: compute both fields.
-                let active_mark_names: Vec<&str> = marks_at.iter().map(|m| m.mark_type()).collect();
-
-                let resolved = doc.resolve(pos).ok();
-
-                let allowed = resolved
-                    .as_ref()
-                    .and_then(|r| {
-                        let parent = r.parent(doc);
-                        self.schema
-                            .node(parent.node_type())
-                            .map(|spec| self.schema.allowed_marks_at(spec, &active_mark_names))
-                    })
-                    .unwrap_or_default();
-
-                let (budget, work_limit) = self.runtime_content_budget();
-                let insertable = resolved
-                    .and_then(|r| {
-                        self.insertable_nodes_from_resolved(doc, &r, &budget, work_limit)
-                            .ok()
-                    })
-                    .unwrap_or_default();
-
-                (allowed, insertable)
-            }
-        };
-
         // List wrap commands: true if already in a list (toggle/switch) or if
         // the parent context allows list nodes.
         let bullet_list = self.command_list_type(false);
@@ -1865,14 +1769,14 @@ impl Editor {
                 .is_some_and(|name| self.can_apply_list_type(&self.selection, name)),
         );
 
-        ActiveState {
-            marks,
-            mark_attrs,
-            nodes,
+        crate::editor_state::active_state(
+            doc,
+            &self.schema,
+            &self.selection,
+            self.stored_marks.as_deref(),
             commands,
-            allowed_marks,
-            insertable_nodes,
-        }
+            &self.resource_limits,
+        )
     }
 
     fn compute_history_state(&self) -> HistoryState {

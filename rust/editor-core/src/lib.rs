@@ -2,6 +2,7 @@ pub mod backend;
 pub mod boundary;
 pub mod collaboration;
 pub mod editor;
+pub mod editor_state;
 pub mod history;
 pub mod intercept;
 pub mod model;

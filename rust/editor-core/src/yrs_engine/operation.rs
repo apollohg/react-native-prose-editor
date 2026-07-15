@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
+use crate::editor_state::{ActiveState, HistoryState};
 use crate::model::{Fragment, Mark, Node};
+use crate::render::incremental::RenderBlocksPatch;
+use crate::render::RenderElement;
 
 use super::TransactionOrigin;
 
@@ -155,6 +158,220 @@ pub struct TransactionCommit {
     pub document_revision: u64,
     pub state_revision: u64,
     pub origin: TransactionOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RenderUpdate {
+    None,
+    Patch(RenderBlocksPatch),
+    Full(Vec<Vec<RenderElement>>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedTransactionResult {
+    pub request_id: u64,
+    pub origin: TransactionOrigin,
+    pub changed: bool,
+    pub document_revision: u64,
+    pub state_revision: u64,
+    pub selection: ResolvedSelection,
+    pub active_state: ActiveState,
+    pub history_state: HistoryState,
+    pub render_update: RenderUpdate,
+}
+
+impl TypedTransactionResult {
+    /// Deterministic allocation/payload charge used by pre-write admission.
+    pub fn derived_output_bytes(&self) -> usize {
+        let mut bytes = 8usize
+            .saturating_add(1)
+            .saturating_add(1)
+            .saturating_add(8)
+            .saturating_add(8);
+        bytes = bytes.saturating_add(selection_bytes(&self.selection));
+        bytes = bytes.saturating_add(active_state_bytes(&self.active_state));
+        bytes = bytes.saturating_add(2);
+        bytes.saturating_add(render_update_bytes(&self.render_update))
+    }
+}
+
+impl From<&TypedTransactionResult> for TransactionCommit {
+    fn from(result: &TypedTransactionResult) -> Self {
+        Self {
+            request_id: result.request_id,
+            changed: result.changed,
+            document_revision: result.document_revision,
+            state_revision: result.state_revision,
+            origin: result.origin,
+        }
+    }
+}
+
+fn selection_bytes(selection: &ResolvedSelection) -> usize {
+    match selection {
+        ResolvedSelection::Text { .. } => 1usize.saturating_add(6 * 4),
+        ResolvedSelection::Node { .. } => 1usize.saturating_add(3 * 4),
+        ResolvedSelection::All => 1,
+    }
+}
+
+fn active_state_bytes(state: &ActiveState) -> usize {
+    let bool_map = |map: &HashMap<String, bool>| {
+        map.iter().fold(8usize, |bytes, (key, _)| {
+            bytes.saturating_add(string_bytes(key)).saturating_add(1)
+        })
+    };
+    let attrs = state.mark_attrs.iter().fold(8usize, |bytes, (key, value)| {
+        bytes
+            .saturating_add(string_bytes(key))
+            .saturating_add(json_bytes(value))
+    });
+    let strings = |values: &[String]| {
+        values.iter().fold(8usize, |bytes, value| {
+            bytes.saturating_add(string_bytes(value))
+        })
+    };
+    bool_map(&state.marks)
+        .saturating_add(attrs)
+        .saturating_add(bool_map(&state.nodes))
+        .saturating_add(bool_map(&state.commands))
+        .saturating_add(strings(&state.allowed_marks))
+        .saturating_add(strings(&state.insertable_nodes))
+}
+
+fn render_update_bytes(update: &RenderUpdate) -> usize {
+    match update {
+        RenderUpdate::None => 1,
+        RenderUpdate::Patch(patch) => 1usize
+            .saturating_add(16)
+            .saturating_add(render_blocks_bytes(&patch.blocks)),
+        RenderUpdate::Full(blocks) => 1usize.saturating_add(render_blocks_bytes(blocks)),
+    }
+}
+
+fn render_blocks_bytes(blocks: &[Vec<RenderElement>]) -> usize {
+    blocks.iter().fold(8usize, |bytes, block| {
+        block
+            .iter()
+            .fold(bytes.saturating_add(8), |bytes, element| {
+                bytes.saturating_add(render_element_bytes(element))
+            })
+    })
+}
+
+fn attrs_bytes(attrs: &HashMap<String, serde_json::Value>) -> usize {
+    8usize.saturating_add(serde_json::to_vec(attrs).map_or(usize::MAX, |value| value.len()))
+}
+
+fn json_bytes(value: &serde_json::Value) -> usize {
+    8usize.saturating_add(serde_json::to_vec(value).map_or(usize::MAX, |value| value.len()))
+}
+
+fn string_bytes(value: &str) -> usize {
+    8usize.saturating_add(value.len())
+}
+
+fn render_element_bytes(element: &RenderElement) -> usize {
+    let payload = match element {
+        RenderElement::TextRun { text, marks } => {
+            marks
+                .iter()
+                .fold(string_bytes(text).saturating_add(8), |bytes, mark| {
+                    bytes
+                        .saturating_add(string_bytes(&mark.mark_type))
+                        .saturating_add(attrs_bytes(&mark.attrs))
+                })
+        }
+        RenderElement::VoidInline {
+            node_type, attrs, ..
+        }
+        | RenderElement::VoidBlock {
+            node_type, attrs, ..
+        } => string_bytes(node_type)
+            .saturating_add(4)
+            .saturating_add(attrs_bytes(attrs)),
+        RenderElement::OpaqueInlineAtom {
+            node_type,
+            label,
+            mention_theme,
+            ..
+        } => string_bytes(node_type)
+            .saturating_add(string_bytes(label))
+            .saturating_add(4)
+            .saturating_add(1)
+            .saturating_add(mention_theme.as_ref().map_or(0, attrs_bytes)),
+        RenderElement::OpaqueBlockAtom {
+            node_type, label, ..
+        } => string_bytes(node_type)
+            .saturating_add(string_bytes(label))
+            .saturating_add(4),
+        RenderElement::BlockStart {
+            node_type,
+            list_context,
+            ..
+        } => string_bytes(node_type)
+            .saturating_add(2)
+            .saturating_add(1)
+            .saturating_add(list_context.as_ref().map_or(0, |context| {
+                18usize.saturating_add(context.kind.as_ref().map_or(0, |kind| string_bytes(kind)))
+            })),
+        RenderElement::BlockEnd => 0,
+    };
+    1usize.saturating_add(payload)
+}
+
+#[cfg(test)]
+mod result_meter_tests {
+    use super::*;
+    use crate::render::RenderMark;
+
+    #[test]
+    fn result_meter_charges_nested_containers_fields_and_attribute_payloads() {
+        let attrs = HashMap::from([("href".to_string(), serde_json::json!("x"))]);
+        let result = TypedTransactionResult {
+            request_id: 1,
+            origin: TransactionOrigin::LocalApi,
+            changed: true,
+            document_revision: 1,
+            state_revision: 1,
+            selection: ResolvedSelection::Text {
+                anchor: ResolvedPoint {
+                    document: 1,
+                    scalar: 0,
+                    utf16: 0,
+                },
+                head: ResolvedPoint {
+                    document: 1,
+                    scalar: 0,
+                    utf16: 0,
+                },
+            },
+            active_state: ActiveState {
+                marks: HashMap::from([("bold".into(), true)]),
+                mark_attrs: HashMap::from([(
+                    "bold".into(),
+                    serde_json::Value::Object(attrs.clone().into_iter().collect()),
+                )]),
+                nodes: HashMap::new(),
+                commands: HashMap::new(),
+                allowed_marks: vec!["bold".into()],
+                insertable_nodes: vec![],
+            },
+            history_state: HistoryState {
+                can_undo: true,
+                can_redo: false,
+            },
+            render_update: RenderUpdate::Full(vec![vec![RenderElement::TextRun {
+                text: "x".into(),
+                marks: vec![RenderMark {
+                    mark_type: "bold".into(),
+                    attrs,
+                }],
+            }]]),
+        };
+
+        assert_eq!(result.derived_output_bytes(), 225);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

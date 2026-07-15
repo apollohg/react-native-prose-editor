@@ -146,6 +146,74 @@ pub fn contiguous_render_blocks_patch(
     })
 }
 
+/// Derive a contiguous render patch and prove it reconstructs the complete
+/// new render. Compiler hints may widen the exact rendered diff, never narrow
+/// it. `Err(full)` is the safe fallback whenever the proof cannot be made.
+pub fn safe_contiguous_render_blocks_patch(
+    old_doc: &Document,
+    new_doc: &Document,
+    schema: &Schema,
+    affected_indices: &[usize],
+) -> Result<Option<RenderBlocksPatch>, Vec<Vec<RenderElement>>> {
+    if old_doc == new_doc {
+        return Ok(None);
+    }
+
+    let old_blocks = render_blocks(old_doc, schema);
+    let new_blocks = render_blocks(new_doc, schema);
+    let widest_len = old_blocks.len().max(new_blocks.len());
+    if affected_indices.iter().any(|index| *index >= widest_len) {
+        return Err(new_blocks);
+    }
+
+    let mut prefix = 0usize;
+    while prefix < old_blocks.len()
+        && prefix < new_blocks.len()
+        && old_blocks[prefix] == new_blocks[prefix]
+    {
+        prefix += 1;
+    }
+    let mut old_end = old_blocks.len();
+    let mut new_end = new_blocks.len();
+    while old_end > prefix && new_end > prefix && old_blocks[old_end - 1] == new_blocks[new_end - 1]
+    {
+        old_end -= 1;
+        new_end -= 1;
+    }
+    if prefix == old_blocks.len() && prefix == new_blocks.len() {
+        return Err(new_blocks);
+    }
+
+    let mut start = prefix;
+    for index in affected_indices {
+        start = start.min(*index);
+        if *index < old_blocks.len() {
+            old_end = old_end.max(index.saturating_add(1));
+        }
+        if *index < new_blocks.len() {
+            new_end = new_end.max(index.saturating_add(1));
+        }
+    }
+    let patch = RenderBlocksPatch {
+        start_index: start,
+        delete_count: old_end.saturating_sub(start),
+        blocks: new_blocks[start..new_end].to_vec(),
+    };
+    let mut reconstructed = old_blocks;
+    let Some(end) = patch.start_index.checked_add(patch.delete_count) else {
+        return Err(new_blocks);
+    };
+    if end > reconstructed.len() {
+        return Err(new_blocks);
+    }
+    reconstructed.splice(patch.start_index..end, patch.blocks.clone());
+    if reconstructed == new_blocks {
+        Ok(Some(patch))
+    } else {
+        Err(new_blocks)
+    }
+}
+
 /// Generate render elements for a single top-level block and its descendants.
 /// This mirrors the logic in `generate::walk_children` but for a single node.
 fn generate_block(

@@ -32,9 +32,9 @@ pub use editing_limits::{
 pub use engine::{EngineCommit, InitializationMode, YrsDocumentEngine, YrsEngineConfig};
 pub use error::{YrsEngineError, YrsEngineResult};
 pub use operation::{
-    Affinity, EditorOffsetKind, HistoryPolicy, OperationError, OperationResult, ResolvedPoint,
-    ResolvedSelection, RevisionedPosition, RevisionedRange, SelectionInput, SelectionIntent,
-    TransactionCommit, TypedOperation, TypedTransaction,
+    Affinity, EditorOffsetKind, HistoryPolicy, OperationError, OperationResult, RenderUpdate,
+    ResolvedPoint, ResolvedSelection, RevisionedPosition, RevisionedRange, SelectionInput,
+    SelectionIntent, TransactionCommit, TypedOperation, TypedTransaction, TypedTransactionResult,
 };
 pub use origin::TransactionOrigin;
 #[cfg(test)]

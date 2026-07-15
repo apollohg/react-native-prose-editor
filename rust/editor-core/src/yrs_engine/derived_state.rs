@@ -317,32 +317,7 @@ fn insert_mark_ranked(marks: &mut Vec<Mark>, mark: Mark, schema: &Schema) {
 }
 
 pub(crate) fn marks_at_position(document: &Document, position: u32) -> Vec<Mark> {
-    let Ok(resolved) = document.resolve(position) else {
-        return Vec::new();
-    };
-    let parent = resolved.parent(document);
-    let Some(content) = parent.content() else {
-        return Vec::new();
-    };
-    let mut offset = 0u32;
-    for child in content.iter() {
-        let child_size = child.node_size();
-        if child.is_text()
-            && offset <= resolved.parent_offset
-            && resolved.parent_offset <= offset.saturating_add(child_size)
-        {
-            return child.marks().to_vec();
-        }
-        offset = offset.saturating_add(child_size);
-    }
-    if resolved.parent_offset == offset {
-        return content
-            .iter()
-            .rev()
-            .find(|child| child.is_text())
-            .map_or_else(Vec::new, |child| child.marks().to_vec());
-    }
-    Vec::new()
+    crate::editor_state::marks_at_position(document, position)
 }
 
 fn preserve_with_mapped_fallback<T: ReadTxn>(
