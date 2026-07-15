@@ -687,9 +687,11 @@ impl Editor {
             self.backend.position_map(),
             &self.schema,
             &self.selection,
-            doc_pos,
-            width,
-            height,
+            crate::command_planner::ResizeImageRequest {
+                doc_position: doc_pos,
+                width,
+                height,
+            },
             &self.resource_limits,
         ) else {
             return Ok(self.build_update_from_current());
@@ -1295,7 +1297,11 @@ impl Editor {
         if plan.operations.is_empty() {
             return Ok(self.build_update_from_current());
         }
-        let mut transaction = Transaction::new(Source::Input);
+        let source = match plan.history {
+            crate::command_planner::SemanticCommandHistory::InputBoundary => Source::Input,
+            crate::command_planner::SemanticCommandHistory::FormatBoundary => Source::Format,
+        };
+        let mut transaction = Transaction::new(source);
         for operation in &plan.operations {
             transaction.add_step(operation.as_step());
         }

@@ -11,6 +11,50 @@ fn default_editor() -> Editor {
     Editor::new(tiptap_schema(), InterceptorPipeline::new(), false)
 }
 
+fn declaration_order_schema() -> Schema {
+    Schema::from_json(&serde_json::json!({
+        "nodes": [
+            {"name":"doc","content":"block+","role":"doc"},
+            {"name":"paragraph","content":"inline*","group":"block","role":"textBlock","htmlTag":"p"},
+            {"name":"blockTwo","content":"","group":"block","role":"block","isVoid":true},
+            {"name":"blockOne","content":"","group":"block","role":"block","isVoid":true},
+            {"name":"softTwo","content":"","group":"inline","role":"inline","isVoid":true},
+            {"name":"softOne","content":"","group":"inline","role":"inline","isVoid":true},
+            {"name":"text","content":"","group":"inline","role":"text"}
+        ],
+        "marks": [
+            {"name":"markTwo","htmlTag":"strong"},
+            {"name":"markOne","htmlTag":"em"}
+        ]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn independently_built_schemas_keep_active_state_vectors_in_declaration_order() {
+    let first = Editor::new(
+        declaration_order_schema(),
+        InterceptorPipeline::new(),
+        false,
+    )
+    .get_selection_state()
+    .active_state;
+    let second = Editor::new(
+        declaration_order_schema(),
+        InterceptorPipeline::new(),
+        false,
+    )
+    .get_selection_state()
+    .active_state;
+
+    assert_eq!(first, second);
+    assert_eq!(first.allowed_marks, ["markTwo", "markOne"]);
+    assert_eq!(
+        first.insertable_nodes,
+        ["blockTwo", "blockOne", "softTwo", "softOne"]
+    );
+}
+
 #[test]
 fn active_state_exposes_code_and_task_command_capabilities() {
     let schema = Schema::from_json(&serde_json::json!({

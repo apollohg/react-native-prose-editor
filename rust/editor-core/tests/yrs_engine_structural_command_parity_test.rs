@@ -1,14 +1,46 @@
 use editor_core::boundary::ResourceLimits;
 use editor_core::editor::Editor;
-use editor_core::intercept::InterceptorPipeline;
+use editor_core::intercept::{InterceptError, Interceptor, InterceptorPipeline};
 use editor_core::schema::Schema;
 use editor_core::selection::Selection;
 use editor_core::tiptap_schema;
+use editor_core::transform::{Source, Transaction};
 use editor_core::yrs_engine::{
     Affinity, EditingLimits, EditorOffsetKind, HistoryPolicy, InitializationMode, RenderUpdate,
     ResolvedSelection, RevisionedPosition, SelectionInput, SelectionIntent, TransactionOrigin,
     TypedCommand, TypedTransaction, TypedTransactionResult, YrsDocumentEngine, YrsEngineConfig,
 };
+use std::sync::{Arc, Mutex};
+
+struct SourceRecorder {
+    observed: Arc<Mutex<Vec<Source>>>,
+}
+
+impl Interceptor for SourceRecorder {
+    fn intercept(
+        &self,
+        transaction: Transaction,
+        _document: &editor_core::model::Document,
+    ) -> Result<Transaction, InterceptError> {
+        self.observed
+            .lock()
+            .unwrap()
+            .push(transaction.source.clone());
+        Ok(transaction)
+    }
+
+    fn sources(&self) -> &[Source] {
+        const SOURCES: &[Source] = &[
+            Source::Input,
+            Source::Paste,
+            Source::Format,
+            Source::Api,
+            Source::History,
+            Source::Reconciliation,
+        ];
+        SOURCES
+    }
+}
 
 fn point(offset: u32) -> RevisionedPosition {
     RevisionedPosition {
@@ -717,4 +749,203 @@ fn invalid_structural_contexts_are_not_applicable_and_atomic() {
         assert!(!engine.can_undo());
         assert!(!engine.can_redo());
     }
+}
+
+#[test]
+fn existing_list_type_conversion_preserves_format_source_semantics() {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let mut interceptors = InterceptorPipeline::new();
+    interceptors.add(Box::new(SourceRecorder {
+        observed: observed.clone(),
+    }));
+    let mut editor = Editor::new(tiptap_schema(), interceptors, false);
+    editor
+        .set_json(&serde_json::json!({"type":"doc","content":[{"type":"bulletList","content":[
+            {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"one"}]}]}
+        ]}]}))
+        .unwrap();
+    editor.set_selection(Selection::cursor(1));
+    observed.lock().unwrap().clear();
+
+    editor.apply_list_type("orderedList").unwrap();
+
+    assert_eq!(*observed.lock().unwrap(), vec![Source::Format]);
+}
+
+#[test]
+fn custom_ordered_list_conversion_preserves_declared_attrs_and_round_trips_history() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            {"name":"doc","content":"block+","role":"doc"},
+            {"name":"paragraph","content":"inline*","group":"block","role":"textBlock","htmlTag":"p"},
+            {"name":"alphaOrdered","content":"item+","group":"block","role":"list","htmlTag":"ol","attrs":{"start":{}}},
+            {"name":"betaOrdered","content":"item+","group":"block","role":"list","htmlTag":"ol","attrs":{"start":{}}},
+            {"name":"item","content":"paragraph block*","role":"listItem","htmlTag":"li"},
+            {"name":"text","content":"","group":"inline","role":"text"}
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let document = serde_json::json!({"type":"doc","content":[
+        {"type":"alphaOrdered","attrs":{"start":3},"content":[
+            {"type":"item","content":[
+                {"type":"paragraph","content":[{"type":"text","text":"outer"}]},
+                {"type":"alphaOrdered","attrs":{"start":4},"content":[
+                    {"type":"item","content":[{"type":"paragraph","content":[{"type":"text","text":"inner"}]}]}
+                ]}
+            ]}
+        ]}
+    ]});
+    let mut engine = YrsDocumentEngine::new(YrsEngineConfig {
+        schema,
+        fragment_name: "prosemirror".into(),
+        initialization_mode: InitializationMode::LocalEmpty,
+        resource_limits: ResourceLimits::default(),
+        editing_limits: EditingLimits::default(),
+        max_length: None,
+        scope: None,
+    })
+    .unwrap();
+    engine
+        .import_json(&document.to_string(), TransactionOrigin::DocumentImport)
+        .unwrap();
+    select(&mut engine, 300, 1, 1);
+
+    let result = engine
+        .apply_command(
+            301,
+            TypedCommand::ApplyListType {
+                list_type: "betaOrdered".into(),
+            },
+        )
+        .unwrap()
+        .expect("compatible custom list conversion must apply");
+    assert!(result.changed);
+    let converted = engine.document_json().unwrap();
+    assert_eq!(converted["content"][0]["type"], "betaOrdered");
+    assert_eq!(converted["content"][0]["attrs"]["start"], 3);
+    assert_eq!(
+        converted["content"][0]["content"][0]["content"][1]["type"],
+        "alphaOrdered"
+    );
+    assert_eq!(
+        converted["content"][0]["content"][0]["content"][1]["attrs"]["start"],
+        4
+    );
+
+    engine.undo_with_result(302).unwrap().expect("undo");
+    assert_eq!(engine.document_json().unwrap(), document);
+    engine.redo_with_result(303).unwrap().expect("redo");
+    assert_eq!(engine.document_json().unwrap(), converted);
+}
+
+#[test]
+fn list_conversion_preserves_opted_in_metadata_and_requires_target_declared_attrs() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            {"name":"doc","content":"block+","role":"doc"},
+            {"name":"paragraph","content":"inline*","group":"block","role":"textBlock","htmlTag":"p"},
+            {"name":"sourceList","content":"sourceItem+","group":"block","role":"list","htmlTag":"ul","allowUndeclaredAttrs":true,"attrs":{"shared":{}}},
+            {"name":"targetList","content":"targetItem*","group":"block","role":"list","htmlTag":"ul","allowUndeclaredAttrs":true,"attrs":{"shared":{},"listDefault":{"default":"target-default"}}},
+            {"name":"missingWrapperList","content":"targetItem*","group":"block","role":"list","htmlTag":"ul","allowUndeclaredAttrs":true,"attrs":{"requiredTarget":{}}},
+            {"name":"missingItemList","content":"missingRequiredItem*","group":"block","role":"list","htmlTag":"ul","allowUndeclaredAttrs":true,"attrs":{"shared":{}}},
+            {"name":"sourceItem","content":"paragraph block*","role":"listItem","htmlTag":"li","allowUndeclaredAttrs":true},
+            {"name":"targetItem","content":"paragraph block*","role":"listItem","htmlTag":"li","allowUndeclaredAttrs":true,"attrs":{"itemShared":{},"itemDefault":{"default":7}}},
+            {"name":"missingRequiredItem","content":"paragraph block*","role":"listItem","htmlTag":"li","allowUndeclaredAttrs":true,"attrs":{"missingItemRequired":{}}},
+            {"name":"text","content":"","group":"inline","role":"text"}
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let document = serde_json::json!({"type":"doc","content":[
+        {"type":"sourceList","attrs":{"shared":"wrapper-shared","wrapperMeta":{"owner":"app"}},"content":[
+            {"type":"sourceItem","attrs":{"itemShared":"item-shared","itemMeta":["keep",2]},"content":[
+                {"type":"paragraph","content":[{"type":"text","text":"entry"}]}
+            ]}
+        ]}
+    ]});
+    let mut engine = YrsDocumentEngine::new(YrsEngineConfig {
+        schema,
+        fragment_name: "prosemirror".into(),
+        initialization_mode: InitializationMode::LocalEmpty,
+        resource_limits: ResourceLimits::default(),
+        editing_limits: EditingLimits::default(),
+        max_length: None,
+        scope: None,
+    })
+    .unwrap();
+    engine
+        .import_json(&document.to_string(), TransactionOrigin::DocumentImport)
+        .unwrap();
+    select(&mut engine, 400, 1, 1);
+
+    engine
+        .apply_command(
+            401,
+            TypedCommand::ApplyListType {
+                list_type: "targetList".into(),
+            },
+        )
+        .unwrap()
+        .expect("compatible pass-through conversion must apply");
+    let converted = engine.document_json().unwrap();
+    let list = &converted["content"][0];
+    assert_eq!(list["type"], "targetList");
+    let item = &list["content"][0];
+    assert_eq!(item["type"], "targetItem");
+    let converted_document = engine.document().unwrap();
+    let list_node = converted_document.root().child(0).unwrap();
+    assert_eq!(
+        list_node.attrs().get("shared"),
+        Some(&serde_json::json!("wrapper-shared"))
+    );
+    assert_eq!(
+        list_node.attrs().get("listDefault"),
+        Some(&serde_json::json!("target-default"))
+    );
+    assert_eq!(
+        list_node.attrs().get("wrapperMeta"),
+        Some(&serde_json::json!({"owner":"app"}))
+    );
+    let item_node = list_node.child(0).unwrap();
+    assert_eq!(
+        item_node.attrs().get("itemShared"),
+        Some(&serde_json::json!("item-shared"))
+    );
+    assert_eq!(
+        item_node.attrs().get("itemDefault"),
+        Some(&serde_json::json!(7))
+    );
+    assert_eq!(
+        item_node.attrs().get("itemMeta"),
+        Some(&serde_json::json!(["keep", 2]))
+    );
+
+    engine.undo_with_result(402).unwrap().expect("undo");
+    assert_eq!(engine.document_json().unwrap(), document);
+
+    let revision = engine.revision();
+    assert!(engine
+        .apply_command(
+            403,
+            TypedCommand::ApplyListType {
+                list_type: "missingWrapperList".into(),
+            },
+        )
+        .unwrap()
+        .is_none());
+    assert_eq!(engine.revision(), revision);
+    assert_eq!(engine.document_json().unwrap(), document);
+
+    assert!(engine
+        .apply_command(
+            404,
+            TypedCommand::ApplyListType {
+                list_type: "missingItemList".into(),
+            },
+        )
+        .unwrap()
+        .is_none());
+    assert_eq!(engine.revision(), revision);
+    assert_eq!(engine.document_json().unwrap(), document);
 }

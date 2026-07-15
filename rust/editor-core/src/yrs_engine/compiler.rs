@@ -33,6 +33,7 @@ pub(crate) enum AtomicFailpoint {
     CanonicalOutputAdmission,
     RevisionAdmission,
     DurableMetadataAdmission,
+    RemoteHistoryAdmission,
 }
 
 #[cfg(test)]
@@ -47,6 +48,7 @@ impl AtomicFailpoint {
             Self::CanonicalOutputAdmission => "canonicalOutputAdmission",
             Self::RevisionAdmission => "revisionAdmission",
             Self::DurableMetadataAdmission => "durableMetadataAdmission",
+            Self::RemoteHistoryAdmission => "remoteHistoryAdmission",
         }
     }
 }
@@ -229,43 +231,13 @@ fn compile_transaction_with_yrs_impl<T: yrs::ReadTxn>(
             u64::MAX,
         )
     })?;
-    let crdt_clock_work = crdt_clock_scan_reservation(
+    let charged_scan_work = admit_yrs_scan_work(
         request_id,
+        admitted_input_bytes,
+        document_text_bytes,
         txn,
-        context.resource_limits.max_encoded_state_bytes,
+        context.resource_limits,
     )?;
-    // One pass materializes each Yrs text and one pass builds its scalar/UTF-16 index.
-    // Reserve both before constructing MutationCompiler, so invalid envelopes never
-    // traverse Yrs and admitted traversal cannot outrun its transaction-wide budget.
-    let initial_scan_work = document_text_bytes
-        .checked_mul(2)
-        .and_then(|work| work.checked_add(crdt_clock_work.checked_mul(2)?))
-        .ok_or_else(|| {
-            input_limit_error(
-                request_id,
-                None,
-                context.resource_limits.max_input_bytes,
-                usize::MAX,
-            )
-        })?;
-    let charged_scan_work = admitted_input_bytes
-        .checked_add(initial_scan_work)
-        .ok_or_else(|| {
-            input_limit_error(
-                request_id,
-                None,
-                context.resource_limits.max_input_bytes,
-                usize::MAX,
-            )
-        })?;
-    if charged_scan_work > context.resource_limits.max_input_bytes {
-        return Err(input_limit_error(
-            request_id,
-            None,
-            context.resource_limits.max_input_bytes,
-            charged_scan_work,
-        ));
-    }
     let lowering = MutationCompiler::new(
         request_id,
         txn,
@@ -348,7 +320,7 @@ fn compile_transaction_with_yrs_impl<T: yrs::ReadTxn>(
     Ok(compiled)
 }
 
-fn admit_transaction_envelope(
+pub(crate) fn admit_transaction_envelope(
     context: CompilationContext<'_>,
     transaction: &TypedTransaction,
 ) -> OperationResult<usize> {
@@ -511,7 +483,7 @@ fn input_limit_error(
     )
 }
 
-fn document_text_bytes(document: &Document) -> Option<usize> {
+pub(crate) fn document_text_bytes(document: &Document) -> Option<usize> {
     fn node_bytes(node: &Node) -> Option<usize> {
         let mut total = node.text_str().map_or(0, str::len);
         if let Some(content) = node.content() {
@@ -522,6 +494,50 @@ fn document_text_bytes(document: &Document) -> Option<usize> {
         Some(total)
     }
     node_bytes(document.root())
+}
+
+pub(crate) fn admit_yrs_scan_work<T: yrs::ReadTxn>(
+    request_id: u64,
+    admitted_input_bytes: usize,
+    document_text_bytes: usize,
+    txn: &T,
+    resource_limits: &ResourceLimits,
+) -> OperationResult<usize> {
+    let crdt_clock_work =
+        crdt_clock_scan_reservation(request_id, txn, resource_limits.max_encoded_state_bytes)?;
+    // One pass materializes each Yrs text and one pass builds its scalar/UTF-16 index.
+    // Reserve both before any selection or mutation traversal. Selection-only callers
+    // may supply the exact document-text metric cached at the last document change.
+    let initial_scan_work = document_text_bytes
+        .checked_mul(2)
+        .and_then(|work| work.checked_add(crdt_clock_work.checked_mul(2)?))
+        .ok_or_else(|| {
+            input_limit_error(
+                request_id,
+                None,
+                resource_limits.max_input_bytes,
+                usize::MAX,
+            )
+        })?;
+    let charged_scan_work = admitted_input_bytes
+        .checked_add(initial_scan_work)
+        .ok_or_else(|| {
+            input_limit_error(
+                request_id,
+                None,
+                resource_limits.max_input_bytes,
+                usize::MAX,
+            )
+        })?;
+    if charged_scan_work > resource_limits.max_input_bytes {
+        return Err(input_limit_error(
+            request_id,
+            None,
+            resource_limits.max_input_bytes,
+            charged_scan_work,
+        ));
+    }
+    Ok(charged_scan_work)
 }
 
 fn compile_transaction_impl(

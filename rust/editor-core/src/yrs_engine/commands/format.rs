@@ -195,6 +195,7 @@ pub(super) fn plan(
                         content: plan.content,
                     }],
                     selection_after: Some(plan.selection_after),
+                    history: crate::command_planner::SemanticCommandHistory::FormatBoundary,
                 },
             )
         }
@@ -216,6 +217,7 @@ pub(super) fn plan(
                         content: plan.content,
                     }],
                     selection_after: Some(plan.selection_after),
+                    history: crate::command_planner::SemanticCommandHistory::FormatBoundary,
                 },
             )
         }
@@ -237,6 +239,7 @@ pub(super) fn plan(
                         content: plan.content,
                     }],
                     selection_after: Some(plan.selection_after),
+                    history: crate::command_planner::SemanticCommandHistory::FormatBoundary,
                 },
             )
         }

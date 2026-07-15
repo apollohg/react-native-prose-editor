@@ -79,14 +79,25 @@ fn transaction_with_selection(
     context: &PlanningContext<'_>,
     operations: Vec<TypedOperation>,
     selection_intent: SelectionIntent,
+    history: crate::command_planner::SemanticCommandHistory,
 ) -> TypedTransaction {
+    let history_policy = semantic_history_policy(history);
     TypedTransaction {
         request_id: context.request_id,
         base_document_revision: context.revision,
         origin: TransactionOrigin::LocalCommand,
         operations,
         selection_intent,
-        history_policy: HistoryPolicy::Boundary,
+        history_policy,
+    }
+}
+
+fn semantic_history_policy(
+    history: crate::command_planner::SemanticCommandHistory,
+) -> HistoryPolicy {
+    match history {
+        crate::command_planner::SemanticCommandHistory::InputBoundary
+        | crate::command_planner::SemanticCommandHistory::FormatBoundary => HistoryPolicy::Boundary,
     }
 }
 
@@ -203,7 +214,7 @@ pub(super) fn semantic_transaction(
             ),
         )],
         selection_intent: SelectionIntent::UseOperationResult,
-        history_policy: HistoryPolicy::Boundary,
+        history_policy: semantic_history_policy(plan.history),
     }))
 }
 
@@ -228,7 +239,8 @@ fn direct_transaction(
         SelectionIntent::UseOperationResult
     };
     let compile = |selection_intent| {
-        let transaction = transaction_with_selection(context, operations.clone(), selection_intent);
+        let transaction =
+            transaction_with_selection(context, operations.clone(), selection_intent, plan.history);
         let compiled = crate::yrs_engine::compiler::compile_transaction(
             crate::yrs_engine::compiler::CompilationContext {
                 document: context.document,
@@ -643,6 +655,7 @@ pub(super) fn plan(
                         content: replacement.content,
                     }],
                     selection_after: Some(replacement.selection_after),
+                    history: crate::command_planner::SemanticCommandHistory::InputBoundary,
                 },
             )
         }

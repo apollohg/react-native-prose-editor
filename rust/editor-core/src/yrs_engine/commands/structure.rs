@@ -99,9 +99,11 @@ pub(super) fn plan(
                 context.position_map,
                 context.schema,
                 &selection,
-                doc_position,
-                width,
-                height,
+                crate::command_planner::ResizeImageRequest {
+                    doc_position,
+                    width,
+                    height,
+                },
                 context.resource_limits,
             )
         }

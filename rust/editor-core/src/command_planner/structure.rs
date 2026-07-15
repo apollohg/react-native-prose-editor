@@ -6,7 +6,7 @@ use crate::schema::{NodeRole, Schema};
 use crate::selection::Selection;
 use crate::transform::Step;
 
-use super::{SemanticCommandPlan, SemanticOperation};
+use super::{SemanticCommandHistory, SemanticCommandPlan, SemanticOperation};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StructuralDiff {
@@ -25,13 +25,30 @@ fn default_attrs(
     schema: &Schema,
     node_type: &str,
 ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
-    schema.node(node_type)?.attrs.iter().try_fold(
-        std::collections::HashMap::new(),
-        |mut attrs, (name, spec)| {
-            attrs.insert(name.clone(), spec.default.clone()?);
-            Some(attrs)
-        },
-    )
+    compatible_declared_attrs(schema, node_type, &Default::default())
+}
+
+fn compatible_declared_attrs(
+    schema: &Schema,
+    node_type: &str,
+    current: &std::collections::HashMap<String, serde_json::Value>,
+) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+    let node_spec = schema.node(node_type)?;
+    let mut attrs = if node_spec.allow_undeclared_attrs {
+        current.clone()
+    } else {
+        std::collections::HashMap::new()
+    };
+    for (name, attr_spec) in &node_spec.attrs {
+        attrs.insert(
+            name.clone(),
+            current
+                .get(name)
+                .cloned()
+                .or_else(|| attr_spec.default.clone())?,
+        );
+    }
+    Some(attrs)
 }
 
 fn node_open_pos(document: &Document, path: &[u32]) -> Option<u32> {
@@ -140,17 +157,11 @@ fn admitted_plan(
 }
 
 fn list_attrs_for_type(
+    schema: &Schema,
     list_type: &str,
     current: &std::collections::HashMap<String, serde_json::Value>,
-) -> std::collections::HashMap<String, serde_json::Value> {
-    if matches!(list_type, "orderedList" | "ordered_list") {
-        current
-            .get("start")
-            .map(|start| std::collections::HashMap::from([("start".into(), start.clone())]))
-            .unwrap_or_default()
-    } else {
-        std::collections::HashMap::new()
-    }
+) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+    compatible_declared_attrs(schema, list_type, current)
 }
 
 pub(crate) fn plan_wrap_in_list(
@@ -172,24 +183,25 @@ pub(crate) fn plan_wrap_in_list(
         let items = selected
             .into_iter()
             .map(|block| {
-                Node::element(
+                Some(Node::element(
                     item_type.to_string(),
-                    default_attrs(schema, item_type).unwrap_or_default(),
+                    default_attrs(schema, item_type)?,
                     Fragment::from(vec![block]),
-                )
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Option<Vec<_>>>()?;
         SemanticCommandPlan {
             operations: vec![SemanticOperation::ReplaceRange {
                 from: replace_from,
                 to: replace_to,
                 content: Fragment::from(vec![Node::element(
                     list_type.to_string(),
-                    list_attrs_for_type(list_type, &Default::default()),
+                    list_attrs_for_type(schema, list_type, &Default::default())?,
                     Fragment::from(items),
                 )]),
             }],
             selection_after: None,
+            history: SemanticCommandHistory::InputBoundary,
         }
     } else {
         SemanticCommandPlan {
@@ -198,10 +210,11 @@ pub(crate) fn plan_wrap_in_list(
                 to: selection.to(document),
                 list_type: list_type.to_string(),
                 item_type: item_type.to_string(),
-                attrs: list_attrs_for_type(list_type, &Default::default()),
-                item_attrs: default_attrs(schema, item_type).unwrap_or_default(),
+                attrs: list_attrs_for_type(schema, list_type, &Default::default())?,
+                item_attrs: default_attrs(schema, item_type)?,
             }],
             selection_after: None,
+            history: SemanticCommandHistory::InputBoundary,
         }
     };
     admitted_plan(document, schema, selection, plan, limits)
@@ -237,14 +250,14 @@ pub(crate) fn plan_apply_list_type(
                         .filter(|spec| matches!(spec.role, NodeRole::ListItem))?;
                     Some(Node::element(
                         item_type.clone(),
-                        default_attrs(schema, &item_type)?,
+                        compatible_declared_attrs(schema, &item_type, item.attrs())?,
                         item.content().cloned().unwrap_or_else(Fragment::empty),
                     ))
                 })
                 .collect::<Option<Vec<_>>>()?;
             let replacement = Node::element(
                 list_type.to_string(),
-                list_attrs_for_type(list_type, list.attrs()),
+                list_attrs_for_type(schema, list_type, list.attrs())?,
                 Fragment::from(items),
             );
             return admitted_plan(
@@ -258,6 +271,7 @@ pub(crate) fn plan_apply_list_type(
                         content: Fragment::from(vec![replacement]),
                     }],
                     selection_after: None,
+                    history: SemanticCommandHistory::FormatBoundary,
                 },
                 limits,
             );
@@ -281,6 +295,7 @@ fn plan_list_position_operation(
         SemanticCommandPlan {
             operations: vec![operation],
             selection_after: None,
+            history: SemanticCommandHistory::InputBoundary,
         },
         limits,
     )
@@ -371,6 +386,7 @@ pub(crate) fn plan_outdent_list_item(
             content: forward.content,
         }],
         selection_after: Some(simulated.selection),
+        history: SemanticCommandHistory::InputBoundary,
     })
 }
 
@@ -468,6 +484,7 @@ pub(crate) fn plan_insert_node(
             SemanticCommandPlan {
                 operations: vec![operation],
                 selection_after: Some(Selection::cursor(from.checked_add(1)?)),
+                history: SemanticCommandHistory::InputBoundary,
             }
         }
         NodeRole::Block => {
@@ -488,11 +505,13 @@ pub(crate) fn plan_insert_node(
                         content: Fragment::from(vec![node, text_block]),
                     }],
                     selection_after: Some(Selection::cursor(replace_from.checked_add(2)?)),
+                    history: SemanticCommandHistory::InputBoundary,
                 }
             } else {
                 SemanticCommandPlan {
                     operations: vec![SemanticOperation::InsertNode { pos: insert, node }],
                     selection_after: Some(Selection::cursor(insert.checked_add(1)?)),
+                    history: SemanticCommandHistory::InputBoundary,
                 }
             }
         }
@@ -501,16 +520,26 @@ pub(crate) fn plan_insert_node(
     admitted_plan(document, schema, selection, plan, limits)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResizeImageRequest {
+    pub doc_position: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub(crate) fn plan_resize_image(
     document: &Document,
     position_map: &PositionMap,
     schema: &Schema,
     selection: &Selection,
-    doc_position: u32,
-    width: u32,
-    height: u32,
+    request: ResizeImageRequest,
     limits: &ResourceLimits,
 ) -> Option<SemanticCommandPlan> {
+    let ResizeImageRequest {
+        doc_position,
+        width,
+        height,
+    } = request;
     if width == 0 || height == 0 {
         return None;
     }
@@ -540,6 +569,7 @@ pub(crate) fn plan_resize_image(
                 attrs,
             }],
             selection_after: Some(Selection::node(block.doc_start)),
+            history: SemanticCommandHistory::InputBoundary,
         },
         limits,
     )

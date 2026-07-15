@@ -114,9 +114,31 @@ pub(crate) fn command_applicability(
     selection: &Selection,
     limits: &ResourceLimits,
 ) -> HashMap<String, bool> {
+    command_applicability_with_known_node_count(
+        document,
+        schema,
+        selection,
+        limits,
+        document_node_count(document.root()),
+    )
+}
+
+pub(crate) fn command_applicability_with_known_node_count(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    limits: &ResourceLimits,
+    document_node_count: usize,
+) -> HashMap<String, bool> {
     let pos = selection.from(document);
     let list_context = list_item_context_at(document, schema, pos);
-
+    let block_range = selected_block_range(
+        document,
+        schema,
+        selection.from(document),
+        selection.to(document),
+    );
+    let root_wrap_range = root_wrap_range(document, schema, selection);
     let mut commands = HashMap::new();
     commands.insert(
         "indentList".into(),
@@ -132,17 +154,24 @@ pub(crate) fn command_applicability(
     );
     commands.insert(
         "toggleBlockquote".into(),
-        can_toggle_blockquote(document, schema, selection, limits),
+        can_toggle_blockquote_local(
+            document,
+            schema,
+            selection,
+            limits,
+            document_node_count,
+            block_range.as_ref(),
+        ),
     );
     for level in 1..=6 {
         commands.insert(
             format!("toggleHeading{level}"),
-            can_toggle_heading(document, schema, selection, level),
+            can_toggle_heading(document, schema, block_range.as_ref(), level),
         );
     }
     commands.insert(
         "toggleCodeBlock".into(),
-        can_toggle_code_block(document, schema, selection),
+        can_toggle_code_block(document, schema, block_range.as_ref()),
     );
     commands.insert(
         "toggleTaskItem".into(),
@@ -150,11 +179,29 @@ pub(crate) fn command_applicability(
     );
     commands.insert(
         "wrapBulletList".into(),
-        can_apply_list_type(document, schema, selection, "bulletList", limits),
+        can_apply_list_type_local(
+            document,
+            schema,
+            selection,
+            "bulletList",
+            limits,
+            document_node_count,
+            block_range.as_ref(),
+            root_wrap_range.as_ref(),
+        ),
     );
     commands.insert(
         "wrapOrderedList".into(),
-        can_apply_list_type(document, schema, selection, "orderedList", limits),
+        can_apply_list_type_local(
+            document,
+            schema,
+            selection,
+            "orderedList",
+            limits,
+            document_node_count,
+            block_range.as_ref(),
+            root_wrap_range.as_ref(),
+        ),
     );
     commands
 }
@@ -268,7 +315,7 @@ fn block_insert_position(document: &Document, schema: &Schema, position: u32) ->
 fn can_toggle_heading(
     document: &Document,
     schema: &Schema,
-    selection: &Selection,
+    range: Option<&BlockSelectionRange>,
     level: u8,
 ) -> bool {
     let Some(target_type) = schema
@@ -280,7 +327,7 @@ fn can_toggle_heading(
     let Some(paragraph_type) = paragraph_node_name(schema) else {
         return false;
     };
-    let Some(range) = selected_text_block_range(document, schema, selection) else {
+    let Some(range) = range.filter(|range| selected_blocks_are_text_blocks(schema, range)) else {
         return false;
     };
     let replacement_type = if range
@@ -292,17 +339,21 @@ fn can_toggle_heading(
     } else {
         target_type
     };
-    can_replace_selected_text_blocks(document, schema, &range, replacement_type)
+    can_replace_selected_text_blocks(document, schema, range, replacement_type)
 }
 
-fn can_toggle_code_block(document: &Document, schema: &Schema, selection: &Selection) -> bool {
+fn can_toggle_code_block(
+    document: &Document,
+    schema: &Schema,
+    range: Option<&BlockSelectionRange>,
+) -> bool {
     let Some(code_block_type) = crate::command_planner::code_block_node_name(schema) else {
         return false;
     };
     let Some(paragraph_type) = paragraph_node_name(schema) else {
         return false;
     };
-    let Some(range) = selected_text_block_range(document, schema, selection) else {
+    let Some(range) = range.filter(|range| selected_blocks_are_text_blocks(schema, range)) else {
         return false;
     };
     let replacement_type = if range
@@ -314,10 +365,505 @@ fn can_toggle_code_block(document: &Document, schema: &Schema, selection: &Selec
     } else {
         code_block_type
     };
-    can_replace_selected_text_blocks(document, schema, &range, replacement_type)
+    can_replace_selected_text_blocks(document, schema, range, replacement_type)
 }
 
-fn can_toggle_blockquote(
+fn can_toggle_blockquote_local(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    limits: &ResourceLimits,
+    document_node_count: usize,
+    block_range: Option<&BlockSelectionRange>,
+) -> bool {
+    let Some(blockquote_type) = schema
+        .node_by_html_tag("blockquote")
+        .map(|spec| spec.name.as_str())
+    else {
+        return false;
+    };
+    let pos = selection.from(document);
+    if let Some((path, quote)) =
+        containing_node_path_at(document, schema, pos, |_, name| name == blockquote_type)
+    {
+        let Some(content) = quote.content() else {
+            return false;
+        };
+        let replacement = content.iter().map(Node::node_type).collect::<Vec<_>>();
+        return parent_accepts_path_replacement(document, schema, &path, &replacement);
+    }
+
+    let Some(range) = block_range else {
+        return false;
+    };
+    let Some(quote_spec) = schema.node(blockquote_type) else {
+        return false;
+    };
+    if !attrs_are_valid(schema, blockquote_type, &HashMap::new()) {
+        return false;
+    }
+    let selected_types = range
+        .selected_blocks
+        .iter()
+        .map(Node::node_type)
+        .collect::<Vec<_>>();
+    if !quote_spec
+        .content
+        .matches(&selected_types, |child, symbol| {
+            schema.node_matches_symbol(child, symbol)
+        })
+        || !parent_accepts_range_replacement(document, schema, range, &[blockquote_type])
+    {
+        return false;
+    }
+    let deepest = range
+        .selected_blocks
+        .iter()
+        .map(node_relative_depth)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(range.parent_path.len())
+        .saturating_add(2);
+    resource_growth_fits(document_node_count, limits, 1, deepest)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn can_apply_list_type_local(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    list_type: &str,
+    limits: &ResourceLimits,
+    document_node_count: usize,
+    block_range: Option<&BlockSelectionRange>,
+    root_wrap_range: Option<&BlockSelectionRange>,
+) -> bool {
+    if schema.node(list_type).is_none() {
+        return false;
+    }
+    let pos = selection.from(document);
+    if let Some((list_path, list)) = containing_node_path_at(document, schema, pos, |role, _| {
+        matches!(role, NodeRole::List { .. })
+    }) {
+        if list.node_type() == list_type {
+            return can_unwrap_list_item_local(document, schema, pos, &list_path, list);
+        }
+        let attrs = list_attrs_for_type(list_type, list.attrs());
+        let Some(content) = list.content() else {
+            return false;
+        };
+        let child_types = content.iter().map(Node::node_type).collect::<Vec<_>>();
+        return attrs_are_valid(schema, list_type, &attrs)
+            && schema.node(list_type).is_some_and(|spec| {
+                spec.content.matches(&child_types, |child, symbol| {
+                    schema.node_matches_symbol(child, symbol)
+                })
+            })
+            && parent_accepts_path_replacement(document, schema, &list_path, &[list_type]);
+    }
+
+    let Some(item_type) = schema.list_item_type_for(list_type) else {
+        return false;
+    };
+    let in_quote = block_range
+        .and_then(|range| document.node_at(&range.parent_path))
+        .and_then(|parent| schema.node(parent.node_type()))
+        .is_some_and(|spec| spec.html_tag.as_deref() == Some("blockquote"));
+    if let Some(range) = block_range.filter(|_| in_quote) {
+        return can_wrap_range_in_list_local(
+            document,
+            schema,
+            range,
+            list_type,
+            &item_type,
+            limits,
+            document_node_count,
+        );
+    }
+    let Some(range) = root_wrap_range else {
+        return false;
+    };
+    can_wrap_range_in_list_local(
+        document,
+        schema,
+        range,
+        list_type,
+        &item_type,
+        limits,
+        document_node_count,
+    )
+}
+
+fn can_wrap_range_in_list_local(
+    document: &Document,
+    schema: &Schema,
+    range: &BlockSelectionRange,
+    list_type: &str,
+    item_type: &str,
+    limits: &ResourceLimits,
+    document_node_count: usize,
+) -> bool {
+    let selected_types = range
+        .selected_blocks
+        .iter()
+        .map(Node::node_type)
+        .collect::<Vec<_>>();
+    can_build_list(schema, list_type, item_type, &selected_types)
+        && parent_accepts_range_replacement(document, schema, range, &[list_type])
+        && resource_growth_fits(
+            document_node_count,
+            limits,
+            selected_types.len().saturating_add(1),
+            range
+                .selected_blocks
+                .iter()
+                .map(node_relative_depth)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(range.parent_path.len())
+                .saturating_add(3),
+        )
+}
+
+fn root_wrap_range(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+) -> Option<BlockSelectionRange> {
+    let from = selection.from(document);
+    let to = selection.to(document);
+    if from > to {
+        return None;
+    }
+    let content = document.root().content()?;
+    let mut offset = 0u32;
+    let mut first = None;
+    let mut last = None;
+    for (index, child) in content.iter().enumerate() {
+        let end = offset.saturating_add(child.node_size());
+        if end > from && offset < to {
+            if schema
+                .node(child.node_type())
+                .is_some_and(|spec| matches!(spec.role, NodeRole::List { .. }))
+            {
+                return None;
+            }
+            first.get_or_insert(index);
+            last = Some(index);
+        }
+        offset = end;
+    }
+    let (Some(first), Some(last)) = (first, last) else {
+        return None;
+    };
+    let selected_blocks = content
+        .iter()
+        .skip(first)
+        .take(last.saturating_sub(first).saturating_add(1))
+        .cloned()
+        .collect::<Vec<_>>();
+    Some(BlockSelectionRange {
+        parent_path: Vec::new(),
+        first_child_index: first,
+        replace_from: 0,
+        replace_to: 0,
+        selected_blocks,
+    })
+}
+
+fn selected_blocks_are_text_blocks(schema: &Schema, range: &BlockSelectionRange) -> bool {
+    !range.selected_blocks.is_empty()
+        && range.selected_blocks.iter().all(|block| {
+            schema
+                .node(block.node_type())
+                .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
+        })
+}
+
+fn can_build_list(
+    schema: &Schema,
+    list_type: &str,
+    item_type: &str,
+    selected_types: &[&str],
+) -> bool {
+    let Some(list_spec) = schema.node(list_type) else {
+        return false;
+    };
+    let Some(item_spec) = schema.node(item_type) else {
+        return false;
+    };
+    matches!(list_spec.role, NodeRole::List { .. })
+        && matches!(item_spec.role, NodeRole::ListItem)
+        && attrs_are_valid(schema, list_type, &HashMap::new())
+        && attrs_are_valid(schema, item_type, &HashMap::new())
+        && list_spec
+            .content
+            .matches(&vec![item_type; selected_types.len()], |child, symbol| {
+                schema.node_matches_symbol(child, symbol)
+            })
+        && selected_types.iter().all(|selected| {
+            item_spec.content.matches(&[*selected], |child, symbol| {
+                schema.node_matches_symbol(child, symbol)
+            })
+        })
+}
+
+fn can_unwrap_list_item_local(
+    document: &Document,
+    schema: &Schema,
+    pos: u32,
+    expected_list_path: &[u32],
+    list: &Node,
+) -> bool {
+    let Ok(resolved) = document.resolve(pos) else {
+        return false;
+    };
+    let mut node = document.root();
+    let mut item_depth = None;
+    for (depth, index) in resolved.node_path.iter().copied().enumerate() {
+        let Some(child) = node.child(index as usize) else {
+            return false;
+        };
+        if schema
+            .node(child.node_type())
+            .is_some_and(|spec| matches!(spec.role, NodeRole::ListItem))
+        {
+            item_depth = Some(depth);
+        }
+        node = child;
+    }
+    let Some(item_depth) = item_depth else {
+        return false;
+    };
+    let list_path = &resolved.node_path[..item_depth];
+    if list_path != expected_list_path {
+        return false;
+    }
+    let item_index = resolved.node_path[item_depth] as usize;
+    let Some(list_content) = list.content() else {
+        return false;
+    };
+    let Some(item) = list_content.child(item_index) else {
+        return false;
+    };
+    let Some(item_content) = item.content() else {
+        return false;
+    };
+    let extracted = item_content.iter().map(Node::node_type).collect::<Vec<_>>();
+    let total = list_content.child_count();
+    let mut replacement = Vec::new();
+    if total == 1 {
+        replacement.extend(extracted);
+    } else if item_index == 0 {
+        replacement.extend(extracted);
+        replacement.push(list.node_type());
+        if !list_subset_is_valid(schema, list, 1, total) {
+            return false;
+        }
+    } else if item_index + 1 == total {
+        replacement.push(list.node_type());
+        replacement.extend(extracted);
+        if !list_subset_is_valid(schema, list, 0, item_index) {
+            return false;
+        }
+    } else {
+        replacement.push(list.node_type());
+        replacement.extend(extracted);
+        replacement.push(list.node_type());
+        if !list_subset_is_valid(schema, list, 0, item_index)
+            || !list_subset_is_valid(schema, list, item_index + 1, total)
+        {
+            return false;
+        }
+    }
+    parent_accepts_path_replacement(document, schema, list_path, &replacement)
+}
+
+fn list_subset_is_valid(schema: &Schema, list: &Node, from: usize, to: usize) -> bool {
+    let Some(spec) = schema.node(list.node_type()) else {
+        return false;
+    };
+    let Some(content) = list.content() else {
+        return false;
+    };
+    let types = content
+        .iter()
+        .skip(from)
+        .take(to.saturating_sub(from))
+        .map(Node::node_type)
+        .collect::<Vec<_>>();
+    spec.content.matches(&types, |child, symbol| {
+        schema.node_matches_symbol(child, symbol)
+    })
+}
+
+fn attrs_are_valid(
+    schema: &Schema,
+    node_type: &str,
+    attrs: &HashMap<String, serde_json::Value>,
+) -> bool {
+    schema.node(node_type).is_some_and(|spec| {
+        spec.attrs
+            .iter()
+            .all(|(name, attr)| attr.has_default || attrs.contains_key(name))
+            && (spec.allow_undeclared_attrs
+                || attrs.keys().all(|name| spec.attrs.contains_key(name)))
+    })
+}
+
+fn parent_accepts_path_replacement(
+    document: &Document,
+    schema: &Schema,
+    path: &[u32],
+    replacement: &[&str],
+) -> bool {
+    let Some((&child_index, parent_path)) = path.split_last() else {
+        return false;
+    };
+    parent_accepts_replacement(
+        document,
+        schema,
+        parent_path,
+        child_index as usize,
+        1,
+        replacement,
+    )
+}
+
+fn parent_accepts_range_replacement(
+    document: &Document,
+    schema: &Schema,
+    range: &BlockSelectionRange,
+    replacement: &[&str],
+) -> bool {
+    parent_accepts_replacement(
+        document,
+        schema,
+        &range.parent_path,
+        range.first_child_index,
+        range.selected_blocks.len(),
+        replacement,
+    )
+}
+
+fn parent_accepts_replacement(
+    document: &Document,
+    schema: &Schema,
+    parent_path: &[u32],
+    first: usize,
+    removed: usize,
+    replacement: &[&str],
+) -> bool {
+    let parent = if parent_path.is_empty() {
+        document.root()
+    } else {
+        let Some(parent) = document.node_at(parent_path) else {
+            return false;
+        };
+        parent
+    };
+    let Some(parent_spec) = schema.node(parent.node_type()) else {
+        return false;
+    };
+    let Some(content) = parent.content() else {
+        return false;
+    };
+    if first > content.child_count() || first.saturating_add(removed) > content.child_count() {
+        return false;
+    }
+    // Content expressions observe a child only through the symbols it
+    // matches. Equal-length replacements with identical signatures preserve
+    // an already-admitted parent sequence, so the shared selection range does
+    // not need to rescan every immutable sibling for each command target.
+    if removed == replacement.len()
+        && content
+            .iter()
+            .skip(first)
+            .take(removed)
+            .zip(replacement.iter().copied())
+            .all(|(current, candidate)| {
+                parent_spec.content.symbols().all(|symbol| {
+                    schema.node_matches_symbol(current.node_type(), symbol)
+                        == schema.node_matches_symbol(candidate, symbol)
+                })
+            })
+    {
+        return true;
+    }
+    let mut child_types = Vec::with_capacity(
+        content
+            .child_count()
+            .saturating_sub(removed)
+            .saturating_add(replacement.len()),
+    );
+    child_types.extend(content.iter().take(first).map(Node::node_type));
+    child_types.extend(replacement.iter().copied());
+    child_types.extend(
+        content
+            .iter()
+            .skip(first.saturating_add(removed))
+            .map(Node::node_type),
+    );
+    parent_spec.content.matches(&child_types, |child, symbol| {
+        schema.node_matches_symbol(child, symbol)
+    })
+}
+
+fn resource_growth_fits(
+    document_node_count: usize,
+    limits: &ResourceLimits,
+    added_nodes: usize,
+    deepest_new_node: usize,
+) -> bool {
+    document_node_count
+        .checked_add(added_nodes)
+        .is_some_and(|count| count <= limits.max_document_nodes)
+        && deepest_new_node <= limits.max_document_depth
+}
+
+pub(crate) fn document_node_count(node: &Node) -> usize {
+    node.content().map_or(1, |content| {
+        content
+            .iter()
+            .map(document_node_count)
+            .fold(1usize, usize::saturating_add)
+    })
+}
+
+fn node_relative_depth(node: &Node) -> usize {
+    node.content().map_or(1, |content| {
+        content
+            .iter()
+            .map(node_relative_depth)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    })
+}
+
+fn containing_node_path_at<'a>(
+    document: &'a Document,
+    schema: &Schema,
+    pos: u32,
+    matches_node: impl Fn(&NodeRole, &str) -> bool,
+) -> Option<(Vec<u32>, &'a Node)> {
+    let resolved = document.resolve(pos).ok()?;
+    let mut node = document.root();
+    let mut path = Vec::new();
+    let mut nearest = None;
+    for index in resolved.node_path {
+        node = node.child(index as usize)?;
+        path.push(index);
+        let spec = schema.node(node.node_type())?;
+        if matches_node(&spec.role, node.node_type()) {
+            nearest = Some((path.clone(), node));
+        }
+    }
+    nearest
+}
+
+#[cfg(test)]
+fn can_toggle_blockquote_transaction_oracle(
     document: &Document,
     schema: &Schema,
     selection: &Selection,
@@ -379,7 +925,8 @@ fn can_toggle_blockquote(
         .is_ok()
 }
 
-fn can_apply_list_type(
+#[cfg(test)]
+fn can_apply_list_type_transaction_oracle(
     document: &Document,
     schema: &Schema,
     selection: &Selection,
@@ -528,39 +1075,8 @@ pub(crate) fn can_replace_selected_text_blocks(
     if !matches!(target_spec.role, NodeRole::TextBlock) {
         return false;
     }
-    let parent = if range.parent_path.is_empty() {
-        document.root()
-    } else {
-        let Some(parent) = document.node_at(&range.parent_path) else {
-            return false;
-        };
-        parent
-    };
-    let Some(parent_spec) = schema.node(parent.node_type()) else {
-        return false;
-    };
-    let replaced_end = range
-        .first_child_index
-        .saturating_add(range.selected_blocks.len());
-    let child_types = parent
-        .content()
-        .map(|content| {
-            content
-                .iter()
-                .enumerate()
-                .map(|(index, child)| {
-                    if index >= range.first_child_index && index < replaced_end {
-                        target_type
-                    } else {
-                        child.node_type()
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    parent_spec.content.matches(&child_types, |child, symbol| {
-        schema.node_matches_symbol(child, symbol)
-    })
+    let replacement = vec![target_type; range.selected_blocks.len()];
+    parent_accepts_range_replacement(document, schema, range, &replacement)
 }
 
 pub(crate) fn selected_block_range(
@@ -1057,6 +1573,215 @@ fn containing_list_node_at<'a>(
 mod tests {
     use super::*;
     use crate::model::Fragment;
+
+    fn paragraph(text: &str) -> Node {
+        Node::element(
+            "paragraph".into(),
+            HashMap::new(),
+            Fragment::from(vec![Node::text(text.into(), Vec::new())]),
+        )
+    }
+
+    fn element(node_type: &str, children: Vec<Node>) -> Node {
+        Node::element(node_type.into(), HashMap::new(), Fragment::from(children))
+    }
+
+    fn document(children: Vec<Node>) -> Document {
+        Document::new(element("doc", children))
+    }
+
+    fn assert_structural_preflights_match_oracle(
+        document: &Document,
+        schema: &Schema,
+        selection: &Selection,
+        limits: &ResourceLimits,
+    ) {
+        let nodes = document_node_count(document.root());
+        let block_range = selected_block_range(
+            document,
+            schema,
+            selection.from(document),
+            selection.to(document),
+        );
+        let root_range = root_wrap_range(document, schema, selection);
+        assert_eq!(
+            can_toggle_blockquote_local(
+                document,
+                schema,
+                selection,
+                limits,
+                nodes,
+                block_range.as_ref(),
+            ),
+            can_toggle_blockquote_transaction_oracle(document, schema, selection, limits),
+            "blockquote mismatch for {selection:?}"
+        );
+        for list_type in ["bulletList", "orderedList"] {
+            assert_eq!(
+                can_apply_list_type_local(
+                    document,
+                    schema,
+                    selection,
+                    list_type,
+                    limits,
+                    nodes,
+                    block_range.as_ref(),
+                    root_range.as_ref(),
+                ),
+                can_apply_list_type_transaction_oracle(
+                    document, schema, selection, list_type, limits,
+                ),
+                "{list_type} mismatch for {selection:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn structural_command_local_proofs_match_transaction_oracle() {
+        let schema = crate::tiptap_schema();
+        let documents = vec![
+            document(vec![paragraph("one"), paragraph("two"), paragraph("three")]),
+            document(vec![element("blockquote", vec![paragraph("quote")])]),
+            document(vec![element(
+                "bulletList",
+                vec![
+                    element("listItem", vec![paragraph("one")]),
+                    element("listItem", vec![paragraph("two")]),
+                    element("listItem", vec![paragraph("three")]),
+                ],
+            )]),
+            document(vec![element(
+                "orderedList",
+                vec![element(
+                    "listItem",
+                    vec![
+                        paragraph("outer"),
+                        element(
+                            "bulletList",
+                            vec![element("listItem", vec![paragraph("inner")])],
+                        ),
+                    ],
+                )],
+            )]),
+        ];
+        for document in &documents {
+            let size = document.content_size();
+            let positions = [0, 1, size / 2, size.saturating_sub(1), size];
+            for position in positions {
+                for selection in [
+                    Selection::cursor(position),
+                    Selection::text(1.min(size), position),
+                    Selection::text(position, 1.min(size)),
+                    Selection::node(position),
+                    Selection::All,
+                ] {
+                    assert_structural_preflights_match_oracle(
+                        document,
+                        &schema,
+                        &selection,
+                        &ResourceLimits::default(),
+                    );
+                }
+            }
+            let nodes = document_node_count(document.root());
+            let depth = node_relative_depth(document.root());
+            for (nodes, depth) in [
+                (nodes, depth),
+                (nodes.saturating_add(1), depth),
+                (nodes.saturating_add(8), depth.saturating_add(2)),
+            ] {
+                let limits = ResourceLimits {
+                    max_document_nodes: nodes,
+                    max_document_depth: depth,
+                    ..ResourceLimits::default()
+                };
+                assert_structural_preflights_match_oracle(
+                    document,
+                    &schema,
+                    &Selection::cursor(1.min(size)),
+                    &limits,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn structural_command_local_proofs_match_custom_schema_and_invalid_positions() {
+        use crate::schema::AttrSpec;
+
+        let base = crate::tiptap_schema();
+        let mut nodes = base.all_nodes().cloned().collect::<Vec<_>>();
+        for spec in &mut nodes {
+            if spec.html_tag.as_deref() == Some("blockquote") || spec.name == "bulletList" {
+                spec.attrs.insert(
+                    "requiredProofAttr".into(),
+                    AttrSpec {
+                        default: None,
+                        has_default: false,
+                    },
+                );
+            }
+        }
+        let schema = Schema::new(nodes, base.all_marks().cloned().collect());
+        let document = document(vec![paragraph("one"), paragraph("two")]);
+        for selection in [
+            Selection::cursor(1),
+            Selection::text(1, document.content_size().saturating_sub(1)),
+            Selection::text(document.content_size().saturating_sub(1), 1),
+            Selection::cursor(document.content_size().saturating_add(1)),
+            Selection::cursor(u32::MAX),
+        ] {
+            assert_structural_preflights_match_oracle(
+                &document,
+                &schema,
+                &selection,
+                &ResourceLimits::default(),
+            );
+        }
+    }
+
+    #[test]
+    fn structural_command_local_proofs_match_generated_block_ranges() {
+        let schema = crate::tiptap_schema();
+        for block_count in 1..=8 {
+            let document = document(
+                (0..block_count)
+                    .map(|index| paragraph(&format!("block-{index}")))
+                    .collect(),
+            );
+            let size = document.content_size();
+            let positions = (0..=size)
+                .filter(|position| position % 3 == 0 || *position == 1 || *position == size)
+                .collect::<Vec<_>>();
+            for &anchor in &positions {
+                for &head in &positions {
+                    assert_structural_preflights_match_oracle(
+                        &document,
+                        &schema,
+                        &Selection::text(anchor, head),
+                        &ResourceLimits::default(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn known_node_count_entry_point_matches_standalone_wrapper() {
+        let schema = crate::tiptap_schema();
+        let document = document(vec![paragraph("one"), paragraph("two")]);
+        let selection = Selection::cursor(1);
+        assert_eq!(
+            command_applicability_with_known_node_count(
+                &document,
+                &schema,
+                &selection,
+                &ResourceLimits::default(),
+                document_node_count(document.root()),
+            ),
+            command_applicability(&document, &schema, &selection, &ResourceLimits::default(),)
+        );
+    }
 
     #[test]
     fn node_selection_preserves_collapsed_stored_marks() {

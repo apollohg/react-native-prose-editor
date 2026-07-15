@@ -2040,6 +2040,7 @@ impl MutationCompiler {
                 .copied()
                 .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
             let mut semantic_index = 0usize;
+            let mut semantic_text_offset = 0u32;
             let mut boundaries = Vec::with_capacity(parent.storage_children.len() + 1);
             for storage in &parent.storage_children {
                 boundaries.push(cursor);
@@ -2053,17 +2054,26 @@ impl MutationCompiler {
                             let child = content.child(semantic_index).ok_or_else(|| {
                                 invalid_action_range(self.request_id, operation_index)
                             })?;
-                            if !child.is_text() || child.node_size() > remaining {
+                            if !child.is_text() || semantic_text_offset >= child.node_size() {
                                 return Err(invalid_action_range(self.request_id, operation_index));
                             }
-                            cursor = cursor.checked_add(child.node_size()).ok_or_else(|| {
+                            let available = child.node_size() - semantic_text_offset;
+                            let consumed = remaining.min(available);
+                            cursor = cursor.checked_add(consumed).ok_or_else(|| {
                                 invalid_action_range(self.request_id, operation_index)
                             })?;
-                            remaining -= child.node_size();
-                            semantic_index += 1;
+                            remaining -= consumed;
+                            semantic_text_offset += consumed;
+                            if semantic_text_offset == child.node_size() {
+                                semantic_index += 1;
+                                semantic_text_offset = 0;
+                            }
                         }
                     }
                     StorageChildKind::Element { .. } | StorageChildKind::PreparedElement => {
+                        if semantic_text_offset != 0 {
+                            return Err(invalid_action_range(self.request_id, operation_index));
+                        }
                         let child = content.child(semantic_index).ok_or_else(|| {
                             invalid_action_range(self.request_id, operation_index)
                         })?;
@@ -2076,6 +2086,9 @@ impl MutationCompiler {
                         semantic_index += 1;
                     }
                 }
+            }
+            if semantic_text_offset != 0 || semantic_index != content.child_count() {
+                return Err(invalid_action_range(self.request_id, operation_index));
             }
             boundaries.push(cursor);
             missing_starts.insert(parent.parent.id(), boundaries);
@@ -2151,5 +2164,4 @@ impl MutationCompiler {
         }
         Ok(())
     }
-
 }

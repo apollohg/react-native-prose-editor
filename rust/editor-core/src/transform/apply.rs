@@ -37,7 +37,7 @@ pub fn apply_step(
     match step {
         Step::InsertText { pos, text, marks } => apply_insert_text(doc, *pos, text, marks, schema),
         Step::DeleteRange { from, to } => apply_delete_range(doc, *from, *to),
-        Step::AddMark { from, to, mark } => apply_add_mark(doc, *from, *to, mark),
+        Step::AddMark { from, to, mark } => apply_add_mark(doc, *from, *to, mark, schema),
         Step::RemoveMark {
             from,
             to,
@@ -362,6 +362,7 @@ fn apply_add_mark(
     from: u32,
     to: u32,
     mark: &Mark,
+    schema: &Schema,
 ) -> Result<(Document, StepMap), TransformError> {
     if from >= to {
         // No-op: empty range.
@@ -381,7 +382,7 @@ fn apply_add_mark(
     let from_offset = resolved_from.parent_offset;
     let to_offset = resolved_to.parent_offset;
 
-    let new_children = add_mark_in_children(parent, from_offset, to_offset, mark);
+    let new_children = add_mark_in_children(parent, from_offset, to_offset, mark, schema);
     let new_parent = rebuild_element(parent, new_children);
 
     let new_root = replace_node_at_path(doc.root(), &resolved_from.node_path, &new_parent);
@@ -392,7 +393,13 @@ fn apply_add_mark(
 }
 
 /// Add a mark to all text within `[from_offset, to_offset)` in a parent's children.
-fn add_mark_in_children(parent: &Node, from_offset: u32, to_offset: u32, mark: &Mark) -> Vec<Node> {
+fn add_mark_in_children(
+    parent: &Node,
+    from_offset: u32,
+    to_offset: u32,
+    mark: &Mark,
+    schema: &Schema,
+) -> Vec<Node> {
     let content = parent.content().expect("parent should be an element node");
     let mut new_children: Vec<Node> = Vec::with_capacity(content.child_count() + 2);
     let mut offset: u32 = 0;
@@ -433,7 +440,14 @@ fn add_mark_in_children(parent: &Node, from_offset: u32, to_offset: u32, mark: &
                 let inside_str: String = chars[mark_start_in_child..mark_end_in_child]
                     .iter()
                     .collect();
-                let new_marks = add_mark_to_set(child.marks(), mark);
+                let mut new_marks = add_mark_to_set(child.marks(), mark);
+                new_marks.sort_by(|left, right| {
+                    schema
+                        .mark_rank(left.mark_type())
+                        .unwrap_or(usize::MAX)
+                        .cmp(&schema.mark_rank(right.mark_type()).unwrap_or(usize::MAX))
+                        .then_with(|| left.mark_type().cmp(right.mark_type()))
+                });
                 new_children.push(Node::text(inside_str, new_marks));
             }
 

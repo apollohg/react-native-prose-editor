@@ -648,6 +648,7 @@ impl MutationCompiler {
             .collect::<HashMap<_, _>>();
         let semantic_children = children.collect::<Vec<_>>();
         let mut semantic_index = 0usize;
+        let mut semantic_text_offset = 0u32;
         let mut offset = 0u32;
         for (storage_index, storage) in storage_children.iter().enumerate() {
             if offset == position {
@@ -664,16 +665,18 @@ impl MutationCompiler {
                     let mut remaining = current.scalar_len;
                     while remaining > 0 {
                         let child = *semantic_children.get(semantic_index)?;
-                        if !child.is_text() {
+                        if !child.is_text() || semantic_text_offset >= child.node_size() {
                             return None;
                         }
-                        let width = child.node_size();
-                        if width == 0 || width > remaining {
-                            return None;
+                        let available = child.node_size() - semantic_text_offset;
+                        let consumed = remaining.min(available);
+                        offset = offset.checked_add(consumed)?;
+                        remaining -= consumed;
+                        semantic_text_offset += consumed;
+                        if semantic_text_offset == child.node_size() {
+                            semantic_index += 1;
+                            semantic_text_offset = 0;
                         }
-                        offset = offset.checked_add(width)?;
-                        remaining -= width;
-                        semantic_index += 1;
                     }
                     if position > start && position < offset {
                         return Some(StorageInsertion::InsideText {
@@ -686,6 +689,9 @@ impl MutationCompiler {
                     }
                 }
                 StorageChildKind::Element { .. } | StorageChildKind::PreparedElement => {
+                    if semantic_text_offset != 0 {
+                        return None;
+                    }
                     let child = *semantic_children.get(semantic_index)?;
                     if child.is_text() {
                         return None;
@@ -919,5 +925,4 @@ impl MutationCompiler {
         }
         Ok(())
     }
-
 }

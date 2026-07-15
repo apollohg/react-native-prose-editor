@@ -218,7 +218,7 @@ fn structural_parity_at_doc_cursor(
 #[test]
 fn complete_command_contract_routes_structural_work_explicitly() {
     let engine = engine();
-    let structural = [
+    let applicable = [
         TypedCommand::ApplyListType {
             list_type: "bulletList".into(),
         },
@@ -226,6 +226,15 @@ fn complete_command_contract_routes_structural_work_explicitly() {
             list_type: "bulletList".into(),
             item_type: "listItem".into(),
         },
+    ];
+    for command in applicable {
+        assert!(matches!(
+            engine.plan_command(1, command).unwrap(),
+            CommandPlan::Transaction(_)
+        ));
+    }
+
+    let not_applicable_in_the_default_cursor_context = [
         TypedCommand::UnwrapFromList,
         TypedCommand::IndentListItem,
         TypedCommand::OutdentListItem,
@@ -239,7 +248,7 @@ fn complete_command_contract_routes_structural_work_explicitly() {
             height: 20,
         },
     ];
-    for command in structural {
+    for command in not_applicable_in_the_default_cursor_context {
         assert_eq!(
             engine.plan_command(1, command).unwrap(),
             CommandPlan::NotApplicable
@@ -760,7 +769,7 @@ fn json_and_html_content_match_legacy_empty_block_and_selection_semantics() {
                 html: "<p><strong>html</strong><br></p>".into(),
             },
             true,
-            true,
+            false,
         ),
     ];
     for (index, (command, html, artifact)) in cases.into_iter().enumerate() {

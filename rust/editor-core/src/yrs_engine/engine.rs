@@ -490,10 +490,11 @@ impl YrsDocumentEngine {
                 revision: self.revision,
             });
         }
-        // The dependency set is complete, so quarantine is no longer useful.
-        // Discard it before admission: if deferred content proves invalid, it
-        // must not permanently poison later legitimate synchronization.
-        self.quarantined_remote_update = None;
+        // Temporarily remove the completed dependency set while its document
+        // content is validated. Invalid/over-limit content is poison and stays
+        // discarded; once content admission succeeds, retain these bytes until
+        // every fallible operational reservation has completed.
+        let completed_quarantine = self.quarantined_remote_update.take();
         let candidate_encoded =
             encode_candidate_state_bounded(&candidate_doc, &self.resource_limits)
                 .map_err(|error| history_operation_error(request_id, error))?;
@@ -561,6 +562,7 @@ impl YrsDocumentEngine {
                 u64::try_from(canonical_bytes.len()).unwrap_or(u64::MAX),
             ));
         }
+        self.quarantined_remote_update = completed_quarantine;
         let next_revision =
             checked_operation_increment(request_id, self.revision, "documentRevision")?;
         let next_state_revision =
@@ -675,6 +677,11 @@ impl YrsDocumentEngine {
                 format!("candidate-produced incremental update cannot decode: {error}"),
             )
         })?;
+        #[cfg(test)]
+        super::compiler::check_atomic_failpoint(
+            request_id,
+            super::compiler::AtomicFailpoint::RemoteHistoryAdmission,
+        )?;
         // Replay retention charges remote work in encoded-byte units: this is
         // the exact admitted incremental payload, not redundant caller input.
         let replay_byte_units = u64::try_from(accepted_update.len())
@@ -1119,6 +1126,10 @@ impl YrsDocumentEngine {
         if let Some(state) = &self.derived_state {
             debug_assert_eq!(state.document_revision, self.revision);
             debug_assert_eq!(state.state_revision, self.state_revision);
+            debug_assert_eq!(
+                state.document_node_count,
+                crate::editor_state::document_node_count(state.document.root())
+            );
         }
     }
 
@@ -1258,9 +1269,273 @@ impl YrsDocumentEngine {
         &mut self,
         transaction: super::TypedTransaction,
     ) -> super::OperationResult<super::TransactionCommit> {
+        if transaction.operations.is_empty()
+            && transaction.history_policy == super::HistoryPolicy::Skip
+        {
+            return self
+                .apply_empty_skip_transaction(transaction, false)
+                .map(|(commit, _)| commit);
+        }
         let compiled = self.compile_typed_transaction(transaction)?;
         let (commit, _) = self.apply_compiled_transaction(compiled, false)?;
         Ok(commit)
+    }
+
+    fn apply_empty_skip_transaction(
+        &mut self,
+        transaction: super::TypedTransaction,
+        with_result: bool,
+    ) -> super::OperationResult<(
+        super::TransactionCommit,
+        Option<super::TypedTransactionResult>,
+    )> {
+        debug_assert!(transaction.operations.is_empty());
+        debug_assert_eq!(transaction.history_policy, super::HistoryPolicy::Skip);
+        let request_id = transaction.request_id;
+        let current = self
+            .derived_state
+            .as_ref()
+            .ok_or_else(|| super::OperationError::engine_not_ready(request_id))?;
+        let context = CompilationContext {
+            document: &current.document,
+            selection: None,
+            schema: &self.schema,
+            resource_limits: &self.resource_limits,
+            editing_limits: &self.editing_limits,
+            document_revision: self.revision,
+            max_length: self.max_length,
+        };
+        #[cfg(test)]
+        super::compiler::check_atomic_failpoint(
+            request_id,
+            super::compiler::AtomicFailpoint::EnvelopeAdmission,
+        )?;
+        let admitted_input_bytes =
+            super::compiler::admit_transaction_envelope(context, &transaction)?;
+        #[cfg(test)]
+        super::compiler::check_atomic_failpoint(
+            request_id,
+            super::compiler::AtomicFailpoint::SemanticCompilation,
+        )?;
+
+        let txn = self.doc.transact();
+        super::compiler::admit_yrs_scan_work(
+            request_id,
+            admitted_input_bytes,
+            current.document_text_bytes,
+            &txn,
+            &self.resource_limits,
+        )?;
+        let needs_rendered_text = match &transaction.selection_intent {
+            super::SelectionIntent::Set(super::SelectionInput::Text { anchor, head }) => {
+                anchor.kind == super::EditorOffsetKind::Utf16
+                    || head.kind == super::EditorOffsetKind::Utf16
+            }
+            super::SelectionIntent::Set(super::SelectionInput::Node { at }) => {
+                at.kind == super::EditorOffsetKind::Utf16
+            }
+            _ => false,
+        };
+        let rendered_text = if needs_rendered_text {
+            current.rendered_text.as_str()
+        } else {
+            ""
+        };
+        let fragment = txn
+            .get_xml_fragment(self.fragment_name.as_str())
+            .ok_or_else(|| {
+                super::OperationError::engine_invariant_failed(
+                    request_id,
+                    None,
+                    "ready Yrs document fragment is missing",
+                )
+            })?;
+        let resolve_point = |field: &'static str,
+                             point: super::RevisionedPosition|
+         -> super::OperationResult<u32> {
+            super::position::editor_offset_to_doc_pos(
+                point.offset,
+                point.kind,
+                rendered_text,
+                &current.position_map,
+                &current.document,
+            )
+            .ok_or_else(|| {
+                super::OperationError::selection_position_invalid(
+                    request_id,
+                    field,
+                    format!("{field} is outside the base document"),
+                )
+            })
+        };
+        let relative_point = |field: &'static str,
+                              point: super::RevisionedPosition|
+         -> super::OperationResult<super::RelativePoint> {
+            let document_position = resolve_point(field, point)?;
+            super::position::doc_pos_to_relative_point(
+                &txn,
+                &fragment,
+                document_position,
+                point.affinity,
+                &self.schema,
+            )
+            .ok_or_else(|| {
+                super::OperationError::selection_position_invalid(
+                    request_id,
+                    field,
+                    "selection cannot be represented with the requested Yrs affinity",
+                )
+            })
+        };
+        let next_relative = match &transaction.selection_intent {
+            super::SelectionIntent::Preserve | super::SelectionIntent::UseOperationResult => {
+                current.relative_selection.clone()
+            }
+            super::SelectionIntent::Set(super::SelectionInput::Text { anchor, head }) => {
+                let anchor_document = resolve_point("selection.anchor", *anchor)?;
+                let head_document = resolve_point("selection.head", *head)?;
+                let normalized = Selection::text(anchor_document, head_document)
+                    .normalized(&current.document, &current.position_map);
+                debug_assert!(matches!(normalized, Selection::Text { .. }));
+                super::RelativeSelection::Text {
+                    anchor: relative_point("selection.anchor", *anchor)?,
+                    head: relative_point("selection.head", *head)?,
+                }
+            }
+            super::SelectionIntent::Set(super::SelectionInput::Node { at }) => {
+                let document_position = resolve_point("selection.at", *at)?;
+                let normalized = Selection::node(document_position)
+                    .normalized(&current.document, &current.position_map);
+                let Selection::Node { pos } = normalized else {
+                    return Err(super::OperationError::engine_invariant_failed(
+                        request_id,
+                        None,
+                        "node selection did not compile to a node selection",
+                    ));
+                };
+                if !selectable_void_at(current.document.root(), pos, 0, &self.schema) {
+                    return Err(super::OperationError::selection_position_invalid(
+                        request_id,
+                        "selection.at",
+                        "node selection must target a selectable void or atom node",
+                    ));
+                }
+                super::RelativeSelection::Node {
+                    point: relative_point("selection.at", *at)?,
+                }
+            }
+            super::SelectionIntent::Set(super::SelectionInput::All) => {
+                super::RelativeSelection::All
+            }
+        };
+        let next_selection = current
+            .resolve_relative_selection(&next_relative, &txn, &fragment, &self.schema)
+            .ok_or_else(|| {
+                super::OperationError::selection_position_invalid(
+                    request_id,
+                    "selection",
+                    "selection cannot be represented in the Yrs document",
+                )
+            })?;
+        drop(txn);
+        let next_stored_marks = stored_marks_after_selection_change(
+            current.stored_marks.as_deref(),
+            &current.resolved_selection,
+            &next_selection,
+            &current.document,
+            &self.schema,
+        );
+        let changed = next_relative != current.relative_selection
+            || next_selection != current.resolved_selection
+            || next_stored_marks != current.stored_marks;
+        let next_state_revision = if changed {
+            checked_operation_increment(request_id, self.state_revision, "stateRevision")?
+        } else {
+            self.state_revision
+        };
+        let result = with_result
+            .then(|| {
+                self.prepare_empty_skip_result(
+                    request_id,
+                    transaction.origin,
+                    &next_selection,
+                    next_stored_marks.as_deref(),
+                    changed,
+                    next_state_revision,
+                )
+            })
+            .transpose()?;
+
+        if changed {
+            let current = self.derived_state.as_mut().ok_or_else(|| {
+                super::OperationError::engine_invariant_failed(
+                    request_id,
+                    None,
+                    "ready Yrs engine lost derived state during selection admission",
+                )
+            })?;
+            current.relative_selection = next_relative;
+            current.resolved_selection = next_selection;
+            current.stored_marks = next_stored_marks;
+            current.state_revision = next_state_revision;
+            self.state_revision = next_state_revision;
+            self.last_committed_origin = Some(transaction.origin);
+        }
+        let commit = super::TransactionCommit {
+            request_id,
+            changed,
+            document_revision: self.revision,
+            state_revision: self.state_revision,
+            origin: transaction.origin,
+        };
+        Ok((commit, result))
+    }
+
+    fn prepare_empty_skip_result(
+        &self,
+        request_id: u64,
+        origin: TransactionOrigin,
+        selection: &super::ResolvedSelection,
+        stored_marks: Option<&[crate::model::Mark]>,
+        changed: bool,
+        state_revision: u64,
+    ) -> super::OperationResult<super::TypedTransactionResult> {
+        let current = self
+            .derived_state
+            .as_ref()
+            .ok_or_else(|| super::OperationError::engine_not_ready(request_id))?;
+        let legacy_selection = super::derived_state::resolved_to_legacy(selection);
+        let commands = crate::editor_state::command_applicability_with_known_node_count(
+            &current.document,
+            &self.schema,
+            &legacy_selection,
+            &self.resource_limits,
+            current.document_node_count,
+        );
+        let active_state = crate::editor_state::active_state(
+            &current.document,
+            &self.schema,
+            &legacy_selection,
+            stored_marks,
+            commands,
+            &self.resource_limits,
+        );
+        let result = super::TypedTransactionResult {
+            request_id,
+            origin,
+            changed,
+            document_revision: self.revision,
+            state_revision,
+            selection: selection.clone(),
+            active_state,
+            history_state: crate::editor_state::HistoryState {
+                can_undo: self.can_undo(),
+                can_redo: self.can_redo(),
+            },
+            render_update: super::RenderUpdate::None,
+        };
+        self.admit_typed_result(request_id, &result)?;
+        Ok(result)
     }
 
     fn prepare_typed_result(
@@ -1398,6 +1673,20 @@ impl YrsDocumentEngine {
         transaction: super::TypedTransaction,
     ) -> super::OperationResult<super::TypedTransactionResult> {
         let request_id = transaction.request_id;
+        if transaction.operations.is_empty()
+            && transaction.history_policy == super::HistoryPolicy::Skip
+        {
+            return self
+                .apply_empty_skip_transaction(transaction, true)?
+                .1
+                .ok_or_else(|| {
+                    super::OperationError::engine_invariant_failed(
+                        request_id,
+                        None,
+                        "rich empty Skip transaction produced no result envelope",
+                    )
+                });
+        }
         let compiled = self.compile_typed_transaction(transaction)?;
         let (_, result) = self.apply_compiled_transaction(compiled, true)?;
         result.ok_or_else(|| {
@@ -3019,6 +3308,63 @@ mod tests {
     }
 
     #[test]
+    fn derived_state_node_count_refreshes_and_empty_results_use_equivalent_commands() {
+        let mut engine = transaction_engine();
+        let initial = engine.derived_state.as_ref().unwrap();
+        assert_eq!(
+            initial.document_node_count,
+            crate::editor_state::document_node_count(initial.document.root())
+        );
+
+        engine
+            .import_json(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"one"}]},{"type":"paragraph","content":[{"type":"text","text":"two"}]}]}"#,
+                TransactionOrigin::DocumentImport,
+            )
+            .unwrap();
+        let refreshed = engine.derived_state.as_ref().unwrap();
+        assert_eq!(refreshed.document_revision, engine.revision());
+        assert_eq!(
+            refreshed.document_node_count,
+            crate::editor_state::document_node_count(refreshed.document.root())
+        );
+
+        let transaction = TypedTransaction {
+            request_id: 991,
+            base_document_revision: engine.revision(),
+            origin: TransactionOrigin::LocalApi,
+            operations: Vec::new(),
+            selection_intent: SelectionIntent::Set(SelectionInput::Text {
+                anchor: RevisionedPosition {
+                    offset: 1,
+                    kind: EditorOffsetKind::Scalar,
+                    affinity: Affinity::Before,
+                },
+                head: RevisionedPosition {
+                    offset: 1,
+                    kind: EditorOffsetKind::Scalar,
+                    affinity: Affinity::Before,
+                },
+            }),
+            history_policy: HistoryPolicy::Skip,
+        };
+        let result = engine
+            .apply_typed_transaction_with_result(transaction)
+            .unwrap();
+        let state = engine.derived_state.as_ref().unwrap();
+        let selection = state.legacy_selection();
+        assert_eq!(
+            result.active_state.commands,
+            crate::editor_state::command_applicability(
+                &state.document,
+                &engine.schema,
+                &selection,
+                &engine.resource_limits,
+            )
+        );
+    }
+
+    #[test]
     fn utf16_doc_preserves_fresh_client_ids_and_uses_utf16_offsets() {
         let first = utf16_doc();
         let second = utf16_doc();
@@ -3819,6 +4165,469 @@ mod tests {
             );
             assert_eq!(atomic_audit(&engine), before, "{failpoint:?}");
         }
+    }
+
+    #[test]
+    fn empty_skip_selection_bypasses_mutation_preflight_but_not_admission_or_boundaries() {
+        use crate::yrs_engine::compiler::{set_atomic_failpoint_for_test, AtomicFailpoint};
+
+        let selection_transaction =
+            |engine: &YrsDocumentEngine, request_id, history_policy| TypedTransaction {
+                request_id,
+                base_document_revision: engine.revision(),
+                origin: TransactionOrigin::LocalApi,
+                operations: vec![],
+                selection_intent: SelectionIntent::Set(SelectionInput::All),
+                history_policy,
+            };
+
+        let mut skip = transaction_engine();
+        set_atomic_failpoint_for_test(Some(AtomicFailpoint::MutationPreflight));
+        let result = skip
+            .apply_typed_transaction_with_result(selection_transaction(
+                &skip,
+                760,
+                HistoryPolicy::Skip,
+            ))
+            .expect("empty Skip selection must not enter mutation preflight");
+        set_atomic_failpoint_for_test(None);
+        assert!(result.changed);
+        assert_eq!(skip.revision(), 0);
+        assert_eq!(skip.state_revision(), 1);
+
+        let mut boundary = transaction_engine();
+        let before_boundary = atomic_audit(&boundary);
+        set_atomic_failpoint_for_test(Some(AtomicFailpoint::MutationPreflight));
+        let boundary_error = boundary
+            .apply_typed_transaction(selection_transaction(
+                &boundary,
+                761,
+                HistoryPolicy::Boundary,
+            ))
+            .unwrap_err();
+        set_atomic_failpoint_for_test(None);
+        assert_eq!(
+            boundary_error.details,
+            Some(json!({ "failpoint": "mutationPreflight" }))
+        );
+        assert_eq!(atomic_audit(&boundary), before_boundary);
+
+        let mut rejected = transaction_engine();
+        let before_rejected = atomic_audit(&rejected);
+        set_atomic_failpoint_for_test(Some(AtomicFailpoint::EnvelopeAdmission));
+        let admission_error = rejected
+            .apply_typed_transaction(selection_transaction(&rejected, 762, HistoryPolicy::Skip))
+            .unwrap_err();
+        set_atomic_failpoint_for_test(None);
+        assert_eq!(
+            admission_error.details,
+            Some(json!({ "failpoint": "envelopeAdmission" }))
+        );
+        assert_eq!(atomic_audit(&rejected), before_rejected);
+    }
+
+    #[test]
+    fn empty_skip_fast_path_matches_full_compiler_at_yrs_scan_work_boundary() {
+        fn populated_engine() -> YrsDocumentEngine {
+            let mut engine = transaction_engine();
+            engine
+                .import_json(
+                    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"scan boundary"}]}]}"#,
+                    TransactionOrigin::DocumentImport,
+                )
+                .unwrap();
+            engine
+        }
+
+        fn scan_work(engine: &YrsDocumentEngine) -> usize {
+            let document_text_bytes = engine.document().unwrap().root().text_content().len();
+            let txn = engine.doc.transact();
+            let crdt_clock_work = txn
+                .state_vector()
+                .iter()
+                .map(|(_, clock)| usize::try_from(*clock).unwrap() + 1)
+                .sum::<usize>();
+            document_text_bytes * 2 + crdt_clock_work * 2
+        }
+
+        fn transaction(engine: &YrsDocumentEngine, request_id: u64) -> TypedTransaction {
+            TypedTransaction {
+                request_id,
+                base_document_revision: engine.revision(),
+                origin: TransactionOrigin::LocalApi,
+                operations: vec![],
+                selection_intent: SelectionIntent::Set(SelectionInput::All),
+                history_policy: HistoryPolicy::Skip,
+            }
+        }
+
+        let required = scan_work(&populated_engine());
+
+        let mut exact_fast = populated_engine();
+        exact_fast.resource_limits.max_input_bytes = required;
+        let exact_fast_result = exact_fast
+            .apply_typed_transaction_with_result(transaction(&exact_fast, 763))
+            .unwrap();
+        let mut exact_slow = populated_engine();
+        exact_slow.resource_limits.max_input_bytes = required;
+        let exact_slow_transaction = transaction(&exact_slow, 763);
+        let exact_slow_compiled = exact_slow
+            .compile_typed_transaction(exact_slow_transaction)
+            .unwrap();
+        let exact_slow_result = exact_slow
+            .apply_compiled_transaction(exact_slow_compiled, true)
+            .unwrap()
+            .1
+            .unwrap();
+        assert_eq!(exact_fast_result, exact_slow_result);
+        assert_eq!(exact_fast.document_json(), exact_slow.document_json());
+        assert_eq!(exact_fast.document_html(), exact_slow.document_html());
+        assert_eq!(exact_fast.revision(), exact_slow.revision());
+        assert_eq!(exact_fast.state_revision(), exact_slow.state_revision());
+        assert_eq!(
+            exact_fast.resolved_selection(),
+            exact_slow.resolved_selection()
+        );
+        assert_eq!(exact_fast.stored_marks(), exact_slow.stored_marks());
+        assert_eq!(exact_fast.can_undo(), exact_slow.can_undo());
+        assert_eq!(exact_fast.can_redo(), exact_slow.can_redo());
+
+        let mut one_under_slow = populated_engine();
+        one_under_slow.resource_limits.max_input_bytes = required - 1;
+        let before_slow = atomic_audit(&one_under_slow);
+        let slow_error = one_under_slow
+            .compile_typed_transaction(transaction(&one_under_slow, 764))
+            .unwrap_err();
+        assert_eq!(atomic_audit(&one_under_slow), before_slow);
+
+        let mut one_under_fast = populated_engine();
+        one_under_fast.resource_limits.max_input_bytes = required - 1;
+        let before_fast = atomic_audit(&one_under_fast);
+        let fast_error = one_under_fast
+            .apply_typed_transaction_with_result(transaction(&one_under_fast, 764))
+            .unwrap_err();
+        assert_eq!(fast_error, slow_error);
+        assert_eq!(atomic_audit(&one_under_fast), before_fast);
+
+        let mut changed_document = populated_engine();
+        changed_document
+            .apply_command(765, TypedCommand::InsertText { text: "é".into() })
+            .unwrap()
+            .unwrap();
+        let cached_text_bytes = changed_document
+            .derived_state
+            .as_ref()
+            .unwrap()
+            .document_text_bytes;
+        assert_eq!(
+            cached_text_bytes,
+            changed_document
+                .document()
+                .unwrap()
+                .root()
+                .text_content()
+                .len()
+        );
+        let changed_required = scan_work(&changed_document);
+        changed_document.resource_limits.max_input_bytes = changed_required - 1;
+        let before_changed = atomic_audit(&changed_document);
+        let changed_error = changed_document
+            .apply_typed_transaction_with_result(transaction(&changed_document, 766))
+            .unwrap_err();
+        assert_eq!(changed_error.code, "OPERATION_LIMIT_EXCEEDED");
+        assert_eq!(
+            changed_error.limit,
+            Some(u64::try_from(changed_required - 1).unwrap())
+        );
+        assert_eq!(
+            changed_error.actual,
+            Some(u64::try_from(changed_required).unwrap())
+        );
+        assert_eq!(atomic_audit(&changed_document), before_changed);
+
+        let invalid_selection = |engine: &YrsDocumentEngine| TypedTransaction {
+            request_id: 767,
+            base_document_revision: engine.revision(),
+            origin: TransactionOrigin::LocalApi,
+            operations: vec![],
+            selection_intent: SelectionIntent::Set(SelectionInput::Text {
+                anchor: RevisionedPosition {
+                    offset: u32::MAX,
+                    kind: EditorOffsetKind::Utf16,
+                    affinity: Affinity::Before,
+                },
+                head: RevisionedPosition {
+                    offset: u32::MAX,
+                    kind: EditorOffsetKind::Utf16,
+                    affinity: Affinity::After,
+                },
+            }),
+            history_policy: HistoryPolicy::Skip,
+        };
+        let invalid_slow = populated_engine();
+        let before_invalid_slow = atomic_audit(&invalid_slow);
+        let invalid_slow_error = invalid_slow
+            .compile_typed_transaction(invalid_selection(&invalid_slow))
+            .unwrap_err();
+        assert_eq!(atomic_audit(&invalid_slow), before_invalid_slow);
+        let mut invalid_fast = populated_engine();
+        let before_invalid_fast = atomic_audit(&invalid_fast);
+        let invalid_fast_error = invalid_fast
+            .apply_typed_transaction_with_result(invalid_selection(&invalid_fast))
+            .unwrap_err();
+        assert_eq!(invalid_fast_error, invalid_slow_error);
+        assert_eq!(atomic_audit(&invalid_fast), before_invalid_fast);
+    }
+
+    #[test]
+    fn empty_skip_fast_path_matches_full_compiler_for_selection_forms_and_local_state() {
+        fn populated_engine() -> YrsDocumentEngine {
+            let mut engine = transaction_engine();
+            engine
+                .import_json(
+                    &json!({
+                        "type": "doc",
+                        "content": [
+                            {"type": "paragraph", "content": [{"type": "text", "text": "a😀b"}]},
+                            {"type": "horizontalRule"},
+                            {"type": "paragraph", "content": [{"type": "text", "text": "tail"}]}
+                        ]
+                    })
+                    .to_string(),
+                    TransactionOrigin::DocumentImport,
+                )
+                .unwrap();
+            engine
+        }
+
+        fn transaction(
+            engine: &YrsDocumentEngine,
+            request_id: u64,
+            selection_intent: SelectionIntent,
+        ) -> TypedTransaction {
+            TypedTransaction {
+                request_id,
+                base_document_revision: engine.revision(),
+                origin: TransactionOrigin::LocalApi,
+                operations: vec![],
+                selection_intent,
+                history_policy: HistoryPolicy::Skip,
+            }
+        }
+
+        fn slow_result(
+            engine: &mut YrsDocumentEngine,
+            transaction: TypedTransaction,
+        ) -> crate::yrs_engine::TypedTransactionResult {
+            let compiled = engine.compile_typed_transaction(transaction).unwrap();
+            engine
+                .apply_compiled_transaction(compiled, true)
+                .unwrap()
+                .1
+                .unwrap()
+        }
+
+        let scalar = |offset, affinity| RevisionedPosition {
+            offset,
+            kind: EditorOffsetKind::Scalar,
+            affinity,
+        };
+        let utf16 = |offset, affinity| RevisionedPosition {
+            offset,
+            kind: EditorOffsetKind::Utf16,
+            affinity,
+        };
+        let intents = [
+            SelectionIntent::Set(SelectionInput::Text {
+                anchor: scalar(2, Affinity::Before),
+                head: scalar(2, Affinity::After),
+            }),
+            SelectionIntent::Set(SelectionInput::Text {
+                anchor: utf16(3, Affinity::Before),
+                head: utf16(3, Affinity::After),
+            }),
+            SelectionIntent::Set(SelectionInput::Node {
+                at: scalar(4, Affinity::Before),
+            }),
+            SelectionIntent::Set(SelectionInput::All),
+            SelectionIntent::Preserve,
+            SelectionIntent::UseOperationResult,
+        ];
+
+        for (index, intent) in intents.into_iter().enumerate() {
+            let mut fast = populated_engine();
+            let mut slow = populated_engine();
+            let fast_before = atomic_audit(&fast);
+            let slow_before = atomic_audit(&slow);
+            let fast_transaction = transaction(&fast, 770 + index as u64, intent.clone());
+            let slow_transaction = transaction(&slow, 770 + index as u64, intent.clone());
+
+            let fast_result = fast
+                .apply_typed_transaction_with_result(fast_transaction)
+                .unwrap();
+            let slow_result = slow_result(&mut slow, slow_transaction);
+
+            assert_eq!(fast_result, slow_result, "intent={intent:?}");
+            assert_eq!(
+                fast.document_json(),
+                slow.document_json(),
+                "intent={intent:?}"
+            );
+            assert_eq!(
+                fast.document_html(),
+                slow.document_html(),
+                "intent={intent:?}"
+            );
+            assert_eq!(fast.revision(), slow.revision(), "intent={intent:?}");
+            assert_eq!(
+                fast.state_revision(),
+                slow.state_revision(),
+                "intent={intent:?}"
+            );
+            assert_eq!(
+                fast.resolved_selection(),
+                slow.resolved_selection(),
+                "intent={intent:?}"
+            );
+            assert_eq!(
+                fast.stored_marks(),
+                slow.stored_marks(),
+                "intent={intent:?}"
+            );
+            assert_eq!(fast.can_undo(), slow.can_undo(), "intent={intent:?}");
+            assert_eq!(fast.can_redo(), slow.can_redo(), "intent={intent:?}");
+            assert_eq!(fast.encoded_state().unwrap(), fast_before.encoded);
+            assert_eq!(slow.encoded_state().unwrap(), slow_before.encoded);
+            assert_eq!(fast.yrs_state_epoch, fast_before.yrs_state_epoch);
+            assert_eq!(slow.yrs_state_epoch, slow_before.yrs_state_epoch);
+            assert_eq!(
+                fast.history.replay_audit_for_test(),
+                fast_before.replay_audit
+            );
+            assert_eq!(
+                slow.history.replay_audit_for_test(),
+                slow_before.replay_audit
+            );
+        }
+
+        let stored_mark_intents = [
+            SelectionIntent::Set(SelectionInput::Text {
+                anchor: scalar(1, Affinity::Before),
+                head: scalar(1, Affinity::Before),
+            }),
+            SelectionIntent::Set(SelectionInput::Text {
+                anchor: scalar(2, Affinity::Before),
+                head: scalar(2, Affinity::Before),
+            }),
+            SelectionIntent::Set(SelectionInput::Node {
+                at: scalar(4, Affinity::Before),
+            }),
+        ];
+        for (index, intent) in stored_mark_intents.into_iter().enumerate() {
+            let mut fast = populated_engine();
+            let mut slow = populated_engine();
+            select_text(&mut fast, 780, 1, 1);
+            select_text(&mut slow, 780, 1, 1);
+            for engine in [&mut fast, &mut slow] {
+                engine
+                    .apply_command(
+                        781,
+                        TypedCommand::ToggleMark {
+                            mark_type: "bold".into(),
+                        },
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert!(engine.stored_marks().is_some());
+            }
+            let fast_transaction = transaction(&fast, 782 + index as u64, intent.clone());
+            let slow_transaction = transaction(&slow, 782 + index as u64, intent.clone());
+
+            let fast_result = fast
+                .apply_typed_transaction_with_result(fast_transaction)
+                .unwrap();
+            let slow_result = slow_result(&mut slow, slow_transaction);
+
+            assert_eq!(fast_result, slow_result, "stored intent={intent:?}");
+            assert_eq!(
+                fast.resolved_selection(),
+                slow.resolved_selection(),
+                "stored intent={intent:?}"
+            );
+            assert_eq!(
+                fast.stored_marks(),
+                slow.stored_marks(),
+                "stored intent={intent:?}"
+            );
+            if index == 0 {
+                assert!(fast.stored_marks().is_some());
+            } else {
+                assert!(fast.stored_marks().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn remote_history_admission_failure_retains_dependency_quarantine_for_retry() {
+        use crate::yrs_engine::compiler::{set_atomic_failpoint_for_test, AtomicFailpoint};
+        use yrs::{diff_updates_v1, encode_state_vector_from_update_v1};
+
+        let mut source = transaction_engine();
+        let base = source.encoded_state().unwrap();
+        source
+            .apply_command(200, TypedCommand::InsertText { text: "a".into() })
+            .unwrap();
+        let after_a = source.encoded_state().unwrap();
+        source
+            .apply_command(201, TypedCommand::InsertText { text: "b".into() })
+            .unwrap();
+        let after_b = source.encoded_state().unwrap();
+        let base_sv = encode_state_vector_from_update_v1(&base).unwrap();
+        let after_a_sv = encode_state_vector_from_update_v1(&after_a).unwrap();
+        let delta_a = diff_updates_v1(&after_a, &base_sv).unwrap();
+        let delta_b = diff_updates_v1(&after_b, &after_a_sv).unwrap();
+
+        let mut target = YrsDocumentEngine::new(YrsEngineConfig {
+            schema: tiptap_schema(),
+            fragment_name: "prosemirror".into(),
+            initialization_mode: crate::yrs_engine::InitializationMode::AwaitRemote,
+            resource_limits: ResourceLimits::default(),
+            editing_limits: crate::yrs_engine::EditingLimits::default(),
+            max_length: None,
+            scope: Some(crate::yrs_engine::DocumentScope {
+                document_id: "doc".into(),
+                lineage_id: "lineage".into(),
+            }),
+        })
+        .unwrap();
+        assert!(
+            !target
+                .apply_remote_update_v1(202, &delta_b)
+                .unwrap()
+                .changed
+        );
+        assert!(
+            !target
+                .apply_remote_update_v1(203, &delta_a)
+                .unwrap()
+                .changed
+        );
+        let before = atomic_audit(&target);
+
+        set_atomic_failpoint_for_test(Some(AtomicFailpoint::RemoteHistoryAdmission));
+        let error = target.apply_remote_update_v1(204, &base).unwrap_err();
+        set_atomic_failpoint_for_test(None);
+
+        assert_eq!(error.code, "ENGINE_INVARIANT_FAILED");
+        assert_eq!(
+            error.details,
+            Some(json!({ "failpoint": "remoteHistoryAdmission" }))
+        );
+        assert_eq!(atomic_audit(&target), before);
+        let retry = target.apply_remote_update_v1(205, &base).unwrap();
+        assert!(retry.changed);
+        assert_eq!(target.document().unwrap().root().text_content(), "ab");
+        assert_eq!(target.encoded_state().unwrap(), after_b);
     }
 
     #[test]

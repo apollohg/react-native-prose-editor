@@ -88,61 +88,47 @@ pub fn contiguous_render_blocks_patch(
     new_doc: &Document,
     schema: &Schema,
 ) -> Option<RenderBlocksPatch> {
-    let old_children = old_doc
-        .root()
-        .content()
-        .map(|content| content.children())
-        .unwrap_or(&[]);
-    let new_children = new_doc
-        .root()
-        .content()
-        .map(|content| content.children())
-        .unwrap_or(&[]);
+    let old_blocks = render_blocks(old_doc, schema);
+    let new_blocks = render_blocks(new_doc, schema);
 
     let mut prefix = 0usize;
-    while prefix < old_children.len()
-        && prefix < new_children.len()
-        && old_children[prefix] == new_children[prefix]
+    while prefix < old_blocks.len()
+        && prefix < new_blocks.len()
+        && old_blocks[prefix] == new_blocks[prefix]
     {
         prefix += 1;
     }
 
-    if prefix == old_children.len() && prefix == new_children.len() {
+    if prefix == old_blocks.len() && prefix == new_blocks.len() {
         return None;
     }
 
-    let mut old_suffix = old_children.len();
-    let mut new_suffix = new_children.len();
+    let mut old_suffix = old_blocks.len();
+    let mut new_suffix = new_blocks.len();
     while old_suffix > prefix
         && new_suffix > prefix
-        && old_children[old_suffix - 1] == new_children[new_suffix - 1]
+        && old_blocks[old_suffix - 1] == new_blocks[new_suffix - 1]
     {
         old_suffix -= 1;
         new_suffix -= 1;
     }
 
     let start_index = if prefix > 0 { prefix - 1 } else { 0 };
-    let old_end = if old_suffix < old_children.len() {
+    let old_end = if old_suffix < old_blocks.len() {
         old_suffix + 1
     } else {
         old_suffix
     };
-    let new_end = if new_suffix < new_children.len() {
+    let new_end = if new_suffix < new_blocks.len() {
         new_suffix + 1
     } else {
         new_suffix
     };
 
-    let affected_indices = (start_index..new_end).collect::<Vec<_>>();
-    let blocks = incremental(new_doc, schema, &affected_indices)
-        .into_iter()
-        .map(|(_, elements)| elements)
-        .collect::<Vec<_>>();
-
     Some(RenderBlocksPatch {
         start_index,
         delete_count: old_end.saturating_sub(start_index),
-        blocks,
+        blocks: new_blocks[start_index..new_end].to_vec(),
     })
 }
 

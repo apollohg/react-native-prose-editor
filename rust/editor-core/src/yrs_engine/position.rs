@@ -1,6 +1,7 @@
 use yrs::branch::{Branch, BranchPtr};
+use yrs::types::text::{Text, YChange};
 use yrs::types::xml::{XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut, XmlTextRef};
-use yrs::{Assoc, GetString, ReadTxn, StickyIndex};
+use yrs::{Any, Assoc, ReadTxn, StickyIndex};
 
 use crate::model::Document;
 use crate::position::PositionMap;
@@ -134,7 +135,7 @@ pub(crate) fn sticky_index_to_doc_pos<T: ReadTxn>(
         ) {
             return Some(position);
         }
-        child_start += xml_out_pm_size(txn, &child, schema);
+        child_start = child_start.checked_add(xml_out_pm_size(txn, &child, schema)?)?;
     }
     None
 }
@@ -151,7 +152,7 @@ fn sticky_index_to_doc_pos_in_node<T: ReadTxn>(
         XmlOut::Text(text) => {
             let text_branch = BranchPtr::from(<XmlTextRef as AsRef<Branch>>::as_ref(text));
             if text_branch == target_branch {
-                let text_value = text.get_string(txn);
+                let text_value = xml_text_plain_string(text, txn)?;
                 let scalar_offset = utf16_offset_to_scalar(&text_value, target_index)?;
                 return Some(node_start + scalar_offset);
             }
@@ -185,7 +186,7 @@ fn sticky_index_to_doc_pos_in_node<T: ReadTxn>(
                 ) {
                     return Some(position);
                 }
-                child_start += xml_out_pm_size(txn, &child, schema);
+                child_start = child_start.checked_add(xml_out_pm_size(txn, &child, schema)?)?;
             }
             None
         }
@@ -214,7 +215,7 @@ fn sticky_index_to_doc_pos_in_node<T: ReadTxn>(
                 ) {
                     return Some(position);
                 }
-                child_start += xml_out_pm_size(txn, &child, schema);
+                child_start = child_start.checked_add(xml_out_pm_size(txn, &child, schema)?)?;
             }
             None
         }
@@ -233,7 +234,7 @@ fn sequence_branch_index_to_doc_pos<'a, T: ReadTxn>(
     for child in children {
         match &child {
             XmlOut::Text(text) => {
-                let text_value = text.get_string(txn);
+                let text_value = xml_text_plain_string(text, txn)?;
                 let text_scalar_len = scalar_len(&text_value);
                 if target_index == branch_index {
                     return Some(doc_pos);
@@ -249,7 +250,7 @@ fn sequence_branch_index_to_doc_pos<'a, T: ReadTxn>(
                     return Some(doc_pos);
                 }
                 branch_index += 1;
-                doc_pos += xml_out_pm_size(txn, &child, schema);
+                doc_pos = doc_pos.checked_add(xml_out_pm_size(txn, &child, schema)?)?;
                 if target_index == branch_index {
                     return Some(doc_pos);
                 }
@@ -271,7 +272,7 @@ pub(crate) fn doc_pos_to_sticky_index<T: ReadTxn>(
     assoc: Assoc,
     schema: &Schema,
 ) -> Option<StickyIndex> {
-    let content_size = xml_fragment_pm_content_size(txn, fragment, schema);
+    let content_size = xml_fragment_pm_content_size(txn, fragment, schema)?;
     if doc_pos > content_size {
         return None;
     }
@@ -315,7 +316,7 @@ fn doc_pos_to_sticky_index_in_sequence<'a, T: ReadTxn>(
     while let Some(child) = children.next() {
         match &child {
             XmlOut::Text(text) => {
-                let text_value = text.get_string(txn);
+                let text_value = xml_text_plain_string(text, txn)?;
                 let text_scalar_len = scalar_len(&text_value);
                 let mut retry_adjacent_text = false;
                 if doc_pos <= consumed_pm + text_scalar_len {
@@ -340,7 +341,7 @@ fn doc_pos_to_sticky_index_in_sequence<'a, T: ReadTxn>(
                 }
             }
             XmlOut::Element(element) => {
-                let child_size = xml_out_pm_size(txn, &child, schema);
+                let child_size = xml_out_pm_size(txn, &child, schema)?;
                 if doc_pos == consumed_pm {
                     return StickyIndex::at(txn, branch, branch_index, assoc);
                 }
@@ -358,7 +359,7 @@ fn doc_pos_to_sticky_index_in_sequence<'a, T: ReadTxn>(
                 consumed_pm += child_size;
             }
             XmlOut::Fragment(nested) => {
-                let child_size = xml_out_pm_size(txn, &child, schema);
+                let child_size = xml_out_pm_size(txn, &child, schema)?;
                 if doc_pos == consumed_pm {
                     return StickyIndex::at(txn, branch, branch_index, assoc);
                 }
@@ -389,11 +390,10 @@ fn xml_fragment_pm_content_size<T: ReadTxn>(
     txn: &T,
     fragment: &XmlFragmentRef,
     schema: &Schema,
-) -> u32 {
-    fragment
-        .children(txn)
-        .map(|child| xml_out_pm_size(txn, &child, schema))
-        .sum()
+) -> Option<u32> {
+    fragment.children(txn).try_fold(0u32, |size, child| {
+        size.checked_add(xml_out_pm_size(txn, &child, schema)?)
+    })
 }
 
 fn is_void_element<T: ReadTxn>(element: &XmlElementRef, txn: &T, schema: &Schema) -> bool {
@@ -407,24 +407,33 @@ fn is_void_element<T: ReadTxn>(element: &XmlElementRef, txn: &T, schema: &Schema
     true
 }
 
-fn xml_out_pm_size<T: ReadTxn>(txn: &T, node: &XmlOut, schema: &Schema) -> u32 {
+fn xml_out_pm_size<T: ReadTxn>(txn: &T, node: &XmlOut, schema: &Schema) -> Option<u32> {
     match node {
-        XmlOut::Text(text) => text.get_string(txn).chars().count() as u32,
+        XmlOut::Text(text) => Some(scalar_len(&xml_text_plain_string(text, txn)?)),
         XmlOut::Element(element) => {
             if is_void_element(element, txn, schema) {
-                1
+                Some(1)
             } else {
-                2 + element
-                    .children(txn)
-                    .map(|child| xml_out_pm_size(txn, &child, schema))
-                    .sum::<u32>()
+                element.children(txn).try_fold(2u32, |size, child| {
+                    size.checked_add(xml_out_pm_size(txn, &child, schema)?)
+                })
             }
         }
-        XmlOut::Fragment(fragment) => fragment
-            .children(txn)
-            .map(|child| xml_out_pm_size(txn, &child, schema))
-            .sum(),
+        XmlOut::Fragment(fragment) => fragment.children(txn).try_fold(0u32, |size, child| {
+            size.checked_add(xml_out_pm_size(txn, &child, schema)?)
+        }),
     }
+}
+
+fn xml_text_plain_string<T: ReadTxn>(text: &XmlTextRef, txn: &T) -> Option<String> {
+    let mut value = String::new();
+    for diff in text.diff(txn, YChange::identity) {
+        let yrs::Out::Any(Any::String(run)) = diff.insert else {
+            return None;
+        };
+        value.push_str(&run);
+    }
+    Some(value)
 }
 
 fn scalar_len(value: &str) -> u32 {

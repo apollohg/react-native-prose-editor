@@ -45,6 +45,7 @@ impl SchemaValidationError {
 #[derive(Debug, Clone)]
 pub struct Schema {
     nodes: HashMap<String, NodeSpec>,
+    node_order: Vec<String>,
     marks: HashMap<String, MarkSpec>,
     mark_order: Vec<String>,
     node_html_tags: HashMap<String, String>,
@@ -332,12 +333,14 @@ impl Schema {
             .min_by_key(|node| node.name.as_str())
             .map(|node| node.name.clone());
 
+        let node_order = nodes.iter().map(|node| node.name.clone()).collect();
         let mark_order = marks.iter().map(|mark| mark.name.clone()).collect();
         let schema = Self {
             nodes: nodes
                 .into_iter()
                 .map(|node| (node.name.clone(), node))
                 .collect(),
+            node_order,
             marks: marks
                 .into_iter()
                 .map(|mark| (mark.name.clone(), mark))
@@ -635,12 +638,16 @@ impl Schema {
 
     /// Iterate over all node specs.
     pub fn all_nodes(&self) -> impl Iterator<Item = &NodeSpec> {
-        self.nodes.values()
+        self.node_order
+            .iter()
+            .filter_map(|name| self.nodes.get(name))
     }
 
     /// Iterate over all mark specs.
     pub fn all_marks(&self) -> impl Iterator<Item = &MarkSpec> {
-        self.marks.values()
+        self.mark_order
+            .iter()
+            .filter_map(|name| self.marks.get(name))
     }
 
     /// Return the list of mark names that can be toggled at the given node.

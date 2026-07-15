@@ -5,7 +5,7 @@ use crate::schema::Schema;
 use crate::selection::Selection;
 use crate::transform::Transaction;
 
-use super::{SemanticCommandPlan, SemanticOperation};
+use super::{SemanticCommandHistory, SemanticCommandPlan, SemanticOperation};
 
 fn insertion_marks(
     document: &Document,
@@ -70,6 +70,7 @@ pub(crate) fn plan_replace_selection_text(
     (!operations.is_empty()).then_some(SemanticCommandPlan {
         operations,
         selection_after: None,
+        history: SemanticCommandHistory::InputBoundary,
     })
 }
 
@@ -261,6 +262,7 @@ pub(crate) fn plan_split(
     Ok(Some(SemanticCommandPlan {
         operations,
         selection_after: None,
+        history: SemanticCommandHistory::InputBoundary,
     }))
 }
 
@@ -311,6 +313,7 @@ fn plan_code_split(
                 content: Fragment::from(vec![left, right]),
             }],
             selection_after: Some(Selection::cursor(cursor)),
+            history: SemanticCommandHistory::InputBoundary,
         }));
     }
     Ok(Some(SemanticCommandPlan::one(

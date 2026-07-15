@@ -23,6 +23,9 @@ pub(crate) struct DerivedStateCache {
     pub document: Document,
     pub canonical_json: serde_json::Value,
     pub position_map: PositionMap,
+    pub rendered_text: String,
+    pub document_text_bytes: usize,
+    pub document_node_count: usize,
     pub relative_selection: RelativeSelection,
     pub resolved_selection: ResolvedSelection,
     pub stored_marks: Option<Vec<Mark>>,
@@ -41,6 +44,9 @@ impl DerivedStateCache {
         state_revision: u64,
     ) -> Option<Self> {
         let position_map = PositionMap::build(&document, schema);
+        let rendered_text = crate::render::rendered_text(&document, schema);
+        let document_text_bytes = super::compiler::document_text_bytes(&document)?;
+        let document_node_count = crate::editor_state::document_node_count(document.root());
         let selection = (0..position_map.block_count())
             .filter_map(|index| position_map.block(index))
             .find(|block| !block.is_void_block)
@@ -59,11 +65,15 @@ impl DerivedStateCache {
             schema,
             &document,
             &position_map,
+            &rendered_text,
         )?;
         Some(Self {
             document,
             canonical_json,
             position_map,
+            rendered_text,
+            document_text_bytes,
+            document_node_count,
             relative_selection,
             resolved_selection,
             stored_marks: None,
@@ -97,6 +107,9 @@ impl DerivedStateCache {
         };
         position_map.update(step_map, &self.document, &document, update_mode, schema);
         position_map.compact();
+        let rendered_text = crate::render::rendered_text(&document, schema);
+        let document_text_bytes = super::compiler::document_text_bytes(&document)?;
+        let document_node_count = crate::editor_state::document_node_count(document.root());
 
         let mut relative_selection = explicit_selection
             .cloned()
@@ -108,6 +121,7 @@ impl DerivedStateCache {
             schema,
             &document,
             &position_map,
+            &rendered_text,
         );
         if resolved_selection.is_none() {
             let fallback = preserved_fallback?;
@@ -126,6 +140,7 @@ impl DerivedStateCache {
                 schema,
                 &document,
                 &position_map,
+                &rendered_text,
             );
         }
         let resolved_selection = resolved_selection?;
@@ -134,6 +149,9 @@ impl DerivedStateCache {
             document,
             canonical_json,
             position_map,
+            rendered_text,
+            document_text_bytes,
+            document_node_count,
             relative_selection,
             resolved_selection,
             stored_marks: self.stored_marks.clone(),
@@ -157,12 +175,31 @@ impl DerivedStateCache {
             schema,
             &self.document,
             &self.position_map,
+            &self.rendered_text,
         )?;
         let mut next = self.clone();
         next.relative_selection = relative_selection;
         next.resolved_selection = resolved_selection;
         next.state_revision = state_revision;
         Some(next)
+    }
+
+    pub fn resolve_relative_selection<T: ReadTxn>(
+        &self,
+        relative_selection: &RelativeSelection,
+        txn: &T,
+        fragment: &XmlFragmentRef,
+        schema: &Schema,
+    ) -> Option<ResolvedSelection> {
+        resolve_selection(
+            txn,
+            fragment,
+            relative_selection,
+            schema,
+            &self.document,
+            &self.position_map,
+            &self.rendered_text,
+        )
     }
 
     pub fn legacy_selection(&self) -> Selection {
@@ -351,6 +388,7 @@ pub(crate) fn resolve_selection<T: ReadTxn>(
     schema: &Schema,
     document: &Document,
     position_map: &PositionMap,
+    rendered_text: &str,
 ) -> Option<ResolvedSelection> {
     let selection = relative_selection_to_selection(
         txn,
@@ -360,13 +398,12 @@ pub(crate) fn resolve_selection<T: ReadTxn>(
         document,
         position_map,
     )?;
-    let rendered = crate::render::rendered_text(document, schema);
     let point = |document_position| {
         let scalar = position_map.doc_to_scalar(document_position, document);
         Some(ResolvedPoint {
             document: document_position,
             scalar,
-            utf16: scalar_offset_to_utf16(&rendered, scalar)?,
+            utf16: scalar_offset_to_utf16(rendered_text, scalar)?,
         })
     };
     match selection {

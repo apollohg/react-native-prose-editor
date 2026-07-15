@@ -4,7 +4,7 @@ use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::{NodeRole, Schema};
 use crate::selection::Selection;
 
-use super::{SemanticCommandPlan, SemanticOperation};
+use super::{SemanticCommandHistory, SemanticCommandPlan, SemanticOperation};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MarkCommandPlan {
@@ -58,6 +58,7 @@ pub(crate) fn plan_toggle_mark(
             semantic: SemanticCommandPlan {
                 operations: vec![operation],
                 selection_after: Some(selection.clone()),
+                history: SemanticCommandHistory::FormatBoundary,
             },
             stored_marks_after: Some(stored),
         });
@@ -79,6 +80,7 @@ pub(crate) fn plan_toggle_mark(
         semantic: SemanticCommandPlan {
             operations: vec![operation],
             selection_after: Some(selection.clone()),
+            history: SemanticCommandHistory::FormatBoundary,
         },
         stored_marks_after: None,
     })
@@ -116,6 +118,7 @@ pub(crate) fn plan_set_mark(
                         },
                     ],
                     selection_after: Some(selection.clone()),
+                    history: SemanticCommandHistory::FormatBoundary,
                 },
                 stored_marks_after: None,
             });
@@ -128,6 +131,7 @@ pub(crate) fn plan_set_mark(
             semantic: SemanticCommandPlan {
                 operations: vec![SemanticOperation::ReplaceMark { from, to, mark }],
                 selection_after: Some(selection.clone()),
+                history: SemanticCommandHistory::FormatBoundary,
             },
             stored_marks_after: Some(stored),
         });
@@ -143,6 +147,7 @@ pub(crate) fn plan_set_mark(
                 SemanticOperation::AddMark { from, to, mark },
             ],
             selection_after: Some(selection.clone()),
+            history: SemanticCommandHistory::FormatBoundary,
         },
         stored_marks_after: None,
     })
@@ -172,6 +177,7 @@ pub(crate) fn plan_unset_mark(
                         mark_type: mark_type.to_string(),
                     }],
                     selection_after: Some(selection.clone()),
+                    history: SemanticCommandHistory::FormatBoundary,
                 },
                 stored_marks_after: None,
             });
@@ -186,6 +192,7 @@ pub(crate) fn plan_unset_mark(
                     mark_type: mark_type.to_string(),
                 }],
                 selection_after: Some(selection.clone()),
+                history: SemanticCommandHistory::FormatBoundary,
             },
             stored_marks_after: Some(stored),
         });
@@ -198,6 +205,7 @@ pub(crate) fn plan_unset_mark(
                 mark_type: mark_type.to_string(),
             }],
             selection_after: Some(selection.clone()),
+            history: SemanticCommandHistory::FormatBoundary,
         },
         stored_marks_after: None,
     })

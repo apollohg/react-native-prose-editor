@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use editor_core::model::{Document, Fragment, Mark, Node};
 use editor_core::render;
 use editor_core::render::generate::generate;
-use editor_core::render::incremental::{contiguous_render_blocks_patch, incremental};
+use editor_core::render::incremental::{
+    contiguous_render_blocks_patch, incremental, render_blocks,
+};
 use editor_core::render::{ListContext, RenderElement, RenderMark};
 use editor_core::tiptap_schema;
 
@@ -257,6 +259,50 @@ fn test_contiguous_render_blocks_patch_expands_adjacent_blocks_for_middle_insert
     assert_eq!(block_visible_text(&patch.blocks[0]), "Two");
     assert_eq!(block_visible_text(&patch.blocks[1]), "Inserted");
     assert_eq!(block_visible_text(&patch.blocks[2]), "Three");
+}
+
+#[test]
+fn contiguous_patch_reconstructs_shifted_downstream_atom_positions() {
+    let schema = tiptap_schema();
+    let opaque = |placement: &str, label: &str| {
+        Node::void(
+            "__opaque_json".to_string(),
+            HashMap::from([
+                (
+                    "opaque_placement".to_string(),
+                    serde_json::Value::String(placement.to_string()),
+                ),
+                (
+                    "label".to_string(),
+                    serde_json::Value::String(label.to_string()),
+                ),
+            ]),
+        )
+    };
+    let document = |first: &str| {
+        Document::new(doc(vec![
+            paragraph(vec![text(first)]),
+            paragraph(vec![
+                text("later"),
+                hard_break(),
+                opaque("inline", "inline"),
+            ]),
+            horizontal_rule(),
+            opaque("block", "block"),
+        ]))
+    };
+    let old_doc = document("a");
+    let new_doc = document("aa");
+    let mut reconstructed = render_blocks(&old_doc, &schema);
+    let patch = contiguous_render_blocks_patch(&old_doc, &new_doc, &schema)
+        .expect("early insertion must produce a render patch");
+
+    reconstructed.splice(
+        patch.start_index..patch.start_index + patch.delete_count,
+        patch.blocks,
+    );
+
+    assert_eq!(reconstructed, render_blocks(&new_doc, &schema));
 }
 
 // ---------------------------------------------------------------------------

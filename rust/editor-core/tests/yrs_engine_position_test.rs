@@ -18,7 +18,9 @@ use yrs::types::text::Text;
 use yrs::types::xml::{
     XmlElementPrelim, XmlElementRef, XmlFragment, XmlFragmentRef, XmlTextPrelim, XmlTextRef,
 };
-use yrs::{Assoc, ClientID, Doc, OffsetKind, Options, ReadTxn, StickyIndex, Transact, WriteTxn};
+use yrs::{
+    Any, Assoc, ClientID, Doc, OffsetKind, Options, ReadTxn, StickyIndex, Transact, WriteTxn,
+};
 
 fn utf16_doc() -> Doc {
     utf16_doc_with_client_id(4444)
@@ -278,6 +280,51 @@ fn shared_position_codec_round_trips_unicode_void_nodes_lists_and_paragraph_boun
     // paragraph(A + emoji + combining sequence + hard break + mention + Z) = 9,
     // horizontal rule = 1, nested bullet list = 12.
     assert_all_positions_round_trip(&doc, "prosemirror", &schema, 22, &[5, 8, 19, 20, 21, 22]);
+}
+
+#[test]
+fn formatted_xml_text_position_sizes_use_visible_text_not_markup() {
+    let doc = utf16_doc();
+    let mut txn = doc.transact_mut();
+    let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+    let first = push_element(&fragment, &mut txn, "paragraph");
+    let formatted = push_text(&first, &mut txn, "format");
+    formatted.format(
+        &mut txn,
+        1,
+        3,
+        yrs::types::Attrs::from([("bold".into(), Any::Bool(true))]),
+    );
+    let second = push_element(&fragment, &mut txn, "paragraph");
+    push_text(&second, &mut txn, "marked");
+    drop(txn);
+
+    let txn = doc.transact();
+    let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+    let point = doc_pos_to_relative_point(&txn, &fragment, 9, Affinity::Before, &tiptap_schema())
+        .expect("later text start must ignore formatting markup in the earlier XmlText");
+    assert_eq!(
+        relative_point_to_doc_pos(&txn, &fragment, &point, &tiptap_schema()),
+        Some(9),
+    );
+}
+
+#[test]
+fn position_codec_rejects_non_string_xml_text_content_instead_of_dropping_it() {
+    let doc = utf16_doc();
+    let mut txn = doc.transact_mut();
+    let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+    let paragraph = push_element(&fragment, &mut txn, "paragraph");
+    let text = push_text(&paragraph, &mut txn, "a");
+    text.insert_embed(&mut txn, 1, Any::Bool(true));
+    drop(txn);
+
+    let txn = doc.transact();
+    let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+    assert_eq!(
+        doc_pos_to_relative_point(&txn, &fragment, 1, Affinity::Before, &tiptap_schema(),),
+        None,
+    );
 }
 
 #[test]

@@ -231,14 +231,6 @@ impl MutationCompiler {
                         .is_some_and(|spec| matches!(spec.role, NodeRole::ListItem))
                 })
             });
-        if resolved.node_path.len() != 1 && list_item_path.is_none() {
-            return Err(OperationError::operation_invalid(
-                self.request_id,
-                operation_index,
-                "at",
-                "nested block split requires a tracked wrapper hint",
-            ));
-        }
         let block_path = resolved.node_path.iter().copied().collect::<Vec<_>>();
         let block_target = self
             .structural_parents
@@ -265,6 +257,79 @@ impl MutationCompiler {
             &block_target.storage_children,
             resolved.parent_offset,
         ) {
+            if move_index == 0 {
+                if let Some(item_path) = list_item_path.as_ref() {
+                    let list_path = item_path[..item_path.len() - 1].to_vec();
+                    let item_index = *item_path
+                        .last()
+                        .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
+                    let inserted_node = after.node_at(item_path).ok_or_else(|| {
+                        OperationError::engine_invariant_failed(
+                            self.request_id,
+                            Some(operation_index),
+                            "list-start split preview has no inserted empty item",
+                        )
+                    })?;
+                    let json = crate::serialize::node_to_prosemirror_json(inserted_node, schema);
+                    let mut batch = prepare_xml_nodes(
+                        std::slice::from_ref(&json),
+                        limits,
+                        item_path.len().saturating_add(1),
+                    )
+                    .map_err(|error| {
+                        map_prepared_node_error(self.request_id, operation_index, error)
+                    })?;
+                    for child in &mut batch.nodes {
+                        child.index = item_index.checked_add(child.index).ok_or_else(|| {
+                            invalid_action_range(self.request_id, operation_index)
+                        })?;
+                    }
+                    let insertion_parent = self
+                        .structural_parents
+                        .get(&list_path)
+                        .cloned()
+                        .ok_or_else(|| {
+                            OperationError::engine_invariant_failed(
+                                self.request_id,
+                                Some(operation_index),
+                                "list-start split has no tracked list parent",
+                            )
+                        })?;
+                    self.apply_virtual_structural_splices(
+                        operation_index,
+                        after,
+                        &[VirtualStructuralSplice {
+                            parent_path: list_path.clone(),
+                            semantic_index: item_index,
+                            semantic_delete: 0,
+                            semantic_insert: 1,
+                            storage_index: item_index,
+                            storage_delete: 0,
+                        }],
+                        None,
+                    )?;
+                    let prepared_id = self.queue_prepared_insert(PendingPreparedInsert {
+                        parent: insertion_parent.parent,
+                        child_index: item_index,
+                        nodes: batch.nodes,
+                        signature: insertion_parent.signature,
+                        operation_index,
+                        semantic_parent_path: list_path,
+                        first_semantic_index: item_index,
+                    });
+                    self.register_prepared_insert_state(operation_index, prepared_id, after)?;
+                    self.charge_operation_work(
+                        operation_index,
+                        batch
+                            .work
+                            .checked_add(block_target.signature.children.len())
+                            .ok_or_else(|| {
+                                work_overflow(self.request_id, operation_index, self.action_limit)
+                            })?,
+                    )?;
+                    return Ok(());
+                }
+            }
             let moved_count = u32::try_from(block_target.storage_children.len())
                 .ok()
                 .and_then(|len| len.checked_sub(move_index))
@@ -305,15 +370,17 @@ impl MutationCompiler {
                     StorageChildKind::Element { .. } | StorageChildKind::PreparedElement => None,
                 });
             if retained_text_id.is_none() {
-                let first_moved_text_id = block_target.storage_children.get(moved_start).and_then(
-                    |child| match child {
-                        StorageChildKind::Text { target, .. } => {
-                            Some(AsRef::<Branch>::as_ref(target).id())
-                        }
-                        StorageChildKind::Element { .. }
-                        | StorageChildKind::PreparedElement => None,
-                    },
-                );
+                let first_moved_text_id =
+                    block_target
+                        .storage_children
+                        .get(moved_start)
+                        .and_then(|child| match child {
+                            StorageChildKind::Text { target, .. } => {
+                                Some(AsRef::<Branch>::as_ref(target).id())
+                            }
+                            StorageChildKind::Element { .. }
+                            | StorageChildKind::PreparedElement => None,
+                        });
                 if let (Some(first_moved_text_id), XmlParentRef::Element(parent)) =
                     (first_moved_text_id, &block_target.parent)
                 {
@@ -334,10 +401,8 @@ impl MutationCompiler {
                                 parent: block_target.signature.parent.clone(),
                                 tag: parent.tag().clone(),
                                 path: block_target.signature.path.clone(),
-                                child_count: u32::try_from(
-                                    block_target.signature.children.len(),
-                                )
-                                .map_err(|_| {
+                                child_count: u32::try_from(block_target.signature.children.len())
+                                    .map_err(|_| {
                                     invalid_action_range(self.request_id, operation_index)
                                 })?,
                                 initial_child_index: move_index,
@@ -401,38 +466,39 @@ impl MutationCompiler {
             let block_index = *block_path
                 .last()
                 .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
-            let right_block = after
-                .root()
-                .content()
-                .and_then(|content| {
-                    content.child(usize::try_from(block_index).ok()?.checked_add(1)?)
-                })
-                .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
-            let json = crate::serialize::node_to_prosemirror_json(right_block, schema);
-            let mut batch =
-                prepare_xml_nodes(std::slice::from_ref(&json), limits, 2).map_err(|error| {
-                    map_prepared_node_error(self.request_id, operation_index, error)
-                })?;
             let insertion_index = block_index
                 .checked_add(1)
                 .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
+            let insertion_parent_path = block_path[..block_path.len() - 1].to_vec();
+            let mut inserted_path = insertion_parent_path.clone();
+            inserted_path.push(insertion_index);
+            let right_block = after
+                .node_at(&inserted_path)
+                .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
+            let json = crate::serialize::node_to_prosemirror_json(right_block, schema);
+            let mut batch = prepare_xml_nodes(
+                std::slice::from_ref(&json),
+                limits,
+                inserted_path.len().saturating_add(1),
+            )
+            .map_err(|error| map_prepared_node_error(self.request_id, operation_index, error))?;
             for child in &mut batch.nodes {
                 child.index = insertion_index
                     .checked_add(child.index)
                     .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
             }
-            let root_target = self
+            let insertion_parent = self
                 .structural_parents
-                .get(&Vec::new())
+                .get(&insertion_parent_path)
                 .cloned()
                 .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
             let prepared_id = self.queue_prepared_insert(PendingPreparedInsert {
-                parent: root_target.parent,
+                parent: insertion_parent.parent,
                 child_index: insertion_index,
                 nodes: batch.nodes,
-                signature: root_target.signature,
+                signature: insertion_parent.signature,
                 operation_index,
-                semantic_parent_path: Vec::new(),
+                semantic_parent_path: insertion_parent_path,
                 first_semantic_index: insertion_index,
             });
             let previous_end = self
@@ -440,7 +506,7 @@ impl MutationCompiler {
                 .get(after_target)
                 .map(|(_, end)| *end)
                 .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
-            let created_start = first_text_doc_position(after.root(), &[insertion_index])
+            let created_start = first_text_doc_position(after.root(), &inserted_path)
                 .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
             let first_gap_before = created_start
                 .checked_sub(previous_end)
@@ -448,7 +514,7 @@ impl MutationCompiler {
             self.register_prepared_block(
                 operation_index,
                 prepared_id,
-                vec![insertion_index],
+                inserted_path,
                 after_target,
                 first_gap_before,
                 after,
@@ -548,6 +614,70 @@ impl MutationCompiler {
         self.targets[target_index].text = prepared_runs_text(&left_runs);
         self.targets[target_index].scalar_len = scalar_index;
         self.targets[target_index].current_runs = left_runs.clone();
+
+        let split_storage_index = block_target
+            .storage_children
+            .iter()
+            .position(|child| {
+                matches!(
+                    child,
+                    StorageChildKind::Text { target, .. }
+                        if AsRef::<Branch>::as_ref(target).id() == virtual_target_id
+                )
+            })
+            .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
+        let suffix_storage_start = split_storage_index
+            .checked_add(1)
+            .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
+        let suffix_storage_count = block_target
+            .storage_children
+            .len()
+            .checked_sub(suffix_storage_start)
+            .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
+        if suffix_storage_count > 0 {
+            self.push_action(YrsMutationAction::DeleteXmlChildren {
+                parent: block_target.parent.clone(),
+                child_index: u32::try_from(suffix_storage_start)
+                    .map_err(|_| invalid_action_range(self.request_id, operation_index))?,
+                child_count: u32::try_from(suffix_storage_count)
+                    .map_err(|_| invalid_action_range(self.request_id, operation_index))?,
+                signature: block_target.signature.clone(),
+                operation_index,
+            });
+            let deleted_text_ids = block_target.storage_children[suffix_storage_start..]
+                .iter()
+                .filter_map(|child| match child {
+                    StorageChildKind::Text { target, .. } => {
+                        Some(AsRef::<Branch>::as_ref(target).id())
+                    }
+                    StorageChildKind::Element { .. } | StorageChildKind::PreparedElement => None,
+                })
+                .collect::<HashSet<_>>();
+            for candidate in &mut self.targets {
+                let deleted = matches!(
+                    &candidate.kind,
+                    ResolvedTargetKind::Existing { target, .. }
+                        if deleted_text_ids.contains(&AsRef::<Branch>::as_ref(target).id())
+                );
+                if deleted {
+                    for slot in std::mem::take(&mut candidate.action_slots) {
+                        self.actions[slot] = ActionSlot::Tombstone;
+                    }
+                }
+            }
+            self.targets.retain(|candidate| {
+                !matches!(
+                    &candidate.kind,
+                    ResolvedTargetKind::Existing { target, .. }
+                        if deleted_text_ids.contains(&AsRef::<Branch>::as_ref(target).id())
+                )
+            });
+            self.structural_parents
+                .get_mut(&block_path)
+                .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?
+                .storage_children
+                .truncate(suffix_storage_start);
+        }
 
         let (
             insertion_parent_path,
@@ -680,6 +810,7 @@ impl MutationCompiler {
             .len()
             .checked_add(batch.work)
             .and_then(|work| work.checked_add(usize::try_from(delete_len_utf16).ok()?))
+            .and_then(|work| work.checked_add(suffix_storage_count))
             .and_then(|work| work.checked_add(moved_wrapper_work))
             .ok_or_else(|| work_overflow(self.request_id, operation_index, self.action_limit))?;
         self.charge_operation_work(operation_index, work)?;
@@ -1040,5 +1171,4 @@ impl MutationCompiler {
             position_resolver_work: self.position_resolver_work,
         })
     }
-
 }

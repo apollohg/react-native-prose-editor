@@ -262,8 +262,10 @@ fn duplicate_corrupt_oversize_schema_and_node_limits_are_atomic() {
         assert_eq!(audit(&target), before);
     }
 
-    let mut tight_resources = ResourceLimits::default();
-    tight_resources.max_encoded_state_bytes = 64;
+    let tight_resources = ResourceLimits {
+        max_encoded_state_bytes: 64,
+        ..ResourceLimits::default()
+    };
     let mut tight = engine_with(
         tiptap_schema(),
         InitializationMode::AwaitRemote,
@@ -303,8 +305,10 @@ fn duplicate_corrupt_oversize_schema_and_node_limits_are_atomic() {
     assert_eq!(error.code, "DOCUMENT_INVALID");
     assert_eq!(audit(&schema_target), before);
 
-    let mut node_resources = ResourceLimits::default();
-    node_resources.max_document_nodes = 2;
+    let node_resources = ResourceLimits {
+        max_document_nodes: 2,
+        ..ResourceLimits::default()
+    };
     let mut node_target = engine_with(
         tiptap_schema(),
         InitializationMode::AwaitRemote,
@@ -335,8 +339,10 @@ fn canonical_output_ceiling_accepts_exact_and_rejects_one_over_atomically() {
         .unwrap()
         .len();
 
-    let mut exact_limits = EditingLimits::default();
-    exact_limits.max_derived_output_bytes = exact_bytes;
+    let exact_limits = EditingLimits {
+        max_derived_output_bytes: exact_bytes,
+        ..EditingLimits::default()
+    };
     let mut exact = engine_with(
         tiptap_schema(),
         InitializationMode::AwaitRemote,
@@ -346,8 +352,10 @@ fn canonical_output_ceiling_accepts_exact_and_rejects_one_over_atomically() {
     );
     assert!(exact.apply_remote_update_v1(41, &update).unwrap().changed);
 
-    let mut one_under_limits = EditingLimits::default();
-    one_under_limits.max_derived_output_bytes = exact_bytes - 1;
+    let one_under_limits = EditingLimits {
+        max_derived_output_bytes: exact_bytes - 1,
+        ..EditingLimits::default()
+    };
     let mut one_under = engine_with(
         tiptap_schema(),
         InitializationMode::AwaitRemote,

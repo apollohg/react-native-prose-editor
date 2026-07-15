@@ -21,6 +21,7 @@ pub(crate) use structure::{
     plan_apply_list_type, plan_indent_list_item, plan_insert_node, plan_outdent_list_item,
     plan_resize_image, plan_toggle_task_item_checked, plan_unwrap_from_list, plan_wrap_in_list,
     prove_structural_diff, simulate_plan, structural_diff, structural_diff_bounded,
+    ResizeImageRequest,
 };
 pub(crate) use text::{
     apply_operations, plan_delete_backward, plan_delete_scalar_range, plan_insert_text,
@@ -173,10 +174,17 @@ impl SemanticOperation {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SemanticCommandHistory {
+    InputBoundary,
+    FormatBoundary,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SemanticCommandPlan {
     pub operations: Vec<SemanticOperation>,
     pub selection_after: Option<Selection>,
+    pub history: SemanticCommandHistory,
 }
 
 impl SemanticCommandPlan {
@@ -184,6 +192,7 @@ impl SemanticCommandPlan {
         Self {
             operations: vec![operation],
             selection_after: None,
+            history: SemanticCommandHistory::InputBoundary,
         }
     }
 }
@@ -417,6 +426,7 @@ fn lift_trailing_empty_list_block(
             content: Fragment::from(replacement),
         }],
         selection_after: Some(Selection::cursor(selection)),
+        history: SemanticCommandHistory::InputBoundary,
     })
 }
 
@@ -489,6 +499,7 @@ fn plan_empty_blockquote_exit(
             content: Fragment::from(replacement),
         }],
         selection_after: Some(Selection::cursor(cursor.checked_add(1)?)),
+        history: SemanticCommandHistory::InputBoundary,
     })
 }
 
@@ -557,6 +568,7 @@ fn replace_void_and_empty_block(
             content: Fragment::from(vec![default_text_block(schema)?]),
         }],
         selection_after: Some(Selection::cursor(from.checked_add(1)?)),
+        history: SemanticCommandHistory::InputBoundary,
     })
 }
 
@@ -821,6 +833,7 @@ fn plan_empty_non_default_text_block(
             return Ok(Some(SemanticCommandPlan {
                 operations: vec![operation],
                 selection_after: Some(Selection::cursor(from + 1)),
+                history: SemanticCommandHistory::InputBoundary,
             }));
         }
     }

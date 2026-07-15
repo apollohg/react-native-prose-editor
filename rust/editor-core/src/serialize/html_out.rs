@@ -86,7 +86,9 @@ fn serialize_node(node: &Node, schema: &Schema, buf: &mut String) {
 }
 
 fn serialize_node_attrs(node: &Node, spec: &crate::schema::NodeSpec, buf: &mut String) {
-    for key in spec.attrs.keys() {
+    let mut keys = spec.attrs.keys().collect::<Vec<_>>();
+    keys.sort_unstable();
+    for key in keys {
         let Some(value) = node.attrs().get(key) else {
             continue;
         };
@@ -132,7 +134,9 @@ fn serialize_mark_open(mark: &crate::model::Mark, schema: &Schema, buf: &mut Str
         buf.push('"');
     }
     if let Some(spec) = schema.mark(mark.mark_type()) {
-        for name in spec.attrs.keys() {
+        let mut names = spec.attrs.keys().collect::<Vec<_>>();
+        names.sort_unstable();
+        for name in names {
             if let Some(value) = mark.attrs().get(name) {
                 let rendered = value
                     .as_str()
@@ -249,5 +253,70 @@ fn escape_html(text: &str, buf: &mut String) {
             '"' => buf.push_str("&quot;"),
             _ => buf.push(ch),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_html;
+    use crate::schema::Schema;
+    use crate::serialize::{from_prosemirror_json, UnknownTypeMode};
+
+    #[test]
+    fn node_attributes_are_emitted_in_canonical_name_order() {
+        let schema = Schema::from_json(&serde_json::json!({
+            "nodes": [
+                {"name":"doc","content":"media?","role":"doc"},
+                {"name":"media","content":"","role":"block","isVoid":true,"htmlTag":"img","attrs":{
+                    "zeta":{},"alpha":{},"mu":{},"beta":{},"theta":{},"gamma":{},"eta":{},"delta":{}
+                }},
+                {"name":"text","content":"","role":"text"}
+            ],
+            "marks": []
+        }))
+        .unwrap();
+        let document = from_prosemirror_json(
+            &serde_json::json!({"type":"doc","content":[{"type":"media","attrs":{
+                "zeta":"z","alpha":"a","mu":"m","beta":"b","theta":"t","gamma":"g","eta":"e","delta":"d"
+            }}]}),
+            &schema,
+            UnknownTypeMode::Error,
+        )
+        .unwrap();
+
+        assert_eq!(
+            to_html(&document, &schema),
+            "<img alpha=\"a\" beta=\"b\" delta=\"d\" eta=\"e\" gamma=\"g\" mu=\"m\" theta=\"t\" zeta=\"z\">"
+        );
+    }
+
+    #[test]
+    fn mark_attributes_are_emitted_in_canonical_name_order() {
+        let schema = Schema::from_json(&serde_json::json!({
+            "nodes": [
+                {"name":"doc","content":"paragraph","role":"doc"},
+                {"name":"paragraph","content":"text*","role":"textBlock","htmlTag":"p"},
+                {"name":"text","content":"","role":"text"}
+            ],
+            "marks": [{"name":"custom","htmlTag":"span","attrs":{
+                "zeta":{},"alpha":{},"mu":{},"beta":{},"theta":{},"gamma":{},"eta":{},"delta":{}
+            }}]
+        }))
+        .unwrap();
+        let document = from_prosemirror_json(
+            &serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{
+                "type":"text","text":"x","marks":[{"type":"custom","attrs":{
+                    "zeta":"z","alpha":"a","mu":"m","beta":"b","theta":"t","gamma":"g","eta":"e","delta":"d"
+                }}]
+            }]}]}),
+            &schema,
+            UnknownTypeMode::Error,
+        )
+        .unwrap();
+
+        assert_eq!(
+            to_html(&document, &schema),
+            "<p><span alpha=\"a\" beta=\"b\" delta=\"d\" eta=\"e\" gamma=\"g\" mu=\"m\" theta=\"t\" zeta=\"z\">x</span></p>"
+        );
     }
 }

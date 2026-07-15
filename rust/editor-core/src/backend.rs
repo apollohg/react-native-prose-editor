@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::boundary::ResourceLimits;
 use crate::history::UndoHistory;
-use crate::model::{Document, Fragment};
+use crate::model::{Document, Fragment, Node};
 use crate::position::update::UpdateMode;
 use crate::position::PositionMap;
 use crate::render::incremental::{
@@ -213,11 +213,15 @@ impl StandaloneBackend {
                 to,
                 mark_type,
             } => {
-                // Scan the pre-step document to find which text segments
-                // actually had this mark, and extract the full mark (with
-                // attrs) from each. We build a single AddMark using the
-                // mark found in the document. If the mark carried attrs
-                // (e.g. link href), this preserves them.
+                if let Some(content) = extract_inline_fragment_in_range(doc, *from, *to) {
+                    return Step::ReplaceRange {
+                        from: *from,
+                        to: *to,
+                        content,
+                    };
+                }
+                // Defensive fallback for a range that cannot be represented
+                // as one inline fragment.
                 let mark = extract_mark_in_range(doc, *from, *to, mark_type);
                 Step::AddMark {
                     from: *from,
@@ -225,7 +229,10 @@ impl StandaloneBackend {
                     mark,
                 }
             }
-            Step::SplitBlock { pos, .. } => {
+            step @ Step::SplitBlock { pos, .. } => {
+                if let Some(inverse) = localized_structural_inverse(schema, doc, step) {
+                    return inverse;
+                }
                 // Splitting at pos inserts 2 tokens (close tag + open tag).
                 // In the post-split document, the block boundary where we need
                 // to join is at pos + 1 (the open tag of the new block).
@@ -357,6 +364,45 @@ fn extract_exact_sibling_fragment(doc: &Document, from: u32, to: u32) -> Option<
         offset = next;
     }
     None
+}
+
+fn extract_inline_fragment_in_range(doc: &Document, from: u32, to: u32) -> Option<Fragment> {
+    if from >= to {
+        return None;
+    }
+    let resolved_from = doc.resolve(from).ok()?;
+    let resolved_to = doc.resolve(to).ok()?;
+    if resolved_from.node_path != resolved_to.node_path {
+        return None;
+    }
+    let content = resolved_from.parent(doc).content()?;
+    let from_offset = resolved_from.parent_offset;
+    let to_offset = resolved_to.parent_offset;
+    let mut offset = 0u32;
+    let mut selected = Vec::new();
+    for child in content.iter() {
+        let end = offset.checked_add(child.node_size())?;
+        let overlap_from = from_offset.max(offset);
+        let overlap_to = to_offset.min(end);
+        if overlap_from < overlap_to {
+            if let Some(text) = child.text_str() {
+                let chars = text.chars().collect::<Vec<_>>();
+                let local_from = usize::try_from(overlap_from.checked_sub(offset)?).ok()?;
+                let local_to = usize::try_from(overlap_to.checked_sub(offset)?).ok()?;
+                selected.push(Node::text(
+                    chars.get(local_from..local_to)?.iter().collect(),
+                    child.marks().to_vec(),
+                ));
+            } else {
+                if overlap_from != offset || overlap_to != end {
+                    return None;
+                }
+                selected.push(child.clone());
+            }
+        }
+        offset = end;
+    }
+    (!selected.is_empty()).then(|| Fragment::from(selected))
 }
 
 fn structural_delete_inverse(schema: &Schema, doc: &Document, from: u32, to: u32) -> Option<Step> {

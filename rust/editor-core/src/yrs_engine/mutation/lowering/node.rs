@@ -463,6 +463,7 @@ impl MutationCompiler {
             |start| positions.partition_point(|(existing, _)| *existing < start),
         );
         let old_next_start = positions.get(insertion).map(|(start, _)| *start);
+        let inserted_text_targets = !texts.is_empty();
         let mut target_index = insertion;
         let mut current_end = if insertion == 0 {
             0
@@ -495,13 +496,15 @@ impl MutationCompiler {
                 .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
             target_index += 1;
         }
-        if let Some(old_next_start) = old_next_start {
-            let shifted = old_next_start
-                .checked_add(inserted_node_size)
-                .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
-            self.targets[target_index].gap_before = shifted
-                .checked_sub(current_end)
-                .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
+        if !inserted_text_targets {
+            if let Some(old_next_start) = old_next_start {
+                let shifted = old_next_start
+                    .checked_add(inserted_node_size)
+                    .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
+                self.targets[target_index].gap_before = shifted
+                    .checked_sub(current_end)
+                    .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
+            }
         }
         Ok(())
     }
