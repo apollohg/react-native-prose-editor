@@ -486,7 +486,7 @@ pub(crate) fn exact_point_is_representable<T: ReadTxn>(
     doc_pos_to_relative_point(txn, fragment, position, point.affinity, schema).is_some()
 }
 
-fn resolved_to_legacy(selection: &ResolvedSelection) -> Selection {
+pub(crate) fn resolved_to_legacy(selection: &ResolvedSelection) -> Selection {
     match selection {
         ResolvedSelection::Text { anchor, head } => Selection::text(anchor.document, head.document),
         ResolvedSelection::Node { at } => Selection::node(at.document),

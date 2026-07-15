@@ -5,6 +5,7 @@ mod derived_state;
 mod editing_limits;
 mod engine;
 mod error;
+mod history;
 mod mutation;
 #[cfg(test)]
 #[path = "mutation_tests.rs"]

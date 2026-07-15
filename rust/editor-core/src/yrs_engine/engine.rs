@@ -1,5 +1,8 @@
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::sync::Arc;
+use yrs::sync::time::{Clock, SystemClock};
 use yrs::types::xml::XmlFragmentRef;
 use yrs::updates::decoder::Decode;
 use yrs::Update;
@@ -187,10 +190,18 @@ pub struct YrsDocumentEngine {
     yrs_state_epoch: u64,
     last_committed_origin: Option<TransactionOrigin>,
     durable_client_ids: HashSet<u64>,
+    history: super::history::YrsHistory,
 }
 
 impl YrsDocumentEngine {
     pub fn new(config: YrsEngineConfig) -> YrsEngineResult<Self> {
+        Self::new_with_history_clock(config, Arc::new(SystemClock))
+    }
+
+    pub fn new_with_history_clock(
+        config: YrsEngineConfig,
+        history_clock: Arc<dyn Clock>,
+    ) -> YrsEngineResult<Self> {
         let YrsEngineConfig {
             schema,
             fragment_name,
@@ -214,6 +225,23 @@ impl YrsDocumentEngine {
         };
         let derived_state =
             build_derived_state_for_candidate(&candidate, &schema, &fragment_name, 0, 0)?;
+        let history_fragment = {
+            let txn = candidate.doc.transact();
+            txn.get_xml_fragment(fragment_name.as_str())
+                .ok_or_else(|| {
+                    YrsEngineError::new(
+                        "CODEC_INVARIANT_FAILED",
+                        "initialized Yrs fragment is missing while binding history",
+                    )
+                })?
+        };
+        let history = super::history::YrsHistory::new(
+            &candidate.doc,
+            &history_fragment,
+            editing_limits.clone(),
+            resource_limits.max_encoded_state_bytes,
+            history_clock,
+        );
 
         Ok(Self {
             doc: candidate.doc,
@@ -230,11 +258,270 @@ impl YrsDocumentEngine {
             yrs_state_epoch: 0,
             last_committed_origin: None,
             durable_client_ids: candidate.durable_client_ids,
+            history,
         })
     }
 
     pub fn is_ready(&self) -> bool {
         self.derived_state.is_some()
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    pub fn undo(
+        &mut self,
+        request_id: u64,
+    ) -> super::OperationResult<Option<super::TransactionCommit>> {
+        self.apply_history_pop(request_id, true)
+    }
+
+    pub fn redo(
+        &mut self,
+        request_id: u64,
+    ) -> super::OperationResult<Option<super::TransactionCommit>> {
+        self.apply_history_pop(request_id, false)
+    }
+
+    fn apply_history_pop(
+        &mut self,
+        request_id: u64,
+        undoing: bool,
+    ) -> super::OperationResult<Option<super::TransactionCommit>> {
+        if if undoing {
+            !self.history.can_undo()
+        } else {
+            !self.history.can_redo()
+        } {
+            return Ok(None);
+        }
+
+        let next_document_revision =
+            checked_operation_increment(request_id, self.revision, "documentRevision")?;
+        let next_state_revision =
+            checked_operation_increment(request_id, self.state_revision, "stateRevision")?;
+        let next_yrs_state_epoch =
+            checked_operation_increment(request_id, self.yrs_state_epoch, "yrsStateEpoch")?;
+
+        let action = if undoing {
+            super::history::HistoryAction::Undo
+        } else {
+            super::history::HistoryAction::Redo
+        };
+        let candidate_doc = self.new_history_candidate_doc();
+        self.history.seed_candidate(request_id, &candidate_doc)?;
+        let candidate_fragment =
+            candidate_doc.get_or_insert_xml_fragment(self.fragment_name.as_str());
+        let mut candidate_history =
+            self.history
+                .replay_into(request_id, &candidate_doc, &candidate_fragment)?;
+        let candidate_pop = match action {
+            super::history::HistoryAction::Undo => candidate_history.undo(),
+            super::history::HistoryAction::Redo => candidate_history.redo(),
+        };
+        if !candidate_pop.changed {
+            return Err(super::OperationError::engine_invariant_failed(
+                request_id,
+                None,
+                "bounded history replay cannot reproduce the next live pop",
+            ));
+        }
+        let restored = candidate_pop.restored.as_ref().ok_or_else(|| {
+            super::OperationError::engine_invariant_failed(
+                request_id,
+                None,
+                "changed history candidate supplied no restoration metadata",
+            )
+        })?;
+        let (candidate_state, candidate_encoded_state) = self.derive_history_candidate_state(
+            request_id,
+            &candidate_doc,
+            restored,
+            next_document_revision,
+            next_state_revision,
+        )?;
+
+        candidate_history.accept_action(action, candidate_encoded_state);
+        self.doc = candidate_doc;
+        self.history = candidate_history;
+        self.derived_state = Some(candidate_state);
+        self.revision = next_document_revision;
+        self.state_revision = next_state_revision;
+        self.yrs_state_epoch = next_yrs_state_epoch;
+        self.last_committed_origin = Some(TransactionOrigin::UndoRedo);
+        Ok(Some(super::TransactionCommit {
+            request_id,
+            changed: true,
+            document_revision: self.revision,
+            state_revision: self.state_revision,
+            origin: TransactionOrigin::UndoRedo,
+        }))
+    }
+
+    fn new_history_candidate_doc(&self) -> Doc {
+        Doc::with_options(Options {
+            client_id: self.doc.client_id(),
+            guid: self.doc.guid(),
+            offset_kind: OffsetKind::Utf16,
+            // History StackItems reference deleted structs which are present in
+            // the full update but whose live keep flags are not encoded.
+            skip_gc: true,
+            ..Options::default()
+        })
+    }
+
+    fn derive_history_candidate_state(
+        &self,
+        request_id: u64,
+        doc: &Doc,
+        restored: &super::history::HistoryLocalState,
+        document_revision: u64,
+        state_revision: u64,
+    ) -> super::OperationResult<(DerivedStateCache, Vec<u8>)> {
+        let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
+        let txn = doc.transact();
+        let fragment = txn
+            .get_xml_fragment(self.fragment_name.as_str())
+            .ok_or_else(|| {
+                super::OperationError::engine_invariant_failed(
+                    request_id,
+                    None,
+                    "history result fragment is missing",
+                )
+            })?;
+        let derived_json = codec
+            .read_json(&fragment, &txn)
+            .map_err(|error| history_operation_error(request_id, error))?;
+        let document = from_prosemirror_json_with_limits(
+            &derived_json,
+            &self.schema,
+            UnknownTypeMode::Preserve,
+            &self.resource_limits,
+        )
+        .map_err(|error| {
+            super::OperationError::document_invalid(request_id, None, "document", error.to_string())
+        })?;
+        let document =
+            canonicalize_yrs_document(&rehydrate_reserved_html_opaque(&document), &self.schema);
+        DocumentValidator::validate(&document, &self.schema, &self.resource_limits).map_err(
+            |error| {
+                if error.code() == "DOCUMENT_LIMIT_EXCEEDED" {
+                    super::OperationError::document_limit_exceeded(
+                        request_id,
+                        None,
+                        "document",
+                        error.limit.unwrap_or(0) as u64,
+                        error.actual.unwrap_or(0) as u64,
+                    )
+                } else {
+                    super::OperationError::document_invalid(
+                        request_id,
+                        None,
+                        "document",
+                        error.to_string(),
+                    )
+                }
+            },
+        )?;
+        if let Some(limit) = self.max_length {
+            let actual = document.root().text_content().chars().count() as u64;
+            if actual > u64::from(limit) {
+                return Err(super::OperationError::document_limit_exceeded(
+                    request_id,
+                    None,
+                    "maxLength",
+                    u64::from(limit),
+                    actual,
+                ));
+            }
+        }
+        crate::transform::validate_input_mark_set(
+            restored.stored_marks.as_deref().unwrap_or_default(),
+            &self.schema,
+        )
+        .map_err(|error| {
+            super::OperationError::engine_invariant_failed(
+                request_id,
+                None,
+                format!("history metadata contains invalid stored marks: {error}"),
+            )
+        })?;
+        let canonical_json = to_prosemirror_json(&document, &self.schema);
+        let canonical_bytes = serde_json::to_vec(&canonical_json).map_err(|error| {
+            super::OperationError::engine_invariant_failed(
+                request_id,
+                None,
+                format!("history result serialization failed: {error}"),
+            )
+        })?;
+        if canonical_bytes.len() > self.editing_limits.max_derived_output_bytes {
+            return Err(super::OperationError::document_limit_exceeded(
+                request_id,
+                None,
+                "maxDerivedOutputBytes",
+                u64::try_from(self.editing_limits.max_derived_output_bytes).unwrap_or(u64::MAX),
+                u64::try_from(canonical_bytes.len()).unwrap_or(u64::MAX),
+            ));
+        }
+        let canonical_fingerprint: [u8; 32] = Sha256::digest(&canonical_bytes).into();
+        let base = DerivedStateCache::initialize(
+            document,
+            canonical_json,
+            &txn,
+            &fragment,
+            &self.schema,
+            document_revision,
+            state_revision,
+        )
+        .ok_or_else(|| {
+            super::OperationError::engine_invariant_failed(
+                request_id,
+                None,
+                "history result cannot initialize derived editor state",
+            )
+        })?;
+        // Yrs recreates inserted structs with new IDs during redo, so the
+        // original relative cursor can remain valid yet resolve beside the
+        // redone content. Preserve the document-relative snapshot as the CRDT
+        // metadata and reseal it from the exact resolved fallback on restore.
+        let restored_relative = if canonical_fingerprint == restored.canonical_fingerprint {
+            operation_result_to_relative(
+                &txn,
+                &fragment,
+                &super::derived_state::resolved_to_legacy(&restored.resolved_selection),
+                &self.schema,
+            )
+        } else {
+            restored.relative_selection.clone()
+        };
+        let mut state = base
+            .with_relative_selection(
+                restored_relative,
+                &txn,
+                &fragment,
+                &self.schema,
+                state_revision,
+            )
+            .ok_or_else(|| {
+                super::OperationError::engine_invariant_failed(
+                    request_id,
+                    None,
+                    "history restoration selection cannot resolve",
+                )
+            })?;
+        state.stored_marks = restored
+            .stored_marks
+            .as_deref()
+            .map(|marks| super::derived_state::canonical_marks(marks, &self.schema));
+        drop(txn);
+        let encoded = encode_state_bounded(doc, &self.resource_limits)
+            .map_err(|error| history_operation_error(request_id, error))?;
+        Ok((state, encoded))
     }
 
     pub fn document(&self) -> Option<&Document> {
@@ -646,7 +933,7 @@ impl YrsDocumentEngine {
         })?;
 
         // Revalidate sealed signatures against one final stable read view.
-        let current_encoded_bytes = {
+        let current_encoded_state = {
             let txn = self.doc.transact();
             #[cfg(test)]
             super::compiler::check_atomic_failpoint(
@@ -660,12 +947,13 @@ impl YrsDocumentEngine {
                 super::compiler::AtomicFailpoint::EncodedAdmission,
             )?;
             if txn.state_vector().is_empty() {
-                0
+                Vec::new()
             } else {
-                txn.encode_state_as_update_v1(&StateVector::default()).len()
+                txn.encode_state_as_update_v1(&StateVector::default())
             }
         };
-        let admitted_encoded_bytes = current_encoded_bytes
+        let admitted_encoded_bytes = current_encoded_state
+            .len()
             .checked_add(compiled.encoded_growth_bound)
             .ok_or_else(|| {
                 super::OperationError::document_limit_exceeded(
@@ -709,10 +997,24 @@ impl YrsDocumentEngine {
         if compiled.authored_clock_units > 0 {
             next_durable_client_ids.insert(self.client_id());
         }
+        let history_before = self
+            .derived_state
+            .as_ref()
+            .map(|state| history_local_state(state, &self.fragment_name));
+        let history_after_metadata_bytes = match &compiled.stored_marks_plan {
+            StoredMarksPlan::Set(stored_marks) => {
+                history_metadata_bytes(stored_marks.as_deref(), &self.fragment_name)
+            }
+            StoredMarksPlan::Unsealed => usize::MAX,
+        };
 
         let CompiledTransaction {
             request_id,
             origin,
+            history_policy,
+            history_class,
+            undo_units_bound,
+            encoded_growth_bound,
             preview,
             selection_plan,
             relative_selection_plan,
@@ -723,10 +1025,38 @@ impl YrsDocumentEngine {
             mutation_plan,
             ..
         } = compiled;
+        let captures_history = history_policy != super::HistoryPolicy::Skip
+            && history_class != super::compiler::HistoryClass::Skip;
+        let history_origin = if captures_history {
+            self.history.prepare_capture(
+                request_id,
+                origin,
+                history_policy,
+                history_class,
+                undo_units_bound,
+                history_before,
+                history_after_metadata_bytes,
+                &current_encoded_state,
+                encoded_growth_bound,
+            )?
+        } else {
+            self.history.prepare_excluded(
+                request_id,
+                origin,
+                undo_units_bound,
+                &current_encoded_state,
+                encoded_growth_bound,
+            )?
+        };
+        let history_state_vector = self.doc.transact().state_vector();
         {
-            let mut txn = self.doc.transact_mut_with(origin.as_yrs_origin());
+            let mut txn = self.doc.transact_mut_with(history_origin);
             execute_mutation_plan(mutation_plan, &mut txn);
         }
+        let history_update = self
+            .doc
+            .transact()
+            .encode_state_as_update_v1(&history_state_vector);
 
         let canonical_json_for_cache = canonical_json.clone();
         let next_derived_state = {
@@ -793,6 +1123,14 @@ impl YrsDocumentEngine {
             next.stored_marks = stored_marks;
             next
         };
+        if captures_history {
+            self.history.finish_capture(
+                history_local_state(&next_derived_state, &self.fragment_name),
+                history_update,
+            );
+        } else {
+            self.history.finish_excluded(history_update);
+        }
 
         debug_assert_eq!(next_derived_state.document_revision, next_document_revision);
         self.derived_state = Some(next_derived_state);
@@ -864,6 +1202,7 @@ impl YrsDocumentEngine {
 
         let current_state = encode_state_bounded(&self.doc, &self.resource_limits)?;
         if self.is_ready() && current_state == snapshot.encoded_state {
+            self.reset_history_binding();
             return Ok(EngineCommit {
                 changed: false,
                 revision: self.revision,
@@ -895,6 +1234,12 @@ impl YrsDocumentEngine {
             next_state_revision,
         )?;
         self.doc = candidate.doc;
+        let history_fragment = {
+            let txn = self.doc.transact();
+            txn.get_xml_fragment(self.fragment_name.as_str())
+                .expect("validated snapshot candidate retains the history fragment")
+        };
+        self.history.rebind(&self.doc, &history_fragment);
         debug_assert_eq!(
             next_derived_state
                 .as_ref()
@@ -1052,6 +1397,7 @@ impl YrsDocumentEngine {
             .map_err(|error| YrsEngineError::parse("DOCUMENT_INVALID", error))?;
         if let Some(state) = &self.derived_state {
             if state.canonical_json == value {
+                self.reset_history_binding();
                 return Ok(EngineCommit {
                     changed: false,
                     revision: self.revision,
@@ -1159,6 +1505,7 @@ impl YrsDocumentEngine {
         };
         let unchanged = self.document() == Some(candidate_document);
         if unchanged {
+            self.reset_history_binding();
             return Ok(EngineCommit {
                 changed: false,
                 revision: self.revision,
@@ -1175,6 +1522,12 @@ impl YrsDocumentEngine {
             next_state_revision,
         )?;
         self.doc = candidate.doc;
+        let history_fragment = {
+            let txn = self.doc.transact();
+            txn.get_xml_fragment(self.fragment_name.as_str())
+                .expect("validated import candidate retains the history fragment")
+        };
+        self.history.rebind(&self.doc, &history_fragment);
         debug_assert_eq!(
             next_derived_state
                 .as_ref()
@@ -1201,6 +1554,15 @@ impl YrsDocumentEngine {
             )
             .with_details(json!({ "field": "revision" }))
         })
+    }
+
+    fn reset_history_binding(&mut self) {
+        let fragment = {
+            let txn = self.doc.transact();
+            txn.get_xml_fragment(self.fragment_name.as_str())
+                .expect("ready Yrs document retains the history fragment")
+        };
+        self.history.rebind(&self.doc, &fragment);
     }
 
     fn next_durable_revisions(&self) -> YrsEngineResult<(u64, u64, u64)> {
@@ -1310,6 +1672,67 @@ fn snapshot_error(
     field: &'static str,
 ) -> YrsEngineError {
     YrsEngineError::new(code, message).with_details(json!({ "field": field }))
+}
+
+fn history_local_state(
+    state: &DerivedStateCache,
+    fragment_name: &str,
+) -> super::history::HistoryLocalState {
+    let canonical_bytes = serde_json::to_vec(&state.canonical_json)
+        .expect("validated canonical history JSON remains serializable");
+    super::history::HistoryLocalState {
+        relative_selection: state.relative_selection.clone(),
+        resolved_selection: state.resolved_selection.clone(),
+        stored_marks: state.stored_marks.clone(),
+        text_length: u64::try_from(state.document.root().text_content().chars().count())
+            .unwrap_or(u64::MAX),
+        canonical_fingerprint: Sha256::digest(&canonical_bytes).into(),
+        derived_output_bytes: canonical_bytes.len(),
+        metadata_bytes: history_metadata_bytes(state.stored_marks.as_deref(), fragment_name),
+    }
+}
+
+fn history_metadata_bytes(
+    stored_marks: Option<&[crate::model::Mark]>,
+    fragment_name: &str,
+) -> usize {
+    const FIXED_SELECTION_BYTES: usize = 512;
+    let marks = stored_marks
+        .unwrap_or_default()
+        .iter()
+        .map(|mark| {
+            json!({
+                "type": mark.mark_type(),
+                "attrs": mark.attrs(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mark_bytes = serde_json::to_vec(&marks)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX);
+    FIXED_SELECTION_BYTES
+        .checked_add(fragment_name.len())
+        .and_then(|bytes| bytes.checked_add(mark_bytes))
+        .unwrap_or(usize::MAX)
+}
+
+fn history_operation_error(request_id: u64, error: YrsEngineError) -> super::OperationError {
+    if let (Some(limit), Some(actual)) = (error.limit, error.actual) {
+        let field = if error.code == "INPUT_LIMIT_EXCEEDED" {
+            "maxEncodedStateBytes"
+        } else {
+            "document"
+        };
+        super::OperationError::document_limit_exceeded(
+            request_id,
+            None,
+            field,
+            u64::try_from(limit).unwrap_or(u64::MAX),
+            u64::try_from(actual).unwrap_or(u64::MAX),
+        )
+    } else {
+        super::OperationError::engine_invariant_failed(request_id, None, error.message)
+    }
 }
 
 fn snapshot_parse_error(
@@ -1549,6 +1972,9 @@ fn build_await_remote_candidate(
 fn utf16_doc() -> Doc {
     let options = Options {
         offset_kind: OffsetKind::Utf16,
+        // Yrs history StackItems refer to deleted structs. Keep them available
+        // in both live and candidate stores for the lifetime of an epoch.
+        skip_gc: true,
         ..Options::default()
     };
     Doc::with_options(options)
