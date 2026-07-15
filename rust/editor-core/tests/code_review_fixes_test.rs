@@ -849,6 +849,26 @@ fn test_redo_restores_post_transaction_selection() {
 }
 
 #[test]
+fn test_structural_redo_restores_exact_post_transaction_selection() {
+    let mut editor = default_editor();
+    editor.set_html("<p>one</p><p>two</p>").expect("set_html");
+    editor.set_selection(Selection::text(1, 5));
+
+    editor
+        .apply_list_type("orderedList")
+        .expect("apply list type");
+    let post_transaction = editor.selection().clone();
+
+    editor.undo().expect("undo");
+    let redo = editor.redo().expect("redo");
+
+    assert_eq!(
+        redo.selection, post_transaction,
+        "structural redo must restore the exact document-scoped selection snapshot"
+    );
+}
+
+#[test]
 fn test_undo_redo_selection_does_not_return_none() {
     // The old code returned selection_update: None from undo/redo,
     // leaving the cursor wherever it was. Verify that undo/redo now

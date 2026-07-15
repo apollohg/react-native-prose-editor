@@ -5,11 +5,13 @@ use std::sync::Arc;
 use yrs::sync::time::{Clock, SystemClock};
 use yrs::types::xml::XmlFragmentRef;
 use yrs::updates::decoder::Decode;
+use yrs::updates::encoder::Encode;
 use yrs::Update;
 use yrs::{Doc, OffsetKind, Options, ReadTxn, StateVector, Transact, WriteTxn};
 
 use crate::boundary::{BoundedInput, InputKind, ResourceLimits};
 use crate::model::Document;
+use crate::position::update::UpdateMode;
 use crate::position::PositionMap;
 use crate::schema::{schema_fingerprint, NodeRole, Schema};
 use crate::selection::Selection;
@@ -17,7 +19,9 @@ use crate::serialize::{
     from_html_with_limits, from_prosemirror_json_with_limits, rehydrate_reserved_html_opaque,
     to_html, to_prosemirror_json, FromHtmlOptions, JsonParseError, ParseError, UnknownTypeMode,
 };
-use crate::transform::{canonicalize_yrs_document, validate_canonical_marks, DocumentValidator};
+use crate::transform::{
+    canonicalize_yrs_document, validate_canonical_marks, DocumentValidator, StepMap,
+};
 
 use super::compiler::{
     compile_transaction_with_yrs_and_stored_marks, map_position, selectable_void_at,
@@ -27,7 +31,8 @@ use super::compiler::{
     RelativeSelectionPlan, SelectionPlan, StoredMarksCompilationContext, StoredMarksPlan,
 };
 use super::derived_state::{
-    exact_point_is_representable, operation_result_to_relative, DerivedStateCache,
+    exact_point_is_representable, operation_result_to_relative,
+    stored_marks_after_selection_change, DerivedStateCache,
 };
 use super::mutation::{execute_mutation_plan, preflight_mutation_plan, YrsMutationPlan};
 use super::update_preflight::preflight_update_v1;
@@ -190,6 +195,9 @@ pub struct YrsDocumentEngine {
     yrs_state_epoch: u64,
     last_committed_origin: Option<TransactionOrigin>,
     durable_client_ids: HashSet<u64>,
+    /// Dependency-pending standard updates are quarantined outside the live
+    /// authoritative Doc until their complete merged state can be validated.
+    quarantined_remote_update: Option<Vec<u8>>,
     history: super::history::YrsHistory,
 }
 
@@ -258,6 +266,7 @@ impl YrsDocumentEngine {
             yrs_state_epoch: 0,
             last_committed_origin: None,
             durable_client_ids: candidate.durable_client_ids,
+            quarantined_remote_update: None,
             history,
         })
     }
@@ -348,6 +357,357 @@ impl YrsDocumentEngine {
         Ok(self
             .apply_history_pop(request_id, false, true)?
             .and_then(|(_, result)| result))
+    }
+
+    /// Merge one standard Yjs/Yrs Update-v1 into the authoritative document.
+    ///
+    /// The update is fully decoded, applied, derived, validated, and admitted
+    /// on an isolated candidate before the live CRDT is opened for mutation.
+    /// Remote-origin structs remain outside the local undo scope.
+    pub fn apply_remote_update_v1(
+        &mut self,
+        request_id: u64,
+        update: &[u8],
+    ) -> super::OperationResult<EngineCommit> {
+        let admitted_epoch = self.yrs_state_epoch;
+        if update.len() > self.resource_limits.max_encoded_state_bytes {
+            return Err(super::OperationError::document_limit_exceeded(
+                request_id,
+                None,
+                "maxEncodedStateBytes",
+                self.resource_limits.max_encoded_state_bytes as u64,
+                update.len() as u64,
+            ));
+        }
+        preflight_update_v1(update, &self.resource_limits)
+            .map_err(|error| remote_ingress_error(request_id, error))?;
+        let incoming_update = Update::decode_v1(update).map_err(|error| {
+            super::OperationError::document_invalid(
+                request_id,
+                None,
+                "update",
+                format!("invalid Update-v1: {error}"),
+            )
+        })?;
+        let (candidate_update, merged_update_bytes) = if let Some(quarantined) =
+            self.quarantined_remote_update.as_deref()
+        {
+            let combined_len = quarantined.len().checked_add(update.len()).ok_or_else(|| {
+                super::OperationError::document_limit_exceeded(
+                    request_id,
+                    None,
+                    "maxEncodedStateBytes",
+                    self.resource_limits.max_encoded_state_bytes as u64,
+                    u64::MAX,
+                )
+            })?;
+            if combined_len > self.resource_limits.max_encoded_state_bytes {
+                return Err(super::OperationError::document_limit_exceeded(
+                    request_id,
+                    None,
+                    "maxEncodedStateBytes",
+                    self.resource_limits.max_encoded_state_bytes as u64,
+                    combined_len as u64,
+                ));
+            }
+            let quarantined_update = Update::decode_v1(quarantined).map_err(|error| {
+                super::OperationError::engine_invariant_failed(
+                    request_id,
+                    None,
+                    format!("quarantined Update-v1 cannot decode: {error}"),
+                )
+            })?;
+            let merged = Update::merge_updates(vec![quarantined_update, incoming_update]);
+            let merged_bytes = merged.encode_v1();
+            if merged_bytes.len() > self.resource_limits.max_encoded_state_bytes {
+                return Err(super::OperationError::document_limit_exceeded(
+                    request_id,
+                    None,
+                    "maxEncodedStateBytes",
+                    self.resource_limits.max_encoded_state_bytes as u64,
+                    merged_bytes.len() as u64,
+                ));
+            }
+            preflight_update_v1(&merged_bytes, &self.resource_limits)
+                .map_err(|error| remote_ingress_error(request_id, error))?;
+            (merged, Some(merged_bytes))
+        } else {
+            (incoming_update, None)
+        };
+        let current_encoded = encode_state_bounded(&self.doc, &self.resource_limits)
+            .map_err(|error| history_operation_error(request_id, error))?;
+        let candidate_doc = fresh_utf16_doc_excluding(&self.durable_client_ids, self.client_id());
+        {
+            let mut txn =
+                candidate_doc.transact_mut_with(TransactionOrigin::RemoteSync.as_yrs_origin());
+            if !current_encoded.is_empty() {
+                let current = Update::decode_v1(&current_encoded).map_err(|error| {
+                    super::OperationError::engine_invariant_failed(
+                        request_id,
+                        None,
+                        format!("current encoded state cannot decode: {error}"),
+                    )
+                })?;
+                txn.apply_update(current).map_err(|error| {
+                    super::OperationError::engine_invariant_failed(
+                        request_id,
+                        None,
+                        format!("candidate cannot seed current state: {error}"),
+                    )
+                })?;
+            }
+            txn.apply_update(candidate_update).map_err(|error| {
+                super::OperationError::document_invalid(
+                    request_id,
+                    None,
+                    "update",
+                    format!("candidate rejected Update-v1: {error}"),
+                )
+            })?;
+        }
+        let candidate_has_missing_updates = {
+            let txn = candidate_doc.transact();
+            txn.has_missing_updates()
+        };
+        if candidate_has_missing_updates {
+            let quarantined = if let Some(merged) = merged_update_bytes {
+                merged
+            } else {
+                let mut admitted = Vec::new();
+                admitted.try_reserve_exact(update.len()).map_err(|error| {
+                    super::OperationError::operation_resource_exhausted(
+                        request_id,
+                        "remoteUpdate",
+                        format!("cannot reserve quarantined remote update: {error}"),
+                    )
+                })?;
+                admitted.extend_from_slice(update);
+                admitted
+            };
+            self.quarantined_remote_update = Some(quarantined);
+            return Ok(EngineCommit {
+                changed: false,
+                revision: self.revision,
+            });
+        }
+        // The dependency set is complete, so quarantine is no longer useful.
+        // Discard it before admission: if deferred content proves invalid, it
+        // must not permanently poison later legitimate synchronization.
+        self.quarantined_remote_update = None;
+        let candidate_encoded =
+            encode_candidate_state_bounded(&candidate_doc, &self.resource_limits)
+                .map_err(|error| history_operation_error(request_id, error))?;
+        if candidate_encoded == current_encoded {
+            self.quarantined_remote_update = None;
+            return Ok(EngineCommit {
+                changed: false,
+                revision: self.revision,
+            });
+        }
+
+        let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
+        let candidate_json = {
+            let txn = candidate_doc.transact();
+            let fragment = txn
+                .get_xml_fragment(self.fragment_name.as_str())
+                .ok_or_else(|| {
+                    super::OperationError::document_invalid(
+                        request_id,
+                        None,
+                        "update",
+                        "remote update does not contain the configured document fragment",
+                    )
+                })?;
+            codec
+                .read_json(&fragment, &txn)
+                .map_err(|error| remote_engine_error(request_id, error))?
+        };
+        let candidate_document = from_prosemirror_json_with_limits(
+            &candidate_json,
+            &self.schema,
+            UnknownTypeMode::Preserve,
+            &self.resource_limits,
+        )
+        .map_err(|error| remote_json_error(request_id, error))?;
+        let candidate_document = rehydrate_reserved_html_opaque(&candidate_document);
+        DocumentValidator::validate(&candidate_document, &self.schema, &self.resource_limits)
+            .map_err(|error| remote_validation_error(request_id, error))?;
+        if let Some(limit) = self.max_length {
+            let actual = candidate_document.root().text_content().chars().count();
+            if actual > limit as usize {
+                return Err(super::OperationError::document_limit_exceeded(
+                    request_id,
+                    None,
+                    "maxLength",
+                    u64::from(limit),
+                    actual as u64,
+                ));
+            }
+        }
+        let canonical_json = to_prosemirror_json(&candidate_document, &self.schema);
+        let canonical_bytes = serde_json::to_vec(&canonical_json).map_err(|error| {
+            super::OperationError::engine_invariant_failed(
+                request_id,
+                None,
+                format!("remote document serialization failed: {error}"),
+            )
+        })?;
+        if canonical_bytes.len() > self.editing_limits.max_derived_output_bytes {
+            return Err(super::OperationError::document_limit_exceeded(
+                request_id,
+                None,
+                "maxDerivedOutputBytes",
+                u64::try_from(self.editing_limits.max_derived_output_bytes).unwrap_or(u64::MAX),
+                u64::try_from(canonical_bytes.len()).unwrap_or(u64::MAX),
+            ));
+        }
+        let next_revision =
+            checked_operation_increment(request_id, self.revision, "documentRevision")?;
+        let next_state_revision =
+            checked_operation_increment(request_id, self.state_revision, "stateRevision")?;
+        let next_epoch =
+            checked_operation_increment(request_id, self.yrs_state_epoch, "yrsStateEpoch")?;
+        let next_state = {
+            let txn = candidate_doc.transact();
+            let fragment = txn
+                .get_xml_fragment(self.fragment_name.as_str())
+                .ok_or_else(|| {
+                    super::OperationError::engine_invariant_failed(
+                        request_id,
+                        None,
+                        "validated remote candidate lost its document fragment",
+                    )
+                })?;
+            if let Some(current) = self.derived_state.as_ref() {
+                let fallback = affinity_aware_mapped_selection(
+                    &current.legacy_selection(),
+                    &current.relative_selection,
+                    &StepMap::empty(),
+                    &candidate_document,
+                    &self.schema,
+                );
+                let mut next = current
+                    .after_document_change(
+                        candidate_document.clone(),
+                        canonical_json.clone(),
+                        &txn,
+                        &fragment,
+                        &self.schema,
+                        &StepMap::empty(),
+                        UpdateMode::Rebuild,
+                        &[],
+                        None,
+                        Some(&fallback),
+                        false,
+                        next_revision,
+                        next_state_revision,
+                    )
+                    .ok_or_else(|| {
+                        super::OperationError::selection_position_invalid(
+                            request_id,
+                            "selection",
+                            "local relative selection cannot resolve after remote update",
+                        )
+                    })?;
+                next.stored_marks = match (&current.resolved_selection, &next.resolved_selection) {
+                    (
+                        super::ResolvedSelection::Text {
+                            anchor: current_anchor,
+                            head: current_head,
+                        },
+                        super::ResolvedSelection::Text {
+                            anchor: next_anchor,
+                            head: next_head,
+                        },
+                    ) if current.relative_selection == next.relative_selection
+                        && current_anchor.document == current_head.document
+                        && next_anchor.document == next_head.document =>
+                    {
+                        current.stored_marks.clone()
+                    }
+                    _ => stored_marks_after_selection_change(
+                        current.stored_marks.as_deref(),
+                        &current.resolved_selection,
+                        &next.resolved_selection,
+                        &next.document,
+                        &self.schema,
+                    ),
+                };
+                next
+            } else {
+                DerivedStateCache::initialize(
+                    candidate_document.clone(),
+                    canonical_json.clone(),
+                    &txn,
+                    &fragment,
+                    &self.schema,
+                    next_revision,
+                    next_state_revision,
+                )
+                .ok_or_else(|| {
+                    super::OperationError::engine_invariant_failed(
+                        request_id,
+                        None,
+                        "remote candidate cannot initialize derived state",
+                    )
+                })?
+            }
+        };
+        let durable_client_ids = {
+            let txn = candidate_doc.transact();
+            txn.state_vector()
+                .iter()
+                .map(|(client, _)| client.get())
+                .collect::<HashSet<_>>()
+        };
+        let accepted_update = {
+            let current_state_vector = self.doc.transact().state_vector();
+            candidate_doc
+                .transact()
+                .encode_state_as_update_v1(&current_state_vector)
+        };
+        preflight_update_v1(&accepted_update, &self.resource_limits)
+            .map_err(|error| history_operation_error(request_id, error))?;
+        let live_update = Update::decode_v1(&accepted_update).map_err(|error| {
+            super::OperationError::engine_invariant_failed(
+                request_id,
+                None,
+                format!("candidate-produced incremental update cannot decode: {error}"),
+            )
+        })?;
+        // Replay retention charges remote work in encoded-byte units: this is
+        // the exact admitted incremental payload, not redundant caller input.
+        let replay_byte_units = u64::try_from(accepted_update.len())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        let origin = self.history.prepare_excluded(
+            request_id,
+            TransactionOrigin::RemoteSync,
+            replay_byte_units,
+            &current_encoded,
+            accepted_update.len(),
+        )?;
+        assert_eq!(
+            admitted_epoch, self.yrs_state_epoch,
+            "remote update engine state changed during candidate admission"
+        );
+        {
+            let mut txn = self.doc.transact_mut_with(origin);
+            txn.apply_update(live_update)
+                .expect("candidate-proved remote update must apply to identical live state");
+        }
+        self.history.finish_excluded(accepted_update);
+        self.quarantined_remote_update = None;
+        self.derived_state = Some(next_state);
+        self.durable_client_ids = durable_client_ids;
+        self.revision = next_revision;
+        self.state_revision = next_state_revision;
+        self.yrs_state_epoch = next_epoch;
+        self.last_committed_origin = Some(TransactionOrigin::RemoteSync);
+        Ok(EngineCommit {
+            changed: true,
+            revision: self.revision,
+        })
     }
 
     fn apply_history_pop(
@@ -1579,6 +1939,7 @@ impl YrsDocumentEngine {
 
         let current_state = encode_state_bounded(&self.doc, &self.resource_limits)?;
         if self.is_ready() && current_state == snapshot.encoded_state {
+            self.quarantined_remote_update = None;
             self.reset_history_binding();
             return Ok(EngineCommit {
                 changed: false,
@@ -1617,6 +1978,7 @@ impl YrsDocumentEngine {
                 .expect("validated snapshot candidate retains the history fragment")
         };
         self.history.rebind(&self.doc, &history_fragment);
+        self.quarantined_remote_update = None;
         debug_assert_eq!(
             next_derived_state
                 .as_ref()
@@ -1655,6 +2017,13 @@ impl YrsDocumentEngine {
                 .map_err(|error| {
                     snapshot_parse_error("COLLABORATION_DECODE_FAILED", error, "encodedState")
                 })?;
+            if candidate_doc.transact().has_missing_updates() {
+                return Err(snapshot_error(
+                    "COLLABORATION_DECODE_FAILED",
+                    "encoded snapshot contains unresolved Update-v1 dependencies",
+                    "encodedState",
+                ));
+            }
             (candidate_doc, durable_client_ids)
         };
 
@@ -1774,6 +2143,7 @@ impl YrsDocumentEngine {
             .map_err(|error| YrsEngineError::parse("DOCUMENT_INVALID", error))?;
         if let Some(state) = &self.derived_state {
             if state.canonical_json == value {
+                self.quarantined_remote_update = None;
                 self.reset_history_binding();
                 return Ok(EngineCommit {
                     changed: false,
@@ -1882,6 +2252,7 @@ impl YrsDocumentEngine {
         };
         let unchanged = self.document() == Some(candidate_document);
         if unchanged {
+            self.quarantined_remote_update = None;
             self.reset_history_binding();
             return Ok(EngineCommit {
                 changed: false,
@@ -1905,6 +2276,7 @@ impl YrsDocumentEngine {
                 .expect("validated import candidate retains the history fragment")
         };
         self.history.rebind(&self.doc, &history_fragment);
+        self.quarantined_remote_update = None;
         debug_assert_eq!(
             next_derived_state
                 .as_ref()
@@ -2139,6 +2511,101 @@ fn history_operation_error(request_id: u64, error: YrsEngineError) -> super::Ope
         )
     } else {
         super::OperationError::engine_invariant_failed(request_id, None, error.message)
+    }
+}
+
+fn remote_ingress_error(request_id: u64, error: YrsEngineError) -> super::OperationError {
+    if let (Some(limit), Some(actual)) = (error.limit, error.actual) {
+        let field = if error.code == "INPUT_LIMIT_EXCEEDED" {
+            "maxEncodedStateBytes"
+        } else {
+            "encodedState"
+        };
+        let mut mapped = super::OperationError::document_limit_exceeded(
+            request_id,
+            None,
+            field,
+            u64::try_from(limit).unwrap_or(u64::MAX),
+            u64::try_from(actual).unwrap_or(u64::MAX),
+        );
+        merge_operation_details(&mut mapped, error.details);
+        mapped
+    } else {
+        super::OperationError::document_invalid(request_id, None, "update", error.message)
+    }
+}
+
+fn remote_engine_error(request_id: u64, error: YrsEngineError) -> super::OperationError {
+    if let (Some(limit), Some(actual)) = (error.limit, error.actual) {
+        let mut mapped = super::OperationError::document_limit_exceeded(
+            request_id,
+            None,
+            "update",
+            u64::try_from(limit).unwrap_or(u64::MAX),
+            u64::try_from(actual).unwrap_or(u64::MAX),
+        );
+        merge_operation_details(&mut mapped, error.details);
+        mapped
+    } else {
+        super::OperationError::document_invalid(
+            request_id,
+            None,
+            "update",
+            format!("remote document cannot be decoded: {}", error.message),
+        )
+    }
+}
+
+fn remote_json_error(request_id: u64, error: JsonParseError) -> super::OperationError {
+    match error {
+        JsonParseError::ResourceLimit { limit, actual } => {
+            super::OperationError::document_limit_exceeded(
+                request_id,
+                None,
+                "update",
+                u64::try_from(limit).unwrap_or(u64::MAX),
+                u64::try_from(actual).unwrap_or(u64::MAX),
+            )
+        }
+        error => {
+            super::OperationError::document_invalid(request_id, None, "update", error.to_string())
+        }
+    }
+}
+
+fn remote_validation_error(
+    request_id: u64,
+    error: crate::boundary::BoundaryError,
+) -> super::OperationError {
+    if error.code() == "DOCUMENT_LIMIT_EXCEEDED" {
+        let mut mapped = super::OperationError::document_limit_exceeded(
+            request_id,
+            None,
+            "update",
+            u64::try_from(error.limit.unwrap_or(0)).unwrap_or(u64::MAX),
+            u64::try_from(error.actual.unwrap_or(0)).unwrap_or(u64::MAX),
+        );
+        merge_operation_details(&mut mapped, error.details);
+        mapped
+    } else {
+        super::OperationError::document_invalid(request_id, None, "update", error.to_string())
+    }
+}
+
+fn merge_operation_details(mapped: &mut super::OperationError, source: Option<serde_json::Value>) {
+    let Some(serde_json::Value::Object(source)) = source else {
+        return;
+    };
+    let target = mapped
+        .details
+        .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let serde_json::Value::Object(target) = target else {
+        return;
+    };
+    for (key, value) in source {
+        if key != "field" {
+            target.insert(key, value);
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 //! Serialization-ready editor commands and pure typed-transaction planning.
 
 mod format;
+mod structure;
 mod text;
 
 use std::collections::HashMap;
@@ -10,8 +11,7 @@ use crate::position::PositionMap;
 use crate::schema::Schema;
 
 use super::{
-    CommandPlan::NotApplicable, OperationResult, ResolvedSelection, RevisionedPosition,
-    RevisionedRange, TypedTransaction,
+    OperationResult, ResolvedSelection, RevisionedPosition, RevisionedRange, TypedTransaction,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,13 +109,13 @@ pub(crate) fn plan(
         | TypedCommand::ToggleHeading { .. }
         | TypedCommand::ToggleCodeBlock
         | TypedCommand::ToggleBlockquote) => format::plan(context, command),
-        TypedCommand::ApplyListType { .. }
+        command @ (TypedCommand::ApplyListType { .. }
         | TypedCommand::WrapInList { .. }
         | TypedCommand::UnwrapFromList
         | TypedCommand::IndentListItem
         | TypedCommand::OutdentListItem
         | TypedCommand::ToggleTaskItemChecked
         | TypedCommand::InsertNode { .. }
-        | TypedCommand::ResizeImage { .. } => Ok(NotApplicable),
+        | TypedCommand::ResizeImage { .. }) => structure::plan(context, command),
     }
 }

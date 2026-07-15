@@ -382,25 +382,21 @@ impl Editor {
         to: u32,
         list_type: &str,
     ) -> Result<EditorUpdate, EditorError> {
-        let item_type = self
-            .schema
-            .list_item_type_for(list_type)
-            .unwrap_or_else(|| "listItem".to_string());
-
-        let mut tx = Transaction::new(Source::Input);
-        tx.add_step(Step::WrapInList {
-            from,
-            to,
-            list_type: list_type.to_string(),
-            item_type,
-            attrs: HashMap::new(),
-            item_attrs: HashMap::new(),
-        });
-        match self.apply_transaction(tx) {
-            Ok(update) => Ok(update),
-            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
-            Err(e) => Err(e),
-        }
+        let Some(item_type) = self.schema.list_item_type_for(list_type) else {
+            return Ok(self.build_update_from_current());
+        };
+        let selection = Selection::text(from, to);
+        let Some(plan) = crate::command_planner::plan_wrap_in_list(
+            self.backend.document(),
+            &self.schema,
+            &selection,
+            list_type,
+            &item_type,
+            &self.resource_limits,
+        ) else {
+            return Ok(self.build_update_from_current());
+        };
+        self.apply_semantic_command_plan(plan)
     }
 
     /// Apply a list type to the current selection.
@@ -409,36 +405,16 @@ impl Editor {
     /// converts the containing list node in-place so the whole list changes
     /// type atomically.
     pub fn apply_list_type(&mut self, list_type: &str) -> Result<EditorUpdate, EditorError> {
-        let doc = self.backend.document();
-        let pos = self.selection.from(doc);
-
-        if let Some((list_start, list_node)) = self.containing_list_node_at(pos) {
-            if list_node.node_type() != list_type {
-                let replacement = Node::element(
-                    list_type.to_string(),
-                    list_attrs_for_type(list_type, list_node.attrs()),
-                    list_node.content().cloned().unwrap_or_else(Fragment::empty),
-                );
-                let mut tx = Transaction::new(Source::Format);
-                tx.add_step(Step::ReplaceRange {
-                    from: list_start,
-                    to: list_start + list_node.node_size(),
-                    content: Fragment::from(vec![replacement]),
-                });
-                return match self.apply_transaction(tx) {
-                    Ok(update) => Ok(update),
-                    Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
-                    Err(e) => Err(e),
-                };
-            }
-        }
-
-        let from = self.selection.from(doc);
-        let to = self.selection.to(doc);
-        if let Some(update) = self.wrap_selected_blocks_in_list(from, to, list_type)? {
-            return Ok(update);
-        }
-        self.wrap_in_list(from, to, list_type)
+        let Some(plan) = crate::command_planner::plan_apply_list_type(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            list_type,
+            &self.resource_limits,
+        ) else {
+            return Ok(self.build_update_from_current());
+        };
+        self.apply_semantic_command_plan(plan)
     }
 
     /// Toggle a blockquote around the current block selection.
@@ -597,32 +573,46 @@ impl Editor {
 
     /// Unwrap a list item at the given position.
     pub fn unwrap_from_list(&mut self, pos: u32) -> Result<EditorUpdate, EditorError> {
-        let mut tx = Transaction::new(Source::Input);
-        tx.add_step(Step::UnwrapFromList { pos });
-        match self.apply_transaction(tx) {
-            Ok(update) => Ok(update),
-            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
-            Err(e) => Err(e),
-        }
+        let selection = if pos == self.selection.from(self.backend.document()) {
+            self.selection.clone()
+        } else {
+            Selection::cursor(pos)
+        };
+        let Some(plan) = crate::command_planner::plan_unwrap_from_list(
+            self.backend.document(),
+            &self.schema,
+            &selection,
+            &self.resource_limits,
+        ) else {
+            return Ok(self.build_update_from_current());
+        };
+        self.apply_semantic_command_plan(plan)
     }
 
     /// Increase the nesting level of the current list item.
     pub fn indent_list_item(&mut self) -> Result<EditorUpdate, EditorError> {
-        let doc = self.backend.document();
-        let pos = self.selection.from(doc);
-        let mut tx = Transaction::new(Source::Input);
-        tx.add_step(Step::IndentListItem { pos });
-        self.apply_transaction(tx)
+        let Some(plan) = crate::command_planner::plan_indent_list_item(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            &self.resource_limits,
+        ) else {
+            return Ok(self.build_update_from_current());
+        };
+        self.apply_semantic_command_plan(plan)
     }
 
     /// Decrease the nesting level of the current list item.
     pub fn outdent_list_item(&mut self) -> Result<EditorUpdate, EditorError> {
-        let doc = self.backend.document();
-        let pos = self.selection.from(doc);
-        let selection_remap = self.selection_remap_for_outdent(pos);
-        let mut tx = Transaction::new(Source::Input);
-        tx.add_step(Step::OutdentListItem { pos });
-        self.apply_transaction_with_selection_remap(tx, selection_remap)
+        let Some(plan) = crate::command_planner::plan_outdent_list_item(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            &self.resource_limits,
+        ) else {
+            return Ok(self.build_update_from_current());
+        };
+        self.apply_semantic_command_plan(plan)
     }
 
     /// Insert a node at a position.
@@ -674,15 +664,16 @@ impl Editor {
         &mut self,
         node_type: &str,
     ) -> Result<EditorUpdate, EditorError> {
-        let doc = self.backend.document();
-        let from = self.selection.from(doc);
-        let to = self.selection.to(doc);
-
-        if self.is_inline_insertable_node(node_type) {
-            return self.replace_selection_with_inline_node(from, to, node_type);
-        }
-
-        self.insert_node(from, node_type)
+        let Some(plan) = crate::command_planner::plan_insert_node(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            node_type,
+            &self.resource_limits,
+        ) else {
+            return Ok(self.build_update_from_current());
+        };
+        self.apply_semantic_command_plan(plan)
     }
 
     pub fn resize_image_at_doc_pos(
@@ -691,33 +682,19 @@ impl Editor {
         width: u32,
         height: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        if width == 0 || height == 0 {
-            return Ok(self.build_update_from_current());
-        }
-
-        let Some((image_pos, mut attrs)) = self.image_node_at_doc_pos(doc_pos) else {
+        let Some(plan) = crate::command_planner::plan_resize_image(
+            self.backend.document(),
+            self.backend.position_map(),
+            &self.schema,
+            &self.selection,
+            doc_pos,
+            width,
+            height,
+            &self.resource_limits,
+        ) else {
             return Ok(self.build_update_from_current());
         };
-
-        let width_value = serde_json::Value::Number(serde_json::Number::from(width));
-        let height_value = serde_json::Value::Number(serde_json::Number::from(height));
-        if attrs.get("width") == Some(&width_value) && attrs.get("height") == Some(&height_value) {
-            return Ok(self.build_update_from_current());
-        }
-
-        attrs.insert("width".to_string(), width_value);
-        attrs.insert("height".to_string(), height_value);
-
-        let mut tx = Transaction::new(Source::Input);
-        tx.add_step(Step::UpdateNodeAttrs {
-            pos: image_pos,
-            attrs,
-        });
-        self.apply_transaction_with_selection_adjustments(
-            tx,
-            None,
-            Some(Selection::node(image_pos)),
-        )
+        self.apply_semantic_command_plan(plan)
     }
 
     /// Insert HTML content at the current selection position.
@@ -1026,11 +1003,15 @@ impl Editor {
 
     /// Toggle the checked state of the current task item.
     pub fn toggle_task_item_checked(&mut self) -> Result<EditorUpdate, EditorError> {
-        let pos = self.selection.from(self.backend.document());
-        let Some(tx) = self.task_item_toggle_plan(pos)? else {
+        let Some(plan) = crate::command_planner::plan_toggle_task_item_checked(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            &self.resource_limits,
+        ) else {
             return Ok(self.build_update_from_current());
         };
-        self.apply_transaction(tx)
+        self.apply_semantic_command_plan(plan)
     }
 
     /// Replace a scalar range with text in a single transaction.
@@ -1408,16 +1389,16 @@ impl Editor {
 
         // Map the selection through the step map.
         let new_selection = self.selection.map(&step_map);
-        let pos_map_temp = self.backend.position_map();
+        let preview_position_map = PositionMap::build(&preview_doc, &self.schema);
         let selection_after = selection_override
             .clone()
-            .map(|selection| selection.normalized(&preview_doc, pos_map_temp))
+            .map(|selection| selection.normalized(&preview_doc, &preview_position_map))
             .or_else(|| {
                 selection_remap
                     .as_ref()
                     .and_then(|remap| remap.resolve(&preview_doc))
             })
-            .unwrap_or_else(|| new_selection.normalized(&doc_before, pos_map_temp));
+            .unwrap_or_else(|| new_selection.normalized(&preview_doc, &preview_position_map));
 
         // Apply to backend (mutates document, position map, history).
         let state = self.backend.apply_transaction(

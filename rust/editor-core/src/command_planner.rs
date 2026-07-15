@@ -18,6 +18,8 @@ pub(crate) use format::{
     plan_toggle_heading, plan_toggle_mark, plan_unset_mark, CommandReplacement, MarkCommandPlan,
 };
 pub(crate) use structure::{
+    plan_apply_list_type, plan_indent_list_item, plan_insert_node, plan_outdent_list_item,
+    plan_resize_image, plan_toggle_task_item_checked, plan_unwrap_from_list, plan_wrap_in_list,
     prove_structural_diff, simulate_plan, structural_diff, structural_diff_bounded,
 };
 pub(crate) use text::{
@@ -70,6 +72,25 @@ pub(crate) enum SemanticOperation {
     },
     OutdentListItem {
         pos: u32,
+    },
+    WrapInList {
+        from: u32,
+        to: u32,
+        list_type: String,
+        item_type: String,
+        attrs: HashMap<String, serde_json::Value>,
+        item_attrs: HashMap<String, serde_json::Value>,
+    },
+    IndentListItem {
+        pos: u32,
+    },
+    InsertNode {
+        pos: u32,
+        node: Node,
+    },
+    UpdateNodeAttrs {
+        pos: u32,
+        attrs: HashMap<String, serde_json::Value>,
     },
 }
 
@@ -124,6 +145,30 @@ impl SemanticOperation {
             Self::JoinBlocks { pos } => Step::JoinBlocks { pos: *pos },
             Self::UnwrapFromList { pos } => Step::UnwrapFromList { pos: *pos },
             Self::OutdentListItem { pos } => Step::OutdentListItem { pos: *pos },
+            Self::WrapInList {
+                from,
+                to,
+                list_type,
+                item_type,
+                attrs,
+                item_attrs,
+            } => Step::WrapInList {
+                from: *from,
+                to: *to,
+                list_type: list_type.clone(),
+                item_type: item_type.clone(),
+                attrs: attrs.clone(),
+                item_attrs: item_attrs.clone(),
+            },
+            Self::IndentListItem { pos } => Step::IndentListItem { pos: *pos },
+            Self::InsertNode { pos, node } => Step::InsertNode {
+                pos: *pos,
+                node: node.clone(),
+            },
+            Self::UpdateNodeAttrs { pos, attrs } => Step::UpdateNodeAttrs {
+                pos: *pos,
+                attrs: attrs.clone(),
+            },
         }
     }
 }

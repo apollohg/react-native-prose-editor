@@ -257,10 +257,25 @@ fn direct_transaction(
     }
 
     let mut alternatives = Vec::new();
+    let structural_selection_change = plan.selection_after.as_ref().unwrap_or(simulated_selection)
+        != selection
+        && plan.operations.iter().any(|operation| {
+            matches!(
+                operation,
+                crate::command_planner::SemanticOperation::ReplaceRange { .. }
+                    | crate::command_planner::SemanticOperation::SplitBlock { .. }
+                    | crate::command_planner::SemanticOperation::JoinBlocks { .. }
+                    | crate::command_planner::SemanticOperation::UnwrapFromList { .. }
+                    | crate::command_planner::SemanticOperation::OutdentListItem { .. }
+                    | crate::command_planner::SemanticOperation::WrapInList { .. }
+                    | crate::command_planner::SemanticOperation::IndentListItem { .. }
+                    | crate::command_planner::SemanticOperation::InsertNode { .. }
+            )
+        });
     if !matches!(preferred, SelectionIntent::UseOperationResult) {
         alternatives.push(SelectionIntent::UseOperationResult);
     }
-    if !matches!(preferred, SelectionIntent::Preserve) {
+    if !matches!(preferred, SelectionIntent::Preserve) && !structural_selection_change {
         alternatives.push(SelectionIntent::Preserve);
     }
     if let Some(explicit) = direct_selection_input(context, simulated_selection) {
@@ -382,6 +397,38 @@ fn direct_typed_operation(
         }
         crate::command_planner::SemanticOperation::OutdentListItem { pos } => {
             TypedOperation::OutdentListItem { at: encoded(*pos)? }
+        }
+        crate::command_planner::SemanticOperation::WrapInList {
+            from,
+            to,
+            list_type,
+            item_type,
+            attrs,
+            item_attrs,
+        } => TypedOperation::WrapInList {
+            range: RevisionedRange {
+                from: encoded(*from)?,
+                to: encoded(*to)?,
+            },
+            list_type: list_type.clone(),
+            item_type: item_type.clone(),
+            attrs: attrs.clone(),
+            item_attrs: item_attrs.clone(),
+        },
+        crate::command_planner::SemanticOperation::IndentListItem { pos } => {
+            TypedOperation::IndentListItem { at: encoded(*pos)? }
+        }
+        crate::command_planner::SemanticOperation::InsertNode { pos, node } => {
+            TypedOperation::InsertNode {
+                at: encoded(*pos)?,
+                node: node.clone(),
+            }
+        }
+        crate::command_planner::SemanticOperation::UpdateNodeAttrs { pos, attrs } => {
+            TypedOperation::UpdateNodeAttrs {
+                at: encoded(*pos)?,
+                attrs: attrs.clone(),
+            }
         }
     })
 }
