@@ -34,6 +34,25 @@ pub struct RevisionedRange {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedPoint {
+    pub document: u32,
+    pub scalar: u32,
+    pub utf16: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedSelection {
+    Text {
+        anchor: ResolvedPoint,
+        head: ResolvedPoint,
+    },
+    Node {
+        at: ResolvedPoint,
+    },
+    All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryPolicy {
     Auto,
     Boundary,

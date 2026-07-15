@@ -303,23 +303,34 @@ fn doc_pos_to_sticky_index_in_sequence<'a, T: ReadTxn>(
 ) -> Option<StickyIndex> {
     let mut branch_index = 0u32;
     let mut consumed_pm = 0u32;
+    let mut children = children.peekable();
 
-    for child in children {
+    while let Some(child) = children.next() {
         match &child {
             XmlOut::Text(text) => {
                 let text_value = text.get_string(txn);
                 let text_scalar_len = scalar_len(&text_value);
+                let mut retry_adjacent_text = false;
                 if doc_pos <= consumed_pm + text_scalar_len {
                     let utf16_offset = scalar_offset_to_utf16(&text_value, doc_pos - consumed_pm)?;
-                    return StickyIndex::at(
+                    if let Some(sticky) = StickyIndex::at(
                         txn,
                         BranchPtr::from(<XmlTextRef as AsRef<Branch>>::as_ref(text)),
                         utf16_offset,
                         assoc,
-                    );
+                    ) {
+                        return Some(sticky);
+                    }
+                    if doc_pos < consumed_pm + text_scalar_len {
+                        return None;
+                    }
+                    retry_adjacent_text = true;
                 }
                 branch_index += 1;
                 consumed_pm += text_scalar_len;
+                if retry_adjacent_text && !matches!(children.peek(), Some(XmlOut::Text(_))) {
+                    return None;
+                }
             }
             XmlOut::Element(element) => {
                 let child_size = xml_out_pm_size(txn, &child, schema);

@@ -1,20 +1,30 @@
 use serde_json::json;
 use std::collections::HashSet;
+use yrs::types::xml::XmlFragmentRef;
 use yrs::updates::decoder::Decode;
 use yrs::Update;
 use yrs::{Doc, OffsetKind, Options, ReadTxn, StateVector, Transact, WriteTxn};
 
 use crate::boundary::{BoundedInput, InputKind, ResourceLimits};
 use crate::model::Document;
+use crate::position::PositionMap;
 use crate::schema::{schema_fingerprint, NodeRole, Schema};
+use crate::selection::Selection;
 use crate::serialize::{
     from_html_with_limits, from_prosemirror_json_with_limits, rehydrate_reserved_html_opaque,
     to_html, to_prosemirror_json, FromHtmlOptions, JsonParseError, ParseError, UnknownTypeMode,
 };
 use crate::transform::{canonicalize_yrs_document, validate_canonical_marks, DocumentValidator};
 
-use super::compiler::{compile_transaction_with_yrs, CompilationContext, CompiledTransaction};
-use super::mutation::{execute_mutation_plan, preflight_mutation_plan};
+use super::compiler::{
+    compile_transaction_with_yrs, map_position, selectable_void_at, CompilationContext,
+    CompiledTransaction,
+};
+use super::compiler::{RelativeSelectionPlan, SelectionPlan};
+use super::derived_state::{
+    exact_point_is_representable, operation_result_to_relative, DerivedStateCache,
+};
+use super::mutation::{execute_mutation_plan, preflight_mutation_plan, YrsMutationPlan};
 use super::update_preflight::preflight_update_v1;
 use super::{
     DocumentScope, DocumentSnapshot, EditingLimits, TransactionOrigin, YrsDocumentCodec,
@@ -42,6 +52,66 @@ pub struct YrsEngineConfig {
 pub struct EngineCommit {
     pub changed: bool,
     pub revision: u64,
+}
+
+fn selection_requires_fallback_proof<T: ReadTxn>(
+    plan: &YrsMutationPlan,
+    txn: &T,
+    fragment: &XmlFragmentRef,
+    selection: &super::RelativeSelection,
+) -> bool {
+    match selection {
+        super::RelativeSelection::Text { anchor, head } => {
+            plan.removes_sticky_branch(txn, fragment, &anchor.sticky)
+                || plan.removes_sticky_branch(txn, fragment, &head.sticky)
+        }
+        super::RelativeSelection::Node { point } => {
+            plan.removes_sticky_branch(txn, fragment, &point.sticky)
+        }
+        super::RelativeSelection::All => false,
+    }
+}
+
+struct FallbackProofContext<'a, Current, Proof> {
+    plan: &'a YrsMutationPlan,
+    current_txn: &'a Current,
+    current_fragment: &'a XmlFragmentRef,
+    proof_txn: &'a Proof,
+    proof_fragment: &'a XmlFragmentRef,
+    schema: &'a Schema,
+}
+
+fn required_fallbacks_are_representable<Current: ReadTxn, Proof: ReadTxn>(
+    context: FallbackProofContext<'_, Current, Proof>,
+    selection: &Selection,
+    relative: &super::RelativeSelection,
+) -> bool {
+    let FallbackProofContext {
+        plan,
+        current_txn,
+        current_fragment,
+        proof_txn,
+        proof_fragment,
+        schema,
+    } = context;
+    let point_is_valid = |position, point: &super::RelativePoint| {
+        !plan.removes_sticky_branch(current_txn, current_fragment, &point.sticky)
+            || exact_point_is_representable(proof_txn, proof_fragment, position, point, schema)
+    };
+    match (selection, relative) {
+        (
+            Selection::Text { anchor, head },
+            super::RelativeSelection::Text {
+                anchor: relative_anchor,
+                head: relative_head,
+            },
+        ) => point_is_valid(*anchor, relative_anchor) && point_is_valid(*head, relative_head),
+        (Selection::Node { pos }, super::RelativeSelection::Node { point }) => {
+            point_is_valid(*pos, point)
+        }
+        (Selection::All, super::RelativeSelection::All) => true,
+        _ => false,
+    }
 }
 
 enum EngineDocumentState {
@@ -109,7 +179,7 @@ pub struct YrsDocumentEngine {
     max_length: Option<u32>,
     scope: Option<DocumentScope>,
     schema_fingerprint: String,
-    state: EngineDocumentState,
+    derived_state: Option<DerivedStateCache>,
     revision: u64,
     state_revision: u64,
     yrs_state_epoch: u64,
@@ -140,6 +210,8 @@ impl YrsDocumentEngine {
                 build_await_remote_candidate(&fragment_name, &resource_limits)?
             }
         };
+        let derived_state =
+            build_derived_state_for_candidate(&candidate, &schema, &fragment_name, 0, 0)?;
 
         Ok(Self {
             doc: candidate.doc,
@@ -150,7 +222,7 @@ impl YrsDocumentEngine {
             max_length,
             scope,
             schema_fingerprint,
-            state: candidate.state,
+            derived_state,
             revision: 0,
             state_revision: 0,
             yrs_state_epoch: 0,
@@ -160,21 +232,20 @@ impl YrsDocumentEngine {
     }
 
     pub fn is_ready(&self) -> bool {
-        matches!(self.state, EngineDocumentState::Ready { .. })
+        self.derived_state.is_some()
     }
 
     pub fn document(&self) -> Option<&Document> {
-        match &self.state {
-            EngineDocumentState::AwaitingRemote => None,
-            EngineDocumentState::Ready { document, .. } => Some(document),
-        }
+        self.debug_assert_derived_revision_keys();
+        let state = self.derived_state.as_ref()?;
+        Some(&state.document)
     }
 
     pub fn document_json(&self) -> Option<serde_json::Value> {
-        match &self.state {
-            EngineDocumentState::AwaitingRemote => None,
-            EngineDocumentState::Ready { canonical_json, .. } => Some(canonical_json.clone()),
-        }
+        self.debug_assert_derived_revision_keys();
+        self.derived_state
+            .as_ref()
+            .map(|state| state.canonical_json.clone())
     }
 
     pub fn document_html(&self) -> Option<String> {
@@ -187,11 +258,32 @@ impl YrsDocumentEngine {
     }
 
     pub fn revision(&self) -> u64 {
+        self.debug_assert_derived_revision_keys();
         self.revision
     }
 
     pub fn state_revision(&self) -> u64 {
+        self.debug_assert_derived_revision_keys();
         self.state_revision
+    }
+
+    pub fn position_map(&self) -> Option<&PositionMap> {
+        self.debug_assert_derived_revision_keys();
+        self.derived_state.as_ref().map(|state| &state.position_map)
+    }
+
+    pub fn relative_selection(&self) -> Option<&super::RelativeSelection> {
+        self.debug_assert_derived_revision_keys();
+        self.derived_state
+            .as_ref()
+            .map(|state| &state.relative_selection)
+    }
+
+    pub fn resolved_selection(&self) -> Option<&super::ResolvedSelection> {
+        self.debug_assert_derived_revision_keys();
+        self.derived_state
+            .as_ref()
+            .map(|state| &state.resolved_selection)
     }
 
     pub fn client_id(&self) -> u64 {
@@ -226,6 +318,13 @@ impl YrsDocumentEngine {
         self.max_length
     }
 
+    fn debug_assert_derived_revision_keys(&self) {
+        if let Some(state) = &self.derived_state {
+            debug_assert_eq!(state.document_revision, self.revision);
+            debug_assert_eq!(state.state_revision, self.state_revision);
+        }
+    }
+
     #[allow(dead_code)] // Task 7 exposes the internal compiler through atomic application.
     pub(crate) fn compile_typed_transaction(
         &self,
@@ -244,10 +343,15 @@ impl YrsDocumentEngine {
                     "ready Yrs document fragment is missing",
                 )
             })?;
+        let current_selection = self
+            .derived_state
+            .as_ref()
+            .map(DerivedStateCache::legacy_selection);
+        let current_relative_selection = self.relative_selection().cloned();
         let mut compiled = compile_transaction_with_yrs(
             CompilationContext {
                 document,
-                selection: None,
+                selection: current_selection.as_ref(),
                 schema: &self.schema,
                 resource_limits: &self.resource_limits,
                 editing_limits: &self.editing_limits,
@@ -258,6 +362,85 @@ impl YrsDocumentEngine {
             &txn,
             &fragment,
         )?;
+        if let (
+            Some(selection),
+            Some(relative),
+            SelectionPlan::Mapped(_),
+            RelativeSelectionPlan::PreserveWithFallback(fallback),
+        ) = (
+            current_selection.as_ref(),
+            current_relative_selection.as_ref(),
+            &compiled.selection_plan,
+            &mut compiled.relative_selection_plan,
+        ) {
+            *fallback = affinity_aware_mapped_selection(
+                selection,
+                relative,
+                &compiled.composed_map,
+                &compiled.preview,
+                &self.schema,
+            );
+        }
+        if let RelativeSelectionPlan::Precomputed { relative, fallback } =
+            &compiled.relative_selection_plan
+        {
+            if compiled.preview != *document
+                && selection_requires_fallback_proof(
+                    &compiled.mutation_plan,
+                    &txn,
+                    &fragment,
+                    relative,
+                )
+            {
+                let proof_source = ValidatedImportDocument {
+                    document: compiled.preview.clone(),
+                    canonical_json: compiled.canonical_json.clone().ok_or_else(|| {
+                        super::OperationError::engine_invariant_failed(
+                            compiled.request_id,
+                            None,
+                            "changed explicit selection preview has no canonical JSON",
+                        )
+                    })?,
+                };
+                let proof = self
+                    .build_candidate_from_document(proof_source, compiled.origin)
+                    .map_err(|error| {
+                        super::OperationError::engine_invariant_failed(
+                            compiled.request_id,
+                            None,
+                            format!("cannot prove committed selection representation: {error}"),
+                        )
+                    })?;
+                let proof_txn = proof.doc.transact();
+                let proof_fragment = proof_txn
+                    .get_xml_fragment(self.fragment_name.as_str())
+                    .ok_or_else(|| {
+                        super::OperationError::engine_invariant_failed(
+                            compiled.request_id,
+                            None,
+                            "selection proof candidate fragment is missing",
+                        )
+                    })?;
+                if !required_fallbacks_are_representable(
+                    FallbackProofContext {
+                        plan: &compiled.mutation_plan,
+                        current_txn: &txn,
+                        current_fragment: &fragment,
+                        proof_txn: &proof_txn,
+                        proof_fragment: &proof_fragment,
+                        schema: &self.schema,
+                    },
+                    fallback,
+                    relative,
+                ) {
+                    return Err(super::OperationError::selection_position_invalid(
+                        compiled.request_id,
+                        "selection",
+                        "mapped selection cannot preserve the requested Yrs affinity",
+                    ));
+                }
+            }
+        }
         compiled.yrs_state_epoch = self.yrs_state_epoch;
         Ok(compiled)
     }
@@ -295,10 +478,127 @@ impl YrsDocumentEngine {
                 "compiled preview and Yrs mutation plan disagree about document changes",
             ));
         }
+        let relative_plan_is_sealed = matches!(
+            (&compiled.selection_plan, &compiled.relative_selection_plan),
+            (SelectionPlan::Preserve, RelativeSelectionPlan::Preserve)
+                | (
+                    SelectionPlan::Mapped(_),
+                    RelativeSelectionPlan::PreserveWithFallback(_)
+                )
+                | (
+                    SelectionPlan::Explicit(_),
+                    RelativeSelectionPlan::Precomputed { .. }
+                )
+                | (
+                    SelectionPlan::Explicit(_),
+                    RelativeSelectionPlan::OperationResult
+                )
+        );
+        if !relative_plan_is_sealed {
+            return Err(super::OperationError::engine_invariant_failed(
+                compiled.request_id,
+                None,
+                "compiled relative selection plan is not sealed",
+            ));
+        }
         if preview_is_unchanged {
+            let selection = match &compiled.selection_plan {
+                SelectionPlan::Explicit(selection) | SelectionPlan::Mapped(selection) => selection,
+                SelectionPlan::Preserve => {
+                    return Ok(super::TransactionCommit {
+                        request_id: compiled.request_id,
+                        changed: false,
+                        document_revision: self.revision,
+                        state_revision: self.state_revision,
+                        origin: compiled.origin,
+                    });
+                }
+            };
+            let current = self.derived_state.as_ref().ok_or_else(|| {
+                super::OperationError::engine_invariant_failed(
+                    compiled.request_id,
+                    None,
+                    "ready Yrs engine has no derived state",
+                )
+            })?;
+            let planned_relative_selection = match &compiled.relative_selection_plan {
+                RelativeSelectionPlan::Precomputed { relative, .. } => relative.clone(),
+                RelativeSelectionPlan::OperationResult => {
+                    let txn = self.doc.transact();
+                    let fragment = txn
+                        .get_xml_fragment(self.fragment_name.as_str())
+                        .ok_or_else(|| {
+                            super::OperationError::engine_invariant_failed(
+                                compiled.request_id,
+                                None,
+                                "ready Yrs document fragment is missing",
+                            )
+                        })?;
+                    operation_result_to_relative(&txn, &fragment, selection, &self.schema)
+                }
+                RelativeSelectionPlan::Unsealed
+                | RelativeSelectionPlan::Preserve
+                | RelativeSelectionPlan::PreserveWithFallback(_) => {
+                    return Err(super::OperationError::engine_invariant_failed(
+                        compiled.request_id,
+                        None,
+                        "selection-only transaction has no materializable relative selection",
+                    ));
+                }
+            };
+            let next = {
+                let txn = self.doc.transact();
+                let fragment = txn
+                    .get_xml_fragment(self.fragment_name.as_str())
+                    .ok_or_else(|| {
+                        super::OperationError::engine_invariant_failed(
+                            compiled.request_id,
+                            None,
+                            "ready Yrs document fragment is missing",
+                        )
+                    })?;
+                current
+                    .with_relative_selection(
+                        planned_relative_selection,
+                        &txn,
+                        &fragment,
+                        &self.schema,
+                        self.state_revision,
+                    )
+                    .ok_or_else(|| {
+                        super::OperationError::selection_position_invalid(
+                            compiled.request_id,
+                            "selection",
+                            "selection cannot be represented in the Yrs document",
+                        )
+                    })?
+            };
+            if next.relative_selection == current.relative_selection
+                && next.resolved_selection == current.resolved_selection
+                && next.stored_marks == current.stored_marks
+            {
+                return Ok(super::TransactionCommit {
+                    request_id: compiled.request_id,
+                    changed: false,
+                    document_revision: self.revision,
+                    state_revision: self.state_revision,
+                    origin: compiled.origin,
+                });
+            }
+            let next_state_revision = checked_operation_increment(
+                compiled.request_id,
+                self.state_revision,
+                "stateRevision",
+            )?;
+            let mut next = next;
+            next.state_revision = next_state_revision;
+            debug_assert_eq!(next.document_revision, self.revision);
+            self.derived_state = Some(next);
+            self.state_revision = next_state_revision;
+            self.last_committed_origin = Some(compiled.origin);
             return Ok(super::TransactionCommit {
                 request_id: compiled.request_id,
-                changed: false,
+                changed: true,
                 document_revision: self.revision,
                 state_revision: self.state_revision,
                 origin: compiled.origin,
@@ -387,6 +687,11 @@ impl YrsDocumentEngine {
             request_id,
             origin,
             preview,
+            selection_plan,
+            relative_selection_plan,
+            composed_map,
+            position_update_mode,
+            affected_top_level_blocks,
             mutation_plan,
             ..
         } = compiled;
@@ -395,10 +700,68 @@ impl YrsDocumentEngine {
             execute_mutation_plan(mutation_plan, &mut txn);
         }
 
-        self.state = EngineDocumentState::Ready {
-            document: preview,
-            canonical_json,
+        let canonical_json_for_cache = canonical_json.clone();
+        let next_derived_state = {
+            let txn = self.doc.transact();
+            let fragment = txn
+                .get_xml_fragment(self.fragment_name.as_str())
+                .expect("committed Yrs mutation retains the document fragment");
+            let explicit_relative_selection = match &selection_plan {
+                SelectionPlan::Explicit(_)
+                    if matches!(
+                        relative_selection_plan,
+                        RelativeSelectionPlan::Precomputed { .. }
+                    ) =>
+                {
+                    let RelativeSelectionPlan::Precomputed { relative, .. } =
+                        &relative_selection_plan
+                    else {
+                        unreachable!()
+                    };
+                    Some(relative.clone())
+                }
+                SelectionPlan::Explicit(selection) => Some(operation_result_to_relative(
+                    &txn,
+                    &fragment,
+                    selection,
+                    &self.schema,
+                )),
+                SelectionPlan::Mapped(_) => None,
+                SelectionPlan::Preserve => None,
+            };
+            let preserved_fallback = match &relative_selection_plan {
+                RelativeSelectionPlan::PreserveWithFallback(selection) => Some(selection),
+                RelativeSelectionPlan::Precomputed { fallback, .. } => Some(fallback),
+                _ => None,
+            };
+            let strict_fallback_affinity = matches!(
+                relative_selection_plan,
+                RelativeSelectionPlan::Precomputed { .. }
+            );
+            self.derived_state
+                .as_ref()
+                .and_then(|state| {
+                    state.after_document_change(
+                        preview.clone(),
+                        canonical_json_for_cache,
+                        &txn,
+                        &fragment,
+                        &self.schema,
+                        &composed_map,
+                        position_update_mode,
+                        &affected_top_level_blocks,
+                        explicit_relative_selection.as_ref(),
+                        preserved_fallback,
+                        strict_fallback_affinity,
+                        next_document_revision,
+                        next_state_revision,
+                    )
+                })
+                .expect("committed Yrs state must produce derived editor state")
         };
+
+        debug_assert_eq!(next_derived_state.document_revision, next_document_revision);
+        self.derived_state = Some(next_derived_state);
         self.durable_client_ids = next_durable_client_ids;
         self.revision = next_document_revision;
         self.state_revision = next_state_revision;
@@ -490,8 +853,21 @@ impl YrsDocumentEngine {
 
         let (next_revision, next_state_revision, next_yrs_state_epoch) =
             self.next_durable_revisions()?;
+        let next_derived_state = build_derived_state_for_candidate(
+            &candidate,
+            &self.schema,
+            &self.fragment_name,
+            next_revision,
+            next_state_revision,
+        )?;
         self.doc = candidate.doc;
-        self.state = candidate.state;
+        debug_assert_eq!(
+            next_derived_state
+                .as_ref()
+                .map(|state| state.document_revision),
+            Some(next_revision)
+        );
+        self.derived_state = next_derived_state;
         self.durable_client_ids = candidate.durable_client_ids;
         self.revision = next_revision;
         self.state_revision = next_state_revision;
@@ -640,8 +1016,8 @@ impl YrsDocumentEngine {
         let input = BoundedInput::new(input, InputKind::DocumentJson, &self.resource_limits)?;
         let value = serde_json::from_str(input.as_str())
             .map_err(|error| YrsEngineError::parse("DOCUMENT_INVALID", error))?;
-        if let EngineDocumentState::Ready { canonical_json, .. } = &self.state {
-            if canonical_json == &value {
+        if let Some(state) = &self.derived_state {
+            if state.canonical_json == value {
                 return Ok(EngineCommit {
                     changed: false,
                     revision: self.revision,
@@ -747,10 +1123,7 @@ impl YrsDocumentEngine {
                 unreachable!("imports always build ready candidates")
             }
         };
-        let unchanged = match &self.state {
-            EngineDocumentState::Ready { document, .. } => document == candidate_document,
-            EngineDocumentState::AwaitingRemote => false,
-        };
+        let unchanged = self.document() == Some(candidate_document);
         if unchanged {
             return Ok(EngineCommit {
                 changed: false,
@@ -760,8 +1133,21 @@ impl YrsDocumentEngine {
 
         let (next_revision, next_state_revision, next_yrs_state_epoch) =
             self.next_durable_revisions()?;
+        let next_derived_state = build_derived_state_for_candidate(
+            &candidate,
+            &self.schema,
+            &self.fragment_name,
+            next_revision,
+            next_state_revision,
+        )?;
         self.doc = candidate.doc;
-        self.state = candidate.state;
+        debug_assert_eq!(
+            next_derived_state
+                .as_ref()
+                .map(|state| state.document_revision),
+            Some(next_revision)
+        );
+        self.derived_state = next_derived_state;
         self.durable_client_ids = candidate.durable_client_ids;
         self.revision = next_revision;
         self.state_revision = next_state_revision;
@@ -797,6 +1183,44 @@ impl YrsDocumentEngine {
     }
 }
 
+fn affinity_aware_mapped_selection(
+    selection: &crate::selection::Selection,
+    relative: &super::RelativeSelection,
+    map: &crate::transform::StepMap,
+    preview: &Document,
+    schema: &Schema,
+) -> crate::selection::Selection {
+    let mapped = match (selection, relative) {
+        (
+            crate::selection::Selection::Text { anchor, head },
+            super::RelativeSelection::Text {
+                anchor: relative_anchor,
+                head: relative_head,
+            },
+        ) => crate::selection::Selection::text(
+            map_position(map, *anchor, relative_anchor.affinity),
+            map_position(map, *head, relative_head.affinity),
+        ),
+        (crate::selection::Selection::Node { pos }, super::RelativeSelection::Node { point }) => {
+            crate::selection::Selection::node(map_position(map, *pos, point.affinity))
+        }
+        (crate::selection::Selection::All, super::RelativeSelection::All) => {
+            crate::selection::Selection::all()
+        }
+        _ => selection.map(map),
+    };
+    let position_map = PositionMap::build(preview, schema);
+    let normalized = mapped.normalized(preview, &position_map);
+    match normalized {
+        crate::selection::Selection::Node { pos }
+            if !selectable_void_at(preview.root(), pos, 0, schema) =>
+        {
+            crate::selection::Selection::cursor(pos).normalized(preview, &position_map)
+        }
+        selection => selection,
+    }
+}
+
 fn checked_operation_increment(
     request_id: u64,
     value: u64,
@@ -805,6 +1229,45 @@ fn checked_operation_increment(
     value
         .checked_add(1)
         .ok_or_else(|| super::OperationError::revision_overflow(request_id, field))
+}
+
+fn build_derived_state_for_candidate(
+    candidate: &CandidateDocument,
+    schema: &Schema,
+    fragment_name: &str,
+    document_revision: u64,
+    state_revision: u64,
+) -> YrsEngineResult<Option<DerivedStateCache>> {
+    let EngineDocumentState::Ready {
+        document,
+        canonical_json,
+    } = &candidate.state
+    else {
+        return Ok(None);
+    };
+    let txn = candidate.doc.transact();
+    let fragment = txn.get_xml_fragment(fragment_name).ok_or_else(|| {
+        YrsEngineError::new(
+            "CODEC_INVARIANT_FAILED",
+            "ready Yrs document fragment is missing while deriving editor state",
+        )
+    })?;
+    DerivedStateCache::initialize(
+        document.clone(),
+        canonical_json.clone(),
+        &txn,
+        &fragment,
+        schema,
+        document_revision,
+        state_revision,
+    )
+    .map(Some)
+    .ok_or_else(|| {
+        YrsEngineError::new(
+            "CODEC_INVARIANT_FAILED",
+            "ready Yrs document cannot initialize derived editor state",
+        )
+    })
 }
 
 fn snapshot_error(
@@ -1323,6 +1786,7 @@ mod tests {
             })
             .unwrap();
         engine.revision = u64::MAX;
+        engine.derived_state.as_mut().unwrap().document_revision = u64::MAX;
         let before_client = engine.client_id();
         let before_json = engine.document_json();
         let before_state = engine.encoded_state().unwrap();
@@ -1347,6 +1811,7 @@ mod tests {
             let mut engine = transaction_engine();
             if field == "stateRevision" {
                 engine.state_revision = u64::MAX;
+                engine.derived_state.as_mut().unwrap().state_revision = u64::MAX;
             } else {
                 engine.yrs_state_epoch = u64::MAX;
             }
@@ -1363,6 +1828,38 @@ mod tests {
             assert_eq!(error.details, Some(json!({ "field": field })), "{field}");
             assert_eq!(atomic_audit(&engine), before, "{field}");
         }
+    }
+
+    #[test]
+    fn identical_selection_is_no_op_even_when_state_revision_is_max() {
+        let mut engine = transaction_engine();
+        engine.state_revision = u64::MAX;
+        if let Some(state) = &mut engine.derived_state {
+            state.state_revision = u64::MAX;
+        }
+        let before = atomic_audit(&engine);
+        let transaction = TypedTransaction {
+            request_id: 90_001,
+            base_document_revision: engine.revision(),
+            origin: TransactionOrigin::LocalApi,
+            operations: vec![],
+            selection_intent: SelectionIntent::Set(crate::yrs_engine::SelectionInput::Text {
+                anchor: RevisionedPosition {
+                    offset: 0,
+                    kind: EditorOffsetKind::Scalar,
+                    affinity: Affinity::Before,
+                },
+                head: RevisionedPosition {
+                    offset: 0,
+                    kind: EditorOffsetKind::Scalar,
+                    affinity: Affinity::Before,
+                },
+            }),
+            history_policy: HistoryPolicy::Skip,
+        };
+        let commit = engine.apply_typed_transaction(transaction).unwrap();
+        assert!(!commit.changed);
+        assert_eq!(atomic_audit(&engine), before);
     }
 
     #[test]
@@ -1410,8 +1907,14 @@ mod tests {
         for field in ["documentRevision", "stateRevision", "yrsStateEpoch"] {
             let mut engine = transaction_engine();
             match field {
-                "documentRevision" => engine.revision = u64::MAX,
-                "stateRevision" => engine.state_revision = u64::MAX,
+                "documentRevision" => {
+                    engine.revision = u64::MAX;
+                    engine.derived_state.as_mut().unwrap().document_revision = u64::MAX;
+                }
+                "stateRevision" => {
+                    engine.state_revision = u64::MAX;
+                    engine.derived_state.as_mut().unwrap().state_revision = u64::MAX;
+                }
                 "yrsStateEpoch" => engine.yrs_state_epoch = u64::MAX,
                 _ => unreachable!(),
             }

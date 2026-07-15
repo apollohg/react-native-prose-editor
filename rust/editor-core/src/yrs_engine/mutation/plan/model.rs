@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use yrs::any::Any;
-use yrs::branch::{Branch, BranchID};
+use yrs::branch::{Branch, BranchID, BranchPtr};
 use yrs::types::text::Text;
 use yrs::types::xml::{
     Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut, XmlTextRef,
@@ -11,6 +11,7 @@ use yrs::types::xml::XmlTextPrelim;
 use yrs::types::Attrs;
 use yrs::ReadTxn;
 use yrs::Snapshot;
+use yrs::StickyIndex;
 use yrs::TransactionMut;
 
 use super::super::codec::insert_prepared_node;
@@ -137,6 +138,124 @@ impl YrsMutationPlan {
     pub(crate) fn requires_crdt_envelope(&self) -> bool {
         plan_may_delete_live(self)
     }
+
+    /// Returns whether this point is contained by a base-document XML branch
+    /// that the plan removes. Text tombstones stay attached to their live XML
+    /// branch, so they do not need a freshly materialized affinity fallback.
+    pub(crate) fn removes_sticky_branch<T: ReadTxn>(
+        &self,
+        txn: &T,
+        fragment: &XmlFragmentRef,
+        sticky: &StickyIndex,
+    ) -> bool {
+        let Some(offset) = sticky.get_offset(txn) else {
+            return true;
+        };
+        let Some(deleted_roots) = self.deleted_base_branch_roots(txn) else {
+            return true;
+        };
+        if deleted_roots.is_empty() {
+            return false;
+        }
+        fragment.children(txn).any(|child| {
+            branch_is_deleted_or_descendant(
+                txn,
+                child,
+                offset.branch,
+                &deleted_roots,
+                false,
+            )
+        })
+    }
+
+    fn deleted_base_branch_roots<T: ReadTxn>(&self, txn: &T) -> Option<HashSet<BranchID>> {
+        let mut virtual_children = HashMap::<BranchID, Vec<Option<BranchID>>>::new();
+        let mut deleted = HashSet::new();
+        for action in &self.actions {
+            match action {
+                YrsMutationAction::DeleteXmlChildren {
+                    parent,
+                    child_index,
+                    child_count,
+                    ..
+                } => {
+                    let children = virtual_children.entry(parent.id()).or_insert_with(|| {
+                        parent.children(txn).into_iter().map(Some).collect()
+                    });
+                    let start = usize::try_from(*child_index).ok()?;
+                    let count = usize::try_from(*child_count).ok()?;
+                    let end = start.checked_add(count)?;
+                    if end > children.len() || count == 0 {
+                        return None;
+                    }
+                    for branch in children.drain(start..end).flatten() {
+                        deleted.insert(branch);
+                    }
+                }
+                YrsMutationAction::InsertXmlChildren {
+                    parent,
+                    child_index,
+                    nodes,
+                    ..
+                } => {
+                    let children = virtual_children.entry(parent.id()).or_insert_with(|| {
+                        parent.children(txn).into_iter().map(Some).collect()
+                    });
+                    let index = usize::try_from(*child_index).ok()?;
+                    if index > children.len() || nodes.is_empty() {
+                        return None;
+                    }
+                    children.splice(index..index, std::iter::repeat_n(None, nodes.len()));
+                }
+                YrsMutationAction::CreateText {
+                    parent,
+                    child_index,
+                    ..
+                } => {
+                    let parent_id = AsRef::<Branch>::as_ref(parent).id();
+                    let children = virtual_children.entry(parent_id).or_insert_with(|| {
+                        parent.children(txn).map(|child| Some(child.id())).collect()
+                    });
+                    let index = usize::try_from(*child_index).ok()?;
+                    if index > children.len() {
+                        return None;
+                    }
+                    children.insert(index, None);
+                }
+                _ => {}
+            }
+        }
+        Some(deleted)
+    }
+}
+
+fn branch_is_deleted_or_descendant<T: ReadTxn>(
+    txn: &T,
+    node: XmlOut,
+    target: BranchPtr,
+    deleted_roots: &HashSet<BranchID>,
+    ancestor_deleted: bool,
+) -> bool {
+    let (branch, children): (&Branch, Option<Box<dyn Iterator<Item = XmlOut> + '_>>) = match &node {
+        XmlOut::Text(text) => (AsRef::<Branch>::as_ref(text), None),
+        XmlOut::Element(element) => (
+            AsRef::<Branch>::as_ref(element),
+            Some(Box::new(element.children(txn))),
+        ),
+        XmlOut::Fragment(fragment) => (
+            AsRef::<Branch>::as_ref(fragment),
+            Some(Box::new(fragment.children(txn))),
+        ),
+    };
+    let deleted = ancestor_deleted || deleted_roots.contains(&branch.id());
+    if BranchPtr::from(branch) == target {
+        return deleted;
+    }
+    children.is_some_and(|children| {
+        children.into_iter().any(|child| {
+            branch_is_deleted_or_descendant(txn, child, target, deleted_roots, deleted)
+        })
+    })
 }
 
 #[cfg(test)]

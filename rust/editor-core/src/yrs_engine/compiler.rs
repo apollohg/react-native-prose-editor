@@ -1,5 +1,6 @@
 use crate::boundary::{JsonMeterDimension, JsonMeterError, JsonValueMeter, ResourceLimits};
 use crate::model::{Document, Fragment, Mark, Node};
+use crate::position::update::UpdateMode;
 use crate::position::PositionMap;
 use crate::schema::content_rule::WorkBudget;
 use crate::schema::Schema;
@@ -107,6 +108,18 @@ pub(crate) enum SelectionPlan {
     Explicit(Selection),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RelativeSelectionPlan {
+    Unsealed,
+    Preserve,
+    PreserveWithFallback(Selection),
+    Precomputed {
+        relative: super::RelativeSelection,
+        fallback: Selection,
+    },
+    OperationResult,
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct CompiledTransaction {
@@ -118,6 +131,9 @@ pub(crate) struct CompiledTransaction {
     pub canonical_json: Option<serde_json::Value>,
     pub selection_plan: SelectionPlan,
     pub affected_top_level_blocks: Vec<usize>,
+    pub composed_map: StepMap,
+    pub position_update_mode: UpdateMode,
+    pub relative_selection_plan: RelativeSelectionPlan,
     pub mutation_plan: YrsMutationPlan,
     pub encoded_growth_bound: usize,
     pub undo_units_bound: u64,
@@ -130,7 +146,7 @@ pub(super) fn compile_transaction(
     transaction: TypedTransaction,
 ) -> OperationResult<CompiledTransaction> {
     admit_transaction_envelope(context, &transaction)?;
-    compile_transaction_impl(context, transaction, None, None)
+    compile_transaction_impl(context, &transaction, None, None)
 }
 
 pub(super) fn compile_transaction_with_yrs<T: yrs::ReadTxn>(
@@ -251,12 +267,42 @@ pub(super) fn compile_transaction_with_yrs<T: yrs::ReadTxn>(
         }
         Ok(envelope)
     };
-    let compiled = compile_transaction_impl(
+    let mut compiled = compile_transaction_impl(
         context,
-        transaction,
+        &transaction,
         Some(lowering),
         Some(&mut load_crdt_envelope),
     )?;
+    compiled.relative_selection_plan =
+        match (&compiled.selection_plan, &transaction.selection_intent) {
+            (SelectionPlan::Preserve, _) => RelativeSelectionPlan::Preserve,
+            (SelectionPlan::Mapped(selection), _) => {
+                RelativeSelectionPlan::PreserveWithFallback(selection.clone())
+            }
+            (SelectionPlan::Explicit(selection), SelectionIntent::Set(_)) => {
+                RelativeSelectionPlan::Precomputed {
+                    relative: planned_relative_selection(context, &transaction, txn, fragment)?
+                        .ok_or_else(|| {
+                            OperationError::engine_invariant_failed(
+                                request_id,
+                                None,
+                                "explicit Set selection has no relative plan",
+                            )
+                        })?,
+                    fallback: selection.clone(),
+                }
+            }
+            (SelectionPlan::Explicit(_), SelectionIntent::UseOperationResult) => {
+                RelativeSelectionPlan::OperationResult
+            }
+            (SelectionPlan::Explicit(_), SelectionIntent::Preserve) => {
+                return Err(OperationError::engine_invariant_failed(
+                    request_id,
+                    None,
+                    "Preserve selection unexpectedly compiled as explicit",
+                ));
+            }
+        };
     // The server owns this read view through compilation and preflight. The
     // plan's document guard was captured only after the CRDT clock scan and
     // its input-work reservation above admitted full snapshot construction.
@@ -438,7 +484,7 @@ fn document_text_bytes(document: &Document) -> Option<usize> {
 
 fn compile_transaction_impl(
     context: CompilationContext<'_>,
-    transaction: TypedTransaction,
+    transaction: &TypedTransaction,
     mut lowering: Option<MutationCompiler>,
     mut crdt_envelope_loader: Option<&mut dyn FnMut(usize) -> OperationResult<CrdtEnvelope>>,
 ) -> OperationResult<CompiledTransaction> {
@@ -1214,7 +1260,8 @@ fn compile_transaction_impl(
                         )?;
                     }
                 }
-                operation_result = Some(Selection::node(pos));
+                operation_result = selectable_void_at(preview.root(), pos, 0, context.schema)
+                    .then(|| Selection::node(pos));
                 composed_map = composed_map.compose(&step_map);
                 preview = next;
                 if records_history && operation_changed {
@@ -1266,6 +1313,7 @@ fn compile_transaction_impl(
         &preview,
     )?;
     let affected_top_level_blocks = affected_top_level_blocks(context.document, &preview);
+    let position_update_mode = position_update_mode(&transaction.operations);
     if preview == *context.document || transaction.history_policy == HistoryPolicy::Skip {
         history_class = HistoryClass::Skip;
         undo_units_bound = 0;
@@ -1332,6 +1380,9 @@ fn compile_transaction_impl(
         canonical_json,
         selection_plan,
         affected_top_level_blocks,
+        composed_map,
+        position_update_mode,
+        relative_selection_plan: RelativeSelectionPlan::Unsealed,
         mutation_plan,
         encoded_growth_bound,
         undo_units_bound,
@@ -1341,6 +1392,74 @@ fn compile_transaction_impl(
         // the stable read view.
         yrs_state_epoch: 0,
     })
+}
+
+fn planned_relative_selection<T: yrs::ReadTxn>(
+    context: CompilationContext<'_>,
+    transaction: &TypedTransaction,
+    txn: &T,
+    fragment: &yrs::types::xml::XmlFragmentRef,
+) -> OperationResult<Option<super::RelativeSelection>> {
+    let rendered = crate::render::rendered_text(context.document, context.schema);
+    let map = PositionMap::build(context.document, context.schema);
+    let relative_point = |field: &'static str, point: super::RevisionedPosition| {
+        super::revisioned_position_to_relative_point(
+            txn,
+            fragment,
+            point,
+            &rendered,
+            &map,
+            context.document,
+            context.schema,
+        )
+        .ok_or_else(|| {
+            OperationError::selection_position_invalid(
+                transaction.request_id,
+                field,
+                "selection cannot be represented with the requested Yrs affinity",
+            )
+        })
+    };
+    let text = |anchor, head| {
+        Ok(super::RelativeSelection::Text {
+            anchor: relative_point("selection.anchor", anchor)?,
+            head: relative_point("selection.head", head)?,
+        })
+    };
+    let relative = match &transaction.selection_intent {
+        SelectionIntent::Preserve => return Ok(None),
+        SelectionIntent::Set(super::SelectionInput::Text { anchor, head }) => text(*anchor, *head)?,
+        SelectionIntent::Set(super::SelectionInput::Node { at }) => {
+            super::RelativeSelection::Node {
+                point: relative_point("selection.at", *at)?,
+            }
+        }
+        SelectionIntent::Set(super::SelectionInput::All) => super::RelativeSelection::All,
+        SelectionIntent::UseOperationResult => return Ok(None),
+    };
+    Ok(Some(relative))
+}
+
+fn position_update_mode(operations: &[TypedOperation]) -> UpdateMode {
+    if operations.iter().all(|operation| {
+        matches!(
+            operation,
+            TypedOperation::AddMark { .. }
+                | TypedOperation::RemoveMark { .. }
+                | TypedOperation::ReplaceMark { .. }
+        )
+    }) {
+        UpdateMode::MarksOnly
+    } else if operations.iter().all(|operation| {
+        matches!(
+            operation,
+            TypedOperation::InsertText { .. } | TypedOperation::DeleteRange { .. }
+        )
+    }) {
+        UpdateMode::InlineTextOnly
+    } else {
+        UpdateMode::Rebuild
+    }
 }
 
 fn text_boundaries(
@@ -2155,7 +2274,7 @@ fn resolve_range(
     ))
 }
 
-fn map_position(map: &StepMap, mut position: u32, affinity: Affinity) -> u32 {
+pub(crate) fn map_position(map: &StepMap, mut position: u32, affinity: Affinity) -> u32 {
     for &(range_position, deleted, inserted) in map.ranges() {
         if position < range_position {
             continue;
@@ -2736,15 +2855,21 @@ fn selection_plan(
     preview: &Document,
 ) -> OperationResult<SelectionPlan> {
     let preview_map = PositionMap::build(preview, context.schema);
-    let candidate = match intent {
+    let uses_preserved_fallback =
+        matches!(intent, SelectionIntent::UseOperationResult) && operation_result.is_none();
+    let mut candidate = match intent {
         SelectionIntent::Preserve => context.selection.map(|selection| {
             selection
                 .map(composed_map)
                 .normalized(preview, &preview_map)
         }),
-        SelectionIntent::UseOperationResult => {
-            operation_result.map(|selection| selection.normalized(preview, &preview_map))
-        }
+        SelectionIntent::UseOperationResult => operation_result
+            .or_else(|| {
+                context
+                    .selection
+                    .map(|selection| selection.map(composed_map))
+            })
+            .map(|selection| selection.normalized(preview, &preview_map)),
         SelectionIntent::Set(input) => Some(
             match input {
                 super::SelectionInput::Text { anchor, head } => Selection::text(
@@ -2794,14 +2919,96 @@ fn selection_plan(
         ),
     };
 
+    if let Some(Selection::Node { pos }) = candidate.as_ref() {
+        let pos = *pos;
+        if !selectable_void_at(preview.root(), pos, 0, context.schema) {
+            match intent {
+                SelectionIntent::Set(super::SelectionInput::Node { .. }) => {
+                    return Err(OperationError::selection_position_invalid(
+                        request_id,
+                        "selection.at",
+                        "node selection must target a selectable void or atom node",
+                    ));
+                }
+                SelectionIntent::Preserve => {
+                    candidate = Some(Selection::cursor(pos).normalized(preview, &preview_map));
+                }
+                SelectionIntent::UseOperationResult if uses_preserved_fallback => {
+                    candidate = Some(Selection::cursor(pos).normalized(preview, &preview_map));
+                }
+                SelectionIntent::UseOperationResult => {
+                    return Err(OperationError::engine_invariant_failed(
+                        request_id,
+                        None,
+                        "operation result produced a node selection for a non-selectable node",
+                    ));
+                }
+                SelectionIntent::Set(_) => {
+                    return Err(OperationError::engine_invariant_failed(
+                        request_id,
+                        None,
+                        "non-node explicit selection compiled to an invalid node selection",
+                    ));
+                }
+            }
+        }
+    } else if matches!(
+        intent,
+        SelectionIntent::Set(super::SelectionInput::Node { .. })
+    ) {
+        return Err(OperationError::engine_invariant_failed(
+            request_id,
+            None,
+            "node selection did not compile to a node selection",
+        ));
+    }
+
     match (intent, candidate) {
         (_, None) => Ok(SelectionPlan::Preserve),
-        (_, Some(candidate)) if context.selection == Some(&candidate) => {
+        (SelectionIntent::Preserve, Some(_)) if preview == context.document => {
             Ok(SelectionPlan::Preserve)
         }
         (SelectionIntent::Preserve, Some(candidate)) => Ok(SelectionPlan::Mapped(candidate)),
+        (SelectionIntent::UseOperationResult, Some(_))
+            if uses_preserved_fallback && preview == context.document =>
+        {
+            Ok(SelectionPlan::Preserve)
+        }
+        (SelectionIntent::UseOperationResult, Some(candidate)) if uses_preserved_fallback => {
+            Ok(SelectionPlan::Mapped(candidate))
+        }
         (_, Some(candidate)) => Ok(SelectionPlan::Explicit(candidate)),
     }
+}
+
+pub(crate) fn selectable_void_at(
+    node: &Node,
+    target: u32,
+    content_start: u32,
+    schema: &Schema,
+) -> bool {
+    let Some(content) = node.content() else {
+        return false;
+    };
+    let mut offset = content_start;
+    for child in content.iter() {
+        let selectable = child.is_void()
+            || schema
+                .node(child.node_type())
+                .is_some_and(|spec| spec.is_void);
+        if selectable && target == offset {
+            return true;
+        }
+        if child.content().is_some()
+            && target > offset
+            && target < offset.saturating_add(child.node_size())
+            && selectable_void_at(child, target, offset.saturating_add(1), schema)
+        {
+            return true;
+        }
+        offset = offset.saturating_add(child.node_size());
+    }
+    false
 }
 
 fn affected_top_level_blocks(before: &Document, after: &Document) -> Vec<usize> {

@@ -1,6 +1,7 @@
 mod codec;
 #[allow(dead_code)] // Task 7 installs compiled transactions into the live Yrs engine.
 mod compiler;
+mod derived_state;
 mod editing_limits;
 mod engine;
 mod error;
@@ -30,9 +31,9 @@ pub use editing_limits::{
 pub use engine::{EngineCommit, InitializationMode, YrsDocumentEngine, YrsEngineConfig};
 pub use error::{YrsEngineError, YrsEngineResult};
 pub use operation::{
-    Affinity, EditorOffsetKind, HistoryPolicy, OperationError, OperationResult, RevisionedPosition,
-    RevisionedRange, SelectionInput, SelectionIntent, TransactionCommit, TypedOperation,
-    TypedTransaction,
+    Affinity, EditorOffsetKind, HistoryPolicy, OperationError, OperationResult, ResolvedPoint,
+    ResolvedSelection, RevisionedPosition, RevisionedRange, SelectionInput, SelectionIntent,
+    TransactionCommit, TypedOperation, TypedTransaction,
 };
 pub use origin::TransactionOrigin;
 #[cfg(test)]
@@ -44,4 +45,5 @@ pub use position::{
     revisioned_position_to_relative_point, scalar_offset_to_utf16, utf16_offset_to_scalar,
     RelativePoint, RelativeSelection,
 };
+
 pub use snapshot::{DocumentScope, DocumentSnapshot, SNAPSHOT_FORMAT_VERSION};

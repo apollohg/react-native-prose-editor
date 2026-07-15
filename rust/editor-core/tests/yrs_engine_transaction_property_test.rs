@@ -248,6 +248,77 @@ fn legacy_position(document: &Document, schema: &Schema, scalar: u32) -> u32 {
     PositionMap::build(document, schema).scalar_to_doc(scalar, document)
 }
 
+fn assert_installed_position_map_matches_full_build(
+    engine: &YrsDocumentEngine,
+    schema: &Schema,
+    context: &str,
+) {
+    let document = engine.document().unwrap();
+    let installed = engine.position_map().unwrap();
+    let full = PositionMap::build(document, schema);
+
+    assert_eq!(
+        installed.block_count(),
+        full.block_count(),
+        "{context}: block count"
+    );
+    assert_eq!(
+        installed.total_scalars(),
+        full.total_scalars(),
+        "{context}: total scalars"
+    );
+    for index in 0..full.block_count() {
+        let installed_block = installed.block(index).unwrap();
+        let full_block = full.block(index).unwrap();
+        assert_eq!(
+            installed_block.doc_start, full_block.doc_start,
+            "{context}: block {index} doc_start"
+        );
+        assert_eq!(
+            installed_block.doc_end, full_block.doc_end,
+            "{context}: block {index} doc_end"
+        );
+        assert_eq!(
+            installed_block.scalar_start, full_block.scalar_start,
+            "{context}: block {index} scalar_start"
+        );
+        assert_eq!(
+            installed_block.scalar_len, full_block.scalar_len,
+            "{context}: block {index} scalar_len"
+        );
+        assert_eq!(
+            installed_block.scalar_prefix_len, full_block.scalar_prefix_len,
+            "{context}: block {index} scalar_prefix_len"
+        );
+        assert_eq!(
+            installed_block.rendered_break_after, full_block.rendered_break_after,
+            "{context}: block {index} rendered_break_after"
+        );
+        assert_eq!(
+            installed_block.node_path, full_block.node_path,
+            "{context}: block {index} node_path"
+        );
+        assert_eq!(
+            installed_block.is_void_block, full_block.is_void_block,
+            "{context}: block {index} is_void_block"
+        );
+    }
+    for scalar in 0..=full.total_scalars() {
+        assert_eq!(
+            installed.scalar_to_doc(scalar, document),
+            full.scalar_to_doc(scalar, document),
+            "{context}: scalar offset {scalar}"
+        );
+    }
+    for position in 0..=document.content_size() {
+        assert_eq!(
+            installed.doc_to_scalar(position, document),
+            full.doc_to_scalar(position, document),
+            "{context}: document position {position}"
+        );
+    }
+}
+
 fn opaque_inline(salt: u64) -> Node {
     let exact_yjs_integer = salt % 9_007_199_254_740_991;
     let original = serde_json::json!({
@@ -541,6 +612,11 @@ fn run_scenario(spec: &ActionSpec, coverage: &RefCell<Coverage>) {
     let commit = yrs
         .apply_typed_transaction(transaction(&yrs, spec.salt, operation))
         .unwrap_or_else(|error| panic!("Yrs kind {} failed: {error:?}", spec.kind));
+    assert_installed_position_map_matches_full_build(
+        &yrs,
+        &schema,
+        &format!("operation kind {}", spec.kind),
+    );
     assert_eq!(
         commit.changed,
         yrs.document().unwrap()
@@ -718,6 +794,11 @@ fn run_stateful_trace(trace: &[ActionSpec], coverage: &RefCell<Coverage>) {
                 operation,
             ))
             .unwrap_or_else(|error| panic!("Yrs trace step {index} ({spec:?}) failed: {error:?}"));
+        assert_installed_position_map_matches_full_build(
+            &yrs,
+            &schema,
+            &format!("trace step {index} ({spec:?})"),
+        );
         assert_eq!(
             commit.changed, expected_changed,
             "trace step {index}: {spec:?}"
@@ -785,6 +866,7 @@ fn run_custom_root_case(coverage: &RefCell<Coverage>) {
         },
     ))
     .unwrap();
+    assert_installed_position_map_matches_full_build(&yrs, &schema, "custom root insert");
     assert_eq!(yrs.document(), Some(&expected));
     assert_eq!(
         yrs.document_json(),
@@ -876,6 +958,11 @@ fn run_evolving_list_chain(salt: u64, coverage: &RefCell<Coverage>) {
                 operation,
             ))
             .unwrap();
+        assert_installed_position_map_matches_full_build(
+            &yrs,
+            &schema,
+            &format!("evolving list operation {operation_index}"),
+        );
         assert!(commit.changed);
         assert_eq!(yrs.document(), Some(&legacy));
         assert_eq!(
