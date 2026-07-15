@@ -1730,43 +1730,11 @@ impl Editor {
     /// Compute which marks and nodes are active at the current selection.
     fn compute_active_state(&self) -> ActiveState {
         let doc = self.backend.document();
-        let pos = self.selection.from(doc);
-
-        let mut commands = HashMap::new();
-        commands.insert("indentList".to_string(), self.can_indent_list_item(pos));
-        commands.insert("outdentList".to_string(), self.can_outdent_list_item(pos));
-        commands.insert(
-            "toggleBlockquote".to_string(),
-            self.can_toggle_blockquote_at(&self.selection),
-        );
-        for level in 1..=6 {
-            commands.insert(
-                format!("toggleHeading{level}"),
-                self.can_toggle_heading(level),
-            );
-        }
-        commands.insert("toggleCodeBlock".to_string(), self.can_toggle_code_block());
-        commands.insert(
-            "toggleTaskItem".to_string(),
-            self.task_item_toggle_plan(pos)
-                .is_ok_and(|plan| plan.is_some()),
-        );
-
-        // List wrap commands: true if already in a list (toggle/switch) or if
-        // the parent context allows list nodes.
-        let bullet_list = self.command_list_type(false);
-        let ordered_list = self.command_list_type(true);
-        commands.insert(
-            "wrapBulletList".to_string(),
-            bullet_list
-                .as_deref()
-                .is_some_and(|name| self.can_apply_list_type(&self.selection, name)),
-        );
-        commands.insert(
-            "wrapOrderedList".to_string(),
-            ordered_list
-                .as_deref()
-                .is_some_and(|name| self.can_apply_list_type(&self.selection, name)),
+        let commands = crate::editor_state::command_applicability(
+            doc,
+            &self.schema,
+            &self.selection,
+            &self.resource_limits,
         );
 
         crate::editor_state::active_state(
@@ -2411,155 +2379,6 @@ impl Editor {
         // + node_size.
         let text_block_start = abs_pos - 1; // position of the open tag
         text_block_start + node.node_size()
-    }
-
-    fn command_list_type(&self, ordered: bool) -> Option<String> {
-        let name = if ordered { "orderedList" } else { "bulletList" };
-        self.schema.node(name).map(|_| name.to_string())
-    }
-
-    fn can_apply_list_type(&self, selection: &Selection, list_type: &str) -> bool {
-        let doc = self.backend.document();
-        let pos = selection.from(doc);
-        let mut tx = Transaction::new(Source::Format);
-        if let Some((start, list)) = self.containing_list_node_at(pos) {
-            if list.node_type() == list_type {
-                tx.add_step(Step::UnwrapFromList { pos });
-            } else {
-                tx.add_step(Step::ReplaceRange {
-                    from: start,
-                    to: start + list.node_size(),
-                    content: Fragment::from(vec![Node::element(
-                        list_type.to_string(),
-                        list_attrs_for_type(list_type, list.attrs()),
-                        list.content().cloned().unwrap_or_else(Fragment::empty),
-                    )]),
-                });
-            }
-        } else {
-            let Some(item_type) = self.schema.list_item_type_for(list_type) else {
-                return false;
-            };
-            let range = self.selected_block_range(selection.from(doc), selection.to(doc));
-            let in_quote = range
-                .as_ref()
-                .and_then(|range| doc.node_at(&range.parent_path))
-                .and_then(|parent| self.schema.node(parent.node_type()))
-                .is_some_and(|spec| spec.html_tag.as_deref() == Some("blockquote"));
-            if let Some(range) = range.filter(|_| in_quote) {
-                let items = range
-                    .selected_blocks
-                    .into_iter()
-                    .map(|block| {
-                        Node::element(
-                            item_type.clone(),
-                            HashMap::new(),
-                            Fragment::from(vec![block]),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let list =
-                    Node::element(list_type.to_string(), HashMap::new(), Fragment::from(items));
-                tx.add_step(Step::ReplaceRange {
-                    from: range.replace_from,
-                    to: range.replace_to,
-                    content: Fragment::from(vec![list]),
-                });
-            } else {
-                tx.add_step(Step::WrapInList {
-                    from: selection.from(doc),
-                    to: selection.to(doc),
-                    list_type: list_type.to_string(),
-                    item_type,
-                    attrs: HashMap::new(),
-                    item_attrs: HashMap::new(),
-                });
-            }
-        }
-        tx.apply_with_limits(doc, &self.schema, &self.resource_limits)
-            .is_ok()
-    }
-
-    fn can_toggle_blockquote_at(&self, selection: &Selection) -> bool {
-        let doc = self.backend.document();
-        let pos = selection.from(doc);
-        let Some(blockquote_type) = self.blockquote_node_name() else {
-            return false;
-        };
-        if let Some((start, _, quote)) = self.containing_blockquote_node_at(pos) {
-            let Some(content) = quote.content() else {
-                return false;
-            };
-            let mut tx = Transaction::new(Source::Format);
-            tx.add_step(Step::ReplaceRange {
-                from: start,
-                to: start + quote.node_size(),
-                content: Fragment::from(content.iter().cloned().collect::<Vec<_>>()),
-            });
-            return tx
-                .apply_with_limits(doc, &self.schema, &self.resource_limits)
-                .is_ok();
-        }
-
-        let Some(range) = self.selected_block_range(selection.from(doc), selection.to(doc)) else {
-            return false;
-        };
-        let Some(quote_spec) = self.schema.node(&blockquote_type) else {
-            return false;
-        };
-        let selected = range
-            .selected_blocks
-            .iter()
-            .map(Node::node_type)
-            .collect::<Vec<_>>();
-        if !quote_spec.content.matches(&selected, |child, symbol| {
-            self.schema.node_matches_symbol(child, symbol)
-        }) {
-            return false;
-        }
-        let quote = Node::element(
-            blockquote_type,
-            HashMap::new(),
-            Fragment::from(range.selected_blocks.clone()),
-        );
-        let mut tx = Transaction::new(Source::Format);
-        tx.add_step(Step::ReplaceRange {
-            from: range.replace_from,
-            to: range.replace_to,
-            content: Fragment::from(vec![quote]),
-        });
-        tx.apply_with_limits(doc, &self.schema, &self.resource_limits)
-            .is_ok()
-    }
-
-    fn can_toggle_heading(&self, level: u8) -> bool {
-        let Some(target_type) = self.heading_node_name(level) else {
-            return false;
-        };
-        let Some(paragraph_type) = self.paragraph_node_name() else {
-            return false;
-        };
-        let doc = self.backend.document();
-        let from = self.selection.from(doc);
-        let to = self.selection.to(doc);
-        let Some(range) = self.selected_text_block_range(from, to) else {
-            return false;
-        };
-        let replacement_type = if range
-            .selected_blocks
-            .iter()
-            .all(|block| block.node_type() == target_type)
-        {
-            paragraph_type
-        } else {
-            target_type
-        };
-
-        self.can_replace_selected_text_blocks(&range, &replacement_type)
-    }
-
-    fn can_toggle_code_block(&self) -> bool {
-        self.code_block_toggle_plan().is_some()
     }
 
     fn code_block_toggle_plan(&self) -> Option<(BlockSelectionRange, String)> {
@@ -3233,18 +3052,6 @@ impl Editor {
             }
             Selection::All => None,
         }
-    }
-
-    fn can_indent_list_item(&self, pos: u32) -> bool {
-        self.list_item_context_at(pos)
-            .map(|ctx| ctx.list_item_idx > 0)
-            .unwrap_or(false)
-    }
-
-    fn can_outdent_list_item(&self, pos: u32) -> bool {
-        self.list_item_context_at(pos)
-            .map(|ctx| !ctx.list_path.is_empty() && ctx.parent_is_list_item)
-            .unwrap_or(false)
     }
 
     fn selection_remap_for_outdent(&self, pos: u32) -> Option<SelectionPathRemap> {

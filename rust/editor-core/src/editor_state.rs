@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 
 use crate::boundary::ResourceLimits;
-use crate::model::{Document, Mark, Node};
+use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::content_rule::WorkBudget;
 use crate::schema::{NodeRole, Schema};
 use crate::selection::Selection;
+use crate::transform::{Source, Step, Transaction};
 
 /// Which marks and node types are active at the current selection.
 #[derive(Debug, Clone, PartialEq)]
@@ -103,83 +104,540 @@ pub(crate) fn active_state(
     }
 }
 
-/// Conservative, allocation-bounded command inputs for read-only state
-/// queries. Mutation planners remain authoritative; this reports false when a
-/// complete applicability proof is unavailable.
+/// Exact, allocation-bounded command preflights shared by both engines.
+/// Transaction-backed checks run only against derived documents and report
+/// false whenever a complete applicability proof is unavailable.
 pub(crate) fn command_applicability(
     document: &Document,
     schema: &Schema,
     selection: &Selection,
+    limits: &ResourceLimits,
 ) -> HashMap<String, bool> {
     let pos = selection.from(document);
-    let resolved = document.resolve(pos).ok();
-    let mut path = vec![document.root()];
-    if let Some(resolved) = &resolved {
-        let mut node = document.root();
-        for index in &resolved.node_path {
-            let Some(child) = node.child(*index as usize) else {
-                break;
-            };
-            path.push(child);
-            node = child;
-        }
-    }
-    let has_text_context = !matches!(selection, Selection::All)
-        && path.iter().any(|node| {
-            schema
-                .node(node.node_type())
-                .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
-        });
-    let list_item_depth = path.iter().rposition(|node| {
-        schema
-            .node(node.node_type())
-            .is_some_and(|spec| matches!(spec.role, NodeRole::ListItem))
-    });
-    let list_item_index = list_item_depth
-        .and_then(|depth| resolved.as_ref()?.node_path.get(depth.saturating_sub(1)))
-        .copied()
-        .unwrap_or(0);
-    let nested_list_item = list_item_depth.is_some_and(|depth| {
-        path[..depth].iter().any(|node| {
-            schema
-                .node(node.node_type())
-                .is_some_and(|spec| matches!(spec.role, NodeRole::ListItem))
-        })
-    });
+    let list_context = list_item_context_at(document, schema, pos);
 
     let mut commands = HashMap::new();
-    commands.insert("indentList".into(), list_item_index > 0);
-    commands.insert("outdentList".into(), nested_list_item);
+    commands.insert(
+        "indentList".into(),
+        list_context
+            .as_ref()
+            .is_some_and(|context| context.list_item_index > 0),
+    );
+    commands.insert(
+        "outdentList".into(),
+        list_context
+            .as_ref()
+            .is_some_and(|context| context.parent_is_list_item),
+    );
     commands.insert(
         "toggleBlockquote".into(),
-        has_text_context && schema.node_by_html_tag("blockquote").is_some(),
+        can_toggle_blockquote(document, schema, selection, limits),
     );
     for level in 1..=6 {
         commands.insert(
             format!("toggleHeading{level}"),
-            has_text_context && schema.node_by_html_tag(&format!("h{level}")).is_some(),
+            can_toggle_heading(document, schema, selection, level),
         );
     }
     commands.insert(
         "toggleCodeBlock".into(),
-        has_text_context && schema.node("codeBlock").is_some(),
+        can_toggle_code_block(document, schema, selection),
     );
-    let task = path.iter().any(|node| {
-        node.attrs().contains_key("checked")
-            && schema
-                .node(node.node_type())
-                .is_some_and(|spec| spec.attrs.contains_key("checked"))
-    });
-    commands.insert("toggleTaskItem".into(), task);
+    commands.insert(
+        "toggleTaskItem".into(),
+        can_toggle_task_item(document, schema, pos, limits),
+    );
     commands.insert(
         "wrapBulletList".into(),
-        has_text_context && schema.node("bulletList").is_some(),
+        can_apply_list_type(document, schema, selection, "bulletList", limits),
     );
     commands.insert(
         "wrapOrderedList".into(),
-        has_text_context && schema.node("orderedList").is_some(),
+        can_apply_list_type(document, schema, selection, "orderedList", limits),
     );
     commands
+}
+
+#[derive(Clone)]
+struct BlockSelectionRange {
+    parent_path: Vec<u32>,
+    first_child_index: usize,
+    replace_from: u32,
+    replace_to: u32,
+    selected_blocks: Vec<Node>,
+}
+
+struct ListItemContext {
+    list_item_index: usize,
+    parent_is_list_item: bool,
+}
+
+fn can_toggle_heading(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    level: u8,
+) -> bool {
+    let Some(target_type) = schema
+        .node_by_html_tag(&format!("h{level}"))
+        .map(|spec| spec.name.as_str())
+    else {
+        return false;
+    };
+    let Some(paragraph_type) = paragraph_node_name(schema) else {
+        return false;
+    };
+    let Some(range) = selected_text_block_range(document, schema, selection) else {
+        return false;
+    };
+    let replacement_type = if range
+        .selected_blocks
+        .iter()
+        .all(|block| block.node_type() == target_type)
+    {
+        paragraph_type
+    } else {
+        target_type
+    };
+    can_replace_selected_text_blocks(document, schema, &range, replacement_type)
+}
+
+fn can_toggle_code_block(document: &Document, schema: &Schema, selection: &Selection) -> bool {
+    if schema.node("codeBlock").is_none() {
+        return false;
+    }
+    let Some(paragraph_type) = paragraph_node_name(schema) else {
+        return false;
+    };
+    let Some(range) = selected_text_block_range(document, schema, selection) else {
+        return false;
+    };
+    let replacement_type = if range
+        .selected_blocks
+        .iter()
+        .all(|block| block.node_type() == "codeBlock")
+    {
+        paragraph_type
+    } else {
+        "codeBlock"
+    };
+    can_replace_selected_text_blocks(document, schema, &range, replacement_type)
+}
+
+fn can_toggle_blockquote(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    limits: &ResourceLimits,
+) -> bool {
+    let Some(blockquote_type) = schema
+        .node_by_html_tag("blockquote")
+        .map(|spec| spec.name.as_str())
+    else {
+        return false;
+    };
+    let pos = selection.from(document);
+    let mut transaction = Transaction::new(Source::Format);
+    if let Some((start, quote)) =
+        containing_node_at(document, schema, pos, |_, name| name == blockquote_type)
+    {
+        let Some(content) = quote.content() else {
+            return false;
+        };
+        transaction.add_step(Step::ReplaceRange {
+            from: start,
+            to: start.saturating_add(quote.node_size()),
+            content: Fragment::from(content.iter().cloned().collect::<Vec<_>>()),
+        });
+    } else {
+        let Some(range) = selected_block_range(
+            document,
+            schema,
+            selection.from(document),
+            selection.to(document),
+        ) else {
+            return false;
+        };
+        let Some(quote_spec) = schema.node(blockquote_type) else {
+            return false;
+        };
+        let selected = range
+            .selected_blocks
+            .iter()
+            .map(Node::node_type)
+            .collect::<Vec<_>>();
+        if !quote_spec.content.matches(&selected, |child, symbol| {
+            schema.node_matches_symbol(child, symbol)
+        }) {
+            return false;
+        }
+        transaction.add_step(Step::ReplaceRange {
+            from: range.replace_from,
+            to: range.replace_to,
+            content: Fragment::from(vec![Node::element(
+                blockquote_type.to_string(),
+                HashMap::new(),
+                Fragment::from(range.selected_blocks),
+            )]),
+        });
+    }
+    transaction
+        .apply_with_limits(document, schema, limits)
+        .is_ok()
+}
+
+fn can_apply_list_type(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    list_type: &str,
+    limits: &ResourceLimits,
+) -> bool {
+    if schema.node(list_type).is_none() {
+        return false;
+    }
+    let pos = selection.from(document);
+    let mut transaction = Transaction::new(Source::Format);
+    if let Some((start, list)) = containing_node_at(document, schema, pos, |role, _| {
+        matches!(role, NodeRole::List { .. })
+    }) {
+        if list.node_type() == list_type {
+            transaction.add_step(Step::UnwrapFromList { pos });
+        } else {
+            transaction.add_step(Step::ReplaceRange {
+                from: start,
+                to: start.saturating_add(list.node_size()),
+                content: Fragment::from(vec![Node::element(
+                    list_type.to_string(),
+                    list_attrs_for_type(list_type, list.attrs()),
+                    list.content().cloned().unwrap_or_else(Fragment::empty),
+                )]),
+            });
+        }
+    } else {
+        let Some(item_type) = schema.list_item_type_for(list_type) else {
+            return false;
+        };
+        let range = selected_block_range(
+            document,
+            schema,
+            selection.from(document),
+            selection.to(document),
+        );
+        let in_quote = range
+            .as_ref()
+            .and_then(|range| document.node_at(&range.parent_path))
+            .and_then(|parent| schema.node(parent.node_type()))
+            .is_some_and(|spec| spec.html_tag.as_deref() == Some("blockquote"));
+        if let Some(range) = range.filter(|_| in_quote) {
+            let items = range
+                .selected_blocks
+                .into_iter()
+                .map(|block| {
+                    Node::element(
+                        item_type.clone(),
+                        HashMap::new(),
+                        Fragment::from(vec![block]),
+                    )
+                })
+                .collect::<Vec<_>>();
+            transaction.add_step(Step::ReplaceRange {
+                from: range.replace_from,
+                to: range.replace_to,
+                content: Fragment::from(vec![Node::element(
+                    list_type.to_string(),
+                    HashMap::new(),
+                    Fragment::from(items),
+                )]),
+            });
+        } else {
+            transaction.add_step(Step::WrapInList {
+                from: selection.from(document),
+                to: selection.to(document),
+                list_type: list_type.to_string(),
+                item_type,
+                attrs: HashMap::new(),
+                item_attrs: HashMap::new(),
+            });
+        }
+    }
+    transaction
+        .apply_with_limits(document, schema, limits)
+        .is_ok()
+}
+
+fn can_toggle_task_item(
+    document: &Document,
+    schema: &Schema,
+    pos: u32,
+    limits: &ResourceLimits,
+) -> bool {
+    let Some(path) = nearest_list_item_path(document, schema, pos) else {
+        return false;
+    };
+    let Some(node) = document.node_at(&path) else {
+        return false;
+    };
+    let Some(spec) = schema.node(node.node_type()) else {
+        return false;
+    };
+    if !spec.attrs.contains_key("checked") {
+        return false;
+    }
+    let mut attrs = node.attrs().clone();
+    let checked = attrs
+        .get("checked")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    attrs.insert("checked".into(), serde_json::Value::Bool(!checked));
+    let Some(node_pos) = node_delete_start_pos(document, &path) else {
+        return false;
+    };
+    let mut transaction = Transaction::new(Source::Input);
+    transaction.add_step(Step::UpdateNodeAttrs {
+        pos: node_pos,
+        attrs,
+    });
+    transaction
+        .apply_with_limits(document, schema, limits)
+        .is_ok()
+}
+
+fn selected_text_block_range(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+) -> Option<BlockSelectionRange> {
+    let range = selected_block_range(
+        document,
+        schema,
+        selection.from(document),
+        selection.to(document),
+    )?;
+    (!range.selected_blocks.is_empty()
+        && range.selected_blocks.iter().all(|block| {
+            schema
+                .node(block.node_type())
+                .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
+        }))
+    .then_some(range)
+}
+
+fn can_replace_selected_text_blocks(
+    document: &Document,
+    schema: &Schema,
+    range: &BlockSelectionRange,
+    target_type: &str,
+) -> bool {
+    let Some(target_spec) = schema.node(target_type) else {
+        return false;
+    };
+    if !matches!(target_spec.role, NodeRole::TextBlock) {
+        return false;
+    }
+    let parent = if range.parent_path.is_empty() {
+        document.root()
+    } else {
+        let Some(parent) = document.node_at(&range.parent_path) else {
+            return false;
+        };
+        parent
+    };
+    let Some(parent_spec) = schema.node(parent.node_type()) else {
+        return false;
+    };
+    let replaced_end = range
+        .first_child_index
+        .saturating_add(range.selected_blocks.len());
+    let child_types = parent
+        .content()
+        .map(|content| {
+            content
+                .iter()
+                .enumerate()
+                .map(|(index, child)| {
+                    if index >= range.first_child_index && index < replaced_end {
+                        target_type
+                    } else {
+                        child.node_type()
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    parent_spec.content.matches(&child_types, |child, symbol| {
+        schema.node_matches_symbol(child, symbol)
+    })
+}
+
+fn selected_block_range(
+    document: &Document,
+    schema: &Schema,
+    from: u32,
+    to: u32,
+) -> Option<BlockSelectionRange> {
+    let start_path = block_path_for_pos(document, schema, from)?;
+    let end_path = block_path_for_pos(document, schema, if to > from { to - 1 } else { from })?;
+    let start_parent = &start_path[..start_path.len().saturating_sub(1)];
+    let end_parent = &end_path[..end_path.len().saturating_sub(1)];
+    if start_parent != end_parent {
+        return None;
+    }
+    let parent_path = start_parent.to_vec();
+    let parent = if parent_path.is_empty() {
+        document.root()
+    } else {
+        document.node_at(&parent_path)?
+    };
+    let first = usize::try_from(*start_path.last()?).ok()?;
+    let last = usize::try_from(*end_path.last()?).ok()?;
+    if first > last {
+        return None;
+    }
+    let selected_blocks = (first..=last)
+        .map(|index| parent.child(index).cloned())
+        .collect::<Option<Vec<_>>>()?;
+    let replace_from = node_delete_start_pos(document, &start_path)?;
+    let replace_to =
+        node_delete_start_pos(document, &end_path)?.checked_add(parent.child(last)?.node_size())?;
+    Some(BlockSelectionRange {
+        parent_path,
+        first_child_index: first,
+        replace_from,
+        replace_to,
+        selected_blocks,
+    })
+}
+
+fn block_path_for_pos(document: &Document, schema: &Schema, pos: u32) -> Option<Vec<u32>> {
+    let resolved = document.resolve(pos).ok()?;
+    let mut node = document.root();
+    let mut path = Vec::new();
+    let mut block_path = None;
+    for index in resolved.node_path {
+        let child = node.child(index as usize)?;
+        path.push(index);
+        let role = &schema.node(child.node_type())?.role;
+        if matches!(
+            role,
+            NodeRole::TextBlock | NodeRole::Block | NodeRole::List { .. }
+        ) {
+            block_path = Some(path.clone());
+        }
+        node = child;
+    }
+    block_path
+}
+
+fn containing_node_at<'a>(
+    document: &'a Document,
+    schema: &Schema,
+    pos: u32,
+    matches_node: impl Fn(&NodeRole, &str) -> bool,
+) -> Option<(u32, &'a Node)> {
+    let resolved = document.resolve(pos).ok()?;
+    let mut node = document.root();
+    let mut content_start = 0u32;
+    let mut nearest = None;
+    for index in resolved.node_path {
+        let content = node.content()?;
+        let mut child_open = content_start;
+        for sibling in content.iter().take(index as usize) {
+            child_open = child_open.checked_add(sibling.node_size())?;
+        }
+        let child = content.child(index as usize)?;
+        let spec = schema.node(child.node_type())?;
+        if matches_node(&spec.role, child.node_type()) {
+            nearest = Some((child_open, child));
+        }
+        if !child.is_element() {
+            break;
+        }
+        node = child;
+        content_start = child_open.checked_add(1)?;
+    }
+    nearest
+}
+
+fn list_item_context_at(document: &Document, schema: &Schema, pos: u32) -> Option<ListItemContext> {
+    let resolved = document.resolve(pos).ok()?;
+    let path = &resolved.node_path;
+    let mut node = document.root();
+    let mut list_item_depth = None;
+    for (depth, index) in path.iter().copied().enumerate() {
+        let child = node.child(index as usize)?;
+        if schema
+            .node(child.node_type())
+            .is_some_and(|spec| matches!(spec.role, NodeRole::ListItem))
+        {
+            list_item_depth = Some(depth);
+        }
+        node = child;
+    }
+    let depth = list_item_depth?;
+    let parent_is_list_item = depth > 0
+        && document
+            .node_at(&path[..depth - 1])
+            .and_then(|node| schema.node(node.node_type()))
+            .is_some_and(|spec| matches!(spec.role, NodeRole::ListItem));
+    Some(ListItemContext {
+        list_item_index: usize::try_from(path[depth]).ok()?,
+        parent_is_list_item,
+    })
+}
+
+fn nearest_list_item_path(document: &Document, schema: &Schema, pos: u32) -> Option<Vec<u32>> {
+    let resolved = document.resolve(pos).ok()?;
+    let mut node = document.root();
+    let mut path = Vec::new();
+    let mut nearest = None;
+    for index in resolved.node_path {
+        node = node.child(index as usize)?;
+        path.push(index);
+        if schema
+            .node(node.node_type())
+            .is_some_and(|spec| matches!(spec.role, NodeRole::ListItem))
+        {
+            nearest = Some(path.clone());
+        }
+    }
+    nearest
+}
+
+fn node_delete_start_pos(document: &Document, path: &[u32]) -> Option<u32> {
+    let mut current = document.root();
+    let mut open_pos = 0u32;
+    for index in path.iter().copied() {
+        let content = current.content()?;
+        let mut child_open = open_pos.checked_add(1)?;
+        for sibling in content.iter().take(index as usize) {
+            child_open = child_open.checked_add(sibling.node_size())?;
+        }
+        current = content.child(index as usize)?;
+        open_pos = child_open;
+    }
+    open_pos.checked_sub(1)
+}
+
+fn paragraph_node_name(schema: &Schema) -> Option<&str> {
+    schema
+        .node_by_html_tag("p")
+        .or_else(|| schema.node("paragraph"))
+        .map(|spec| spec.name.as_str())
+}
+
+fn list_attrs_for_type(
+    list_type: &str,
+    current_attrs: &HashMap<String, serde_json::Value>,
+) -> HashMap<String, serde_json::Value> {
+    if matches!(list_type, "orderedList" | "ordered_list") {
+        current_attrs
+            .get("start")
+            .map(|start| HashMap::from([("start".into(), start.clone())]))
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    }
 }
 
 pub(crate) fn marks_at_position(document: &Document, position: u32) -> Vec<Mark> {

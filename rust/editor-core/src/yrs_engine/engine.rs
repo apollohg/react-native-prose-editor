@@ -426,6 +426,7 @@ impl YrsDocumentEngine {
             &candidate.document,
             &self.schema,
             &legacy_selection,
+            &self.resource_limits,
         );
         let active_state = crate::editor_state::active_state(
             &candidate.document,
@@ -899,6 +900,7 @@ impl YrsDocumentEngine {
             &compiled.preview,
             &self.schema,
             &legacy_selection,
+            &self.resource_limits,
         );
         let active_state = crate::editor_state::active_state(
             &compiled.preview,
