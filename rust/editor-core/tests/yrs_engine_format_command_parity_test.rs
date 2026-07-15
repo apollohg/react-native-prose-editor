@@ -134,6 +134,70 @@ fn assert_mark_parity(
     assert_eq!(result.history_state.can_undo, legacy.can_undo());
 }
 
+fn assert_range_mark_history_parity(
+    label: &str,
+    document: serde_json::Value,
+    anchor: u32,
+    head: u32,
+    command: TypedCommand,
+    legacy_apply: impl FnOnce(&mut Editor),
+) {
+    let schema = tiptap_schema();
+    let mut legacy = Editor::new(schema.clone(), InterceptorPipeline::new(), false);
+    legacy.set_json(&document).unwrap();
+    let mut yrs = engine();
+    yrs.import_json(&document.to_string(), TransactionOrigin::DocumentImport)
+        .unwrap();
+    select(&mut yrs, 70, anchor, head);
+    let Some(editor_core::yrs_engine::ResolvedSelection::Text {
+        anchor: selected_anchor,
+        head: selected_head,
+    }) = yrs.resolved_selection()
+    else {
+        panic!("expected resolved text selection in {label}");
+    };
+    let selected = (selected_anchor.scalar, selected_head.scalar);
+    legacy.set_selection_scalar(selected.0, selected.1);
+
+    legacy_apply(&mut legacy);
+    let result = yrs.apply_command(71, command).unwrap().unwrap();
+    assert_eq!(yrs.document_json().unwrap(), legacy.get_json(), "{label}");
+    let editor_core::selection::Selection::Text {
+        anchor: legacy_anchor,
+        head: legacy_head,
+    } = legacy.get_selection_state().selection
+    else {
+        panic!("expected legacy text selection in {label}");
+    };
+    assert_eq!(legacy.doc_to_scalar(legacy_anchor), selected.0, "{label}");
+    assert_eq!(legacy.doc_to_scalar(legacy_head), selected.1, "{label}");
+    let editor_core::yrs_engine::ResolvedSelection::Text {
+        anchor: yrs_anchor,
+        head: yrs_head,
+    } = result.selection
+    else {
+        panic!("expected Yrs text selection in {label}");
+    };
+    assert_eq!((yrs_anchor.scalar, yrs_head.scalar), selected, "{label}");
+    assert_eq!(yrs.stored_marks(), None, "{label}");
+    assert!(legacy.can_undo(), "{label}");
+    assert!(yrs.can_undo(), "{label}");
+
+    assert!(legacy.undo().is_some(), "{label}");
+    assert!(yrs.undo(72).unwrap().is_some(), "{label}");
+    assert_eq!(yrs.document_json().unwrap(), legacy.get_json(), "{label}");
+    assert!(!legacy.can_undo(), "{label}");
+    assert!(!yrs.can_undo(), "{label}");
+    assert!(legacy.undo().is_none(), "{label}");
+    assert!(yrs.undo(73).unwrap().is_none(), "{label}");
+
+    assert!(legacy.redo().is_some(), "{label}");
+    assert!(yrs.redo(74).unwrap().is_some(), "{label}");
+    assert_eq!(yrs.document_json().unwrap(), legacy.get_json(), "{label}");
+    assert!(!legacy.can_redo(), "{label}");
+    assert!(!yrs.can_redo(), "{label}");
+}
+
 #[test]
 fn collapsed_set_mark_updates_stored_marks_without_document_mutation() {
     let mut engine = engine();
@@ -247,6 +311,144 @@ fn mark_command_matrix_matches_legacy_ranges_attrs_and_stored_marks() {
             editor.toggle_mark("italic").unwrap();
         },
     );
+}
+
+#[test]
+fn range_set_and_unset_mark_matrix_preserves_direction_attrs_and_one_undo_group() {
+    let mixed = serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[
+        {"type":"text","text":"a","marks":[{"type":"link","attrs":{"href":"old"}}]},
+        {"type":"text","text":"bc"}
+    ]}]});
+    for (label, anchor, head) in [("forward", 0, 2), ("reverse", 2, 0)] {
+        let attrs = HashMap::from([("href".into(), serde_json::json!("new"))]);
+        assert_range_mark_history_parity(
+            &format!("set-{label}"),
+            mixed.clone(),
+            anchor,
+            head,
+            TypedCommand::SetMark {
+                mark_type: "link".into(),
+                attrs: attrs.clone(),
+            },
+            |editor| {
+                editor.set_mark("link", attrs).unwrap();
+            },
+        );
+        assert_range_mark_history_parity(
+            &format!("unset-{label}"),
+            mixed.clone(),
+            anchor,
+            head,
+            TypedCommand::UnsetMark {
+                mark_type: "link".into(),
+            },
+            |editor| {
+                editor.unset_mark("link").unwrap();
+            },
+        );
+    }
+}
+
+#[test]
+fn mark_request_validation_shares_required_default_undeclared_and_unset_type_rules() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "text*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "text", "content": "", "role": "text" }
+        ],
+        "marks": [{
+            "name": "custom",
+            "htmlTag": "span",
+            "attrs": { "required": {}, "withDefault": { "default": "defaulted" } }
+        }]
+    }))
+    .unwrap();
+    let new_engine = || {
+        YrsDocumentEngine::new(YrsEngineConfig {
+            schema: schema.clone(),
+            fragment_name: "prosemirror".into(),
+            initialization_mode: InitializationMode::LocalEmpty,
+            resource_limits: ResourceLimits::default(),
+            editing_limits: EditingLimits::default(),
+            max_length: None,
+            scope: None,
+        })
+        .unwrap()
+    };
+
+    for attrs in [
+        HashMap::new(),
+        HashMap::from([
+            ("required".into(), serde_json::json!("ok")),
+            ("undeclared".into(), serde_json::json!(true)),
+        ]),
+    ] {
+        let mut yrs = new_engine();
+        let before = (
+            yrs.encoded_state().unwrap(),
+            yrs.revision(),
+            yrs.state_revision(),
+            yrs.last_committed_origin(),
+        );
+        assert!(yrs
+            .apply_command(
+                80,
+                TypedCommand::SetMark {
+                    mark_type: "custom".into(),
+                    attrs: attrs.clone(),
+                },
+            )
+            .is_err());
+        assert_eq!(
+            before,
+            (
+                yrs.encoded_state().unwrap(),
+                yrs.revision(),
+                yrs.state_revision(),
+                yrs.last_committed_origin(),
+            )
+        );
+        let mut legacy = Editor::new(schema.clone(), InterceptorPipeline::new(), false);
+        assert!(legacy.set_mark("custom", attrs).is_err());
+    }
+
+    let required_only = HashMap::from([("required".into(), serde_json::json!("ok"))]);
+    let mut yrs = new_engine();
+    yrs.apply_command(
+        81,
+        TypedCommand::SetMark {
+            mark_type: "custom".into(),
+            attrs: required_only.clone(),
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(yrs.stored_marks().unwrap()[0].attrs(), &required_only);
+    assert!(yrs
+        .apply_command(
+            82,
+            TypedCommand::UnsetMark {
+                mark_type: "custom".into(),
+            },
+        )
+        .unwrap()
+        .is_some());
+    assert_eq!(yrs.stored_marks(), Some(&[][..]));
+
+    let mut unknown_yrs = new_engine();
+    let before = unknown_yrs.encoded_state().unwrap();
+    assert!(unknown_yrs
+        .apply_command(
+            83,
+            TypedCommand::UnsetMark {
+                mark_type: "missing".into(),
+            },
+        )
+        .is_err());
+    assert_eq!(unknown_yrs.encoded_state().unwrap(), before);
+    let mut unknown_legacy = Editor::new(schema, InterceptorPipeline::new(), false);
+    assert!(unknown_legacy.unset_mark("missing").is_err());
 }
 
 #[test]

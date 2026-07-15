@@ -14,14 +14,15 @@ mod format;
 mod structure;
 mod text;
 pub(crate) use format::{
-    code_block_node_name, plan_toggle_blockquote, plan_toggle_code_block, plan_toggle_heading,
-    CommandReplacement,
+    code_block_node_name, plan_set_mark, plan_toggle_blockquote, plan_toggle_code_block,
+    plan_toggle_heading, plan_toggle_mark, plan_unset_mark, CommandReplacement, MarkCommandPlan,
 };
 pub(crate) use structure::{
     prove_structural_diff, simulate_plan, structural_diff, structural_diff_bounded,
 };
 pub(crate) use text::{
-    apply_operations, plan_delete_backward, plan_delete_scalar_range, plan_split,
+    apply_operations, plan_delete_backward, plan_delete_scalar_range, plan_insert_text,
+    plan_replace_selection_text, plan_split,
 };
 use text::{default_text_block, node_delete_start};
 
@@ -35,6 +36,21 @@ pub(crate) enum SemanticOperation {
     DeleteRange {
         from: u32,
         to: u32,
+    },
+    AddMark {
+        from: u32,
+        to: u32,
+        mark: Mark,
+    },
+    RemoveMark {
+        from: u32,
+        to: u32,
+        mark_type: String,
+    },
+    ReplaceMark {
+        from: u32,
+        to: u32,
+        mark: Mark,
     },
     ReplaceRange {
         from: u32,
@@ -68,6 +84,28 @@ impl SemanticOperation {
             Self::DeleteRange { from, to } => Step::DeleteRange {
                 from: *from,
                 to: *to,
+            },
+            Self::AddMark { from, to, mark } => Step::AddMark {
+                from: *from,
+                to: *to,
+                mark: mark.clone(),
+            },
+            Self::RemoveMark {
+                from,
+                to,
+                mark_type,
+            } => Step::RemoveMark {
+                from: *from,
+                to: *to,
+                mark_type: mark_type.clone(),
+            },
+            // ReplaceMark is a collapsed stored-mark transition. The legacy
+            // adapter commits `stored_marks_after` directly, so this fallback
+            // step is never applied to a document range.
+            Self::ReplaceMark { from, to, mark } => Step::AddMark {
+                from: *from,
+                to: *to,
+                mark: mark.clone(),
             },
             Self::ReplaceRange { from, to, content } => Step::ReplaceRange {
                 from: *from,
@@ -103,6 +141,54 @@ impl SemanticCommandPlan {
             selection_after: None,
         }
     }
+}
+
+pub(crate) fn canonical_marks(marks: &[Mark], schema: &Schema) -> Vec<Mark> {
+    let mut marks = marks.to_vec();
+    marks.sort_by(|left, right| {
+        schema
+            .mark_rank(left.mark_type())
+            .unwrap_or(usize::MAX)
+            .cmp(&schema.mark_rank(right.mark_type()).unwrap_or(usize::MAX))
+            .then_with(|| left.mark_type().cmp(right.mark_type()))
+    });
+    marks
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MarkRequestError {
+    UnknownMark,
+    RequiredAttribute(String),
+    UndeclaredAttribute(String),
+}
+
+pub(crate) fn validate_mark_request(
+    schema: &Schema,
+    mark_type: &str,
+    attrs: &HashMap<String, serde_json::Value>,
+) -> Result<(), MarkRequestError> {
+    validate_mark_type(schema, mark_type)?;
+    let spec = schema
+        .mark(mark_type)
+        .expect("validated mark type must exist");
+    if let Some(name) = spec.attrs.iter().find_map(|(name, attr)| {
+        (!attr.has_default && !attrs.contains_key(name)).then(|| name.clone())
+    }) {
+        return Err(MarkRequestError::RequiredAttribute(name));
+    }
+    if !spec.allow_undeclared_attrs {
+        if let Some(name) = attrs.keys().find(|name| !spec.attrs.contains_key(*name)) {
+            return Err(MarkRequestError::UndeclaredAttribute(name.clone()));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_mark_type(schema: &Schema, mark_type: &str) -> Result<(), MarkRequestError> {
+    schema
+        .mark(mark_type)
+        .map(|_| ())
+        .ok_or(MarkRequestError::UnknownMark)
 }
 
 fn empty_list_unwrap_pos(

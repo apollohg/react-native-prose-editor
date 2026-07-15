@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -22,6 +24,16 @@ const API_ORIGIN: &str = "native-editor/history/local-api";
 const ADDED_OBSERVER: &str = "native-editor/history/observer-added";
 const UPDATED_OBSERVER: &str = "native-editor/history/observer-updated";
 const POPPED_OBSERVER: &str = "native-editor/history/observer-popped";
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_BOUNDARY_RESERVATION: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_boundary_reservation_failure_for_test(enabled: bool) {
+    FAIL_BOUNDARY_RESERVATION.with(|fail| fail.set(enabled));
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HistorySnapshot {
@@ -224,6 +236,11 @@ enum ReplayEvent {
     },
     Action(HistoryAction),
     Boundary,
+}
+
+pub(crate) struct PreparedBoundary {
+    accepted_encoded_state: Vec<u8>,
+    roll_epoch: bool,
 }
 
 impl ReplayEvent {
@@ -918,11 +935,19 @@ impl YrsHistory {
         self.force_next_boundary = true;
     }
 
-    pub(crate) fn accept_boundary(
+    pub(crate) fn prepare_boundary(
         &mut self,
         request_id: u64,
         accepted_encoded_state: Vec<u8>,
-    ) -> OperationResult<()> {
+    ) -> OperationResult<PreparedBoundary> {
+        #[cfg(test)]
+        if FAIL_BOUNDARY_RESERVATION.with(Cell::get) {
+            return Err(OperationError::operation_resource_exhausted(
+                request_id,
+                "historyReplay",
+                "injected command-boundary reservation failure",
+            ));
+        }
         self.replay_events.try_reserve(1).map_err(|error| {
             OperationError::operation_resource_exhausted(
                 request_id,
@@ -930,16 +955,33 @@ impl YrsHistory {
                 format!("cannot reserve command boundary: {error}"),
             )
         })?;
-        let event = ReplayEvent::Boundary;
         let next_count = self.replay_events.len().saturating_add(1);
-        let next_bytes = self.replay_bytes.saturating_add(event.encoded_bytes());
-        if next_count >= self.event_ceiling() || next_bytes > self.max_encoded_state_bytes {
-            self.roll_epoch(accepted_encoded_state);
+        let next_bytes = self
+            .replay_bytes
+            .saturating_add(ReplayEvent::Boundary.encoded_bytes());
+        Ok(PreparedBoundary {
+            accepted_encoded_state,
+            roll_epoch: next_count >= self.event_ceiling()
+                || next_bytes > self.max_encoded_state_bytes,
+        })
+    }
+
+    pub(crate) fn commit_boundary(&mut self, prepared: PreparedBoundary) {
+        if prepared.roll_epoch {
+            self.roll_epoch(prepared.accepted_encoded_state);
         } else {
             self.force_next_capture_boundary();
-            self.push_replay_event(event);
+            self.push_replay_event(ReplayEvent::Boundary);
         }
-        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replay_audit_for_test(&self) -> (usize, usize, bool) {
+        (
+            self.replay_events.len(),
+            self.replay_bytes,
+            self.force_next_boundary,
+        )
     }
 
     pub(crate) fn perform(&mut self, action: HistoryAction) -> Option<HistorySnapshotSlot> {

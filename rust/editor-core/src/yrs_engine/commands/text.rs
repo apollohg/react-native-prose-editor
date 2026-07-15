@@ -247,6 +247,35 @@ fn direct_typed_operation(
                 },
             }
         }
+        crate::command_planner::SemanticOperation::AddMark { from, to, mark } => {
+            TypedOperation::AddMark {
+                range: RevisionedRange {
+                    from: encoded(*from)?,
+                    to: encoded(*to)?,
+                },
+                mark: mark.clone(),
+            }
+        }
+        crate::command_planner::SemanticOperation::RemoveMark {
+            from,
+            to,
+            mark_type,
+        } => TypedOperation::RemoveMark {
+            range: RevisionedRange {
+                from: encoded(*from)?,
+                to: encoded(*to)?,
+            },
+            mark_type: mark_type.clone(),
+        },
+        crate::command_planner::SemanticOperation::ReplaceMark { from, to, mark } => {
+            TypedOperation::ReplaceMark {
+                range: RevisionedRange {
+                    from: encoded(*from)?,
+                    to: encoded(*to)?,
+                },
+                mark: mark.clone(),
+            }
+        }
         crate::command_planner::SemanticOperation::ReplaceRange { from, to, content } => {
             // The concrete Yrs ReplaceRange lowering writes into existing XML text
             // targets. Block fragments need the structural lowering below instead.
@@ -286,88 +315,112 @@ pub(super) fn plan(
     context: PlanningContext<'_>,
     command: TypedCommand,
 ) -> OperationResult<CommandPlan> {
-    let Ok((from, to)) = selection_range(context.request_id, context.selection) else {
-        return Ok(CommandPlan::NotApplicable);
-    };
-    let range = |from, to| RevisionedRange {
-        from: point(from),
-        to: point(to),
-    };
-    let insertion_marks = || {
-        if from < to {
-            let doc_from = context.position_map.scalar_to_doc(from, context.document);
-            return Ok(crate::yrs_engine::derived_state::canonical_marks(
-                &crate::editor_state::marks_at_position(context.document, doc_from),
-                context.schema,
-            ));
-        }
-        crate::yrs_engine::derived_state::effective_marks_for_insertion(
-            context.stored_marks,
-            context.document,
-            context.selection,
-            context.schema,
-        )
-    };
-    let operations = match command {
-        TypedCommand::InsertText { text } if text.is_empty() => {
-            return Ok(CommandPlan::NotApplicable)
-        }
-        TypedCommand::InsertText { text } => vec![TypedOperation::InsertText {
-            at: point(to),
-            text,
-            marks: insertion_marks()?,
-        }],
+    let command = match command {
         TypedCommand::DeleteRange { range: requested } => {
             let rendered = crate::render::rendered_text(context.document, context.schema);
-            let scalar = |position: RevisionedPosition| match position.kind {
-                EditorOffsetKind::Scalar => Some(position.offset),
-                EditorOffsetKind::Utf16 => {
-                    crate::yrs_engine::utf16_offset_to_scalar(&rendered, position.offset)
-                }
+            let resolve = |position: RevisionedPosition, field| {
+                let scalar = crate::yrs_engine::position::editor_offset_to_scalar(
+                    position.offset,
+                    position.kind,
+                    &rendered,
+                    context.position_map,
+                )
+                .ok_or_else(|| {
+                    OperationError::position_invalid(
+                        context.request_id,
+                        0,
+                        field,
+                        format!("{field} is outside the rendered document"),
+                    )
+                })?;
+                let document = context.position_map.scalar_to_doc(scalar, context.document);
+                Ok((scalar, document, position.affinity))
             };
-            let requested_from = scalar(requested.from).ok_or_else(|| {
-                OperationError::transaction_invalid(
-                    context.request_id,
-                    "range.from",
-                    "delete range start is outside the rendered document",
-                )
-            })?;
-            let requested_to = scalar(requested.to).ok_or_else(|| {
-                OperationError::transaction_invalid(
-                    context.request_id,
-                    "range.to",
-                    "delete range end is outside the rendered document",
-                )
-            })?;
-            let scalar_from = requested_from.min(requested_to);
-            let scalar_to = requested_from.max(requested_to);
-            let selection = crate::selection::Selection::text(
-                context
-                    .position_map
-                    .scalar_to_doc(requested_from, context.document),
-                context
-                    .position_map
-                    .scalar_to_doc(requested_to, context.document),
-            );
-            let Some(plan) = crate::command_planner::plan_delete_scalar_range(
+            let from = resolve(requested.from, "range.from")?;
+            let to = resolve(requested.to, "range.to")?;
+            if from.0 == to.0 {
+                return Ok(CommandPlan::NotApplicable);
+            }
+            let (mut from, mut to) = if from.0 < to.0 {
+                (from, to)
+            } else {
+                (to, from)
+            };
+            if from.0 > 0
+                && context
+                    .document
+                    .resolve(from.1)
+                    .is_ok_and(|resolved| resolved.node_path.is_empty())
+            {
+                from.1 = from.1.saturating_add(1);
+                to.1 = to.1.saturating_add(1);
+            }
+            if from.1 != context.position_map.scalar_to_doc(from.0, context.document)
+                || to.1 != context.position_map.scalar_to_doc(to.0, context.document)
+            {
+                let selection = crate::selection::Selection::text(from.1, to.1);
+                return semantic_transaction(
+                    &context,
+                    &selection,
+                    crate::command_planner::SemanticCommandPlan {
+                        operations: vec![crate::command_planner::SemanticOperation::DeleteRange {
+                            from: from.1,
+                            to: to.1,
+                        }],
+                        selection_after: Some(crate::selection::Selection::cursor(from.1)),
+                    },
+                );
+            }
+            return Ok(transaction(
+                &context,
+                vec![TypedOperation::DeleteRange {
+                    range: RevisionedRange {
+                        from: RevisionedPosition {
+                            offset: from.0,
+                            kind: EditorOffsetKind::Scalar,
+                            affinity: from.2,
+                        },
+                        to: RevisionedPosition {
+                            offset: to.0,
+                            kind: EditorOffsetKind::Scalar,
+                            affinity: to.2,
+                        },
+                    },
+                }],
+            ));
+        }
+        TypedCommand::InsertText { text } => {
+            let selection = crate::yrs_engine::derived_state::resolved_to_legacy(context.selection);
+            let Some(plan) = crate::command_planner::plan_insert_text(
                 context.document,
-                context.position_map,
                 context.schema,
-                scalar_from,
-                scalar_to,
-            )
-            .map_err(|()| {
-                OperationError::operation_resource_exhausted(
-                    context.request_id,
-                    "commandPlanningWork",
-                    "command planning exceeded its bounded work budget",
-                )
-            })?
-            else {
+                &selection,
+                context.stored_marks,
+                &text,
+            ) else {
                 return Ok(CommandPlan::NotApplicable);
             };
             return semantic_transaction(&context, &selection, plan);
         }
+        TypedCommand::ReplaceSelectionText { text } => {
+            let selection = crate::yrs_engine::derived_state::resolved_to_legacy(context.selection);
+            let Some(plan) = crate::command_planner::plan_replace_selection_text(
+                context.document,
+                context.schema,
+                &selection,
+                context.stored_marks,
+                &text,
+            ) else {
+                return Ok(CommandPlan::NotApplicable);
+            };
+            return semantic_transaction(&context, &selection, plan);
+        }
+        command => command,
+    };
+    let Ok((_from, _to)) = selection_range(context.request_id, context.selection) else {
+        return Ok(CommandPlan::NotApplicable);
+    };
+    match command {
         TypedCommand::DeleteBackward => {
             let selection = crate::yrs_engine::derived_state::resolved_to_legacy(context.selection);
             let Some(plan) = crate::command_planner::plan_delete_backward(
@@ -387,26 +440,7 @@ pub(super) fn plan(
             else {
                 return Ok(CommandPlan::NotApplicable);
             };
-            return semantic_transaction(&context, &selection, plan);
-        }
-        TypedCommand::ReplaceSelectionText { text } => {
-            let mut operations = Vec::with_capacity(2);
-            if from < to {
-                operations.push(TypedOperation::DeleteRange {
-                    range: range(from, to),
-                });
-            }
-            if !text.is_empty() {
-                operations.push(TypedOperation::InsertText {
-                    at: point(from),
-                    text,
-                    marks: insertion_marks()?,
-                });
-            }
-            if operations.is_empty() {
-                return Ok(CommandPlan::NotApplicable);
-            }
-            operations
+            semantic_transaction(&context, &selection, plan)
         }
         TypedCommand::SplitBlock | TypedCommand::DeleteAndSplit => {
             let delete_selection = matches!(command, TypedCommand::DeleteAndSplit);
@@ -429,7 +463,7 @@ pub(super) fn plan(
             else {
                 return Ok(CommandPlan::NotApplicable);
             };
-            return semantic_transaction(&context, &selection, plan);
+            semantic_transaction(&context, &selection, plan)
         }
         TypedCommand::InsertContentJson { .. } | TypedCommand::InsertContentHtml { .. } => {
             let parsed = match command {
@@ -501,7 +535,7 @@ pub(super) fn plan(
             ) else {
                 return Ok(CommandPlan::NotApplicable);
             };
-            return semantic_transaction(
+            semantic_transaction(
                 &context,
                 &selection,
                 crate::command_planner::SemanticCommandPlan {
@@ -512,9 +546,8 @@ pub(super) fn plan(
                     }],
                     selection_after: Some(replacement.selection_after),
                 },
-            );
+            )
         }
         _ => unreachable!("text planner received non-text command"),
-    };
-    Ok(transaction(&context, operations))
+    }
 }

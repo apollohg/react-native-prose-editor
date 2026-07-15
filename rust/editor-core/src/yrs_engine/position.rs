@@ -94,14 +94,21 @@ pub(crate) fn editor_offset_to_doc_pos(
     position_map: &PositionMap,
     document: &Document,
 ) -> Option<u32> {
+    let scalar_offset = editor_offset_to_scalar(offset, kind, rendered_text, position_map)?;
+    Some(position_map.scalar_to_doc(scalar_offset, document))
+}
+
+pub(crate) fn editor_offset_to_scalar(
+    offset: u32,
+    kind: EditorOffsetKind,
+    rendered_text: &str,
+    position_map: &PositionMap,
+) -> Option<u32> {
     let scalar_offset = match kind {
         EditorOffsetKind::Scalar => offset,
         EditorOffsetKind::Utf16 => utf16_offset_to_scalar(rendered_text, offset)?,
     };
-    if scalar_offset > position_map.total_scalars() {
-        return None;
-    }
-    Some(position_map.scalar_to_doc(scalar_offset, document))
+    (scalar_offset <= position_map.total_scalars()).then_some(scalar_offset)
 }
 
 pub(crate) fn sticky_index_to_doc_pos<T: ReadTxn>(

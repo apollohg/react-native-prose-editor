@@ -233,31 +233,6 @@ pub(crate) fn apply_stored_mark_operation(
     }
 }
 
-/// Task 13's input planner consumes this hook. Task 10's live transition path
-/// already has an admitted, mapped caret and therefore updates the canonical
-/// stored set directly with [`apply_stored_mark_operation`].
-#[allow(dead_code)]
-pub(crate) fn effective_marks_for_insertion(
-    stored: Option<&[Mark]>,
-    document: &Document,
-    selection: &ResolvedSelection,
-    schema: &Schema,
-) -> OperationResult<Vec<Mark>> {
-    if let Some(stored) = stored {
-        return Ok(stored.to_vec());
-    }
-    let ResolvedSelection::Text { anchor, head } = selection else {
-        return Ok(Vec::new());
-    };
-    if anchor.document != head.document {
-        return Ok(Vec::new());
-    }
-    Ok(canonical_marks(
-        &marks_at_position(document, anchor.document),
-        schema,
-    ))
-}
-
 pub(crate) fn resolved_from_legacy(
     document: &Document,
     selection: &Selection,

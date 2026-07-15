@@ -1192,12 +1192,15 @@ impl YrsDocumentEngine {
                 unreachable!()
             };
             next.stored_marks = planned_stored_marks.clone();
+            let prepared_boundary = boundary_state
+                .map(|encoded| self.history.prepare_boundary(compiled.request_id, encoded))
+                .transpose()?;
             if next.relative_selection == current.relative_selection
                 && next.resolved_selection == current.resolved_selection
                 && next.stored_marks == current.stored_marks
             {
-                if let Some(encoded) = boundary_state {
-                    self.history.accept_boundary(compiled.request_id, encoded)?;
+                if let Some(prepared) = prepared_boundary {
+                    self.history.commit_boundary(prepared);
                 }
                 let commit = super::TransactionCommit {
                     request_id: compiled.request_id,
@@ -1227,8 +1230,8 @@ impl YrsDocumentEngine {
             self.derived_state = Some(next);
             self.state_revision = next_state_revision;
             self.last_committed_origin = Some(compiled.origin);
-            if let Some(encoded) = boundary_state {
-                self.history.accept_boundary(compiled.request_id, encoded)?;
+            if let Some(prepared) = prepared_boundary {
+                self.history.commit_boundary(prepared);
             }
             let commit = super::TransactionCommit {
                 request_id: compiled.request_id,
@@ -2479,6 +2482,12 @@ mod tests {
         scope: Option<crate::yrs_engine::DocumentScope>,
         fragment: String,
         fingerprint: String,
+        selection: Option<crate::yrs_engine::ResolvedSelection>,
+        stored_marks: Option<Vec<crate::model::Mark>>,
+        can_undo: bool,
+        can_redo: bool,
+        retained_history_units: u64,
+        replay_audit: (usize, usize, bool),
     }
 
     fn atomic_audit(engine: &YrsDocumentEngine) -> AtomicAudit {
@@ -2495,6 +2504,12 @@ mod tests {
             scope: engine.scope.clone(),
             fragment: engine.fragment_name.clone(),
             fingerprint: engine.schema_fingerprint.clone(),
+            selection: engine.resolved_selection().cloned(),
+            stored_marks: engine.stored_marks().map(<[_]>::to_vec),
+            can_undo: engine.can_undo(),
+            can_redo: engine.can_redo(),
+            retained_history_units: engine.history.retained_units(0).unwrap(),
+            replay_audit: engine.history.replay_audit_for_test(),
         }
     }
 
@@ -3102,5 +3117,27 @@ mod tests {
             );
             assert_eq!(atomic_audit(&engine), before, "{failpoint:?}");
         }
+    }
+
+    #[test]
+    fn state_only_boundary_reservation_failure_is_fully_atomic() {
+        use crate::yrs_engine::history::set_boundary_reservation_failure_for_test;
+
+        let mut engine = transaction_engine();
+        let before = atomic_audit(&engine);
+        set_boundary_reservation_failure_for_test(true);
+
+        let error = engine
+            .apply_command(
+                90,
+                crate::yrs_engine::TypedCommand::ToggleMark {
+                    mark_type: "bold".into(),
+                },
+            )
+            .unwrap_err();
+
+        set_boundary_reservation_failure_for_test(false);
+        assert_eq!(error.code, "OPERATION_RESOURCE_EXHAUSTED");
+        assert_eq!(atomic_audit(&engine), before);
     }
 }

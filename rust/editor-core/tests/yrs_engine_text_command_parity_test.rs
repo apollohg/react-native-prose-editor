@@ -502,6 +502,180 @@ fn composition_range_replacement_and_stored_mark_insertion_are_one_command_group
 }
 
 #[test]
+fn insert_text_is_caret_only_for_forward_and_reverse_ranges() {
+    for (index, (anchor, head)) in [(0, 2), (2, 0)].into_iter().enumerate() {
+        let mut engine = engine();
+        engine
+            .apply_command(1, TypedCommand::InsertText { text: "ab".into() })
+            .unwrap();
+        select_yrs(&mut engine, 2, anchor, head);
+        let before = (
+            engine.encoded_state().unwrap(),
+            engine.revision(),
+            engine.state_revision(),
+            engine.can_undo(),
+            engine.can_redo(),
+        );
+        assert_eq!(
+            engine
+                .plan_command(
+                    10 + index as u64,
+                    TypedCommand::InsertText { text: "x".into() },
+                )
+                .unwrap(),
+            CommandPlan::NotApplicable
+        );
+        assert!(engine
+            .apply_command(
+                20 + index as u64,
+                TypedCommand::InsertText { text: "x".into() },
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            before,
+            (
+                engine.encoded_state().unwrap(),
+                engine.revision(),
+                engine.state_revision(),
+                engine.can_undo(),
+                engine.can_redo(),
+            )
+        );
+    }
+}
+
+#[test]
+fn explicit_delete_range_ignores_current_selection_kind_and_rejects_invalid_endpoints() {
+    let mut node = engine();
+    node.import_json(
+        &serde_json::json!({"type":"doc","content":[
+            {"type":"image","attrs":{"src":"x","alt":null,"title":null,"width":null,"height":null}},
+            {"type":"paragraph","content":[{"type":"text","text":"ab"}]}
+        ]})
+        .to_string(),
+        TransactionOrigin::DocumentImport,
+    )
+    .unwrap();
+    node.apply_typed_transaction(TypedTransaction {
+        request_id: 1,
+        base_document_revision: node.revision(),
+        origin: TransactionOrigin::LocalApi,
+        operations: vec![],
+        selection_intent: SelectionIntent::Set(SelectionInput::Node { at: point(0) }),
+        history_policy: HistoryPolicy::Skip,
+    })
+    .unwrap();
+    assert!(
+        node.apply_command(
+            2,
+            TypedCommand::DeleteRange {
+                range: RevisionedRange {
+                    from: point(1),
+                    to: point(2),
+                },
+            },
+        )
+        .unwrap()
+        .unwrap()
+        .changed
+    );
+    assert_eq!(node.document().unwrap().root().text_content(), "b");
+
+    let mut all = engine();
+    all.apply_command(3, TypedCommand::InsertText { text: "abc".into() })
+        .unwrap();
+    all.apply_typed_transaction(TypedTransaction {
+        request_id: 4,
+        base_document_revision: all.revision(),
+        origin: TransactionOrigin::LocalApi,
+        operations: vec![],
+        selection_intent: SelectionIntent::Set(SelectionInput::All),
+        history_policy: HistoryPolicy::Skip,
+    })
+    .unwrap();
+    assert!(
+        all.apply_command(
+            5,
+            TypedCommand::DeleteRange {
+                range: RevisionedRange {
+                    from: point(1),
+                    to: point(2),
+                },
+            },
+        )
+        .unwrap()
+        .unwrap()
+        .changed
+    );
+    assert_eq!(all.document().unwrap().root().text_content(), "ac");
+
+    let rendered = "a😀";
+    for (index, position) in [
+        RevisionedPosition {
+            offset: 3,
+            kind: EditorOffsetKind::Scalar,
+            affinity: Affinity::After,
+        },
+        RevisionedPosition {
+            offset: u32::MAX,
+            kind: EditorOffsetKind::Scalar,
+            affinity: Affinity::After,
+        },
+        RevisionedPosition {
+            offset: 4,
+            kind: EditorOffsetKind::Utf16,
+            affinity: Affinity::After,
+        },
+        RevisionedPosition {
+            offset: u32::MAX,
+            kind: EditorOffsetKind::Utf16,
+            affinity: Affinity::After,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut invalid = engine();
+        invalid
+            .apply_command(
+                30,
+                TypedCommand::InsertText {
+                    text: rendered.into(),
+                },
+            )
+            .unwrap();
+        let before = (
+            invalid.encoded_state().unwrap(),
+            invalid.revision(),
+            invalid.state_revision(),
+            invalid.document_json().unwrap(),
+        );
+        let error = invalid
+            .apply_command(
+                31 + index as u64,
+                TypedCommand::DeleteRange {
+                    range: RevisionedRange {
+                        from: position,
+                        to: position,
+                    },
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "POSITION_INVALID", "{position:?}");
+        assert_eq!(
+            before,
+            (
+                invalid.encoded_state().unwrap(),
+                invalid.revision(),
+                invalid.state_revision(),
+                invalid.document_json().unwrap(),
+            )
+        );
+    }
+}
+
+#[test]
 fn json_and_html_content_match_legacy_empty_block_and_selection_semantics() {
     let schema = tiptap_schema();
     let cases = [

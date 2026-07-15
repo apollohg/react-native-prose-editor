@@ -273,14 +273,17 @@ impl Editor {
     /// Insert text at a document position.
     pub fn insert_text(&mut self, pos: u32, text: &str) -> Result<EditorUpdate, EditorError> {
         self.admit_text_mutation(text)?;
-        let marks = self.effective_marks_for_insert(pos);
-        let mut tx = Transaction::new(Source::Input);
-        tx.add_step(Step::InsertText {
-            pos,
-            text: text.to_string(),
-            marks,
-        });
-        self.apply_transaction(tx)
+        let plan = crate::command_planner::plan_insert_text(
+            self.backend.document(),
+            &self.schema,
+            &Selection::cursor(pos),
+            self.stored_marks.as_deref(),
+            text,
+        );
+        match plan {
+            Some(plan) => self.apply_semantic_command_plan(plan),
+            None => Ok(self.build_update_from_current()),
+        }
     }
 
     /// Delete content between two document positions.
@@ -296,42 +299,14 @@ impl Editor {
     /// insertions. If the selection is a range, add or remove the mark.
     pub fn toggle_mark(&mut self, mark_name: &str) -> Result<EditorUpdate, EditorError> {
         self.validate_mark_request(mark_name, &HashMap::new())?;
-        let doc = self.backend.document();
-        let from = self.selection.from(doc);
-        let to = self.selection.to(doc);
-
-        if from == to {
-            let mut stored = self
-                .stored_marks
-                .clone()
-                .unwrap_or_else(|| self.marks_at_pos(from));
-            if let Some(idx) = stored.iter().position(|mark| mark.mark_type() == mark_name) {
-                stored.remove(idx);
-            } else {
-                stored.push(Mark::new(mark_name.to_string(), HashMap::new()));
-            }
-            self.stored_marks = Some(stored);
-            return Ok(self.build_update_from_current());
-        }
-
-        let mark = Mark::new(mark_name.to_string(), HashMap::new());
-        let has_mark = crate::editor_state::range_has_mark(doc, from, to, mark_name);
-
-        let mut tx = Transaction::new(Source::Format);
-        if has_mark {
-            tx.add_step(Step::RemoveMark {
-                from,
-                to,
-                mark_type: mark_name.to_string(),
-            });
-        } else {
-            tx.add_step(Step::AddMark { from, to, mark });
-        }
-        match self.apply_transaction(tx) {
-            Ok(update) => Ok(update),
-            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
-            Err(e) => Err(e),
-        }
+        let plan = crate::command_planner::plan_toggle_mark(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            self.stored_marks.as_deref(),
+            mark_name,
+        );
+        self.apply_mark_command_plan(plan)
     }
 
     /// Set a mark with explicit attrs on the current selection.
@@ -341,107 +316,32 @@ impl Editor {
         attrs: HashMap<String, serde_json::Value>,
     ) -> Result<EditorUpdate, EditorError> {
         self.validate_mark_request(mark_name, &attrs)?;
-        let doc = self.backend.document();
-        let from = self.selection.from(doc);
-        let to = self.selection.to(doc);
-
-        if from == to {
-            if let Some((range_from, range_to)) =
-                crate::editor_state::mark_range_at_position(doc, from, mark_name)
-            {
-                if range_from < range_to {
-                    let mut tx = Transaction::new(Source::Format);
-                    tx.add_step(Step::RemoveMark {
-                        from: range_from,
-                        to: range_to,
-                        mark_type: mark_name.to_string(),
-                    });
-                    tx.add_step(Step::AddMark {
-                        from: range_from,
-                        to: range_to,
-                        mark: Mark::new(mark_name.to_string(), attrs),
-                    });
-                    return match self.apply_transaction(tx) {
-                        Ok(update) => Ok(update),
-                        Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
-                        Err(e) => Err(e),
-                    };
-                }
-            }
-
-            let mut stored = self
-                .stored_marks
-                .clone()
-                .unwrap_or_else(|| self.marks_at_pos(from));
-            stored.retain(|mark| mark.mark_type() != mark_name);
-            stored.push(Mark::new(mark_name.to_string(), attrs));
-            self.stored_marks = Some(stored);
-            return Ok(self.build_update_from_current());
-        }
-
-        let mut tx = Transaction::new(Source::Format);
-        tx.add_step(Step::RemoveMark {
-            from,
-            to,
-            mark_type: mark_name.to_string(),
-        });
-        tx.add_step(Step::AddMark {
-            from,
-            to,
-            mark: Mark::new(mark_name.to_string(), attrs),
-        });
-        match self.apply_transaction(tx) {
-            Ok(update) => Ok(update),
-            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
-            Err(e) => Err(e),
-        }
+        let plan = crate::command_planner::plan_set_mark(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            self.stored_marks.as_deref(),
+            Mark::new(mark_name.to_string(), attrs),
+        );
+        self.apply_mark_command_plan(plan)
     }
 
     /// Remove a mark from the current selection.
     pub fn unset_mark(&mut self, mark_name: &str) -> Result<EditorUpdate, EditorError> {
-        let doc = self.backend.document();
-        let from = self.selection.from(doc);
-        let to = self.selection.to(doc);
-
-        if from == to {
-            if let Some((range_from, range_to)) =
-                crate::editor_state::mark_range_at_position(doc, from, mark_name)
-            {
-                if range_from < range_to {
-                    let mut tx = Transaction::new(Source::Format);
-                    tx.add_step(Step::RemoveMark {
-                        from: range_from,
-                        to: range_to,
-                        mark_type: mark_name.to_string(),
-                    });
-                    return match self.apply_transaction(tx) {
-                        Ok(update) => Ok(update),
-                        Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
-                        Err(e) => Err(e),
-                    };
-                }
-            }
-
-            let mut stored = self
-                .stored_marks
-                .clone()
-                .unwrap_or_else(|| self.marks_at_pos(from));
-            stored.retain(|mark| mark.mark_type() != mark_name);
-            self.stored_marks = Some(stored);
-            return Ok(self.build_update_from_current());
-        }
-
-        let mut tx = Transaction::new(Source::Format);
-        tx.add_step(Step::RemoveMark {
-            from,
-            to,
-            mark_type: mark_name.to_string(),
-        });
-        match self.apply_transaction(tx) {
-            Ok(update) => Ok(update),
-            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
-            Err(e) => Err(e),
-        }
+        crate::command_planner::validate_mark_type(&self.schema, mark_name).map_err(|_| {
+            EditorError::from(BoundaryError::new(
+                "UNKNOWN_MARK",
+                format!("unknown mark '{mark_name}'"),
+            ))
+        })?;
+        let plan = crate::command_planner::plan_unset_mark(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            self.stored_marks.as_deref(),
+            mark_name,
+        );
+        self.apply_mark_command_plan(plan)
     }
 
     /// Split a block at the given position (e.g. pressing Enter).
@@ -1341,22 +1241,17 @@ impl Editor {
     /// Replace the current selection with plain text in a single transaction.
     pub fn replace_selection_text(&mut self, text: &str) -> Result<EditorUpdate, EditorError> {
         self.admit_text_mutation(text)?;
-        let doc = self.backend.document();
-        let from = self.selection.from(doc);
-        let to = self.selection.to(doc);
-        let marks = self.effective_marks_for_insert(from);
-        let mut tx = Transaction::new(Source::Input);
-        if from < to {
-            tx.add_step(Step::DeleteRange { from, to });
+        let plan = crate::command_planner::plan_replace_selection_text(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            self.stored_marks.as_deref(),
+            text,
+        );
+        match plan {
+            Some(plan) => self.apply_semantic_command_plan(plan),
+            None => Ok(self.build_update_from_current()),
         }
-        if !text.is_empty() {
-            tx.add_step(Step::InsertText {
-                pos: from,
-                text: text.to_string(),
-                marks,
-            });
-        }
-        self.apply_transaction(tx)
     }
 
     // -----------------------------------------------------------------------
@@ -1424,6 +1319,32 @@ impl Editor {
             transaction.add_step(operation.as_step());
         }
         self.apply_transaction_with_selection_adjustments(transaction, None, plan.selection_after)
+    }
+
+    fn apply_mark_command_plan(
+        &mut self,
+        plan: Option<crate::command_planner::MarkCommandPlan>,
+    ) -> Result<EditorUpdate, EditorError> {
+        let Some(plan) = plan else {
+            return Ok(self.build_update_from_current());
+        };
+        if let Some(stored_marks) = plan.stored_marks_after {
+            self.stored_marks = Some(stored_marks);
+            return Ok(self.build_update_from_current());
+        }
+        let mut transaction = Transaction::new(Source::Format);
+        for operation in &plan.semantic.operations {
+            transaction.add_step(operation.as_step());
+        }
+        match self.apply_transaction_with_selection_adjustments(
+            transaction,
+            None,
+            plan.semantic.selection_after,
+        ) {
+            Ok(update) => Ok(update),
+            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
+            Err(error) => Err(error),
+        }
     }
 
     fn apply_command_replacement(
@@ -1597,28 +1518,28 @@ impl Editor {
         mark_name: &str,
         attrs: &HashMap<String, serde_json::Value>,
     ) -> Result<(), EditorError> {
-        let spec = self.schema.mark(mark_name).ok_or_else(|| {
-            BoundaryError::new("UNKNOWN_MARK", format!("unknown mark '{mark_name}'"))
-        })?;
-        for (name, attr) in &spec.attrs {
-            if !attr.has_default && !attrs.contains_key(name) {
-                return Err(BoundaryError::new(
-                    "REQUIRED_ATTRIBUTE_MISSING",
-                    format!("'{mark_name}' requires attribute '{name}'"),
-                )
-                .into());
-            }
-        }
-        if !spec.allow_undeclared_attrs {
-            if let Some(name) = attrs.keys().find(|name| !spec.attrs.contains_key(*name)) {
-                return Err(BoundaryError::new(
-                    "DOCUMENT_INVALID",
-                    format!("'{mark_name}' contains undeclared attribute '{name}'"),
-                )
-                .into());
-            }
-        }
-        Ok(())
+        crate::command_planner::validate_mark_request(&self.schema, mark_name, attrs).map_err(
+            |error| {
+                match error {
+                    crate::command_planner::MarkRequestError::UnknownMark => {
+                        BoundaryError::new("UNKNOWN_MARK", format!("unknown mark '{mark_name}'"))
+                    }
+                    crate::command_planner::MarkRequestError::RequiredAttribute(name) => {
+                        BoundaryError::new(
+                            "REQUIRED_ATTRIBUTE_MISSING",
+                            format!("'{mark_name}' requires attribute '{name}'"),
+                        )
+                    }
+                    crate::command_planner::MarkRequestError::UndeclaredAttribute(name) => {
+                        BoundaryError::new(
+                            "DOCUMENT_INVALID",
+                            format!("'{mark_name}' contains undeclared attribute '{name}'"),
+                        )
+                    }
+                }
+                .into()
+            },
+        )
     }
 
     /// Build an EditorUpdate from render elements and current state.

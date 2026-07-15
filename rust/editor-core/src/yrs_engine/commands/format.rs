@@ -14,6 +14,92 @@ fn point(offset: u32) -> RevisionedPosition {
     }
 }
 
+fn validate_mark_request(
+    context: &PlanningContext<'_>,
+    mark_type: &str,
+    attrs: &std::collections::HashMap<String, serde_json::Value>,
+) -> OperationResult<()> {
+    crate::command_planner::validate_mark_request(context.schema, mark_type, attrs).map_err(
+        |error| {
+            let message = match error {
+                crate::command_planner::MarkRequestError::UnknownMark => {
+                    format!("unknown mark '{mark_type}'")
+                }
+                crate::command_planner::MarkRequestError::RequiredAttribute(name) => {
+                    format!("'{mark_type}' requires attribute '{name}'")
+                }
+                crate::command_planner::MarkRequestError::UndeclaredAttribute(name) => {
+                    format!("'{mark_type}' contains undeclared attribute '{name}'")
+                }
+            };
+            crate::yrs_engine::OperationError::operation_invalid(
+                context.request_id,
+                0,
+                "mark",
+                message,
+            )
+        },
+    )
+}
+
+fn state_only_mark_transaction(
+    context: &PlanningContext<'_>,
+    plan: crate::command_planner::MarkCommandPlan,
+) -> CommandPlan {
+    let encoded = |position: u32| {
+        point(
+            context
+                .position_map
+                .doc_to_scalar(position, context.document),
+        )
+    };
+    let operations = plan
+        .semantic
+        .operations
+        .into_iter()
+        .map(|operation| match operation {
+            crate::command_planner::SemanticOperation::AddMark { from, to, mark } => {
+                TypedOperation::AddMark {
+                    range: RevisionedRange {
+                        from: encoded(from),
+                        to: encoded(to),
+                    },
+                    mark,
+                }
+            }
+            crate::command_planner::SemanticOperation::RemoveMark {
+                from,
+                to,
+                mark_type,
+            } => TypedOperation::RemoveMark {
+                range: RevisionedRange {
+                    from: encoded(from),
+                    to: encoded(to),
+                },
+                mark_type,
+            },
+            crate::command_planner::SemanticOperation::ReplaceMark { from, to, mark } => {
+                TypedOperation::ReplaceMark {
+                    range: RevisionedRange {
+                        from: encoded(from),
+                        to: encoded(to),
+                    },
+                    mark,
+                }
+            }
+            _ => unreachable!("stored-mark planner emitted a non-mark operation"),
+        })
+        .collect();
+    CommandPlan::SelectionOnly(TypedTransaction {
+        request_id: context.request_id,
+        base_document_revision: context.revision,
+        origin: TransactionOrigin::LocalCommand,
+        operations,
+        selection_intent: SelectionIntent::Preserve,
+        history_policy: HistoryPolicy::Boundary,
+    })
+}
+
 pub(super) fn plan(
     context: PlanningContext<'_>,
     command: TypedCommand,
@@ -21,110 +107,76 @@ pub(super) fn plan(
     let crate::yrs_engine::ResolvedSelection::Text { anchor, head } = context.selection else {
         return Ok(CommandPlan::NotApplicable);
     };
-    let from = anchor.scalar.min(head.scalar);
-    let to = anchor.scalar.max(head.scalar);
-    let selection_range = RevisionedRange {
-        from: point(from),
-        to: point(to),
-    };
-    let doc_from = anchor.document.min(head.document);
-    let doc_to = anchor.document.max(head.document);
-    let scalar_range_for_doc = |doc_from: u32, doc_to: u32| RevisionedRange {
-        from: point(
-            context
-                .position_map
-                .doc_to_scalar(doc_from, context.document),
-        ),
-        to: point(context.position_map.doc_to_scalar(doc_to, context.document)),
-    };
-    let mut state_only = false;
-    let uses_operation_result = false;
-    let operations = match command {
+    let selection = crate::selection::Selection::text(
+        context
+            .position_map
+            .scalar_to_doc(anchor.scalar, context.document),
+        context
+            .position_map
+            .scalar_to_doc(head.scalar, context.document),
+    );
+    match command {
         TypedCommand::ToggleMark { mark_type } => {
-            let active = if from == to {
-                context
-                    .stored_marks
-                    .map(|marks| marks.iter().any(|mark| mark.mark_type() == mark_type))
-                    .unwrap_or_else(|| {
-                        crate::editor_state::marks_at_position(context.document, anchor.document)
-                            .iter()
-                            .any(|mark| mark.mark_type() == mark_type)
-                    })
-            } else {
-                crate::editor_state::range_has_mark(context.document, doc_from, doc_to, &mark_type)
+            validate_mark_request(&context, &mark_type, &Default::default())?;
+            let Some(plan) = crate::command_planner::plan_toggle_mark(
+                context.document,
+                context.schema,
+                &selection,
+                context.stored_marks,
+                &mark_type,
+            ) else {
+                return Ok(CommandPlan::NotApplicable);
             };
-            state_only = from == to;
-            if active {
-                vec![TypedOperation::RemoveMark {
-                    range: selection_range,
-                    mark_type,
-                }]
+            if plan.stored_marks_after.is_some() {
+                Ok(state_only_mark_transaction(&context, plan))
             } else {
-                vec![TypedOperation::AddMark {
-                    range: selection_range,
-                    mark: Mark::new(mark_type, Default::default()),
-                }]
+                super::text::semantic_transaction(&context, &selection, plan.semantic)
             }
         }
-        TypedCommand::SetMark { mark_type, attrs } if from == to => {
-            if let Some((mark_from, mark_to)) = crate::editor_state::mark_range_at_position(
+        TypedCommand::SetMark { mark_type, attrs } => {
+            validate_mark_request(&context, &mark_type, &attrs)?;
+            let Some(plan) = crate::command_planner::plan_set_mark(
                 context.document,
-                anchor.document,
-                &mark_type,
-            ) {
-                let range = scalar_range_for_doc(mark_from, mark_to);
-                vec![
-                    TypedOperation::RemoveMark {
-                        range,
-                        mark_type: mark_type.clone(),
-                    },
-                    TypedOperation::AddMark {
-                        range,
-                        mark: Mark::new(mark_type, attrs),
-                    },
-                ]
+                context.schema,
+                &selection,
+                context.stored_marks,
+                Mark::new(mark_type, attrs),
+            ) else {
+                return Ok(CommandPlan::NotApplicable);
+            };
+            if plan.stored_marks_after.is_some() {
+                Ok(state_only_mark_transaction(&context, plan))
             } else {
-                state_only = true;
-                vec![TypedOperation::ReplaceMark {
-                    range: selection_range,
-                    mark: Mark::new(mark_type, attrs),
-                }]
+                super::text::semantic_transaction(&context, &selection, plan.semantic)
             }
         }
-        TypedCommand::SetMark { mark_type, attrs } => vec![
-            TypedOperation::RemoveMark {
-                range: selection_range,
-                mark_type: mark_type.clone(),
-            },
-            TypedOperation::AddMark {
-                range: selection_range,
-                mark: Mark::new(mark_type, attrs),
-            },
-        ],
-        TypedCommand::UnsetMark { mark_type } if from == to => {
-            if let Some((mark_from, mark_to)) = crate::editor_state::mark_range_at_position(
+        TypedCommand::UnsetMark { mark_type } => {
+            crate::command_planner::validate_mark_type(context.schema, &mark_type).map_err(
+                |_| {
+                    crate::yrs_engine::OperationError::operation_invalid(
+                        context.request_id,
+                        0,
+                        "mark",
+                        format!("unknown mark '{mark_type}'"),
+                    )
+                },
+            )?;
+            let Some(plan) = crate::command_planner::plan_unset_mark(
                 context.document,
-                anchor.document,
+                context.schema,
+                &selection,
+                context.stored_marks,
                 &mark_type,
-            ) {
-                vec![TypedOperation::RemoveMark {
-                    range: scalar_range_for_doc(mark_from, mark_to),
-                    mark_type,
-                }]
+            ) else {
+                return Ok(CommandPlan::NotApplicable);
+            };
+            if plan.stored_marks_after.is_some() {
+                Ok(state_only_mark_transaction(&context, plan))
             } else {
-                state_only = true;
-                vec![TypedOperation::RemoveMark {
-                    range: selection_range,
-                    mark_type,
-                }]
+                super::text::semantic_transaction(&context, &selection, plan.semantic)
             }
         }
-        TypedCommand::UnsetMark { mark_type } => vec![TypedOperation::RemoveMark {
-            range: selection_range,
-            mark_type,
-        }],
         TypedCommand::ToggleHeading { level } => {
-            let selection = crate::yrs_engine::derived_state::resolved_to_legacy(context.selection);
             let Some(plan) = crate::command_planner::plan_toggle_heading(
                 context.document,
                 context.schema,
@@ -133,7 +185,7 @@ pub(super) fn plan(
             ) else {
                 return Ok(CommandPlan::NotApplicable);
             };
-            return super::text::semantic_transaction(
+            super::text::semantic_transaction(
                 &context,
                 &selection,
                 crate::command_planner::SemanticCommandPlan {
@@ -144,10 +196,9 @@ pub(super) fn plan(
                     }],
                     selection_after: Some(plan.selection_after),
                 },
-            );
+            )
         }
         TypedCommand::ToggleCodeBlock => {
-            let selection = crate::yrs_engine::derived_state::resolved_to_legacy(context.selection);
             let Some(plan) = crate::command_planner::plan_toggle_code_block(
                 context.document,
                 context.schema,
@@ -155,7 +206,7 @@ pub(super) fn plan(
             ) else {
                 return Ok(CommandPlan::NotApplicable);
             };
-            return super::text::semantic_transaction(
+            super::text::semantic_transaction(
                 &context,
                 &selection,
                 crate::command_planner::SemanticCommandPlan {
@@ -166,10 +217,9 @@ pub(super) fn plan(
                     }],
                     selection_after: Some(plan.selection_after),
                 },
-            );
+            )
         }
         TypedCommand::ToggleBlockquote => {
-            let selection = crate::yrs_engine::derived_state::resolved_to_legacy(context.selection);
             let Some(plan) = crate::command_planner::plan_toggle_blockquote(
                 context.document,
                 context.schema,
@@ -177,7 +227,7 @@ pub(super) fn plan(
             ) else {
                 return Ok(CommandPlan::NotApplicable);
             };
-            return super::text::semantic_transaction(
+            super::text::semantic_transaction(
                 &context,
                 &selection,
                 crate::command_planner::SemanticCommandPlan {
@@ -188,25 +238,8 @@ pub(super) fn plan(
                     }],
                     selection_after: Some(plan.selection_after),
                 },
-            );
+            )
         }
         _ => unreachable!("format planner received non-format command"),
-    };
-    let transaction = TypedTransaction {
-        request_id: context.request_id,
-        base_document_revision: context.revision,
-        origin: TransactionOrigin::LocalCommand,
-        operations,
-        selection_intent: if uses_operation_result {
-            SelectionIntent::UseOperationResult
-        } else {
-            SelectionIntent::Preserve
-        },
-        history_policy: HistoryPolicy::Boundary,
-    };
-    if state_only {
-        Ok(CommandPlan::SelectionOnly(transaction))
-    } else {
-        Ok(CommandPlan::Transaction(transaction))
     }
 }

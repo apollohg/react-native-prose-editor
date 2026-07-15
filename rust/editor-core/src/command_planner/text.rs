@@ -7,6 +7,72 @@ use crate::transform::Transaction;
 
 use super::{SemanticCommandPlan, SemanticOperation};
 
+fn insertion_marks(
+    document: &Document,
+    schema: &Schema,
+    position: u32,
+    stored_marks: Option<&[crate::model::Mark]>,
+    collapsed: bool,
+) -> Vec<crate::model::Mark> {
+    let marks = if collapsed {
+        stored_marks
+            .map(<[_]>::to_vec)
+            .unwrap_or_else(|| crate::editor_state::marks_at_position(document, position))
+    } else {
+        crate::editor_state::marks_at_position(document, position)
+    };
+    super::canonical_marks(&marks, schema)
+}
+
+pub(crate) fn plan_insert_text(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    stored_marks: Option<&[crate::model::Mark]>,
+    text: &str,
+) -> Option<SemanticCommandPlan> {
+    let Selection::Text { anchor, head } = selection else {
+        return None;
+    };
+    if anchor != head || text.is_empty() {
+        return None;
+    }
+    Some(SemanticCommandPlan::one(SemanticOperation::InsertText {
+        pos: *anchor,
+        text: text.to_string(),
+        marks: insertion_marks(document, schema, *anchor, stored_marks, true),
+    }))
+}
+
+pub(crate) fn plan_replace_selection_text(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    stored_marks: Option<&[crate::model::Mark]>,
+    text: &str,
+) -> Option<SemanticCommandPlan> {
+    let Selection::Text { anchor, head } = selection else {
+        return None;
+    };
+    let from = (*anchor).min(*head);
+    let to = (*anchor).max(*head);
+    let mut operations = Vec::with_capacity(2);
+    if from < to {
+        operations.push(SemanticOperation::DeleteRange { from, to });
+    }
+    if !text.is_empty() {
+        operations.push(SemanticOperation::InsertText {
+            pos: from,
+            text: text.to_string(),
+            marks: insertion_marks(document, schema, from, stored_marks, from == to),
+        });
+    }
+    (!operations.is_empty()).then_some(SemanticCommandPlan {
+        operations,
+        selection_after: None,
+    })
+}
+
 pub(super) fn default_text_block(schema: &Schema) -> Option<Node> {
     let spec = schema.preferred_text_block()?;
     let attrs = spec
