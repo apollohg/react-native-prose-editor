@@ -6,7 +6,7 @@ use editor_core::intercept::InterceptorPipeline;
 use editor_core::schema::Schema;
 use editor_core::tiptap_schema;
 use editor_core::yrs_engine::{
-    Affinity, EditingLimits, EditorOffsetKind, HistoryPolicy, InitializationMode,
+    Affinity, CommandPlan, EditingLimits, EditorOffsetKind, HistoryPolicy, InitializationMode,
     RevisionedPosition, SelectionInput, SelectionIntent, TransactionOrigin, TypedCommand,
     TypedOperation, TypedTransaction, YrsDocumentEngine, YrsEngineConfig,
 };
@@ -347,6 +347,42 @@ fn range_set_and_unset_mark_matrix_preserves_direction_attrs_and_one_undo_group(
             },
         );
     }
+}
+
+#[test]
+fn range_set_mark_lowers_to_marks_only_operations_and_preserves_reverse_selection() {
+    let document = serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[
+        {"type":"text","text":"a","marks":[{"type":"link","attrs":{"href":"old"}}]},
+        {"type":"text","text":"bc"}
+    ]}]});
+    let mut engine = engine();
+    engine
+        .import_json(&document.to_string(), TransactionOrigin::DocumentImport)
+        .unwrap();
+    select(&mut engine, 75, 2, 0);
+
+    let CommandPlan::Transaction(transaction) = engine
+        .plan_command(
+            76,
+            TypedCommand::SetMark {
+                mark_type: "link".into(),
+                attrs: HashMap::from([("href".into(), serde_json::json!("new"))]),
+            },
+        )
+        .unwrap()
+    else {
+        panic!("range set-mark must plan a transaction")
+    };
+    assert!(matches!(
+        transaction.operations.as_slice(),
+        [
+            TypedOperation::RemoveMark { .. },
+            TypedOperation::AddMark { .. }
+        ]
+    ));
+    assert_eq!(transaction.selection_intent, SelectionIntent::Preserve);
+    assert_eq!(transaction.origin, TransactionOrigin::LocalCommand);
+    assert_eq!(transaction.history_policy, HistoryPolicy::Boundary);
 }
 
 #[test]

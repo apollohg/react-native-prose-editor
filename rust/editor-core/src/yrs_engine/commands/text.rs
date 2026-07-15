@@ -3,8 +3,8 @@ use crate::boundary::{BoundedInput, InputKind};
 use crate::serialize::{FromHtmlOptions, UnknownTypeMode};
 use crate::yrs_engine::{
     Affinity, EditorOffsetKind, HistoryPolicy, OperationError, OperationResult, RevisionedPosition,
-    RevisionedRange, SelectionIntent, StructuralReplacement, TransactionOrigin, TypedOperation,
-    TypedTransaction,
+    RevisionedRange, SelectionInput, SelectionIntent, StructuralReplacement, TransactionOrigin,
+    TypedOperation, TypedTransaction,
 };
 
 fn point(offset: u32) -> RevisionedPosition {
@@ -75,15 +75,19 @@ fn selection_range(
     }
 }
 
-fn transaction(context: &PlanningContext<'_>, operations: Vec<TypedOperation>) -> CommandPlan {
-    CommandPlan::Transaction(TypedTransaction {
+fn transaction_with_selection(
+    context: &PlanningContext<'_>,
+    operations: Vec<TypedOperation>,
+    selection_intent: SelectionIntent,
+) -> TypedTransaction {
+    TypedTransaction {
         request_id: context.request_id,
         base_document_revision: context.revision,
         origin: TransactionOrigin::LocalCommand,
         operations,
-        selection_intent: SelectionIntent::UseOperationResult,
+        selection_intent,
         history_policy: HistoryPolicy::Boundary,
-    })
+    }
 }
 
 pub(super) fn semantic_transaction(
@@ -135,12 +139,14 @@ pub(super) fn semantic_transaction(
             ));
         }
     }
-    if plan.operations.len() == 1
-        && direct_selection_compatible(&plan.operations[0], plan.selection_after.as_ref())
-    {
-        if let Some(operation) = direct_typed_operation(context, &plan.operations[0]) {
-            return Ok(transaction(context, vec![operation]));
-        }
+    if let Some(transaction) = direct_transaction(
+        context,
+        selection,
+        &plan,
+        &simulated.document,
+        &simulated.selection,
+    )? {
+        return Ok(CommandPlan::Transaction(transaction));
     }
     let diff = crate::command_planner::structural_diff_bounded(
         context.document,
@@ -201,23 +207,92 @@ pub(super) fn semantic_transaction(
     }))
 }
 
-fn direct_selection_compatible(
-    operation: &crate::command_planner::SemanticOperation,
-    selection_after: Option<&crate::selection::Selection>,
-) -> bool {
-    match selection_after {
-        None => true,
-        Some(crate::selection::Selection::Text { anchor, head }) if anchor == head => {
-            let expected = match operation {
-                crate::command_planner::SemanticOperation::ReplaceRange {
-                    from, content, ..
-                } => from.checked_add(content.size()),
-                _ => None,
-            };
-            expected == Some(*anchor)
-        }
-        _ => false,
+fn direct_transaction(
+    context: &PlanningContext<'_>,
+    selection: &crate::selection::Selection,
+    plan: &crate::command_planner::SemanticCommandPlan,
+    simulated_document: &crate::model::Document,
+    simulated_selection: &crate::selection::Selection,
+) -> OperationResult<Option<TypedTransaction>> {
+    let Some(operations) = plan
+        .operations
+        .iter()
+        .map(|operation| direct_typed_operation(context, operation))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    let preferred = if plan.selection_after.as_ref() == Some(selection) {
+        SelectionIntent::Preserve
+    } else {
+        SelectionIntent::UseOperationResult
+    };
+    let compile = |selection_intent| {
+        let transaction = transaction_with_selection(context, operations.clone(), selection_intent);
+        let compiled = crate::yrs_engine::compiler::compile_transaction(
+            crate::yrs_engine::compiler::CompilationContext {
+                document: context.document,
+                selection: Some(selection),
+                schema: context.schema,
+                resource_limits: context.resource_limits,
+                editing_limits: context.editing_limits,
+                document_revision: context.revision,
+                max_length: context.max_length,
+            },
+            transaction.clone(),
+        )?;
+        let compiled_selection = match compiled.selection_plan {
+            crate::yrs_engine::compiler::SelectionPlan::Preserve => selection.clone(),
+            crate::yrs_engine::compiler::SelectionPlan::Mapped(selection)
+            | crate::yrs_engine::compiler::SelectionPlan::Explicit(selection) => selection,
+        };
+        Ok((
+            compiled.preview == *simulated_document && compiled_selection == *simulated_selection,
+            transaction,
+        ))
+    };
+    let (proved, transaction) = compile(preferred.clone())?;
+    if proved {
+        return Ok(Some(transaction));
     }
+
+    let mut alternatives = Vec::new();
+    if !matches!(preferred, SelectionIntent::UseOperationResult) {
+        alternatives.push(SelectionIntent::UseOperationResult);
+    }
+    if !matches!(preferred, SelectionIntent::Preserve) {
+        alternatives.push(SelectionIntent::Preserve);
+    }
+    if let Some(explicit) = direct_selection_input(context, simulated_selection) {
+        alternatives.push(SelectionIntent::Set(explicit));
+    }
+    for intent in alternatives {
+        if let Ok((true, transaction)) = compile(intent) {
+            return Ok(Some(transaction));
+        }
+    }
+    Ok(None)
+}
+
+fn direct_selection_input(
+    context: &PlanningContext<'_>,
+    selection: &crate::selection::Selection,
+) -> Option<SelectionInput> {
+    let encoded = |position: u32| {
+        let scalar = context
+            .position_map
+            .doc_to_scalar(position, context.document);
+        (context.position_map.scalar_to_doc(scalar, context.document) == position)
+            .then_some(point(scalar))
+    };
+    Some(match selection {
+        crate::selection::Selection::Text { anchor, head } => SelectionInput::Text {
+            anchor: encoded(*anchor)?,
+            head: encoded(*head)?,
+        },
+        crate::selection::Selection::Node { pos } => SelectionInput::Node { at: encoded(*pos)? },
+        crate::selection::Selection::All => SelectionInput::All,
+    })
 }
 
 fn direct_typed_operation(
@@ -333,61 +408,37 @@ pub(super) fn plan(
                         format!("{field} is outside the rendered document"),
                     )
                 })?;
-                let document = context.position_map.scalar_to_doc(scalar, context.document);
-                Ok((scalar, document, position.affinity))
+                Ok(scalar)
             };
             let from = resolve(requested.from, "range.from")?;
             let to = resolve(requested.to, "range.to")?;
-            if from.0 == to.0 {
+            if from == to {
                 return Ok(CommandPlan::NotApplicable);
             }
-            let (mut from, mut to) = if from.0 < to.0 {
-                (from, to)
-            } else {
-                (to, from)
+            let (from, to) = if from < to { (from, to) } else { (to, from) };
+            let Some(plan) = crate::command_planner::plan_delete_scalar_range(
+                context.document,
+                context.position_map,
+                context.schema,
+                from,
+                to,
+            )
+            .map_err(|()| {
+                OperationError::operation_invalid(
+                    context.request_id,
+                    0,
+                    "command",
+                    "delete command planning failed",
+                )
+            })?
+            else {
+                return Ok(CommandPlan::NotApplicable);
             };
-            if from.0 > 0
-                && context
-                    .document
-                    .resolve(from.1)
-                    .is_ok_and(|resolved| resolved.node_path.is_empty())
-            {
-                from.1 = from.1.saturating_add(1);
-                to.1 = to.1.saturating_add(1);
-            }
-            if from.1 != context.position_map.scalar_to_doc(from.0, context.document)
-                || to.1 != context.position_map.scalar_to_doc(to.0, context.document)
-            {
-                let selection = crate::selection::Selection::text(from.1, to.1);
-                return semantic_transaction(
-                    &context,
-                    &selection,
-                    crate::command_planner::SemanticCommandPlan {
-                        operations: vec![crate::command_planner::SemanticOperation::DeleteRange {
-                            from: from.1,
-                            to: to.1,
-                        }],
-                        selection_after: Some(crate::selection::Selection::cursor(from.1)),
-                    },
-                );
-            }
-            return Ok(transaction(
-                &context,
-                vec![TypedOperation::DeleteRange {
-                    range: RevisionedRange {
-                        from: RevisionedPosition {
-                            offset: from.0,
-                            kind: EditorOffsetKind::Scalar,
-                            affinity: from.2,
-                        },
-                        to: RevisionedPosition {
-                            offset: to.0,
-                            kind: EditorOffsetKind::Scalar,
-                            affinity: to.2,
-                        },
-                    },
-                }],
-            ));
+            let selection = crate::selection::Selection::text(
+                context.position_map.scalar_to_doc(from, context.document),
+                context.position_map.scalar_to_doc(to, context.document),
+            );
+            return semantic_transaction(&context, &selection, plan);
         }
         TypedCommand::InsertText { text } => {
             let selection = crate::yrs_engine::derived_state::resolved_to_legacy(context.selection);

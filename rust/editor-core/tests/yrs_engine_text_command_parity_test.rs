@@ -171,7 +171,7 @@ fn structural_parity_with_schema(
     };
     assert_eq!(anchor, yrs_anchor.scalar, "anchor mismatch in {label}");
     assert_eq!(head, yrs_head.scalar, "head mismatch in {label}");
-    assert_eq!(legacy.can_undo(), yrs.can_undo());
+    assert_eq!(legacy.can_undo(), yrs.can_undo(), "scenario: {label}");
     let legacy_undo = legacy.undo();
     let yrs_undo = yrs.undo_with_result(802).unwrap();
     assert_eq!(
@@ -314,6 +314,41 @@ fn exact_text_delete_and_split_keep_concrete_operation_classification() {
         panic!("normalized reverse delete must stay a concrete DeleteRange")
     };
     assert_eq!((range.from.offset, range.to.offset), (1, 3));
+
+    let CommandPlan::Transaction(utf16) = engine
+        .plan_command(
+            915,
+            TypedCommand::DeleteRange {
+                range: RevisionedRange {
+                    from: RevisionedPosition {
+                        offset: 1,
+                        kind: EditorOffsetKind::Utf16,
+                        affinity: Affinity::Before,
+                    },
+                    to: RevisionedPosition {
+                        offset: 3,
+                        kind: EditorOffsetKind::Utf16,
+                        affinity: Affinity::After,
+                    },
+                },
+            },
+        )
+        .unwrap()
+    else {
+        panic!("valid UTF-16 delete range must plan")
+    };
+    let [TypedOperation::DeleteRange { range }] = utf16.operations.as_slice() else {
+        panic!("UTF-16 delete must normalize to a concrete scalar DeleteRange")
+    };
+    assert_eq!(
+        (
+            range.from.offset,
+            range.from.kind,
+            range.to.offset,
+            range.to.kind,
+        ),
+        (1, EditorOffsetKind::Scalar, 2, EditorOffsetKind::Scalar,)
+    );
 
     select_yrs(&mut engine, 912, 1, 1);
     let CommandPlan::Transaction(split) =
@@ -502,6 +537,40 @@ fn composition_range_replacement_and_stored_mark_insertion_are_one_command_group
 }
 
 #[test]
+fn ranged_replace_selection_text_lowers_to_inline_delete_and_insert() {
+    let mut engine = engine();
+    engine
+        .apply_command(
+            1,
+            TypedCommand::InsertText {
+                text: "left target right".into(),
+            },
+        )
+        .unwrap();
+    select_yrs(&mut engine, 2, 11, 5);
+
+    let CommandPlan::Transaction(transaction) = engine
+        .plan_command(3, TypedCommand::ReplaceSelectionText { text: "new".into() })
+        .unwrap()
+    else {
+        panic!("ranged replacement must plan a transaction")
+    };
+    assert!(matches!(
+        transaction.operations.as_slice(),
+        [
+            TypedOperation::DeleteRange { .. },
+            TypedOperation::InsertText { .. }
+        ]
+    ));
+    assert_eq!(
+        transaction.selection_intent,
+        SelectionIntent::UseOperationResult
+    );
+    assert_eq!(transaction.origin, TransactionOrigin::LocalCommand);
+    assert_eq!(transaction.history_policy, HistoryPolicy::Boundary);
+}
+
+#[test]
 fn insert_text_is_caret_only_for_forward_and_reverse_ranges() {
     for (index, (anchor, head)) in [(0, 2), (2, 0)].into_iter().enumerate() {
         let mut engine = engine();
@@ -571,8 +640,8 @@ fn explicit_delete_range_ignores_current_selection_kind_and_rejects_invalid_endp
             2,
             TypedCommand::DeleteRange {
                 range: RevisionedRange {
-                    from: point(1),
-                    to: point(2),
+                    from: point(2),
+                    to: point(3),
                 },
             },
         )
@@ -928,6 +997,88 @@ fn delete_command_structural_matrix_matches_legacy() {
             },
         },
     );
+}
+
+#[test]
+fn explicit_delete_range_uses_shared_structural_planning_matrix() {
+    for (label, document, from, to) in [
+        (
+            "explicit-list-marker",
+            serde_json::json!({"type":"doc","content":[{"type":"bulletList","content":[
+                {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"one"}]}]},
+                {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"two"}]}]}
+            ]}]}),
+            7,
+            8,
+        ),
+        (
+            "explicit-empty-list",
+            serde_json::json!({"type":"doc","content":[{"type":"bulletList","content":[
+                {"type":"listItem","content":[{"type":"paragraph"}]}
+            ]}]}),
+            2,
+            3,
+        ),
+        (
+            "explicit-empty-blockquote",
+            serde_json::json!({"type":"doc","content":[{"type":"blockquote","content":[{"type":"paragraph"}]}]}),
+            0,
+            1,
+        ),
+    ] {
+        structural_parity(
+            label,
+            document,
+            from,
+            to,
+            TypedCommand::DeleteRange {
+                range: RevisionedRange {
+                    from: point(from),
+                    to: point(to),
+                },
+            },
+        );
+    }
+
+    for (label, document, document_position) in [
+        (
+            "explicit-void-and-empty-block",
+            serde_json::json!({"type":"doc","content":[
+                {"type":"image","attrs":{"src":"x","alt":null,"title":null,"width":null,"height":null}},
+                {"type":"paragraph"}
+            ]}),
+            2,
+        ),
+        (
+            "explicit-synthetic-block-boundary",
+            serde_json::json!({"type":"doc","content":[
+                {"type":"paragraph","content":[{"type":"text","text":"a"}]},
+                {"type":"paragraph"}
+            ]}),
+            4,
+        ),
+    ] {
+        let mut positions = Editor::new(tiptap_schema(), InterceptorPipeline::new(), false);
+        positions.set_json(&document).unwrap();
+        let to = positions
+            .position_map()
+            .doc_to_scalar(document_position, positions.document());
+        let from = to
+            .checked_sub(1)
+            .expect("structural cursor must follow a boundary");
+        structural_parity(
+            label,
+            document,
+            from,
+            to,
+            TypedCommand::DeleteRange {
+                range: RevisionedRange {
+                    from: point(from),
+                    to: point(to),
+                },
+            },
+        );
+    }
 }
 
 #[test]

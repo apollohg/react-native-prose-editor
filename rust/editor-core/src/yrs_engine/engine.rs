@@ -2455,12 +2455,15 @@ mod tests {
     use serde_json::json;
     use yrs::OffsetKind;
 
+    use yrs::branch::{Branch, BranchPtr};
+    use yrs::types::xml::{XmlFragment, XmlOut, XmlTextRef};
     use yrs::{updates::decoder::Decode, Update};
-    use yrs::{ClientID, Doc, Options};
+    use yrs::{Assoc, ClientID, Doc, Options, ReadTxn, StickyIndex, Transact};
 
     use crate::yrs_engine::{
-        Affinity, EditorOffsetKind, HistoryPolicy, RevisionedPosition, RevisionedRange,
-        SelectionIntent, TransactionOrigin, TypedOperation, TypedTransaction,
+        Affinity, CommandPlan, EditorOffsetKind, HistoryPolicy, RevisionedPosition,
+        RevisionedRange, SelectionInput, SelectionIntent, TransactionOrigin, TypedCommand,
+        TypedOperation, TypedTransaction,
     };
 
     use super::{
@@ -3084,6 +3087,238 @@ mod tests {
             .unwrap()
             .state_vector();
         assert!(durable_clients.get(&ClientID::new(local_client)) > 0);
+    }
+
+    fn select_text(engine: &mut YrsDocumentEngine, request_id: u64, anchor: u32, head: u32) {
+        let point = |offset| RevisionedPosition {
+            offset,
+            kind: EditorOffsetKind::Scalar,
+            affinity: Affinity::Before,
+        };
+        engine
+            .apply_typed_transaction(TypedTransaction {
+                request_id,
+                base_document_revision: engine.revision(),
+                origin: TransactionOrigin::LocalApi,
+                operations: vec![],
+                selection_intent: SelectionIntent::Set(SelectionInput::Text {
+                    anchor: point(anchor),
+                    head: point(head),
+                }),
+                history_policy: HistoryPolicy::Skip,
+            })
+            .unwrap();
+    }
+
+    fn unaffected_text_sticky(
+        engine: &YrsDocumentEngine,
+        text_child: u32,
+        utf16_index: u32,
+    ) -> (crate::yrs_engine::RelativePoint, BranchPtr, u32) {
+        let txn = engine.doc.transact();
+        let fragment = txn.get_xml_fragment(engine.fragment_name.as_str()).unwrap();
+        let XmlOut::Element(paragraph) = fragment.get(&txn, 0).unwrap() else {
+            panic!("expected paragraph")
+        };
+        let XmlOut::Text(text) = paragraph.get(&txn, text_child).unwrap() else {
+            panic!("expected text child")
+        };
+        let branch = BranchPtr::from(<XmlTextRef as AsRef<Branch>>::as_ref(&text));
+        let sticky = StickyIndex::at(&txn, branch, utf16_index, Assoc::After).unwrap();
+        let point = crate::yrs_engine::RelativePoint {
+            sticky,
+            affinity: Affinity::After,
+        };
+        let Some(offset) = point.sticky.get_offset(&txn) else {
+            panic!("sticky must resolve")
+        };
+        let doc_pos = crate::yrs_engine::position::relative_point_to_doc_pos(
+            &txn,
+            &fragment,
+            &point,
+            &engine.schema,
+        )
+        .unwrap();
+        let scalar = engine
+            .position_map()
+            .unwrap()
+            .doc_to_scalar(doc_pos, engine.document().unwrap());
+        (point, offset.branch, scalar)
+    }
+
+    fn assert_unaffected_sticky(
+        engine: &YrsDocumentEngine,
+        point: &crate::yrs_engine::RelativePoint,
+        branch: BranchPtr,
+        expected_scalar: u32,
+    ) {
+        let txn = engine.doc.transact();
+        let fragment = txn.get_xml_fragment(engine.fragment_name.as_str()).unwrap();
+        let offset = point.sticky.get_offset(&txn).unwrap();
+        assert_eq!(
+            offset.branch, branch,
+            "unaffected Yrs branch identity changed"
+        );
+        let doc_pos = crate::yrs_engine::position::relative_point_to_doc_pos(
+            &txn,
+            &fragment,
+            point,
+            &engine.schema,
+        )
+        .unwrap();
+        assert_eq!(
+            engine
+                .position_map()
+                .unwrap()
+                .doc_to_scalar(doc_pos, engine.document().unwrap()),
+            expected_scalar,
+            "unaffected sticky point moved to the wrong rendered position"
+        );
+    }
+
+    #[test]
+    fn granular_command_lowering_preserves_classification_locality_and_unaffected_sticky_identity()
+    {
+        let mut format = transaction_engine();
+        format
+            .import_json(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"a","marks":[{"type":"link","attrs":{"href":"old"}}]},{"type":"text","text":"bc tail"}]}]}"#,
+                TransactionOrigin::DocumentImport,
+            )
+            .unwrap();
+        let (format_sticky, format_branch, format_scalar) = unaffected_text_sticky(&format, 1, 5);
+        select_text(&mut format, 100, 2, 0);
+        let CommandPlan::Transaction(format_transaction) = format
+            .plan_command(
+                101,
+                TypedCommand::SetMark {
+                    mark_type: "link".into(),
+                    attrs: HashMap::from([("href".into(), json!("new"))]),
+                },
+            )
+            .unwrap()
+        else {
+            panic!("range format must plan")
+        };
+        assert!(matches!(
+            format_transaction.operations.as_slice(),
+            [
+                TypedOperation::RemoveMark { .. },
+                TypedOperation::AddMark { .. }
+            ]
+        ));
+        let compiled = format
+            .compile_typed_transaction(format_transaction.clone())
+            .unwrap();
+        assert_eq!(
+            compiled.history_class,
+            crate::yrs_engine::compiler::HistoryClass::Format
+        );
+        assert_eq!(
+            compiled.position_update_mode,
+            crate::position::update::UpdateMode::MarksOnly
+        );
+        assert_eq!(compiled.affected_top_level_blocks, vec![0]);
+        let format_result = format
+            .apply_typed_transaction_with_result(format_transaction)
+            .unwrap();
+        let crate::yrs_engine::RenderUpdate::Patch(format_patch) = format_result.render_update
+        else {
+            panic!("range format must produce a local render patch")
+        };
+        assert_eq!(
+            (
+                format_patch.start_index,
+                format_patch.delete_count,
+                format_patch.blocks.len(),
+            ),
+            (0, 1, 1)
+        );
+        assert_unaffected_sticky(&format, &format_sticky, format_branch, format_scalar);
+        assert!(format.can_undo());
+
+        let mut replace = transaction_engine();
+        replace
+            .import_json(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"left target right"}]}]}"#,
+                TransactionOrigin::DocumentImport,
+            )
+            .unwrap();
+        let (replace_sticky, replace_branch, replace_scalar) =
+            unaffected_text_sticky(&replace, 0, 13);
+        select_text(&mut replace, 102, 11, 5);
+        let CommandPlan::Transaction(replace_transaction) = replace
+            .plan_command(
+                103,
+                TypedCommand::ReplaceSelectionText { text: "new".into() },
+            )
+            .unwrap()
+        else {
+            panic!("range replacement must plan")
+        };
+        assert!(matches!(
+            replace_transaction.operations.as_slice(),
+            [
+                TypedOperation::DeleteRange { .. },
+                TypedOperation::InsertText { .. }
+            ]
+        ));
+        let compiled = replace
+            .compile_typed_transaction(replace_transaction.clone())
+            .unwrap();
+        assert_eq!(
+            compiled.history_class,
+            crate::yrs_engine::compiler::HistoryClass::Structural
+        );
+        assert_eq!(
+            compiled.position_update_mode,
+            crate::position::update::UpdateMode::InlineTextOnly
+        );
+        assert_eq!(compiled.affected_top_level_blocks, vec![0]);
+        let replace_result = replace
+            .apply_typed_transaction_with_result(replace_transaction)
+            .unwrap();
+        let crate::yrs_engine::RenderUpdate::Patch(replace_patch) = replace_result.render_update
+        else {
+            panic!("range replacement must produce a local render patch")
+        };
+        assert_eq!(
+            (
+                replace_patch.start_index,
+                replace_patch.delete_count,
+                replace_patch.blocks.len(),
+            ),
+            (0, 1, 1)
+        );
+        assert_unaffected_sticky(
+            &replace,
+            &replace_sticky,
+            replace_branch,
+            replace_scalar - 3,
+        );
+        assert!(replace.can_undo());
+    }
+
+    #[test]
+    fn direct_command_admission_error_is_not_replanned_as_structure() {
+        let mut engine = transaction_engine();
+        engine
+            .import_json(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"target"}]}]}"#,
+                TransactionOrigin::DocumentImport,
+            )
+            .unwrap();
+        select_text(&mut engine, 104, 6, 0);
+        engine.resource_limits.max_input_bytes = 0;
+        let before = atomic_audit(&engine);
+
+        let error = engine
+            .plan_command(105, TypedCommand::ReplaceSelectionText { text: "x".into() })
+            .unwrap_err();
+
+        assert_eq!(error.code, "OPERATION_LIMIT_EXCEEDED");
+        assert_eq!(error.details, Some(json!({ "field": "maxInputBytes" })));
+        assert_eq!(atomic_audit(&engine), before);
     }
 
     #[test]
