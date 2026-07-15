@@ -4,6 +4,7 @@ use crate::model::Document;
 use crate::render::empty_text_block_placeholder_string;
 use crate::render::inline_atom_label;
 use crate::render::inline_atom_mention_theme;
+use crate::render::opaque_node_is_inline;
 use crate::render::task_list_marker_metadata;
 use crate::render::ListContext;
 use crate::render::RenderElement;
@@ -294,10 +295,7 @@ fn generate_block(
         }
         None => {
             if node.is_void() {
-                let is_inline = spec
-                    .and_then(|s| s.group.as_deref())
-                    .map(|g| g == "inline")
-                    .unwrap_or(false);
+                let is_inline = opaque_node_is_inline(node, schema);
                 if is_inline {
                     elements.push(RenderElement::OpaqueInlineAtom {
                         node_type: node.node_type().to_string(),

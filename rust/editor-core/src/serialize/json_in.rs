@@ -407,6 +407,77 @@ fn build_opaque_json_node(type_name: &str, original_json: &Value, placement: &st
     Node::void("__opaque_json".to_string(), attrs)
 }
 
+pub(crate) fn rehydrate_reserved_html_opaque(document: &Document) -> Document {
+    Document::new(rehydrate_reserved_html_opaque_node(document.root()))
+}
+
+pub(crate) fn normalized_wire_json_node_type(tag: &str, attrs: &Map<String, Value>) -> String {
+    if tag == "heading" {
+        let level = attrs.get("level").and_then(|value| match value {
+            Value::Number(number) => number
+                .as_u64()
+                .and_then(|value| u8::try_from(value).ok())
+                .or_else(|| number.as_i64().and_then(|value| u8::try_from(value).ok()))
+                .or_else(|| {
+                    number.as_f64().and_then(|value| {
+                        (value.is_finite() && value.fract() == 0.0)
+                            .then(|| u8::try_from(value as i64).ok())
+                            .flatten()
+                    })
+                }),
+            Value::String(value) => parse_wire_heading_level_str(value),
+            _ => None,
+        });
+        if let Some(level @ 1..=6) = level {
+            return format!("h{level}");
+        }
+    }
+    tag.to_string()
+}
+
+fn rehydrate_reserved_html_opaque_node(node: &Node) -> Node {
+    if let Some(attrs) = reserved_html_opaque_attrs(node) {
+        return Node::void("__opaque".to_string(), attrs);
+    }
+    if node.is_text() {
+        return Node::text(
+            node.text_str().unwrap_or_default().to_string(),
+            node.marks().to_vec(),
+        );
+    }
+    if node.is_void() {
+        return Node::void(node.node_type().to_string(), node.attrs().clone());
+    }
+    let children = node
+        .content()
+        .into_iter()
+        .flat_map(Fragment::iter)
+        .map(rehydrate_reserved_html_opaque_node)
+        .collect();
+    Node::element(
+        node.node_type().to_string(),
+        node.attrs().clone(),
+        Fragment::from(children),
+    )
+}
+
+fn reserved_html_opaque_attrs(node: &Node) -> Option<HashMap<String, Value>> {
+    if node.node_type() != "__opaque_json" {
+        return None;
+    }
+    let original = node.attrs().get("original_json")?.as_object()?;
+    if original.get("type")?.as_str()? != "__opaque" {
+        return None;
+    }
+    let attrs = original.get("attrs")?.as_object()?;
+    Some(
+        attrs
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect(),
+    )
+}
+
 fn normalize_json_aliases(value: &Value) -> Cow<'_, Value> {
     match value {
         Value::Array(values) => normalize_json_array_aliases(value, values),
@@ -491,7 +562,7 @@ fn parse_heading_level_value(value: Option<&Value>) -> Option<u8> {
     let value = value?;
     let level = match value {
         Value::Number(number) => number.as_u64().and_then(|value| u8::try_from(value).ok())?,
-        Value::String(value) => value.parse::<u8>().ok()?,
+        Value::String(value) => parse_wire_heading_level_str(value)?,
         _ => return None,
     };
 
@@ -500,6 +571,16 @@ fn parse_heading_level_value(value: Option<&Value>) -> Option<u8> {
     } else {
         None
     }
+}
+
+pub(crate) fn parse_wire_heading_level_str(value: &str) -> Option<u8> {
+    // A u8 can contain at most three decimal digits. Capping before parsing
+    // prevents arbitrarily long leading-zero strings from becoming an
+    // unmetered scan in Yrs-backed normalization.
+    (value.len() <= 3)
+        .then(|| value.parse::<u8>().ok())
+        .flatten()
+        .filter(|level| (1..=6).contains(level))
 }
 
 #[cfg(test)]

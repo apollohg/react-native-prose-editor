@@ -23,7 +23,7 @@ pub fn to_prosemirror_json(doc: &Document, schema: &Schema) -> Value {
     node_to_json(doc.root(), schema)
 }
 
-fn node_to_json(node: &Node, schema: &Schema) -> Value {
+pub(crate) fn node_to_json(node: &Node, schema: &Schema) -> Value {
     if node.node_type() == "__opaque_json" {
         return node
             .attrs()

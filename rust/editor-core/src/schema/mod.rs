@@ -486,6 +486,12 @@ impl Schema {
         self.nodes.get(name)
     }
 
+    pub(crate) fn hard_break_node_types(&self) -> impl Iterator<Item = &str> {
+        self.nodes.values().filter_map(|spec| {
+            matches!(spec.role, NodeRole::HardBreak).then_some(spec.name.as_str())
+        })
+    }
+
     /// Look up a mark spec by name.
     pub fn mark(&self, name: &str) -> Option<&MarkSpec> {
         self.marks.get(name)
@@ -1139,13 +1145,13 @@ fn admit_schema_value(
     }
 }
 
-fn is_safe_html_tag(tag: &str) -> bool {
+pub(crate) fn is_safe_html_tag(tag: &str) -> bool {
     let mut chars = tag.chars();
     matches!(chars.next(), Some('a'..='z'))
         && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
-fn is_safe_html_attr(name: &str) -> bool {
+pub(crate) fn is_safe_html_attr(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(ch) if ch.is_ascii_alphabetic() || ch == '_' || ch == ':')
         && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '.' | '-'))

@@ -117,7 +117,118 @@ fn element_attr<'a>(elem: &'a scraper::node::Element, key: &str) -> Option<&'a s
 }
 
 fn is_base64_image_source(src: &str) -> bool {
-    src.trim().to_ascii_lowercase().starts_with("data:image/")
+    src.trim_start()
+        .get(.."data:image/".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:image/"))
+}
+
+pub(crate) fn opaque_html_metadata_remains_opaque(
+    tag: &str,
+    attrs: &serde_json::Map<String, serde_json::Value>,
+    placement: &str,
+    schema: &Schema,
+) -> bool {
+    let attr = |key: &str| attrs.get(key).and_then(serde_json::Value::as_str);
+    if tag == "span"
+        && (attr("data-native-editor-mark").is_some_and(|name| schema.mark(name).is_some())
+            || (schema.node("mention").is_some()
+                && attr("data-native-editor-mention") == Some("true")))
+    {
+        return false;
+    }
+    if tag_to_mark_type(tag).is_some_and(|name| schema.mark(name).is_some())
+        || schema.mark_by_html_tag(tag).is_some()
+    {
+        return false;
+    }
+    if placement == "inline" {
+        return schema.node_by_html_tag(tag).is_none_or(|spec| {
+            !(spec.is_void && matches!(spec.role, NodeRole::HardBreak | NodeRole::Inline))
+        });
+    }
+    if let Some(spec) = schema.node_by_html_tag(tag) {
+        return tag == "img"
+            && spec.name == "image"
+            && attr("src").is_some_and(is_base64_image_source);
+    }
+    true
+}
+
+pub(crate) fn opaque_html_attr_has_canonical_case(tag: &str, attr: &str) -> bool {
+    if !attr.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return true;
+    }
+
+    // html5ever applies the HTML parsing algorithm's foreign-content case
+    // adjustments. Preserve only those exact canonical spellings, and only on
+    // tags that can establish the corresponding foreign namespace. This keeps
+    // arbitrary mixed-case HTML/private keys rejected without breaking stable
+    // SVG/MathML export and reimport.
+    const SVG_ADJUSTED_ATTRS: &[&str] = &[
+        "attributeName",
+        "attributeType",
+        "baseFrequency",
+        "baseProfile",
+        "calcMode",
+        "clipPathUnits",
+        "diffuseConstant",
+        "edgeMode",
+        "filterUnits",
+        "glyphRef",
+        "gradientTransform",
+        "gradientUnits",
+        "kernelMatrix",
+        "kernelUnitLength",
+        "keyPoints",
+        "keySplines",
+        "keyTimes",
+        "lengthAdjust",
+        "limitingConeAngle",
+        "markerHeight",
+        "markerUnits",
+        "markerWidth",
+        "maskContentUnits",
+        "maskUnits",
+        "numOctaves",
+        "pathLength",
+        "patternContentUnits",
+        "patternTransform",
+        "patternUnits",
+        "pointsAtX",
+        "pointsAtY",
+        "pointsAtZ",
+        "preserveAlpha",
+        "preserveAspectRatio",
+        "primitiveUnits",
+        "refX",
+        "refY",
+        "repeatCount",
+        "repeatDur",
+        "requiredExtensions",
+        "requiredFeatures",
+        "specularConstant",
+        "specularExponent",
+        "spreadMethod",
+        "startOffset",
+        "stdDeviation",
+        "stitchTiles",
+        "surfaceScale",
+        "systemLanguage",
+        "tableValues",
+        "targetX",
+        "targetY",
+        "textLength",
+        "viewBox",
+        "viewTarget",
+        "xChannelSelector",
+        "yChannelSelector",
+        "zoomAndPan",
+    ];
+    // Opaque foreign subtrees are represented by their namespace-establishing
+    // root plus raw inner HTML, so only these roots can carry adjusted metadata
+    // without losing their namespace during standalone serialization.
+    (tag == "svg" && SVG_ADJUSTED_ATTRS.contains(&attr))
+        || (tag == "math" && attr == "definitionURL")
 }
 
 fn extract_node_attrs(
@@ -409,12 +520,15 @@ fn process_element(
 
 fn build_mention_node(
     node_ref: SNodeRef<'_>,
-    _elem: &scraper::node::Element,
+    elem: &scraper::node::Element,
     schema: &Schema,
 ) -> Option<Node> {
     schema.node("mention")?;
+    if elem.name() != "span" {
+        return None;
+    }
 
-    let is_mention = element_attr(_elem, "data-native-editor-mention")
+    let is_mention = element_attr(elem, "data-native-editor-mention")
         .map(|value| value == "true")
         .unwrap_or(false);
     if !is_mention {
@@ -422,7 +536,7 @@ fn build_mention_node(
     }
 
     let mut attrs = HashMap::new();
-    if let Some(raw_attrs) = element_attr(_elem, "data-native-editor-mention-attrs") {
+    if let Some(raw_attrs) = element_attr(elem, "data-native-editor-mention-attrs") {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw_attrs) {
             if let Some(map) = value.as_object() {
                 for (key, value) in map {
@@ -697,8 +811,16 @@ fn build_opaque_node(
 
     // Preserve HTML attributes
     let html_attrs: HashMap<String, String> = elem
-        .attrs()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .attrs
+        .iter()
+        .map(|(name, value)| {
+            let local = name.local.as_ref();
+            let key = name
+                .prefix
+                .as_ref()
+                .map_or_else(|| local.to_owned(), |prefix| format!("{prefix}:{local}"));
+            (key, value.to_string())
+        })
         .collect();
     if !html_attrs.is_empty() {
         attrs.insert("html_attrs".to_string(), serde_json::json!(html_attrs));

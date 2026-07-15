@@ -8,6 +8,10 @@ pub use html_out::to_html;
 pub use json_in::{
     from_prosemirror_json, from_prosemirror_json_with_limits, JsonParseError, UnknownTypeMode,
 };
+pub(crate) use json_in::{
+    normalized_wire_json_node_type, parse_wire_heading_level_str, rehydrate_reserved_html_opaque,
+};
+pub(crate) use json_out::node_to_json as node_to_prosemirror_json;
 pub use json_out::to_prosemirror_json;
 
 fn default_node_attrs(

@@ -5,11 +5,11 @@ use yrs::Update;
 use yrs::{Doc, OffsetKind, Options, ReadTxn, StateVector, Transact, WriteTxn};
 
 use crate::boundary::{BoundedInput, InputKind, ResourceLimits};
-use crate::model::{Document, Fragment, Node};
+use crate::model::Document;
 use crate::schema::{schema_fingerprint, NodeRole, Schema};
 use crate::serialize::{
-    from_html_with_limits, from_prosemirror_json_with_limits, to_html, to_prosemirror_json,
-    FromHtmlOptions, JsonParseError, ParseError, UnknownTypeMode,
+    from_html_with_limits, from_prosemirror_json_with_limits, rehydrate_reserved_html_opaque,
+    to_html, to_prosemirror_json, FromHtmlOptions, JsonParseError, ParseError, UnknownTypeMode,
 };
 use crate::transform::{validate_canonical_marks, DocumentValidator};
 
@@ -68,6 +68,12 @@ impl ValidatedImportDocument {
         schema: &Schema,
         resource_limits: &ResourceLimits,
     ) -> YrsEngineResult<Self> {
+        if contains_reserved_public_json_forge(document.root()) {
+            return Err(candidate_invariant_parse_error(
+                "public JSON cannot construct reserved opaque HTML metadata",
+                "candidate codec round-trip changed the document",
+            ));
+        }
         validate_yrs_mark_representation(&document, schema)?;
         validate_import_document(&document, schema, resource_limits)?;
         let canonical_json = to_prosemirror_json(&document, schema);
@@ -76,6 +82,20 @@ impl ValidatedImportDocument {
             canonical_json,
         })
     }
+}
+
+fn contains_reserved_public_json_forge(node: &crate::model::Node) -> bool {
+    if node.node_type() == "__opaque_json"
+        && node
+            .attrs()
+            .get("original_type")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|node_type| matches!(node_type, "__opaque" | "__opaque_json" | "__skip"))
+    {
+        return true;
+    }
+    node.content()
+        .is_some_and(|content| content.iter().any(contains_reserved_public_json_forge))
 }
 
 pub struct YrsDocumentEngine {
@@ -691,55 +711,6 @@ fn validate_snapshot_envelope_output(
         );
     }
     Ok(())
-}
-
-fn rehydrate_reserved_html_opaque(document: &Document) -> Document {
-    Document::new(rehydrate_reserved_html_opaque_node(document.root()))
-}
-
-fn rehydrate_reserved_html_opaque_node(node: &Node) -> Node {
-    if let Some(attrs) = reserved_html_opaque_attrs(node) {
-        return Node::void("__opaque".to_string(), attrs);
-    }
-    if node.is_text() {
-        return Node::text(
-            node.text_str().unwrap_or_default().to_string(),
-            node.marks().to_vec(),
-        );
-    }
-    if node.is_void() {
-        return Node::void(node.node_type().to_string(), node.attrs().clone());
-    }
-    let children = node
-        .content()
-        .into_iter()
-        .flat_map(Fragment::iter)
-        .map(rehydrate_reserved_html_opaque_node)
-        .collect();
-    Node::element(
-        node.node_type().to_string(),
-        node.attrs().clone(),
-        Fragment::from(children),
-    )
-}
-
-fn reserved_html_opaque_attrs(
-    node: &Node,
-) -> Option<std::collections::HashMap<String, serde_json::Value>> {
-    if node.node_type() != "__opaque_json" {
-        return None;
-    }
-    let original = node.attrs().get("original_json")?.as_object()?;
-    if original.get("type")?.as_str()? != "__opaque" {
-        return None;
-    }
-    let attrs = original.get("attrs")?.as_object()?;
-    Some(
-        attrs
-            .iter()
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .collect(),
-    )
 }
 
 fn validate_import_document(

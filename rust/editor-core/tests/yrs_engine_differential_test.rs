@@ -807,6 +807,121 @@ fn public_json_cannot_forge_the_reserved_html_opaque_node() {
 }
 
 #[test]
+fn engine_preserves_base64_image_as_opaque_when_opt_in_is_disabled() {
+    let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+    let html = "<img src=\"data:image/png;base64,AAAA\" alt=\"Inline\">";
+    engine
+        .import_html(
+            html,
+            &FromHtmlOptions {
+                strict: false,
+                allow_base64_images: false,
+            },
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+    assert_eq!(
+        engine
+            .document()
+            .unwrap()
+            .root()
+            .child(0)
+            .unwrap()
+            .node_type(),
+        "__opaque"
+    );
+    assert_eq!(
+        engine.document_json().unwrap()["content"][0]["type"],
+        "__opaque"
+    );
+    let exported = engine.document_html().unwrap();
+    assert!(exported.starts_with("<img "));
+    assert!(exported.contains("src=\"data:image/png;base64,AAAA\""));
+    assert!(exported.contains("alt=\"Inline\""));
+    let before = audit(&engine);
+    let commit = engine
+        .import_html(
+            &exported,
+            &FromHtmlOptions::default(),
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+    assert!(!commit.changed);
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
+fn engine_preserves_known_block_image_as_inline_opaque_inside_paragraph() {
+    let mut engine = YrsDocumentEngine::new(local_config(tiptap_schema())).unwrap();
+    let html = "<p>before<img src=\"https://example.test/image.png\" alt=\"Inline\">after</p>";
+    engine
+        .import_html(
+            html,
+            &FromHtmlOptions::default(),
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+    let json = engine.document_json().unwrap();
+    assert_eq!(json["content"][0]["type"], "paragraph");
+    assert_eq!(json["content"][0]["content"][1]["type"], "__opaque");
+    assert_eq!(
+        json["content"][0]["content"][1]["attrs"]["opaque_placement"],
+        "inline"
+    );
+    let exported = engine.document_html().unwrap();
+    assert!(exported.contains("src=\"https://example.test/image.png\""));
+    let before = audit(&engine);
+    let commit = engine
+        .import_html(
+            &exported,
+            &FromHtmlOptions::default(),
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+    assert!(!commit.changed);
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
+fn engine_preserves_known_nonvoid_inline_and_block_tags_as_inline_opaque() {
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+            { "name": "inlineContainer", "content": "inline*", "group": "inline", "role": "inline", "htmlTag": "x-inline" },
+            { "name": "blockContainer", "content": "block+", "group": "block", "role": "block", "htmlTag": "x-block" },
+            { "name": "inlineVoid", "content": "", "group": "inline", "role": "inline", "htmlTag": "x-void", "isVoid": true },
+            { "name": "hardBreak", "content": "", "group": "inline", "role": "hardBreak", "htmlTag": "br", "isVoid": true },
+            { "name": "text", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .unwrap();
+    let mut engine = YrsDocumentEngine::new(local_config(schema)).unwrap();
+    engine
+        .import_html(
+            "<p>a<x-inline>inline wire</x-inline><x-block>block wire</x-block>b</p>",
+            &FromHtmlOptions::default(),
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+    let json = engine.document_json().unwrap();
+    assert_eq!(json["content"][0]["content"][1]["type"], "__opaque");
+    assert_eq!(json["content"][0]["content"][2]["type"], "__opaque");
+    let before = audit(&engine);
+    let html = engine.document_html().unwrap();
+    let commit = engine
+        .import_html(
+            &html,
+            &FromHtmlOptions::default(),
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+    assert!(!commit.changed);
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
 fn awaiting_engine_import_becomes_ready_with_one_commit() {
     let mut engine = YrsDocumentEngine::new(YrsEngineConfig {
         initialization_mode: InitializationMode::AwaitRemote,

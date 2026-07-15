@@ -151,6 +151,9 @@ fn sticky_index_to_doc_pos_in_node<T: ReadTxn>(
             None
         }
         XmlOut::Element(element) => {
+            if is_void_element(element, txn, schema) {
+                return None;
+            }
             let element_branch = BranchPtr::from(<XmlElementRef as AsRef<Branch>>::as_ref(element));
             if element_branch == target_branch {
                 let content_start = node_start + 1;
@@ -358,7 +361,13 @@ fn doc_pos_to_sticky_index_in_sequence<'a, T: ReadTxn>(
     }
 
     if doc_pos == consumed_pm {
-        StickyIndex::at(txn, branch, branch_index, assoc)
+        StickyIndex::at(txn, branch, branch_index, assoc).or_else(|| {
+            let fallback = match assoc {
+                Assoc::Before => Assoc::After,
+                Assoc::After => Assoc::Before,
+            };
+            StickyIndex::at(txn, branch, branch_index, fallback)
+        })
     } else {
         None
     }
@@ -375,16 +384,19 @@ fn xml_fragment_pm_content_size<T: ReadTxn>(
         .sum()
 }
 
-fn is_void_element_tag(tag: &str, schema: &Schema) -> bool {
-    schema.node(tag).is_some_and(|spec| spec.is_void)
-        || matches!(tag, "__opaque" | "__opaque_json" | "__skip")
+fn is_void_element<T: ReadTxn>(element: &XmlElementRef, txn: &T, schema: &Schema) -> bool {
+    let node_type = super::codec::normalized_wire_element_node_type(element, txn);
+    if let Some(spec) = schema.node(&node_type) {
+        return spec.is_void;
+    }
+    true
 }
 
 fn xml_out_pm_size<T: ReadTxn>(txn: &T, node: &XmlOut, schema: &Schema) -> u32 {
     match node {
         XmlOut::Text(text) => text.get_string(txn).chars().count() as u32,
         XmlOut::Element(element) => {
-            if is_void_element_tag(element.tag(), schema) {
+            if is_void_element(element, txn, schema) {
                 1
             } else {
                 2 + element

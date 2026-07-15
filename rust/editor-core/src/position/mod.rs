@@ -4,6 +4,7 @@ mod fuzz_tests;
 pub mod update;
 
 use smallvec::SmallVec;
+use std::collections::HashSet;
 
 use crate::model::node::Node;
 use crate::model::resolved_pos::ResolvedPos;
@@ -59,6 +60,7 @@ pub struct BlockMapping {
 pub struct PositionMap {
     blocks: Vec<BlockMapping>,
     prefix_deltas: DeltaTree,
+    hard_break_node_types: HashSet<String>,
 }
 
 impl PositionMap {
@@ -68,10 +70,11 @@ impl PositionMap {
     }
 
     /// Create from pre-built block mappings (used by the build module).
-    pub(crate) fn from_blocks(blocks: Vec<BlockMapping>) -> Self {
+    pub(crate) fn from_blocks(blocks: Vec<BlockMapping>, schema: &Schema) -> Self {
         Self {
             blocks,
             prefix_deltas: DeltaTree::empty(),
+            hard_break_node_types: schema.hard_break_node_types().map(str::to_owned).collect(),
         }
     }
 
@@ -127,12 +130,35 @@ impl PositionMap {
     /// fall on a block break are mapped to the end of the preceding block's
     /// content.
     pub fn scalar_to_doc(&self, scalar_offset: u32, doc: &Document) -> u32 {
+        self.scalar_to_doc_metered(scalar_offset, doc, |_| true)
+            .map(|(position, _)| position)
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn scalar_to_doc_metered(
+        &self,
+        scalar_offset: u32,
+        doc: &Document,
+        mut consume: impl FnMut(usize) -> bool,
+    ) -> Option<(u32, usize)> {
         if self.blocks.is_empty() {
-            return 0;
+            return Some((0, 0));
         }
 
-        // Find the block containing this scalar offset.
-        let block_idx = self.find_block_for_scalar(scalar_offset);
+        let mut lo = 0usize;
+        let mut hi = self.blocks.len();
+        while lo < hi {
+            if !consume(1) {
+                return None;
+            }
+            let mid = lo + (hi - lo) / 2;
+            if self.effective_scalar_start(mid) <= scalar_offset {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        let block_idx = lo.saturating_sub(1);
         let block = &self.blocks[block_idx];
         let eff_scalar_start = self.effective_scalar_start(block_idx);
         let eff_doc_start = self.effective_doc_start(block_idx);
@@ -141,29 +167,43 @@ impl PositionMap {
         if block.is_void_block {
             let visible_len = block.scalar_len;
             let intra_scalar = scalar_offset.saturating_sub(eff_scalar_start);
-            return if intra_scalar >= visible_len {
-                eff_doc_start.saturating_add(1)
-            } else {
-                eff_doc_start
-            };
+            return Some((
+                if intra_scalar >= visible_len {
+                    eff_doc_start.saturating_add(1)
+                } else {
+                    eff_doc_start
+                },
+                block_idx,
+            ));
         }
 
         // Intra-block scalar offset.
         let intra_scalar = scalar_offset.saturating_sub(eff_scalar_start);
         if intra_scalar < block.scalar_prefix_len {
-            return eff_doc_start;
+            return Some((eff_doc_start, block_idx));
         }
         let intra_scalar = intra_scalar - block.scalar_prefix_len;
 
-        // Walk the block's content in the document to map scalar offset to
-        // doc offset.
-        let block_node = doc.node_at(&block.node_path);
+        let mut block_node = Some(doc.root());
+        for &index in &block.node_path {
+            if !consume(1) {
+                return None;
+            }
+            block_node = block_node?.child(usize::try_from(index).ok()?);
+        }
         let doc_intra_offset = match block_node {
-            Some(node) => scalar_to_doc_intra_block(node, intra_scalar),
+            Some(node) => scalar_to_doc_intra_block_metered(
+                node,
+                intra_scalar,
+                &self.hard_break_node_types,
+                &mut consume,
+            )?,
             None => intra_scalar, // fallback: assume 1:1 mapping
         };
 
-        eff_doc_start + doc_intra_offset
+        eff_doc_start
+            .checked_add(doc_intra_offset)
+            .map(|position| (position, block_idx))
     }
 
     // -----------------------------------------------------------------------
@@ -216,7 +256,9 @@ impl PositionMap {
                 let intra_doc = doc_pos - eff_doc_start;
                 let block_node = doc.node_at(&block.node_path);
                 let intra_scalar = match block_node {
-                    Some(node) => doc_to_scalar_intra_block(node, intra_doc),
+                    Some(node) => {
+                        doc_to_scalar_intra_block(node, intra_doc, &self.hard_break_node_types)
+                    }
                     None => intra_doc, // fallback
                 };
 
@@ -289,37 +331,6 @@ impl PositionMap {
     // -----------------------------------------------------------------------
     // Block lookup helpers
     // -----------------------------------------------------------------------
-
-    /// Find the block index that contains the given scalar offset.
-    ///
-    /// Uses binary search on effective scalar ranges.
-    fn find_block_for_scalar(&self, scalar_offset: u32) -> usize {
-        if self.blocks.is_empty() {
-            return 0;
-        }
-
-        // Binary search: find the last block whose effective scalar_start <= scalar_offset.
-        let mut lo = 0usize;
-        let mut hi = self.blocks.len();
-
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let eff_start = self.effective_scalar_start(mid);
-            if eff_start <= scalar_offset {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-
-        // lo is now the first block whose effective_scalar_start > scalar_offset.
-        // The containing block is lo - 1 (or 0 if lo == 0).
-        if lo == 0 {
-            0
-        } else {
-            lo - 1
-        }
-    }
 
     /// Find the block index that contains or is nearest to the given doc position.
     ///
@@ -403,48 +414,86 @@ impl PositionMap {
 ///
 /// Text nodes: 1 scalar = 1 doc token (both count Unicode scalars).
 /// Void nodes: 1 scalar (placeholder) = 1 doc token.
-fn scalar_to_doc_intra_block(block_node: &Node, scalar_offset: u32) -> u32 {
-    let content = match block_node.content() {
-        Some(c) => c,
-        None => return scalar_offset,
-    };
+fn scalar_to_doc_intra_block_metered(
+    block_node: &Node,
+    scalar_offset: u32,
+    hard_break_node_types: &HashSet<String>,
+    consume: &mut impl FnMut(usize) -> bool,
+) -> Option<u32> {
+    let content = block_node.content()?;
 
     let mut scalars_consumed: u32 = 0;
     let mut doc_offset: u32 = 0;
 
     for child in content.iter() {
+        if !consume(1) {
+            return None;
+        }
         if child.is_text() {
+            if !consume(child.text_str()?.len()) {
+                return None;
+            }
             let text_scalars = child.node_size();
-            if scalars_consumed + text_scalars > scalar_offset {
+            if scalars_consumed.checked_add(text_scalars)? > scalar_offset {
                 // Position is within this text node.
                 let remaining = scalar_offset - scalars_consumed;
-                return doc_offset + remaining;
+                return doc_offset.checked_add(remaining);
             }
-            scalars_consumed += text_scalars;
-            doc_offset += text_scalars;
+            scalars_consumed = scalars_consumed.checked_add(text_scalars)?;
+            doc_offset = doc_offset.checked_add(text_scalars)?;
         } else if child.is_void() {
-            let visible_len = inline_void_visible_scalar_len(child);
-            if scalars_consumed + visible_len > scalar_offset {
-                // Position is at this void node.
-                return doc_offset;
+            if !consume(inline_void_render_work(child)?) {
+                return None;
             }
-            scalars_consumed += visible_len;
-            doc_offset += 1; // void = 1 doc token
+            let visible_len = inline_void_visible_scalar_len(child, hard_break_node_types);
+            if scalars_consumed.checked_add(visible_len)? > scalar_offset {
+                // Position is at this void node.
+                return Some(doc_offset);
+            }
+            scalars_consumed = scalars_consumed.checked_add(visible_len)?;
+            doc_offset = doc_offset.checked_add(1)?; // void = 1 doc token
         } else {
             // Nested element inside a "text block" — shouldn't happen normally.
-            doc_offset += child.node_size();
+            doc_offset = doc_offset.checked_add(child.node_size())?;
         }
     }
 
     // At the end of block content.
-    doc_offset
+    Some(doc_offset)
+}
+
+fn inline_void_render_work(node: &Node) -> Option<usize> {
+    let label_len = node
+        .attrs()
+        .get("label")
+        .and_then(serde_json::Value::as_str)
+        .filter(|label| !label.is_empty())
+        .map_or(node.node_type().len(), str::len);
+    let trigger_len = if node.node_type() == "mention" {
+        node.attrs()
+            .get("mentionSuggestionChar")
+            .and_then(serde_json::Value::as_str)
+            .map(str::len)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    node.node_type()
+        .len()
+        .checked_add(label_len)?
+        .checked_add(trigger_len)?
+        .checked_add(1)
 }
 
 /// Walk a text block node's content and convert a doc token offset to a
 /// scalar offset within the block.
 ///
-/// Mirrors `scalar_to_doc_intra_block` in reverse.
-fn doc_to_scalar_intra_block(block_node: &Node, doc_offset: u32) -> u32 {
+/// Mirrors `scalar_to_doc_intra_block_metered` in reverse.
+fn doc_to_scalar_intra_block(
+    block_node: &Node,
+    doc_offset: u32,
+    hard_break_node_types: &HashSet<String>,
+) -> u32 {
     let content = match block_node.content() {
         Some(c) => c,
         None => return doc_offset,
@@ -467,7 +516,7 @@ fn doc_to_scalar_intra_block(block_node: &Node, doc_offset: u32) -> u32 {
                 return scalar_offset;
             }
             doc_consumed += 1;
-            scalar_offset += inline_void_visible_scalar_len(child);
+            scalar_offset += inline_void_visible_scalar_len(child, hard_break_node_types);
         } else {
             let node_size = child.node_size();
             if doc_consumed + node_size > doc_offset {
@@ -484,11 +533,11 @@ fn doc_to_scalar_intra_block(block_node: &Node, doc_offset: u32) -> u32 {
     scalar_offset
 }
 
-fn inline_void_visible_scalar_len(node: &Node) -> u32 {
+fn inline_void_visible_scalar_len(node: &Node, hard_break_node_types: &HashSet<String>) -> u32 {
     let label = render::inline_atom_label(node.node_type(), node.attrs());
     render::inline_node_visible_scalar_len(
         node.node_type(),
         Some(label.as_str()),
-        matches!(node.node_type(), "hardBreak" | "hard_break"),
+        hard_break_node_types.contains(node.node_type()),
     )
 }

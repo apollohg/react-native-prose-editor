@@ -7,7 +7,7 @@ use yrs::types::xml::{
     Xml, XmlElementPrelim, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut, XmlTextPrelim,
     XmlTextRef,
 };
-use yrs::types::{Attrs, ToJson};
+use yrs::types::Attrs;
 use yrs::{ReadTxn, TransactionMut};
 
 use crate::boundary::ResourceLimits;
@@ -85,6 +85,99 @@ impl<'a> YrsDocumentCodec<'a> {
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         apply_children(parent, txn, current_children, next_children, 2, &mut budget)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum PreparedXmlNode {
+    Text {
+        runs: Vec<PreparedTextRun>,
+    },
+    Element {
+        tag: String,
+        attrs: Vec<(String, Any)>,
+        children: Vec<PreparedXmlChild>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedTextRun {
+    pub(crate) index_utf16: u32,
+    pub(crate) text: String,
+    pub(crate) attrs: Attrs,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedXmlChild {
+    pub(crate) index: u32,
+    pub(crate) node: PreparedXmlNode,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedXmlBatch {
+    pub(crate) nodes: Vec<PreparedXmlChild>,
+    pub(crate) work: usize,
+}
+
+pub(crate) fn prepare_xml_nodes(
+    nodes: &[Value],
+    limits: &ResourceLimits,
+    depth: usize,
+) -> YrsEngineResult<PreparedXmlBatch> {
+    let mut budget = ConversionBudget::new(limits);
+    let mut prepared = Vec::with_capacity(nodes.len());
+    for (index, node) in nodes.iter().enumerate() {
+        prepared.push(PreparedXmlChild {
+            index: u32::try_from(index).map_err(|_| {
+                YrsEngineError::new(
+                    "DOCUMENT_LIMIT_EXCEEDED",
+                    "prepared XML child index exceeds u32",
+                )
+            })?,
+            node: prepare_json_node(node, depth, &mut budget)?,
+        });
+    }
+    let work = budget
+        .nodes
+        .checked_add(budget.any_work)
+        .and_then(|work| work.checked_add(budget.output_bytes))
+        .ok_or_else(|| {
+            YrsEngineError::new("DOCUMENT_LIMIT_EXCEEDED", "prepared XML work overflow")
+        })?;
+    Ok(PreparedXmlBatch {
+        nodes: prepared,
+        work,
+    })
+}
+
+pub(crate) fn insert_prepared_node<P: XmlFragment>(
+    parent: &P,
+    txn: &mut TransactionMut<'_>,
+    index: u32,
+    node: PreparedXmlNode,
+) {
+    match node {
+        PreparedXmlNode::Text { runs } => {
+            let target = parent.insert(txn, index, XmlTextPrelim::new(""));
+            for run in runs {
+                if !run.text.is_empty() {
+                    target.insert_with_attributes(txn, run.index_utf16, &run.text, run.attrs);
+                }
+            }
+        }
+        PreparedXmlNode::Element {
+            tag,
+            attrs,
+            children,
+        } => {
+            let element = parent.insert(txn, index, XmlElementPrelim::empty(tag.as_str()));
+            for (key, value) in attrs {
+                element.insert_attribute(txn, key.as_str(), value);
+            }
+            for child in children {
+                insert_prepared_node(&element, txn, child.index, child.node);
+            }
+        }
     }
 }
 
@@ -225,12 +318,22 @@ fn xml_element_to_json<T: ReadTxn>(
     let mut object = Map::new();
     let mut attrs = Map::new();
     for (key, value) in element.attributes(txn) {
-        attrs.insert(
-            key.to_string(),
-            any_to_json(&value.to_json(txn), budget, 1)?,
-        );
+        let yrs::Out::Any(value) = value else {
+            return Err(YrsEngineError::new(
+                "CODEC_INVARIANT_FAILED",
+                "Yrs XML attributes must be scalar Any values, not shared types",
+            )
+            .with_details(json!({
+                "phase": "candidateMaterialization",
+                "attribute": key,
+            })));
+        };
+        attrs.insert(key.to_string(), any_to_json(&value, budget, 1)?);
     }
-    let node_type = json_node_type_for_element(element.tag(), &mut attrs);
+    let node_type = normalized_wire_element_node_type(element, txn);
+    if node_type != element.tag().as_ref() {
+        attrs.remove("level");
+    }
     object.insert("type".to_string(), Value::String(node_type));
     if !attrs.is_empty() {
         object.insert("attrs".to_string(), Value::Object(attrs));
@@ -522,20 +625,28 @@ fn insert_json_node<P: XmlFragment>(
     depth: usize,
     budget: &mut ConversionBudget<'_>,
 ) -> YrsEngineResult<()> {
+    let prepared = prepare_json_node(node, depth, budget)?;
+    insert_prepared_node(parent, txn, index, prepared);
+    Ok(())
+}
+
+fn prepare_json_node(
+    node: &Value,
+    depth: usize,
+    budget: &mut ConversionBudget<'_>,
+) -> YrsEngineResult<PreparedXmlNode> {
     budget.admit_node(depth)?;
     let node_type = node.get("type").and_then(Value::as_str).unwrap_or("");
     if node_type == "text" {
         let text_value = node.get("text").and_then(Value::as_str).unwrap_or("");
-        let text = parent.insert(txn, index, XmlTextPrelim::new(""));
-        if !text_value.is_empty() {
-            text.insert_with_attributes(
-                txn,
-                0,
-                text_value,
-                marks_to_attrs(node.get("marks").and_then(Value::as_array)),
-            );
-        }
-        return Ok(());
+        budget.charge_output(text_value.len())?;
+        return Ok(PreparedXmlNode::Text {
+            runs: vec![PreparedTextRun {
+                index_utf16: 0,
+                text: text_value.to_owned(),
+                attrs: prepare_marks_to_attrs(node.get("marks").and_then(Value::as_array), budget)?,
+            }],
+        });
     }
 
     let mut attrs = node
@@ -544,28 +655,142 @@ fn insert_json_node<P: XmlFragment>(
         .cloned()
         .unwrap_or_default();
     let element_name = element_name_for_json_node(node_type, &mut attrs);
-    let element = parent.insert(txn, index, XmlElementPrelim::empty(element_name.as_str()));
-    for (key, value) in &attrs {
-        element.insert_attribute(txn, key.as_str(), json_to_any(value));
+    let mut prepared_attrs = Vec::with_capacity(attrs.len());
+    let mut sorted_attrs = attrs.iter().collect::<Vec<_>>();
+    sorted_attrs.sort_by_key(|(key, _)| *key);
+    for (key, value) in sorted_attrs {
+        budget.charge_output(key.len())?;
+        prepared_attrs.push((key.clone(), prepare_json_value(value, budget, 1)?));
     }
+    let mut prepared_children = Vec::new();
     if let Some(children) = node.get("content").and_then(Value::as_array) {
-        for child in children {
-            let next_index = element.len(txn);
-            insert_json_node(&element, txn, next_index, child, depth + 1, budget)?;
+        prepared_children.reserve(children.len());
+        for (index, child) in children.iter().enumerate() {
+            prepared_children.push(PreparedXmlChild {
+                index: u32::try_from(index).map_err(|_| {
+                    YrsEngineError::new(
+                        "DOCUMENT_LIMIT_EXCEEDED",
+                        "prepared XML child index exceeds u32",
+                    )
+                })?,
+                node: prepare_json_node(child, depth + 1, budget)?,
+            });
         }
     }
-    Ok(())
+    Ok(PreparedXmlNode::Element {
+        tag: element_name,
+        attrs: prepared_attrs,
+        children: prepared_children,
+    })
 }
 
-fn json_node_type_for_element(tag: &str, attrs: &mut Map<String, Value>) -> String {
-    if tag == "heading" {
-        if let Some(level) = parse_heading_level_value(attrs.get("level")) {
-            attrs.remove("level");
-            return format!("h{level}");
+fn prepare_marks_to_attrs(
+    marks: Option<&Vec<Value>>,
+    budget: &mut ConversionBudget<'_>,
+) -> YrsEngineResult<Attrs> {
+    let mut attrs = Attrs::default();
+    let Some(marks) = marks else {
+        return Ok(attrs);
+    };
+    for mark in marks {
+        let Some(mark_type) = mark.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        budget.charge_output(mark_type.len())?;
+        let value = match mark.get("attrs") {
+            Some(value) => prepare_json_value(value, budget, 1)?,
+            None => {
+                budget.admit_any(1, 1)?;
+                Any::Bool(true)
+            }
+        };
+        attrs.insert(mark_type.into(), value);
+    }
+    Ok(attrs)
+}
+
+fn prepare_json_value(
+    value: &Value,
+    budget: &mut ConversionBudget<'_>,
+    depth: usize,
+) -> YrsEngineResult<Any> {
+    budget.admit_any(depth, 1)?;
+    match value {
+        Value::Null => Ok(Any::Null),
+        Value::Bool(value) => Ok(Any::Bool(*value)),
+        Value::Number(number) => {
+            if let Some(value) = number.as_i64() {
+                Ok(Any::BigInt(value))
+            } else if let Some(value) = number.as_u64() {
+                Err(YrsEngineError::new(
+                    "DOCUMENT_INVALID",
+                    format!("numeric attribute {value} exceeds the exact Yjs integer range"),
+                ))
+            } else if let Some(value) = number.as_f64() {
+                if value.is_finite() {
+                    Ok(Any::Number(value))
+                } else {
+                    Err(YrsEngineError::new(
+                        "DOCUMENT_INVALID",
+                        "numeric attribute must be finite",
+                    ))
+                }
+            } else {
+                Err(YrsEngineError::new(
+                    "DOCUMENT_INVALID",
+                    "numeric attribute is not representable",
+                ))
+            }
+        }
+        Value::String(value) => {
+            budget.admit_any(depth, value.len())?;
+            budget.charge_output(value.len())?;
+            Ok(Any::String(value.clone().into()))
+        }
+        Value::Array(values) => {
+            budget.admit_any(depth, values.len())?;
+            let mut prepared = Vec::with_capacity(values.len());
+            for value in values {
+                prepared.push(prepare_json_value(value, budget, depth + 1)?);
+            }
+            Ok(Any::Array(prepared.into()))
+        }
+        Value::Object(values) => {
+            budget.admit_any(depth, values.len())?;
+            let mut prepared = std::collections::HashMap::with_capacity(values.len());
+            let mut entries = values.iter().collect::<Vec<_>>();
+            entries.sort_by_key(|(key, _)| *key);
+            for (key, value) in entries {
+                budget.admit_any(depth, key.len())?;
+                budget.charge_output(key.len())?;
+                prepared.insert(key.clone(), prepare_json_value(value, budget, depth + 1)?);
+            }
+            Ok(Any::Map(Arc::new(prepared)))
         }
     }
+}
 
-    tag.to_string()
+pub(crate) fn normalized_wire_element_node_type<T: ReadTxn>(
+    element: &XmlElementRef,
+    txn: &T,
+) -> String {
+    let tag = element.tag().as_ref();
+    if tag != "heading" {
+        return tag.to_string();
+    }
+    let level = match element.get_attribute(txn, "level") {
+        Some(yrs::Out::Any(Any::BigInt(value))) => u8::try_from(value).ok(),
+        Some(yrs::Out::Any(Any::Number(value))) => (value.is_finite() && value.fract() == 0.0)
+            .then(|| u8::try_from(value as i64).ok())
+            .flatten(),
+        Some(yrs::Out::Any(Any::String(value))) => {
+            crate::serialize::parse_wire_heading_level_str(&value)
+        }
+        _ => None,
+    };
+    level
+        .filter(|level| (1..=6).contains(level))
+        .map_or_else(|| tag.to_string(), |level| format!("h{level}"))
 }
 
 fn element_name_for_json_node(node_type: &str, attrs: &mut Map<String, Value>) -> String {
@@ -583,30 +808,6 @@ fn heading_level_from_internal_node_type(node_type: &str) -> Option<u8> {
         return None;
     }
     let level = suffix.parse::<u8>().ok()?;
-    (1..=6).contains(&level).then_some(level)
-}
-
-fn parse_heading_level_value(value: Option<&Value>) -> Option<u8> {
-    let value = value?;
-    let level = match value {
-        Value::Number(number) => {
-            if let Some(value) = number.as_u64() {
-                u8::try_from(value).ok()?
-            } else if let Some(value) = number.as_i64() {
-                u8::try_from(value).ok()?
-            } else if let Some(value) = number.as_f64() {
-                if !value.is_finite() || value.fract() != 0.0 {
-                    return None;
-                }
-                u8::try_from(value as i64).ok()?
-            } else {
-                return None;
-            }
-        }
-        Value::String(value) => value.parse::<u8>().ok()?,
-        _ => return None,
-    };
-
     (1..=6).contains(&level).then_some(level)
 }
 
@@ -769,7 +970,10 @@ fn decimal_u8_len(value: u8) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{any_to_json_bounded, attrs_to_marks, marks_to_attrs, YrsDocumentCodec};
+    use super::{
+        any_to_json_bounded, attrs_to_marks, insert_prepared_node, marks_to_attrs,
+        prepare_xml_nodes, YrsDocumentCodec,
+    };
     use crate::boundary::ResourceLimits;
     use crate::schema::presets::tiptap_schema;
     use serde_json::{json, Value};
@@ -828,6 +1032,70 @@ mod tests {
         });
 
         assert_eq!(round_trip(next.clone()), next);
+    }
+
+    #[test]
+    fn prepared_builder_matches_codec_for_heading_void_and_nested_any() {
+        let input = json!({
+            "type": "doc",
+            "content": [{
+                "type": "h2",
+                "attrs": {
+                    "data": { "nested": [true, null, "😀", { "value": 7 }] }
+                },
+                "content": [{ "type": "text", "text": "title" }]
+            }, {
+                "type": "hardBreak",
+                "attrs": { "meta": ["void", 2] }
+            }, {
+                "type": "image",
+                "attrs": {
+                    "src": "https://example.test/image.png",
+                    "metadata": { "widths": [320, 640] }
+                }
+            }]
+        });
+        let schema = tiptap_schema();
+        let limits = ResourceLimits::default();
+        let codec = YrsDocumentCodec::new(&schema, &limits);
+
+        let imported = utf16_doc();
+        {
+            let mut txn = imported.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            codec
+                .apply_json(&fragment, &mut txn, &empty_json("doc"), &input)
+                .unwrap();
+        }
+        let expected = {
+            let txn = imported.transact();
+            let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+            codec.read_json(&fragment, &txn).unwrap()
+        };
+
+        let prepared_doc = utf16_doc();
+        {
+            let mut txn = prepared_doc.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let batch =
+                prepare_xml_nodes(input["content"].as_array().unwrap(), &limits, 2).unwrap();
+            for child in batch.nodes {
+                insert_prepared_node(&fragment, &mut txn, child.index, child.node);
+            }
+        }
+        let actual = {
+            let txn = prepared_doc.transact();
+            let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+            codec.read_json(&fragment, &txn).unwrap()
+        };
+        assert_eq!(actual, expected);
+
+        let unsafe_number = json!({
+            "type": "image",
+            "attrs": { "unsafe": u64::MAX }
+        });
+        let error = prepare_xml_nodes(&[unsafe_number], &limits, 2).unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_INVALID");
     }
 
     #[test]

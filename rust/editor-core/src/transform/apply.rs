@@ -6,7 +6,10 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use crate::boundary::{BoundaryError, BoundaryResult, ResourceLimits};
+use crate::boundary::{
+    BoundaryError, BoundaryResult, JsonMeterDimension, JsonMeterError, JsonValueMeter,
+    ResourceLimits,
+};
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::content_rule::WorkBudget;
 use crate::schema::{NodeRole, Schema};
@@ -952,7 +955,12 @@ fn apply_wrap_in_list(
     let num_blocks = (last_idx - first_idx + 1) as u32;
     let total_added = 2 + 2 * num_blocks; // list open/close + li open/close per block
     let map_start = StepMap::from_insert(from, 2);
-    let map_end = StepMap::from_insert(to + 2, total_added - 2);
+    // A semantically empty block resolves both range ends to its content
+    // position. Keep that position between the newly inserted list/item opens
+    // and closes so a following base-revision edit can still address the empty
+    // textblock instead of being pushed to the list boundary.
+    let mapped_end = if from == to { to + 3 } else { to + 2 };
+    let map_end = StepMap::from_insert(mapped_end, total_added - 2);
     let map = map_start.compose(&map_end);
 
     Ok((new_doc, map))
@@ -2176,20 +2184,28 @@ impl DocumentValidator {
             ));
         }
 
-        let mut stats = DocumentStats {
-            node_count: 0,
-            max_depth: 0,
+        let mut state = DocumentValidationState {
+            stats: DocumentStats {
+                node_count: 0,
+                max_depth: 0,
+            },
+            metadata_meter: JsonValueMeter::new(
+                limits.max_input_bytes,
+                work_limit,
+                limits.max_document_depth,
+                0,
+            ),
         };
         validate_node(
             doc.root(),
             schema,
             limits,
             1,
-            &mut stats,
+            &mut state,
             budget,
             work_limit,
         )?;
-        Ok(stats)
+        Ok(state.stats)
     }
 }
 
@@ -2280,23 +2296,28 @@ pub(crate) fn validate_canonical_marks(document: &Document, schema: &Schema) -> 
     visit(document.root(), schema)
 }
 
+struct DocumentValidationState {
+    stats: DocumentStats,
+    metadata_meter: JsonValueMeter,
+}
+
 fn validate_node(
     node: &Node,
     schema: &Schema,
     limits: &ResourceLimits,
     depth: usize,
-    stats: &mut DocumentStats,
+    state: &mut DocumentValidationState,
     budget: &WorkBudget,
     work_limit: usize,
 ) -> BoundaryResult<()> {
     consume_document_work(budget, work_limit, 1)?;
-    stats.node_count = stats.node_count.saturating_add(1);
-    stats.max_depth = stats.max_depth.max(depth);
-    if stats.node_count > limits.max_document_nodes {
+    state.stats.node_count = state.stats.node_count.saturating_add(1);
+    state.stats.max_depth = state.stats.max_depth.max(depth);
+    if state.stats.node_count > limits.max_document_nodes {
         return Err(BoundaryError::limit(
             "DOCUMENT_LIMIT_EXCEEDED",
             limits.max_document_nodes,
-            stats.node_count,
+            state.stats.node_count,
         ));
     }
     if depth > limits.max_document_depth {
@@ -2319,7 +2340,7 @@ fn validate_node(
     }
 
     if node.node_type() == "__opaque" || node.node_type() == "__opaque_json" {
-        return validate_opaque(node);
+        return validate_opaque(node, schema, budget, work_limit, &mut state.metadata_meter);
     }
 
     let spec = schema.node(node.node_type()).ok_or_else(|| {
@@ -2383,7 +2404,7 @@ fn validate_node(
             schema,
             limits,
             depth.saturating_add(1),
-            stats,
+            state,
             budget,
             work_limit,
         )?;
@@ -2463,7 +2484,22 @@ fn consume_document_work(
     Err(error)
 }
 
-fn validate_opaque(node: &Node) -> BoundaryResult<()> {
+fn validate_opaque(
+    node: &Node,
+    schema: &Schema,
+    budget: &WorkBudget,
+    work_limit: usize,
+    metadata_meter: &mut JsonValueMeter,
+) -> BoundaryResult<()> {
+    metadata_meter
+        .admit_object(node.attrs())
+        .map_err(map_opaque_metadata_limit)?;
+    if !node.is_void() {
+        return Err(BoundaryError::new(
+            "DOCUMENT_INVALID",
+            "opaque sentinel nodes must be void",
+        ));
+    }
     let placement = node
         .attrs()
         .get("opaque_placement")
@@ -2474,7 +2510,156 @@ fn validate_opaque(node: &Node) -> BoundaryResult<()> {
             "opaque node is missing a valid placement",
         ));
     }
+    if node.node_type() == "__opaque_json" {
+        const KEYS: &[&str] = &["opaque_placement", "original_json", "original_type"];
+        if node.attrs().len() != KEYS.len()
+            || node.attrs().keys().any(|key| !KEYS.contains(&key.as_str()))
+        {
+            return Err(BoundaryError::new(
+                "DOCUMENT_INVALID",
+                "opaque JSON node has non-canonical metadata",
+            ));
+        }
+        let original_type = node
+            .attrs()
+            .get("original_type")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                BoundaryError::new("DOCUMENT_INVALID", "opaque JSON original_type is invalid")
+            })?;
+        if matches!(original_type, "__opaque" | "__opaque_json" | "__skip")
+            || schema.node(original_type).is_some()
+        {
+            return Err(BoundaryError::new(
+                "DOCUMENT_INVALID",
+                "opaque JSON original_type must remain unknown and non-reserved",
+            ));
+        }
+        let original = node
+            .attrs()
+            .get("original_json")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| {
+                BoundaryError::new("DOCUMENT_INVALID", "opaque JSON payload must be an object")
+            })?;
+        if original.get("type").and_then(serde_json::Value::as_str) != Some(original_type) {
+            return Err(BoundaryError::new(
+                "DOCUMENT_INVALID",
+                "opaque JSON payload type does not match original_type",
+            ));
+        }
+        let empty_attrs = serde_json::Map::new();
+        let original_attrs = original
+            .get("attrs")
+            .and_then(serde_json::Value::as_object)
+            .unwrap_or(&empty_attrs);
+        let normalized_type =
+            crate::serialize::normalized_wire_json_node_type(original_type, original_attrs);
+        if schema.node(&normalized_type).is_some() {
+            return Err(BoundaryError::new(
+                "DOCUMENT_INVALID",
+                "opaque JSON payload normalizes to a known schema node",
+            ));
+        }
+        return Ok(());
+    }
+
+    const HTML_KEYS: &[&str] = &[
+        "html_tag",
+        "opaque_placement",
+        "html_attrs",
+        "text_content",
+        "inner_html",
+    ];
+    if node
+        .attrs()
+        .keys()
+        .any(|key| !HTML_KEYS.contains(&key.as_str()))
+    {
+        return Err(BoundaryError::new(
+            "DOCUMENT_INVALID",
+            "opaque HTML node has non-canonical metadata",
+        ));
+    }
+    let tag = node
+        .attrs()
+        .get("html_tag")
+        .and_then(serde_json::Value::as_str)
+        .filter(|tag| crate::schema::is_safe_html_tag(tag))
+        .ok_or_else(|| BoundaryError::new("DOCUMENT_INVALID", "opaque HTML tag is invalid"))?;
+    if let Some(attrs) = node.attrs().get("html_attrs") {
+        let attrs = attrs.as_object().ok_or_else(|| {
+            BoundaryError::new("DOCUMENT_INVALID", "opaque HTML attrs must be an object")
+        })?;
+        let mut folded_keys = HashSet::with_capacity(attrs.len());
+        for (key, value) in attrs {
+            consume_document_work(budget, work_limit, 1)?;
+            // HTML attribute names are ASCII case-insensitive. Accept only
+            // lowercase HTML keys or html5ever's exact SVG/MathML adjusted
+            // spellings; arbitrary mixed-case private keys could otherwise
+            // change meaning after export/reimport. Reject rather than fold so
+            // duplicate keys cannot collapse ambiguously.
+            if !crate::serialize::html_in::opaque_html_attr_has_canonical_case(tag, key)
+                || !crate::schema::is_safe_html_attr(key)
+                || value.as_str().is_none()
+                || !folded_keys.insert(key.to_ascii_lowercase())
+            {
+                return Err(BoundaryError::new(
+                    "DOCUMENT_INVALID",
+                    "opaque HTML attribute metadata is invalid",
+                ));
+            }
+        }
+        if !crate::serialize::html_in::opaque_html_metadata_remains_opaque(
+            tag,
+            attrs,
+            placement.expect("opaque placement was validated above"),
+            schema,
+        ) {
+            return Err(BoundaryError::new(
+                "DOCUMENT_INVALID",
+                "opaque HTML metadata would reparse as a known semantic node or mark",
+            ));
+        }
+    } else if !crate::serialize::html_in::opaque_html_metadata_remains_opaque(
+        tag,
+        &serde_json::Map::new(),
+        placement.expect("opaque placement was validated above"),
+        schema,
+    ) {
+        return Err(BoundaryError::new(
+            "DOCUMENT_INVALID",
+            "opaque HTML tag would reparse as a known semantic node or mark",
+        ));
+    }
+    for key in ["text_content", "inner_html"] {
+        if node
+            .attrs()
+            .get(key)
+            .is_some_and(|value| value.as_str().is_none())
+        {
+            return Err(BoundaryError::new(
+                "DOCUMENT_INVALID",
+                "opaque HTML text metadata must be strings",
+            ));
+        }
+    }
     Ok(())
+}
+
+fn map_opaque_metadata_limit(error: JsonMeterError) -> BoundaryError {
+    let field = match error.dimension {
+        JsonMeterDimension::Bytes => "maxInputBytes",
+        JsonMeterDimension::Work => "documentWork",
+        JsonMeterDimension::Depth => "maxDocumentDepth",
+    };
+    let mut boundary = BoundaryError::limit("DOCUMENT_LIMIT_EXCEEDED", error.limit, error.actual);
+    boundary.details = Some(serde_json::json!({
+        "phase": "opaqueMetadata",
+        "field": field,
+    }));
+    boundary
 }
 
 /// Check if a child node matches a content group name.

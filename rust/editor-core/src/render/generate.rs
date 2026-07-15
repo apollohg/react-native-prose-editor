@@ -1,7 +1,7 @@
 use crate::model::{Document, Node};
 use crate::render::{
     empty_text_block_placeholder_string, inline_atom_label, inline_atom_mention_theme,
-    task_list_marker_metadata, ListContext, RenderElement, RenderMark,
+    opaque_node_is_inline, task_list_marker_metadata, ListContext, RenderElement, RenderMark,
 };
 use crate::schema::{NodeRole, Schema};
 
@@ -186,10 +186,7 @@ fn walk_children(
                 // Unknown node type: use heuristics based on node kind
                 if child.is_void() {
                     // Determine inline vs block by group
-                    let is_inline = spec
-                        .and_then(|s| s.group.as_deref())
-                        .map(|g| g == "inline")
-                        .unwrap_or(false);
+                    let is_inline = opaque_node_is_inline(child, schema);
                     if is_inline {
                         elements.push(RenderElement::OpaqueInlineAtom {
                             node_type: child.node_type().to_string(),

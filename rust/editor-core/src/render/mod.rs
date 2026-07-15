@@ -188,6 +188,21 @@ pub fn opaque_atom_visible_string(node_type: &str, label: &str) -> String {
     }
 }
 
+pub(crate) fn opaque_node_is_inline(node: &crate::model::Node, schema: &Schema) -> bool {
+    node.attrs()
+        .get("opaque_placement")
+        .and_then(serde_json::Value::as_str)
+        .map_or_else(
+            || {
+                schema
+                    .node(node.node_type())
+                    .and_then(|spec| spec.group.as_deref())
+                    .is_some_and(|group| group == "inline")
+            },
+            |placement| placement == "inline",
+        )
+}
+
 pub fn mention_label_with_trigger(
     label: &str,
     attrs: &std::collections::HashMap<String, serde_json::Value>,

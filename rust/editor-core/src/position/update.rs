@@ -40,7 +40,7 @@ impl PositionMap {
         // Try incremental update for simple single-range edits.
         if mode == UpdateMode::InlineTextOnly {
             if let Some(range) = step_map.single_range() {
-                if self.try_incremental_update(range, old_doc, new_doc) {
+                if self.try_incremental_update(range, old_doc, new_doc, schema) {
                     return;
                 }
             }
@@ -59,6 +59,7 @@ impl PositionMap {
         (pos, deleted, inserted): (u32, u32, u32),
         old_doc: &Document,
         new_doc: &Document,
+        schema: &Schema,
     ) -> bool {
         // Find which block contains the edit position (using current deltas).
         let block_idx = match self.find_block_for_doc_pos(pos) {
@@ -105,7 +106,7 @@ impl PositionMap {
             Some(node) => node,
             None => return false,
         };
-        let rebuilt_block = match rebuild_existing_block_mapping(new_node, &old_block) {
+        let rebuilt_block = match rebuild_existing_block_mapping(new_node, &old_block, schema) {
             Some(block) => block,
             None => return false,
         };

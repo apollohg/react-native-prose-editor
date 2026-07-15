@@ -56,6 +56,10 @@ impl WorkBudget {
         self.remaining.set(remaining - amount);
         true
     }
+
+    pub(crate) fn consumed(&self, initial: usize) -> usize {
+        initial.saturating_sub(self.remaining.get())
+    }
 }
 
 /// A parsed ProseMirror-style content expression.

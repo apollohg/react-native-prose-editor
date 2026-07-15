@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 use crate::model::node::Node;
 use crate::model::Document;
 use crate::render;
-use crate::schema::Schema;
+use crate::schema::{NodeRole, Schema};
 
 use super::{BlockMapping, PositionMap};
 
@@ -71,12 +71,13 @@ pub fn build_position_map(doc: &Document, schema: &Schema) -> PositionMap {
         }
     }
 
-    PositionMap::from_blocks(blocks)
+    PositionMap::from_blocks(blocks, schema)
 }
 
 pub(crate) fn rebuild_existing_block_mapping(
     node: &Node,
     old_block: &BlockMapping,
+    schema: &Schema,
 ) -> Option<BlockMapping> {
     if old_block.is_void_block {
         if !node.is_void() {
@@ -87,7 +88,7 @@ pub(crate) fn rebuild_existing_block_mapping(
             doc_start: old_block.doc_start,
             doc_end: old_block.doc_start,
             scalar_start: old_block.scalar_start,
-            scalar_len: block_visible_scalar_len(node),
+            scalar_len: block_visible_scalar_len(node, schema),
             scalar_prefix_len: old_block.scalar_prefix_len,
             rendered_break_after: old_block.rendered_break_after,
             node_path: old_block.node_path.clone(),
@@ -95,7 +96,7 @@ pub(crate) fn rebuild_existing_block_mapping(
         });
     }
 
-    if !is_text_block(node) {
+    if !is_text_block(node, schema) {
         return None;
     }
 
@@ -104,7 +105,7 @@ pub(crate) fn rebuild_existing_block_mapping(
         doc_start: old_block.doc_start,
         doc_end: old_block.doc_start + content.size(),
         scalar_start: old_block.scalar_start,
-        scalar_len: compute_inline_scalars(node),
+        scalar_len: compute_inline_scalars(node, schema),
         scalar_prefix_len: old_block.scalar_prefix_len,
         rendered_break_after: old_block.rendered_break_after,
         node_path: old_block.node_path.clone(),
@@ -138,7 +139,7 @@ fn walk_node(
             doc_start: doc_offset,
             doc_end: doc_offset, // void has no "content range", just a position
             scalar_start: *scalar_cursor, // will be recalculated
-            scalar_len: block_visible_scalar_len(node),
+            scalar_len: block_visible_scalar_len(node, schema),
             scalar_prefix_len: std::mem::take(&mut pending_prefix_len),
             rendered_break_after: 0, // will be fixed up
             node_path: path.clone(),
@@ -153,9 +154,9 @@ fn walk_node(
     // or a container (contains other elements).
     let content = node.content().expect("element nodes have content");
 
-    if is_text_block(node) {
+    if is_text_block(node, schema) {
         // This is a text block. Compute the scalar length from its inline content.
-        let scalar_len = compute_inline_scalars(node);
+        let scalar_len = compute_inline_scalars(node, schema);
 
         blocks.push(BlockMapping {
             doc_start: doc_offset,
@@ -221,28 +222,17 @@ fn walk_node(
 /// inline content (text nodes and inline void nodes like hardBreak).
 ///
 /// An element with no children (empty paragraph) is also a text block.
-fn is_text_block(node: &Node) -> bool {
-    let content = match node.content() {
-        Some(c) => c,
-        None => return false,
-    };
-
-    // Empty element counts as a text block (e.g. empty paragraph)
-    if content.child_count() == 0 {
-        return true;
-    }
-
-    // All children must be inline (text or void)
-    content
-        .iter()
-        .all(|child| child.is_text() || child.is_void())
+fn is_text_block(node: &Node, schema: &Schema) -> bool {
+    schema
+        .node(node.node_type())
+        .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
 }
 
 /// Count the number of rendered scalars in a text block's inline content.
 ///
 /// - Text nodes contribute their Unicode scalar count.
 /// - Inline void nodes (hardBreak) contribute 1 scalar each.
-fn compute_inline_scalars(node: &Node) -> u32 {
+fn compute_inline_scalars(node: &Node, schema: &Schema) -> u32 {
     let content = match node.content() {
         Some(c) => c,
         None => return 0,
@@ -257,7 +247,7 @@ fn compute_inline_scalars(node: &Node) -> u32 {
         if child.is_text() {
             count += child.node_size(); // node_size for text = scalar count
         } else if child.is_void() {
-            count += inline_visible_scalar_len(child);
+            count += inline_visible_scalar_len(child, schema);
         }
         // Element children inside a text block shouldn't exist, but if they
         // do we skip them (defensive).
@@ -294,20 +284,163 @@ fn list_marker_len(schema: &Schema, list_node: &Node, child_index: usize) -> u32
     render::list_marker_string(ordered, index).chars().count() as u32
 }
 
-fn inline_visible_scalar_len(node: &Node) -> u32 {
+fn inline_visible_scalar_len(node: &Node, schema: &Schema) -> u32 {
     let label = render::inline_atom_label(node.node_type(), node.attrs());
     render::inline_node_visible_scalar_len(
         node.node_type(),
         Some(label.as_str()),
-        matches!(node.node_type(), "hardBreak" | "hard_break"),
+        schema
+            .node(node.node_type())
+            .is_some_and(|spec| matches!(spec.role, NodeRole::HardBreak)),
     )
 }
 
-fn block_visible_scalar_len(node: &Node) -> u32 {
+fn block_visible_scalar_len(node: &Node, schema: &Schema) -> u32 {
+    if schema
+        .node(node.node_type())
+        .is_some_and(|spec| matches!(spec.role, NodeRole::Block))
+    {
+        return 1;
+    }
     let label = render::inline_atom_label(node.node_type(), node.attrs());
     render::block_node_visible_scalar_len(
         node.node_type(),
         Some(label.as_str()),
         matches!(node.node_type(), "horizontalRule" | "horizontal_rule"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::position::update::UpdateMode;
+    use crate::serialize::{from_prosemirror_json, UnknownTypeMode};
+    use crate::transform::StepMap;
+
+    fn role_schema() -> Schema {
+        Schema::from_json(&json!({
+            "nodes": [
+                { "name": "doc", "content": "block*", "role": "doc" },
+                { "name": "paragraph", "content": "inline*", "group": "block", "role": "textBlock", "htmlTag": "p" },
+                { "name": "image", "content": "", "group": "block", "role": "block", "isVoid": true },
+                { "name": "customVoid", "content": "", "group": "block", "role": "block", "isVoid": true },
+                { "name": "emptyBlock", "content": "", "group": "block", "role": "block" },
+                { "name": "softBreak", "content": "", "group": "inline", "role": "hardBreak", "isVoid": true, "allowUndeclaredAttrs": true },
+                { "name": "mention", "content": "", "group": "inline", "role": "inline", "isVoid": true, "allowUndeclaredAttrs": true },
+                { "name": "text", "group": "inline", "role": "text" }
+            ],
+            "marks": []
+        }))
+        .unwrap()
+    }
+
+    fn assert_render_map_parity(value: serde_json::Value) -> (Document, PositionMap, String) {
+        let schema = role_schema();
+        let document = from_prosemirror_json(&value, &schema, UnknownTypeMode::Preserve).unwrap();
+        let map = build_position_map(&document, &schema);
+        let rendered = render::rendered_text(&document, &schema);
+        assert_eq!(map.total_scalars(), rendered.chars().count() as u32);
+        (document, map, rendered)
+    }
+
+    #[test]
+    fn role_driven_void_blocks_match_rendering_alone_and_with_a_sibling() {
+        let (image, image_map, rendered) = assert_render_map_parity(json!({
+            "type": "doc",
+            "content": [{ "type": "image" }]
+        }));
+        assert_eq!(rendered, VOID_BLOCK_PLACEHOLDER.to_string());
+        assert_eq!(image_map.scalar_to_doc(0, &image), 0);
+
+        let (document, map, rendered) = assert_render_map_parity(json!({
+            "type": "doc",
+            "content": [
+                { "type": "customVoid" },
+                { "type": "paragraph", "content": [{ "type": "text", "text": "x" }] }
+            ]
+        }));
+        assert_eq!(rendered, format!("{}\nx", VOID_BLOCK_PLACEHOLDER));
+        assert_eq!(map.scalar_to_doc(0, &document), 0);
+        assert_eq!(map.scalar_to_doc(2, &document), 2);
+    }
+
+    #[test]
+    fn empty_doc_and_generic_empty_block_do_not_become_text_blocks() {
+        assert_render_map_parity(json!({ "type": "doc" }));
+        let (_, map, rendered) = assert_render_map_parity(json!({
+            "type": "doc",
+            "content": [{ "type": "emptyBlock" }]
+        }));
+        assert!(rendered.is_empty());
+        assert_eq!(map.block_count(), 0);
+    }
+
+    #[test]
+    fn custom_hard_break_and_inline_atom_use_renderer_visible_lengths() {
+        let (document, map, rendered) = assert_render_map_parity(json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [
+                    { "type": "softBreak", "attrs": { "label": "ignored-multiscalar-label" } },
+                    { "type": "mention", "attrs": { "label": "Ada" } }
+                ]
+            }]
+        }));
+        assert_eq!(rendered, "\nAda");
+        assert_eq!(
+            (0..=4)
+                .map(|scalar| map.scalar_to_doc(scalar, &document))
+                .collect::<Vec<_>>(),
+            vec![1, 2, 2, 2, 3]
+        );
+        assert_eq!(
+            (0..=3)
+                .map(|position| map.doc_to_scalar(position, &document))
+                .collect::<Vec<_>>(),
+            vec![0, 0, 1, 4]
+        );
+    }
+
+    #[test]
+    fn incremental_rebuild_uses_the_same_schema_role_lengths() {
+        let schema = role_schema();
+        let old_document = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [{ "type": "paragraph", "content": [{ "type": "softBreak" }] }]
+            }),
+            &schema,
+            UnknownTypeMode::Preserve,
+        )
+        .unwrap();
+        let new_document = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{ "type": "mention", "attrs": { "label": "Ada" } }]
+                }]
+            }),
+            &schema,
+            UnknownTypeMode::Preserve,
+        )
+        .unwrap();
+        let mut map = build_position_map(&old_document, &schema);
+        map.update(
+            &StepMap::from_replace(1, 1, 1),
+            &old_document,
+            &new_document,
+            UpdateMode::InlineTextOnly,
+            &schema,
+        );
+        assert_eq!(
+            map.total_scalars(),
+            render::rendered_text(&new_document, &schema)
+                .chars()
+                .count() as u32
+        );
+    }
 }

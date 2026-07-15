@@ -2,6 +2,173 @@ use serde::{Deserialize, Serialize};
 
 pub type BoundaryResult<T> = Result<T, BoundaryError>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JsonMeterDimension {
+    Bytes,
+    Work,
+    Depth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct JsonMeterError {
+    pub(crate) dimension: JsonMeterDimension,
+    pub(crate) limit: usize,
+    pub(crate) actual: usize,
+}
+
+pub(crate) struct JsonValueMeter {
+    byte_limit: usize,
+    work_limit: usize,
+    depth_limit: usize,
+    bytes: usize,
+    work: usize,
+}
+
+impl JsonValueMeter {
+    pub(crate) fn new(
+        byte_limit: usize,
+        work_limit: usize,
+        depth_limit: usize,
+        initial_bytes: usize,
+    ) -> Self {
+        Self {
+            byte_limit,
+            work_limit,
+            depth_limit,
+            bytes: initial_bytes,
+            work: 0,
+        }
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    pub(crate) fn charge_bytes(&mut self, amount: usize) -> Result<(), JsonMeterError> {
+        let actual = self.bytes.saturating_add(amount);
+        if actual > self.byte_limit {
+            return Err(JsonMeterError {
+                dimension: JsonMeterDimension::Bytes,
+                limit: self.byte_limit,
+                actual,
+            });
+        }
+        self.bytes = actual;
+        Ok(())
+    }
+
+    fn admit_value(&mut self, depth: usize) -> Result<(), JsonMeterError> {
+        if depth > self.depth_limit {
+            return Err(JsonMeterError {
+                dimension: JsonMeterDimension::Depth,
+                limit: self.depth_limit,
+                actual: depth,
+            });
+        }
+        let actual = self.work.saturating_add(1);
+        if actual > self.work_limit {
+            return Err(JsonMeterError {
+                dimension: JsonMeterDimension::Work,
+                limit: self.work_limit,
+                actual,
+            });
+        }
+        self.work = actual;
+        Ok(())
+    }
+
+    pub(crate) fn admit_object(
+        &mut self,
+        attrs: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<(), JsonMeterError> {
+        enum Frame<'a> {
+            Attrs(
+                std::collections::hash_map::Iter<'a, String, serde_json::Value>,
+                usize,
+            ),
+            Value(&'a serde_json::Value, usize),
+            Array(std::slice::Iter<'a, serde_json::Value>, usize),
+            Object(serde_json::map::Iter<'a>, usize),
+        }
+        self.charge_bytes(2)?;
+        if !attrs.is_empty() {
+            self.charge_bytes(attrs.len() - 1)?;
+        }
+        let mut stack = vec![Frame::Attrs(attrs.iter(), 1)];
+        while let Some(frame) = stack.pop() {
+            match frame {
+                Frame::Attrs(mut values, depth) => {
+                    if let Some((key, value)) = values.next() {
+                        self.admit_value(depth)?;
+                        self.count_string(key)?;
+                        self.charge_bytes(1)?;
+                        stack.push(Frame::Attrs(values, depth));
+                        stack.push(Frame::Value(value, depth));
+                    }
+                }
+                Frame::Value(value, depth) => match value {
+                    serde_json::Value::Null => self.charge_bytes(4)?,
+                    serde_json::Value::Bool(value) => {
+                        self.charge_bytes(if *value { 4 } else { 5 })?
+                    }
+                    serde_json::Value::Number(value) => {
+                        self.charge_bytes(value.to_string().len())?
+                    }
+                    serde_json::Value::String(value) => self.count_string(value)?,
+                    serde_json::Value::Array(values) => {
+                        self.charge_bytes(2)?;
+                        if !values.is_empty() {
+                            self.charge_bytes(values.len() - 1)?;
+                        }
+                        let child_depth = depth.saturating_add(1);
+                        stack.push(Frame::Array(values.iter(), child_depth));
+                    }
+                    serde_json::Value::Object(values) => {
+                        self.charge_bytes(2)?;
+                        if !values.is_empty() {
+                            self.charge_bytes(values.len() - 1)?;
+                        }
+                        let child_depth = depth.saturating_add(1);
+                        stack.push(Frame::Object(values.iter(), child_depth));
+                    }
+                },
+                Frame::Array(mut values, depth) => {
+                    if let Some(value) = values.next() {
+                        self.admit_value(depth)?;
+                        stack.push(Frame::Array(values, depth));
+                        stack.push(Frame::Value(value, depth));
+                    }
+                }
+                Frame::Object(mut values, depth) => {
+                    if let Some((key, value)) = values.next() {
+                        self.admit_value(depth)?;
+                        self.count_string(key)?;
+                        self.charge_bytes(1)?;
+                        stack.push(Frame::Object(values, depth));
+                        stack.push(Frame::Value(value, depth));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn count_string(&mut self, value: &str) -> Result<(), JsonMeterError> {
+        self.charge_bytes(value.len().saturating_add(2))?;
+        for byte in value.bytes() {
+            let extra = match byte {
+                b'"' | b'\\' | b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' => 1,
+                0x00..=0x1f => 5,
+                _ => 0,
+            };
+            if extra != 0 {
+                self.charge_bytes(extra)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceLimits {
@@ -195,5 +362,63 @@ impl<'a> BoundedInput<'a> {
 
     pub fn as_str(&self) -> &'a str {
         self.value
+    }
+}
+
+#[cfg(test)]
+mod json_meter_tests {
+    use std::collections::HashMap;
+
+    use serde_json::json;
+
+    use super::{JsonMeterDimension, JsonValueMeter};
+
+    #[test]
+    fn json_value_meter_matches_compact_json_and_enforces_exact_bytes() {
+        let attrs = HashMap::from([
+            ("escaped".into(), json!("quote\" slash\\ line\n 😀")),
+            ("number".into(), json!(-123.5)),
+            ("nested".into(), json!({ "a": [true, null, 7] })),
+        ]);
+        let expected = serde_json::to_vec(&attrs).unwrap().len();
+        let mut exact = JsonValueMeter::new(expected, 64, 16, 0);
+        exact.admit_object(&attrs).unwrap();
+        assert_eq!(exact.bytes(), expected);
+
+        let mut one_under = JsonValueMeter::new(expected - 1, 64, 16, 0);
+        let error = one_under.admit_object(&attrs).unwrap_err();
+        assert_eq!(error.dimension, JsonMeterDimension::Bytes);
+        assert_eq!(error.limit, expected - 1);
+        assert!(error.actual > error.limit);
+    }
+
+    #[test]
+    fn json_value_meter_enforces_depth_and_work_before_descent() {
+        let nested = HashMap::from([("value".into(), json!([[0]]))]);
+        JsonValueMeter::new(1024, 8, 3, 0)
+            .admit_object(&nested)
+            .unwrap();
+        let error = JsonValueMeter::new(1024, 8, 2, 0)
+            .admit_object(&nested)
+            .unwrap_err();
+        assert_eq!(error.dimension, JsonMeterDimension::Depth);
+        assert_eq!(error.actual, 3);
+
+        let wide = HashMap::from([("value".into(), json!([1, 2, 3, 4]))]);
+        let error = JsonValueMeter::new(1024, 4, 8, 0)
+            .admit_object(&wide)
+            .unwrap_err();
+        assert_eq!(error.dimension, JsonMeterDimension::Work);
+        assert_eq!(error.actual, 5);
+    }
+
+    #[test]
+    fn json_value_meter_rejects_exhausted_work_before_scanning_the_next_key() {
+        let attrs = HashMap::from([("x".repeat(128 * 1024), json!(null))]);
+        let mut meter = JsonValueMeter::new(usize::MAX, 0, 8, 0);
+        let error = meter.admit_object(&attrs).unwrap_err();
+        assert_eq!(error.dimension, JsonMeterDimension::Work);
+        assert_eq!(error.actual, 1);
+        assert_eq!(meter.bytes(), 2);
     }
 }
