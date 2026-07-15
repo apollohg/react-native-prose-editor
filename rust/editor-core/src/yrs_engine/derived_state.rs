@@ -14,8 +14,8 @@ use super::position::{
     relative_point_to_doc_pos, relative_selection_to_selection,
 };
 use super::{
-    scalar_offset_to_utf16, Affinity, RelativePoint, RelativeSelection, ResolvedPoint,
-    ResolvedSelection,
+    scalar_offset_to_utf16, Affinity, OperationError, OperationResult, RelativePoint,
+    RelativeSelection, ResolvedPoint, ResolvedSelection, TypedOperation,
 };
 
 #[derive(Debug, Clone)]
@@ -168,6 +168,181 @@ impl DerivedStateCache {
     pub fn legacy_selection(&self) -> Selection {
         resolved_to_legacy(&self.resolved_selection)
     }
+}
+
+pub(crate) fn stored_marks_after_selection_change(
+    current: Option<&[Mark]>,
+    before: &ResolvedSelection,
+    after: &ResolvedSelection,
+    _document: &Document,
+    schema: &Schema,
+) -> Option<Vec<Mark>> {
+    let current = current?;
+    if before != after || !is_collapsed_text(after) {
+        return None;
+    }
+    Some(canonical_marks(current, schema))
+}
+
+pub(crate) fn apply_stored_mark_operation(
+    marks: &mut Vec<Mark>,
+    operation: &TypedOperation,
+    schema: &Schema,
+) -> OperationResult<bool> {
+    match operation {
+        TypedOperation::AddMark { mark, .. } => {
+            if let Some(existing) = marks
+                .iter()
+                .find(|candidate| candidate.mark_type() == mark.mark_type())
+            {
+                if existing != mark {
+                    return Err(OperationError::operation_invalid(
+                        0,
+                        0,
+                        "mark",
+                        "AddMark conflicts with an existing same-type mark; use ReplaceMark",
+                    ));
+                }
+                return Ok(false);
+            }
+            insert_mark_ranked(marks, mark.clone(), schema);
+            Ok(true)
+        }
+        TypedOperation::RemoveMark { mark_type, .. } => {
+            let previous_len = marks.len();
+            marks.retain(|candidate| candidate.mark_type() != mark_type);
+            Ok(marks.len() != previous_len)
+        }
+        TypedOperation::ReplaceMark { mark, .. } => {
+            if marks
+                .iter()
+                .find(|candidate| candidate.mark_type() == mark.mark_type())
+                == Some(mark)
+            {
+                return Ok(false);
+            }
+            marks.retain(|candidate| candidate.mark_type() != mark.mark_type());
+            insert_mark_ranked(marks, mark.clone(), schema);
+            Ok(true)
+        }
+        _ => Err(OperationError::engine_invariant_failed(
+            0,
+            None,
+            "stored mark transition received a non-mark operation",
+        )),
+    }
+}
+
+/// Task 13's input planner consumes this hook. Task 10's live transition path
+/// already has an admitted, mapped caret and therefore updates the canonical
+/// stored set directly with [`apply_stored_mark_operation`].
+#[allow(dead_code)]
+pub(crate) fn effective_marks_for_insertion(
+    stored: Option<&[Mark]>,
+    document: &Document,
+    selection: &ResolvedSelection,
+    schema: &Schema,
+) -> OperationResult<Vec<Mark>> {
+    if let Some(stored) = stored {
+        return Ok(stored.to_vec());
+    }
+    let ResolvedSelection::Text { anchor, head } = selection else {
+        return Ok(Vec::new());
+    };
+    if anchor.document != head.document {
+        return Ok(Vec::new());
+    }
+    Ok(canonical_marks(
+        &marks_at_position(document, anchor.document),
+        schema,
+    ))
+}
+
+pub(crate) fn resolved_from_legacy(
+    document: &Document,
+    selection: &Selection,
+    schema: &Schema,
+) -> Option<ResolvedSelection> {
+    let position_map = PositionMap::build(document, schema);
+    let rendered = crate::render::rendered_text(document, schema);
+    let point = |document_position| {
+        let scalar = position_map.doc_to_scalar(document_position, document);
+        Some(ResolvedPoint {
+            document: document_position,
+            scalar,
+            utf16: scalar_offset_to_utf16(&rendered, scalar)?,
+        })
+    };
+    match selection {
+        Selection::Text { anchor, head } => Some(ResolvedSelection::Text {
+            anchor: point(*anchor)?,
+            head: point(*head)?,
+        }),
+        Selection::Node { pos } if selectable_void_at(document.root(), *pos, 0, schema) => {
+            Some(ResolvedSelection::Node { at: point(*pos)? })
+        }
+        Selection::Node { .. } => None,
+        Selection::All => Some(ResolvedSelection::All),
+    }
+}
+
+fn is_collapsed_text(selection: &ResolvedSelection) -> bool {
+    matches!(selection, ResolvedSelection::Text { anchor, head } if anchor.document == head.document)
+}
+
+pub(crate) fn canonical_marks(marks: &[Mark], schema: &Schema) -> Vec<Mark> {
+    let mut marks = marks.to_vec();
+    marks.sort_by(|left, right| {
+        schema
+            .mark_rank(left.mark_type())
+            .unwrap_or(usize::MAX)
+            .cmp(&schema.mark_rank(right.mark_type()).unwrap_or(usize::MAX))
+            .then_with(|| left.mark_type().cmp(right.mark_type()))
+    });
+    marks
+}
+
+fn insert_mark_ranked(marks: &mut Vec<Mark>, mark: Mark, schema: &Schema) {
+    let rank = schema.mark_rank(mark.mark_type()).unwrap_or(usize::MAX);
+    let index = marks
+        .iter()
+        .position(|candidate| {
+            schema
+                .mark_rank(candidate.mark_type())
+                .unwrap_or(usize::MAX)
+                > rank
+        })
+        .unwrap_or(marks.len());
+    marks.insert(index, mark);
+}
+
+pub(crate) fn marks_at_position(document: &Document, position: u32) -> Vec<Mark> {
+    let Ok(resolved) = document.resolve(position) else {
+        return Vec::new();
+    };
+    let parent = resolved.parent(document);
+    let Some(content) = parent.content() else {
+        return Vec::new();
+    };
+    let mut offset = 0u32;
+    for child in content.iter() {
+        let child_size = child.node_size();
+        if child.is_text()
+            && offset <= resolved.parent_offset
+            && resolved.parent_offset <= offset.saturating_add(child_size)
+        {
+            return child.marks().to_vec();
+        }
+        offset = offset.saturating_add(child_size);
+    }
+    if resolved.parent_offset == offset {
+        return content
+            .iter()
+            .rev()
+            .find(|child| child.is_text())
+            .map_or_else(Vec::new, |child| child.marks().to_vec());
+    }
+    Vec::new()
 }
 
 fn preserve_with_mapped_fallback<T: ReadTxn>(

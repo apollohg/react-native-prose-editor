@@ -775,6 +775,11 @@ fn run_stateful_trace(trace: &[ActionSpec], coverage: &RefCell<Coverage>) {
             yrs.revision(),
             yrs.state_revision(),
         );
+        let local_state_before = (
+            yrs.relative_selection().cloned(),
+            yrs.resolved_selection().cloned(),
+            yrs.stored_marks().map(<[Mark]>::to_vec),
+        );
         let (operation, legacy_steps) = stateful_inline_scenario(spec, &legacy, &schema, coverage);
         let mut legacy_transaction = Transaction::new(Source::Api);
         for step in legacy_steps {
@@ -787,6 +792,7 @@ fn run_stateful_trace(trace: &[ActionSpec], coverage: &RefCell<Coverage>) {
             })
             .0;
         let expected_changed = legacy != legacy_before;
+        let operation_debug = format!("{operation:?}");
         let commit = yrs
             .apply_typed_transaction(transaction(
                 &yrs,
@@ -799,11 +805,34 @@ fn run_stateful_trace(trace: &[ActionSpec], coverage: &RefCell<Coverage>) {
             &schema,
             &format!("trace step {index} ({spec:?})"),
         );
-        assert_eq!(
-            commit.changed, expected_changed,
-            "trace step {index}: {spec:?}"
+        let local_state_after = (
+            yrs.relative_selection().cloned(),
+            yrs.resolved_selection().cloned(),
+            yrs.stored_marks().map(<[Mark]>::to_vec),
         );
-        if !expected_changed {
+        let local_state_changed = local_state_after != local_state_before;
+        let expected_commit_changed = expected_changed || local_state_changed;
+        assert_eq!(
+            commit.changed, expected_commit_changed,
+            "trace step {index}: {spec:?}; operation={operation_debug}; before_revisions=({}, {}); after=({}, {}, {:?}, {:?})",
+            engine_before.1,
+            engine_before.2,
+            yrs.revision(),
+            yrs.state_revision(),
+            yrs.stored_marks(),
+            yrs.resolved_selection(),
+        );
+        assert_eq!(
+            yrs.revision(),
+            engine_before.1 + u64::from(expected_changed),
+            "document revision at trace step {index}: {spec:?}"
+        );
+        assert_eq!(
+            yrs.state_revision(),
+            engine_before.2 + u64::from(expected_commit_changed),
+            "state revision at trace step {index}: {spec:?}"
+        );
+        if !expected_commit_changed {
             assert_eq!(
                 (
                     yrs.encoded_state().unwrap(),
@@ -812,6 +841,12 @@ fn run_stateful_trace(trace: &[ActionSpec], coverage: &RefCell<Coverage>) {
                 ),
                 engine_before,
                 "no-op trace step {index}: {spec:?}"
+            );
+        } else if !expected_changed {
+            assert_eq!(
+                yrs.encoded_state().unwrap(),
+                engine_before.0,
+                "state-only trace step wrote Yrs content at {index}: {spec:?}"
             );
         }
 

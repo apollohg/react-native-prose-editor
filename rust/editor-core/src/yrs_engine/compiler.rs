@@ -120,6 +120,18 @@ pub(crate) enum RelativeSelectionPlan {
     OperationResult,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StoredMarksPlan {
+    Unsealed,
+    Set(Option<Vec<Mark>>),
+}
+
+pub(crate) struct StoredMarksCompilationContext<'a> {
+    pub stored_marks: Option<&'a [Mark]>,
+    pub resolved_selection: &'a super::ResolvedSelection,
+    pub relative_selection: &'a super::RelativeSelection,
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct CompiledTransaction {
@@ -134,6 +146,7 @@ pub(crate) struct CompiledTransaction {
     pub composed_map: StepMap,
     pub position_update_mode: UpdateMode,
     pub relative_selection_plan: RelativeSelectionPlan,
+    pub stored_marks_plan: StoredMarksPlan,
     pub mutation_plan: YrsMutationPlan,
     pub encoded_growth_bound: usize,
     pub undo_units_bound: u64,
@@ -146,7 +159,7 @@ pub(super) fn compile_transaction(
     transaction: TypedTransaction,
 ) -> OperationResult<CompiledTransaction> {
     admit_transaction_envelope(context, &transaction)?;
-    compile_transaction_impl(context, &transaction, None, None)
+    compile_transaction_impl(context, &transaction, None, None, None)
 }
 
 pub(super) fn compile_transaction_with_yrs<T: yrs::ReadTxn>(
@@ -154,6 +167,26 @@ pub(super) fn compile_transaction_with_yrs<T: yrs::ReadTxn>(
     transaction: TypedTransaction,
     txn: &T,
     fragment: &yrs::types::xml::XmlFragmentRef,
+) -> OperationResult<CompiledTransaction> {
+    compile_transaction_with_yrs_impl(context, transaction, txn, fragment, None)
+}
+
+pub(super) fn compile_transaction_with_yrs_and_stored_marks<T: yrs::ReadTxn>(
+    context: CompilationContext<'_>,
+    transaction: TypedTransaction,
+    txn: &T,
+    fragment: &yrs::types::xml::XmlFragmentRef,
+    stored_marks: StoredMarksCompilationContext<'_>,
+) -> OperationResult<CompiledTransaction> {
+    compile_transaction_with_yrs_impl(context, transaction, txn, fragment, Some(stored_marks))
+}
+
+fn compile_transaction_with_yrs_impl<T: yrs::ReadTxn>(
+    context: CompilationContext<'_>,
+    transaction: TypedTransaction,
+    txn: &T,
+    fragment: &yrs::types::xml::XmlFragmentRef,
+    stored_marks: Option<StoredMarksCompilationContext<'_>>,
 ) -> OperationResult<CompiledTransaction> {
     let request_id = transaction.request_id;
     #[cfg(test)]
@@ -272,6 +305,7 @@ pub(super) fn compile_transaction_with_yrs<T: yrs::ReadTxn>(
         &transaction,
         Some(lowering),
         Some(&mut load_crdt_envelope),
+        stored_marks,
     )?;
     compiled.relative_selection_plan =
         match (&compiled.selection_plan, &transaction.selection_intent) {
@@ -487,6 +521,7 @@ fn compile_transaction_impl(
     transaction: &TypedTransaction,
     mut lowering: Option<MutationCompiler>,
     mut crdt_envelope_loader: Option<&mut dyn FnMut(usize) -> OperationResult<CrdtEnvelope>>,
+    stored_marks_context: Option<StoredMarksCompilationContext<'_>>,
 ) -> OperationResult<CompiledTransaction> {
     let request_id = transaction.request_id;
     let mut work = CheckedWork::default();
@@ -524,8 +559,29 @@ fn compile_transaction_impl(
     let mut history_class = HistoryClass::Skip;
     let records_history = transaction.history_policy != HistoryPolicy::Skip;
     let mut canonical_json = None;
-
+    let mut stored_marks_state = stored_marks_context
+        .as_ref()
+        .map(|state| state.stored_marks.map(<[Mark]>::to_vec));
+    let tracked_caret = stored_marks_context.as_ref().and_then(|state| {
+        let super::ResolvedSelection::Text { anchor, head } = state.resolved_selection else {
+            return None;
+        };
+        let super::RelativeSelection::Text {
+            head: relative_head,
+            ..
+        } = state.relative_selection
+        else {
+            return None;
+        };
+        (anchor.document == head.document).then_some((head.document, relative_head.affinity))
+    });
     for (operation_index, operation) in transaction.operations.iter().enumerate() {
+        let tracked_caret_for_operation = tracked_caret
+            .map(|(position, affinity)| map_position(&composed_map, position, affinity));
+        let mut stored_marks_input = None;
+        let mut inherited_marks = None;
+        let mut operation_changed;
+        let mut compatible_text_delete = false;
         match operation {
             TypedOperation::InsertText { at, text, marks } => {
                 validate_operation_marks(request_id, operation_index, marks, context.schema)?;
@@ -539,6 +595,7 @@ fn compile_transaction_impl(
                     context.document,
                 )?;
                 let pos = map_position(&composed_map, base_pos, at.affinity);
+                stored_marks_input = Some((pos, pos));
                 let step = Step::InsertText {
                     pos,
                     text: text.clone(),
@@ -557,6 +614,7 @@ fn compile_transaction_impl(
                 }
                 operation_result = Some(Selection::cursor(step_map.map_pos(pos)));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 if records_history {
                     charge_undo_bound(
@@ -580,6 +638,7 @@ fn compile_transaction_impl(
                     context.document,
                     &composed_map,
                 )?;
+                stored_marks_input = Some((from, to));
                 let step = Step::DeleteRange { from, to };
                 let (next, step_map) =
                     crate::transform::apply_step_canonical_marks(&preview, &step, context.schema)
@@ -597,14 +656,21 @@ fn compile_transaction_impl(
                         context.schema,
                         lowering,
                     )?;
-                    if lowering.delete(operation_index, from, to, &boundaries)?
-                        == TextRangeDisposition::Structural
-                    {
-                        lowering.delete_structural_range(operation_index, &preview, from, to)?;
+                    match lowering.delete(operation_index, from, to, &boundaries)? {
+                        TextRangeDisposition::Applied => compatible_text_delete = true,
+                        TextRangeDisposition::Structural => {
+                            lowering.delete_structural_range(
+                                operation_index,
+                                &preview,
+                                from,
+                                to,
+                            )?;
+                        }
                     }
                 }
                 operation_result = Some(Selection::cursor(from));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 if records_history {
                     charge_undo_bound(
@@ -629,6 +695,7 @@ fn compile_transaction_impl(
                     context.document,
                     &composed_map,
                 )?;
+                stored_marks_input = Some((from, to));
                 let step = Step::ReplaceRange {
                     from,
                     to,
@@ -642,7 +709,7 @@ fn compile_transaction_impl(
                 if lowering.is_some() {
                     validate_preview(request_id, Some(operation_index), &next, context)?;
                 }
-                let operation_changed = next != preview;
+                operation_changed = next != preview;
                 if operation_changed {
                     if let Some(lowering) = &mut lowering {
                         let boundaries = text_boundaries(
@@ -671,6 +738,7 @@ fn compile_transaction_impl(
                 }
                 operation_result = Some(Selection::cursor(from.saturating_add(content.size())));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 if records_history && operation_changed {
                     charge_undo_bound(
@@ -709,6 +777,18 @@ fn compile_transaction_impl(
                     context.document,
                     &composed_map,
                 )?;
+                stored_marks_input = Some((from, to));
+                if from == to {
+                    inherited_marks = Some(super::derived_state::marks_at_position(&preview, from));
+                }
+                if add_mark_conflicts_with_existing_attrs(&preview, from, to, mark) {
+                    return Err(OperationError::operation_invalid(
+                        request_id,
+                        operation_index,
+                        "mark",
+                        "AddMark conflicts with an existing same-type mark; use ReplaceMark",
+                    ));
+                }
                 let step = Step::AddMark {
                     from,
                     to,
@@ -722,7 +802,7 @@ fn compile_transaction_impl(
                 if lowering.is_some() {
                     validate_preview(request_id, Some(operation_index), &next, context)?;
                 }
-                let operation_changed = next != preview;
+                operation_changed = next != preview;
                 if operation_changed {
                     if let Some(lowering) = &mut lowering {
                         let boundaries = text_boundaries(
@@ -737,6 +817,7 @@ fn compile_transaction_impl(
                 }
                 operation_result = Some(Selection::text(from, to));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 if records_history && operation_changed {
                     charge_undo_bound(
@@ -768,6 +849,10 @@ fn compile_transaction_impl(
                     context.document,
                     &composed_map,
                 )?;
+                stored_marks_input = Some((from, to));
+                if from == to {
+                    inherited_marks = Some(super::derived_state::marks_at_position(&preview, from));
+                }
                 let step = Step::RemoveMark {
                     from,
                     to,
@@ -781,7 +866,7 @@ fn compile_transaction_impl(
                 if lowering.is_some() {
                     validate_preview(request_id, Some(operation_index), &next, context)?;
                 }
-                let operation_changed = next != preview;
+                operation_changed = next != preview;
                 if operation_changed {
                     if let Some(lowering) = &mut lowering {
                         let boundaries = text_boundaries(
@@ -802,6 +887,7 @@ fn compile_transaction_impl(
                 }
                 operation_result = Some(Selection::text(from, to));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 if records_history && operation_changed {
                     charge_undo_bound(
@@ -831,6 +917,10 @@ fn compile_transaction_impl(
                     context.document,
                     &composed_map,
                 )?;
+                stored_marks_input = Some((from, to));
+                if from == to {
+                    inherited_marks = Some(super::derived_state::marks_at_position(&preview, from));
+                }
                 let remove = Step::RemoveMark {
                     from,
                     to,
@@ -854,7 +944,7 @@ fn compile_transaction_impl(
                 if lowering.is_some() {
                     validate_preview(request_id, Some(operation_index), &next, context)?;
                 }
-                let operation_changed = next != preview;
+                operation_changed = next != preview;
                 if operation_changed {
                     if let Some(lowering) = &mut lowering {
                         let boundaries = text_boundaries(
@@ -870,6 +960,7 @@ fn compile_transaction_impl(
                 let step_map = remove_map.compose(&add_map);
                 operation_result = Some(Selection::text(from, to));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 if records_history && operation_changed {
                     for _ in 0..2 {
@@ -952,6 +1043,7 @@ fn compile_transaction_impl(
                 }
                 operation_result = Some(Selection::cursor(step_map.map_pos(pos)));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 if records_history {
                     charge_undo_bound(
@@ -1005,6 +1097,7 @@ fn compile_transaction_impl(
                 }
                 operation_result = Some(Selection::cursor(step_map.map_pos(pos)));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 if records_history {
                     charge_undo_bound(
@@ -1050,6 +1143,7 @@ fn compile_transaction_impl(
                 }
                 operation_result = Some(Selection::cursor(step_map.map_pos(pos)));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 history_class = merge_history_class(history_class, HistoryClass::Structural);
             }
@@ -1098,6 +1192,7 @@ fn compile_transaction_impl(
                 }
                 operation_result = Some(Selection::text(from, step_map.map_pos(to)));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 history_class = merge_history_class(history_class, HistoryClass::Structural);
             }
@@ -1133,6 +1228,7 @@ fn compile_transaction_impl(
                 }
                 operation_result = Some(Selection::cursor(step_map.map_pos(pos)));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 history_class = merge_history_class(history_class, HistoryClass::Structural);
             }
@@ -1156,7 +1252,7 @@ fn compile_transaction_impl(
                 if lowering.is_some() {
                     validate_preview(request_id, Some(operation_index), &next, context)?;
                 }
-                let operation_changed = next != preview;
+                operation_changed = next != preview;
                 if operation_changed {
                     if let Some(lowering) = &mut lowering {
                         lowering.indent_list_item(
@@ -1171,6 +1267,7 @@ fn compile_transaction_impl(
                 }
                 operation_result = Some(Selection::cursor(step_map.map_pos(pos)));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 if operation_changed {
                     history_class = merge_history_class(history_class, HistoryClass::Structural);
@@ -1196,7 +1293,7 @@ fn compile_transaction_impl(
                 if lowering.is_some() {
                     validate_preview(request_id, Some(operation_index), &next, context)?;
                 }
-                let operation_changed = next != preview;
+                operation_changed = next != preview;
                 if operation_changed {
                     if let Some(lowering) = &mut lowering {
                         lowering.outdent_list_item(
@@ -1211,6 +1308,7 @@ fn compile_transaction_impl(
                 }
                 operation_result = Some(Selection::cursor(step_map.map_pos(pos)));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 if operation_changed {
                     history_class = merge_history_class(history_class, HistoryClass::Structural);
@@ -1247,7 +1345,7 @@ fn compile_transaction_impl(
                 if lowering.is_some() {
                     validate_preview(request_id, Some(operation_index), &next, context)?;
                 }
-                let operation_changed = next != preview;
+                operation_changed = next != preview;
                 if operation_changed {
                     if let Some(lowering) = &mut lowering {
                         lowering.update_node_attrs(
@@ -1263,6 +1361,7 @@ fn compile_transaction_impl(
                 operation_result = selectable_void_at(preview.root(), pos, 0, context.schema)
                     .then(|| Selection::node(pos));
                 composed_map = composed_map.compose(&step_map);
+                operation_changed = next != preview;
                 preview = next;
                 if records_history && operation_changed {
                     charge_undo_bound(
@@ -1286,6 +1385,75 @@ fn compile_transaction_impl(
                 }
             }
         }
+        if let Some(current) = stored_marks_state.as_mut() {
+            let operation_at_caret = tracked_caret_for_operation
+                .zip(stored_marks_input)
+                .is_some_and(|(caret, (from, to))| from == caret && to == caret);
+            let deletion_touches_caret = tracked_caret_for_operation
+                .zip(stored_marks_input)
+                .is_some_and(|(caret, (from, to))| from == caret || to == caret);
+            match operation {
+                TypedOperation::AddMark { .. }
+                | TypedOperation::RemoveMark { .. }
+                | TypedOperation::ReplaceMark { .. }
+                    if operation_at_caret =>
+                {
+                    if let Some(marks) = current.as_mut() {
+                        super::derived_state::apply_stored_mark_operation(
+                            marks,
+                            operation,
+                            context.schema,
+                        )
+                        .map_err(|mut error| {
+                            error.request_id = request_id;
+                            error.operation_index = Some(operation_index);
+                            error
+                        })?;
+                    } else {
+                        let mut marks = inherited_marks.take().unwrap_or_default();
+                        let changed = super::derived_state::apply_stored_mark_operation(
+                            &mut marks,
+                            operation,
+                            context.schema,
+                        )
+                        .map_err(|mut error| {
+                            error.request_id = request_id;
+                            error.operation_index = Some(operation_index);
+                            error
+                        })?;
+                        let materializes = match operation {
+                            TypedOperation::AddMark { .. } | TypedOperation::ReplaceMark { .. } => {
+                                changed
+                            }
+                            TypedOperation::RemoveMark { .. } => true,
+                            _ => unreachable!(),
+                        };
+                        if materializes {
+                            *current = Some(marks);
+                        }
+                    }
+                }
+                TypedOperation::InsertText { text, marks, .. }
+                    if operation_changed && !text.is_empty() && operation_at_caret =>
+                {
+                    if let Some(effective) = current.as_ref() {
+                        if super::derived_state::canonical_marks(marks, context.schema)
+                            != *effective
+                        {
+                            *current = None;
+                        }
+                    }
+                }
+                TypedOperation::DeleteRange { .. }
+                    if operation_changed && deletion_touches_caret && compatible_text_delete =>
+                {
+                    // A compatible text deletion carries the current stored set
+                    // through to the mapped caret without changing it.
+                }
+                _ if operation_changed => *current = None,
+                _ => {}
+            }
+        }
         validate_preview_marks(request_id, operation_index, &preview, context.schema)?;
         canonical_json = Some(charge_preview_output(
             &mut work,
@@ -1302,6 +1470,7 @@ fn compile_transaction_impl(
         &preview,
         context,
     )?;
+    let use_operation_result_falls_back_to_preserve = operation_result.is_none();
     let selection_plan = selection_plan(
         context,
         &transaction.selection_intent,
@@ -1312,6 +1481,63 @@ fn compile_transaction_impl(
         request_id,
         &preview,
     )?;
+    let stored_marks_plan = if let (Some(mut stored), Some(initial)) =
+        (stored_marks_state, stored_marks_context.as_ref())
+    {
+        let after = match &selection_plan {
+            SelectionPlan::Preserve => initial.resolved_selection.clone(),
+            SelectionPlan::Mapped(selection) | SelectionPlan::Explicit(selection) => {
+                super::derived_state::resolved_from_legacy(&preview, selection, context.schema)
+                    .ok_or_else(|| {
+                        OperationError::engine_invariant_failed(
+                            request_id,
+                            None,
+                            "compiled selection cannot produce resolved stored-mark state",
+                        )
+                    })?
+            }
+        };
+        let mapped_tracked_caret = tracked_caret
+            .map(|(position, affinity)| map_position(&composed_map, position, affinity));
+        let after_is_mapped_tracked_caret = mapped_tracked_caret.is_some_and(|mapped| {
+            matches!(
+                &after,
+                super::ResolvedSelection::Text { anchor, head }
+                    if anchor.document == head.document && head.document == mapped
+            )
+        });
+        let compatible_moved_selection = match transaction.selection_intent {
+            SelectionIntent::Preserve => tracked_caret.is_some(),
+            SelectionIntent::UseOperationResult if use_operation_result_falls_back_to_preserve => {
+                tracked_caret.is_some()
+            }
+            SelectionIntent::UseOperationResult => after_is_mapped_tracked_caret,
+            SelectionIntent::Set(_) => false,
+        };
+        let after_is_collapsed_text = matches!(
+            &after,
+            super::ResolvedSelection::Text { anchor, head }
+                if anchor.document == head.document
+        );
+        if !after_is_collapsed_text
+            || (initial.resolved_selection != &after && !compatible_moved_selection)
+        {
+            stored = None;
+        } else if matches!(transaction.selection_intent, SelectionIntent::Set(_))
+            || transaction.operations.is_empty()
+        {
+            stored = super::derived_state::stored_marks_after_selection_change(
+                stored.as_deref(),
+                initial.resolved_selection,
+                &after,
+                &preview,
+                context.schema,
+            );
+        }
+        StoredMarksPlan::Set(stored)
+    } else {
+        StoredMarksPlan::Unsealed
+    };
     let affected_top_level_blocks = affected_top_level_blocks(context.document, &preview);
     let position_update_mode = position_update_mode(&transaction.operations);
     if preview == *context.document || transaction.history_policy == HistoryPolicy::Skip {
@@ -1383,6 +1609,7 @@ fn compile_transaction_impl(
         composed_map,
         position_update_mode,
         relative_selection_plan: RelativeSelectionPlan::Unsealed,
+        stored_marks_plan,
         mutation_plan,
         encoded_growth_bound,
         undo_units_bound,
@@ -2504,6 +2731,44 @@ fn validate_operation_marks(
     crate::transform::validate_input_mark_set(marks, schema).map_err(|error| {
         OperationError::operation_invalid(request_id, operation_index, "marks", error.to_string())
     })
+}
+
+fn add_mark_conflicts_with_existing_attrs(
+    document: &Document,
+    from: u32,
+    to: u32,
+    mark: &Mark,
+) -> bool {
+    if from >= to {
+        return false;
+    }
+    let (Ok(resolved_from), Ok(resolved_to)) = (document.resolve(from), document.resolve(to))
+    else {
+        return false;
+    };
+    if resolved_from.node_path != resolved_to.node_path {
+        return false;
+    }
+    let parent = resolved_from.parent(document);
+    let Some(content) = parent.content() else {
+        return false;
+    };
+    let mut offset = 0u32;
+    for child in content.iter() {
+        let child_end = offset.saturating_add(child.node_size());
+        if child.is_text()
+            && child_end > resolved_from.parent_offset
+            && offset < resolved_to.parent_offset
+            && child
+                .marks()
+                .iter()
+                .any(|existing| existing.mark_type() == mark.mark_type() && existing != mark)
+        {
+            return true;
+        }
+        offset = child_end;
+    }
+    false
 }
 
 fn validate_fragment_marks(

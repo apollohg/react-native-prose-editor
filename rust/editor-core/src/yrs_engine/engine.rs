@@ -17,10 +17,12 @@ use crate::serialize::{
 use crate::transform::{canonicalize_yrs_document, validate_canonical_marks, DocumentValidator};
 
 use super::compiler::{
-    compile_transaction_with_yrs, map_position, selectable_void_at, CompilationContext,
-    CompiledTransaction,
+    compile_transaction_with_yrs_and_stored_marks, map_position, selectable_void_at,
+    CompilationContext, CompiledTransaction,
 };
-use super::compiler::{RelativeSelectionPlan, SelectionPlan};
+use super::compiler::{
+    RelativeSelectionPlan, SelectionPlan, StoredMarksCompilationContext, StoredMarksPlan,
+};
 use super::derived_state::{
     exact_point_is_representable, operation_result_to_relative, DerivedStateCache,
 };
@@ -286,6 +288,13 @@ impl YrsDocumentEngine {
             .map(|state| &state.resolved_selection)
     }
 
+    pub fn stored_marks(&self) -> Option<&[crate::model::Mark]> {
+        self.debug_assert_derived_revision_keys();
+        self.derived_state
+            .as_ref()
+            .and_then(|state| state.stored_marks.as_deref())
+    }
+
     pub fn client_id(&self) -> u64 {
         self.doc.client_id().get()
     }
@@ -333,6 +342,13 @@ impl YrsDocumentEngine {
         let document = self
             .document()
             .ok_or_else(|| super::OperationError::engine_not_ready(transaction.request_id))?;
+        let state = self.derived_state.as_ref().ok_or_else(|| {
+            super::OperationError::engine_invariant_failed(
+                transaction.request_id,
+                None,
+                "ready Yrs engine has no derived state",
+            )
+        })?;
         let txn = self.doc.transact();
         let fragment = txn
             .get_xml_fragment(self.fragment_name.as_str())
@@ -348,7 +364,7 @@ impl YrsDocumentEngine {
             .as_ref()
             .map(DerivedStateCache::legacy_selection);
         let current_relative_selection = self.relative_selection().cloned();
-        let mut compiled = compile_transaction_with_yrs(
+        let mut compiled = compile_transaction_with_yrs_and_stored_marks(
             CompilationContext {
                 document,
                 selection: current_selection.as_ref(),
@@ -361,6 +377,11 @@ impl YrsDocumentEngine {
             transaction,
             &txn,
             &fragment,
+            StoredMarksCompilationContext {
+                stored_marks: state.stored_marks.as_deref(),
+                resolved_selection: &state.resolved_selection,
+                relative_selection: &state.relative_selection,
+            },
         )?;
         if let (
             Some(selection),
@@ -501,19 +522,14 @@ impl YrsDocumentEngine {
                 "compiled relative selection plan is not sealed",
             ));
         }
+        if !matches!(compiled.stored_marks_plan, StoredMarksPlan::Set(_)) {
+            return Err(super::OperationError::engine_invariant_failed(
+                compiled.request_id,
+                None,
+                "compiled stored-mark plan is not sealed",
+            ));
+        }
         if preview_is_unchanged {
-            let selection = match &compiled.selection_plan {
-                SelectionPlan::Explicit(selection) | SelectionPlan::Mapped(selection) => selection,
-                SelectionPlan::Preserve => {
-                    return Ok(super::TransactionCommit {
-                        request_id: compiled.request_id,
-                        changed: false,
-                        document_revision: self.revision,
-                        state_revision: self.state_revision,
-                        origin: compiled.origin,
-                    });
-                }
-            };
             let current = self.derived_state.as_ref().ok_or_else(|| {
                 super::OperationError::engine_invariant_failed(
                     compiled.request_id,
@@ -521,32 +537,40 @@ impl YrsDocumentEngine {
                     "ready Yrs engine has no derived state",
                 )
             })?;
-            let planned_relative_selection = match &compiled.relative_selection_plan {
-                RelativeSelectionPlan::Precomputed { relative, .. } => relative.clone(),
-                RelativeSelectionPlan::OperationResult => {
-                    let txn = self.doc.transact();
-                    let fragment = txn
-                        .get_xml_fragment(self.fragment_name.as_str())
-                        .ok_or_else(|| {
-                            super::OperationError::engine_invariant_failed(
-                                compiled.request_id,
-                                None,
-                                "ready Yrs document fragment is missing",
-                            )
-                        })?;
-                    operation_result_to_relative(&txn, &fragment, selection, &self.schema)
-                }
-                RelativeSelectionPlan::Unsealed
-                | RelativeSelectionPlan::Preserve
-                | RelativeSelectionPlan::PreserveWithFallback(_) => {
-                    return Err(super::OperationError::engine_invariant_failed(
-                        compiled.request_id,
-                        None,
-                        "selection-only transaction has no materializable relative selection",
-                    ));
-                }
-            };
-            let next = {
+            let mut next = if matches!(compiled.selection_plan, SelectionPlan::Preserve) {
+                current.clone()
+            } else {
+                let selection = match &compiled.selection_plan {
+                    SelectionPlan::Explicit(selection) | SelectionPlan::Mapped(selection) => {
+                        selection
+                    }
+                    SelectionPlan::Preserve => unreachable!(),
+                };
+                let planned_relative_selection = match &compiled.relative_selection_plan {
+                    RelativeSelectionPlan::Precomputed { relative, .. } => relative.clone(),
+                    RelativeSelectionPlan::OperationResult => {
+                        let txn = self.doc.transact();
+                        let fragment = txn
+                            .get_xml_fragment(self.fragment_name.as_str())
+                            .ok_or_else(|| {
+                                super::OperationError::engine_invariant_failed(
+                                    compiled.request_id,
+                                    None,
+                                    "ready Yrs document fragment is missing",
+                                )
+                            })?;
+                        operation_result_to_relative(&txn, &fragment, selection, &self.schema)
+                    }
+                    RelativeSelectionPlan::Unsealed
+                    | RelativeSelectionPlan::Preserve
+                    | RelativeSelectionPlan::PreserveWithFallback(_) => {
+                        return Err(super::OperationError::engine_invariant_failed(
+                            compiled.request_id,
+                            None,
+                            "selection-only transaction has no materializable relative selection",
+                        ));
+                    }
+                };
                 let txn = self.doc.transact();
                 let fragment = txn
                     .get_xml_fragment(self.fragment_name.as_str())
@@ -573,6 +597,10 @@ impl YrsDocumentEngine {
                         )
                     })?
             };
+            let StoredMarksPlan::Set(planned_stored_marks) = &compiled.stored_marks_plan else {
+                unreachable!()
+            };
+            next.stored_marks = planned_stored_marks.clone();
             if next.relative_selection == current.relative_selection
                 && next.resolved_selection == current.resolved_selection
                 && next.stored_marks == current.stored_marks
@@ -590,7 +618,6 @@ impl YrsDocumentEngine {
                 self.state_revision,
                 "stateRevision",
             )?;
-            let mut next = next;
             next.state_revision = next_state_revision;
             debug_assert_eq!(next.document_revision, self.revision);
             self.derived_state = Some(next);
@@ -689,6 +716,7 @@ impl YrsDocumentEngine {
             preview,
             selection_plan,
             relative_selection_plan,
+            stored_marks_plan,
             composed_map,
             position_update_mode,
             affected_top_level_blocks,
@@ -738,7 +766,8 @@ impl YrsDocumentEngine {
                 relative_selection_plan,
                 RelativeSelectionPlan::Precomputed { .. }
             );
-            self.derived_state
+            let mut next = self
+                .derived_state
                 .as_ref()
                 .and_then(|state| {
                     state.after_document_change(
@@ -757,7 +786,12 @@ impl YrsDocumentEngine {
                         next_state_revision,
                     )
                 })
-                .expect("committed Yrs state must produce derived editor state")
+                .expect("committed Yrs state must produce derived editor state");
+            let StoredMarksPlan::Set(stored_marks) = stored_marks_plan else {
+                unreachable!()
+            };
+            next.stored_marks = stored_marks;
+            next
         };
 
         debug_assert_eq!(next_derived_state.document_revision, next_document_revision);

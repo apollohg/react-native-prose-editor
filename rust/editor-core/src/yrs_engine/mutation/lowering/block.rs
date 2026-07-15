@@ -295,13 +295,6 @@ impl MutationCompiler {
                     StorageChildKind::Element { .. } | StorageChildKind::PreparedElement => None,
                 })
                 .collect::<HashSet<_>>();
-            self.targets.retain(|candidate| {
-                !matches!(
-                    &candidate.kind,
-                    ResolvedTargetKind::Existing { target, .. }
-                        if moved_ids.contains(&AsRef::<Branch>::as_ref(target).id())
-                )
-            });
             let retained_text_id = block_target.storage_children[..moved_start]
                 .iter()
                 .rev()
@@ -311,6 +304,71 @@ impl MutationCompiler {
                     }
                     StorageChildKind::Element { .. } | StorageChildKind::PreparedElement => None,
                 });
+            if retained_text_id.is_none() {
+                let first_moved_text_id = block_target.storage_children.get(moved_start).and_then(
+                    |child| match child {
+                        StorageChildKind::Text { target, .. } => {
+                            Some(AsRef::<Branch>::as_ref(target).id())
+                        }
+                        StorageChildKind::Element { .. }
+                        | StorageChildKind::PreparedElement => None,
+                    },
+                );
+                if let (Some(first_moved_text_id), XmlParentRef::Element(parent)) =
+                    (first_moved_text_id, &block_target.parent)
+                {
+                    if let Some(candidate) = self.targets.iter_mut().find(|candidate| {
+                        matches!(
+                            &candidate.kind,
+                            ResolvedTargetKind::Existing { target, .. }
+                                if AsRef::<Branch>::as_ref(target).id() == first_moved_text_id
+                        )
+                    }) {
+                        for slot in std::mem::take(&mut candidate.action_slots) {
+                            self.actions[slot] = ActionSlot::Tombstone;
+                        }
+                        candidate.kind = ResolvedTargetKind::Missing {
+                            parent: parent.clone(),
+                            child_index: move_index,
+                            signature: ParentSignature {
+                                parent: block_target.signature.parent.clone(),
+                                tag: parent.tag().clone(),
+                                path: block_target.signature.path.clone(),
+                                child_count: u32::try_from(
+                                    block_target.signature.children.len(),
+                                )
+                                .map_err(|_| {
+                                    invalid_action_range(self.request_id, operation_index)
+                                })?,
+                                initial_child_index: move_index,
+                                left_neighbor: move_index
+                                    .checked_sub(1)
+                                    .and_then(|index| {
+                                        block_target.signature.children.get(index as usize)
+                                    })
+                                    .cloned(),
+                                right_neighbor: block_target
+                                    .signature
+                                    .children
+                                    .get(move_index as usize)
+                                    .cloned(),
+                            },
+                            create_action: None,
+                        };
+                        candidate.text.clear();
+                        candidate.scalar_len = 0;
+                        candidate.base_runs.clear();
+                        candidate.current_runs.clear();
+                    }
+                }
+            }
+            self.targets.retain(|candidate| {
+                !matches!(
+                    &candidate.kind,
+                    ResolvedTargetKind::Existing { target, .. }
+                        if moved_ids.contains(&AsRef::<Branch>::as_ref(target).id())
+                )
+            });
             let after_target = if let Some(retained_text_id) = retained_text_id {
                 self.targets.iter().position(|candidate| {
                     matches!(
@@ -329,8 +387,13 @@ impl MutationCompiler {
                 self.targets.iter().position(|candidate| {
                     matches!(
                         &candidate.kind,
-                        ResolvedTargetKind::Missing { parent, .. }
+                        ResolvedTargetKind::Missing {
+                            parent,
+                            child_index,
+                            ..
+                        }
                             if AsRef::<Branch>::as_ref(parent).id() == block_parent_id
+                                && *child_index == move_index
                     )
                 })
             }
