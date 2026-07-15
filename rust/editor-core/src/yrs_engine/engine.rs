@@ -346,7 +346,7 @@ impl YrsDocumentEngine {
             next_state_revision,
         )?;
 
-        candidate_history.accept_action(action, candidate_encoded_state);
+        candidate_history.accept_action(request_id, action, candidate_encoded_state)?;
         self.doc = candidate_doc;
         self.history = candidate_history;
         self.derived_state = Some(candidate_state);
@@ -1014,6 +1014,7 @@ impl YrsDocumentEngine {
             history_policy,
             history_class,
             undo_units_bound,
+            replay_work_units_bound,
             encoded_growth_bound,
             preview,
             selection_plan,
@@ -1043,7 +1044,7 @@ impl YrsDocumentEngine {
             self.history.prepare_excluded(
                 request_id,
                 origin,
-                undo_units_bound,
+                replay_work_units_bound,
                 &current_encoded_state,
                 encoded_growth_bound,
             )?

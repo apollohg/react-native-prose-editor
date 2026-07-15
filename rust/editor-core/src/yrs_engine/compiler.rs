@@ -150,6 +150,7 @@ pub(crate) struct CompiledTransaction {
     pub mutation_plan: YrsMutationPlan,
     pub encoded_growth_bound: usize,
     pub undo_units_bound: u64,
+    pub replay_work_units_bound: u64,
     pub authored_clock_units: u64,
     pub yrs_state_epoch: u64,
 }
@@ -1569,9 +1570,14 @@ fn compile_transaction_impl(
     } else {
         None
     };
+    let replay_work_units_bound = if yrs_lowered {
+        estimate_undo_units(request_id, &mutation_plan, crdt_envelope.as_ref())?
+    } else {
+        undo_units_bound
+    };
     if yrs_lowered && history_class != HistoryClass::Skip {
-        undo_units_bound = estimate_undo_units(request_id, &mutation_plan, crdt_envelope.as_ref())?;
-        if undo_units_bound > context.editing_limits.max_undo_retained_units {
+        undo_units_bound = replay_work_units_bound;
+        if replay_work_units_bound > context.editing_limits.max_undo_retained_units {
             // The semantic pass records the first operation that crosses the
             // aggregate limit. Preserve only that attribution when the exact
             // Yrs estimator confirms the failure: the reported `actual` must
@@ -1585,7 +1591,7 @@ fn compile_transaction_impl(
                 operation_index,
                 "maxUndoRetainedUnits",
                 context.editing_limits.max_undo_retained_units,
-                undo_units_bound,
+                replay_work_units_bound,
             ));
         } else {
             undo_limit_error = None;
@@ -1613,6 +1619,7 @@ fn compile_transaction_impl(
         mutation_plan,
         encoded_growth_bound,
         undo_units_bound,
+        replay_work_units_bound,
         authored_clock_units,
         // Standalone compiler tests do not own an engine epoch. The engine
         // seals its current epoch onto the compiled plan before it can leave

@@ -42,18 +42,73 @@ struct HistoryMetadataValue {
     after: Option<HistorySnapshot>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct HistoryMetadataSlots {
+    before: Option<HistorySnapshotSlot>,
+    after: Option<HistorySnapshotSlot>,
+}
+
 #[derive(Debug, Clone, Default)]
-struct HistoryMetadata(Arc<Mutex<HistoryMetadataValue>>);
+struct HistorySnapshotSlot(Arc<Mutex<Option<HistorySnapshot>>>);
+
+impl PartialEq for HistorySnapshotSlot {
+    fn eq(&self, other: &Self) -> bool {
+        self.value() == other.value()
+    }
+}
+
+impl Eq for HistorySnapshotSlot {}
+
+impl HistorySnapshotSlot {
+    fn initialized(value: HistorySnapshot) -> Self {
+        Self(Arc::new(Mutex::new(Some(value))))
+    }
+
+    fn empty() -> Self {
+        Self::default()
+    }
+
+    fn value(&self) -> Option<HistorySnapshot> {
+        self.0
+            .lock()
+            .expect("history snapshot slot lock poisoned")
+            .clone()
+    }
+
+    fn set(&self, value: HistorySnapshot) {
+        *self.0.lock().expect("history snapshot slot lock poisoned") = Some(value);
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct HistoryMetadata(Arc<Mutex<HistoryMetadataSlots>>);
 
 impl HistoryMetadata {
     fn capture(before: HistorySnapshot) -> Self {
-        Self(Arc::new(Mutex::new(HistoryMetadataValue {
-            after: Some(before.clone()),
+        let before = HistorySnapshotSlot::initialized(before);
+        Self(Arc::new(Mutex::new(HistoryMetadataSlots {
+            after: Some(HistorySnapshotSlot::empty()),
             before: Some(before),
         })))
     }
 
     fn value(&self) -> HistoryMetadataValue {
+        let slots = self.slots();
+        HistoryMetadataValue {
+            before: slots.before.and_then(|slot| slot.value()),
+            after: slots.after.and_then(|slot| slot.value()),
+        }
+    }
+
+    fn resolved_value(&self) -> (Option<HistorySnapshot>, Option<HistorySnapshot>) {
+        let slots = self.slots();
+        (
+            slots.before.and_then(|slot| slot.value()),
+            slots.after.and_then(|slot| slot.value()),
+        )
+    }
+
+    fn slots(&self) -> HistoryMetadataSlots {
         self.0
             .lock()
             .expect("history metadata lock poisoned")
@@ -61,18 +116,41 @@ impl HistoryMetadata {
     }
 
     fn replace(&self, value: HistoryMetadataValue) {
-        *self.0.lock().expect("history metadata lock poisoned") = value;
+        *self.0.lock().expect("history metadata lock poisoned") = HistoryMetadataSlots {
+            before: value.before.map(HistorySnapshotSlot::initialized),
+            after: value.after.map(HistorySnapshotSlot::initialized),
+        };
     }
 
     fn preserve_before_from(&self, existing: &Self) {
         self.0
             .lock()
             .expect("history metadata lock poisoned")
-            .before = existing.value().before;
+            .before = existing.slots().before;
     }
 
     fn set_after(&self, after: HistorySnapshot) {
-        self.0.lock().expect("history metadata lock poisoned").after = Some(after);
+        let after_slot = self
+            .slots()
+            .after
+            .expect("captured history metadata has an after slot");
+        after_slot.set(after);
+    }
+
+    fn deep_clone(&self) -> Self {
+        let (before, after) = self.resolved_value();
+        let clone = Self(Arc::new(Mutex::new(HistoryMetadataSlots {
+            before: before.map(HistorySnapshotSlot::initialized),
+            after: Some(HistorySnapshotSlot::empty()),
+        })));
+        if let Some(after) = after {
+            clone.set_after(after);
+        }
+        clone
+    }
+
+    fn identity(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
     }
 }
 
@@ -137,8 +215,7 @@ enum ReplayEvent {
         class: HistoryClass,
         undo_units_bound: u64,
         capture_millis: u64,
-        before: Box<HistorySnapshot>,
-        after: Box<HistorySnapshot>,
+        metadata: HistoryMetadata,
     },
     Excluded {
         update: Vec<u8>,
@@ -152,15 +229,7 @@ impl ReplayEvent {
     fn encoded_bytes(&self) -> usize {
         const TAG_BYTES: usize = 1;
         match self {
-            Self::Recorded {
-                update,
-                before,
-                after,
-                ..
-            } => TAG_BYTES
-                .saturating_add(update.len())
-                .saturating_add(before.metadata_bytes)
-                .saturating_add(after.metadata_bytes),
+            Self::Recorded { update, .. } => TAG_BYTES.saturating_add(update.capacity()),
             Self::Excluded { update, .. } => TAG_BYTES.saturating_add(update.len()),
             Self::Action(_) => TAG_BYTES,
         }
@@ -185,11 +254,14 @@ enum PendingReplayEvent {
         class: HistoryClass,
         undo_units_bound: u64,
         capture_millis: u64,
-        before: Box<HistorySnapshot>,
+        metadata: HistoryMetadata,
+        update: Vec<u8>,
+        metadata_increment: usize,
     },
     Excluded {
         origin: TransactionOrigin,
         work_units: u64,
+        update: Vec<u8>,
     },
 }
 
@@ -208,6 +280,7 @@ pub(crate) struct YrsHistory {
     replay_events: Vec<ReplayEvent>,
     replay_bytes: usize,
     replay_work_units: u64,
+    replay_metadata_bytes: usize,
     max_encoded_state_bytes: usize,
     pending_replay_event: Option<PendingReplayEvent>,
     rebase_before_next_event: bool,
@@ -327,6 +400,7 @@ impl YrsHistory {
             replay_events: Vec::new(),
             replay_bytes: 0,
             replay_work_units: 0,
+            replay_metadata_bytes: 0,
             max_encoded_state_bytes,
             pending_replay_event: None,
             rebase_before_next_event: false,
@@ -359,6 +433,16 @@ impl YrsHistory {
         fragment: &XmlFragmentRef,
     ) -> OperationResult<Self> {
         self.retained_units(request_id)?;
+        let mut replayed_events = Vec::new();
+        replayed_events
+            .try_reserve_exact(self.replay_events.len())
+            .map_err(|error| {
+                OperationError::operation_resource_exhausted(
+                    request_id,
+                    "historyReplay",
+                    format!("cannot reserve candidate history events: {error}"),
+                )
+            })?;
         let mut candidate = Self::from_stacks(
             doc,
             fragment,
@@ -379,24 +463,43 @@ impl YrsHistory {
                     class,
                     undo_units_bound,
                     capture_millis,
-                    before,
-                    after,
+                    metadata,
                 } => {
+                    let replay_metadata = metadata.deep_clone();
+                    let (before, after) = replay_metadata.resolved_value();
+                    assert!(
+                        before.is_some(),
+                        "recorded replay metadata has before state"
+                    );
+                    let after = after.expect("recorded replay metadata has after state");
                     let replay_origin = candidate.begin_capture(
-                        request_id,
                         *origin,
                         *policy,
                         *class,
-                        *undo_units_bound,
-                        before.as_ref().clone(),
-                        after.metadata_bytes,
                         Some(*capture_millis),
-                    )?;
+                        replay_metadata,
+                    );
                     apply_update_bytes_with_origin(request_id, doc, update, replay_origin)?;
-                    candidate.finish_capture(after.as_ref().clone(), Vec::new());
+                    candidate.finish_capture(after, Vec::new());
+                    replayed_events.push(ReplayEvent::Recorded {
+                        update: update.clone(),
+                        origin: *origin,
+                        policy: *policy,
+                        class: *class,
+                        undo_units_bound: *undo_units_bound,
+                        capture_millis: *capture_millis,
+                        metadata: candidate
+                            .manager
+                            .undo_stack()
+                            .last()
+                            .expect("replayed capture creates an undo item")
+                            .meta()
+                            .clone(),
+                    });
                 }
                 ReplayEvent::Excluded { update, origin, .. } => {
                     apply_update_bytes(request_id, doc, update, *origin)?;
+                    replayed_events.push(event.clone());
                 }
                 ReplayEvent::Action(action) => {
                     if candidate.perform(*action).is_none() {
@@ -406,13 +509,15 @@ impl YrsHistory {
                             "history replay cannot reproduce an accepted pop",
                         ));
                     }
+                    replayed_events.push(event.clone());
                 }
             }
         }
         candidate.epoch_baseline = self.epoch_baseline.clone();
-        candidate.replay_events = self.replay_events.clone();
+        candidate.replay_events = replayed_events;
         candidate.replay_bytes = self.replay_bytes;
         candidate.replay_work_units = self.replay_work_units;
+        candidate.replay_metadata_bytes = self.replay_metadata_bytes;
         candidate.recording_replay_events = true;
         Ok(candidate)
     }
@@ -486,71 +591,63 @@ impl YrsHistory {
             ));
         }
 
-        let replay_event_bytes_bound = update_bytes_bound
-            .checked_add(standalone_metadata_bytes)
-            .ok_or_else(|| {
-                encoded_limit_error(request_id, self.max_encoded_state_bytes, usize::MAX)
-            })?;
-        self.reserve_replay_event(
+        let now = self.clock.latch();
+        let pending_metadata_bytes = self
+            .replay_metadata_bytes
+            .checked_add(self.unmirrored_stack_metadata_bytes(request_id)?)
+            .and_then(|bytes| bytes.checked_add(standalone_metadata_bytes))
+            .unwrap_or(usize::MAX);
+        let should_roll = pending_metadata_bytes > self.limits.max_derived_output_bytes
+            || self.capture_would_roll(
+                request_id,
+                origin,
+                policy,
+                class,
+                undo_units_bound,
+                &before,
+                after_metadata_bytes,
+                now,
+            )?;
+        let reserved_update = self.reserve_replay_event(
             request_id,
             current_encoded_state,
-            replay_event_bytes_bound,
+            update_bytes_bound,
             undo_units_bound,
             false,
         )?;
-        let now = self.clock.latch();
-        if self.capture_would_roll(
-            request_id,
-            origin,
-            policy,
-            class,
-            undo_units_bound,
-            &before,
-            after_metadata_bytes,
-            now,
-        )? {
+        if should_roll {
             self.roll_epoch(current_encoded_state.to_vec());
             self.clock.latch_at(now);
         }
-        let origin_value = self.begin_capture(
-            request_id,
-            origin,
-            policy,
-            class,
-            undo_units_bound,
-            before.clone(),
-            after_metadata_bytes,
-            Some(now),
-        )?;
+        let compatible = self.capture_is_compatible(origin, policy, class, now);
+        let metadata_increment = after_metadata_bytes
+            .checked_add(if compatible { 0 } else { before.metadata_bytes })
+            .expect("standalone history metadata was checked before capture");
+        let metadata = HistoryMetadata::capture(before.clone());
+        let origin_value = self.begin_capture(origin, policy, class, Some(now), metadata.clone());
         self.pending_replay_event = Some(PendingReplayEvent::Recorded {
             origin,
             policy,
             class,
             undo_units_bound,
             capture_millis: now,
-            before: Box::new(before),
+            metadata,
+            update: reserved_update,
+            metadata_increment,
         });
         Ok(origin_value)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn begin_capture(
         &mut self,
-        request_id: u64,
         origin: TransactionOrigin,
         policy: HistoryPolicy,
         class: HistoryClass,
-        undo_units_bound: u64,
-        before: HistoryLocalState,
-        after_metadata_bytes: usize,
         capture_millis: Option<u64>,
-    ) -> OperationResult<Origin> {
+        metadata: HistoryMetadata,
+    ) -> Origin {
         let now = capture_millis.unwrap_or_else(|| self.clock.latch());
         self.clock.latch_at(now);
-        let standalone_metadata_bytes = before
-            .metadata_bytes
-            .checked_add(after_metadata_bytes)
-            .ok_or_else(|| metadata_limit_error(request_id, &self.limits, usize::MAX))?;
         let compatible = policy == HistoryPolicy::Auto
             && !self.force_next_boundary
             && origin == TransactionOrigin::LocalInput
@@ -564,61 +661,15 @@ impl YrsHistory {
             self.manager.reset();
         }
 
-        let current_units = stack_units(self.manager.undo_stack(), request_id)?;
-        let next_units = current_units.checked_add(undo_units_bound).ok_or_else(|| {
-            OperationError::operation_limit_exceeded(
-                request_id,
-                None,
-                "maxUndoRetainedUnits",
-                self.limits.max_undo_retained_units,
-                u64::MAX,
-            )
-        })?;
-        let next_groups = self
-            .manager
-            .undo_stack()
-            .len()
-            .saturating_add(usize::from(!compatible));
-        let current_metadata_bytes =
-            stack_metadata_bytes(self.manager.undo_stack(), request_id, &self.limits)?;
-        let next_metadata_bytes = if compatible {
-            let replaced_after = self
-                .manager
-                .undo_stack()
-                .last()
-                .and_then(|item| item.meta().value().after)
-                .map(|snapshot| snapshot.metadata_bytes)
-                .unwrap_or(0);
-            current_metadata_bytes
-                .checked_sub(replaced_after)
-                .and_then(|value| value.checked_add(after_metadata_bytes))
-                .ok_or_else(|| metadata_limit_error(request_id, &self.limits, usize::MAX))?
-        } else {
-            current_metadata_bytes
-                .checked_add(standalone_metadata_bytes)
-                .ok_or_else(|| metadata_limit_error(request_id, &self.limits, usize::MAX))?
-        };
-        if next_units > self.limits.max_undo_retained_units
-            || next_groups > self.limits.max_undo_groups
-            || next_metadata_bytes > self.limits.max_derived_output_bytes
-        {
-            // yrs 0.27.2 clear_undo/clear_redo both clear both stacks. Use the
-            // explicitly whole-epoch operation and never depend on that bug.
-            self.manager.clear_all();
-            self.manager.reset();
-            self.reset_grouping();
-        }
-
         *self
             .pending_capture
             .lock()
-            .expect("pending history capture lock poisoned") =
-            Some(HistoryMetadata::capture(before));
+            .expect("pending history capture lock poisoned") = Some(metadata);
         self.last_capture_millis = Some(now);
         self.last_class = Some(class);
         self.last_origin = Some(origin);
         self.force_next_boundary = policy == HistoryPolicy::Boundary;
-        Ok(Self::recorded_origin(origin))
+        Self::recorded_origin(origin)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -633,15 +684,7 @@ impl YrsHistory {
         after_metadata_bytes: usize,
         now: u64,
     ) -> OperationResult<bool> {
-        let compatible = policy == HistoryPolicy::Auto
-            && !self.force_next_boundary
-            && origin == TransactionOrigin::LocalInput
-            && self.last_origin == Some(TransactionOrigin::LocalInput)
-            && self.last_class == Some(class)
-            && matches!(class, HistoryClass::Insert | HistoryClass::Delete)
-            && self
-                .last_capture_millis
-                .is_some_and(|last| now >= last && now - last < CAPTURE_TIMEOUT_MILLIS);
+        let compatible = self.capture_is_compatible(origin, policy, class, now);
         let next_units =
             stack_units(self.manager.undo_stack(), request_id)?.saturating_add(undo_units_bound);
         let next_groups = self
@@ -672,6 +715,55 @@ impl YrsHistory {
             || next_metadata_bytes > self.limits.max_derived_output_bytes)
     }
 
+    fn capture_is_compatible(
+        &self,
+        origin: TransactionOrigin,
+        policy: HistoryPolicy,
+        class: HistoryClass,
+        now: u64,
+    ) -> bool {
+        policy == HistoryPolicy::Auto
+            && !self.force_next_boundary
+            && origin == TransactionOrigin::LocalInput
+            && self.last_origin == Some(TransactionOrigin::LocalInput)
+            && self.last_class == Some(class)
+            && matches!(class, HistoryClass::Insert | HistoryClass::Delete)
+            && self
+                .last_capture_millis
+                .is_some_and(|last| now >= last && now - last < CAPTURE_TIMEOUT_MILLIS)
+    }
+
+    fn unmirrored_stack_metadata_bytes(&self, request_id: u64) -> OperationResult<usize> {
+        let mirrored = self
+            .replay_events
+            .iter()
+            .filter_map(|event| match event {
+                ReplayEvent::Recorded { metadata, .. } => Some(metadata.identity()),
+                ReplayEvent::Excluded { .. } | ReplayEvent::Action(_) => None,
+            })
+            .collect::<HashSet<_>>();
+        let mut seen = HashSet::new();
+        let mut total = 0usize;
+        for item in self
+            .manager
+            .undo_stack()
+            .iter()
+            .chain(self.manager.redo_stack())
+        {
+            let metadata = item.meta();
+            if mirrored.contains(&metadata.identity()) || !seen.insert(metadata.identity()) {
+                continue;
+            }
+            let value = metadata.value();
+            for snapshot in [value.before, value.after].into_iter().flatten() {
+                total = total
+                    .checked_add(snapshot.metadata_bytes)
+                    .ok_or_else(|| metadata_limit_error(request_id, &self.limits, usize::MAX))?;
+            }
+        }
+        Ok(total)
+    }
+
     pub(crate) fn finish_capture(&mut self, after: HistoryLocalState, update: Vec<u8>) {
         let pending = self
             .pending_capture
@@ -679,7 +771,7 @@ impl YrsHistory {
             .expect("pending history capture lock poisoned")
             .take();
         if let Some(metadata) = pending {
-            metadata.set_after(after.clone());
+            metadata.set_after(after);
             if self.recording_replay_events {
                 let Some(PendingReplayEvent::Recorded {
                     origin,
@@ -687,27 +779,33 @@ impl YrsHistory {
                     class,
                     undo_units_bound,
                     capture_millis,
-                    before,
+                    metadata,
+                    update: mut reserved_update,
+                    metadata_increment,
                 }) = self.pending_replay_event.take()
                 else {
                     self.invalidate_replay_after_mutation();
                     return;
                 };
+                assert!(
+                    update.len() <= reserved_update.capacity(),
+                    "admitted history update exceeds its exact pre-write reservation"
+                );
+                reserved_update.extend_from_slice(&update);
                 let event = ReplayEvent::Recorded {
-                    update,
+                    update: reserved_update,
                     origin,
                     policy,
                     class,
                     undo_units_bound,
                     capture_millis,
-                    before,
-                    after: Box::new(after),
+                    metadata,
                 };
-                if !self.replay_event_fits(&event) {
-                    self.invalidate_replay_after_mutation();
-                    return;
-                }
                 self.push_replay_event(event);
+                self.replay_metadata_bytes = self
+                    .replay_metadata_bytes
+                    .checked_add(metadata_increment)
+                    .expect("history metadata reservation checked aggregate capacity");
             }
         }
         self.clock.release();
@@ -724,20 +822,27 @@ impl YrsHistory {
         current_encoded_state: &[u8],
         update_bytes_bound: usize,
     ) -> OperationResult<Origin> {
-        self.reserve_replay_event(
+        let update = self.reserve_replay_event(
             request_id,
             current_encoded_state,
             update_bytes_bound,
             work_units,
             true,
         )?;
-        self.pending_replay_event = Some(PendingReplayEvent::Excluded { origin, work_units });
+        self.pending_replay_event = Some(PendingReplayEvent::Excluded {
+            origin,
+            work_units,
+            update,
+        });
         Ok(origin.as_yrs_origin())
     }
 
     pub(crate) fn finish_excluded(&mut self, update: Vec<u8>) {
-        let Some(PendingReplayEvent::Excluded { origin, work_units }) =
-            self.pending_replay_event.take()
+        let Some(PendingReplayEvent::Excluded {
+            origin,
+            work_units,
+            update: mut reserved_update,
+        }) = self.pending_replay_event.take()
         else {
             self.invalidate_replay_after_mutation();
             return;
@@ -748,17 +853,19 @@ impl YrsHistory {
             self.replay_events.clear();
             self.replay_bytes = 0;
             self.replay_work_units = 0;
+            self.replay_metadata_bytes = 0;
             return;
         }
+        assert!(
+            update.len() <= reserved_update.capacity(),
+            "admitted excluded update exceeds its exact pre-write reservation"
+        );
+        reserved_update.extend_from_slice(&update);
         let event = ReplayEvent::Excluded {
-            update,
+            update: reserved_update,
             origin,
             work_units,
         };
-        if !self.replay_event_fits(&event) {
-            self.invalidate_replay_after_mutation();
-            return;
-        }
         self.push_replay_event(event);
     }
 
@@ -832,16 +939,35 @@ impl YrsHistory {
             })
     }
 
-    pub(crate) fn accept_action(&mut self, action: HistoryAction, accepted_encoded_state: Vec<u8>) {
+    pub(crate) fn accept_action(
+        &mut self,
+        request_id: u64,
+        action: HistoryAction,
+        accepted_encoded_state: Vec<u8>,
+    ) -> OperationResult<()> {
+        self.replay_events.try_reserve(1).map_err(|error| {
+            OperationError::operation_resource_exhausted(
+                request_id,
+                "historyReplay",
+                format!("cannot reserve accepted history action: {error}"),
+            )
+        })?;
         let event = ReplayEvent::Action(action);
         let event_ceiling = self.event_ceiling();
         let next_count = self.replay_events.len().saturating_add(1);
         let next_bytes = self.replay_bytes.saturating_add(event.encoded_bytes());
-        if next_count >= event_ceiling || next_bytes > self.max_encoded_state_bytes {
+        let retained_metadata = self
+            .replay_metadata_bytes
+            .saturating_add(self.unmirrored_stack_metadata_bytes(request_id)?);
+        if next_count >= event_ceiling
+            || next_bytes > self.max_encoded_state_bytes
+            || retained_metadata > self.limits.max_derived_output_bytes
+        {
             self.roll_epoch(accepted_encoded_state);
         } else {
             self.push_replay_event(event);
         }
+        Ok(())
     }
 
     fn reserve_replay_event(
@@ -851,8 +977,25 @@ impl YrsHistory {
         update_bytes_bound: usize,
         work_units: u64,
         excluded: bool,
-    ) -> OperationResult<()> {
-        let event_bytes_bound = update_bytes_bound.checked_add(1).ok_or_else(|| {
+    ) -> OperationResult<Vec<u8>> {
+        let mut update = Vec::new();
+        update
+            .try_reserve_exact(update_bytes_bound)
+            .map_err(|error| {
+                OperationError::operation_resource_exhausted(
+                    request_id,
+                    "historyReplay",
+                    format!("cannot reserve bounded history update payload: {error}"),
+                )
+            })?;
+        self.replay_events.try_reserve(1).map_err(|error| {
+            OperationError::operation_resource_exhausted(
+                request_id,
+                "historyReplay",
+                format!("cannot reserve bounded history event slot: {error}"),
+            )
+        })?;
+        let event_bytes_bound = update.capacity().checked_add(1).ok_or_else(|| {
             encoded_limit_error(request_id, self.max_encoded_state_bytes, usize::MAX)
         })?;
         if event_bytes_bound > self.max_encoded_state_bytes {
@@ -868,7 +1011,7 @@ impl YrsHistory {
                 // replay epoch. Preserve live history until it commits, then
                 // invalidate it atomically in `finish_excluded`.
                 self.rebase_before_next_event = true;
-                return Ok(());
+                return Ok(update);
             }
             return Err(OperationError::operation_limit_exceeded(
                 request_id,
@@ -890,7 +1033,7 @@ impl YrsHistory {
         {
             self.roll_epoch(current_encoded_state.to_vec());
         }
-        Ok(())
+        Ok(update)
     }
 
     #[allow(clippy::manual_saturating_arithmetic)]
@@ -908,23 +1051,6 @@ impl YrsHistory {
         self.replay_events.push(event);
     }
 
-    fn replay_event_fits(&self, event: &ReplayEvent) -> bool {
-        self.replay_events
-            .len()
-            .checked_add(1)
-            .is_some_and(|count| {
-                count <= self.event_ceiling()
-                    && self
-                        .replay_bytes
-                        .checked_add(event.encoded_bytes())
-                        .is_some_and(|bytes| bytes <= self.max_encoded_state_bytes)
-                    && self
-                        .replay_work_units
-                        .checked_add(event.work_units())
-                        .is_some_and(|units| units <= self.limits.max_undo_retained_units)
-            })
-    }
-
     fn invalidate_replay_after_mutation(&mut self) {
         self.manager.clear_all();
         self.manager.reset();
@@ -932,6 +1058,7 @@ impl YrsHistory {
         self.replay_events.clear();
         self.replay_bytes = 0;
         self.replay_work_units = 0;
+        self.replay_metadata_bytes = 0;
         self.pending_replay_event = None;
         self.rebase_before_next_event = true;
     }
@@ -944,6 +1071,7 @@ impl YrsHistory {
         self.replay_events.clear();
         self.replay_bytes = 0;
         self.replay_work_units = 0;
+        self.replay_metadata_bytes = 0;
         self.pending_replay_event = None;
         self.rebase_before_next_event = false;
     }
@@ -1117,5 +1245,30 @@ mod tests {
         assert_eq!(history.manager.undo_stack().len(), 1);
         assert!(history.manager.undo_blocking());
         assert_eq!(fragment.get_string(&doc.transact()), "remote");
+    }
+
+    #[test]
+    fn replay_reservation_is_fallible_and_does_not_clear_existing_history() {
+        let doc = Doc::new();
+        let fragment = doc.get_or_insert_xml_fragment("history-test");
+        let mut history = YrsHistory::new(
+            &doc,
+            &fragment,
+            EditingLimits::default(),
+            usize::MAX,
+            Arc::new(|| 10_000),
+        );
+        {
+            let mut txn = doc.transact_mut_with(INPUT_ORIGIN);
+            fragment.push_back(&mut txn, XmlTextPrelim::new("local"));
+        }
+        let undo_groups = history.manager.undo_stack().len();
+
+        let error = history
+            .reserve_replay_event(41, &[], usize::MAX, 1, false)
+            .unwrap_err();
+        assert_eq!(error.code, "OPERATION_RESOURCE_EXHAUSTED");
+        assert_eq!(history.manager.undo_stack().len(), undo_groups);
+        assert!(history.manager.can_undo());
     }
 }

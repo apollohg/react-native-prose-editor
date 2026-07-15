@@ -291,6 +291,15 @@ impl OperationError {
             .with_operation_index(operation_index)
     }
 
+    pub(crate) fn operation_resource_exhausted(
+        request_id: u64,
+        field: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::new("OPERATION_RESOURCE_EXHAUSTED", message, request_id)
+            .with_details(serde_json::json!({ "field": field }))
+    }
+
     pub(crate) fn revision_overflow(request_id: u64, field: &'static str) -> Self {
         Self::engine_invariant_failed(request_id, None, format!("{field} cannot be incremented"))
             .with_details(serde_json::json!({ "field": field }))

@@ -721,6 +721,20 @@ fn aggregate_output_and_undo_work_accept_exact_and_reject_one_over() {
     assert_eq!(compiled.undo_units_bound, 0);
     assert_eq!(compiled.history_class, HistoryClass::Skip);
 
+    let limited_engine = engine_with(PLAIN, ResourceLimits::default(), limits.clone(), None);
+    let mut skipped = transaction(
+        &limited_engine,
+        vec![TypedOperation::InsertText {
+            at: point(5),
+            text: "xy".into(),
+            marks: vec![],
+        }],
+    );
+    skipped.history_policy = HistoryPolicy::Skip;
+    let compiled = limited_engine.compile_typed_transaction(skipped).unwrap();
+    assert_eq!(compiled.undo_units_bound, 0);
+    assert_eq!(compiled.replay_work_units_bound, 2);
+
     for (range, accepted) in [(range(1, 2), true), (range(1, 3), false)] {
         let context = super::CompilationContext {
             document: engine.document().unwrap(),

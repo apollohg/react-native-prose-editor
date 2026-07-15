@@ -19,6 +19,7 @@ const PLAIN_AB: &str =
 const PLAIN_ABC: &str =
     r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"abc"}]}]}"#;
 const BOLD_A: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"a","marks":[{"type":"bold"}]}]}]}"#;
+const PLAIN_HISTORY_SNAPSHOT_BYTES: usize = 512 + "prosemirror".len() + 2;
 
 #[derive(Debug, Clone, PartialEq)]
 struct HistoryAudit {
@@ -1066,6 +1067,114 @@ fn skipped_durable_edits_replay_between_recorded_groups_without_becoming_undoabl
     redo_commit(&mut harness);
     assert_eq!(text(&harness.engine), "abaxb");
     assert_eq!(harness.redo().unwrap(), None);
+}
+
+#[test]
+fn oversized_skip_mutation_commits_and_clears_the_history_epoch() {
+    let limits = EditingLimits {
+        max_undo_retained_units: 2,
+        ..EditingLimits::default()
+    };
+    let mut harness = Harness::with_limits(limits);
+    harness
+        .insert("a", TransactionOrigin::LocalInput, HistoryPolicy::Boundary)
+        .unwrap();
+    assert!(harness.engine.can_undo());
+
+    harness
+        .insert("xyz", TransactionOrigin::LocalApi, HistoryPolicy::Skip)
+        .unwrap();
+    assert_eq!(text(&harness.engine), "axyz");
+    assert!(!harness.engine.can_undo());
+    assert!(!harness.engine.can_redo());
+}
+
+#[test]
+fn fitting_skip_work_contributes_to_aggregate_epoch_rollover() {
+    let limits = EditingLimits {
+        max_undo_retained_units: 4,
+        ..EditingLimits::default()
+    };
+    let mut harness = Harness::with_limits(limits);
+    harness
+        .insert("a", TransactionOrigin::LocalInput, HistoryPolicy::Boundary)
+        .unwrap();
+    harness
+        .insert("x", TransactionOrigin::LocalApi, HistoryPolicy::Skip)
+        .unwrap();
+    harness
+        .insert("y", TransactionOrigin::LocalApi, HistoryPolicy::Skip)
+        .unwrap();
+    assert!(harness.engine.can_undo());
+
+    harness
+        .insert("z", TransactionOrigin::LocalApi, HistoryPolicy::Skip)
+        .unwrap();
+    assert_eq!(text(&harness.engine), "axyz");
+    assert!(!harness.engine.can_undo());
+}
+
+#[test]
+fn physical_history_metadata_accepts_exact_boundary_and_rejects_one_over_atomically() {
+    // The manager and replay journal share one metadata object, which owns one
+    // before and one after snapshot.
+    let exact = PLAIN_HISTORY_SNAPSHOT_BYTES * 2;
+    for (limit, accepted) in [(exact, true), (exact - 1, false)] {
+        let limits = EditingLimits {
+            max_derived_output_bytes: limit,
+            ..EditingLimits::default()
+        };
+        let mut harness = Harness::with_limits(limits);
+        let before = harness.audit();
+        let result = harness.insert("a", TransactionOrigin::LocalInput, HistoryPolicy::Boundary);
+        if accepted {
+            result.unwrap();
+            assert!(harness.engine.can_undo());
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+            assert_eq!(error.limit, Some((exact - 1) as u64));
+            assert_eq!(error.actual, Some(exact as u64));
+            assert_eq!(harness.audit(), before);
+        }
+    }
+}
+
+#[test]
+fn compatible_edit_pending_metadata_is_bounded_and_rolls_before_live_mutation() {
+    // Existing shared manager/journal metadata (2 snapshots) plus the next
+    // event's preallocated before+after slots (2) are the peak pending state.
+    let exact_pending = PLAIN_HISTORY_SNAPSHOT_BYTES * 4;
+    for (limit, expected_after_undo) in [(exact_pending, ""), (exact_pending - 1, "a")] {
+        let limits = EditingLimits {
+            max_derived_output_bytes: limit,
+            ..EditingLimits::default()
+        };
+        let mut harness = Harness::with_limits(limits);
+        harness
+            .insert("a", TransactionOrigin::LocalInput, HistoryPolicy::Auto)
+            .unwrap();
+        harness.advance(1);
+        harness
+            .insert("b", TransactionOrigin::LocalInput, HistoryPolicy::Auto)
+            .unwrap();
+        undo_commit(&mut harness);
+        assert_eq!(text(&harness.engine), expected_after_undo, "limit={limit}");
+    }
+
+    let limits = EditingLimits {
+        max_derived_output_bytes: exact_pending,
+        ..EditingLimits::default()
+    };
+    let mut repeated = Harness::with_limits(limits);
+    for value in ["a", "b", "c"] {
+        repeated
+            .insert(value, TransactionOrigin::LocalInput, HistoryPolicy::Auto)
+            .unwrap();
+        repeated.advance(1);
+    }
+    undo_commit(&mut repeated);
+    assert_eq!(text(&repeated.engine), "ab");
 }
 
 #[test]
