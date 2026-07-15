@@ -14,6 +14,14 @@ mod position;
 mod snapshot;
 mod update_preflight;
 
+const RAW_STORAGE_WORK_MULTIPLIER: usize = 128;
+
+fn raw_storage_work_limit(limits: &crate::boundary::ResourceLimits) -> usize {
+    limits
+        .max_document_nodes
+        .saturating_mul(RAW_STORAGE_WORK_MULTIPLIER)
+}
+
 pub(crate) use codec::YrsDocumentCodec;
 pub use editing_limits::{
     EditingLimitOverrides, EditingLimits, HARD_MAX_DERIVED_OUTPUT_BYTES,

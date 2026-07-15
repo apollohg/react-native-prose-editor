@@ -900,7 +900,6 @@ fn rendered_text_helper_matches_position_map_for_visible_atoms_and_separators() 
             Node::element("paragraph".into(), HashMap::new(), Fragment::empty()),
         ]),
     ));
-
     let rendered = crate::render::rendered_text(&document, &schema);
     assert_eq!(rendered, "A\n@Jay[C]\n\u{fffc}\n[W]\n\u{200b}");
     assert_eq!(
@@ -998,6 +997,7 @@ fn no_op_marks_do_not_consume_undo_or_rewrite_unrelated_text_nodes() {
             ]),
         )]),
     ));
+    let document = crate::transform::canonicalize_yrs_document(&document, &schema);
     let resource_limits = ResourceLimits::default();
     let editing_limits = EditingLimits::default();
     let context = super::CompilationContext {
@@ -1025,7 +1025,7 @@ fn no_op_marks_do_not_consume_undo_or_rewrite_unrelated_text_nodes() {
     )
     .unwrap();
     assert_eq!(compiled.preview, document);
-    assert_eq!(compiled.preview.root().child(0).unwrap().child_count(), 2);
+    assert_eq!(compiled.preview.root().child(0).unwrap().child_count(), 1);
 }
 
 #[test]

@@ -11,7 +11,7 @@ use crate::serialize::{
     from_html_with_limits, from_prosemirror_json_with_limits, rehydrate_reserved_html_opaque,
     to_html, to_prosemirror_json, FromHtmlOptions, JsonParseError, ParseError, UnknownTypeMode,
 };
-use crate::transform::{validate_canonical_marks, DocumentValidator};
+use crate::transform::{canonicalize_yrs_document, validate_canonical_marks, DocumentValidator};
 
 use super::compiler::{compile_transaction_with_yrs, CompilationContext, CompiledTransaction};
 use super::mutation::{execute_mutation_plan, preflight_mutation_plan};
@@ -77,6 +77,7 @@ impl ValidatedImportDocument {
         }
         validate_yrs_mark_representation(&document, schema)?;
         validate_import_document(&document, schema, resource_limits)?;
+        let document = canonicalize_yrs_document(&document, schema);
         let canonical_json = to_prosemirror_json(&document, schema);
         Ok(Self {
             document,
@@ -127,6 +128,8 @@ impl YrsDocumentEngine {
             max_length,
             scope,
         } = config;
+        resource_limits.validate()?;
+        editing_limits.validate()?;
         validate_config_metadata(&fragment_name, scope.as_ref(), &resource_limits)?;
         let schema_fingerprint = schema_fingerprint(&schema);
         let candidate = match initialization_mode {

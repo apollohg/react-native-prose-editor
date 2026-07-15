@@ -2,7 +2,7 @@ use serde_json::json;
 
 use crate::boundary::ResourceLimits;
 
-use super::{YrsEngineError, YrsEngineResult};
+use super::{raw_storage_work_limit, YrsEngineError, YrsEngineResult};
 
 pub(super) fn preflight_update_v1(encoded: &[u8], limits: &ResourceLimits) -> YrsEngineResult<()> {
     if encoded.len() > limits.max_encoded_state_bytes {
@@ -330,21 +330,20 @@ impl<'a> PreflightReader<'a> {
         if count > self.remaining() / minimum_bytes {
             return Err(self.declared_length_error());
         }
-        if count > self.limits.max_document_nodes {
-            // No separate decoded-update item ceiling exists. Reuse the
-            // configurable node ceiling so compact encodings cannot amplify
-            // into attacker-sized Yrs collection allocations before the
-            // derived document is available for ordinary node validation.
-            return Err(YrsEngineError::limit(
-                "DOCUMENT_LIMIT_EXCEEDED",
-                self.limits.max_document_nodes,
-                count,
-            )
-            .with_details(json!({
-                "field": "encodedState",
-                "phase": "updatePreflight",
-                "dimension": "collectionItems"
-            })));
+        let limit = raw_storage_work_limit(self.limits);
+        if count > limit {
+            // Decoded update collections describe raw CRDT storage, which can
+            // legitimately be more fragmented than the canonical document.
+            // Bound that amplification independently from canonical nodes.
+            return Err(
+                YrsEngineError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, count).with_details(
+                    json!({
+                        "field": "encodedState",
+                        "phase": "updatePreflight",
+                        "dimension": "collectionItems"
+                    }),
+                ),
+            );
         }
         Ok(())
     }
@@ -354,7 +353,7 @@ impl<'a> PreflightReader<'a> {
             .work
             .checked_add(amount)
             .ok_or_else(|| self.decode_error("workOverflow"))?;
-        let limit = self.limits.max_document_nodes;
+        let limit = raw_storage_work_limit(self.limits);
         if self.work > limit {
             return Err(
                 YrsEngineError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, self.work).with_details(
@@ -661,17 +660,17 @@ impl<'a> JsonPreflight<'a> {
             .work
             .checked_add(amount)
             .ok_or_else(|| self.invalid_json())?;
-        if self.work > self.limits.max_document_nodes {
-            return Err(YrsEngineError::limit(
-                "DOCUMENT_LIMIT_EXCEEDED",
-                self.limits.max_document_nodes,
-                self.work,
-            )
-            .with_details(json!({
-                "field": "encodedState",
-                "phase": "updatePreflight",
-                "dimension": "work"
-            })));
+        let limit = raw_storage_work_limit(self.limits);
+        if self.work > limit {
+            return Err(
+                YrsEngineError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, self.work).with_details(
+                    json!({
+                        "field": "encodedState",
+                        "phase": "updatePreflight",
+                        "dimension": "work"
+                    }),
+                ),
+            );
         }
         Ok(())
     }
@@ -736,7 +735,7 @@ impl<'a> JsonPreflight<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::preflight_update_v1;
+    use super::{preflight_update_v1, PreflightReader};
     use crate::boundary::ResourceLimits;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -748,6 +747,13 @@ mod tests {
         update.extend_from_slice(any);
         update.push(0); // empty delete set
         update
+    }
+
+    fn any_array(count: u32) -> Vec<u8> {
+        let mut any = vec![117];
+        push_var_u32(&mut any, count);
+        any.extend(std::iter::repeat_n(126, count as usize));
+        any
     }
 
     fn nested_array(depth: usize) -> Vec<u8> {
@@ -832,17 +838,25 @@ mod tests {
     #[test]
     fn collection_allocations_and_aggregate_work_use_exact_node_boundaries() {
         let collection_limits = ResourceLimits {
-            max_document_nodes: 4,
+            max_document_nodes: 1,
             ..ResourceLimits::default()
         };
-        let error = preflight_update_v1(
-            &any_update(&[117, 5, 126, 126, 126, 126, 126]),
-            &collection_limits,
-        )
-        .unwrap_err();
+        let declared_bytes = vec![0; 129];
+        let reader = PreflightReader::new(&declared_bytes, &collection_limits);
+        reader.require_declared_count(128, 1).unwrap();
+        let error = reader.require_declared_count(129, 1).unwrap_err();
+        assert_eq!(error.limit, Some(128));
+        assert_eq!(error.actual, Some(129));
+        assert_eq!(
+            error.details.as_ref().unwrap()["dimension"],
+            "collectionItems"
+        );
+
+        let error =
+            preflight_update_v1(&any_update(&any_array(129)), &collection_limits).unwrap_err();
         assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
-        assert_eq!(error.limit, Some(4));
-        assert_eq!(error.actual, Some(5));
+        assert_eq!(error.limit, Some(128));
+        assert_eq!(error.actual, Some(129));
         assert_eq!(
             error.details,
             Some(serde_json::json!({
@@ -853,15 +867,14 @@ mod tests {
         );
 
         let work_limits = ResourceLimits {
-            max_document_nodes: 5,
+            max_document_nodes: 1,
             ..ResourceLimits::default()
         };
-        preflight_update_v1(&any_update(&[117, 2, 126, 126]), &work_limits).unwrap();
-        let error =
-            preflight_update_v1(&any_update(&[117, 3, 126, 126, 126]), &work_limits).unwrap_err();
+        preflight_update_v1(&any_update(&any_array(125)), &work_limits).unwrap();
+        let error = preflight_update_v1(&any_update(&any_array(126)), &work_limits).unwrap_err();
         assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
-        assert_eq!(error.limit, Some(5));
-        assert_eq!(error.actual, Some(6));
+        assert_eq!(error.limit, Some(128));
+        assert_eq!(error.actual, Some(129));
         assert_eq!(
             error.details,
             Some(serde_json::json!({
@@ -875,24 +888,36 @@ mod tests {
     #[test]
     fn json_embed_and_format_use_exact_collection_work_boundaries() {
         let limits = ResourceLimits {
-            max_document_nodes: 5,
+            max_document_nodes: 1,
             ..ResourceLimits::default()
         };
-        preflight_update_v1(&json_update(5, None, "[null,null]"), &limits).unwrap();
-        preflight_update_v1(
-            &json_update(6, Some("mark"), r#"{"a":null,"b":null}"#),
-            &limits,
-        )
-        .unwrap();
+        let exact_array = format!("[{}]", vec!["null"; 125].join(","));
+        let exact_object = format!(
+            "{{{}}}",
+            (0..125)
+                .map(|index| format!(r#""k{index}":null"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        preflight_update_v1(&json_update(5, None, &exact_array), &limits).unwrap();
+        preflight_update_v1(&json_update(6, Some("mark"), &exact_object), &limits).unwrap();
 
+        let over_array = format!("[{}]", vec!["null"; 126].join(","));
+        let over_object = format!(
+            "{{{}}}",
+            (0..126)
+                .map(|index| format!(r#""k{index}":null"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         for update in [
-            json_update(5, None, "[null,null,null]"),
-            json_update(6, Some("mark"), r#"{"a":null,"b":null,"c":null}"#),
+            json_update(5, None, &over_array),
+            json_update(6, Some("mark"), &over_object),
         ] {
             let error = preflight_update_v1(&update, &limits).unwrap_err();
             assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
-            assert_eq!(error.limit, Some(5));
-            assert_eq!(error.actual, Some(6));
+            assert_eq!(error.limit, Some(128));
+            assert_eq!(error.actual, Some(129));
             assert_eq!(error.details.as_ref().unwrap()["dimension"], "work");
         }
     }

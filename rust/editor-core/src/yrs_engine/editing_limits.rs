@@ -50,28 +50,34 @@ impl EditingLimits {
                 .unwrap_or(defaults.max_derived_output_bytes),
         };
 
+        limits.validate()?;
+
+        Ok(limits)
+    }
+
+    pub(crate) fn validate(&self) -> YrsEngineResult<()> {
         validate_limit(
             "maxOperationsPerTransaction",
-            limits.max_operations_per_transaction as u64,
+            self.max_operations_per_transaction as u64,
             HARD_MAX_OPERATIONS_PER_TRANSACTION as u64,
         )?;
         validate_limit(
             "maxUndoGroups",
-            limits.max_undo_groups as u64,
+            self.max_undo_groups as u64,
             HARD_MAX_UNDO_GROUPS as u64,
         )?;
         validate_limit(
             "maxUndoRetainedUnits",
-            limits.max_undo_retained_units,
+            self.max_undo_retained_units,
             HARD_MAX_UNDO_RETAINED_UNITS,
         )?;
         validate_limit(
             "maxDerivedOutputBytes",
-            limits.max_derived_output_bytes as u64,
+            self.max_derived_output_bytes as u64,
             HARD_MAX_DERIVED_OUTPUT_BYTES as u64,
         )?;
 
-        Ok(limits)
+        Ok(())
     }
 }
 

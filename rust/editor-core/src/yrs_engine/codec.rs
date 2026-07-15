@@ -13,7 +13,7 @@ use yrs::{ReadTxn, TransactionMut};
 use crate::boundary::ResourceLimits;
 use crate::schema::Schema;
 
-use super::{YrsEngineError, YrsEngineResult};
+use super::{raw_storage_work_limit, YrsEngineError, YrsEngineResult};
 
 pub(crate) struct YrsDocumentCodec<'a> {
     schema: &'a Schema,
@@ -185,6 +185,7 @@ pub(crate) fn insert_prepared_node<P: XmlFragment>(
 struct ConversionBudget<'a> {
     limits: &'a ResourceLimits,
     nodes: usize,
+    raw_text_runs: usize,
     any_work: usize,
     output_bytes: usize,
     charge_output: bool,
@@ -195,6 +196,7 @@ impl<'a> ConversionBudget<'a> {
         Self {
             limits,
             nodes: 0,
+            raw_text_runs: 0,
             any_work: 0,
             output_bytes: 0,
             charge_output: true,
@@ -231,6 +233,24 @@ impl<'a> ConversionBudget<'a> {
         Ok(())
     }
 
+    fn admit_raw_text_run(&mut self, depth: usize) -> YrsEngineResult<()> {
+        self.admit_traversal_depth(depth)?;
+        self.raw_text_runs = self.raw_text_runs.saturating_add(1);
+        let limit = raw_storage_work_limit(self.limits);
+        if self.raw_text_runs > limit {
+            return Err(YrsEngineError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                limit,
+                self.raw_text_runs,
+            )
+            .with_details(json!({
+                "phase": "candidateMaterialization",
+                "dimension": "rawTextRuns"
+            })));
+        }
+        Ok(())
+    }
+
     fn admit_any(&mut self, depth: usize, amount: usize) -> YrsEngineResult<()> {
         if depth > self.limits.max_document_depth {
             return Err(YrsEngineError::limit(
@@ -244,7 +264,7 @@ impl<'a> ConversionBudget<'a> {
             })));
         }
         self.any_work = self.any_work.saturating_add(amount);
-        let limit = self.limits.max_document_nodes.saturating_mul(128);
+        let limit = raw_storage_work_limit(self.limits);
         if self.any_work > limit {
             return Err(
                 YrsEngineError::limit("DOCUMENT_LIMIT_EXCEEDED", limit, self.any_work)
@@ -359,22 +379,51 @@ fn append_xml_text_json<T: ReadTxn>(
     output: &mut Vec<Value>,
 ) -> YrsEngineResult<()> {
     for diff in text.diff(txn, YChange::identity) {
+        budget.admit_raw_text_run(depth)?;
         let yrs::Out::Any(any) = diff.insert else {
-            continue;
+            return Err(YrsEngineError::new(
+                "CODEC_INVARIANT_FAILED",
+                "Yrs XML text runs must contain scalar string values",
+            )
+            .with_details(json!({
+                "phase": "candidateMaterialization",
+                "field": "xmlTextRun"
+            })));
         };
-        let Value::String(text_value) = any_to_json(&any, budget, 1)? else {
-            continue;
+        let Any::String(text_value) = any else {
+            return Err(YrsEngineError::new(
+                "CODEC_INVARIANT_FAILED",
+                "Yrs XML text runs must contain string values",
+            )
+            .with_details(json!({
+                "phase": "candidateMaterialization",
+                "field": "xmlTextRun"
+            })));
         };
+        budget.charge_computed_output(|| json_string_len(&text_value))?;
+        let text_value = text_value.to_string();
         if text_value.is_empty() {
             continue;
         }
+        let marks = attrs_to_marks(diff.attributes.as_deref(), schema, budget)?;
+        let marks = (!marks.is_empty()).then_some(Value::Array(marks));
+        if let Some(Value::Object(previous)) = output.last_mut() {
+            let compatible = previous.get("type").and_then(Value::as_str) == Some("text")
+                && previous.get("marks") == marks.as_ref();
+            if compatible {
+                if let Some(Value::String(previous_text)) = previous.get_mut("text") {
+                    previous_text.push_str(&text_value);
+                    continue;
+                }
+            }
+        }
+
         budget.admit_node(depth)?;
         let mut object = Map::new();
         object.insert("type".to_string(), Value::String("text".to_string()));
         object.insert("text".to_string(), Value::String(text_value));
-        let marks = attrs_to_marks(diff.attributes.as_deref(), schema, budget)?;
-        if !marks.is_empty() {
-            object.insert("marks".to_string(), Value::Array(marks));
+        if let Some(marks) = marks {
+            object.insert("marks".to_string(), marks);
         }
         output.push(Value::Object(object));
     }
@@ -977,6 +1026,10 @@ mod tests {
     use crate::boundary::ResourceLimits;
     use crate::schema::presets::tiptap_schema;
     use serde_json::{json, Value};
+    use yrs::types::text::{Text, YChange};
+    use yrs::types::xml::{XmlElementPrelim, XmlFragment, XmlTextPrelim};
+    use yrs::types::Attrs;
+    use yrs::{Any, ArrayPrelim};
     use yrs::{Doc, OffsetKind, Options, ReadTxn, Transact, WriteTxn};
 
     fn utf16_doc() -> Doc {
@@ -1009,6 +1062,219 @@ mod tests {
         let txn = doc.transact();
         let fragment = txn.get_xml_fragment("prosemirror").unwrap();
         codec.read_json(&fragment, &txn).unwrap()
+    }
+
+    fn read_raw(doc: &Doc) -> Value {
+        let schema = tiptap_schema();
+        let limits = ResourceLimits::default();
+        let codec = YrsDocumentCodec::new(&schema, &limits);
+        let txn = doc.transact();
+        let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+        codec.read_json(&fragment, &txn).unwrap()
+    }
+
+    fn mark_attrs(mark: &str) -> Attrs {
+        mark_attrs_value(mark, Any::Bool(true))
+    }
+
+    fn mark_attrs_value(mark: &str, value: Any) -> Attrs {
+        let mut attrs = Attrs::default();
+        attrs.insert(mark.into(), value);
+        attrs
+    }
+
+    #[test]
+    fn read_json_coalesces_only_adjacent_equal_mark_text_storage() {
+        let siblings = utf16_doc();
+        {
+            let mut txn = siblings.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            paragraph.push_back(&mut txn, XmlTextPrelim::new("a"));
+            paragraph.push_back(&mut txn, XmlTextPrelim::new("b"));
+        }
+        assert_eq!(
+            read_raw(&siblings),
+            json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{ "type": "text", "text": "ab" }]
+                }]
+            })
+        );
+
+        let diff_runs = utf16_doc();
+        let text = {
+            let mut txn = diff_runs.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            let text = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+            text.insert_with_attributes(&mut txn, 0, "ab", mark_attrs("bold"));
+            text.insert_embed_with_attributes(&mut txn, 1, Any::Bool(false), Attrs::default());
+            text
+        };
+        let txn = diff_runs.transact();
+        assert_eq!(text.diff(&txn, YChange::identity).len(), 3);
+        let schema = tiptap_schema();
+        let limits = ResourceLimits::default();
+        let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+        let error = YrsDocumentCodec::new(&schema, &limits)
+            .read_json(&fragment, &txn)
+            .unwrap_err();
+        assert_eq!(error.code, "CODEC_INVARIANT_FAILED");
+        assert_eq!(
+            error.details,
+            Some(json!({
+                "phase": "candidateMaterialization",
+                "field": "xmlTextRun"
+            }))
+        );
+        drop(txn);
+
+        let shared_embed = utf16_doc();
+        {
+            let mut txn = shared_embed.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            let text = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+            text.insert_embed_with_attributes(
+                &mut txn,
+                0,
+                ArrayPrelim::from(vec![Any::String("shared".into())]),
+                Attrs::default(),
+            );
+        }
+        let txn = shared_embed.transact();
+        let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+        let error = YrsDocumentCodec::new(&schema, &limits)
+            .read_json(&fragment, &txn)
+            .unwrap_err();
+        assert_eq!(error.code, "CODEC_INVARIANT_FAILED");
+        assert_eq!(
+            error.details,
+            Some(json!({
+                "phase": "candidateMaterialization",
+                "field": "xmlTextRun"
+            }))
+        );
+
+        let different_marks = utf16_doc();
+        {
+            let mut txn = different_marks.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            let bold = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+            bold.insert_with_attributes(&mut txn, 0, "a", mark_attrs("bold"));
+            let italic = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+            italic.insert_with_attributes(&mut txn, 0, "b", mark_attrs("italic"));
+        }
+        assert_eq!(
+            read_raw(&different_marks)["content"][0]["content"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let element_boundary = utf16_doc();
+        {
+            let mut txn = element_boundary.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            paragraph.push_back(&mut txn, XmlTextPrelim::new("a"));
+            paragraph.push_back(&mut txn, XmlElementPrelim::empty("hardBreak"));
+            paragraph.push_back(&mut txn, XmlTextPrelim::new("b"));
+        }
+        let element_json = read_raw(&element_boundary);
+        assert_eq!(
+            element_json["content"][0]["content"],
+            json!([
+                { "type": "text", "text": "a" },
+                { "type": "hardBreak" },
+                { "type": "text", "text": "b" }
+            ])
+        );
+
+        let schema = tiptap_schema();
+        let exact_limits = ResourceLimits {
+            max_document_nodes: 3,
+            ..ResourceLimits::default()
+        };
+        let txn = siblings.transact();
+        let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+        assert!(YrsDocumentCodec::new(&schema, &exact_limits)
+            .read_json(&fragment, &txn)
+            .is_ok());
+        let rejected_limits = ResourceLimits {
+            max_document_nodes: 2,
+            ..ResourceLimits::default()
+        };
+        let error = YrsDocumentCodec::new(&schema, &rejected_limits)
+            .read_json(&fragment, &txn)
+            .unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(error.limit, Some(2));
+        assert_eq!(error.actual, Some(3));
+
+        let raw_work_limits = ResourceLimits {
+            max_document_nodes: 3,
+            ..ResourceLimits::default()
+        };
+        let exact_fragmented = utf16_doc();
+        {
+            let mut txn = exact_fragmented.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            for _ in 0..384 {
+                paragraph.push_back(&mut txn, XmlTextPrelim::new("x"));
+            }
+        }
+        let txn = exact_fragmented.transact();
+        let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+        let exact_fragmented_json = YrsDocumentCodec::new(&schema, &raw_work_limits)
+            .read_json(&fragment, &txn)
+            .unwrap();
+        assert_eq!(
+            exact_fragmented_json["content"][0]["content"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            exact_fragmented_json["content"][0]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            384
+        );
+
+        let fragmented = utf16_doc();
+        {
+            let mut txn = fragmented.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            for _ in 0..385 {
+                paragraph.push_back(&mut txn, XmlTextPrelim::new("x"));
+            }
+        }
+        let txn = fragmented.transact();
+        let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+        let error = YrsDocumentCodec::new(&schema, &raw_work_limits)
+            .read_json(&fragment, &txn)
+            .unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(error.limit, Some(384));
+        assert_eq!(error.actual, Some(385));
+        assert_eq!(
+            error.details,
+            Some(json!({
+                "phase": "candidateMaterialization",
+                "dimension": "rawTextRuns"
+            }))
+        );
     }
 
     #[test]
@@ -1237,7 +1503,10 @@ mod tests {
                             "kind": "warning",
                             "metadata": [true, null, { "rank": 2 }]
                         },
-                        "content": [{ "type": "text", "text": "preserve me" }]
+                        "content": [
+                            { "type": "text", "text": "preserve " },
+                            { "type": "text", "text": "me" }
+                        ]
                     }
                 }
             }]

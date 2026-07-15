@@ -11,6 +11,22 @@ use yrs::{Doc, ReadTxn, StateVector, Transact, WriteTxn};
 
 const SMALL_DECLARED_LENGTH_BOMB: &[u8] = &[1, 1, 1, 0, 3, 1, 0, 0x7f];
 
+fn push_var_u32(bytes: &mut Vec<u8>, mut value: u32) {
+    while value >= 0x80 {
+        bytes.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    bytes.push(value as u8);
+}
+
+fn json_embed_update(value: &str) -> Vec<u8> {
+    let mut update = vec![1, 1, 1, 0, 5, 1, 0];
+    push_var_u32(&mut update, value.len() as u32);
+    update.extend_from_slice(value.as_bytes());
+    update.push(0);
+    update
+}
+
 #[derive(Debug, PartialEq)]
 struct EngineAudit {
     ready: bool,
@@ -493,23 +509,28 @@ fn structural_preflight_rejections_are_structured_and_atomic() {
 
 #[test]
 fn json_content_work_rejection_is_structured_and_atomic() {
-    let json = b"[null,null,null]";
-    let mut encoded_state = vec![1, 1, 1, 0, 5, 1, 0, json.len() as u8];
-    encoded_state.extend_from_slice(json);
-    encoded_state.push(0);
     let mut engine = engine_with_limits(ResourceLimits {
-        max_document_nodes: 5,
+        max_document_nodes: 2,
         ..ResourceLimits::default()
     });
     let before = audit(&engine);
+
+    let exact_json = format!("[{}]", vec!["null"; 253].join(","));
     let mut snapshot = engine.export_snapshot().unwrap();
-    snapshot.encoded_state = encoded_state;
+    snapshot.encoded_state = json_embed_update(&exact_json);
+    let exact_error = engine.restore_snapshot(&snapshot).unwrap_err();
+    assert_eq!(exact_error.code, "CODEC_INVARIANT_FAILED");
+    assert_eq!(audit(&engine), before);
+
+    let over_json = format!("[{}]", vec!["null"; 254].join(","));
+    let mut snapshot = engine.export_snapshot().unwrap();
+    snapshot.encoded_state = json_embed_update(&over_json);
 
     let error = engine.restore_snapshot(&snapshot).unwrap_err();
 
     assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
-    assert_eq!(error.limit, Some(5));
-    assert_eq!(error.actual, Some(6));
+    assert_eq!(error.limit, Some(256));
+    assert_eq!(error.actual, Some(257));
     assert_eq!(
         error.details,
         Some(serde_json::json!({

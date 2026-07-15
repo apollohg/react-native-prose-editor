@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use editor_core::boundary::ResourceLimits;
+use editor_core::model::{Fragment, Node};
 use editor_core::schema::{AttrSpec, NodeRole, NodeSpec, Schema};
 use editor_core::serialize::{
     from_prosemirror_json_with_limits, to_html, to_prosemirror_json, FromHtmlOptions,
@@ -8,8 +9,9 @@ use editor_core::serialize::{
 };
 use editor_core::tiptap_schema;
 use editor_core::yrs_engine::{
-    DocumentScope, EngineCommit, InitializationMode, TransactionOrigin, YrsDocumentEngine,
-    YrsEngineConfig,
+    Affinity, DocumentScope, EditorOffsetKind, EngineCommit, HistoryPolicy, InitializationMode,
+    RevisionedPosition, RevisionedRange, SelectionIntent, TransactionOrigin, TypedOperation,
+    TypedTransaction, YrsDocumentEngine, YrsEngineConfig,
 };
 use yrs::types::xml::XmlFragment;
 use yrs::updates::decoder::Decode;
@@ -132,6 +134,146 @@ fn schema_for(name: &str) -> Schema {
         "extended" => extended_schema(),
         other => panic!("unknown fixture schema: {other}"),
     }
+}
+
+#[test]
+fn adjacent_equal_mark_json_imports_use_one_canonical_text_node_after_snapshot_hydration() {
+    let schema = tiptap_schema();
+    let scope = Some(DocumentScope {
+        document_id: "adjacent-text".into(),
+        lineage_id: "adjacent-text-lineage".into(),
+    });
+    let input = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "paragraph",
+            "content": [
+                { "type": "text", "text": "a", "marks": [{ "type": "bold" }] },
+                { "type": "text", "text": "b", "marks": [{ "type": "bold" }] }
+            ]
+        }, {
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": "tail" }]
+        }]
+    });
+    let expected = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "paragraph",
+            "content": [{
+                "type": "text",
+                "text": "ab",
+                "marks": [{ "type": "bold" }]
+            }]
+        }, {
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": "tail" }]
+        }]
+    });
+
+    let mut source_config = local_config(schema.clone());
+    source_config.scope = scope.clone();
+    let mut source = YrsDocumentEngine::new(source_config).unwrap();
+    source
+        .import_json(&input.to_string(), TransactionOrigin::DocumentImport)
+        .unwrap();
+    assert_eq!(source.document_json(), Some(expected.clone()));
+    source
+        .apply_typed_transaction(TypedTransaction {
+            request_id: 55,
+            base_document_revision: source.revision(),
+            origin: TransactionOrigin::LocalApi,
+            operations: vec![TypedOperation::InsertText {
+                at: RevisionedPosition {
+                    offset: 7,
+                    kind: EditorOffsetKind::Scalar,
+                    affinity: Affinity::After,
+                },
+                text: "!".into(),
+                marks: vec![],
+            }],
+            selection_intent: SelectionIntent::Preserve,
+            history_policy: HistoryPolicy::Skip,
+        })
+        .unwrap();
+    let mut expected_after_edit = expected;
+    expected_after_edit["content"][1]["content"][0]["text"] = serde_json::json!("tail!");
+    assert_eq!(source.document_json(), Some(expected_after_edit.clone()));
+    assert_eq!(
+        source.document_json().unwrap()["content"][0]["content"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let snapshot = source.export_snapshot().unwrap();
+    let mut target_config = local_config(schema);
+    target_config.initialization_mode = InitializationMode::AwaitRemote;
+    target_config.scope = scope;
+    let mut target = YrsDocumentEngine::new(target_config).unwrap();
+    target.restore_snapshot(&snapshot).unwrap();
+    assert_eq!(target.document_json(), Some(expected_after_edit));
+    assert_eq!(target.document(), source.document());
+    assert_eq!(target.document_html(), source.document_html());
+}
+
+#[test]
+fn exact_canonical_node_limit_survives_fragmented_typed_edit_export_and_restore() {
+    let schema = tiptap_schema();
+    let scope = Some(DocumentScope {
+        document_id: "fragmented-text".into(),
+        lineage_id: "fragmented-text-lineage".into(),
+    });
+    let mut source_config = local_config(schema.clone());
+    source_config.scope = scope.clone();
+    source_config.resource_limits.max_document_nodes = 3;
+    let mut source = YrsDocumentEngine::new(source_config).unwrap();
+    source
+        .import_json(
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"o"}]}]}"#,
+            TransactionOrigin::DocumentImport,
+        )
+        .unwrap();
+    let point = RevisionedPosition {
+        offset: 0,
+        kind: EditorOffsetKind::Scalar,
+        affinity: Affinity::After,
+    };
+    source
+        .apply_typed_transaction(TypedTransaction {
+            request_id: 56,
+            base_document_revision: source.revision(),
+            origin: TransactionOrigin::LocalApi,
+            operations: vec![TypedOperation::ReplaceRange {
+                range: RevisionedRange {
+                    from: point,
+                    to: point,
+                },
+                content: Fragment::from(vec![Node::text("Ω".into(), vec![])]),
+            }],
+            selection_intent: SelectionIntent::Preserve,
+            history_policy: HistoryPolicy::Skip,
+        })
+        .unwrap();
+    let expected = serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": "Ωo" }]
+        }]
+    });
+    assert_eq!(source.document_json(), Some(expected.clone()));
+
+    let snapshot = source.export_snapshot().unwrap();
+    let mut target_config = local_config(schema);
+    target_config.initialization_mode = InitializationMode::AwaitRemote;
+    target_config.scope = scope;
+    target_config.resource_limits.max_document_nodes = 3;
+    let mut target = YrsDocumentEngine::new(target_config).unwrap();
+    target.restore_snapshot(&snapshot).unwrap();
+    assert_eq!(target.document_json(), Some(expected));
+    assert_eq!(target.document(), source.document());
 }
 
 #[test]

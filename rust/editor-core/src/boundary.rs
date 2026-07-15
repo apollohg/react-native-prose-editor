@@ -239,24 +239,29 @@ impl ResourceLimits {
                 .unwrap_or(defaults.max_encoded_state_bytes),
         };
 
+        limits.validate()?;
+        Ok(limits)
+    }
+
+    pub(crate) fn validate(&self) -> BoundaryResult<()> {
         for (name, actual, ceiling) in [
-            ("maxInputBytes", limits.max_input_bytes, 64 * 1024 * 1024),
-            ("maxDocumentNodes", limits.max_document_nodes, 1_000_000),
-            ("maxDocumentDepth", limits.max_document_depth, 1_024),
-            ("maxSchemaNodes", limits.max_schema_nodes, 10_000),
+            ("maxInputBytes", self.max_input_bytes, 64 * 1024 * 1024),
+            ("maxDocumentNodes", self.max_document_nodes, 1_000_000),
+            ("maxDocumentDepth", self.max_document_depth, 1_024),
+            ("maxSchemaNodes", self.max_schema_nodes, 10_000),
             (
                 "maxSchemaExpressionBytes",
-                limits.max_schema_expression_bytes,
+                self.max_schema_expression_bytes,
                 1024 * 1024,
             ),
             (
                 "maxCollaborationMessageBytes",
-                limits.max_collaboration_message_bytes,
+                self.max_collaboration_message_bytes,
                 64 * 1024 * 1024,
             ),
             (
                 "maxEncodedStateBytes",
-                limits.max_encoded_state_bytes,
+                self.max_encoded_state_bytes,
                 256 * 1024 * 1024,
             ),
         ] {
@@ -270,7 +275,7 @@ impl ResourceLimits {
                 });
             }
         }
-        Ok(limits)
+        Ok(())
     }
 
     fn limit_for(&self, kind: InputKind) -> usize {

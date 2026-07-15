@@ -81,17 +81,20 @@ pub(crate) fn apply_step_canonical_marks(
     schema: &Schema,
 ) -> Result<(Document, StepMap), TransformError> {
     let (document, step_map) = apply_step(doc, step, schema)?;
-    Ok((
-        canonicalize_document_mark_order(&document, schema),
-        step_map,
-    ))
+    Ok((canonicalize_yrs_document(&document, schema), step_map))
 }
 
-fn canonicalize_document_mark_order(document: &Document, schema: &Schema) -> Document {
+pub(crate) fn canonicalize_yrs_document(document: &Document, schema: &Schema) -> Document {
     fn canonicalize_node(node: &Node, schema: &Schema) -> Node {
         if let Some(text) = node.text_str() {
             let mut marks = node.marks().to_vec();
-            marks.sort_by_key(|mark| schema.mark_rank(mark.mark_type()).unwrap_or(usize::MAX));
+            marks.sort_by(|left, right| {
+                schema
+                    .mark_rank(left.mark_type())
+                    .unwrap_or(usize::MAX)
+                    .cmp(&schema.mark_rank(right.mark_type()).unwrap_or(usize::MAX))
+                    .then_with(|| left.mark_type().cmp(right.mark_type()))
+            });
             return Node::text(text.to_string(), marks);
         }
         let Some(content) = node.content() else {
@@ -100,7 +103,8 @@ fn canonicalize_document_mark_order(document: &Document, schema: &Schema) -> Doc
         let children = content
             .iter()
             .map(|child| canonicalize_node(child, schema))
-            .collect();
+            .collect::<Vec<_>>();
+        let children = merge_adjacent_text_nodes(children);
         rebuild_element(node, children)
     }
 

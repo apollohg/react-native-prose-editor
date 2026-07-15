@@ -133,6 +133,190 @@ fn engine_config_stores_editing_limits_and_preserves_explicit_zero_max_length() 
 }
 
 #[test]
+fn engine_config_revalidates_raw_editing_limits_before_creating_a_document() {
+    let exact = EditingLimits {
+        max_operations_per_transaction: HARD_MAX_OPERATIONS_PER_TRANSACTION,
+        max_undo_groups: HARD_MAX_UNDO_GROUPS,
+        max_undo_retained_units: HARD_MAX_UNDO_RETAINED_UNITS,
+        max_derived_output_bytes: HARD_MAX_DERIVED_OUTPUT_BYTES,
+    };
+    let exact_engine = YrsDocumentEngine::new(YrsEngineConfig {
+        schema: tiptap_schema(),
+        fragment_name: "prosemirror".into(),
+        initialization_mode: InitializationMode::LocalEmpty,
+        resource_limits: ResourceLimits::default(),
+        editing_limits: exact.clone(),
+        max_length: None,
+        scope: None,
+    })
+    .unwrap();
+    assert_eq!(exact_engine.editing_limits(), &exact);
+
+    let invalid = [
+        (
+            EditingLimits {
+                max_operations_per_transaction: 0,
+                ..EditingLimits::default()
+            },
+            "maxOperationsPerTransaction",
+            0,
+            HARD_MAX_OPERATIONS_PER_TRANSACTION,
+        ),
+        (
+            EditingLimits {
+                max_operations_per_transaction: HARD_MAX_OPERATIONS_PER_TRANSACTION + 1,
+                ..EditingLimits::default()
+            },
+            "maxOperationsPerTransaction",
+            HARD_MAX_OPERATIONS_PER_TRANSACTION + 1,
+            HARD_MAX_OPERATIONS_PER_TRANSACTION,
+        ),
+        (
+            EditingLimits {
+                max_undo_groups: 0,
+                ..EditingLimits::default()
+            },
+            "maxUndoGroups",
+            0,
+            HARD_MAX_UNDO_GROUPS,
+        ),
+        (
+            EditingLimits {
+                max_undo_groups: HARD_MAX_UNDO_GROUPS + 1,
+                ..EditingLimits::default()
+            },
+            "maxUndoGroups",
+            HARD_MAX_UNDO_GROUPS + 1,
+            HARD_MAX_UNDO_GROUPS,
+        ),
+        (
+            EditingLimits {
+                max_undo_retained_units: 0,
+                ..EditingLimits::default()
+            },
+            "maxUndoRetainedUnits",
+            0,
+            usize::try_from(HARD_MAX_UNDO_RETAINED_UNITS).unwrap(),
+        ),
+        (
+            EditingLimits {
+                max_undo_retained_units: HARD_MAX_UNDO_RETAINED_UNITS + 1,
+                ..EditingLimits::default()
+            },
+            "maxUndoRetainedUnits",
+            usize::try_from(HARD_MAX_UNDO_RETAINED_UNITS + 1).unwrap(),
+            usize::try_from(HARD_MAX_UNDO_RETAINED_UNITS).unwrap(),
+        ),
+        (
+            EditingLimits {
+                max_derived_output_bytes: 0,
+                ..EditingLimits::default()
+            },
+            "maxDerivedOutputBytes",
+            0,
+            HARD_MAX_DERIVED_OUTPUT_BYTES,
+        ),
+        (
+            EditingLimits {
+                max_derived_output_bytes: HARD_MAX_DERIVED_OUTPUT_BYTES + 1,
+                ..EditingLimits::default()
+            },
+            "maxDerivedOutputBytes",
+            HARD_MAX_DERIVED_OUTPUT_BYTES + 1,
+            HARD_MAX_DERIVED_OUTPUT_BYTES,
+        ),
+    ];
+
+    for (editing_limits, field, actual, limit) in invalid {
+        let error = YrsDocumentEngine::new(YrsEngineConfig {
+            schema: tiptap_schema(),
+            fragment_name: "prosemirror".into(),
+            initialization_mode: InitializationMode::LocalEmpty,
+            resource_limits: ResourceLimits::default(),
+            editing_limits,
+            max_length: None,
+            scope: None,
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error.code, "INVALID_RESOURCE_LIMIT");
+        assert_eq!(error.details, Some(json!({ "field": field })));
+        assert_eq!(error.actual, Some(actual));
+        assert_eq!(error.limit, Some(limit));
+    }
+}
+
+#[test]
+fn engine_config_revalidates_raw_resource_limits_before_creating_a_document() {
+    let exact = ResourceLimits {
+        max_input_bytes: 64 * 1024 * 1024,
+        max_document_nodes: 1_000_000,
+        max_document_depth: 1_024,
+        max_schema_nodes: 10_000,
+        max_schema_expression_bytes: 1024 * 1024,
+        max_collaboration_message_bytes: 64 * 1024 * 1024,
+        max_encoded_state_bytes: 256 * 1024 * 1024,
+    };
+    let exact_engine = YrsDocumentEngine::new(YrsEngineConfig {
+        schema: tiptap_schema(),
+        fragment_name: "prosemirror".into(),
+        initialization_mode: InitializationMode::LocalEmpty,
+        resource_limits: exact.clone(),
+        editing_limits: EditingLimits::default(),
+        max_length: None,
+        scope: None,
+    })
+    .unwrap();
+    assert_eq!(exact_engine.resource_limits(), &exact);
+
+    let mut invalid = Vec::new();
+    for (field, limit) in [
+        ("maxInputBytes", 64 * 1024 * 1024),
+        ("maxDocumentNodes", 1_000_000),
+        ("maxDocumentDepth", 1_024),
+        ("maxSchemaNodes", 10_000),
+        ("maxSchemaExpressionBytes", 1024 * 1024),
+        ("maxCollaborationMessageBytes", 64 * 1024 * 1024),
+        ("maxEncodedStateBytes", 256 * 1024 * 1024),
+    ] {
+        for actual in [0, limit + 1] {
+            let mut limits = exact.clone();
+            match field {
+                "maxInputBytes" => limits.max_input_bytes = actual,
+                "maxDocumentNodes" => limits.max_document_nodes = actual,
+                "maxDocumentDepth" => limits.max_document_depth = actual,
+                "maxSchemaNodes" => limits.max_schema_nodes = actual,
+                "maxSchemaExpressionBytes" => limits.max_schema_expression_bytes = actual,
+                "maxCollaborationMessageBytes" => {
+                    limits.max_collaboration_message_bytes = actual;
+                }
+                "maxEncodedStateBytes" => limits.max_encoded_state_bytes = actual,
+                _ => unreachable!(),
+            }
+            invalid.push((limits, field, actual, limit));
+        }
+    }
+
+    for (resource_limits, field, actual, limit) in invalid {
+        let error = YrsDocumentEngine::new(YrsEngineConfig {
+            schema: tiptap_schema(),
+            fragment_name: "prosemirror".into(),
+            initialization_mode: InitializationMode::LocalEmpty,
+            resource_limits,
+            editing_limits: EditingLimits::default(),
+            max_length: None,
+            scope: None,
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error.code, "INVALID_RESOURCE_LIMIT");
+        assert_eq!(error.details, Some(json!({ "field": field })));
+        assert_eq!(error.actual, Some(actual));
+        assert_eq!(error.limit, Some(limit));
+    }
+}
+
+#[test]
 fn operation_errors_have_only_the_nine_stable_codes() {
     let errors = [
         OperationError::engine_not_ready(41),
