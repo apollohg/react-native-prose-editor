@@ -229,7 +229,10 @@ fn plan_may_delete_live(plan: &YrsMutationPlan) -> bool {
     })
 }
 
-fn planned_insertion_units(request_id: u64, plan: &YrsMutationPlan) -> OperationResult<u64> {
+pub(crate) fn planned_insertion_units(
+    request_id: u64,
+    plan: &YrsMutationPlan,
+) -> OperationResult<u64> {
     fn format_units(attrs: &Attrs) -> Option<u64> {
         u64::try_from(attrs.len()).ok()?.checked_mul(2)
     }

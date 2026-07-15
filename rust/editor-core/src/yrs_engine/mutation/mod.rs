@@ -7,7 +7,7 @@ pub(crate) use lowering::{
 };
 pub(crate) use plan::{
     crdt_clock_scan_reservation, crdt_envelope, estimate_undo_units, estimate_update_v1_growth,
-    preflight_mutation_plan, CrdtEnvelope, YrsMutationPlan,
+    planned_insertion_units, preflight_mutation_plan, CrdtEnvelope, YrsMutationPlan,
 };
 
 #[allow(unused_imports)] // Production execution is consumed by the Task 7 engine boundary.

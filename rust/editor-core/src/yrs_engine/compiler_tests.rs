@@ -482,6 +482,7 @@ fn no_ops_and_empty_ranges_compile_without_history_or_actions() {
         vec![],
         vec![TypedOperation::DeleteRange { range: range(2, 2) }],
     ] {
+        let empty_envelope = operations.is_empty();
         let compiled = engine
             .compile_typed_transaction(transaction(&engine, operations))
             .unwrap();
@@ -489,6 +490,7 @@ fn no_ops_and_empty_ranges_compile_without_history_or_actions() {
         assert_eq!(compiled.history_class, HistoryClass::Skip);
         assert!(compiled.affected_top_level_blocks.is_empty());
         assert!(compiled.mutation_plan.actions.is_empty());
+        assert_eq!(compiled.canonical_json.is_none(), empty_envelope);
     }
 }
 

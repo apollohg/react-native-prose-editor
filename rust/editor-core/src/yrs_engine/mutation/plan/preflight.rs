@@ -736,7 +736,6 @@ fn validate_element_signature<T: ReadTxn>(
 ) -> OperationResult<usize> {
     let path_matches = expected_path_matches(
         signature.target.clone(),
-        target.parent(),
         &signature.path,
         txn,
         path_children,
@@ -909,14 +908,11 @@ fn validate_structural_parent<'a, T: ReadTxn>(
         operation_index,
     } = context;
     if !parents.contains_key(&signature.parent) {
-        // A remotely replaced nested parent may already be detached and
-        // garbage-collected. In that state Yrs' Branch::id() panics, while
-        // parent() safely reports that the recorded path no longer exists.
-        // Validate reachability first and only derive the branch ID after it
-        // is known to remain attached to the expected document path.
+        // Resolve the recorded parent chain from stable BranchIDs before
+        // deriving a live branch ID. Detached/GC'd branches are absent from
+        // the store and never reach the potentially-panicking id() call.
         if !expected_path_matches(
             signature.parent.clone(),
-            parent.parent(),
             &signature.path,
             txn,
             path_children,
@@ -975,7 +971,6 @@ fn validate_signature<T: ReadTxn>(
     let branch = <XmlTextRef as AsRef<Branch>>::as_ref(target);
     let path_matches = expected_path_matches(
         expected.target.clone(),
-        target.parent(),
         &expected.path,
         txn,
         path_children,
@@ -1025,7 +1020,6 @@ fn validate_parent_identity<T: ReadTxn>(
     let branch = <XmlElementRef as AsRef<Branch>>::as_ref(parent);
     let path_matches = expected_path_matches(
         expected.parent.clone(),
-        parent.parent(),
         &expected.path,
         txn,
         path_children,
@@ -1091,18 +1085,23 @@ pub(super) fn invalid_action_range(request_id: u64, operation_index: usize) -> O
 
 fn expected_path_matches<T: ReadTxn>(
     mut child_id: BranchID,
-    mut parent: Option<XmlOut>,
     expected: &[(BranchID, u32)],
     txn: &T,
     path_children: &mut std::collections::HashMap<BranchID, Vec<BranchID>>,
 ) -> bool {
     for (expected_parent, expected_index) in expected {
-        let Some(node) = parent else {
-            return false;
+        let node = match expected_parent {
+            // A decoded update may retain an undefined root type internally;
+            // `get_xml_fragment` performs the same safe XML reinterpretation
+            // used by the engine/compiler boundary.
+            BranchID::Root(name) => txn
+                .get_xml_fragment(name.clone())
+                .map(XmlOut::Fragment),
+            BranchID::Nested(_) => expected_parent
+                .get_branch(txn)
+                .and_then(|parent| XmlOut::try_from(parent).ok()),
         };
-        if node.id() != *expected_parent {
-            return false;
-        }
+        let Some(node) = node else { return false };
         let children = path_children
             .entry(node.id())
             .or_insert_with(|| match &node {
@@ -1120,11 +1119,6 @@ fn expected_path_matches<T: ReadTxn>(
             return false;
         }
         child_id = node.id();
-        parent = match node {
-            XmlOut::Element(element) => element.parent(),
-            XmlOut::Fragment(fragment) => fragment.parent(),
-            XmlOut::Text(text) => text.parent(),
-        };
     }
-    parent.is_none()
+    matches!(child_id, BranchID::Root(_))
 }

@@ -14,6 +14,7 @@ use crate::serialize::{
 use crate::transform::{validate_canonical_marks, DocumentValidator};
 
 use super::compiler::{compile_transaction_with_yrs, CompilationContext, CompiledTransaction};
+use super::mutation::{execute_mutation_plan, preflight_mutation_plan};
 use super::update_preflight::preflight_update_v1;
 use super::{
     DocumentScope, DocumentSnapshot, EditingLimits, TransactionOrigin, YrsDocumentCodec,
@@ -109,6 +110,8 @@ pub struct YrsDocumentEngine {
     schema_fingerprint: String,
     state: EngineDocumentState,
     revision: u64,
+    state_revision: u64,
+    yrs_state_epoch: u64,
     last_committed_origin: Option<TransactionOrigin>,
     durable_client_ids: HashSet<u64>,
 }
@@ -146,6 +149,8 @@ impl YrsDocumentEngine {
             schema_fingerprint,
             state: candidate.state,
             revision: 0,
+            state_revision: 0,
+            yrs_state_epoch: 0,
             last_committed_origin: None,
             durable_client_ids: candidate.durable_client_ids,
         })
@@ -180,6 +185,10 @@ impl YrsDocumentEngine {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub fn state_revision(&self) -> u64 {
+        self.state_revision
     }
 
     pub fn client_id(&self) -> u64 {
@@ -232,7 +241,7 @@ impl YrsDocumentEngine {
                     "ready Yrs document fragment is missing",
                 )
             })?;
-        compile_transaction_with_yrs(
+        let mut compiled = compile_transaction_with_yrs(
             CompilationContext {
                 document,
                 selection: None,
@@ -245,7 +254,160 @@ impl YrsDocumentEngine {
             transaction,
             &txn,
             &fragment,
-        )
+        )?;
+        compiled.yrs_state_epoch = self.yrs_state_epoch;
+        Ok(compiled)
+    }
+
+    pub fn apply_typed_transaction(
+        &mut self,
+        transaction: super::TypedTransaction,
+    ) -> super::OperationResult<super::TransactionCommit> {
+        let compiled = self.compile_typed_transaction(transaction)?;
+        self.apply_compiled_transaction(compiled)
+    }
+
+    fn apply_compiled_transaction(
+        &mut self,
+        mut compiled: CompiledTransaction,
+    ) -> super::OperationResult<super::TransactionCommit> {
+        // A compiled plan owns Yrs handles after its original read transaction
+        // closes. Reject a stale plan in O(1) before no-op classification or
+        // any state-vector/snapshot traversal.
+        if compiled.yrs_state_epoch != self.yrs_state_epoch {
+            return Err(super::OperationError::engine_invariant_failed(
+                compiled.request_id,
+                None,
+                "compiled Yrs transaction is stale",
+            ));
+        }
+        let preview_is_unchanged = compiled.preview
+            == *self
+                .document()
+                .ok_or_else(|| super::OperationError::engine_not_ready(compiled.request_id))?;
+        if preview_is_unchanged != compiled.mutation_plan.is_empty() {
+            return Err(super::OperationError::engine_invariant_failed(
+                compiled.request_id,
+                None,
+                "compiled preview and Yrs mutation plan disagree about document changes",
+            ));
+        }
+        if preview_is_unchanged {
+            return Ok(super::TransactionCommit {
+                request_id: compiled.request_id,
+                changed: false,
+                document_revision: self.revision,
+                state_revision: self.state_revision,
+                origin: compiled.origin,
+            });
+        }
+
+        #[cfg(test)]
+        super::compiler::check_atomic_failpoint(
+            compiled.request_id,
+            super::compiler::AtomicFailpoint::CanonicalOutputAdmission,
+        )?;
+        let canonical_json = compiled.canonical_json.take().ok_or_else(|| {
+            super::OperationError::engine_invariant_failed(
+                compiled.request_id,
+                None,
+                "changed transaction has no admitted canonical JSON",
+            )
+        })?;
+
+        // Revalidate sealed signatures against one final stable read view.
+        let current_encoded_bytes = {
+            let txn = self.doc.transact();
+            #[cfg(test)]
+            super::compiler::check_atomic_failpoint(
+                compiled.request_id,
+                super::compiler::AtomicFailpoint::FinalPreflight,
+            )?;
+            preflight_mutation_plan(compiled.request_id, &compiled.mutation_plan, &txn)?;
+            #[cfg(test)]
+            super::compiler::check_atomic_failpoint(
+                compiled.request_id,
+                super::compiler::AtomicFailpoint::EncodedAdmission,
+            )?;
+            if txn.state_vector().is_empty() {
+                0
+            } else {
+                txn.encode_state_as_update_v1(&StateVector::default()).len()
+            }
+        };
+        let admitted_encoded_bytes = current_encoded_bytes
+            .checked_add(compiled.encoded_growth_bound)
+            .ok_or_else(|| {
+                super::OperationError::document_limit_exceeded(
+                    compiled.request_id,
+                    None,
+                    "maxEncodedStateBytes",
+                    u64::try_from(self.resource_limits.max_encoded_state_bytes).unwrap_or(u64::MAX),
+                    u64::MAX,
+                )
+            })?;
+        if admitted_encoded_bytes > self.resource_limits.max_encoded_state_bytes {
+            return Err(super::OperationError::document_limit_exceeded(
+                compiled.request_id,
+                None,
+                "maxEncodedStateBytes",
+                u64::try_from(self.resource_limits.max_encoded_state_bytes).unwrap_or(u64::MAX),
+                u64::try_from(admitted_encoded_bytes).unwrap_or(u64::MAX),
+            ));
+        }
+
+        #[cfg(test)]
+        super::compiler::check_atomic_failpoint(
+            compiled.request_id,
+            super::compiler::AtomicFailpoint::RevisionAdmission,
+        )?;
+        let next_document_revision =
+            checked_operation_increment(compiled.request_id, self.revision, "documentRevision")?;
+        let next_state_revision =
+            checked_operation_increment(compiled.request_id, self.state_revision, "stateRevision")?;
+        let next_yrs_state_epoch = checked_operation_increment(
+            compiled.request_id,
+            self.yrs_state_epoch,
+            "yrsStateEpoch",
+        )?;
+        #[cfg(test)]
+        super::compiler::check_atomic_failpoint(
+            compiled.request_id,
+            super::compiler::AtomicFailpoint::DurableMetadataAdmission,
+        )?;
+        let mut next_durable_client_ids = self.durable_client_ids.clone();
+        if compiled.authored_clock_units > 0 {
+            next_durable_client_ids.insert(self.client_id());
+        }
+
+        let CompiledTransaction {
+            request_id,
+            origin,
+            preview,
+            mutation_plan,
+            ..
+        } = compiled;
+        {
+            let mut txn = self.doc.transact_mut_with(origin.as_yrs_origin());
+            execute_mutation_plan(mutation_plan, &mut txn);
+        }
+
+        self.state = EngineDocumentState::Ready {
+            document: preview,
+            canonical_json,
+        };
+        self.durable_client_ids = next_durable_client_ids;
+        self.revision = next_document_revision;
+        self.state_revision = next_state_revision;
+        self.yrs_state_epoch = next_yrs_state_epoch;
+        self.last_committed_origin = Some(origin);
+        Ok(super::TransactionCommit {
+            request_id,
+            changed: true,
+            document_revision: self.revision,
+            state_revision: self.state_revision,
+            origin,
+        })
     }
 
     pub fn export_snapshot(&self) -> YrsEngineResult<DocumentSnapshot> {
@@ -323,11 +485,14 @@ impl YrsDocumentEngine {
             }
         };
 
-        let next_revision = self.next_revision()?;
+        let (next_revision, next_state_revision, next_yrs_state_epoch) =
+            self.next_durable_revisions()?;
         self.doc = candidate.doc;
         self.state = candidate.state;
         self.durable_client_ids = candidate.durable_client_ids;
         self.revision = next_revision;
+        self.state_revision = next_state_revision;
+        self.yrs_state_epoch = next_yrs_state_epoch;
         self.last_committed_origin = Some(TransactionOrigin::SnapshotRestore);
         Ok(EngineCommit {
             changed: true,
@@ -590,11 +755,14 @@ impl YrsDocumentEngine {
             });
         }
 
-        let next_revision = self.next_revision()?;
+        let (next_revision, next_state_revision, next_yrs_state_epoch) =
+            self.next_durable_revisions()?;
         self.doc = candidate.doc;
         self.state = candidate.state;
         self.durable_client_ids = candidate.durable_client_ids;
         self.revision = next_revision;
+        self.state_revision = next_state_revision;
+        self.yrs_state_epoch = next_yrs_state_epoch;
         self.last_committed_origin = Some(origin);
         Ok(EngineCommit {
             changed: true,
@@ -611,6 +779,29 @@ impl YrsDocumentEngine {
             .with_details(json!({ "field": "revision" }))
         })
     }
+
+    fn next_durable_revisions(&self) -> YrsEngineResult<(u64, u64, u64)> {
+        let document_revision = self.next_revision()?;
+        let state_revision = self.state_revision.checked_add(1).ok_or_else(|| {
+            YrsEngineError::new("REVISION_OVERFLOW", "state revision cannot be incremented")
+                .with_details(json!({ "field": "stateRevision" }))
+        })?;
+        let yrs_state_epoch = self.yrs_state_epoch.checked_add(1).ok_or_else(|| {
+            YrsEngineError::new("REVISION_OVERFLOW", "Yrs state epoch cannot be incremented")
+                .with_details(json!({ "field": "yrsStateEpoch" }))
+        })?;
+        Ok((document_revision, state_revision, yrs_state_epoch))
+    }
+}
+
+fn checked_operation_increment(
+    request_id: u64,
+    value: u64,
+    field: &'static str,
+) -> super::OperationResult<u64> {
+    value
+        .checked_add(1)
+        .ok_or_else(|| super::OperationError::revision_overflow(request_id, field))
 }
 
 fn snapshot_error(
@@ -922,9 +1113,10 @@ fn encode_candidate_state_bounded(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use crate::boundary::ResourceLimits;
+    use crate::model::Mark;
     use crate::schema::presets::tiptap_schema;
     use crate::serialize::{from_prosemirror_json, UnknownTypeMode};
     use serde_json::json;
@@ -933,7 +1125,83 @@ mod tests {
     use yrs::{updates::decoder::Decode, Update};
     use yrs::{ClientID, Doc, Options};
 
-    use super::{fresh_utf16_doc_excluding_with, utf16_doc, ValidatedImportDocument};
+    use crate::yrs_engine::{
+        Affinity, EditorOffsetKind, HistoryPolicy, RevisionedPosition, RevisionedRange,
+        SelectionIntent, TransactionOrigin, TypedOperation, TypedTransaction,
+    };
+
+    use super::{
+        fresh_utf16_doc_excluding_with, utf16_doc, ValidatedImportDocument, YrsDocumentEngine,
+        YrsEngineConfig,
+    };
+
+    #[derive(Debug, PartialEq)]
+    struct AtomicAudit {
+        encoded: Vec<u8>,
+        json: Option<serde_json::Value>,
+        html: Option<String>,
+        revision: u64,
+        state_revision: u64,
+        yrs_state_epoch: u64,
+        client_id: u64,
+        durable_client_ids: HashSet<u64>,
+        origin: Option<TransactionOrigin>,
+        scope: Option<crate::yrs_engine::DocumentScope>,
+        fragment: String,
+        fingerprint: String,
+    }
+
+    fn atomic_audit(engine: &YrsDocumentEngine) -> AtomicAudit {
+        AtomicAudit {
+            encoded: engine.encoded_state().unwrap(),
+            json: engine.document_json(),
+            html: engine.document_html(),
+            revision: engine.revision,
+            state_revision: engine.state_revision,
+            yrs_state_epoch: engine.yrs_state_epoch,
+            client_id: engine.client_id(),
+            durable_client_ids: engine.durable_client_ids.clone(),
+            origin: engine.last_committed_origin,
+            scope: engine.scope.clone(),
+            fragment: engine.fragment_name.clone(),
+            fingerprint: engine.schema_fingerprint.clone(),
+        }
+    }
+
+    fn transaction_engine() -> YrsDocumentEngine {
+        YrsDocumentEngine::new(YrsEngineConfig {
+            schema: tiptap_schema(),
+            fragment_name: "prosemirror".into(),
+            initialization_mode: crate::yrs_engine::InitializationMode::LocalEmpty,
+            resource_limits: ResourceLimits::default(),
+            editing_limits: crate::yrs_engine::EditingLimits::default(),
+            max_length: None,
+            scope: Some(crate::yrs_engine::DocumentScope {
+                document_id: "doc".into(),
+                lineage_id: "lineage".into(),
+            }),
+        })
+        .unwrap()
+    }
+
+    fn insert_transaction(engine: &YrsDocumentEngine, request_id: u64) -> TypedTransaction {
+        TypedTransaction {
+            request_id,
+            base_document_revision: engine.revision(),
+            origin: TransactionOrigin::LocalApi,
+            operations: vec![TypedOperation::InsertText {
+                at: RevisionedPosition {
+                    offset: 1,
+                    kind: EditorOffsetKind::Scalar,
+                    affinity: Affinity::After,
+                },
+                text: "x".into(),
+                marks: vec![],
+            }],
+            selection_intent: SelectionIntent::Preserve,
+            history_policy: HistoryPolicy::Skip,
+        }
+    }
 
     #[test]
     fn utf16_doc_preserves_fresh_client_ids_and_uses_utf16_offsets() {
@@ -1071,6 +1339,30 @@ mod tests {
     }
 
     #[test]
+    fn candidate_state_revision_and_epoch_overflow_reject_before_swap() {
+        for field in ["stateRevision", "yrsStateEpoch"] {
+            let mut engine = transaction_engine();
+            if field == "stateRevision" {
+                engine.state_revision = u64::MAX;
+            } else {
+                engine.yrs_state_epoch = u64::MAX;
+            }
+            let before = atomic_audit(&engine);
+
+            let error = engine
+                .import_json(
+                    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"changed"}]}]}"#,
+                    TransactionOrigin::DocumentImport,
+                )
+                .unwrap_err();
+
+            assert_eq!(error.code, "REVISION_OVERFLOW", "{field}");
+            assert_eq!(error.details, Some(json!({ "field": field })), "{field}");
+            assert_eq!(atomic_audit(&engine), before, "{field}");
+        }
+    }
+
+    #[test]
     fn snapshot_export_envelope_budget_has_exact_and_over_boundaries_without_mutation() {
         let mut engine =
             crate::yrs_engine::YrsDocumentEngine::new(crate::yrs_engine::YrsEngineConfig {
@@ -1108,5 +1400,335 @@ mod tests {
         assert_eq!(engine.client_id(), before_client);
         assert_eq!(engine.document_json(), before_json);
         assert_eq!(engine.encoded_state().unwrap(), state);
+    }
+
+    #[test]
+    fn typed_transaction_rejects_every_revision_or_epoch_overflow_before_mutation() {
+        for field in ["documentRevision", "stateRevision", "yrsStateEpoch"] {
+            let mut engine = transaction_engine();
+            match field {
+                "documentRevision" => engine.revision = u64::MAX,
+                "stateRevision" => engine.state_revision = u64::MAX,
+                "yrsStateEpoch" => engine.yrs_state_epoch = u64::MAX,
+                _ => unreachable!(),
+            }
+            let transaction = insert_transaction(&engine, 71);
+            let before = atomic_audit(&engine);
+
+            let error = engine.apply_typed_transaction(transaction).unwrap_err();
+
+            assert_eq!(error.code, "ENGINE_INVARIANT_FAILED", "{field}");
+            assert_eq!(error.details, Some(json!({ "field": field })), "{field}");
+            assert_eq!(atomic_audit(&engine), before, "{field}");
+        }
+    }
+
+    #[test]
+    fn compiled_transaction_epoch_is_checked_before_yrs_metadata_revalidation() {
+        for changed in [true, false] {
+            let mut engine = transaction_engine();
+            let transaction = if changed {
+                insert_transaction(&engine, 72)
+            } else {
+                TypedTransaction {
+                    request_id: 72,
+                    base_document_revision: engine.revision(),
+                    origin: TransactionOrigin::LocalApi,
+                    operations: vec![],
+                    selection_intent: SelectionIntent::Preserve,
+                    history_policy: HistoryPolicy::Skip,
+                }
+            };
+            let compiled = engine.compile_typed_transaction(transaction).unwrap();
+            engine.yrs_state_epoch += 1;
+            let before = atomic_audit(&engine);
+
+            let error = engine.apply_compiled_transaction(compiled).unwrap_err();
+
+            assert_eq!(error.code, "ENGINE_INVARIANT_FAILED", "changed={changed}");
+            assert!(error.message.contains("stale"), "changed={changed}");
+            assert_eq!(atomic_audit(&engine), before, "changed={changed}");
+        }
+    }
+
+    #[test]
+    fn projected_encoded_ceiling_accepts_exact_and_rejects_one_under_without_new_clock() {
+        let mut exact = transaction_engine();
+        let exact_transaction = insert_transaction(&exact, 73);
+        let exact_compiled = exact
+            .compile_typed_transaction(exact_transaction.clone())
+            .unwrap();
+        let exact_limit = exact
+            .encoded_state()
+            .unwrap()
+            .len()
+            .checked_add(exact_compiled.encoded_growth_bound)
+            .unwrap();
+        exact.resource_limits.max_encoded_state_bytes = exact_limit;
+
+        let commit = exact.apply_typed_transaction(exact_transaction).unwrap();
+
+        assert!(commit.changed);
+        assert!(exact.encoded_state().unwrap().len() <= exact_limit);
+
+        let mut one_under = transaction_engine();
+        let rejected_transaction = insert_transaction(&one_under, 74);
+        let rejected_compiled = one_under
+            .compile_typed_transaction(rejected_transaction.clone())
+            .unwrap();
+        let rejected_limit = one_under
+            .encoded_state()
+            .unwrap()
+            .len()
+            .checked_add(rejected_compiled.encoded_growth_bound)
+            .unwrap()
+            - 1;
+        one_under.resource_limits.max_encoded_state_bytes = rejected_limit;
+        let before = atomic_audit(&one_under);
+
+        let error = one_under
+            .apply_typed_transaction(rejected_transaction)
+            .unwrap_err();
+
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(
+            error.details,
+            Some(json!({ "field": "maxEncodedStateBytes" }))
+        );
+        assert_eq!(error.limit, Some(rejected_limit as u64));
+        assert_eq!(error.actual, Some((rejected_limit + 1) as u64));
+        assert_eq!(atomic_audit(&one_under), before);
+    }
+
+    #[test]
+    fn canonical_cache_output_accepts_exact_rejects_one_under_and_reuses_empty_noop_cache() {
+        let expected = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "x" }]
+            }]
+        });
+        let exact_bytes = serde_json::to_vec(&expected).unwrap().len();
+
+        let mut exact = transaction_engine();
+        exact.editing_limits.max_derived_output_bytes = exact_bytes;
+        let transaction = insert_transaction(&exact, 77);
+        exact.apply_typed_transaction(transaction).unwrap();
+        assert_eq!(exact.document_json(), Some(expected));
+
+        let mut one_under = transaction_engine();
+        one_under.editing_limits.max_derived_output_bytes = exact_bytes - 1;
+        let transaction = insert_transaction(&one_under, 78);
+        let before = atomic_audit(&one_under);
+        let error = one_under.apply_typed_transaction(transaction).unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(error.limit, Some((exact_bytes - 1) as u64));
+        assert_eq!(error.actual, Some(exact_bytes as u64));
+        assert_eq!(atomic_audit(&one_under), before);
+
+        let mut empty_noop = transaction_engine();
+        empty_noop.editing_limits.max_derived_output_bytes = 1;
+        let transaction = TypedTransaction {
+            request_id: 79,
+            base_document_revision: empty_noop.revision(),
+            origin: TransactionOrigin::LocalApi,
+            operations: vec![],
+            selection_intent: SelectionIntent::Preserve,
+            history_policy: HistoryPolicy::Skip,
+        };
+        let before = atomic_audit(&empty_noop);
+        let commit = empty_noop.apply_typed_transaction(transaction).unwrap();
+        assert!(!commit.changed);
+        assert_eq!(atomic_audit(&empty_noop), before);
+    }
+
+    #[test]
+    fn typed_commit_installs_local_client_origin_and_candidate_revisions() {
+        let mut source = transaction_engine();
+        let imported = source
+            .import_json(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"seed"}]}]}"#,
+                TransactionOrigin::DocumentImport,
+            )
+            .unwrap();
+        assert!(imported.changed);
+        assert_eq!(
+            (
+                source.revision,
+                source.state_revision,
+                source.yrs_state_epoch
+            ),
+            (1, 1, 1)
+        );
+        let snapshot = source.export_snapshot().unwrap();
+        let mut target = transaction_engine();
+        target.restore_snapshot(&snapshot).unwrap();
+        let local_client = target.client_id();
+        assert!(!target.durable_client_ids.contains(&local_client));
+        assert_eq!(
+            (
+                target.revision,
+                target.state_revision,
+                target.yrs_state_epoch
+            ),
+            (1, 1, 1)
+        );
+
+        let transaction = insert_transaction(&target, 75);
+        let commit = target.apply_typed_transaction(transaction).unwrap();
+
+        assert!(commit.changed);
+        assert!(target.durable_client_ids.contains(&local_client));
+        assert_eq!(
+            target.last_committed_origin,
+            Some(TransactionOrigin::LocalApi)
+        );
+        assert_eq!(
+            (
+                target.revision,
+                target.state_revision,
+                target.yrs_state_epoch
+            ),
+            (2, 2, 2)
+        );
+
+        let unchanged = target.document_json().unwrap();
+        let commit = target
+            .import_json(
+                &serde_json::to_string(&unchanged).unwrap(),
+                TransactionOrigin::DocumentImport,
+            )
+            .unwrap();
+        assert!(!commit.changed);
+        assert_eq!(
+            (
+                target.revision,
+                target.state_revision,
+                target.yrs_state_epoch
+            ),
+            (2, 2, 2)
+        );
+    }
+
+    #[test]
+    fn restored_deletion_only_commit_does_not_claim_an_unauthored_local_client() {
+        let mut source = transaction_engine();
+        source
+            .import_json(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"seed"}]}]}"#,
+                TransactionOrigin::DocumentImport,
+            )
+            .unwrap();
+        let snapshot = source.export_snapshot().unwrap();
+        let mut target = transaction_engine();
+        target.restore_snapshot(&snapshot).unwrap();
+        let local_client = target.client_id();
+        assert!(!target.durable_client_ids.contains(&local_client));
+        let from = RevisionedPosition {
+            offset: 0,
+            kind: EditorOffsetKind::Scalar,
+            affinity: Affinity::After,
+        };
+        let to = RevisionedPosition { offset: 1, ..from };
+        let transaction = TypedTransaction {
+            request_id: 80,
+            base_document_revision: target.revision(),
+            origin: TransactionOrigin::LocalApi,
+            operations: vec![TypedOperation::DeleteRange {
+                range: RevisionedRange { from, to },
+            }],
+            selection_intent: SelectionIntent::Preserve,
+            history_policy: HistoryPolicy::Skip,
+        };
+
+        let compiled = target
+            .compile_typed_transaction(transaction.clone())
+            .unwrap();
+        assert_eq!(compiled.authored_clock_units, 0);
+        target.apply_typed_transaction(transaction).unwrap();
+
+        assert!(!target.durable_client_ids.contains(&local_client));
+        let durable_clients = Update::decode_v1(&target.encoded_state().unwrap())
+            .unwrap()
+            .state_vector();
+        assert!(durable_clients.get(&ClientID::new(local_client)) == 0);
+    }
+
+    #[test]
+    fn restored_format_only_commit_records_its_authored_local_clock() {
+        let mut source = transaction_engine();
+        source
+            .import_json(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"seed"}]}]}"#,
+                TransactionOrigin::DocumentImport,
+            )
+            .unwrap();
+        let snapshot = source.export_snapshot().unwrap();
+        let mut target = transaction_engine();
+        target.restore_snapshot(&snapshot).unwrap();
+        let local_client = target.client_id();
+        let from = RevisionedPosition {
+            offset: 0,
+            kind: EditorOffsetKind::Scalar,
+            affinity: Affinity::After,
+        };
+        let to = RevisionedPosition { offset: 1, ..from };
+        let transaction = TypedTransaction {
+            request_id: 81,
+            base_document_revision: target.revision(),
+            origin: TransactionOrigin::LocalApi,
+            operations: vec![TypedOperation::AddMark {
+                range: RevisionedRange { from, to },
+                mark: Mark::new("bold".into(), HashMap::new()),
+            }],
+            selection_intent: SelectionIntent::Preserve,
+            history_policy: HistoryPolicy::Skip,
+        };
+
+        let compiled = target
+            .compile_typed_transaction(transaction.clone())
+            .unwrap();
+        assert!(compiled.authored_clock_units > 0);
+        target.apply_typed_transaction(transaction).unwrap();
+
+        assert!(target.durable_client_ids.contains(&local_client));
+        let durable_clients = Update::decode_v1(&target.encoded_state().unwrap())
+            .unwrap()
+            .state_vector();
+        assert!(durable_clients.get(&ClientID::new(local_client)) > 0);
+    }
+
+    #[test]
+    fn every_recoverable_atomic_stage_failpoint_is_pre_open_and_read_only() {
+        use crate::yrs_engine::compiler::{set_atomic_failpoint_for_test, AtomicFailpoint};
+
+        let failpoints = [
+            AtomicFailpoint::EnvelopeAdmission,
+            AtomicFailpoint::SemanticCompilation,
+            AtomicFailpoint::MutationPreflight,
+            AtomicFailpoint::FinalPreflight,
+            AtomicFailpoint::EncodedAdmission,
+            AtomicFailpoint::CanonicalOutputAdmission,
+            AtomicFailpoint::RevisionAdmission,
+            AtomicFailpoint::DurableMetadataAdmission,
+        ];
+        for failpoint in failpoints {
+            let mut engine = transaction_engine();
+            let transaction = insert_transaction(&engine, 76);
+            let before = atomic_audit(&engine);
+            set_atomic_failpoint_for_test(Some(failpoint));
+
+            let error = engine.apply_typed_transaction(transaction).unwrap_err();
+
+            set_atomic_failpoint_for_test(None);
+            assert_eq!(error.code, "ENGINE_INVARIANT_FAILED", "{failpoint:?}");
+            assert_eq!(
+                error.details,
+                Some(json!({ "failpoint": failpoint.field_name() })),
+                "{failpoint:?}"
+            );
+            assert_eq!(atomic_audit(&engine), before, "{failpoint:?}");
+        }
     }
 }

@@ -38,13 +38,6 @@ impl XmlParentRef {
         }
     }
 
-    fn parent(&self) -> Option<XmlOut> {
-        match self {
-            Self::Fragment(parent) => parent.parent(),
-            Self::Element(parent) => parent.parent(),
-        }
-    }
-
     #[allow(dead_code)] // Production execution is consumed by the Task 7 engine boundary.
     fn remove_range(&self, txn: &mut TransactionMut<'_>, index: u32, len: u32) {
         match self {
@@ -137,6 +130,10 @@ pub(crate) struct CrdtEnvelope {
 }
 
 impl YrsMutationPlan {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.actions.is_empty()
+    }
+
     pub(crate) fn requires_crdt_envelope(&self) -> bool {
         plan_may_delete_live(self)
     }

@@ -11,14 +11,71 @@ use smallvec::SmallVec;
 use super::editing_limits::CheckedWork;
 use super::mutation::{
     crdt_clock_scan_reservation, crdt_envelope, estimate_undo_units, estimate_update_v1_growth,
-    mark_attr, preflight_mutation_plan, removed_mark_attr, CrdtEnvelope, MutationCompiler,
-    MutationDocumentContext, ReplacementInput, TextRangeDisposition, YrsMutationPlan,
+    mark_attr, planned_insertion_units, preflight_mutation_plan, removed_mark_attr, CrdtEnvelope,
+    MutationCompiler, MutationDocumentContext, ReplacementInput, TextRangeDisposition,
+    YrsMutationPlan,
 };
 use super::{
     editor_offset_to_doc_pos, Affinity, EditingLimits, HistoryPolicy, OperationError,
     OperationResult, RevisionedRange, SelectionIntent, TransactionOrigin, TypedOperation,
     TypedTransaction,
 };
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AtomicFailpoint {
+    EnvelopeAdmission,
+    SemanticCompilation,
+    MutationPreflight,
+    FinalPreflight,
+    EncodedAdmission,
+    CanonicalOutputAdmission,
+    RevisionAdmission,
+    DurableMetadataAdmission,
+}
+
+#[cfg(test)]
+impl AtomicFailpoint {
+    pub(crate) const fn field_name(self) -> &'static str {
+        match self {
+            Self::EnvelopeAdmission => "envelopeAdmission",
+            Self::SemanticCompilation => "semanticCompilation",
+            Self::MutationPreflight => "mutationPreflight",
+            Self::FinalPreflight => "finalPreflight",
+            Self::EncodedAdmission => "encodedAdmission",
+            Self::CanonicalOutputAdmission => "canonicalOutputAdmission",
+            Self::RevisionAdmission => "revisionAdmission",
+            Self::DurableMetadataAdmission => "durableMetadataAdmission",
+        }
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static ATOMIC_FAILPOINT: std::cell::Cell<Option<AtomicFailpoint>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn set_atomic_failpoint_for_test(failpoint: Option<AtomicFailpoint>) {
+    ATOMIC_FAILPOINT.set(failpoint);
+}
+
+#[cfg(test)]
+pub(crate) fn check_atomic_failpoint(
+    request_id: u64,
+    stage: AtomicFailpoint,
+) -> OperationResult<()> {
+    if ATOMIC_FAILPOINT.get() == Some(stage) {
+        Err(OperationError::atomic_failpoint(
+            request_id,
+            stage.field_name(),
+        ))
+    } else {
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -58,11 +115,14 @@ pub(crate) struct CompiledTransaction {
     pub history_policy: HistoryPolicy,
     pub history_class: HistoryClass,
     pub preview: Document,
+    pub canonical_json: Option<serde_json::Value>,
     pub selection_plan: SelectionPlan,
     pub affected_top_level_blocks: Vec<usize>,
     pub mutation_plan: YrsMutationPlan,
     pub encoded_growth_bound: usize,
     pub undo_units_bound: u64,
+    pub authored_clock_units: u64,
+    pub yrs_state_epoch: u64,
 }
 
 pub(super) fn compile_transaction(
@@ -80,7 +140,11 @@ pub(super) fn compile_transaction_with_yrs<T: yrs::ReadTxn>(
     fragment: &yrs::types::xml::XmlFragmentRef,
 ) -> OperationResult<CompiledTransaction> {
     let request_id = transaction.request_id;
+    #[cfg(test)]
+    check_atomic_failpoint(request_id, AtomicFailpoint::EnvelopeAdmission)?;
     let admitted_input_bytes = admit_transaction_envelope(context, &transaction)?;
+    #[cfg(test)]
+    check_atomic_failpoint(request_id, AtomicFailpoint::SemanticCompilation)?;
     let action_multiplier = context
         .editing_limits
         .max_operations_per_transaction
@@ -197,6 +261,8 @@ pub(super) fn compile_transaction_with_yrs<T: yrs::ReadTxn>(
     // plan's document guard was captured only after the CRDT clock scan and
     // its input-work reservation above admitted full snapshot construction.
     // Preflight checks that sealed snapshot before any eager Yrs target reads.
+    #[cfg(test)]
+    check_atomic_failpoint(request_id, AtomicFailpoint::MutationPreflight)?;
     preflight_mutation_plan(request_id, &compiled.mutation_plan, txn)?;
     Ok(compiled)
 }
@@ -411,6 +477,7 @@ fn compile_transaction_impl(
     let mut undo_limit_error = None;
     let mut history_class = HistoryClass::Skip;
     let records_history = transaction.history_policy != HistoryPolicy::Skip;
+    let mut canonical_json = None;
 
     for (operation_index, operation) in transaction.operations.iter().enumerate() {
         match operation {
@@ -1173,7 +1240,13 @@ fn compile_transaction_impl(
             }
         }
         validate_preview_marks(request_id, operation_index, &preview, context.schema)?;
-        charge_preview_output(&mut work, request_id, operation_index, &preview, context)?;
+        canonical_json = Some(charge_preview_output(
+            &mut work,
+            request_id,
+            operation_index,
+            &preview,
+            context,
+        )?);
     }
 
     validate_preview(
@@ -1210,6 +1283,7 @@ fn compile_transaction_impl(
         lowered_plan
     };
     mutation_plan.cache_prepared_metrics(request_id)?;
+    let authored_clock_units = planned_insertion_units(request_id, &mutation_plan)?;
     let crdt_envelope = if mutation_plan.requires_crdt_envelope() {
         Some(crdt_envelope_loader.as_mut().ok_or_else(|| {
             OperationError::engine_invariant_failed(
@@ -1255,11 +1329,17 @@ fn compile_transaction_impl(
         history_policy: transaction.history_policy,
         history_class,
         preview,
+        canonical_json,
         selection_plan,
         affected_top_level_blocks,
         mutation_plan,
         encoded_growth_bound,
         undo_units_bound,
+        authored_clock_units,
+        // Standalone compiler tests do not own an engine epoch. The engine
+        // seals its current epoch onto the compiled plan before it can leave
+        // the stable read view.
+        yrs_state_epoch: 0,
     })
 }
 
@@ -2578,8 +2658,9 @@ fn charge_preview_output(
     operation_index: usize,
     preview: &Document,
     context: CompilationContext<'_>,
-) -> OperationResult<()> {
-    let bytes = serde_json::to_vec(&to_prosemirror_json(preview, context.schema))
+) -> OperationResult<serde_json::Value> {
+    let canonical_json = to_prosemirror_json(preview, context.schema);
+    let bytes = serde_json::to_vec(&canonical_json)
         .map_err(|error| {
             OperationError::engine_invariant_failed(
                 request_id,
@@ -2593,7 +2674,8 @@ fn charge_preview_output(
         operation_index,
         bytes,
         context.editing_limits.max_derived_output_bytes,
-    )
+    )?;
+    Ok(canonical_json)
 }
 
 fn validate_preview(

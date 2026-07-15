@@ -272,6 +272,17 @@ impl OperationError {
             .with_operation_index(operation_index)
     }
 
+    pub(crate) fn revision_overflow(request_id: u64, field: &'static str) -> Self {
+        Self::engine_invariant_failed(request_id, None, format!("{field} cannot be incremented"))
+            .with_details(serde_json::json!({ "field": field }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn atomic_failpoint(request_id: u64, failpoint: &'static str) -> Self {
+        Self::engine_invariant_failed(request_id, None, format!("atomic failpoint: {failpoint}"))
+            .with_details(serde_json::json!({ "failpoint": failpoint }))
+    }
+
     fn new(code: &'static str, message: impl Into<String>, request_id: u64) -> Self {
         Self {
             code,
