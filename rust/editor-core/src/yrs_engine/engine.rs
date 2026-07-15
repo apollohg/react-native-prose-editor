@@ -331,11 +331,18 @@ impl YrsDocumentEngine {
                 "bounded history replay cannot reproduce the next live pop",
             ));
         }
-        let restored = candidate_pop.restored.as_ref().ok_or_else(|| {
+        let restored_slot = candidate_pop.restored.as_ref().ok_or_else(|| {
             super::OperationError::engine_invariant_failed(
                 request_id,
                 None,
                 "changed history candidate supplied no restoration metadata",
+            )
+        })?;
+        let restored = restored_slot.get().ok_or_else(|| {
+            super::OperationError::engine_invariant_failed(
+                request_id,
+                None,
+                "changed history candidate supplied an unsealed restoration snapshot",
             )
         })?;
         let (candidate_state, candidate_encoded_state) = self.derive_history_candidate_state(
@@ -1001,12 +1008,25 @@ impl YrsDocumentEngine {
             .derived_state
             .as_ref()
             .map(|state| history_local_state(state, &self.fragment_name));
-        let history_after_metadata_bytes = match &compiled.stored_marks_plan {
-            StoredMarksPlan::Set(stored_marks) => {
-                history_metadata_bytes(stored_marks.as_deref(), &self.fragment_name)
-            }
-            StoredMarksPlan::Unsealed => usize::MAX,
+        let captures_history = compiled.history_policy != super::HistoryPolicy::Skip
+            && compiled.history_class != super::compiler::HistoryClass::Skip;
+        let history_after_template = if captures_history {
+            let StoredMarksPlan::Set(stored_marks) = &compiled.stored_marks_plan else {
+                unreachable!("stored-mark plan was sealed above")
+            };
+            Some(history_snapshot_template(
+                &compiled.preview,
+                &canonical_json,
+                stored_marks.as_deref(),
+                &self.fragment_name,
+            ))
+        } else {
+            None
         };
+        let history_after_metadata_bytes = history_after_template
+            .as_ref()
+            .map(|template| template.metadata_bytes)
+            .unwrap_or(0);
 
         let CompiledTransaction {
             request_id,
@@ -1026,8 +1046,6 @@ impl YrsDocumentEngine {
             mutation_plan,
             ..
         } = compiled;
-        let captures_history = history_policy != super::HistoryPolicy::Skip
-            && history_class != super::compiler::HistoryClass::Skip;
         let history_origin = if captures_history {
             self.history.prepare_capture(
                 request_id,
@@ -1125,8 +1143,13 @@ impl YrsDocumentEngine {
             next
         };
         if captures_history {
+            let history_after_template = history_after_template
+                .expect("captured history has an admitted after-state template");
             self.history.finish_capture(
-                history_local_state(&next_derived_state, &self.fragment_name),
+                history_after_template.seal(
+                    next_derived_state.relative_selection.clone(),
+                    next_derived_state.resolved_selection.clone(),
+                ),
                 history_update,
             );
         } else {
@@ -1691,6 +1714,36 @@ fn history_local_state(
         derived_output_bytes: canonical_bytes.len(),
         metadata_bytes: history_metadata_bytes(state.stored_marks.as_deref(), fragment_name),
     }
+}
+
+fn history_snapshot_template(
+    document: &Document,
+    canonical_json: &serde_json::Value,
+    stored_marks: Option<&[crate::model::Mark]>,
+    fragment_name: &str,
+) -> super::history::HistorySnapshotTemplate {
+    let canonical_bytes = serde_json::to_vec(canonical_json)
+        .expect("validated canonical history JSON remains serializable");
+    super::history::HistorySnapshotTemplate {
+        stored_marks: stored_marks.map(<[crate::model::Mark]>::to_vec),
+        text_length: document_text_length(document.root()),
+        canonical_fingerprint: Sha256::digest(&canonical_bytes).into(),
+        derived_output_bytes: canonical_bytes.len(),
+        metadata_bytes: history_metadata_bytes(stored_marks, fragment_name),
+    }
+}
+
+fn document_text_length(node: &crate::model::Node) -> u64 {
+    if let Some(text) = node.text_str() {
+        return u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+    }
+    node.content()
+        .map(|content| {
+            content.iter().fold(0u64, |total, child| {
+                total.saturating_add(document_text_length(child))
+            })
+        })
+        .unwrap_or(0)
 }
 
 fn history_metadata_bytes(

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use yrs::sync::time::Clock;
 use yrs::types::xml::XmlFragmentRef;
@@ -36,10 +36,31 @@ pub(crate) struct HistorySnapshot {
 
 pub(crate) type HistoryLocalState = HistorySnapshot;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct HistoryMetadataValue {
-    before: Option<HistorySnapshot>,
-    after: Option<HistorySnapshot>,
+#[derive(Debug)]
+pub(crate) struct HistorySnapshotTemplate {
+    pub stored_marks: Option<Vec<Mark>>,
+    pub text_length: u64,
+    pub canonical_fingerprint: [u8; 32],
+    pub derived_output_bytes: usize,
+    pub metadata_bytes: usize,
+}
+
+impl HistorySnapshotTemplate {
+    pub(crate) fn seal(
+        self,
+        relative_selection: RelativeSelection,
+        resolved_selection: ResolvedSelection,
+    ) -> HistorySnapshot {
+        HistorySnapshot {
+            relative_selection,
+            resolved_selection,
+            stored_marks: self.stored_marks,
+            text_length: self.text_length,
+            canonical_fingerprint: self.canonical_fingerprint,
+            derived_output_bytes: self.derived_output_bytes,
+            metadata_bytes: self.metadata_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -49,11 +70,11 @@ struct HistoryMetadataSlots {
 }
 
 #[derive(Debug, Clone, Default)]
-struct HistorySnapshotSlot(Arc<Mutex<Option<HistorySnapshot>>>);
+pub(crate) struct HistorySnapshotSlot(Arc<OnceLock<HistorySnapshot>>);
 
 impl PartialEq for HistorySnapshotSlot {
     fn eq(&self, other: &Self) -> bool {
-        self.value() == other.value()
+        self.get() == other.get()
     }
 }
 
@@ -61,22 +82,27 @@ impl Eq for HistorySnapshotSlot {}
 
 impl HistorySnapshotSlot {
     fn initialized(value: HistorySnapshot) -> Self {
-        Self(Arc::new(Mutex::new(Some(value))))
+        let slot = Self::empty();
+        slot.set(value);
+        slot
     }
 
     fn empty() -> Self {
         Self::default()
     }
 
-    fn value(&self) -> Option<HistorySnapshot> {
-        self.0
-            .lock()
-            .expect("history snapshot slot lock poisoned")
-            .clone()
+    pub(crate) fn get(&self) -> Option<&HistorySnapshot> {
+        self.0.get()
     }
 
     fn set(&self, value: HistorySnapshot) {
-        *self.0.lock().expect("history snapshot slot lock poisoned") = Some(value);
+        self.0
+            .set(value)
+            .unwrap_or_else(|_| panic!("history snapshot slot can only be sealed once"));
+    }
+
+    fn identity(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
     }
 }
 
@@ -92,22 +118,6 @@ impl HistoryMetadata {
         })))
     }
 
-    fn value(&self) -> HistoryMetadataValue {
-        let slots = self.slots();
-        HistoryMetadataValue {
-            before: slots.before.and_then(|slot| slot.value()),
-            after: slots.after.and_then(|slot| slot.value()),
-        }
-    }
-
-    fn resolved_value(&self) -> (Option<HistorySnapshot>, Option<HistorySnapshot>) {
-        let slots = self.slots();
-        (
-            slots.before.and_then(|slot| slot.value()),
-            slots.after.and_then(|slot| slot.value()),
-        )
-    }
-
     fn slots(&self) -> HistoryMetadataSlots {
         self.0
             .lock()
@@ -115,11 +125,8 @@ impl HistoryMetadata {
             .clone()
     }
 
-    fn replace(&self, value: HistoryMetadataValue) {
-        *self.0.lock().expect("history metadata lock poisoned") = HistoryMetadataSlots {
-            before: value.before.map(HistorySnapshotSlot::initialized),
-            after: value.after.map(HistorySnapshotSlot::initialized),
-        };
+    fn replace_slots(&self, slots: HistoryMetadataSlots) {
+        *self.0.lock().expect("history metadata lock poisoned") = slots;
     }
 
     fn preserve_before_from(&self, existing: &Self) {
@@ -137,18 +144,11 @@ impl HistoryMetadata {
         after_slot.set(after);
     }
 
-    fn deep_clone(&self) -> Self {
-        let (before, after) = self.resolved_value();
-        let clone = Self(Arc::new(Mutex::new(HistoryMetadataSlots {
-            before: before.map(HistorySnapshotSlot::initialized),
-            after: Some(HistorySnapshotSlot::empty()),
-        })));
-        if let Some(after) = after {
-            clone.set_after(after);
-        }
-        clone
+    fn shared_wrapper(&self) -> Self {
+        Self(Arc::new(Mutex::new(self.slots())))
     }
 
+    #[cfg(test)]
     fn identity(&self) -> usize {
         Arc::as_ptr(&self.0) as usize
     }
@@ -200,7 +200,7 @@ pub(crate) enum HistoryAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HistoryPop {
     pub changed: bool,
-    pub restored: Option<HistoryLocalState>,
+    pub restored: Option<HistorySnapshotSlot>,
 }
 
 #[derive(Debug, Clone)]
@@ -230,7 +230,7 @@ impl ReplayEvent {
         const TAG_BYTES: usize = 1;
         match self {
             Self::Recorded { update, .. } => TAG_BYTES.saturating_add(update.capacity()),
-            Self::Excluded { update, .. } => TAG_BYTES.saturating_add(update.len()),
+            Self::Excluded { update, .. } => TAG_BYTES.saturating_add(update.capacity()),
             Self::Action(_) => TAG_BYTES,
         }
     }
@@ -271,7 +271,7 @@ pub(crate) struct YrsHistory {
     clock: Arc<LatchingClock>,
     pending_capture: Arc<Mutex<Option<HistoryMetadata>>>,
     pending_pop: Arc<Mutex<Option<HistoryMetadata>>>,
-    popped: Arc<Mutex<Option<(EventKind, HistoryMetadataValue)>>>,
+    popped: Arc<Mutex<Option<(EventKind, HistoryMetadataSlots)>>>,
     last_capture_millis: Option<u64>,
     last_class: Option<HistoryClass>,
     last_origin: Option<TransactionOrigin>,
@@ -324,7 +324,7 @@ impl YrsHistory {
     ) -> Self {
         let pending_capture = Arc::new(Mutex::new(None::<HistoryMetadata>));
         let pending_pop = Arc::new(Mutex::new(None::<HistoryMetadata>));
-        let popped = Arc::new(Mutex::new(None::<(EventKind, HistoryMetadataValue)>));
+        let popped = Arc::new(Mutex::new(None::<(EventKind, HistoryMetadataSlots)>));
         let mut tracked_origins = HashSet::new();
         tracked_origins.insert(Origin::from(INPUT_ORIGIN));
         tracked_origins.insert(Origin::from(COMMAND_ORIGIN));
@@ -372,17 +372,17 @@ impl YrsHistory {
         let popped_target = pending_pop.clone();
         let popped_result = popped.clone();
         manager.observe_item_popped_with(POPPED_OBSERVER, move |_, event| {
-            let value = event.meta().value();
+            let slots = event.meta().slots();
             if let Some(target) = popped_target
                 .lock()
                 .expect("pending history pop lock poisoned")
                 .clone()
             {
-                target.replace(value.clone());
+                target.replace_slots(slots.clone());
             }
             *popped_result
                 .lock()
-                .expect("popped history metadata lock poisoned") = Some((event.kind(), value));
+                .expect("popped history metadata lock poisoned") = Some((event.kind(), slots));
         });
 
         Self {
@@ -465,13 +465,24 @@ impl YrsHistory {
                     capture_millis,
                     metadata,
                 } => {
-                    let replay_metadata = metadata.deep_clone();
-                    let (before, after) = replay_metadata.resolved_value();
+                    let replay_metadata = metadata.shared_wrapper();
+                    let replay_slots = replay_metadata.slots();
                     assert!(
-                        before.is_some(),
+                        replay_slots
+                            .before
+                            .as_ref()
+                            .and_then(HistorySnapshotSlot::get)
+                            .is_some(),
                         "recorded replay metadata has before state"
                     );
-                    let after = after.expect("recorded replay metadata has after state");
+                    assert!(
+                        replay_slots
+                            .after
+                            .as_ref()
+                            .and_then(HistorySnapshotSlot::get)
+                            .is_some(),
+                        "recorded replay metadata has after state"
+                    );
                     let replay_origin = candidate.begin_capture(
                         *origin,
                         *policy,
@@ -480,7 +491,7 @@ impl YrsHistory {
                         replay_metadata,
                     );
                     apply_update_bytes_with_origin(request_id, doc, update, replay_origin)?;
-                    candidate.finish_capture(after, Vec::new());
+                    candidate.finish_replay_capture();
                     replayed_events.push(ReplayEvent::Recorded {
                         update: update.clone(),
                         origin: *origin,
@@ -700,8 +711,8 @@ impl YrsHistory {
                 .manager
                 .undo_stack()
                 .last()
-                .and_then(|item| item.meta().value().after)
-                .map(|snapshot| snapshot.metadata_bytes)
+                .and_then(|item| item.meta().slots().after)
+                .and_then(|slot| slot.get().map(|snapshot| snapshot.metadata_bytes))
                 .unwrap_or(0);
             current_metadata_bytes
                 .checked_sub(replaced_after)
@@ -734,15 +745,19 @@ impl YrsHistory {
     }
 
     fn unmirrored_stack_metadata_bytes(&self, request_id: u64) -> OperationResult<usize> {
-        let mirrored = self
+        let mut seen = self
             .replay_events
             .iter()
-            .filter_map(|event| match event {
-                ReplayEvent::Recorded { metadata, .. } => Some(metadata.identity()),
-                ReplayEvent::Excluded { .. } | ReplayEvent::Action(_) => None,
+            .flat_map(|event| match event {
+                ReplayEvent::Recorded { metadata, .. } => {
+                    let slots = metadata.slots();
+                    [slots.before, slots.after]
+                }
+                ReplayEvent::Excluded { .. } | ReplayEvent::Action(_) => [None, None],
             })
+            .flatten()
+            .map(|slot| slot.identity())
             .collect::<HashSet<_>>();
-        let mut seen = HashSet::new();
         let mut total = 0usize;
         for item in self
             .manager
@@ -750,18 +765,36 @@ impl YrsHistory {
             .iter()
             .chain(self.manager.redo_stack())
         {
-            let metadata = item.meta();
-            if mirrored.contains(&metadata.identity()) || !seen.insert(metadata.identity()) {
-                continue;
-            }
-            let value = metadata.value();
-            for snapshot in [value.before, value.after].into_iter().flatten() {
-                total = total
-                    .checked_add(snapshot.metadata_bytes)
-                    .ok_or_else(|| metadata_limit_error(request_id, &self.limits, usize::MAX))?;
+            let slots = item.meta().slots();
+            for slot in [slots.before, slots.after].into_iter().flatten() {
+                if seen.insert(slot.identity()) {
+                    let snapshot = slot.get().ok_or_else(|| {
+                        OperationError::engine_invariant_failed(
+                            request_id,
+                            None,
+                            "retained history contains an unsealed snapshot slot",
+                        )
+                    })?;
+                    total = total.checked_add(snapshot.metadata_bytes).ok_or_else(|| {
+                        metadata_limit_error(request_id, &self.limits, usize::MAX)
+                    })?;
+                }
             }
         }
         Ok(total)
+    }
+
+    fn finish_replay_capture(&mut self) {
+        self.pending_capture
+            .lock()
+            .expect("pending history capture lock poisoned")
+            .take()
+            .expect("replayed capture creates history metadata");
+        self.pending_replay_event = None;
+        self.clock.release();
+        if self.force_next_boundary {
+            self.manager.reset();
+        }
     }
 
     pub(crate) fn finish_capture(&mut self, after: HistoryLocalState, update: Vec<u8>) {
@@ -869,7 +902,7 @@ impl YrsHistory {
         self.push_replay_event(event);
     }
 
-    pub(crate) fn perform(&mut self, action: HistoryAction) -> Option<HistorySnapshot> {
+    pub(crate) fn perform(&mut self, action: HistoryAction) -> Option<HistorySnapshotSlot> {
         let available = match action {
             HistoryAction::Undo => self.manager.can_undo(),
             HistoryAction::Redo => self.manager.can_redo(),
@@ -1100,12 +1133,22 @@ fn stack_metadata_bytes(
     limits: &EditingLimits,
 ) -> OperationResult<usize> {
     let mut total = 0usize;
+    let mut seen = HashSet::new();
     for item in stack {
-        let value = item.meta().value();
-        for snapshot in [value.before, value.after].into_iter().flatten() {
-            total = total
-                .checked_add(snapshot.metadata_bytes)
-                .ok_or_else(|| metadata_limit_error(request_id, limits, usize::MAX))?;
+        let slots = item.meta().slots();
+        for slot in [slots.before, slots.after].into_iter().flatten() {
+            if seen.insert(slot.identity()) {
+                let snapshot = slot.get().ok_or_else(|| {
+                    OperationError::engine_invariant_failed(
+                        request_id,
+                        None,
+                        "retained history contains an unsealed snapshot slot",
+                    )
+                })?;
+                total = total
+                    .checked_add(snapshot.metadata_bytes)
+                    .ok_or_else(|| metadata_limit_error(request_id, limits, usize::MAX))?;
+            }
         }
     }
     Ok(total)
@@ -1208,7 +1251,83 @@ mod tests {
     use yrs::types::xml::XmlFragment;
     use yrs::{Doc, GetString, IdSet, Transact, XmlTextPrelim};
 
-    use super::{add_id_set_units, EditingLimits, TransactionOrigin, YrsHistory, INPUT_ORIGIN};
+    use super::{
+        add_id_set_units, EditingLimits, HistoryMetadata, HistoryMetadataSlots,
+        HistorySnapshotSlot, ReplayEvent, TransactionOrigin, YrsHistory, INPUT_ORIGIN,
+    };
+
+    #[test]
+    fn excluded_event_accounts_reserved_capacity_not_only_encoded_length() {
+        let mut update = Vec::with_capacity(64);
+        update.extend_from_slice(&[1, 2, 3]);
+        let event = ReplayEvent::Excluded {
+            update,
+            origin: TransactionOrigin::LocalApi,
+            work_units: 3,
+        };
+        assert_eq!(event.encoded_bytes(), 65);
+    }
+
+    #[test]
+    fn candidate_metadata_wrapper_shares_immutable_snapshot_slots() {
+        let before = HistorySnapshotSlot::empty();
+        let after = HistorySnapshotSlot::empty();
+        let metadata = HistoryMetadata(Arc::new(std::sync::Mutex::new(HistoryMetadataSlots {
+            before: Some(before),
+            after: Some(after),
+        })));
+
+        let candidate = metadata.shared_wrapper();
+        assert_ne!(metadata.identity(), candidate.identity());
+        let live_slots = metadata.slots();
+        let candidate_slots = candidate.slots();
+        assert_eq!(
+            live_slots.before.unwrap().identity(),
+            candidate_slots.before.unwrap().identity()
+        );
+        assert_eq!(
+            live_slots.after.unwrap().identity(),
+            candidate_slots.after.unwrap().identity()
+        );
+    }
+
+    #[test]
+    fn cumulative_excluded_events_charge_reserved_payload_capacity() {
+        let doc = Doc::new();
+        let fragment = doc.get_or_insert_xml_fragment("history-test");
+        let mut history = YrsHistory::new(
+            &doc,
+            &fragment,
+            EditingLimits::default(),
+            usize::MAX,
+            Arc::new(|| 10_000),
+        );
+
+        let mut first = history.reserve_replay_event(1, &[], 9, 1, true).unwrap();
+        first.push(1);
+        let event_bytes = first.capacity() + 1;
+        history.max_encoded_state_bytes = event_bytes * 2;
+        history.push_replay_event(ReplayEvent::Excluded {
+            update: first,
+            origin: TransactionOrigin::LocalApi,
+            work_units: 1,
+        });
+
+        let mut second = history.reserve_replay_event(2, &[], 9, 1, true).unwrap();
+        second.push(2);
+        history.push_replay_event(ReplayEvent::Excluded {
+            update: second,
+            origin: TransactionOrigin::LocalApi,
+            work_units: 1,
+        });
+        assert_eq!(history.replay_bytes, event_bytes * 2);
+        assert_eq!(history.replay_events.len(), 2);
+
+        let third = history.reserve_replay_event(3, &[], 9, 1, true).unwrap();
+        assert!(third.capacity() < history.max_encoded_state_bytes);
+        assert!(history.replay_events.is_empty());
+        assert_eq!(history.replay_bytes, 0);
+    }
 
     #[test]
     fn id_set_accounting_counts_clock_ranges_not_clients() {

@@ -1130,6 +1130,10 @@ fn physical_history_metadata_accepts_exact_boundary_and_rejects_one_over_atomica
         if accepted {
             result.unwrap();
             assert!(harness.engine.can_undo());
+            undo_commit(&mut harness);
+            assert_eq!(text(&harness.engine), "");
+            redo_commit(&mut harness);
+            assert_eq!(text(&harness.engine), "a");
         } else {
             let error = result.unwrap_err();
             assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
