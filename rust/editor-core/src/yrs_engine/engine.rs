@@ -266,6 +266,46 @@ impl YrsDocumentEngine {
         self.derived_state.is_some()
     }
 
+    pub fn plan_command(
+        &self,
+        request_id: u64,
+        command: super::TypedCommand,
+    ) -> super::OperationResult<super::CommandPlan> {
+        let state = self
+            .derived_state
+            .as_ref()
+            .ok_or_else(|| super::OperationError::engine_not_ready(request_id))?;
+        super::commands::plan(
+            super::commands::PlanningContext {
+                request_id,
+                revision: self.revision,
+                document: &state.document,
+                position_map: &state.position_map,
+                selection: &state.resolved_selection,
+                stored_marks: state.stored_marks.as_deref(),
+                schema: &self.schema,
+                resource_limits: &self.resource_limits,
+                editing_limits: &self.editing_limits,
+                max_length: self.max_length,
+            },
+            command,
+        )
+    }
+
+    pub fn apply_command(
+        &mut self,
+        request_id: u64,
+        command: super::TypedCommand,
+    ) -> super::OperationResult<Option<super::TypedTransactionResult>> {
+        match self.plan_command(request_id, command)? {
+            super::CommandPlan::NotApplicable => Ok(None),
+            super::CommandPlan::Transaction(transaction)
+            | super::CommandPlan::SelectionOnly(transaction) => self
+                .apply_typed_transaction_with_result(transaction)
+                .map(Some),
+        }
+    }
+
     pub fn can_undo(&self) -> bool {
         self.history.can_undo()
     }
@@ -1072,6 +1112,15 @@ impl YrsDocumentEngine {
             .then(|| self.prepare_typed_result(&compiled))
             .transpose()?;
         if preview_is_unchanged {
+            let boundary_state =
+                (compiled.history_policy == super::HistoryPolicy::Boundary).then(|| {
+                    let txn = self.doc.transact();
+                    if txn.state_vector().is_empty() {
+                        Vec::new()
+                    } else {
+                        txn.encode_state_as_update_v1(&StateVector::default())
+                    }
+                });
             let current = self.derived_state.as_ref().ok_or_else(|| {
                 super::OperationError::engine_invariant_failed(
                     compiled.request_id,
@@ -1147,6 +1196,9 @@ impl YrsDocumentEngine {
                 && next.resolved_selection == current.resolved_selection
                 && next.stored_marks == current.stored_marks
             {
+                if let Some(encoded) = boundary_state {
+                    self.history.accept_boundary(compiled.request_id, encoded)?;
+                }
                 let commit = super::TransactionCommit {
                     request_id: compiled.request_id,
                     changed: false,
@@ -1175,6 +1227,9 @@ impl YrsDocumentEngine {
             self.derived_state = Some(next);
             self.state_revision = next_state_revision;
             self.last_committed_origin = Some(compiled.origin);
+            if let Some(encoded) = boundary_state {
+                self.history.accept_boundary(compiled.request_id, encoded)?;
+            }
             let commit = super::TransactionCommit {
                 request_id: compiled.request_id,
                 changed: true,
@@ -1428,6 +1483,9 @@ impl YrsDocumentEngine {
             );
         } else {
             self.history.finish_excluded(history_update);
+            if history_policy == super::HistoryPolicy::Boundary {
+                self.history.force_next_capture_boundary();
+            }
         }
 
         debug_assert_eq!(next_derived_state.document_revision, next_document_revision);

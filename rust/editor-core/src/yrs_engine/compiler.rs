@@ -382,6 +382,13 @@ fn admit_transaction_envelope(
     let mut input_bytes = 0usize;
     for (operation_index, operation) in transaction.operations.iter().enumerate() {
         let amount = match operation {
+            TypedOperation::ReplaceStructure(replacement) => Some(checked_fragment_input_bytes(
+                request_id,
+                operation_index,
+                replacement.content(),
+                context.resource_limits,
+                input_bytes,
+            )?),
             TypedOperation::InsertText { text, marks, .. } => {
                 if text.is_empty() {
                     return Err(OperationError::operation_invalid(
@@ -584,6 +591,87 @@ fn compile_transaction_impl(
         let mut operation_changed;
         let mut compatible_text_delete = false;
         match operation {
+            TypedOperation::ReplaceStructure(replacement) => {
+                if transaction.operations.len() != 1 {
+                    return Err(OperationError::operation_invalid(
+                        request_id,
+                        operation_index,
+                        "structure",
+                        "sealed structural replacement must be the transaction's only operation",
+                    ));
+                }
+                validate_fragment_marks(
+                    request_id,
+                    operation_index,
+                    replacement.content(),
+                    context.schema,
+                )?;
+                let (from, to) = resolve_structural_window(
+                    request_id,
+                    operation_index,
+                    &preview,
+                    replacement,
+                    context.resource_limits,
+                )?;
+                stored_marks_input = Some((from, to));
+                let step = Step::ReplaceRange {
+                    from,
+                    to,
+                    content: replacement.content().clone(),
+                };
+                let (next, step_map) =
+                    crate::transform::apply_step_canonical_marks(&preview, &step, context.schema)
+                        .map_err(|error| {
+                        map_transform_error(request_id, operation_index, "structure", error)
+                    })?;
+                if lowering.is_some() {
+                    validate_preview(request_id, Some(operation_index), &next, context)?;
+                }
+                operation_changed = next != preview;
+                if operation_changed {
+                    if let Some(lowering) = &mut lowering {
+                        let boundaries = text_boundaries(
+                            request_id,
+                            operation_index,
+                            &preview,
+                            context.schema,
+                            lowering,
+                        )?;
+                        lowering.replace_structural_range(
+                            operation_index,
+                            MutationDocumentContext {
+                                before: &preview,
+                                after: &next,
+                                schema: context.schema,
+                                limits: context.resource_limits,
+                            },
+                            ReplacementInput {
+                                from,
+                                to,
+                                boundaries: &boundaries,
+                                content: replacement.content(),
+                            },
+                        )?;
+                    }
+                }
+                operation_result = Some(replacement.selection_after().clone());
+                composed_map = composed_map.compose(&step_map);
+                preview = next;
+                if records_history && operation_changed {
+                    charge_undo_bound(
+                        &mut undo_units_bound,
+                        &mut undo_limit_error,
+                        u64::from(to - from)
+                            .saturating_add(u64::from(replacement.content().size())),
+                        request_id,
+                        operation_index,
+                        context.editing_limits.max_undo_retained_units,
+                    );
+                }
+                if operation_changed {
+                    history_class = merge_history_class(history_class, HistoryClass::Structural);
+                }
+            }
             TypedOperation::InsertText { at, text, marks } => {
                 validate_operation_marks(request_id, operation_index, marks, context.schema)?;
                 let base_pos = resolve_position(
@@ -1817,6 +1905,159 @@ fn resolve_position(
             None => OperationError::selection_position_invalid(request_id, field, message),
         }
     })
+}
+
+fn resolve_structural_window(
+    request_id: u64,
+    operation_index: usize,
+    document: &Document,
+    replacement: &super::StructuralReplacement,
+    limits: &ResourceLimits,
+) -> OperationResult<(u32, u32)> {
+    if replacement.parent_path().len() > limits.max_document_depth {
+        return Err(OperationError::operation_resource_exhausted(
+            request_id,
+            "maxDocumentDepth",
+            "structural target path exceeds the document depth limit",
+        ));
+    }
+    let mut node = document.root();
+    let mut content_start = 0u32;
+    let mut work = 0usize;
+    for path_index in replacement.parent_path().iter().copied() {
+        work = work.saturating_add(1);
+        if work > limits.max_document_nodes {
+            return Err(OperationError::operation_resource_exhausted(
+                request_id,
+                "maxDocumentNodes",
+                "structural target traversal exceeds the document work limit",
+            ));
+        }
+        let content = node.content().ok_or_else(|| {
+            OperationError::operation_invalid(
+                request_id,
+                operation_index,
+                "structure",
+                "structural target parent has no child content",
+            )
+        })?;
+        let index = usize::try_from(path_index).map_err(|_| {
+            OperationError::operation_invalid(
+                request_id,
+                operation_index,
+                "structure",
+                "structural target path index is not representable",
+            )
+        })?;
+        for sibling in content.iter().take(index) {
+            work = work.saturating_add(1);
+            if work > limits.max_document_nodes {
+                return Err(OperationError::operation_resource_exhausted(
+                    request_id,
+                    "maxDocumentNodes",
+                    "structural target traversal exceeds the document work limit",
+                ));
+            }
+            content_start = content_start
+                .checked_add(sibling.node_size())
+                .ok_or_else(|| {
+                    OperationError::operation_invalid(
+                        request_id,
+                        operation_index,
+                        "structure",
+                        "structural target position overflowed",
+                    )
+                })?;
+        }
+        content_start = content_start.checked_add(1).ok_or_else(|| {
+            OperationError::operation_invalid(
+                request_id,
+                operation_index,
+                "structure",
+                "structural target position overflowed",
+            )
+        })?;
+        node = content.child(index).ok_or_else(|| {
+            OperationError::operation_invalid(
+                request_id,
+                operation_index,
+                "structure",
+                "structural target path is outside the document",
+            )
+        })?;
+    }
+    let content = node.content().ok_or_else(|| {
+        OperationError::operation_invalid(
+            request_id,
+            operation_index,
+            "structure",
+            "structural target parent has no child content",
+        )
+    })?;
+    let (from_child, to_child) = replacement.child_window();
+    let from_child = usize::try_from(from_child).map_err(|_| {
+        OperationError::operation_invalid(
+            request_id,
+            operation_index,
+            "structure",
+            "structural child window is not representable",
+        )
+    })?;
+    let to_child = usize::try_from(to_child).map_err(|_| {
+        OperationError::operation_invalid(
+            request_id,
+            operation_index,
+            "structure",
+            "structural child window is not representable",
+        )
+    })?;
+    if from_child > to_child || to_child > content.child_count() {
+        return Err(OperationError::operation_invalid(
+            request_id,
+            operation_index,
+            "structure",
+            "structural child window is outside its parent",
+        ));
+    }
+    let mut from = content_start;
+    for sibling in content.iter().take(from_child) {
+        work = work.saturating_add(1);
+        if work > limits.max_document_nodes {
+            return Err(OperationError::operation_resource_exhausted(
+                request_id,
+                "maxDocumentNodes",
+                "structural target traversal exceeds the document work limit",
+            ));
+        }
+        from = from.checked_add(sibling.node_size()).ok_or_else(|| {
+            OperationError::operation_invalid(
+                request_id,
+                operation_index,
+                "structure",
+                "structural target position overflowed",
+            )
+        })?;
+    }
+    let mut to = from;
+    for sibling in content.iter().skip(from_child).take(to_child - from_child) {
+        work = work.saturating_add(1);
+        if work > limits.max_document_nodes {
+            return Err(OperationError::operation_resource_exhausted(
+                request_id,
+                "maxDocumentNodes",
+                "structural target traversal exceeds the document work limit",
+            ));
+        }
+        to = to.checked_add(sibling.node_size()).ok_or_else(|| {
+            OperationError::operation_invalid(
+                request_id,
+                operation_index,
+                "structure",
+                "structural target position overflowed",
+            )
+        })?;
+    }
+    Ok((from, to))
 }
 
 #[derive(Clone, Copy)]

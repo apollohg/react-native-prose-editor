@@ -1,4 +1,5 @@
 mod codec;
+mod commands;
 #[allow(dead_code)] // Task 7 installs compiled transactions into the live Yrs engine.
 mod compiler;
 mod derived_state;
@@ -25,6 +26,7 @@ fn raw_storage_work_limit(limits: &crate::boundary::ResourceLimits) -> usize {
 }
 
 pub(crate) use codec::YrsDocumentCodec;
+pub use commands::{CommandPlan, TypedCommand};
 pub use editing_limits::{
     EditingLimitOverrides, EditingLimits, HARD_MAX_DERIVED_OUTPUT_BYTES,
     HARD_MAX_OPERATIONS_PER_TRANSACTION, HARD_MAX_UNDO_GROUPS, HARD_MAX_UNDO_RETAINED_UNITS,
@@ -34,7 +36,8 @@ pub use error::{YrsEngineError, YrsEngineResult};
 pub use operation::{
     Affinity, EditorOffsetKind, HistoryPolicy, OperationError, OperationResult, RenderUpdate,
     ResolvedPoint, ResolvedSelection, RevisionedPosition, RevisionedRange, SelectionInput,
-    SelectionIntent, TransactionCommit, TypedOperation, TypedTransaction, TypedTransactionResult,
+    SelectionIntent, StructuralReplacement, TransactionCommit, TypedOperation, TypedTransaction,
+    TypedTransactionResult,
 };
 pub use origin::TransactionOrigin;
 #[cfg(test)]

@@ -444,7 +444,7 @@ impl MutationCompiler {
         Ok(())
     }
 
-    fn replace_structural_range(
+    pub(crate) fn replace_structural_range(
         &mut self,
         operation_index: usize,
         context: MutationDocumentContext<'_>,

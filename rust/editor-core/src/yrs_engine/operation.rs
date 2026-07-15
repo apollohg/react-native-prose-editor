@@ -92,7 +92,62 @@ pub struct TypedTransaction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// A deterministic same-parent structural child-window replacement.
+///
+/// The payload is inspectable but crate-sealed: external callers cannot forge
+/// structural targets or their policy.
+///
+/// ```compile_fail
+/// use editor_core::yrs_engine::StructuralReplacement;
+/// let _ = StructuralReplacement::new(
+///     vec![], 0, 0, Default::default(), editor_core::selection::Selection::cursor(0)
+/// );
+/// ```
+pub struct StructuralReplacement {
+    parent_path: Vec<u32>,
+    from_child: u32,
+    to_child: u32,
+    content: Fragment,
+    selection_after: crate::selection::Selection,
+}
+
+impl StructuralReplacement {
+    pub(crate) fn new(
+        parent_path: Vec<u32>,
+        from_child: u32,
+        to_child: u32,
+        content: Fragment,
+        selection_after: crate::selection::Selection,
+    ) -> Self {
+        Self {
+            parent_path,
+            from_child,
+            to_child,
+            content,
+            selection_after,
+        }
+    }
+
+    pub fn parent_path(&self) -> &[u32] {
+        &self.parent_path
+    }
+
+    pub fn child_window(&self) -> (u32, u32) {
+        (self.from_child, self.to_child)
+    }
+
+    pub fn content(&self) -> &Fragment {
+        &self.content
+    }
+
+    pub(crate) fn selection_after(&self) -> &crate::selection::Selection {
+        &self.selection_after
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum TypedOperation {
+    ReplaceStructure(StructuralReplacement),
     InsertText {
         at: RevisionedPosition,
         text: String,

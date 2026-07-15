@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod boundary;
 pub mod collaboration;
+pub(crate) mod command_planner;
 pub mod editor;
 pub mod editor_state;
 pub mod history;

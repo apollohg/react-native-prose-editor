@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::boundary::ResourceLimits;
+use crate::command_planner::CommandReplacement;
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::schema::content_rule::WorkBudget;
 use crate::schema::{NodeRole, Schema};
@@ -159,17 +160,109 @@ pub(crate) fn command_applicability(
 }
 
 #[derive(Clone)]
-struct BlockSelectionRange {
-    parent_path: Vec<u32>,
-    first_child_index: usize,
-    replace_from: u32,
-    replace_to: u32,
-    selected_blocks: Vec<Node>,
+pub(crate) struct BlockSelectionRange {
+    pub(crate) parent_path: Vec<u32>,
+    pub(crate) first_child_index: usize,
+    pub(crate) replace_from: u32,
+    pub(crate) replace_to: u32,
+    pub(crate) selected_blocks: Vec<Node>,
 }
 
 struct ListItemContext {
     list_item_index: usize,
     parent_is_list_item: bool,
+}
+
+pub(crate) fn plan_content_insertion(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    content: &Fragment,
+) -> Option<CommandReplacement> {
+    if content.size() == 0 {
+        return None;
+    }
+    let from = selection.from(document);
+    let to = selection.to(document);
+    let is_block = content.iter().all(|node| {
+        schema.node(node.node_type()).is_some_and(|spec| {
+            matches!(
+                spec.role,
+                NodeRole::TextBlock | NodeRole::List { .. } | NodeRole::Block
+            )
+        })
+    });
+    if !is_block {
+        return Some(CommandReplacement {
+            from,
+            to,
+            content: content.clone(),
+            selection_after: Selection::cursor(from.saturating_add(content.size())),
+        });
+    }
+    let insert_at = block_insert_position(document, schema, from)?;
+    let (replace_from, replace_to) =
+        empty_text_block_range(document, schema, from).unwrap_or((insert_at, insert_at));
+    let inserted_size = content.size();
+    let mut nodes = content.iter().cloned().collect::<Vec<_>>();
+    let ends_with_text_block = content
+        .iter()
+        .last()
+        .and_then(|node| schema.node(node.node_type()))
+        .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock));
+    let selection_after = if ends_with_text_block {
+        Selection::cursor(replace_from.saturating_add(inserted_size.saturating_sub(1)))
+    } else {
+        let paragraph = schema.preferred_text_block()?;
+        let attrs = paragraph
+            .attrs
+            .iter()
+            .filter_map(|(name, attr)| attr.default.clone().map(|value| (name.clone(), value)))
+            .collect();
+        nodes.push(Node::element(
+            paragraph.name.clone(),
+            attrs,
+            Fragment::empty(),
+        ));
+        Selection::cursor(replace_from.saturating_add(inserted_size).saturating_add(1))
+    };
+    Some(CommandReplacement {
+        from: replace_from,
+        to: replace_to,
+        content: Fragment::from(nodes),
+        selection_after,
+    })
+}
+
+fn empty_text_block_range(
+    document: &Document,
+    schema: &Schema,
+    position: u32,
+) -> Option<(u32, u32)> {
+    let resolved = document.resolve(position).ok()?;
+    let block = resolved.parent(document);
+    if !schema
+        .node(block.node_type())
+        .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
+        || block.content_size() != 0
+    {
+        return None;
+    }
+    let start = node_delete_start_pos(document, &resolved.node_path)?;
+    Some((start, start.checked_add(block.node_size())?))
+}
+
+fn block_insert_position(document: &Document, schema: &Schema, position: u32) -> Option<u32> {
+    let resolved = document.resolve(position).ok()?;
+    let parent = resolved.parent(document);
+    if !schema
+        .node(parent.node_type())
+        .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
+    {
+        return Some(position);
+    }
+    let start = node_delete_start_pos(document, &resolved.node_path)?;
+    start.checked_add(parent.node_size())
 }
 
 fn can_toggle_heading(
@@ -203,9 +296,9 @@ fn can_toggle_heading(
 }
 
 fn can_toggle_code_block(document: &Document, schema: &Schema, selection: &Selection) -> bool {
-    if schema.node("codeBlock").is_none() {
+    let Some(code_block_type) = crate::command_planner::code_block_node_name(schema) else {
         return false;
-    }
+    };
     let Some(paragraph_type) = paragraph_node_name(schema) else {
         return false;
     };
@@ -215,11 +308,11 @@ fn can_toggle_code_block(document: &Document, schema: &Schema, selection: &Selec
     let replacement_type = if range
         .selected_blocks
         .iter()
-        .all(|block| block.node_type() == "codeBlock")
+        .all(|block| block.node_type() == code_block_type)
     {
         paragraph_type
     } else {
-        "codeBlock"
+        code_block_type
     };
     can_replace_selected_text_blocks(document, schema, &range, replacement_type)
 }
@@ -403,7 +496,7 @@ fn can_toggle_task_item(
         .is_ok()
 }
 
-fn selected_text_block_range(
+pub(crate) fn selected_text_block_range(
     document: &Document,
     schema: &Schema,
     selection: &Selection,
@@ -423,7 +516,7 @@ fn selected_text_block_range(
     .then_some(range)
 }
 
-fn can_replace_selected_text_blocks(
+pub(crate) fn can_replace_selected_text_blocks(
     document: &Document,
     schema: &Schema,
     range: &BlockSelectionRange,
@@ -470,7 +563,7 @@ fn can_replace_selected_text_blocks(
     })
 }
 
-fn selected_block_range(
+pub(crate) fn selected_block_range(
     document: &Document,
     schema: &Schema,
     from: u32,
@@ -529,7 +622,7 @@ fn block_path_for_pos(document: &Document, schema: &Schema, pos: u32) -> Option<
     block_path
 }
 
-fn containing_node_at<'a>(
+pub(crate) fn containing_node_at<'a>(
     document: &'a Document,
     schema: &Schema,
     pos: u32,
@@ -619,7 +712,7 @@ fn node_delete_start_pos(document: &Document, path: &[u32]) -> Option<u32> {
     open_pos.checked_sub(1)
 }
 
-fn paragraph_node_name(schema: &Schema) -> Option<&str> {
+pub(crate) fn paragraph_node_name(schema: &Schema) -> Option<&str> {
     schema
         .node_by_html_tag("p")
         .or_else(|| schema.node("paragraph"))
@@ -666,6 +759,103 @@ pub(crate) fn marks_at_position(document: &Document, position: u32) -> Vec<Mark>
             .map_or_else(Vec::new, |child| child.marks().to_vec());
     }
     Vec::new()
+}
+
+pub(crate) fn range_has_mark(document: &Document, from: u32, to: u32, mark_name: &str) -> bool {
+    let Ok(resolved) = document.resolve(from) else {
+        return false;
+    };
+    let Some(content) = resolved.parent(document).content() else {
+        return false;
+    };
+    let from_offset = resolved.parent_offset;
+    let to_offset = from_offset.saturating_add(to.saturating_sub(from));
+    let mut offset = 0u32;
+    let mut found = false;
+    for child in content.iter() {
+        let end = offset.saturating_add(child.node_size());
+        if child.is_text() && end > from_offset && offset < to_offset {
+            found = true;
+            if !child
+                .marks()
+                .iter()
+                .any(|mark| mark.mark_type() == mark_name)
+            {
+                return false;
+            }
+        }
+        offset = end;
+    }
+    found
+}
+
+pub(crate) fn mark_range_at_position(
+    document: &Document,
+    position: u32,
+    mark_name: &str,
+) -> Option<(u32, u32)> {
+    let resolved = document.resolve(position).ok()?;
+    let content = resolved.parent(document).content()?;
+    let parent_content_start = content_start_for_path(document, &resolved.node_path)?;
+    let mut offset = 0u32;
+    let mut target = None;
+    for (index, child) in content.iter().enumerate() {
+        let end = offset.checked_add(child.node_size())?;
+        if child.is_text()
+            && child
+                .marks()
+                .iter()
+                .any(|mark| mark.mark_type() == mark_name)
+            && offset <= resolved.parent_offset
+            && resolved.parent_offset <= end
+        {
+            target = Some((index, offset, end));
+            break;
+        }
+        offset = end;
+    }
+    let (index, mut start, mut end) = target?;
+    let target_mark = content
+        .child(index)?
+        .marks()
+        .iter()
+        .find(|mark| mark.mark_type() == mark_name)?;
+    let mut left = index;
+    while left > 0 {
+        let sibling = content.child(left - 1)?;
+        if !sibling.is_text() || !sibling.marks().iter().any(|mark| mark == target_mark) {
+            break;
+        }
+        start = start.checked_sub(sibling.node_size())?;
+        left -= 1;
+    }
+    let mut right = index;
+    while right + 1 < content.child_count() {
+        let sibling = content.child(right + 1)?;
+        if !sibling.is_text() || !sibling.marks().iter().any(|mark| mark == target_mark) {
+            break;
+        }
+        end = end.checked_add(sibling.node_size())?;
+        right += 1;
+    }
+    Some((
+        parent_content_start.checked_add(start)?,
+        parent_content_start.checked_add(end)?,
+    ))
+}
+
+fn content_start_for_path(document: &Document, path: &[u32]) -> Option<u32> {
+    let mut start = 0u32;
+    let mut node = document.root();
+    for index in path.iter().copied() {
+        let content = node.content()?;
+        for sibling in content.iter().take(index as usize) {
+            start = start.checked_add(sibling.node_size())?;
+        }
+        start = start.checked_add(1)?;
+        node = content.child(index as usize)?;
+    }
+    Some(start)
 }
 
 pub(crate) fn nodes_at_position(document: &Document, position: u32) -> Vec<String> {

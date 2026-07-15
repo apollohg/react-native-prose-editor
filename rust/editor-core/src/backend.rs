@@ -184,7 +184,15 @@ impl StandaloneBackend {
                     to: pos + len,
                 }
             }
-            Step::DeleteRange { from, to } => {
+            step @ Step::DeleteRange { from, to } => {
+                if extract_exact_sibling_fragment(doc, *from, *to).is_some() {
+                    if let Some(inverse) = localized_structural_inverse(schema, doc, step) {
+                        return inverse;
+                    }
+                }
+                if let Some(inverse) = structural_delete_inverse(schema, doc, *from, *to) {
+                    return inverse;
+                }
                 // Extract the text being deleted from the current document.
                 let deleted_text = extract_text_in_range(doc, *from, *to);
                 // Reconstruct marks from the current document at the deletion point.
@@ -224,6 +232,14 @@ impl StandaloneBackend {
                 Step::JoinBlocks { pos: pos + 1 }
             }
             Step::JoinBlocks { pos } => {
+                if let Some(inverse) = list_item_join_inverse(schema, doc, *pos) {
+                    // `SplitBlock` only splits text blocks. Joining list items
+                    // merges their block children, so the ordinary inverse
+                    // below cannot reconstruct the second list-item wrapper.
+                    // Restore only the merged item, keeping unrelated siblings
+                    // out of the retained history payload.
+                    return inverse;
+                }
                 // To undo a join, we need to split the merged block.
                 // The join removed 2 tokens (close tag + open tag) at the
                 // boundary. In the post-join doc, the split position is
@@ -237,13 +253,19 @@ impl StandaloneBackend {
                     attrs,
                 }
             }
-            Step::WrapInList { from, .. } => {
+            step @ Step::WrapInList { from, .. } => {
+                if let Some(inverse) = localized_structural_inverse(schema, doc, step) {
+                    return inverse;
+                }
                 // Inverse of wrapping is unwrapping. We need a position inside
                 // the first list item. The first list item's content starts at
                 // from + 2 (after list_open + li_open).
                 Step::UnwrapFromList { pos: from + 2 }
             }
-            Step::UnwrapFromList { pos } => {
+            step @ Step::UnwrapFromList { pos } => {
+                if let Some(inverse) = localized_structural_inverse(schema, doc, step) {
+                    return inverse;
+                }
                 // Resolve the containing list node from the pre-step document
                 // to get its type, attrs, and the range of content being unwrapped.
                 let list_context = resolve_list_context_at(schema, doc, *pos);
@@ -256,17 +278,13 @@ impl StandaloneBackend {
                     item_attrs: list_context.item_attrs,
                 }
             }
-            Step::IndentListItem { .. } | Step::OutdentListItem { .. } => {
-                let original_content = doc
-                    .root()
-                    .content()
-                    .cloned()
-                    .unwrap_or_else(Fragment::empty);
-                Step::ReplaceRange {
-                    from: 0,
-                    to: doc.content_size(),
-                    content: original_content,
-                }
+            step @ (Step::IndentListItem { .. } | Step::OutdentListItem { .. }) => {
+                localized_structural_inverse(schema, doc, step).unwrap_or_else(|| {
+                    // The transform was already previewed successfully before
+                    // inverse computation, so failing to derive a local exact
+                    // inverse is an internal invariant violation.
+                    panic!("validated list transform must have a localized exact inverse")
+                })
             }
             Step::InsertNode { pos, node } => {
                 let node_size = node.node_size();
@@ -284,15 +302,195 @@ impl StandaloneBackend {
             }
             Step::ReplaceRange { from, to, content } => {
                 // Inverse: replace the inserted content with the original content.
-                let original_content = extract_fragment_in_range(doc, *from, *to);
+                // Preserve complete nodes when the replaced range is an exact
+                // sibling slice. Inline/partial ranges retain the established
+                // text-and-marks extraction path below.
+                let original_content = extract_exact_sibling_fragment(doc, *from, *to)
+                    .unwrap_or_else(|| extract_fragment_in_range(doc, *from, *to));
+                // The editor computes and validates the post-step document
+                // before the backend asks for inverses, so this inserted end
+                // is already proven representable in the u32 position model.
+                let inverse_to = from
+                    .checked_add(content.size())
+                    .expect("validated ReplaceRange end must fit the position model");
                 Step::ReplaceRange {
                     from: *from,
-                    to: from + content.size(),
+                    to: inverse_to,
                     content: original_content,
                 }
             }
         }
     }
+}
+
+fn extract_exact_sibling_fragment(doc: &Document, from: u32, to: u32) -> Option<Fragment> {
+    if from >= to {
+        return None;
+    }
+    let resolved_from = doc.resolve(from).ok()?;
+    let resolved_to = doc.resolve(to).ok()?;
+    if resolved_from.node_path != resolved_to.node_path {
+        return None;
+    }
+    let content = resolved_from.parent(doc).content()?;
+    let mut offset = 0u32;
+    let mut selected = Vec::new();
+    let mut started = false;
+    for child in content.iter() {
+        if !started {
+            if offset == resolved_from.parent_offset {
+                started = true;
+            } else if offset > resolved_from.parent_offset {
+                return None;
+            }
+        }
+        let next = offset.checked_add(child.node_size())?;
+        if started {
+            if next > resolved_to.parent_offset {
+                return None;
+            }
+            selected.push(child.clone());
+            if next == resolved_to.parent_offset {
+                return Some(Fragment::from(selected));
+            }
+        }
+        offset = next;
+    }
+    None
+}
+
+fn structural_delete_inverse(schema: &Schema, doc: &Document, from: u32, to: u32) -> Option<Step> {
+    if from >= to {
+        return None;
+    }
+    let resolved_from = doc.resolve(from).ok()?;
+    let resolved_to = doc.resolve(to).ok()?;
+    let common_depth = resolved_from
+        .node_path
+        .iter()
+        .zip(resolved_to.node_path.iter())
+        .take_while(|(left, right)| left == right)
+        .count();
+    if common_depth == resolved_from.node_path.len() && common_depth == resolved_to.node_path.len()
+    {
+        return None;
+    }
+    let parent_path = &resolved_from.node_path[..common_depth];
+    let parent = doc.node_at(parent_path)?;
+    let content = parent.content()?;
+    let start = endpoint_child_index(
+        content,
+        resolved_from.node_path.get(common_depth).copied(),
+        resolved_from.parent_offset,
+    )?;
+    let end = match resolved_to.node_path.get(common_depth).copied() {
+        Some(index) => usize::try_from(index).ok()?.checked_add(1)?,
+        None => endpoint_child_index(content, None, resolved_to.parent_offset)?,
+    };
+    if start >= end || end > content.child_count() {
+        return None;
+    }
+    let original = Fragment::from(
+        content
+            .iter()
+            .skip(start)
+            .take(end - start)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let range_start = absolute_child_start(doc, parent_path, start)?;
+    let delete = Step::DeleteRange { from, to };
+    let (post, _) = crate::transform::apply::apply_step(doc, &delete, schema).ok()?;
+    let removed = doc.content_size().checked_sub(post.content_size())?;
+    let post_size = original.size().checked_sub(removed)?;
+    let inverse = Step::ReplaceRange {
+        from: range_start,
+        to: range_start.checked_add(post_size)?,
+        content: original,
+    };
+    let (restored, _) = crate::transform::apply::apply_step(&post, &inverse, schema).ok()?;
+    (&restored == doc).then_some(inverse)
+}
+
+fn localized_structural_inverse(schema: &Schema, doc: &Document, step: &Step) -> Option<Step> {
+    let (post, _) = crate::transform::apply::apply_step(doc, step, schema).ok()?;
+    let diff = crate::command_planner::structural_diff(&post, doc)?;
+    let from_index = usize::try_from(diff.from_child).ok()?;
+    let to_index = usize::try_from(diff.to_child).ok()?;
+    let from = absolute_child_start(&post, &diff.parent_path, from_index)?;
+    let to = absolute_child_start(&post, &diff.parent_path, to_index)?;
+    let inverse = Step::ReplaceRange {
+        from,
+        to,
+        content: diff.content,
+    };
+    let (restored, _) = crate::transform::apply::apply_step(&post, &inverse, schema).ok()?;
+    (&restored == doc).then_some(inverse)
+}
+
+fn endpoint_child_index(
+    content: &Fragment,
+    path_index: Option<u32>,
+    parent_offset: u32,
+) -> Option<usize> {
+    if let Some(index) = path_index {
+        return usize::try_from(index).ok();
+    }
+    let mut offset = 0u32;
+    for (index, child) in content.iter().enumerate() {
+        if offset == parent_offset {
+            return Some(index);
+        }
+        offset = offset.checked_add(child.node_size())?;
+    }
+    (offset == parent_offset).then_some(content.child_count())
+}
+
+fn absolute_child_start(doc: &Document, parent_path: &[u32], index: usize) -> Option<u32> {
+    let mut node = doc.root();
+    let mut content_start = 0u32;
+    for path_index in parent_path.iter().copied() {
+        let content = node.content()?;
+        let index = usize::try_from(path_index).ok()?;
+        for sibling in content.iter().take(index) {
+            content_start = content_start.checked_add(sibling.node_size())?;
+        }
+        content_start = content_start.checked_add(1)?;
+        node = content.child(index)?;
+    }
+    for sibling in node.content()?.iter().take(index) {
+        content_start = content_start.checked_add(sibling.node_size())?;
+    }
+    Some(content_start)
+}
+
+fn list_item_join_inverse(schema: &Schema, doc: &Document, pos: u32) -> Option<Step> {
+    let Ok(resolved) = doc.resolve(pos) else {
+        return None;
+    };
+    let content = resolved.parent(doc).content()?;
+    let mut offset = 0;
+    for (index, child) in content.iter().enumerate() {
+        if offset == resolved.parent_offset && index > 0 {
+            let previous = content.child(index - 1)?;
+            if !schema.is_list_item(previous.node_type()) || !schema.is_list_item(child.node_type())
+            {
+                return None;
+            }
+            let from = pos.checked_sub(previous.node_size())?;
+            let merged_size = previous
+                .node_size()
+                .checked_add(child.node_size())?
+                .checked_sub(2)?;
+            return Some(Step::ReplaceRange {
+                from,
+                to: from.checked_add(merged_size)?,
+                content: Fragment::from(vec![previous.clone(), child.clone()]),
+            });
+        }
+        offset = offset.checked_add(child.node_size())?;
+    }
+    None
 }
 
 fn resolve_node_attrs_at(
@@ -757,5 +955,92 @@ fn resolve_list_context_at(schema: &Schema, doc: &Document, pos: u32) -> ListCon
         item_attrs: HashMap::new(),
         wrap_from: pos,
         wrap_to: pos,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::serialize::{from_prosemirror_json, UnknownTypeMode};
+
+    #[test]
+    fn list_item_join_inverse_retains_only_the_local_items() {
+        let schema = crate::tiptap_schema();
+        let prefix = "x".repeat(4096);
+        let source = serde_json::json!({
+            "type":"doc",
+            "content":[
+                {"type":"paragraph","content":[{"type":"text","text":prefix}]},
+                {"type":"bulletList","content":[
+                    {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"one"}]}]},
+                    {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"two"}]}]}
+                ]},
+                {"type":"paragraph","content":[{"type":"text","text":"untouched"}]}
+            ]
+        });
+        let document = from_prosemirror_json(&source, &schema, UnknownTypeMode::Error).unwrap();
+        let prefix_size = document.root().child(0).unwrap().node_size();
+        let list = document.root().child(1).unwrap();
+        let first = list.child(0).unwrap();
+        let join = prefix_size + 1 + first.node_size();
+
+        let Step::ReplaceRange { from, to, content } =
+            list_item_join_inverse(&schema, &document, join).unwrap()
+        else {
+            panic!("list-item join inverse must be a localized replacement")
+        };
+        assert_eq!(from, prefix_size + 1);
+        assert_eq!(
+            to - from,
+            first.node_size() + list.child(1).unwrap().node_size() - 2
+        );
+        assert_eq!(content.child_count(), 2);
+        assert!(from > 0);
+        assert!(to < document.content_size());
+    }
+
+    #[test]
+    fn structural_delete_inverse_is_local_at_root_and_nested_parent() {
+        let schema = crate::tiptap_schema();
+        let root_source = serde_json::json!({
+            "type":"doc",
+            "content":[
+                {"type":"paragraph","content":[{"type":"text","text":"ab"}]},
+                {"type":"paragraph","content":[{"type":"text","text":"cd"}]},
+                {"type":"paragraph","content":[{"type":"text","text":"untouched"}]}
+            ]
+        });
+        let root = from_prosemirror_json(&root_source, &schema, UnknownTypeMode::Error).unwrap();
+        let Step::ReplaceRange { from, to, content } =
+            structural_delete_inverse(&schema, &root, 2, 6).unwrap()
+        else {
+            panic!("cross-block root delete must have a localized inverse")
+        };
+        assert_eq!((from, to, content.child_count()), (0, 4, 2));
+        assert!(to < root.content_size());
+
+        let nested_source = serde_json::json!({
+            "type":"doc",
+            "content":[
+                {"type":"paragraph","content":[{"type":"text","text":"z"}]},
+                {"type":"blockquote","content":[
+                    {"type":"paragraph","content":[{"type":"text","text":"ab"}]},
+                    {"type":"paragraph","content":[{"type":"text","text":"cd"}]}
+                ]},
+                {"type":"paragraph","content":[{"type":"text","text":"untouched"}]}
+            ]
+        });
+        let nested =
+            from_prosemirror_json(&nested_source, &schema, UnknownTypeMode::Error).unwrap();
+        let Step::ReplaceRange { from, to, content } =
+            structural_delete_inverse(&schema, &nested, 6, 10).unwrap()
+        else {
+            panic!("nested cross-block delete must have a localized inverse")
+        };
+        assert_eq!((from, to, content.child_count()), (4, 8, 2));
+        assert!(from > 0);
+        assert!(to < nested.content_size());
+
+        assert!(structural_delete_inverse(&schema, &nested, 5, 6).is_none());
     }
 }

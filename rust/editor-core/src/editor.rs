@@ -105,6 +105,7 @@ enum SelectionOffset {
 // ---------------------------------------------------------------------------
 
 /// Action to take when split_block is called on an empty structured block.
+#[allow(dead_code)] // Retained for Task 14's standalone structural-command migration.
 enum SplitAction {
     /// Unwrap the list item to a paragraph (top-level list).
     UnwrapList(u32),
@@ -114,6 +115,7 @@ enum SplitAction {
     ExitBlockquote(u32),
 }
 
+#[allow(dead_code)] // Retained for Task 14's standalone structural-command migration.
 enum ListMarkerBackspaceAction {
     JoinPreviousItem(u32),
     UnwrapItem(u32),
@@ -136,6 +138,7 @@ pub struct Editor {
     document_version: u64,
 }
 
+#[allow(dead_code)] // Legacy private adapters remain until Task 14 moves list commands.
 impl Editor {
     /// Create a new editor with the given schema and interceptor pipeline.
     ///
@@ -312,7 +315,7 @@ impl Editor {
         }
 
         let mark = Mark::new(mark_name.to_string(), HashMap::new());
-        let has_mark = self.range_has_mark(from, to, mark_name);
+        let has_mark = crate::editor_state::range_has_mark(doc, from, to, mark_name);
 
         let mut tx = Transaction::new(Source::Format);
         if has_mark {
@@ -343,7 +346,9 @@ impl Editor {
         let to = self.selection.to(doc);
 
         if from == to {
-            if let Some((range_from, range_to)) = self.mark_range_at_pos(from, mark_name) {
+            if let Some((range_from, range_to)) =
+                crate::editor_state::mark_range_at_position(doc, from, mark_name)
+            {
                 if range_from < range_to {
                     let mut tx = Transaction::new(Source::Format);
                     tx.add_step(Step::RemoveMark {
@@ -399,7 +404,9 @@ impl Editor {
         let to = self.selection.to(doc);
 
         if from == to {
-            if let Some((range_from, range_to)) = self.mark_range_at_pos(from, mark_name) {
+            if let Some((range_from, range_to)) =
+                crate::editor_state::mark_range_at_position(doc, from, mark_name)
+            {
                 if range_from < range_to {
                     let mut tx = Transaction::new(Source::Format);
                     tx.add_step(Step::RemoveMark {
@@ -439,30 +446,26 @@ impl Editor {
 
     /// Split a block at the given position (e.g. pressing Enter).
     pub fn split_block(&mut self, pos: u32) -> Result<EditorUpdate, EditorError> {
-        let (budget, work_limit) = self.runtime_content_budget();
-        if self.is_code_block_at_pos(pos) {
-            if let Some(exit) = self.try_exit_code_block(pos, &budget, work_limit) {
-                return exit;
-            }
-            return self.insert_text(pos, "\n");
-        }
-
-        if let Some(action) = self.empty_split_action(pos) {
-            return self.apply_empty_split_action(action);
-        }
-
-        // Normal split: create the schema-preferred constructible text block.
-        let step = self
-            .preferred_split_step(self.backend.document(), pos, &budget, work_limit)?
-            .ok_or_else(|| {
-                EditorError::Transform(TransformError::InvalidTarget(
-                    "schema has no constructible text block valid at the split position"
-                        .to_string(),
-                ))
-            })?;
-        let mut tx = Transaction::new(Source::Input);
-        tx.add_step(step);
-        self.apply_transaction(tx)
+        let selection = Selection::cursor(pos);
+        let plan = crate::command_planner::plan_split(
+            self.backend.document(),
+            self.backend.position_map(),
+            &self.schema,
+            &selection,
+            false,
+            &self.resource_limits,
+        )
+        .map_err(|()| {
+            Self::runtime_content_limit_error(
+                self.resource_limits.max_document_nodes.saturating_mul(128),
+            )
+        })?
+        .ok_or_else(|| {
+            EditorError::Transform(TransformError::InvalidTarget(
+                "schema has no constructible text block valid at the split position".into(),
+            ))
+        })?;
+        self.apply_semantic_command_plan(plan)
     }
 
     /// Join two adjacent blocks at the given boundary position.
@@ -544,19 +547,14 @@ impl Editor {
     /// containing blockquote. Otherwise wraps the selected sibling block range
     /// in a new blockquote container.
     pub fn toggle_blockquote(&mut self) -> Result<EditorUpdate, EditorError> {
-        let doc = self.backend.document();
-        let pos = self.selection.from(doc);
-
-        if self.containing_blockquote_node_at(pos).is_some() {
-            return self.unwrap_from_blockquote(pos);
-        }
-
-        let Some(blockquote_type) = self.blockquote_node_name() else {
+        let Some(plan) = crate::command_planner::plan_toggle_blockquote(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+        ) else {
             return Ok(self.build_update_from_current());
         };
-        let from = self.selection.from(doc);
-        let to = self.selection.to(doc);
-        self.wrap_in_blockquote(from, to, &blockquote_type)
+        self.apply_command_replacement(plan)
     }
 
     /// Toggle a blockquote at an explicit scalar selection supplied by the caller.
@@ -576,31 +574,15 @@ impl Editor {
     /// selection is converted back to paragraphs. Otherwise, the selected text
     /// blocks are converted to the requested heading level.
     pub fn toggle_heading(&mut self, level: u8) -> Result<EditorUpdate, EditorError> {
-        let Some(target_type) = self.heading_node_name(level) else {
+        let Some(plan) = crate::command_planner::plan_toggle_heading(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            level,
+        ) else {
             return Ok(self.build_update_from_current());
         };
-        let Some(paragraph_type) = self.paragraph_node_name() else {
-            return Ok(self.build_update_from_current());
-        };
-
-        let doc = self.backend.document();
-        let from = self.selection.from(doc);
-        let to = self.selection.to(doc);
-        let Some(range) = self.selected_text_block_range(from, to) else {
-            return Ok(self.build_update_from_current());
-        };
-
-        let replacement_type = if range
-            .selected_blocks
-            .iter()
-            .all(|block| block.node_type() == target_type)
-        {
-            paragraph_type
-        } else {
-            target_type
-        };
-
-        self.replace_selected_text_blocks(range, &replacement_type)
+        self.apply_command_replacement(plan)
     }
 
     /// Toggle a heading at an explicit scalar selection supplied by the caller.
@@ -621,10 +603,14 @@ impl Editor {
     /// paragraph; otherwise converts it to a codeBlock. No-op update when the
     /// schema defines no codeBlock node.
     pub fn toggle_code_block(&mut self) -> Result<EditorUpdate, EditorError> {
-        let Some((range, target_type)) = self.code_block_toggle_plan() else {
+        let Some(plan) = crate::command_planner::plan_toggle_code_block(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+        ) else {
             return Ok(self.build_update_from_current());
         };
-        self.replace_selected_text_blocks(range, &target_type)
+        self.apply_command_replacement(plan)
     }
 
     /// Toggle a code block at an explicit scalar selection supplied by the caller.
@@ -853,18 +839,21 @@ impl Editor {
             None => return Ok(self.build_update_from_current()),
         };
 
-        let doc = self.backend.document();
-        let from = self.selection.from(doc);
-
-        if self.is_block_fragment(&content) {
-            return self.insert_block_fragment_at_selection(from, &content, Source::Paste);
-        }
-
-        let to = self.selection.to(doc);
-
+        let Some(plan) = crate::editor_state::plan_content_insertion(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            &content,
+        ) else {
+            return Ok(self.build_update_from_current());
+        };
         let mut tx = Transaction::new(Source::Paste);
-        tx.add_step(Step::ReplaceRange { from, to, content });
-        self.apply_transaction(tx)
+        tx.add_step(Step::ReplaceRange {
+            from: plan.from,
+            to: plan.to,
+            content: plan.content,
+        });
+        self.apply_transaction_with_selection_adjustments(tx, None, Some(plan.selection_after))
     }
 
     /// Insert JSON content at the current selection position.
@@ -886,18 +875,21 @@ impl Editor {
             None => return Ok(self.build_update_from_current()),
         };
 
-        let doc = self.backend.document();
-        let from = self.selection.from(doc);
-
-        if self.is_block_fragment(&content) {
-            return self.insert_block_fragment_at_selection(from, &content, Source::Api);
-        }
-
-        let to = self.selection.to(doc);
-
+        let Some(plan) = crate::editor_state::plan_content_insertion(
+            self.backend.document(),
+            &self.schema,
+            &self.selection,
+            &content,
+        ) else {
+            return Ok(self.build_update_from_current());
+        };
         let mut tx = Transaction::new(Source::Api);
-        tx.add_step(Step::ReplaceRange { from, to, content });
-        self.apply_transaction(tx)
+        tx.add_step(Step::ReplaceRange {
+            from: plan.from,
+            to: plan.to,
+            content: plan.content,
+        });
+        self.apply_transaction_with_selection_adjustments(tx, None, Some(plan.selection_after))
     }
 
     /// Replace the entire document content with HTML via a transaction.
@@ -1078,76 +1070,22 @@ impl Editor {
         scalar_from: u32,
         scalar_to: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        let doc_from = self.scalar_to_doc(scalar_from);
-        let doc_to = self.scalar_to_doc(scalar_to);
-        if let Some(list_pos) =
-            self.empty_list_unwrap_pos_for_scalar_delete(scalar_from, scalar_to, doc_from, doc_to)
-        {
-            return self.unwrap_from_list(list_pos);
-        }
-        if let Some(quote_pos) = self.empty_blockquote_exit_pos_for_scalar_delete(
+        let Some(plan) = crate::command_planner::plan_delete_scalar_range(
+            self.backend.document(),
+            self.backend.position_map(),
+            &self.schema,
             scalar_from,
             scalar_to,
-            doc_from,
-            doc_to,
-        ) {
-            return self.exit_empty_blockquote(quote_pos);
-        }
-        if let Some(action) = self.list_item_marker_backspace_action_for_scalar_delete(
-            scalar_from,
-            scalar_to,
-            doc_from,
-            doc_to,
-        ) {
-            return match action {
-                ListMarkerBackspaceAction::JoinPreviousItem(pos) => self.join_blocks(pos),
-                ListMarkerBackspaceAction::UnwrapItem(pos) => self.unwrap_from_list(pos),
-            };
-        }
-        if let Some((replace_from, replace_to, content, selection_after)) = self
-            .lift_empty_text_block_out_of_list_for_scalar_delete(
-                scalar_from,
-                scalar_to,
-                doc_from,
-                doc_to,
-            )
-        {
-            let mut tx = Transaction::new(Source::Input);
-            tx.add_step(Step::ReplaceRange {
-                from: replace_from,
-                to: replace_to,
-                content: Fragment::from(content),
-            });
-            return self.apply_transaction_with_selection_adjustments(
-                tx,
-                None,
-                Some(selection_after),
-            );
-        }
-        if let Some((replace_from, replace_to, selection_after)) =
-            self.block_void_replacement_for_scalar_delete(scalar_from, scalar_to, doc_from, doc_to)
-        {
-            let mut tx = Transaction::new(Source::Input);
-            tx.add_step(Step::ReplaceRange {
-                from: replace_from,
-                to: replace_to,
-                content: Fragment::from(vec![Self::empty_paragraph_node()]),
-            });
-            return self.apply_transaction_with_selection_adjustments(
-                tx,
-                None,
-                Some(selection_after),
-            );
-        }
-        if let Some((block_from, block_to)) = self.empty_text_block_delete_range_for_scalar_delete(
-            scalar_from,
-            scalar_to,
-            doc_from,
-            doc_to,
-        ) {
-            return self.delete_range(block_from, block_to);
-        }
-        self.delete_range(doc_from, doc_to)
+        )
+        .map_err(|()| {
+            EditorError::Transform(TransformError::InvalidTarget(
+                "delete command planning failed".into(),
+            ))
+        })?
+        else {
+            return Ok(self.build_update_from_current());
+        };
+        self.apply_semantic_command_plan(plan)
     }
 
     /// Delete backward relative to an explicit scalar selection.
@@ -1163,36 +1101,27 @@ impl Editor {
         scalar_head: u32,
     ) -> Result<EditorUpdate, EditorError> {
         self.with_scalar_selection(scalar_anchor, scalar_head, |editor| {
-            editor.delete_backward_at_current_scalar_selection(scalar_anchor, scalar_head)
+            editor.delete_backward_at_current_scalar_selection()
         })
     }
 
-    fn delete_backward_at_current_scalar_selection(
-        &mut self,
-        scalar_anchor: u32,
-        scalar_head: u32,
-    ) -> Result<EditorUpdate, EditorError> {
-        let from = scalar_anchor.min(scalar_head);
-        let to = scalar_anchor.max(scalar_head);
-        if from < to {
-            return self.delete_scalar_range(from, to);
-        }
-
-        let doc = self.backend.document();
-        let cursor_pos = self.selection.from(doc);
-        if let Some(action) = self.empty_split_action(cursor_pos) {
-            return self.apply_empty_split_action(action);
-        }
-        if let Some(update) =
-            self.replace_empty_non_paragraph_text_block_with_default_text_block(cursor_pos)?
-        {
-            return Ok(update);
-        }
-        if to > 0 {
-            return self.delete_scalar_range(to - 1, to);
-        }
-
-        Ok(self.build_update_from_current())
+    fn delete_backward_at_current_scalar_selection(&mut self) -> Result<EditorUpdate, EditorError> {
+        let Some(plan) = crate::command_planner::plan_delete_backward(
+            self.backend.document(),
+            self.backend.position_map(),
+            &self.schema,
+            &self.selection,
+            &self.resource_limits,
+        )
+        .map_err(|()| {
+            Self::runtime_content_limit_error(
+                self.resource_limits.max_document_nodes.saturating_mul(128),
+            )
+        })?
+        else {
+            return Ok(self.build_update_from_current());
+        };
+        self.apply_semantic_command_plan(plan)
     }
 
     /// Toggle the checked state of the current task item.
@@ -1250,53 +1179,33 @@ impl Editor {
         scalar_from: u32,
         scalar_to: u32,
     ) -> Result<EditorUpdate, EditorError> {
-        let doc_from = self.scalar_to_doc(scalar_from);
-        let doc_to = self.scalar_to_doc(scalar_to);
+        self.with_scalar_selection(scalar_from, scalar_to, |editor| {
+            editor.delete_and_split_at_current_scalar_selection()
+        })
+    }
 
-        if doc_from == doc_to && self.is_code_block_at_pos(doc_from) {
-            return self.split_block(doc_from);
-        }
-
-        let mut tx = Transaction::new(Source::Input);
-        if doc_from < doc_to {
-            tx.add_step(Step::DeleteRange {
-                from: doc_from,
-                to: doc_to,
-            });
-        }
-        let preview = tx
-            .apply_steps_unchecked(self.backend.document(), &self.schema)
-            .map_err(EditorError::Transform)?
-            .0;
-        let (budget, work_limit) = self.runtime_content_budget();
-        let selection_override = match self.empty_split_action_in_document(&preview, doc_from) {
-            Some(SplitAction::UnwrapList(pos)) => {
-                tx.add_step(Step::UnwrapFromList { pos });
-                None
-            }
-            Some(SplitAction::OutdentList(pos)) => {
-                tx.add_step(Step::OutdentListItem { pos });
-                None
-            }
-            Some(SplitAction::ExitBlockquote(pos)) => {
-                let (step, selection) = self.empty_blockquote_exit_plan(&preview, pos)?;
-                tx.add_step(step);
-                Some(selection)
-            }
-            None => {
-                let step = self
-                    .preferred_split_step(&preview, doc_from, &budget, work_limit)?
-                    .ok_or_else(|| {
-                        EditorError::Transform(TransformError::InvalidTarget(
-                            "schema has no constructible text block valid at the split position"
-                                .to_string(),
-                        ))
-                    })?;
-                tx.add_step(step);
-                None
-            }
+    fn delete_and_split_at_current_scalar_selection(
+        &mut self,
+    ) -> Result<EditorUpdate, EditorError> {
+        let Some(plan) = crate::command_planner::plan_split(
+            self.backend.document(),
+            self.backend.position_map(),
+            &self.schema,
+            &self.selection,
+            true,
+            &self.resource_limits,
+        )
+        .map_err(|()| {
+            Self::runtime_content_limit_error(
+                self.resource_limits.max_document_nodes.saturating_mul(128),
+            )
+        })?
+        else {
+            return Err(EditorError::Transform(TransformError::InvalidTarget(
+                "schema has no constructible text block valid at the split position".into(),
+            )));
         };
-        self.apply_transaction_with_selection_adjustments(tx, None, selection_override)
+        self.apply_semantic_command_plan(plan)
     }
 
     /// Set the selection from scalar offsets, converting to document positions.
@@ -1501,6 +1410,38 @@ impl Editor {
     /// Apply a transaction through the interceptor pipeline and backend.
     fn apply_transaction(&mut self, tx: Transaction) -> Result<EditorUpdate, EditorError> {
         self.apply_transaction_with_selection_adjustments(tx, None, None)
+    }
+
+    fn apply_semantic_command_plan(
+        &mut self,
+        plan: crate::command_planner::SemanticCommandPlan,
+    ) -> Result<EditorUpdate, EditorError> {
+        if plan.operations.is_empty() {
+            return Ok(self.build_update_from_current());
+        }
+        let mut transaction = Transaction::new(Source::Input);
+        for operation in &plan.operations {
+            transaction.add_step(operation.as_step());
+        }
+        self.apply_transaction_with_selection_adjustments(transaction, None, plan.selection_after)
+    }
+
+    fn apply_command_replacement(
+        &mut self,
+        plan: crate::command_planner::CommandReplacement,
+    ) -> Result<EditorUpdate, EditorError> {
+        let selection_after = plan.selection_after;
+        let mut tx = Transaction::new(Source::Format);
+        tx.add_step(Step::ReplaceRange {
+            from: plan.from,
+            to: plan.to,
+            content: plan.content,
+        });
+        match self.apply_transaction_with_selection_adjustments(tx, None, Some(selection_after)) {
+            Ok(update) => Ok(update),
+            Err(EditorError::Transform(_)) => Ok(self.build_update_from_current()),
+            Err(error) => Err(error),
+        }
     }
 
     fn apply_full_document_replace(
@@ -3948,6 +3889,7 @@ impl Editor {
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)] // Used by the retained Task 14 standalone adapters above.
 fn preferred_text_block_node_names_for_parent(
     schema: &Schema,
     parent_spec: &NodeSpec,
@@ -4051,6 +3993,7 @@ struct BlockSelectionRange {
     selected_blocks: Vec<Node>,
 }
 
+#[allow(dead_code)] // Used by the retained Task 14 standalone adapters above.
 struct EmptyBlockquoteExitContext {
     cursor_pos: u32,
     quote_node: Node,

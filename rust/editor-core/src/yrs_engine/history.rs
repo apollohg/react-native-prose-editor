@@ -223,6 +223,7 @@ enum ReplayEvent {
         work_units: u64,
     },
     Action(HistoryAction),
+    Boundary,
 }
 
 impl ReplayEvent {
@@ -232,6 +233,7 @@ impl ReplayEvent {
             Self::Recorded { update, .. } => TAG_BYTES.saturating_add(update.capacity()),
             Self::Excluded { update, .. } => TAG_BYTES.saturating_add(update.capacity()),
             Self::Action(_) => TAG_BYTES,
+            Self::Boundary => TAG_BYTES,
         }
     }
 
@@ -242,6 +244,7 @@ impl ReplayEvent {
             } => *undo_units_bound,
             Self::Excluded { work_units, .. } => *work_units,
             Self::Action(_) => 0,
+            Self::Boundary => 0,
         }
     }
 }
@@ -522,6 +525,10 @@ impl YrsHistory {
                     }
                     replayed_events.push(event.clone());
                 }
+                ReplayEvent::Boundary => {
+                    candidate.force_next_capture_boundary();
+                    replayed_events.push(event.clone());
+                }
             }
         }
         candidate.epoch_baseline = self.epoch_baseline.clone();
@@ -753,7 +760,9 @@ impl YrsHistory {
                     let slots = metadata.slots();
                     [slots.before, slots.after]
                 }
-                ReplayEvent::Excluded { .. } | ReplayEvent::Action(_) => [None, None],
+                ReplayEvent::Excluded { .. } | ReplayEvent::Action(_) | ReplayEvent::Boundary => {
+                    [None, None]
+                }
             })
             .flatten()
             .map(|slot| slot.identity())
@@ -900,6 +909,37 @@ impl YrsHistory {
             work_units,
         };
         self.push_replay_event(event);
+    }
+
+    /// Records a command boundary even when the command changed only editor
+    /// state (for example, collapsed stored marks) and captured no Yrs structs.
+    pub(crate) fn force_next_capture_boundary(&mut self) {
+        self.manager.reset();
+        self.force_next_boundary = true;
+    }
+
+    pub(crate) fn accept_boundary(
+        &mut self,
+        request_id: u64,
+        accepted_encoded_state: Vec<u8>,
+    ) -> OperationResult<()> {
+        self.replay_events.try_reserve(1).map_err(|error| {
+            OperationError::operation_resource_exhausted(
+                request_id,
+                "historyReplay",
+                format!("cannot reserve command boundary: {error}"),
+            )
+        })?;
+        let event = ReplayEvent::Boundary;
+        let next_count = self.replay_events.len().saturating_add(1);
+        let next_bytes = self.replay_bytes.saturating_add(event.encoded_bytes());
+        if next_count >= self.event_ceiling() || next_bytes > self.max_encoded_state_bytes {
+            self.roll_epoch(accepted_encoded_state);
+        } else {
+            self.force_next_capture_boundary();
+            self.push_replay_event(event);
+        }
+        Ok(())
     }
 
     pub(crate) fn perform(&mut self, action: HistoryAction) -> Option<HistorySnapshotSlot> {
