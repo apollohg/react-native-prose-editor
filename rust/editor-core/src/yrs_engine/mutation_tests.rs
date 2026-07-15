@@ -3105,18 +3105,22 @@ fn sticky_reverse_mapping_rejects_unknown_wire_element_and_descendant_branches()
             Some(position)
         );
     }
-    for position in [1, 2] {
-        for affinity in [Affinity::Before, Affinity::After] {
-            let point =
-                super::doc_pos_to_relative_point(&txn, &fragment, position, affinity, &schema)
-                    .unwrap();
-            assert_eq!(point.affinity, affinity);
-            assert_eq!(
-                super::relative_point_to_doc_pos(&txn, &fragment, &point, &schema),
-                Some(position)
-            );
-        }
+    for (position, affinity) in [
+        (1, Affinity::Before),
+        (1, Affinity::After),
+        (2, Affinity::Before),
+    ] {
+        let point =
+            super::doc_pos_to_relative_point(&txn, &fragment, position, affinity, &schema).unwrap();
+        assert_eq!(point.affinity, affinity);
+        assert_eq!(
+            super::relative_point_to_doc_pos(&txn, &fragment, &point, &schema),
+            Some(position)
+        );
     }
+    assert!(
+        super::doc_pos_to_relative_point(&txn, &fragment, 2, Affinity::After, &schema).is_none()
+    );
     for sticky in [
         StickyIndex::at(
             &txn,

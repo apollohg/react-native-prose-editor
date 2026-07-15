@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use editor_core::model::{Document, Fragment, Node};
 use editor_core::position::PositionMap;
-use editor_core::schema::Schema;
+use editor_core::schema::content_rule::ContentRule;
+use editor_core::schema::{NodeRole, NodeSpec, Schema};
 use editor_core::selection::Selection;
 use editor_core::tiptap_schema;
 use editor_core::yrs_engine::{
@@ -12,11 +13,12 @@ use editor_core::yrs_engine::{
 };
 use proptest::prelude::*;
 use serde::Deserialize;
+use yrs::branch::{Branch, BranchPtr};
 use yrs::types::text::Text;
 use yrs::types::xml::{
     XmlElementPrelim, XmlElementRef, XmlFragment, XmlFragmentRef, XmlTextPrelim, XmlTextRef,
 };
-use yrs::{ClientID, Doc, OffsetKind, Options, ReadTxn, Transact, WriteTxn};
+use yrs::{Assoc, ClientID, Doc, OffsetKind, Options, ReadTxn, StickyIndex, Transact, WriteTxn};
 
 fn utf16_doc() -> Doc {
     utf16_doc_with_client_id(4444)
@@ -65,7 +67,23 @@ fn rich_position_fixture() -> (Doc, Schema) {
     push_text(&nested_paragraph, &mut txn, "nested");
 
     drop(txn);
-    (doc, tiptap_schema())
+    (doc, rich_position_schema())
+}
+
+fn rich_position_schema() -> Schema {
+    let base = tiptap_schema();
+    let mut nodes = base.all_nodes().cloned().collect::<Vec<_>>();
+    nodes.push(NodeSpec {
+        name: "mention".into(),
+        content: ContentRule::parse("").unwrap(),
+        group: Some("inline".into()),
+        attrs: HashMap::new(),
+        role: NodeRole::Inline,
+        html_tag: None,
+        is_void: true,
+        allow_undeclared_attrs: true,
+    });
+    Schema::new(nodes, base.all_marks().cloned().collect())
 }
 
 fn rich_position_document() -> Document {
@@ -161,6 +179,23 @@ fn assert_fixture_matches_legacy_golden(doc: &Doc, schema: &Schema, golden: &Gol
     assert_eq!(golden.pairs.len(), golden.content_size as usize + 1);
     let txn = doc.transact();
     let fragment = txn.get_xml_fragment(golden.fragment_name.as_str()).unwrap();
+    let computed_content_size = (0..=golden.content_size + 1)
+        .take_while(|doc_pos| {
+            doc_pos_to_relative_point(&txn, &fragment, *doc_pos, Affinity::Before, schema).is_some()
+        })
+        .last()
+        .expect("position zero must map");
+    assert_eq!(computed_content_size, golden.content_size);
+    for affinity in [Affinity::Before, Affinity::After] {
+        assert!(doc_pos_to_relative_point(
+            &txn,
+            &fragment,
+            golden.content_size + 1,
+            affinity,
+            schema,
+        )
+        .is_none());
+    }
     for (doc_pos, pair) in golden.pairs.iter().enumerate() {
         for (affinity, expected) in [
             (Affinity::Before, &pair.before),
@@ -192,7 +227,8 @@ fn assert_fixture_matches_legacy_golden(doc: &Doc, schema: &Schema, golden: &Gol
 
 #[test]
 fn shared_position_codec_matches_frozen_pre_extraction_sticky_goldens() {
-    // Captured from the pre-extraction collaboration codec at commit 27b89e6.
+    // The custom-root fixture is captured from the pre-extraction codec. The
+    // rich fixture pins the strict schema contract with an explicit void mention.
     let goldens: LegacyGoldens =
         serde_json::from_str(include_str!("fixtures/yrs-position-legacy-golden.json"))
             .expect("legacy position golden fixture should be valid");
@@ -241,7 +277,7 @@ fn shared_position_codec_round_trips_unicode_void_nodes_lists_and_paragraph_boun
 
     // paragraph(A + emoji + combining sequence + hard break + mention + Z) = 9,
     // horizontal rule = 1, nested bullet list = 12.
-    assert_all_positions_round_trip(&doc, "prosemirror", &schema, 22, &[5, 7, 9, 20, 21, 22]);
+    assert_all_positions_round_trip(&doc, "prosemirror", &schema, 22, &[5, 8, 19, 20, 21, 22]);
 }
 
 #[test]
@@ -282,6 +318,230 @@ fn shared_position_codec_uses_schema_for_custom_roots_and_void_nodes() {
 
     // body("root😀") = 7, custom void = 1, body("tail") = 6.
     assert_all_positions_round_trip(&doc, "article-content", &schema, 14, &[6, 13, 14]);
+}
+
+fn strict_position_schema() -> Schema {
+    Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "block+", "role": "doc" },
+            {
+                "name": "knownContainer",
+                "content": "",
+                "group": "block",
+                "role": "block"
+            },
+            {
+                "name": "knownVoid",
+                "content": "",
+                "group": "block",
+                "role": "block",
+                "isVoid": true
+            },
+            {
+                "name": "h2",
+                "content": "inline*",
+                "group": "block",
+                "role": "textBlock"
+            },
+            {
+                "name": "__opaque",
+                "content": "inline*",
+                "group": "block",
+                "role": "block"
+            },
+            {
+                "name": "__opaque_json",
+                "content": "inline*",
+                "group": "block",
+                "role": "block"
+            },
+            {
+                "name": "__skip",
+                "content": "inline*",
+                "group": "block",
+                "role": "block"
+            },
+            { "name": "text", "content": "", "group": "inline", "role": "text" }
+        ],
+        "marks": []
+    }))
+    .expect("strict position schema should be valid")
+}
+
+fn assert_single_element_size(
+    doc: &Doc,
+    schema: &Schema,
+    expected_size: u32,
+    element_branch_visible_at: Option<u32>,
+) {
+    let txn = doc.transact();
+    let fragment = txn.get_xml_fragment("strict-position").unwrap();
+    let element = match fragment.get(&txn, 0).unwrap() {
+        yrs::types::xml::XmlOut::Element(element) => element,
+        _ => panic!("element expected"),
+    };
+    for doc_pos in 0..=expected_size {
+        assert!(
+            doc_pos_to_relative_point(&txn, &fragment, doc_pos, Affinity::Before, schema,)
+                .is_some()
+        );
+    }
+    for affinity in [Affinity::Before, Affinity::After] {
+        assert!(
+            doc_pos_to_relative_point(&txn, &fragment, expected_size + 1, affinity, schema,)
+                .is_none()
+        );
+    }
+    assert!(
+        doc_pos_to_relative_point(&txn, &fragment, expected_size, Affinity::After, schema,)
+            .is_none()
+    );
+
+    let element_sticky = StickyIndex::at(
+        &txn,
+        BranchPtr::from(<XmlElementRef as AsRef<Branch>>::as_ref(&element)),
+        0,
+        Assoc::Before,
+    )
+    .unwrap();
+    assert_eq!(
+        relative_point_to_doc_pos(
+            &txn,
+            &fragment,
+            &editor_core::yrs_engine::RelativePoint {
+                sticky: element_sticky,
+                affinity: Affinity::Before,
+            },
+            schema,
+        ),
+        element_branch_visible_at
+    );
+}
+
+fn strict_element_fixture(
+    client_id: u64,
+    tag: &str,
+    with_descendant: bool,
+) -> (Doc, Option<StickyIndex>) {
+    let doc = utf16_doc_with_client_id(client_id);
+    let descendant = {
+        let mut txn = doc.transact_mut();
+        let fragment = txn.get_or_insert_xml_fragment("strict-position");
+        let element = push_element(&fragment, &mut txn, tag);
+        with_descendant.then(|| {
+            let text = push_text(&element, &mut txn, "hostile");
+            StickyIndex::at(
+                &txn,
+                BranchPtr::from(<XmlTextRef as AsRef<Branch>>::as_ref(&text)),
+                1,
+                Assoc::After,
+            )
+            .unwrap()
+        })
+    };
+    (doc, descendant)
+}
+
+#[test]
+fn strict_schema_and_opaque_position_matrix_has_exact_sizes_and_hidden_branches() {
+    let schema = strict_position_schema();
+
+    let (known_nonvoid, _) = strict_element_fixture(5101, "knownContainer", false);
+    assert_single_element_size(&known_nonvoid, &schema, 2, Some(1));
+
+    let (known_void, _) = strict_element_fixture(5102, "knownVoid", false);
+    assert_single_element_size(&known_void, &schema, 1, None);
+
+    for (client_id, with_descendant) in [(5103, false), (5104, true)] {
+        let (unknown, descendant) =
+            strict_element_fixture(client_id, "schemaUnknown", with_descendant);
+        assert_single_element_size(&unknown, &schema, 1, None);
+        if let Some(sticky) = descendant {
+            let txn = unknown.transact();
+            let fragment = txn.get_xml_fragment("strict-position").unwrap();
+            assert!(relative_point_to_doc_pos(
+                &txn,
+                &fragment,
+                &editor_core::yrs_engine::RelativePoint {
+                    sticky,
+                    affinity: Affinity::After,
+                },
+                &schema,
+            )
+            .is_none());
+        }
+    }
+
+    for (client_id, with_descendant) in [(5105, false), (5106, true)] {
+        let (heading, descendant) = strict_element_fixture(client_id, "heading", with_descendant);
+        assert_single_element_size(&heading, &schema, 1, None);
+        if let Some(sticky) = descendant {
+            let txn = heading.transact();
+            let fragment = txn.get_xml_fragment("strict-position").unwrap();
+            assert!(relative_point_to_doc_pos(
+                &txn,
+                &fragment,
+                &editor_core::yrs_engine::RelativePoint {
+                    sticky,
+                    affinity: Affinity::After,
+                },
+                &schema,
+            )
+            .is_none());
+        }
+    }
+
+    for (client_id, reserved) in [
+        (5108, "__opaque"),
+        (5109, "__opaque_json"),
+        (5110, "__skip"),
+    ] {
+        let (hostile, descendant) = strict_element_fixture(client_id, reserved, true);
+        assert_single_element_size(&hostile, &schema, 1, None);
+        let txn = hostile.transact();
+        let fragment = txn.get_xml_fragment("strict-position").unwrap();
+        assert!(relative_point_to_doc_pos(
+            &txn,
+            &fragment,
+            &editor_core::yrs_engine::RelativePoint {
+                sticky: descendant.unwrap(),
+                affinity: Affinity::After,
+            },
+            &schema,
+        )
+        .is_none());
+    }
+}
+
+#[test]
+fn deleting_unknown_descendants_keeps_one_opaque_position_and_hidden_branches() {
+    let schema = strict_position_schema();
+    let (doc, descendant) = strict_element_fixture(5107, "schemaUnknown", true);
+    let descendant = descendant.unwrap();
+    assert_single_element_size(&doc, &schema, 1, None);
+
+    {
+        let mut txn = doc.transact_mut();
+        let fragment = txn.get_xml_fragment("strict-position").unwrap();
+        let yrs::types::xml::XmlOut::Element(element) = fragment.get(&txn, 0).unwrap() else {
+            panic!("unknown element expected")
+        };
+        element.remove_range(&mut txn, 0, 1);
+    }
+
+    assert_single_element_size(&doc, &schema, 1, None);
+    let txn = doc.transact();
+    let fragment = txn.get_xml_fragment("strict-position").unwrap();
+    assert!(relative_point_to_doc_pos(
+        &txn,
+        &fragment,
+        &editor_core::yrs_engine::RelativePoint {
+            sticky: descendant,
+            affinity: Affinity::After,
+        },
+        &schema,
+    )
+    .is_none());
 }
 
 #[test]
@@ -381,30 +641,32 @@ fn revisioned_offsets_preserve_affinity_at_rendered_inter_block_break() {
             .unwrap()
         };
         let before = point(Affinity::Before);
-        let after = point(Affinity::After);
-        for point in [&before, &after] {
-            assert_eq!(
-                relative_point_to_doc_pos(&txn, &fragment, point, &schema),
-                Some(8)
-            );
-        }
+        assert!(revisioned_position_to_relative_point(
+            &txn,
+            &fragment,
+            RevisionedPosition {
+                offset,
+                kind,
+                affinity: Affinity::After,
+            },
+            rendered_text,
+            &map,
+            &document,
+            &schema,
+        )
+        .is_none());
+        assert_eq!(
+            relative_point_to_doc_pos(&txn, &fragment, &before, &schema),
+            Some(8)
+        );
         let before_sticky = serde_json::to_value(&before.sticky).unwrap();
-        let after_sticky = serde_json::to_value(&after.sticky).unwrap();
         assert_eq!(
             before_sticky,
             serde_json::json!({
                 "assoc": -1,
-                "type": { "client": 4242, "clock": 9 }
-            })
-        );
-        assert_eq!(
-            after_sticky,
-            serde_json::json!({
-                "assoc": 0,
                 "item": { "client": 4242, "clock": 10 }
             })
         );
-        assert_ne!(before_sticky, after_sticky);
     }
 }
 

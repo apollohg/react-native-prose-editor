@@ -505,7 +505,6 @@ impl MutationCompiler {
         }
         Ok(())
     }
-
 }
 
 fn wire_element_is_semantic_void<T: ReadTxn>(
@@ -514,6 +513,9 @@ fn wire_element_is_semantic_void<T: ReadTxn>(
     schema: &Schema,
 ) -> bool {
     let node_type = super::super::codec::normalized_wire_element_node_type(element, txn);
+    if matches!(node_type.as_str(), "__opaque" | "__opaque_json" | "__skip") {
+        return true;
+    }
     if let Some(spec) = schema.node(&node_type) {
         return spec.is_void;
     }

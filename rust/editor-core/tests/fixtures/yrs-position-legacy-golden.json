@@ -10,7 +10,6 @@
       { "before": { "assoc": -1, "item": { "client": 4242, "clock": 5 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 6 } } },
       { "before": { "assoc": -1, "item": { "client": 4242, "clock": 6 } }, "after": null },
       { "before": { "assoc": -1, "item": { "client": 4242, "clock": 7 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 8 } } },
-      { "before": { "assoc": -1, "type": { "client": 4242, "clock": 8 } }, "after": null },
       { "before": { "assoc": -1, "type": { "client": 4242, "clock": 9 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 10 } } },
       { "before": { "assoc": -1, "item": { "client": 4242, "clock": 10 } }, "after": null },
       { "before": { "assoc": -1, "item": { "client": 4242, "clock": 0 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 11 } } },
@@ -25,7 +24,8 @@
       { "before": { "assoc": -1, "item": { "client": 4242, "clock": 20 } }, "after": { "assoc": 0, "item": { "client": 4242, "clock": 21 } } },
       { "before": { "assoc": -1, "item": { "client": 4242, "clock": 21 } }, "after": null },
       { "before": { "assoc": -1, "item": { "client": 4242, "clock": 14 } }, "after": null },
-      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 13 } }, "after": null }
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 13 } }, "after": null },
+      { "before": { "assoc": -1, "item": { "client": 4242, "clock": 12 } }, "after": null }
     ]
   },
   "custom_root": {

@@ -361,13 +361,7 @@ fn doc_pos_to_sticky_index_in_sequence<'a, T: ReadTxn>(
     }
 
     if doc_pos == consumed_pm {
-        StickyIndex::at(txn, branch, branch_index, assoc).or_else(|| {
-            let fallback = match assoc {
-                Assoc::Before => Assoc::After,
-                Assoc::After => Assoc::Before,
-            };
-            StickyIndex::at(txn, branch, branch_index, fallback)
-        })
+        StickyIndex::at(txn, branch, branch_index, assoc)
     } else {
         None
     }
@@ -386,6 +380,9 @@ fn xml_fragment_pm_content_size<T: ReadTxn>(
 
 fn is_void_element<T: ReadTxn>(element: &XmlElementRef, txn: &T, schema: &Schema) -> bool {
     let node_type = super::codec::normalized_wire_element_node_type(element, txn);
+    if matches!(node_type.as_str(), "__opaque" | "__opaque_json" | "__skip") {
+        return true;
+    }
     if let Some(spec) = schema.node(&node_type) {
         return spec.is_void;
     }

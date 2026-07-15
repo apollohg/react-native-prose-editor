@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod prepared_batch_tests {
     use serde_json::json;
+    use yrs::types::xml::{XmlElementPrelim, XmlFragment};
     use yrs::{Doc, OffsetKind, Options, Transact, WriteTxn};
 
     use super::*;
@@ -20,6 +21,49 @@ mod prepared_batch_tests {
     #[test]
     fn action_slot_stays_pointer_sized_for_tombstone_heavy_plans() {
         assert!(std::mem::size_of::<ActionSlot>() <= 32);
+    }
+
+    #[test]
+    fn reserved_wire_elements_remain_semantic_void_under_hostile_schema_declarations() {
+        let schema = Schema::from_json(&json!({
+            "nodes": [
+                { "name": "doc", "content": "block+", "role": "doc" },
+                {
+                    "name": "__opaque",
+                    "content": "inline*",
+                    "group": "block",
+                    "role": "block"
+                },
+                {
+                    "name": "__opaque_json",
+                    "content": "inline*",
+                    "group": "block",
+                    "role": "block"
+                },
+                {
+                    "name": "__skip",
+                    "content": "inline*",
+                    "group": "block",
+                    "role": "block"
+                },
+                { "name": "text", "content": "", "group": "inline", "role": "text" }
+            ],
+            "marks": []
+        }))
+        .unwrap();
+
+        for reserved in ["__opaque", "__opaque_json", "__skip"] {
+            let doc = utf16_doc();
+            let element = {
+                let mut txn = doc.transact_mut();
+                let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+                let element = fragment.push_back(&mut txn, XmlElementPrelim::empty(reserved));
+                element.push_back(&mut txn, yrs::types::xml::XmlTextPrelim::new("hostile"));
+                element
+            };
+            let txn = doc.transact();
+            assert!(wire_element_is_semantic_void(&element, &txn, &schema));
+        }
     }
 
     fn seed_two_prepared_root_blocks(
