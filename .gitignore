@@ -1,6 +1,7 @@
 .idea
 .vscode
 .DS_Store
+.worktrees
 node_modules
 example/node_modules
 example/.expo
