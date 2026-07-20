@@ -113,7 +113,7 @@ for (const [name, ceiling] of Object.entries(resourceCeilings)) {
     const snake = name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
     const match = rust
         .replaceAll(/\s/g, '')
-        .match(new RegExp(`\\("${name}",limits\\.${snake},([\\d_*+]+),?\\)`));
+        .match(new RegExp(`\\("${name}",(?:self|limits)\\.${snake},([\\d_*+]+),?\\)`));
     assert.ok(match, `Rust ceiling missing for ${name}`);
     assert.equal(evaluateInteger(match[1]), ceiling, `Rust ceiling drift for ${name}`);
 }
@@ -166,6 +166,7 @@ assert.deepEqual(
     Object.keys(fixtures).sort(),
     [
         'customArticleRoot',
+        'ffiV2ErrorContract',
         'missingImageSource',
         'oversizedSchema',
         'schemaNormalizationParity',
@@ -184,6 +185,70 @@ assert.ok(Array.isArray(fixtures.schemaNormalizationParity.missingFields?.nodes)
 assert.ok(Array.isArray(fixtures.schemaNormalizationParity.missingFields?.marks));
 assert.equal(typeof fixtures.schemaNormalizationParity.invalidNodeTag, 'string');
 assert.equal(typeof fixtures.schemaNormalizationParity.invalidAttribute, 'string');
+
+const ffiV2 = fixtures.ffiV2ErrorContract;
+assert.deepEqual(ffiV2.domains, [
+    'boundary',
+    'document',
+    'operation',
+    'lifecycle',
+    'snapshot',
+    'transport',
+]);
+assert.deepEqual(ffiV2.operationCodes, [
+    'ENGINE_NOT_READY',
+    'REVISION_MISMATCH',
+    'POSITION_INVALID',
+    'TRANSACTION_INVALID',
+    'OPERATION_INVALID',
+    'OPERATION_LIMIT_EXCEEDED',
+    'OPERATION_RESOURCE_EXHAUSTED',
+    'DOCUMENT_INVALID',
+    'DOCUMENT_LIMIT_EXCEEDED',
+    'ENGINE_INVARIANT_FAILED',
+]);
+assert.equal(new Set(ffiV2.domains).size, 6);
+assert.equal(new Set(ffiV2.operationCodes).size, 10);
+assert.ok(ffiV2.goldenErrors.every((error) => ffiV2.domains.includes(error.domain)));
+assert.ok(ffiV2.goldenErrors.every((error) => typeof error.code === 'string'));
+for (const code of ffiV2.operationCodes) {
+    const golden = ffiV2.goldenErrors.filter((error) => error.code === code);
+    assert.equal(golden.length, 1, `expected one golden FFI v2 error for ${code}`);
+    assert.equal(golden[0].domain, ffiV2.operationCodeDomains[code]);
+    assert.match(golden[0].requestId, /^(0|[1-9]\d*)$/);
+}
+assert.ok(
+    ffiV2.invalidRequestIds.every((requestId) => !/^(0|[1-9]\d*)$/.test(requestId))
+);
+assert.deepEqual(
+    ffiV2.deterministicMappings.map(({ expectedCode }) => expectedCode),
+    [
+        'OPERATION_LIMIT_EXCEEDED',
+        'DOCUMENT_LIMIT_EXCEEDED',
+        'OPERATION_RESOURCE_EXHAUSTED',
+    ]
+);
+
+const session = read('rust/editor-core/src/session.rs');
+const collaborationNames = Object.fromEntries(
+    Object.keys(ffiV2.collaborationLimits.defaults).map((name) => [
+        name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
+        name,
+    ])
+);
+assert.deepEqual(
+    objectAssignments(session, 'impl Default for CollaborationLimits', collaborationNames),
+    ffiV2.collaborationLimits.defaults
+);
+assert.deepEqual(
+    objectAssignments(session, 'pub(crate) const fn hard_ceiling()', collaborationNames),
+    ffiV2.collaborationLimits.ceilings
+);
+
+const ffiTypes = read('rust/editor-core/src/ffi_v2/types.rs');
+for (const domain of ffiV2.domains) assert.ok(ffiTypes.includes(`"${domain}"`));
+for (const code of ffiV2.operationCodes) assert.ok(ffiTypes.includes(`"${code}"`));
+assert.match(ffiTypes, /Some\(true\)/, 'unit success must cross UniFFI as Some(true)');
 
 const udl = read('rust/editor-core/src/editor_core.udl');
 assert.match(udl, /string editor_create_result\(string config_json\);/);

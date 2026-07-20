@@ -403,6 +403,63 @@ impl PositionMap {
     pub fn blocks(&self) -> &[BlockMapping] {
         &self.blocks
     }
+
+    /// Rendered scalar width of an inline void in this map's schema domain.
+    /// Localized derived indexes use this while streaming a block once.
+    pub(crate) fn inline_void_scalar_len(&self, node: &Node) -> Option<u32> {
+        node.is_void()
+            .then(|| inline_void_visible_scalar_len(node, &self.hard_break_node_types))
+    }
+
+    pub(crate) fn has_effective_stored_bounds(&self) -> bool {
+        self.prefix_deltas.is_empty()
+    }
+
+    /// Upper bound for heap allocations produced by cloning this map into a
+    /// history snapshot. Source capacities bound the corresponding clone
+    /// requests; spilled `SmallVec` paths are charged individually.
+    pub(crate) fn history_snapshot_clone_retained_bytes(&self) -> Option<usize> {
+        let block_bytes = self
+            .blocks
+            .capacity()
+            .checked_mul(std::mem::size_of::<BlockMapping>())?;
+        let spilled_path_bytes = self.blocks.iter().try_fold(0usize, |total, block| {
+            let path_bytes = if block.node_path.spilled() {
+                block
+                    .node_path
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<u32>())?
+            } else {
+                0
+            };
+            total.checked_add(path_bytes)
+        })?;
+        let hard_break_capacity = self.hard_break_node_types.capacity();
+        let hard_break_bucket_count_bound = if hard_break_capacity == 0 {
+            0
+        } else {
+            // `HashSet::capacity()` reports the element capacity at its load
+            // factor. Twice that capacity plus one bounds both buckets and the
+            // trailing control group without relying on hashbrown internals.
+            hard_break_capacity.checked_mul(2)?.checked_add(1)?
+        };
+        // A bucket stores one String plus control metadata. One usize of
+        // control charge per bucket also covers the trailing SIMD control
+        // group used by the standard hash-table implementation.
+        let hard_break_table_bytes = hard_break_bucket_count_bound.checked_mul(
+            std::mem::size_of::<String>().checked_add(std::mem::size_of::<usize>())?,
+        )?;
+        let hard_break_string_bytes = self
+            .hard_break_node_types
+            .iter()
+            .try_fold(0usize, |total, value| total.checked_add(value.capacity()))?;
+
+        block_bytes
+            .checked_add(spilled_path_bytes)?
+            .checked_add(self.prefix_deltas.history_snapshot_clone_retained_bytes()?)?
+            .checked_add(hard_break_table_bytes)?
+            .checked_add(hard_break_string_bytes)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -540,4 +597,46 @@ fn inline_void_visible_scalar_len(node: &Node, hard_break_node_types: &HashSet<S
         Some(label.as_str()),
         hard_break_node_types.contains(node.node_type()),
     )
+}
+
+#[cfg(test)]
+mod retained_size_tests {
+    use smallvec::smallvec;
+
+    use super::{BlockMapping, PositionMap};
+    use crate::schema::presets::tiptap_schema;
+
+    fn block(path: smallvec::SmallVec<[u32; 8]>) -> BlockMapping {
+        BlockMapping {
+            doc_start: 0,
+            doc_end: 0,
+            scalar_start: 0,
+            scalar_len: 0,
+            scalar_prefix_len: 0,
+            rendered_break_after: 0,
+            node_path: path,
+            is_void_block: false,
+        }
+    }
+
+    #[test]
+    fn history_snapshot_clone_charge_scales_with_summed_spilled_path_depth() {
+        let schema = tiptap_schema();
+        let shallow =
+            PositionMap::from_blocks(vec![block(smallvec![0, 0, 0, 0, 0, 0, 0, 0]); 24], &schema);
+        let deep_blocks = (9..=32)
+            .map(|depth| block(smallvec::SmallVec::from_vec(vec![0; depth])))
+            .collect::<Vec<_>>();
+        let summed_spilled_capacity = deep_blocks
+            .iter()
+            .map(|block| block.node_path.capacity())
+            .sum::<usize>();
+        let deep = PositionMap::from_blocks(deep_blocks, &schema);
+
+        let shallow_bytes = shallow.history_snapshot_clone_retained_bytes().unwrap();
+        let deep_bytes = deep.history_snapshot_clone_retained_bytes().unwrap();
+        let spilled_path_bytes = summed_spilled_capacity * std::mem::size_of::<u32>();
+
+        assert!(deep_bytes >= shallow_bytes.saturating_add(spilled_path_bytes));
+    }
 }

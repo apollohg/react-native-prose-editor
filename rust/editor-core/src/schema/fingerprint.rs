@@ -4,6 +4,21 @@ use serde::Serialize;
 
 use super::{AttrSpec, MarkSpec, NodeRole, NodeSpec, Schema};
 
+#[cfg(test)]
+std::thread_local! {
+    static SCHEMA_FINGERPRINT_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_schema_fingerprint_count_for_test() {
+    SCHEMA_FINGERPRINT_COUNT.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn take_schema_fingerprint_count_for_test() -> usize {
+    SCHEMA_FINGERPRINT_COUNT.replace(0)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CanonicalSchema<'a> {
@@ -181,6 +196,8 @@ impl<'a> From<&'a Schema> for CanonicalSchema<'a> {
 }
 
 pub(crate) fn schema_fingerprint(schema: &Schema) -> String {
+    #[cfg(test)]
+    SCHEMA_FINGERPRINT_COUNT.set(SCHEMA_FINGERPRINT_COUNT.get().saturating_add(1));
     use sha2::{Digest, Sha256};
     let canonical = CanonicalSchema::from(schema);
     let bytes =

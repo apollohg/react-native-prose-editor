@@ -50,4 +50,14 @@ impl Fragment {
     pub fn children(&self) -> &[Node] {
         &self.children
     }
+
+    pub(crate) fn history_snapshot_retained_bytes(&self) -> Option<usize> {
+        let slots = self
+            .children
+            .capacity()
+            .checked_mul(std::mem::size_of::<Node>())?;
+        self.children.iter().try_fold(slots, |total, child| {
+            total.checked_add(child.history_snapshot_retained_bytes()?)
+        })
+    }
 }

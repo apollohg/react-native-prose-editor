@@ -106,6 +106,23 @@ pub(super) fn semantic_transaction(
     selection: &crate::selection::Selection,
     plan: crate::command_planner::SemanticCommandPlan,
 ) -> OperationResult<CommandPlan> {
+    semantic_transaction_impl(context, selection, plan, None)
+}
+
+pub(super) fn admitted_semantic_transaction(
+    context: &PlanningContext<'_>,
+    selection: &crate::selection::Selection,
+    admitted: crate::command_planner::AdmittedSemanticCommandPlan,
+) -> OperationResult<CommandPlan> {
+    semantic_transaction_impl(context, selection, admitted.plan, Some(admitted.simulated))
+}
+
+fn semantic_transaction_impl(
+    context: &PlanningContext<'_>,
+    selection: &crate::selection::Selection,
+    plan: crate::command_planner::SemanticCommandPlan,
+    admitted_simulation: Option<crate::command_planner::SimulatedCommandPlan>,
+) -> OperationResult<CommandPlan> {
     if plan.operations.len() > context.editing_limits.max_operations_per_transaction {
         return Err(OperationError::operation_limit_exceeded(
             context.request_id,
@@ -115,21 +132,139 @@ pub(super) fn semantic_transaction(
             plan.operations.len() as u64,
         ));
     }
-    let simulated = crate::command_planner::simulate_plan(
-        context.document,
-        context.schema,
-        selection,
-        &plan,
-        context.resource_limits,
-    )
-    .map_err(|()| {
-        OperationError::operation_invalid(
-            context.request_id,
-            0,
-            "command",
-            "command simulation failed",
+    let simulated = match admitted_simulation {
+        Some(simulated) => simulated,
+        None => crate::command_planner::simulate_plan(
+            context.document,
+            context.schema,
+            selection,
+            &plan,
+            context.resource_limits,
         )
-    })?;
+        .map_err(|()| {
+            OperationError::operation_invalid(
+                context.request_id,
+                0,
+                "command",
+                "command simulation failed",
+            )
+        })?,
+    };
+    if let Some(preparation) = context
+        .preparation
+        .filter(|_| is_single_compile_prepared_plan(&plan))
+    {
+        let prepares_candidate_validation = plan.operations.iter().any(|operation| {
+            matches!(
+                operation,
+                crate::command_planner::SemanticOperation::AddMark { .. }
+                    | crate::command_planner::SemanticOperation::RemoveMark { .. }
+                    | crate::command_planner::SemanticOperation::WrapInList { .. }
+            )
+        });
+        let candidate_seed = prepares_candidate_validation
+            .then(|| {
+                crate::yrs_engine::compiler::PreparedCandidateSeed::mint(
+                    context.request_id,
+                    &simulated.document,
+                    context.schema,
+                    context.canonical_schema,
+                    context.resource_limits,
+                    context.editing_limits,
+                    context.max_length,
+                )
+            })
+            .transpose()?;
+        let prepared = if plan.operations.iter().any(|operation| {
+            matches!(
+                operation,
+                crate::command_planner::SemanticOperation::WrapInList { .. }
+            )
+        }) {
+            let prepared_selection = candidate_seed
+                .as_ref()
+                .expect("prepared wrap retains candidate seed")
+                .normalize_selection(&simulated.selection);
+            let transaction = structural_fallback_transaction(
+                context,
+                plan.history,
+                &simulated.document,
+                &prepared_selection,
+            )?;
+            is_prepared_root_wrap_shape(&transaction).then_some((transaction, prepared_selection))
+        } else {
+            preferred_direct_transaction(context, selection, &plan)
+                .map(|transaction| (transaction, simulated.selection.clone()))
+        };
+        if let Some((transaction, prepared_selection)) = prepared {
+            let deferred_shape =
+                crate::yrs_engine::prepared_admission::DeferredInsertShapeProof::prepare(
+                    context.document,
+                    plan.operations.as_slice(),
+                );
+            let eager_known_serialized_len = (!context.allow_deferred_admission)
+                .then(|| {
+                    deferred_shape.as_ref().and_then(|shape| {
+                        context
+                            .canonical_artifact
+                            .serialized_len()
+                            .checked_add(shape.escaped_body_bytes())
+                    })
+                })
+                .flatten();
+            let execution_admission = match (
+                context.allow_deferred_admission,
+                deferred_shape,
+                context
+                    .canonical_artifact
+                    .admitted_serialized_upper_bound_option(),
+            ) {
+                (true, Some(shape), Some(base_upper))
+                    if base_upper
+                        .checked_add(shape.escaped_body_bytes())
+                        .is_some_and(|candidate| {
+                            candidate <= context.editing_limits.max_derived_output_bytes
+                        }) =>
+                {
+                    let admission =
+                        crate::yrs_engine::prepared_admission::DeferredCommandAdmission::prepare(
+                            context,
+                            &transaction,
+                            &simulated,
+                            shape,
+                        )?;
+                    admission.pre_admit_seed_independent()?;
+                    crate::yrs_engine::prepared_admission::ExecutionSemanticAdmission::Deferred(
+                        admission,
+                    )
+                }
+                _ => {
+                    let admission = prepare_eager_semantic_admission(
+                        context,
+                        &plan,
+                        &transaction,
+                        &simulated,
+                        candidate_seed,
+                        eager_known_serialized_len,
+                    )?;
+                    admission.pre_admit_seed_independent(
+                        &transaction,
+                        &simulated.document,
+                        context.editing_limits,
+                    )?;
+                    crate::yrs_engine::prepared_admission::ExecutionSemanticAdmission::Eager(
+                        admission,
+                    )
+                }
+            };
+            preparation.replace(Some(super::PreparedCommandProof {
+                document: simulated.document,
+                selection: prepared_selection,
+                execution_admission,
+            }));
+            return Ok(CommandPlan::Transaction(transaction));
+        }
+    }
     crate::transform::DocumentValidator::validate(
         &simulated.document,
         context.schema,
@@ -159,9 +294,97 @@ pub(super) fn semantic_transaction(
     )? {
         return Ok(CommandPlan::Transaction(transaction));
     }
+    let transaction = structural_fallback_transaction(
+        context,
+        plan.history,
+        &simulated.document,
+        &simulated.selection,
+    )?;
+    Ok(CommandPlan::Transaction(transaction))
+}
+
+fn is_prepared_root_wrap_shape(transaction: &TypedTransaction) -> bool {
+    let [TypedOperation::ReplaceStructure(replacement)] = transaction.operations.as_slice() else {
+        return false;
+    };
+    let (from_child, to_child) = replacement.child_window();
+    replacement.parent_path().is_empty()
+        && replacement.content().child_count() == 1
+        && from_child < to_child
+}
+
+fn is_single_compile_prepared_plan(plan: &crate::command_planner::SemanticCommandPlan) -> bool {
+    plan.operations.len() == 1
+        && plan.operations.iter().all(|operation| {
+            matches!(
+                operation,
+                crate::command_planner::SemanticOperation::InsertText { .. }
+                    | crate::command_planner::SemanticOperation::AddMark { .. }
+                    | crate::command_planner::SemanticOperation::RemoveMark { .. }
+                    | crate::command_planner::SemanticOperation::WrapInList { .. }
+            )
+        })
+}
+
+fn prepare_eager_semantic_admission(
+    context: &PlanningContext<'_>,
+    plan: &crate::command_planner::SemanticCommandPlan,
+    transaction: &TypedTransaction,
+    simulated: &crate::command_planner::SimulatedCommandPlan,
+    candidate_seed: Option<crate::yrs_engine::compiler::PreparedCandidateSeed>,
+    known_canonical_serialized_len: Option<usize>,
+) -> OperationResult<crate::yrs_engine::compiler::PreparedSemanticAdmission> {
+    let (undo_units, command_contract_kind) = if simulated.document == *context.document {
+        (
+            0,
+            crate::yrs_engine::compiler::PreparedCommandContractKind::None,
+        )
+    } else {
+        match &plan.operations[0] {
+            crate::command_planner::SemanticOperation::InsertText { text, .. } => (
+                text.chars().count() as u64,
+                crate::yrs_engine::compiler::PreparedCommandContractKind::None,
+            ),
+            crate::command_planner::SemanticOperation::AddMark { from, to, .. }
+            | crate::command_planner::SemanticOperation::RemoveMark { from, to, .. } => (
+                u64::from(to.saturating_sub(*from)),
+                crate::yrs_engine::compiler::PreparedCommandContractKind::None,
+            ),
+            crate::command_planner::SemanticOperation::WrapInList { .. } => (
+                0,
+                crate::yrs_engine::compiler::PreparedCommandContractKind::RootWrap,
+            ),
+            _ => unreachable!("prepared eligibility admits only one direct operation"),
+        }
+    };
+    crate::yrs_engine::compiler::PreparedSemanticAdmission::prepare_single_operation(
+        context.request_id,
+        context.revision,
+        context.state_revision,
+        context.yrs_state_epoch,
+        context.schema,
+        context.canonical_schema,
+        context.resource_limits,
+        context.editing_limits,
+        context.max_length,
+        transaction,
+        &simulated.document,
+        candidate_seed,
+        known_canonical_serialized_len,
+        undo_units,
+        command_contract_kind,
+    )
+}
+
+pub(super) fn structural_fallback_transaction(
+    context: &PlanningContext<'_>,
+    history: crate::command_planner::SemanticCommandHistory,
+    simulated_document: &crate::model::Document,
+    simulated_selection: &crate::selection::Selection,
+) -> OperationResult<TypedTransaction> {
     let diff = crate::command_planner::structural_diff_bounded(
         context.document,
-        &simulated.document,
+        simulated_document,
         context.resource_limits,
     )
     .map_err(|()| {
@@ -181,7 +404,7 @@ pub(super) fn semantic_transaction(
     })?;
     if !crate::command_planner::prove_structural_diff(
         context.document,
-        &simulated.document,
+        simulated_document,
         &diff,
         context.schema,
         context.resource_limits,
@@ -200,7 +423,7 @@ pub(super) fn semantic_transaction(
             "structural replacement did not reproduce the simulated candidate",
         ));
     }
-    Ok(CommandPlan::Transaction(TypedTransaction {
+    Ok(TypedTransaction {
         request_id: context.request_id,
         base_document_revision: context.revision,
         origin: TransactionOrigin::LocalCommand,
@@ -210,12 +433,22 @@ pub(super) fn semantic_transaction(
                 diff.from_child,
                 diff.to_child,
                 diff.content,
-                simulated.selection,
+                simulated_selection.clone(),
             ),
         )],
         selection_intent: SelectionIntent::UseOperationResult,
-        history_policy: semantic_history_policy(plan.history),
-    }))
+        history_policy: semantic_history_policy(history),
+    })
+}
+
+fn direct_typed_operations(
+    context: &PlanningContext<'_>,
+    operations: &[crate::command_planner::SemanticOperation],
+) -> Option<Vec<TypedOperation>> {
+    operations
+        .iter()
+        .map(|operation| direct_typed_operation(context, operation))
+        .collect()
 }
 
 fn direct_transaction(
@@ -225,12 +458,7 @@ fn direct_transaction(
     simulated_document: &crate::model::Document,
     simulated_selection: &crate::selection::Selection,
 ) -> OperationResult<Option<TypedTransaction>> {
-    let Some(operations) = plan
-        .operations
-        .iter()
-        .map(|operation| direct_typed_operation(context, operation))
-        .collect::<Option<Vec<_>>>()
-    else {
+    let Some(operations) = direct_typed_operations(context, &plan.operations) else {
         return Ok(None);
     };
     let preferred = if plan.selection_after.as_ref() == Some(selection) {
@@ -299,6 +527,25 @@ fn direct_transaction(
         }
     }
     Ok(None)
+}
+
+fn preferred_direct_transaction(
+    context: &PlanningContext<'_>,
+    selection: &crate::selection::Selection,
+    plan: &crate::command_planner::SemanticCommandPlan,
+) -> Option<TypedTransaction> {
+    let operations = direct_typed_operations(context, &plan.operations)?;
+    let preferred = if plan.selection_after.as_ref() == Some(selection) {
+        SelectionIntent::Preserve
+    } else {
+        SelectionIntent::UseOperationResult
+    };
+    Some(transaction_with_selection(
+        context,
+        operations,
+        preferred,
+        plan.history,
+    ))
 }
 
 fn direct_selection_input(

@@ -1,8 +1,12 @@
+#[cfg(feature = "ffi-v2-staging")]
+mod awareness;
+mod canonical;
 mod codec;
 mod commands;
 #[allow(dead_code)] // Task 7 installs compiled transactions into the live Yrs engine.
 mod compiler;
 mod derived_state;
+pub(crate) use derived_state::record_active_state_full_assembly;
 mod editing_limits;
 mod engine;
 mod error;
@@ -11,9 +15,12 @@ mod mutation;
 #[cfg(test)]
 #[path = "mutation_tests.rs"]
 mod mutation_tests;
+#[cfg(test)]
+pub(crate) mod observability;
 mod operation;
 mod origin;
 mod position;
+mod prepared_admission;
 mod snapshot;
 mod update_preflight;
 
@@ -25,13 +32,19 @@ fn raw_storage_work_limit(limits: &crate::boundary::ResourceLimits) -> usize {
         .saturating_mul(RAW_STORAGE_WORK_MULTIPLIER)
 }
 
+#[cfg(feature = "ffi-v2-staging")]
+pub use awareness::{AwarenessApplied, AwarenessCodec, AwarenessLimits, AwarenessPeer};
 pub(crate) use codec::YrsDocumentCodec;
 pub use commands::{CommandPlan, TypedCommand};
 pub use editing_limits::{
     EditingLimitOverrides, EditingLimits, HARD_MAX_DERIVED_OUTPUT_BYTES,
     HARD_MAX_OPERATIONS_PER_TRANSACTION, HARD_MAX_UNDO_GROUPS, HARD_MAX_UNDO_RETAINED_UNITS,
 };
-pub use engine::{EngineCommit, InitializationMode, YrsDocumentEngine, YrsEngineConfig};
+#[cfg(feature = "ffi-v2-staging")]
+pub use engine::PreparedRemoteUpdate;
+pub use engine::{
+    EngineCommit, EngineRenderState, InitializationMode, YrsDocumentEngine, YrsEngineConfig,
+};
 pub use error::{YrsEngineError, YrsEngineResult};
 pub use operation::{
     Affinity, EditorOffsetKind, HistoryPolicy, OperationError, OperationResult, RenderUpdate,
@@ -39,6 +52,8 @@ pub use operation::{
     SelectionIntent, StructuralReplacement, TransactionCommit, TypedOperation, TypedTransaction,
     TypedTransactionResult,
 };
+#[cfg(feature = "ffi-v2-staging")]
+pub use operation::{ReplacementHistory, RootReplacementError};
 pub use origin::TransactionOrigin;
 #[cfg(test)]
 pub(crate) use position::doc_pos_to_sticky_index;

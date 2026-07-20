@@ -270,11 +270,14 @@ impl MutationCompiler {
             .content()
             .and_then(|content| content.child(first))
             .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
-        let json = crate::serialize::node_to_prosemirror_json(list_node, schema);
-        let mut batch = prepare_xml_nodes(std::slice::from_ref(&json), limits, 2)
-            .map_err(|error| map_prepared_node_error(self.request_id, operation_index, error))?;
-        let materialized_empty_targets =
-            materialize_empty_prepared_textblocks(&mut batch.nodes, schema);
+        let mut batch = prepare_direct_root_wrap_batch(
+            self.request_id,
+            operation_index,
+            list_node,
+            schema,
+            limits,
+            false,
+        )?;
         for child in &mut batch.nodes {
             child.index = first_u32
                 .checked_add(child.index)
@@ -288,8 +291,8 @@ impl MutationCompiler {
             operation_index,
         });
         let prepared_work = batch
-            .work
-            .checked_add(materialized_empty_targets)
+            .batch_work
+            .checked_add(batch.empty_work)
             .ok_or_else(|| work_overflow(self.request_id, operation_index, self.action_limit))?;
         let insert_id = self.queue_prepared_insert(PendingPreparedInsert {
             parent: root_target.parent,

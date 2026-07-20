@@ -5,6 +5,10 @@ pub mod presets;
 
 #[allow(unused_imports)]
 pub(crate) use fingerprint::schema_fingerprint;
+#[cfg(test)]
+pub(crate) use fingerprint::{
+    reset_schema_fingerprint_count_for_test, take_schema_fingerprint_count_for_test,
+};
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};

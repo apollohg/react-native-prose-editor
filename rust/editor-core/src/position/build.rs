@@ -7,6 +7,28 @@ use crate::schema::{NodeRole, Schema};
 
 use super::{BlockMapping, PositionMap};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PositionBlockKind {
+    Text,
+    Void,
+}
+
+/// Classify nodes exactly as the PositionMap DFS does. Callers must stop
+/// descending when this returns a block kind.
+pub(crate) fn classify_position_block(node: &Node, schema: &Schema) -> Option<PositionBlockKind> {
+    if node.is_void() {
+        Some(PositionBlockKind::Void)
+    } else if node.is_element()
+        && schema
+            .node(node.node_type())
+            .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
+    {
+        Some(PositionBlockKind::Text)
+    } else {
+        None
+    }
+}
+
 /// Placeholder character used for void block-level nodes (e.g. horizontalRule)
 /// in the rendered text. U+FFFC OBJECT REPLACEMENT CHARACTER.
 pub const VOID_BLOCK_PLACEHOLDER: char = '\u{FFFC}';
@@ -80,7 +102,7 @@ pub(crate) fn rebuild_existing_block_mapping(
     schema: &Schema,
 ) -> Option<BlockMapping> {
     if old_block.is_void_block {
-        if !node.is_void() {
+        if classify_position_block(node, schema) != Some(PositionBlockKind::Void) {
             return None;
         }
 
@@ -96,7 +118,7 @@ pub(crate) fn rebuild_existing_block_mapping(
         });
     }
 
-    if !is_text_block(node, schema) {
+    if classify_position_block(node, schema) != Some(PositionBlockKind::Text) {
         return None;
     }
 
@@ -132,7 +154,7 @@ fn walk_node(
         return;
     }
 
-    if node.is_void() {
+    if classify_position_block(node, schema) == Some(PositionBlockKind::Void) {
         // Block-level void node (e.g. horizontalRule).
         // Rendered as a placeholder or opaque label.
         blocks.push(BlockMapping {
@@ -154,7 +176,7 @@ fn walk_node(
     // or a container (contains other elements).
     let content = node.content().expect("element nodes have content");
 
-    if is_text_block(node, schema) {
+    if classify_position_block(node, schema) == Some(PositionBlockKind::Text) {
         // This is a text block. Compute the scalar length from its inline content.
         let scalar_len = compute_inline_scalars(node, schema);
 
@@ -222,12 +244,6 @@ fn walk_node(
 /// inline content (text nodes and inline void nodes like hardBreak).
 ///
 /// An element with no children (empty paragraph) is also a text block.
-fn is_text_block(node: &Node, schema: &Schema) -> bool {
-    schema
-        .node(node.node_type())
-        .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
-}
-
 /// Count the number of rendered scalars in a text block's inline content.
 ///
 /// - Text nodes contribute their Unicode scalar count.

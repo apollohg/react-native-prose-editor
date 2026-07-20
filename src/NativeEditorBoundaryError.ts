@@ -25,6 +25,41 @@ export type KnownNativeEditorBoundaryErrorCode =
 /** Known codes remain suggested while future native codes can cross the boundary losslessly. */
 export type NativeEditorBoundaryErrorCode = KnownNativeEditorBoundaryErrorCode | (string & {});
 
+export const NATIVE_EDITOR_ERROR_DOMAINS = [
+    'boundary',
+    'document',
+    'operation',
+    'lifecycle',
+    'snapshot',
+    'transport',
+] as const;
+
+export type NativeEditorErrorDomain = (typeof NATIVE_EDITOR_ERROR_DOMAINS)[number];
+
+export const NATIVE_EDITOR_OPERATION_ERROR_CODES = [
+    'ENGINE_NOT_READY',
+    'REVISION_MISMATCH',
+    'POSITION_INVALID',
+    'TRANSACTION_INVALID',
+    'OPERATION_INVALID',
+    'OPERATION_LIMIT_EXCEEDED',
+    'OPERATION_RESOURCE_EXHAUSTED',
+    'DOCUMENT_INVALID',
+    'DOCUMENT_LIMIT_EXCEEDED',
+    'ENGINE_INVARIANT_FAILED',
+] as const;
+
+export interface NativeEditorV2Error {
+    domain: NativeEditorErrorDomain;
+    code: NativeEditorBoundaryErrorCode;
+    message: string;
+    requestId: string | null;
+    operationIndex: number | null;
+    limit: number | null;
+    actual: number | null;
+    details: Record<string, unknown> | null;
+}
+
 export class NativeEditorBoundaryError extends Error {
     constructor(
         readonly code: NativeEditorBoundaryErrorCode,
@@ -54,4 +89,77 @@ export function parseNativeBoundaryError(value: unknown): NativeEditorBoundaryEr
             ? (nativeError.details as Record<string, unknown>)
             : undefined
     );
+}
+
+const CANONICAL_DECIMAL_ID = /^(0|[1-9]\d*)$/;
+
+function nullableUnsignedInteger(value: unknown): number | null | undefined {
+    if (value == null) return null;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return undefined;
+    return value;
+}
+
+function parseDetails(nativeError: Record<string, unknown>): Record<string, unknown> | null | undefined {
+    if (nativeError.details != null) {
+        if (
+            typeof nativeError.details !== 'object' ||
+            Array.isArray(nativeError.details)
+        ) {
+            return undefined;
+        }
+        return nativeError.details as Record<string, unknown>;
+    }
+    if (nativeError.detailsJson == null) return null;
+    if (typeof nativeError.detailsJson !== 'string') return undefined;
+    try {
+        const details: unknown = JSON.parse(nativeError.detailsJson);
+        return details != null && typeof details === 'object' && !Array.isArray(details)
+            ? (details as Record<string, unknown>)
+            : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/** Normalize a raw FFI v2 error record without changing the legacy error parser contract. */
+export function normalizeNativeEditorV2Error(value: unknown): NativeEditorV2Error | null {
+    const envelope = value as { error?: unknown };
+    const nativeError = envelope?.error as Record<string, unknown> | undefined;
+    if (nativeError == null || typeof nativeError !== 'object') return null;
+
+    const { domain, code, message } = nativeError;
+    if (
+        typeof domain !== 'string' ||
+        !NATIVE_EDITOR_ERROR_DOMAINS.includes(domain as NativeEditorErrorDomain) ||
+        typeof code !== 'string' ||
+        typeof message !== 'string'
+    ) {
+        return null;
+    }
+
+    const requestId = nativeError.requestId;
+    if (
+        requestId != null &&
+        (typeof requestId !== 'string' || !CANONICAL_DECIMAL_ID.test(requestId))
+    ) {
+        return null;
+    }
+    const operationIndex = nullableUnsignedInteger(nativeError.operationIndex);
+    const limit = nullableUnsignedInteger(nativeError.limit);
+    const actual = nullableUnsignedInteger(nativeError.actual);
+    const details = parseDetails(nativeError);
+    if (operationIndex === undefined || limit === undefined || actual === undefined || details === undefined) {
+        return null;
+    }
+
+    return {
+        domain: domain as NativeEditorErrorDomain,
+        code,
+        message,
+        requestId: requestId == null ? null : requestId,
+        operationIndex,
+        limit,
+        actual,
+        details,
+    };
 }

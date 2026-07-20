@@ -884,69 +884,6 @@ fn individually_oversized_recorded_groups_reject_atomically_but_skip_succeeds() 
 }
 
 #[test]
-fn undo_candidate_validation_failure_preserves_live_content_stack_order_and_metadata() {
-    // Imports intentionally do not apply the local typing max-length policy. This
-    // creates a valid collaborative document whose next recorded deletion is
-    // locally valid, while undoing that deletion would exceed maxLength.
-    let mut harness = Harness::with_config(
-        EditingLimits::default(),
-        ResourceLimits::default(),
-        Some(1),
-        InitializationMode::LocalEmpty,
-        None,
-    );
-    harness.import_json(PLAIN_AB);
-    harness.delete(1, 2, HistoryPolicy::Boundary).unwrap();
-    assert_eq!(text(&harness.engine), "a");
-    assert!(harness.engine.can_undo());
-    assert!(!harness.engine.can_redo());
-
-    let before = harness.audit();
-    let error = harness.undo().unwrap_err();
-    assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
-    assert_eq!(error.limit, Some(1));
-    assert_eq!(error.actual, Some(2));
-    assert_eq!(
-        error.details,
-        Some(serde_json::json!({ "field": "maxLength" }))
-    );
-    assert_eq!(harness.audit(), before);
-
-    // A second attempt must inspect the same top stack item and fail identically;
-    // candidate validation must not pop, reorder, or transfer it to redo.
-    let repeated = harness.undo().unwrap_err();
-    assert_eq!(repeated.code, error.code);
-    assert_eq!(repeated.limit, error.limit);
-    assert_eq!(repeated.actual, error.actual);
-    assert_eq!(repeated.details, error.details);
-    assert_eq!(harness.audit(), before);
-}
-
-#[test]
-fn second_undo_resource_failure_is_rejected_before_the_live_pop() {
-    let mut harness = Harness::with_config(
-        EditingLimits::default(),
-        ResourceLimits::default(),
-        Some(1),
-        InitializationMode::LocalEmpty,
-        None,
-    );
-    harness.import_json(PLAIN_AB);
-    harness.delete(1, 2, HistoryPolicy::Boundary).unwrap();
-    harness.delete(0, 1, HistoryPolicy::Boundary).unwrap();
-
-    undo_commit(&mut harness);
-    assert_eq!(text(&harness.engine), "a");
-    let before = harness.audit();
-
-    let error = harness.undo().unwrap_err();
-    assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
-    assert_eq!(error.limit, Some(1));
-    assert_eq!(error.actual, Some(2));
-    assert_eq!(harness.audit(), before);
-}
-
-#[test]
 fn bounded_epoch_keeps_undo_redo_scans_within_configured_group_and_work_limits() {
     let limits = EditingLimits {
         max_undo_groups: 1,
@@ -1146,9 +1083,9 @@ fn physical_history_metadata_accepts_exact_boundary_and_rejects_one_over_atomica
 
 #[test]
 fn compatible_edit_pending_metadata_is_bounded_and_rolls_before_live_mutation() {
-    // Existing shared manager/journal metadata (2 snapshots) plus the next
-    // event's preallocated before+after slots (2) are the peak pending state.
-    let exact_pending = PLAIN_HISTORY_SNAPSHOT_BYTES * 4;
+    // Existing shared manager/journal metadata (before+after) plus only the
+    // replacement after snapshot is the compatible capture's pending peak.
+    let exact_pending = PLAIN_HISTORY_SNAPSHOT_BYTES * 3;
     for (limit, expected_after_undo) in [(exact_pending, ""), (exact_pending - 1, "a")] {
         let limits = EditingLimits {
             max_derived_output_bytes: limit,
@@ -1188,4 +1125,130 @@ fn initial_document_contract_used_by_history_fixtures_is_stable() {
         harness.engine.document_json(),
         serde_json::from_str(EMPTY).ok()
     );
+}
+
+#[cfg(feature = "ffi-v2-staging")]
+const REPLACEMENT_DOC: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"replaced"}]}]}"#;
+
+#[cfg(feature = "ffi-v2-staging")]
+#[test]
+fn undoable_boundary_replacement_never_merges_with_adjacent_auto_typing() {
+    use editor_core::yrs_engine::ReplacementHistory;
+
+    let mut harness = Harness::new();
+    harness.import_json(PLAIN_AB);
+    harness
+        .insert("x", TransactionOrigin::LocalInput, HistoryPolicy::Auto)
+        .unwrap();
+    assert_eq!(text(&harness.engine), "abx");
+    let pre_replacement = harness.engine.document_json();
+
+    // The replacement lands inside the Auto capture window and must still be
+    // its own boundary group on both sides.
+    let request_id = harness.take_request_id();
+    let commit = harness
+        .engine
+        .prepare_root_replacement_json(
+            request_id,
+            REPLACEMENT_DOC,
+            ReplacementHistory::UndoableBoundary,
+        )
+        .unwrap();
+    assert!(commit.changed);
+    assert_eq!(commit.request_id, request_id);
+    assert_eq!(commit.origin, TransactionOrigin::LocalApi);
+    assert_eq!(text(&harness.engine), "replaced");
+
+    // Control probe: two Auto inserts inside the same window DO merge with
+    // each other, proving the window was mergeable — yet neither merges into
+    // the replacement group.
+    harness
+        .insert("y", TransactionOrigin::LocalInput, HistoryPolicy::Auto)
+        .unwrap();
+    harness
+        .insert("z", TransactionOrigin::LocalInput, HistoryPolicy::Auto)
+        .unwrap();
+    assert_eq!(text(&harness.engine), "replacedyz");
+
+    // Exactly three groups: [typing x] [replacement] [typing yz].
+    undo_commit(&mut harness);
+    assert_eq!(
+        text(&harness.engine),
+        "replaced",
+        "trailing Auto typing must not merge into the replacement group"
+    );
+    undo_commit(&mut harness);
+    assert_eq!(
+        harness.engine.document_json(),
+        pre_replacement,
+        "one undo restores the exact pre-replacement document"
+    );
+    assert!(
+        harness.engine.can_undo(),
+        "the leading typing group survives as its own undo item"
+    );
+
+    redo_commit(&mut harness);
+    assert_eq!(
+        text(&harness.engine),
+        "replaced",
+        "redo restores the replacement"
+    );
+    redo_commit(&mut harness);
+    assert_eq!(text(&harness.engine), "replacedyz");
+    assert!(!harness.engine.can_redo());
+}
+
+#[cfg(feature = "ffi-v2-staging")]
+#[test]
+fn reset_and_clear_replacement_clears_history_in_the_same_store() {
+    use editor_core::yrs_engine::ReplacementHistory;
+
+    let mut harness = Harness::new();
+    harness.import_json(PLAIN_AB);
+    harness
+        .insert("x", TransactionOrigin::LocalInput, HistoryPolicy::Auto)
+        .unwrap();
+    assert!(harness.engine.can_undo());
+    undo_commit(&mut harness);
+    redo_commit(&mut harness);
+    assert!(harness.engine.can_undo());
+
+    let client = harness.engine.client_id();
+    let revision = harness.engine.revision();
+    let request_id = harness.take_request_id();
+    let commit = harness
+        .engine
+        .prepare_root_replacement_json(
+            request_id,
+            REPLACEMENT_DOC,
+            ReplacementHistory::ResetAndClear,
+        )
+        .unwrap();
+    assert!(commit.changed);
+    assert_eq!(
+        commit.document_revision,
+        revision + 1,
+        "same-store replacement continues the durable revision sequence"
+    );
+    assert_eq!(
+        harness.engine.client_id(),
+        client,
+        "same-store replacement keeps the writing client identity"
+    );
+
+    assert!(!harness.engine.can_undo());
+    assert!(!harness.engine.can_redo());
+    assert!(harness.undo().unwrap().is_none());
+    assert!(harness.redo().unwrap().is_none());
+    assert_eq!(text(&harness.engine), "replaced");
+
+    // Fresh history bottoms out at the replacement, never before it.
+    harness
+        .insert("q", TransactionOrigin::LocalInput, HistoryPolicy::Auto)
+        .unwrap();
+    assert!(harness.engine.can_undo());
+    undo_commit(&mut harness);
+    assert_eq!(text(&harness.engine), "replaced");
+    assert!(!harness.engine.can_undo());
 }

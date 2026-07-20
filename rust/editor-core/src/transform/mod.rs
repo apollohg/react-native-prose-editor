@@ -4,11 +4,14 @@ pub mod steps;
 
 // Re-export apply_step for use by the backend module.
 pub use apply::apply_step;
+pub(crate) use apply::DocumentStats;
 pub use apply::DocumentValidator;
 pub(crate) use apply::{
-    apply_step_canonical_marks, canonicalize_yrs_document, validate_canonical_marks,
-    validate_input_mark_set,
+    apply_step_canonical_marks, canonicalize_yrs_document, canonicalize_yrs_document_with_evidence,
+    validate_canonical_marks, validate_canonical_marks_with_evidence, validate_input_mark_set,
+    CanonicalMarksEvidence,
 };
+pub(crate) use apply::{DocumentValidationMetrics, DocumentValidationReport};
 
 use std::collections::HashMap;
 

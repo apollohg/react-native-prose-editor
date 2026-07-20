@@ -206,6 +206,29 @@ pub enum TypedOperation {
     },
 }
 
+/// History class of a same-store whole-document root replacement.
+#[cfg(feature = "ffi-v2-staging")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplacementHistory {
+    /// `setContent` / `setContentJson` / replace-mode controlled value:
+    /// exactly one undoable local-API history boundary.
+    UndoableBoundary,
+    /// Reset/import mode: non-undoable, clears the local history.
+    ResetAndClear,
+}
+
+/// Failure surface of a same-store whole-document root replacement.
+///
+/// `Admission` carries the exact import-pipeline error (bounded input, parse,
+/// model/schema validation, canonical-output ceilings); `Transaction` carries
+/// the sealed root-window transaction rejection. Both stages reject atomically.
+#[cfg(feature = "ffi-v2-staging")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootReplacementError {
+    Admission(super::YrsEngineError),
+    Transaction(OperationError),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransactionCommit {
     pub request_id: u64,
@@ -270,7 +293,7 @@ fn selection_bytes(selection: &ResolvedSelection) -> usize {
     }
 }
 
-fn active_state_bytes(state: &ActiveState) -> usize {
+pub(crate) fn active_state_bytes(state: &ActiveState) -> usize {
     let bool_map = |map: &HashMap<String, bool>| {
         map.iter().fold(8usize, |bytes, (key, _)| {
             bytes.saturating_add(string_bytes(key)).saturating_add(1)

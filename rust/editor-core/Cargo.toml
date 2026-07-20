@@ -16,7 +16,7 @@ smallvec = "1.13"
 scraper = "0.21"
 ego-tree = "0.9"
 regex = "1"
-sha2 = "0.10"
+sha2 = { version = "0.10", features = ["asm"] }
 yrs = { version = "=0.27.2", features = ["sync"] }
 
 [dev-dependencies]
@@ -34,6 +34,7 @@ required-features = ["cli"]
 default = []
 cli = ["uniffi/cli"]
 crdt = [] # Phase 2
+ffi-v2-staging = []
 
 [[bench]]
 name = "perf_suite"

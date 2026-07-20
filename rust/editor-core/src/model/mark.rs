@@ -24,6 +24,20 @@ impl Mark {
     pub fn attrs(&self) -> &HashMap<String, serde_json::Value> {
         &self.attrs
     }
+
+    pub(crate) fn history_snapshot_clone_retained_bytes(&self) -> Option<usize> {
+        let table = crate::model::hash_table_retained_bytes::<String, serde_json::Value>(
+            self.attrs.capacity(),
+        )?;
+        self.attrs.iter().try_fold(
+            self.mark_type.capacity().checked_add(table)?,
+            |total, (key, value)| {
+                total
+                    .checked_add(key.capacity())?
+                    .checked_add(crate::model::json_value_retained_bytes(value)?)
+            },
+        )
+    }
 }
 
 impl PartialEq for Mark {

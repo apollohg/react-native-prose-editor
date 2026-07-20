@@ -4,13 +4,12 @@ use std::sync::Arc;
 use yrs::any::Any;
 use yrs::branch::{Branch, BranchID, BranchPtr};
 use yrs::types::text::Text;
-use yrs::types::xml::{
-    Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut, XmlTextRef,
-};
 use yrs::types::xml::XmlTextPrelim;
+use yrs::types::xml::{Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut, XmlTextRef};
 use yrs::types::Attrs;
 use yrs::ReadTxn;
 use yrs::Snapshot;
+use yrs::StateVector;
 use yrs::StickyIndex;
 use yrs::TransactionMut;
 
@@ -78,6 +77,12 @@ pub(crate) struct TargetSignature {
     pub(super) capture_work: usize,
 }
 
+impl TargetSignature {
+    pub(crate) fn initial_len_utf16(&self) -> u32 {
+        self.initial_len_utf16
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ElementSignature {
     pub(super) target: BranchID,
@@ -135,6 +140,12 @@ impl YrsMutationPlan {
         self.actions.is_empty()
     }
 
+    pub(crate) fn matches_sealed_import_state(&self, state_vector: &StateVector) -> bool {
+        self.document_guard.as_ref().is_some_and(|guard| {
+            guard.snapshot.state_map == *state_vector && guard.snapshot.delete_set.is_empty()
+        })
+    }
+
     pub(crate) fn requires_crdt_envelope(&self) -> bool {
         plan_may_delete_live(self)
     }
@@ -158,14 +169,72 @@ impl YrsMutationPlan {
             return false;
         }
         fragment.children(txn).any(|child| {
-            branch_is_deleted_or_descendant(
-                txn,
-                child,
-                offset.branch,
-                &deleted_roots,
-                false,
-            )
+            branch_is_deleted_or_descendant(txn, child, offset.branch, &deleted_roots, false)
         })
+    }
+
+    pub(crate) fn rebind_to_equivalent_store<T: ReadTxn>(
+        mut self,
+        request_id: u64,
+        txn: &T,
+    ) -> OperationResult<Self> {
+        fn branch<T: ReadTxn>(
+            request_id: u64,
+            txn: &T,
+            id: BranchID,
+        ) -> OperationResult<BranchPtr> {
+            id.get_branch(txn).ok_or_else(|| {
+                OperationError::engine_invariant_failed(
+                    request_id,
+                    None,
+                    "equivalent candidate store is missing a sealed mutation target",
+                )
+            })
+        }
+
+        for action in &mut self.actions {
+            match action {
+                YrsMutationAction::DeleteXmlChildren { parent, .. }
+                | YrsMutationAction::InsertXmlChildren { parent, .. } => {
+                    *parent = match parent {
+                        XmlParentRef::Fragment(current) => {
+                            XmlParentRef::Fragment(XmlFragmentRef::from(branch(
+                                request_id,
+                                txn,
+                                AsRef::<Branch>::as_ref(current).id(),
+                            )?))
+                        }
+                        XmlParentRef::Element(current) => {
+                            XmlParentRef::Element(XmlElementRef::from(branch(
+                                request_id,
+                                txn,
+                                AsRef::<Branch>::as_ref(current).id(),
+                            )?))
+                        }
+                    };
+                }
+                YrsMutationAction::SetXmlAttribute { target, .. }
+                | YrsMutationAction::RemoveXmlAttribute { target, .. }
+                | YrsMutationAction::CreateText { parent: target, .. } => {
+                    *target = XmlElementRef::from(branch(
+                        request_id,
+                        txn,
+                        AsRef::<Branch>::as_ref(&*target).id(),
+                    )?);
+                }
+                YrsMutationAction::InsertText { target, .. }
+                | YrsMutationAction::DeleteText { target, .. }
+                | YrsMutationAction::FormatText { target, .. } => {
+                    *target = XmlTextRef::from(branch(
+                        request_id,
+                        txn,
+                        AsRef::<Branch>::as_ref(&*target).id(),
+                    )?);
+                }
+            }
+        }
+        self.document_guard = Some(capture_document_guard(request_id, txn)?);
+        Ok(self)
     }
 
     fn deleted_base_branch_roots<T: ReadTxn>(&self, txn: &T) -> Option<HashSet<BranchID>> {
@@ -179,9 +248,9 @@ impl YrsMutationPlan {
                     child_count,
                     ..
                 } => {
-                    let children = virtual_children.entry(parent.id()).or_insert_with(|| {
-                        parent.children(txn).into_iter().map(Some).collect()
-                    });
+                    let children = virtual_children
+                        .entry(parent.id())
+                        .or_insert_with(|| parent.children(txn).into_iter().map(Some).collect());
                     let start = usize::try_from(*child_index).ok()?;
                     let count = usize::try_from(*child_count).ok()?;
                     let end = start.checked_add(count)?;
@@ -198,9 +267,9 @@ impl YrsMutationPlan {
                     nodes,
                     ..
                 } => {
-                    let children = virtual_children.entry(parent.id()).or_insert_with(|| {
-                        parent.children(txn).into_iter().map(Some).collect()
-                    });
+                    let children = virtual_children
+                        .entry(parent.id())
+                        .or_insert_with(|| parent.children(txn).into_iter().map(Some).collect());
                     let index = usize::try_from(*child_index).ok()?;
                     if index > children.len() || nodes.is_empty() {
                         return None;

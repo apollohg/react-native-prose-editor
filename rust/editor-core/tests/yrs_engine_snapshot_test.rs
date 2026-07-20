@@ -211,6 +211,49 @@ fn schema_mismatch_wins_over_malformed_encoded_state() {
 }
 
 #[test]
+#[cfg(feature = "ffi-v2-staging")]
+fn room_initialization_validates_every_snapshot_identity_field_before_decode() {
+    let source = populated_scoped_engine();
+    let snapshot = source.export_snapshot().unwrap();
+    let cases = [
+        ("formatVersion", "SNAPSHOT_VERSION_UNSUPPORTED"),
+        ("documentId", "SNAPSHOT_SCOPE_MISMATCH"),
+        ("lineageId", "SNAPSHOT_LINEAGE_MISMATCH"),
+        ("fragmentName", "SNAPSHOT_FRAGMENT_MISMATCH"),
+        ("schemaFingerprint", "SNAPSHOT_SCHEMA_MISMATCH"),
+    ];
+
+    for (field, expected_code) in cases {
+        let mut mismatched = snapshot.clone();
+        match field {
+            "formatVersion" => mismatched.format_version += 1,
+            "documentId" => mismatched.document_id = "other-document".into(),
+            "lineageId" => mismatched.lineage_id = "other-lineage".into(),
+            "fragmentName" => mismatched.fragment_name = "other-fragment".into(),
+            "schemaFingerprint" => mismatched.schema_fingerprint = "other-schema".into(),
+            _ => unreachable!(),
+        }
+        mismatched.encoded_state = vec![0xff, 0xff, 0xff];
+        let config = YrsEngineConfig {
+            initialization_mode: InitializationMode::AwaitRemote,
+            ..engine_config(
+                "doc-a",
+                "lineage-a",
+                "prosemirror",
+                ResourceLimits::default(),
+            )
+        };
+
+        let error = YrsDocumentEngine::new_with_snapshot(config, &mismatched)
+            .err()
+            .expect("mismatched room snapshot must reject creation");
+
+        assert_eq!(error.code, expected_code, "identity field {field}");
+        assert_field(&error, field);
+    }
+}
+
+#[test]
 fn unscoped_restore_is_rejected_before_encoded_state_decode() {
     let source = populated_scoped_engine();
     let mut snapshot = source.export_snapshot().unwrap();
@@ -448,6 +491,29 @@ fn changed_restore_swaps_once_and_records_snapshot_origin() {
     );
     assert_eq!(target.document_json(), source.document_json());
     assert_ne!(target.client_id(), before.client_id);
+}
+
+#[test]
+fn snapshot_store_swap_cannot_reuse_prior_import_identity() {
+    let prior = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"prior"}]}]}"#;
+    let mut target = scoped_engine("doc-a", "lineage-a");
+    target
+        .import_json(prior, TransactionOrigin::DocumentImport)
+        .unwrap();
+
+    let source = populated_scoped_engine();
+    let snapshot = source.export_snapshot().unwrap();
+    target.restore_snapshot(&snapshot).unwrap();
+    let after_swap = audit(&target);
+
+    let commit = target
+        .import_json(prior, TransactionOrigin::DocumentImport)
+        .unwrap();
+
+    assert!(commit.changed);
+    assert_eq!(commit.revision, after_swap.revision + 1);
+    assert_ne!(audit(&target).client_id, after_swap.client_id);
+    assert_eq!(target.document_html().as_deref(), Some("<p>prior</p>"));
 }
 
 #[test]

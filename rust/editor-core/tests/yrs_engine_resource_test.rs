@@ -185,6 +185,136 @@ fn document_nodes_accept_exact_and_one_above_limits_and_reject_one_below_atomica
 }
 
 #[test]
+fn import_validates_the_exact_precanonical_document_before_reusing_evidence() {
+    let input = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}]}"#;
+    let mut engine = engine_with_limits(ResourceLimits {
+        // Canonicalization merges the adjacent text nodes to three nodes, but
+        // the admitted public input has four and must retain its old rejection.
+        max_document_nodes: 3,
+        ..ResourceLimits::default()
+    });
+    let before = audit(&engine);
+
+    let error = engine
+        .import_json(input, TransactionOrigin::DocumentImport)
+        .unwrap_err();
+
+    assert_limit_error(&error, "DOCUMENT_LIMIT_EXCEEDED", 3, 4);
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
+fn canonical_output_limit_counts_large_default_mark_attrs_per_text_node() {
+    let default_payload = "d".repeat(4_096);
+    let schema = Schema::from_json(&serde_json::json!({
+        "nodes": [
+            { "name": "doc", "content": "paragraph+", "role": "doc" },
+            { "name": "paragraph", "content": "text*", "role": "textBlock" },
+            { "name": "text", "role": "text" }
+        ],
+        "marks": [{
+            "name": "decor",
+            "attrs": { "payload": { "default": default_payload } }
+        }]
+    }))
+    .unwrap();
+    let content = (0..32)
+        .map(|index| {
+            serde_json::json!({
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": format!("node-{index}"),
+                    "marks": [{ "type": "decor" }]
+                }]
+            })
+        })
+        .collect::<Vec<_>>();
+    let input = serde_json::to_string(&serde_json::json!({
+        "type": "doc",
+        "content": content
+    }))
+    .unwrap();
+
+    let mut probe = YrsDocumentEngine::new(config(
+        schema.clone(),
+        ResourceLimits::default(),
+        InitializationMode::LocalEmpty,
+    ))
+    .unwrap();
+    probe
+        .import_json(&input, TransactionOrigin::DocumentImport)
+        .unwrap();
+    let canonical_len = serde_json::to_vec(&probe.document_json().unwrap())
+        .unwrap()
+        .len();
+
+    let mut accepted_config = config(
+        schema.clone(),
+        ResourceLimits::default(),
+        InitializationMode::LocalEmpty,
+    );
+    accepted_config.editing_limits.max_derived_output_bytes = canonical_len;
+    let mut accepted = YrsDocumentEngine::new(accepted_config).unwrap();
+    accepted
+        .import_json(&input, TransactionOrigin::DocumentImport)
+        .unwrap();
+
+    let mut rejected_config = config(
+        schema,
+        ResourceLimits::default(),
+        InitializationMode::LocalEmpty,
+    );
+    rejected_config.editing_limits.max_derived_output_bytes = canonical_len - 1;
+    let mut rejected = YrsDocumentEngine::new(rejected_config).unwrap();
+    let before = audit(&rejected);
+    let error = rejected
+        .import_json(&input, TransactionOrigin::DocumentImport)
+        .unwrap_err();
+    assert_limit_error(
+        &error,
+        "DOCUMENT_LIMIT_EXCEEDED",
+        canonical_len - 1,
+        canonical_len,
+    );
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({ "field": "maxDerivedOutputBytes" }))
+    );
+    assert_eq!(audit(&rejected), before);
+}
+
+#[test]
+fn max_length_accepts_exact_and_rejects_one_over_with_structured_error() {
+    let exact = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"four"}]}]}"#;
+    let over = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"fives"}]}]}"#;
+    let mut candidate = config(
+        tiptap_schema(),
+        ResourceLimits::default(),
+        InitializationMode::LocalEmpty,
+    );
+    candidate.max_length = Some(4);
+    let mut engine = YrsDocumentEngine::new(candidate).unwrap();
+
+    engine
+        .import_json(exact, TransactionOrigin::DocumentImport)
+        .unwrap();
+    let before = audit(&engine);
+    let error = engine
+        .import_json(over, TransactionOrigin::DocumentImport)
+        .unwrap_err();
+
+    assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(error.limit, Some(4));
+    assert_eq!(error.actual, Some(5));
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({ "field": "maxLength" }))
+    );
+    assert_eq!(audit(&engine), before);
+}
+
+#[test]
 fn document_depth_accepts_exact_and_one_above_limits_and_rejects_one_below_atomically() {
     let input = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"depth three"}]}]}"#;
 

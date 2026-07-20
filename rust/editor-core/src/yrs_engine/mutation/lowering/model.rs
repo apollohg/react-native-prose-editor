@@ -176,6 +176,37 @@ pub(crate) enum TextRangeDisposition {
     Structural,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MutationCompilerBuild {
+    Localized,
+    EagerFallback,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct LocalizedInsertLocator<'a> {
+    pub(crate) document: &'a Document,
+    pub(crate) block_path: &'a [u32],
+    pub(crate) position: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct LocalizedFormatLocator<'a> {
+    document: &'a Document,
+    block_path: &'a [u32],
+    from: u32,
+    to: u32,
+    seed: &'a MutationLookupSeed,
+}
+
+pub(crate) struct LocalizedRootWindowLocator<'a> {
+    document: &'a Document,
+    expected_preview: &'a Document,
+    from_child: u32,
+    to_child: u32,
+    expected_content: Fragment,
+    seed: &'a MutationLookupSeed,
+}
+
 #[derive(Debug)]
 pub(crate) struct MutationCompiler {
     request_id: u64,
@@ -187,6 +218,8 @@ pub(crate) struct MutationCompiler {
     prepared_elements: HashMap<Vec<u32>, PreparedHandle>,
     charged_work: usize,
     pending_traversal_work: usize,
+    localized_position_target_count: Option<usize>,
+    explicit_path_parent_widths: Option<HashMap<BranchID, usize>>,
     action_limit: usize,
     scan_work: usize,
     scan_limit: usize,
@@ -197,4 +230,120 @@ pub(crate) struct MutationCompiler {
     wrap_checkpoints: HashMap<usize, VirtualStateCheckpoint>,
     #[cfg(test)]
     virtual_delete_visits: usize,
+}
+
+/// Authoritative, document-scoped metadata captured by the lifecycle that
+/// owns the derived editor view. It contains only the global facts a
+/// localized insert cannot recover without walking the complete Yrs tree.
+#[derive(Debug, Clone)]
+pub(crate) struct MutationLookupSeed {
+    binding: MutationLookupBinding,
+    state: MutationLookupSeedState,
+}
+
+#[derive(Debug, Clone)]
+struct MutationLookupBinding {
+    source_document: Document,
+    canonical_artifact: Option<CanonicalArtifact>,
+    resource_limits: ResourceLimits,
+    editing_limits: EditingLimits,
+    max_length: Option<u32>,
+    store_token: usize,
+    fragment_id: BranchID,
+    schema_fingerprint: Arc<str>,
+    yrs_state_epoch: u64,
+    document_revision: u64,
+    /// Exact Yrs state/delete-set evidence exists only while an unavailable
+    /// history-candidate capability awaits one-shot publication.
+    history_store_snapshot: Option<HistoryStoreSnapshotEvidence>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HistoryStoreSnapshotEvidence {
+    snapshot: Arc<yrs::Snapshot>,
+    /// Exact clock-scan work admitted against maxEncodedStateBytes before the
+    /// proportional Yrs snapshot allocation was allowed to occur.
+    admitted_clock_scan_work: usize,
+}
+
+#[derive(Debug, Clone)]
+enum MutationLookupSeedState {
+    Ready(MutationLookupPayload),
+    Unavailable,
+}
+
+#[derive(Debug, Clone)]
+struct MutationLookupPayload {
+    target_count: usize,
+    pending_traversal_work: usize,
+    path_parent_widths: Arc<HashMap<BranchID, usize>>,
+    target_materialization_work: Arc<HashMap<BranchID, usize>>,
+}
+
+/// Opaque, one-owner payload collected while the validated codec projection
+/// is already walking the exact candidate store.
+pub(crate) struct ImportLookupMaterialization(MutationLookupPayload);
+
+impl ImportLookupMaterialization {
+    fn new(payload: MutationLookupPayload) -> Self {
+        Self(payload)
+    }
+
+    /// Whether retaining an exact import replica can accelerate at least one
+    /// localized mutation target. Zero-target payloads still prove a valid
+    /// traversal, but a later mutation would have to take the ordinary
+    /// structural path regardless of whether the replica was retained.
+    pub(crate) fn accelerates_localized_mutation(&self) -> bool {
+        self.0.target_count != 0
+    }
+}
+
+/// A capability for exactly one existing-branch text insertion. Deliberately
+/// exposing no delete, format, structural, or multi-operation entry points
+/// keeps the localized lowering boundary sealed by construction.
+#[derive(Debug)]
+pub(crate) struct LocalizedInsertCompiler {
+    compiler: MutationCompiler,
+}
+
+/// A capability for formatting exactly one non-empty range inside one
+/// existing, non-void textblock. Its surface deliberately cannot perform
+/// insertions, deletions, or structural edits.
+#[derive(Debug)]
+pub(crate) struct LocalizedFormatCompiler {
+    compiler: MutationCompiler,
+    seed_pending_traversal_work: usize,
+    seed_materialization_work: Arc<HashMap<BranchID, usize>>,
+}
+
+/// A capability for replacing exactly one complete child window of the
+/// semantic/Yrs document root. It cannot address text or descendant parents.
+#[derive(Debug)]
+pub(crate) struct LocalizedRootWindowCompiler {
+    compiler: MutationCompiler,
+    document: Document,
+    expected_preview: Document,
+    from_child: u32,
+    to_child: u32,
+    expected_content: Fragment,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MutationLookupPromotion {
+    request_id: u64,
+    source: MutationLookupPromotionSource,
+    materialization_work_updates: Vec<(BranchID, usize, usize)>,
+    next_pending_traversal_work: usize,
+}
+
+impl MutationLookupPromotion {
+    pub(crate) fn request_id(&self) -> u64 {
+        self.request_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MutationLookupPromotionSource {
+    ExistingInsert,
+    ExistingFormat,
 }

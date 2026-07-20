@@ -23,6 +23,13 @@ impl StepMap {
         }
     }
 
+    pub(crate) fn try_from_insert(pos: u32, len: u32) -> Option<Self> {
+        let mut ranges = Vec::new();
+        ranges.try_reserve_exact(1).ok()?;
+        ranges.push((pos, 0, len));
+        Some(Self { ranges })
+    }
+
     /// Create a map from a single deletion.
     pub fn from_delete(pos: u32, len: u32) -> Self {
         Self {

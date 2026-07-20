@@ -51,14 +51,22 @@ pub(super) fn plan(
         TypedCommand::WrapInList {
             list_type,
             item_type,
-        } => crate::command_planner::plan_wrap_in_list(
-            context.document,
-            context.schema,
-            &selection,
-            &list_type,
-            &item_type,
-            context.resource_limits,
-        ),
+        } => {
+            let admitted = crate::command_planner::plan_wrap_in_list_admitted(
+                context.document,
+                context.schema,
+                &selection,
+                &list_type,
+                &item_type,
+                context.resource_limits,
+            );
+            return match admitted {
+                Some(admitted) => {
+                    super::text::admitted_semantic_transaction(&context, &selection, admitted)
+                }
+                None => Ok(CommandPlan::NotApplicable),
+            };
+        }
         TypedCommand::UnwrapFromList => crate::command_planner::plan_unwrap_from_list(
             context.document,
             context.schema,

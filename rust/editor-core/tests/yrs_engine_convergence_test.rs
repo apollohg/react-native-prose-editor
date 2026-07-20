@@ -407,3 +407,179 @@ fn three_replicas_converge_for_six_delta_orders_with_base_first_or_last() {
         "tail-C"
     );
 }
+
+/// Task 9: a full protocol-driven session — two live registry sessions
+/// exchanging Step 1/Step 2/Update frames exclusively through
+/// `receive_message` and the outbox pickup seams — converging to
+/// state-vector equality with local edits interleaved on both sides.
+#[cfg(feature = "ffi-v2-staging")]
+mod protocol_driven {
+    use editor_core::boundary::ResourceLimits;
+    use editor_core::native_bridge_test_support as bridge;
+    use editor_core::session_initialization_test_support::{
+        begin_connect, create_room_from_json, destroy_session, document_state, receive_message,
+        session_audit, socket_opened, sync_step1_frame, take_next_protocol_reply, transport_state,
+        DocumentState, TransportState,
+    };
+    use editor_core::tiptap_schema;
+    use editor_core::yrs_engine::{
+        DocumentScope, DocumentSnapshot, EditingLimits, InitializationMode, TransactionOrigin,
+        YrsDocumentEngine, YrsEngineConfig,
+    };
+    use yrs::encode_state_vector_from_update_v1;
+    use yrs::sync::{Message, SyncMessage};
+    use yrs::updates::decoder::Decode;
+    use yrs::updates::encoder::Encode;
+
+    const DOCUMENT_ID: &str = "protocol-convergence-room";
+    const LINEAGE_ID: &str = "protocol-convergence-lineage";
+    const SEED_JSON: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"convergence seed"}]}]}"#;
+
+    fn snapshot_source() -> DocumentSnapshot {
+        let mut source = YrsDocumentEngine::new(YrsEngineConfig {
+            schema: tiptap_schema(),
+            fragment_name: "prosemirror".into(),
+            initialization_mode: InitializationMode::LocalEmpty,
+            resource_limits: ResourceLimits::default(),
+            editing_limits: EditingLimits::default(),
+            max_length: None,
+            scope: Some(DocumentScope {
+                document_id: DOCUMENT_ID.into(),
+                lineage_id: LINEAGE_ID.into(),
+            }),
+        })
+        .unwrap();
+        source
+            .import_json(SEED_JSON, TransactionOrigin::DocumentImport)
+            .unwrap();
+        source.export_snapshot().unwrap()
+    }
+
+    /// Frame a captured outbound document update as a standard y-sync
+    /// Update message, exactly as the Task 12 transport will.
+    fn framed_update(update_v1: Vec<u8>) -> Vec<u8> {
+        Message::Sync(SyncMessage::Update(update_v1)).encode_v1()
+    }
+
+    fn local_edit(id: u64, request_id: u64, text: &str) {
+        let revision = bridge::session_audit(id).unwrap().document_revision;
+        let envelope = serde_json::json!({
+            "version": 1,
+            "requestId": request_id,
+            "baseDocumentRevision": revision,
+            "text": text,
+        })
+        .to_string();
+        bridge::submit_input(id, &envelope).unwrap();
+    }
+
+    /// Ship every pending outbound document update from one session into the
+    /// other through `receive_message`, returning how many were delivered.
+    fn deliver_document_updates(from: u64, to: u64, to_generation: u64, request_id: u64) -> usize {
+        let mut delivered = 0;
+        while let Some((_, update)) = bridge::take_next_update(from).unwrap() {
+            let outcome = receive_message(
+                to,
+                request_id + delivered as u64,
+                to_generation,
+                &framed_update(update),
+            )
+            .unwrap();
+            assert!(outcome.close.is_none(), "{outcome:?}");
+            delivered += 1;
+        }
+        delivered
+    }
+
+    /// Ship every pending protocol reply from one session into the other.
+    fn deliver_protocol_replies(from: u64, to: u64, to_generation: u64, request_id: u64) -> usize {
+        let mut delivered = 0;
+        while let Some((_, reply)) = take_next_protocol_reply(from).unwrap() {
+            let outcome =
+                receive_message(to, request_id + delivered as u64, to_generation, &reply).unwrap();
+            assert!(outcome.close.is_none(), "{outcome:?}");
+            delivered += 1;
+        }
+        delivered
+    }
+
+    /// Structural state vector: encoded state-vector bytes are
+    /// hash-map-ordered and nondeterministic across independent docs, and
+    /// the design requires semantic equality, not re-encoded byte identity.
+    fn state_vector(id: u64) -> yrs::StateVector {
+        let encoded = session_audit(id).unwrap().encoded_state.unwrap();
+        yrs::StateVector::decode_v1(&encode_state_vector_from_update_v1(&encoded).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn protocol_driven_sessions_converge_with_interleaved_local_edits() {
+        let snapshot = snapshot_source();
+        let ready_config = serde_json::json!({
+            "documentId": snapshot.document_id,
+            "lineageId": snapshot.lineage_id,
+            "snapshot": snapshot,
+        });
+        let a = create_room_from_json(&ready_config.to_string()).unwrap();
+        let b = create_room_from_json(
+            &serde_json::json!({ "documentId": DOCUMENT_ID, "lineageId": LINEAGE_ID }).to_string(),
+        )
+        .unwrap();
+        bridge::attach_runtime(a).unwrap();
+        bridge::attach_runtime(b).unwrap();
+        assert_eq!(document_state(a).unwrap(), DocumentState::RoomReady);
+        assert_eq!(document_state(b).unwrap(), DocumentState::AwaitRemote);
+
+        // Both sides connect; socket open owes a Step 1 send each.
+        let gen_a = begin_connect(a, 84_000).unwrap();
+        socket_opened(a, 84_001, gen_a).unwrap();
+        let gen_b = begin_connect(b, 84_002).unwrap();
+        socket_opened(b, 84_003, gen_b).unwrap();
+        let step1_a = sync_step1_frame(a, 84_004).unwrap();
+        let step1_b = sync_step1_frame(b, 84_005).unwrap();
+
+        // A's Step 1 reaches B: B owes a Step 2 reply (a no-op — B is empty).
+        let outcome = receive_message(b, 84_010, gen_b, &step1_a).unwrap();
+        assert!(outcome.close.is_none(), "{outcome:?}");
+        assert_eq!(outcome.replies_enqueued, 1, "{outcome:?}");
+        assert_eq!(deliver_protocol_replies(b, a, gen_a, 84_020), 1);
+        assert_eq!(
+            transport_state(a).unwrap(),
+            TransportState::Synchronized,
+            "a valid no-op Step 2 synchronizes a RoomReady handshake",
+        );
+
+        // B's Step 1 reaches A: A's Step 2 reply initializes B server-style.
+        let outcome = receive_message(a, 84_030, gen_a, &step1_b).unwrap();
+        assert!(outcome.close.is_none(), "{outcome:?}");
+        assert_eq!(outcome.replies_enqueued, 1, "{outcome:?}");
+        assert_eq!(deliver_protocol_replies(a, b, gen_b, 84_040), 1);
+        assert_eq!(document_state(b).unwrap(), DocumentState::RoomReady);
+        assert_eq!(transport_state(b).unwrap(), TransportState::Synchronized);
+
+        // Interleaved local edits on both sides, exchanged as bounded
+        // Update frames through the outbox pickup seam.
+        local_edit(a, 84_100, "alpha ");
+        assert_eq!(deliver_document_updates(a, b, gen_b, 84_110), 1);
+        local_edit(b, 84_120, "bravo ");
+        assert_eq!(deliver_document_updates(b, a, gen_a, 84_130), 1);
+        local_edit(a, 84_140, "charlie ");
+        local_edit(b, 84_150, "delta ");
+        assert_eq!(deliver_document_updates(a, b, gen_b, 84_160), 1);
+        assert_eq!(deliver_document_updates(b, a, gen_a, 84_170), 1);
+
+        // Convergence: state-vector equality plus identical canonical
+        // renders, with no residual outbox entries on either side.
+        assert_eq!(state_vector(a), state_vector(b));
+        let audit_a = session_audit(a).unwrap();
+        let audit_b = session_audit(b).unwrap();
+        assert_eq!(audit_a.document_json, audit_b.document_json);
+        assert_eq!(audit_a.document_html, audit_b.document_html);
+        assert_eq!(bridge::outbox_pending(a).unwrap().unwrap(), (0, 0));
+        assert_eq!(bridge::outbox_pending(b).unwrap().unwrap(), (0, 0));
+        assert!(take_next_protocol_reply(a).unwrap().is_none());
+        assert!(take_next_protocol_reply(b).unwrap().is_none());
+
+        destroy_session(a);
+        destroy_session(b);
+    }
+}

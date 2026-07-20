@@ -153,6 +153,68 @@ fn materialize_empty_prepared_textblocks(nodes: &mut [PreparedXmlChild], schema:
     work
 }
 
+struct DirectRootWrapBatch {
+    nodes: Vec<PreparedXmlChild>,
+    batch_work: usize,
+    empty_work: usize,
+    metrics: Option<DirectRootWrapMetrics>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DirectRootWrapMetrics {
+    pub(crate) insertion_units: u64,
+    pub(crate) growth_bytes: usize,
+}
+
+fn prepare_direct_root_wrap_batch(
+    request_id: u64,
+    operation_index: usize,
+    list_node: &Node,
+    schema: &Schema,
+    limits: &ResourceLimits,
+    collect_metrics: bool,
+) -> OperationResult<DirectRootWrapBatch> {
+    let json = crate::serialize::node_to_prosemirror_json(list_node, schema);
+    let mut batch = prepare_xml_nodes(std::slice::from_ref(&json), limits, 2)
+        .map_err(|error| map_prepared_node_error(request_id, operation_index, error))?;
+    let empty_work = materialize_empty_prepared_textblocks(&mut batch.nodes, schema);
+    let metrics = collect_metrics
+        .then(|| {
+            super::plan::prepared_nodes_metrics(&batch.nodes)
+                .map(|metrics| DirectRootWrapMetrics {
+                    insertion_units: metrics.insertion_units,
+                    growth_bytes: metrics.growth_bytes,
+                })
+                .ok_or_else(|| invalid_action_range(request_id, operation_index))
+        })
+        .transpose()?;
+    Ok(DirectRootWrapBatch {
+        nodes: batch.nodes,
+        batch_work: batch.work,
+        empty_work,
+        metrics,
+    })
+}
+
+pub(crate) fn direct_root_wrap_metrics(
+    request_id: u64,
+    operation_index: usize,
+    list_node: &Node,
+    schema: &Schema,
+    limits: &ResourceLimits,
+) -> OperationResult<DirectRootWrapMetrics> {
+    Ok(prepare_direct_root_wrap_batch(
+        request_id,
+        operation_index,
+        list_node,
+        schema,
+        limits,
+        true,
+    )?
+    .metrics
+    .expect("metrics were requested for the prepared root-wrap oracle"))
+}
+
 fn first_text_doc_position(root: &Node, path: &[u32]) -> Option<u32> {
     fn relative(node: &Node) -> Option<u32> {
         if node.is_text() {

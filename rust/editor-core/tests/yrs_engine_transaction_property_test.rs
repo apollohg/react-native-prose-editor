@@ -1367,3 +1367,420 @@ fn no_op_and_rejection_classes_match_the_legacy_oracle_without_state_changes() {
         before
     );
 }
+
+#[cfg(feature = "ffi-v2-staging")]
+mod whole_root_replacement {
+    use std::collections::HashMap;
+
+    use editor_core::boundary::ResourceLimits;
+    use editor_core::tiptap_schema;
+    use editor_core::yrs_engine::{
+        EditingLimits, InitializationMode, ReplacementHistory, TransactionOrigin,
+        YrsDocumentEngine, YrsEngineConfig,
+    };
+    use proptest::prelude::*;
+    use yrs::updates::decoder::Decode;
+    use yrs::{Doc, GetString, ReadTxn, Transact, Update};
+
+    fn engine_with_document(json: &serde_json::Value) -> YrsDocumentEngine {
+        let mut engine = YrsDocumentEngine::new(YrsEngineConfig {
+            schema: tiptap_schema(),
+            fragment_name: "prosemirror".into(),
+            initialization_mode: InitializationMode::LocalEmpty,
+            resource_limits: ResourceLimits::default(),
+            editing_limits: EditingLimits::default(),
+            max_length: None,
+            scope: None,
+        })
+        .unwrap();
+        engine
+            .import_json(&json.to_string(), TransactionOrigin::DocumentImport)
+            .unwrap();
+        engine
+    }
+
+    fn paragraphs(texts: &[String]) -> serde_json::Value {
+        serde_json::json!({
+            "type": "doc",
+            "content": texts
+                .iter()
+                .map(|text| {
+                    if text.is_empty() {
+                        serde_json::json!({ "type": "paragraph" })
+                    } else {
+                        serde_json::json!({
+                            "type": "paragraph",
+                            "content": [{ "type": "text", "text": text }],
+                        })
+                    }
+                })
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    fn state_vector_entries(update: &[u8]) -> HashMap<u64, u32> {
+        let doc = Doc::new();
+        {
+            let mut txn = doc.transact_mut();
+            txn.apply_update(Update::decode_v1(update).unwrap())
+                .unwrap();
+        }
+        let txn = doc.transact();
+        let vector = txn.state_vector();
+        vector
+            .iter()
+            .map(|(client, clock)| (client.get(), *clock))
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn root_replacement_is_same_store_import_equivalent_and_convergent(
+            before in proptest::collection::vec("[a-z]{0,6}", 1..4usize),
+            after in proptest::collection::vec("[a-z]{0,6}", 1..4usize),
+            reset in proptest::bool::ANY,
+        ) {
+            let before_doc = paragraphs(&before);
+            let after_doc = paragraphs(&after);
+            let mut engine = engine_with_document(&before_doc);
+            let reference = engine_with_document(&after_doc);
+            let expected_changed = engine.document_json() != reference.document_json();
+
+            let base_state = engine.encoded_state().unwrap();
+            let writer = engine.client_id();
+            let history = if reset {
+                ReplacementHistory::ResetAndClear
+            } else {
+                ReplacementHistory::UndoableBoundary
+            };
+
+            let commit = engine
+                .prepare_root_replacement_json(7, &after_doc.to_string(), history)
+                .unwrap();
+
+            // Replacement is canonically equivalent to a fresh import of the
+            // same target document.
+            prop_assert_eq!(commit.changed, expected_changed);
+            prop_assert_eq!(engine.document_json(), reference.document_json());
+            prop_assert_eq!(engine.client_id(), writer);
+
+            // Same-store: the writer's clock strictly advances on change and
+            // no other state-vector entry moves.
+            let after_state = engine.encoded_state().unwrap();
+            let before_entries = state_vector_entries(&base_state);
+            let after_entries = state_vector_entries(&after_state);
+            if expected_changed {
+                prop_assert!(
+                    after_entries.get(&writer).copied().unwrap_or(0)
+                        > before_entries.get(&writer).copied().unwrap_or(0)
+                );
+            } else {
+                prop_assert_eq!(&after_entries, &before_entries);
+            }
+            for (client, clock) in &before_entries {
+                if *client != writer {
+                    prop_assert_eq!(after_entries.get(client), Some(clock));
+                }
+            }
+
+            // Standard incremental convergence: a peer holding the prior
+            // state converges through the base->after Update-v1 alone.
+            let peer = Doc::new();
+            let peer_fragment = peer.get_or_insert_xml_fragment("prosemirror");
+            {
+                let mut txn = peer.transact_mut();
+                txn.apply_update(Update::decode_v1(&base_state).unwrap()).unwrap();
+            }
+            let base_vector = peer.transact().state_vector();
+            let replica = Doc::new();
+            let replica_fragment = replica.get_or_insert_xml_fragment("prosemirror");
+            {
+                let mut txn = replica.transact_mut();
+                txn.apply_update(Update::decode_v1(&after_state).unwrap()).unwrap();
+            }
+            let incremental = replica.transact().encode_state_as_update_v1(&base_vector);
+            {
+                let mut txn = peer.transact_mut();
+                txn.apply_update(Update::decode_v1(&incremental).unwrap()).unwrap();
+            }
+            {
+                let peer_txn = peer.transact();
+                let replica_txn = replica.transact();
+                prop_assert_eq!(peer_txn.state_vector(), replica_txn.state_vector());
+                prop_assert_eq!(
+                    peer_fragment.get_string(&peer_txn),
+                    replica_fragment.get_string(&replica_txn)
+                );
+            }
+
+            // Exact history policy per mode.
+            if reset {
+                prop_assert!(!engine.can_undo());
+                prop_assert!(!engine.can_redo());
+            } else {
+                prop_assert_eq!(engine.can_undo(), expected_changed);
+                if expected_changed {
+                    prop_assert!(engine.undo(8).unwrap().is_some());
+                    let restored = engine_with_document(&before_doc);
+                    prop_assert_eq!(engine.document_json(), restored.document_json());
+                }
+            }
+        }
+    }
+}
+
+/// Task 7 property extension: every durable local path — typed input
+/// transaction, command, undo, redo, replace (`UndoableBoundary`), and reset
+/// (`ResetAndClear`) — reserves a conservative outbound bound before the
+/// irreversible Yrs write and captures an incremental Update-v1 whose length
+/// never exceeds that admitted bound, while a twin replica fed only by the
+/// captured outbox entries converges exactly. Selection requests reserve and
+/// enqueue nothing.
+#[cfg(feature = "ffi-v2-staging")]
+mod outbound_update_bounds {
+    use editor_core::boundary::ResourceLimits;
+    use editor_core::native_bridge_test_support::{
+        self as bridge, BridgeTestOutcome, SessionOptions,
+    };
+    use editor_core::tiptap_schema;
+    use editor_core::yrs_engine::{
+        EditingLimits, InitializationMode, YrsDocumentEngine, YrsEngineConfig,
+    };
+    use proptest::prelude::*;
+
+    fn paragraphs_json(texts: &[String]) -> String {
+        serde_json::json!({
+            "type": "doc",
+            "content": texts
+                .iter()
+                .map(|text| {
+                    if text.is_empty() {
+                        serde_json::json!({ "type": "paragraph" })
+                    } else {
+                        serde_json::json!({
+                            "type": "paragraph",
+                            "content": [{ "type": "text", "text": text }],
+                        })
+                    }
+                })
+                .collect::<Vec<_>>(),
+        })
+        .to_string()
+    }
+
+    fn twin_replica() -> YrsDocumentEngine {
+        // Content-free AwaitRemote replica: converges exclusively from the
+        // captured outbox entries.
+        YrsDocumentEngine::new(YrsEngineConfig {
+            schema: tiptap_schema(),
+            fragment_name: "prosemirror".into(),
+            initialization_mode: InitializationMode::AwaitRemote,
+            resource_limits: ResourceLimits::default(),
+            editing_limits: EditingLimits::default(),
+            max_length: None,
+            scope: Some(editor_core::yrs_engine::DocumentScope {
+                document_id: "bounds-twin".into(),
+                lineage_id: "bounds-twin-lineage".into(),
+            }),
+        })
+        .unwrap()
+    }
+
+    fn revision(id: u64) -> u64 {
+        bridge::session_audit(id).unwrap().document_revision
+    }
+
+    fn text_fragment() -> impl Strategy<Value = String> {
+        prop_oneof![
+            "[a-z]{1,6}",
+            "[\u{1F600}-\u{1F604}]{1,3}",
+            "[\u{e9}-\u{ef}]{1,4}",
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+
+        #[test]
+        fn captured_updates_stay_within_admitted_bounds_and_converge(
+            seed_texts in proptest::collection::vec(text_fragment(), 1..3usize),
+            typed in text_fragment(),
+            typed_second in text_fragment(),
+            replace_texts in proptest::collection::vec(text_fragment(), 1..3usize),
+            reset_texts in proptest::collection::vec(text_fragment(), 1..3usize),
+        ) {
+            let id = bridge::create_session(SessionOptions {
+                initial_json: Some(paragraphs_json(&seed_texts)),
+                attach_runtime: true,
+                ..SessionOptions::default()
+            })
+            .unwrap();
+
+            let mut twin = twin_replica();
+            let mut replay = 50_000u64;
+            let initial = bridge::session_audit(id).unwrap().encoded_state.unwrap();
+            twin.apply_remote_update_v1(replay, &initial).unwrap();
+
+            let mut replay_one = |twin: &mut YrsDocumentEngine,
+                                  label: &str|
+             -> Result<(), TestCaseError> {
+                let bound = bridge::last_reserved_upper_bound(id).unwrap();
+                let bound = bound.unwrap_or_else(|| panic!("{label}: missing reservation"));
+                let (_, update) = bridge::take_next_update(id).unwrap()
+                    .unwrap_or_else(|| panic!("{label}: missing outbox entry"));
+                prop_assert!(
+                    update.len() <= bound,
+                    "{} captured {} bytes above admitted bound {}",
+                    label,
+                    update.len(),
+                    bound,
+                );
+                replay += 1;
+                twin.apply_remote_update_v1(replay, &update).unwrap();
+                prop_assert_eq!(
+                    twin.document_json(),
+                    bridge::session_audit(id).unwrap().document_json,
+                    "{} twin replica must converge from the captured update",
+                    label,
+                );
+                prop_assert!(
+                    bridge::take_next_update(id).unwrap().is_none(),
+                    "{} must enqueue exactly one entry",
+                    label,
+                );
+                Ok(())
+            };
+
+            // Typed local-input transaction.
+            let outcome = bridge::submit_input(
+                id,
+                &serde_json::json!({
+                    "version": 1,
+                    "requestId": 1,
+                    "baseDocumentRevision": revision(id),
+                    "text": typed,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let changed_transaction = matches!(
+                outcome,
+                BridgeTestOutcome::Transaction { changed: true, .. }
+            );
+            prop_assert!(changed_transaction);
+            replay_one(&mut twin, "input")?;
+
+            // Selection/state-only request: reserves nothing, enqueues nothing.
+            bridge::submit_selection(
+                id,
+                &serde_json::json!({
+                    "version": 1,
+                    "requestId": 2,
+                    "baseDocumentRevision": revision(id),
+                    "selection": {
+                        "type": "text",
+                        "anchor": { "offset": 0, "kind": "scalar" },
+                        "head": { "offset": 0, "kind": "scalar" },
+                    },
+                })
+                .to_string(),
+            )
+            .unwrap();
+            prop_assert_eq!(bridge::outbox_pending(id).unwrap(), Some((0, 0)));
+
+            // Command.
+            let outcome = bridge::submit_command(
+                id,
+                &serde_json::json!({
+                    "version": 1,
+                    "requestId": 3,
+                    "baseDocumentRevision": revision(id),
+                    "command": { "type": "toggleBlockquote" },
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let changed_transaction = matches!(
+                outcome,
+                BridgeTestOutcome::Transaction { changed: true, .. }
+            );
+            prop_assert!(changed_transaction);
+            replay_one(&mut twin, "command")?;
+
+            // Second input so undo has a mixed-history group to pop.
+            bridge::submit_input(
+                id,
+                &serde_json::json!({
+                    "version": 1,
+                    "requestId": 4,
+                    "baseDocumentRevision": revision(id),
+                    "text": typed_second,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            replay_one(&mut twin, "input-second")?;
+
+            // Undo and redo.
+            prop_assert!(bridge::undo(id, 5).unwrap());
+            replay_one(&mut twin, "undo")?;
+            prop_assert!(bridge::redo(id, 6).unwrap());
+            replay_one(&mut twin, "redo")?;
+
+            // Whole-document replace: one undoable local-API boundary.
+            bridge::submit_local_api(
+                id,
+                &serde_json::json!({
+                    "version": 1,
+                    "requestId": 7,
+                    "baseDocumentRevision": revision(id),
+                    "setJson": serde_json::from_str::<serde_json::Value>(
+                        &paragraphs_json(&replace_texts),
+                    )
+                    .unwrap(),
+                    "history": "undoableBoundary",
+                })
+                .to_string(),
+            )
+            .unwrap();
+            if bridge::outbox_pending(id).unwrap() == Some((0, 0)) {
+                // Identical replacement content is an unchanged commit and
+                // must not enqueue an update.
+                prop_assert_eq!(
+                    twin.document_json(),
+                    bridge::session_audit(id).unwrap().document_json,
+                );
+            } else {
+                replay_one(&mut twin, "replace")?;
+            }
+
+            // Reset: non-undoable, clears history, still one bounded entry.
+            bridge::submit_local_api(
+                id,
+                &serde_json::json!({
+                    "version": 1,
+                    "requestId": 8,
+                    "baseDocumentRevision": revision(id),
+                    "setJson": serde_json::from_str::<serde_json::Value>(
+                        &paragraphs_json(&reset_texts),
+                    )
+                    .unwrap(),
+                    "history": "resetAndClear",
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let audit = bridge::session_audit(id).unwrap();
+            prop_assert!(!audit.can_undo);
+            if bridge::outbox_pending(id).unwrap() == Some((0, 0)) {
+                prop_assert_eq!(twin.document_json(), audit.document_json);
+            } else {
+                replay_one(&mut twin, "reset")?;
+            }
+
+            bridge::destroy_session(id);
+        }
+    }
+}

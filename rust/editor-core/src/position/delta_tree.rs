@@ -84,4 +84,13 @@ impl DeltaTree {
     pub fn iter(&self) -> impl Iterator<Item = &(usize, i32, i32)> {
         self.deltas.iter()
     }
+
+    /// Upper bound for the heap retained by cloning this tree into a history
+    /// snapshot. `Vec::clone` requests space for the populated entries, which
+    /// cannot exceed the source allocation represented by `capacity()`.
+    pub(crate) fn history_snapshot_clone_retained_bytes(&self) -> Option<usize> {
+        self.deltas
+            .capacity()
+            .checked_mul(std::mem::size_of::<(usize, i32, i32)>())
+    }
 }

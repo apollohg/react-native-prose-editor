@@ -1120,16 +1120,17 @@ impl MutationCompiler {
                 u64::try_from(self.charged_work).unwrap_or(u64::MAX),
             ));
         }
-        let path_parent_widths = self
-            .structural_parents
-            .values()
-            .map(|parent| {
-                (
-                    parent.signature.parent.clone(),
-                    parent.signature.children.len(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        let path_parent_widths = self.explicit_path_parent_widths.take().unwrap_or_else(|| {
+            self.structural_parents
+                .values()
+                .map(|parent| {
+                    (
+                        parent.signature.parent.clone(),
+                        parent.signature.children.len(),
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        });
         let mut actions = Vec::new();
         for slot in self.actions {
             match slot {

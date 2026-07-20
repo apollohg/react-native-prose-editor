@@ -71,6 +71,8 @@ pub enum RenderElement {
 /// Reconstruct the exact flat visible string consumed by scalar editor
 /// offsets and the position map.
 pub(crate) fn rendered_text(document: &Document, schema: &Schema) -> String {
+    #[cfg(test)]
+    crate::yrs_engine::observability::record_rendered_text_derivation();
     let blocks = incremental::render_blocks(document, schema);
     let elements = incremental::flatten_render_blocks(&blocks);
     let mut text = String::new();

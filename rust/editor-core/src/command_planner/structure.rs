@@ -21,6 +21,11 @@ pub(crate) struct SimulatedCommandPlan {
     pub selection: Selection,
 }
 
+pub(crate) struct AdmittedSemanticCommandPlan {
+    pub plan: SemanticCommandPlan,
+    pub simulated: SimulatedCommandPlan,
+}
+
 fn default_attrs(
     schema: &Schema,
     node_type: &str,
@@ -151,9 +156,10 @@ fn admitted_plan(
     selection: &Selection,
     plan: SemanticCommandPlan,
     limits: &ResourceLimits,
-) -> Option<SemanticCommandPlan> {
+) -> Option<AdmittedSemanticCommandPlan> {
     let simulated = simulate_plan(document, schema, selection, &plan, limits).ok()?;
-    (simulated.document != *document || simulated.selection != *selection).then_some(plan)
+    (simulated.document != *document || simulated.selection != *selection)
+        .then_some(AdmittedSemanticCommandPlan { plan, simulated })
 }
 
 fn list_attrs_for_type(
@@ -172,6 +178,18 @@ pub(crate) fn plan_wrap_in_list(
     item_type: &str,
     limits: &ResourceLimits,
 ) -> Option<SemanticCommandPlan> {
+    plan_wrap_in_list_admitted(document, schema, selection, list_type, item_type, limits)
+        .map(|admitted| admitted.plan)
+}
+
+pub(crate) fn plan_wrap_in_list_admitted(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    list_type: &str,
+    item_type: &str,
+    limits: &ResourceLimits,
+) -> Option<AdmittedSemanticCommandPlan> {
     let (parent_path, replace_from, replace_to, selected) =
         selected_block_range(document, schema, selection)?;
     let in_blockquote = (!parent_path.is_empty())
@@ -274,7 +292,8 @@ pub(crate) fn plan_apply_list_type(
                     history: SemanticCommandHistory::FormatBoundary,
                 },
                 limits,
-            );
+            )
+            .map(|admitted| admitted.plan);
         }
     }
     let item_type = schema.list_item_type_for(list_type)?;
@@ -299,6 +318,7 @@ fn plan_list_position_operation(
         },
         limits,
     )
+    .map(|admitted| admitted.plan)
 }
 
 pub(crate) fn plan_unwrap_from_list(
@@ -517,7 +537,7 @@ pub(crate) fn plan_insert_node(
         }
         _ => return None,
     };
-    admitted_plan(document, schema, selection, plan, limits)
+    admitted_plan(document, schema, selection, plan, limits).map(|admitted| admitted.plan)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -573,6 +593,7 @@ pub(crate) fn plan_resize_image(
         },
         limits,
     )
+    .map(|admitted| admitted.plan)
 }
 
 pub(crate) fn simulate_plan(
@@ -582,6 +603,8 @@ pub(crate) fn simulate_plan(
     plan: &SemanticCommandPlan,
     limits: &ResourceLimits,
 ) -> Result<SimulatedCommandPlan, ()> {
+    #[cfg(test)]
+    crate::yrs_engine::observability::record_planner_simulation();
     if plan.operations.len() > limits.max_document_nodes {
         return Err(());
     }

@@ -29,7 +29,8 @@ use crate::transform::DocumentValidator;
 use super::codec::{PreparedXmlChild, PreparedXmlNode};
 use super::compiler::{compile_transaction_with_yrs, CompilationContext, CompiledTransaction};
 use super::mutation::{
-    crdt_clock_scan_reservation, crdt_envelope, execute_mutation_plan, preflight_mutation_plan,
+    crdt_clock_scan_reservation, crdt_envelope, direct_root_wrap_metrics,
+    direct_xml_replacement_growth, execute_mutation_plan, preflight_mutation_plan,
     preflight_mutation_work_for_test, TextRangeDisposition, YrsMutationAction,
 };
 use super::YrsDocumentCodec;
@@ -5237,6 +5238,131 @@ fn wrap_in_list_replaces_one_complete_root_block_directly() {
         "one"
     );
     assert_eq!(actual["content"][1]["content"][0]["text"], "tail");
+}
+
+#[test]
+fn direct_root_wrap_oracle_metrics_match_the_public_lowering_matrix() {
+    let cases = [
+        json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "plain" }]
+            }]
+        }),
+        json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "Á🙂漢字" }]
+            }]
+        }),
+        json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "marked",
+                    "marks": [{ "type": "bold" }, { "type": "italic" }]
+                }]
+            }]
+        }),
+        json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": "one" }] },
+                { "type": "paragraph", "content": [{ "type": "text", "text": "two" }] },
+                { "type": "paragraph", "content": [{ "type": "text", "text": "three" }] }
+            ]
+        }),
+        json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [
+                    { "type": "text", "text": "before" },
+                    { "type": "hardBreak" },
+                    { "type": "text", "text": "after" }
+                ]
+            }]
+        }),
+    ];
+
+    for (case_index, source) in cases.into_iter().enumerate() {
+        let schema = tiptap_schema();
+        let source_document =
+            from_prosemirror_json(&source, &schema, UnknownTypeMode::Preserve).unwrap();
+        let to = u32::try_from(
+            crate::render::rendered_text(&source_document, &schema)
+                .chars()
+                .count(),
+        )
+        .unwrap();
+        let (doc, schema, limits, compiled) = compile_operations_with_schema(
+            &source,
+            vec![TypedOperation::WrapInList {
+                range: range_for_test(0, to),
+                list_type: "bulletList".into(),
+                item_type: "listItem".into(),
+                attrs: HashMap::new(),
+                item_attrs: HashMap::new(),
+            }],
+            schema,
+        );
+        let list_node = compiled
+            .preview
+            .root()
+            .content()
+            .and_then(|content| content.child(0))
+            .unwrap();
+        let metrics = direct_root_wrap_metrics(122, 0, list_node, &schema, &limits).unwrap();
+        assert_eq!(
+            metrics.insertion_units, compiled.authored_clock_units,
+            "case {case_index} insertion units"
+        );
+        let replaced_children = match &compiled.mutation_plan.actions[0] {
+            YrsMutationAction::DeleteXmlChildren { child_count, .. } => *child_count,
+            action => panic!("case {case_index} unexpected first action: {action:?}"),
+        };
+        let txn = doc.transact();
+        let envelope = crdt_envelope(122, &txn, usize::MAX).unwrap();
+        assert_eq!(
+            direct_xml_replacement_growth(
+                122,
+                0,
+                replaced_children,
+                metrics.growth_bytes,
+                metrics.insertion_units,
+                &envelope,
+            )
+            .unwrap(),
+            compiled.encoded_growth_bound,
+            "case {case_index} encoded growth"
+        );
+    }
+}
+
+#[test]
+fn direct_root_wrap_growth_oracle_preserves_public_overflow_error_contract() {
+    let error = direct_xml_replacement_growth(
+        12_203,
+        7,
+        1,
+        usize::MAX,
+        1,
+        &super::mutation::CrdtEnvelope::default(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "OPERATION_LIMIT_EXCEEDED");
+    assert_eq!(error.operation_index, Some(7));
+    assert_eq!(
+        error.details,
+        Some(json!({ "field": "estimatedUpdateV1Growth" }))
+    );
+    assert_eq!(error.limit, Some(u64::MAX));
+    assert_eq!(error.actual, Some(u64::MAX));
 }
 
 #[test]

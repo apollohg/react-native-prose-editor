@@ -136,7 +136,6 @@ pub(crate) fn estimate_update_v1_growth(
     }
     if plan_has_deletions(plan) {
         let inserted_units = planned_insertion_units(request_id, plan)?;
-        let live_units = envelope.map_or(0, |envelope| envelope.live_clock_units);
         if plan_may_delete_live(plan) && envelope.is_none() {
             return Err(OperationError::engine_invariant_failed(
                 request_id,
@@ -144,26 +143,12 @@ pub(crate) fn estimate_update_v1_growth(
                 "Yrs live deletion estimate requires a transaction snapshot envelope",
             ));
         }
-        let delete_units = live_units
-            .checked_add(inserted_units)
-            .ok_or_else(|| invalid_action_range(request_id, 0))?;
-        let possible_clients = u64::try_from(envelope.map_or(0, |value| value.client_count))
-            .unwrap_or(u64::MAX)
-            .saturating_add(1)
-            .min(delete_units);
-        // Update-v1 delete sets encode a client count, then for every client a
-        // client id and range count, and for every range a clock and length.
-        // Ten bytes bounds a u64 client varint; five bounds every u32 varint.
-        // One deleted clock per range is the maximally fragmented case.
-        let delete_set_bytes = 5u64
-            .checked_add(
-                possible_clients
-                    .checked_mul(15)
-                    .ok_or_else(|| invalid_action_range(request_id, 0))?,
-            )
-            .and_then(|bytes| bytes.checked_add(delete_units.checked_mul(10)?))
-            .and_then(|bytes| usize::try_from(bytes).ok())
-            .ok_or_else(|| invalid_action_range(request_id, 0))?;
+        let delete_set_bytes = deletion_set_growth(
+            request_id,
+            0,
+            inserted_units,
+            envelope.copied().unwrap_or_default(),
+        )?;
         total = checked_estimate_add(request_id, 0, total, Some(delete_set_bytes))?;
     }
     Ok(total)
@@ -187,10 +172,10 @@ pub(crate) fn estimate_undo_units(
     // A plan can delete every currently-live clock plus clocks it inserted
     // earlier in the same transaction. Count insertions separately because an
     // UndoManager stack item retains both its insertion and deletion IdSets.
-    inserted
-        .checked_add(envelope.map_or(0, |value| value.live_clock_units))
-        .and_then(|units| units.checked_add(inserted))
-        .ok_or_else(|| invalid_action_range(request_id, 0))
+    match envelope {
+        Some(envelope) => deleting_plan_undo_units(request_id, 0, inserted, envelope),
+        None => Ok(inserted),
+    }
 }
 
 fn plan_has_deletions(plan: &YrsMutationPlan) -> bool {
@@ -227,6 +212,78 @@ fn plan_may_delete_live(plan: &YrsMutationPlan) -> bool {
         | YrsMutationAction::InsertXmlChildren { .. }
         | YrsMutationAction::InsertText { .. } => false,
     })
+}
+
+// `XmlText::insert_with_attributes` authors format items not only for the
+// requested attributes, but also to suspend and restore inherited keys that
+// the explicit insertion omits. The target signature is the sealed preflight
+// view of that exact text, so inspect only the run(s) touching the insertion
+// point. At a run boundary either side can supply Yrs' active formatting;
+// taking their union is the bounded conservative case.
+fn inherited_omitted_format_units(
+    runs: &[TextSignatureRun],
+    index_utf16: u32,
+    desired: &Attrs,
+) -> Option<u64> {
+    let mut run_start = 0u32;
+    let mut prior_touching: Option<&TextSignatureRun> = None;
+    let mut omitted_keys = 0u64;
+    for run in runs {
+        let run_len = u32::try_from(run.text.encode_utf16().count()).ok()?;
+        let run_end = run_start.checked_add(run_len)?;
+        if run_start <= index_utf16 && index_utf16 <= run_end {
+            for (key, _) in &run.attrs {
+                let already_requested = desired.contains_key(key.as_ref());
+                let already_counted = prior_touching.is_some_and(|prior| {
+                    prior
+                        .attrs
+                        .iter()
+                        .any(|(prior_key, _)| prior_key == key)
+                });
+                if !already_requested && !already_counted {
+                    omitted_keys = omitted_keys.checked_add(1)?;
+                }
+            }
+            prior_touching = Some(run);
+        }
+        run_start = run_end;
+        if run_start > index_utf16 {
+            break;
+        }
+    }
+    omitted_keys.checked_mul(2)
+}
+
+#[cfg(test)]
+mod inherited_format_bound_tests {
+    use super::*;
+
+    fn run(text: &str, key: &str) -> TextSignatureRun {
+        TextSignatureRun {
+            text: text.into(),
+            attrs: vec![(Arc::<str>::from(key), Any::Bool(true))],
+        }
+    }
+
+    #[test]
+    fn touching_run_union_bounds_omitted_keys_at_start_inside_end_and_boundary() {
+        let bold = [run("a😀", "bold")];
+        let empty = Attrs::default();
+        assert_eq!(inherited_omitted_format_units(&bold, 0, &empty), Some(2));
+        assert_eq!(inherited_omitted_format_units(&bold, 1, &empty), Some(2));
+        assert_eq!(inherited_omitted_format_units(&bold, 3, &empty), Some(2));
+
+        let boundary = [run("a", "bold"), run("b", "italic")];
+        assert_eq!(
+            inherited_omitted_format_units(&boundary, 1, &empty),
+            Some(4)
+        );
+        let desired_bold = Attrs::from([(Arc::<str>::from("bold"), Any::Bool(true))]);
+        assert_eq!(
+            inherited_omitted_format_units(&boundary, 1, &desired_bold),
+            Some(2)
+        );
+    }
 }
 
 pub(crate) fn planned_insertion_units(
@@ -286,12 +343,23 @@ pub(crate) fn planned_insertion_units(
                 units
             }
             YrsMutationAction::InsertText {
-                len_utf16, attrs, ..
+                index_utf16,
+                len_utf16,
+                attrs,
+                signature,
+                ..
             } => {
                 u64::from(*len_utf16)
                     .checked_add(format_units(attrs).ok_or_else(|| {
                         invalid_action_range(request_id, action.operation_index())
                     })?)
+                    .and_then(|units| {
+                        units.checked_add(inherited_omitted_format_units(
+                            &signature.runs,
+                            *index_utf16,
+                            attrs,
+                        )?)
+                    })
                     .ok_or_else(|| invalid_action_range(request_id, action.operation_index()))?
             }
             YrsMutationAction::FormatText { attrs, .. } => format_units(attrs)
@@ -374,13 +442,13 @@ fn estimate_created_text_action(
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct PreparedMetrics {
-    growth_bytes: usize,
-    insertion_units: u64,
-    work: usize,
+pub(crate) struct PreparedMetrics {
+    pub(crate) growth_bytes: usize,
+    pub(crate) insertion_units: u64,
+    pub(crate) work: usize,
 }
 
-fn prepared_nodes_metrics(nodes: &[PreparedXmlChild]) -> Option<PreparedMetrics> {
+pub(crate) fn prepared_nodes_metrics(nodes: &[PreparedXmlChild]) -> Option<PreparedMetrics> {
     fn node_metrics(node: &PreparedXmlNode) -> Option<PreparedMetrics> {
         match node {
             PreparedXmlNode::Text { runs } => {
@@ -455,6 +523,85 @@ fn prepared_nodes_metrics(nodes: &[PreparedXmlChild]) -> Option<PreparedMetrics>
             total.work = total.work.checked_add(child.work)?;
             Some(total)
         })
+}
+
+pub(crate) fn deleting_plan_undo_units(
+    request_id: u64,
+    operation_index: usize,
+    inserted_units: u64,
+    envelope: &CrdtEnvelope,
+) -> OperationResult<u64> {
+    inserted_units
+        .checked_add(envelope.live_clock_units)
+        .and_then(|units| units.checked_add(inserted_units))
+        .ok_or_else(|| invalid_action_range(request_id, operation_index))
+}
+
+fn deletion_set_growth(
+    request_id: u64,
+    operation_index: usize,
+    inserted_units: u64,
+    envelope: CrdtEnvelope,
+) -> OperationResult<usize> {
+    let delete_units = envelope
+        .live_clock_units
+        .checked_add(inserted_units)
+        .ok_or_else(|| invalid_action_range(request_id, operation_index))?;
+    let possible_clients = u64::try_from(envelope.client_count)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1)
+        .min(delete_units);
+    // Update-v1 delete sets encode a client count, then for every client a
+    // client id and range count, and for every range a clock and length.
+    // Ten bytes bounds a u64 client varint; five bounds every u32 varint.
+    // One deleted clock per range is the maximally fragmented case.
+    5u64
+        .checked_add(
+            possible_clients
+                .checked_mul(15)
+                .ok_or_else(|| invalid_action_range(request_id, operation_index))?,
+        )
+        .and_then(|bytes| bytes.checked_add(delete_units.checked_mul(10)?))
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or_else(|| invalid_action_range(request_id, operation_index))
+}
+
+pub(crate) fn direct_xml_replacement_growth(
+    request_id: u64,
+    operation_index: usize,
+    replaced_children: u32,
+    prepared_growth_bytes: usize,
+    inserted_units: u64,
+    envelope: &CrdtEnvelope,
+) -> OperationResult<usize> {
+    let delete_action = checked_estimate_add(
+        request_id,
+        operation_index,
+        512,
+        usize::try_from(replaced_children)
+            .ok()
+            .and_then(|count| count.checked_mul(64)),
+    )?;
+    let insert_action = checked_estimate_add(
+        request_id,
+        operation_index,
+        512,
+        Some(prepared_growth_bytes),
+    )?;
+    let delete_set_bytes =
+        deletion_set_growth(request_id, operation_index, inserted_units, *envelope)?;
+    let total = checked_estimate_add(
+        request_id,
+        operation_index,
+        delete_action,
+        Some(insert_action),
+    )?;
+    checked_estimate_add(
+        request_id,
+        operation_index,
+        total,
+        Some(delete_set_bytes),
+    )
 }
 
 fn any_growth(value: &Any) -> Option<usize> {

@@ -39,6 +39,18 @@ pub(crate) fn active_state(
     commands: HashMap<String, bool>,
     limits: &ResourceLimits,
 ) -> ActiveState {
+    crate::yrs_engine::record_active_state_full_assembly();
+    active_state_impl(document, schema, selection, stored_marks, commands, limits)
+}
+
+fn active_state_impl(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    stored_marks: Option<&[Mark]>,
+    commands: HashMap<String, bool>,
+    limits: &ResourceLimits,
+) -> ActiveState {
     let pos = selection.from(document);
     let marks_at = effective_marks_for_selection(document, selection, stored_marks);
     let nodes_at = nodes_at_position(document, pos);
@@ -130,6 +142,24 @@ pub(crate) fn command_applicability_with_known_node_count(
     limits: &ResourceLimits,
     document_node_count: usize,
 ) -> HashMap<String, bool> {
+    #[cfg(test)]
+    crate::yrs_engine::observability::record_active_applicability_pass();
+    command_applicability_with_known_node_count_impl(
+        document,
+        schema,
+        selection,
+        limits,
+        document_node_count,
+    )
+}
+
+fn command_applicability_with_known_node_count_impl(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    limits: &ResourceLimits,
+    document_node_count: usize,
+) -> HashMap<String, bool> {
     let pos = selection.from(document);
     let list_context = list_item_context_at(document, schema, pos);
     let block_range = selected_block_range(
@@ -204,6 +234,25 @@ pub(crate) fn command_applicability_with_known_node_count(
         ),
     );
     commands
+}
+
+#[cfg(test)]
+pub(crate) fn active_state_for_debug_invariant(
+    document: &Document,
+    schema: &Schema,
+    selection: &Selection,
+    stored_marks: Option<&[Mark]>,
+    limits: &ResourceLimits,
+    document_node_count: usize,
+) -> ActiveState {
+    let commands = command_applicability_with_known_node_count_impl(
+        document,
+        schema,
+        selection,
+        limits,
+        document_node_count,
+    );
+    active_state_impl(document, schema, selection, stored_marks, commands, limits)
 }
 
 #[derive(Clone)]

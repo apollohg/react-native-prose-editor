@@ -10,6 +10,29 @@ use crate::selection::Selection;
 
 use super::{Affinity, EditorOffsetKind, RevisionedPosition};
 
+#[cfg(test)]
+std::thread_local! {
+    static RELATIVE_FULL_SIZE_PREPASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RELATIVE_FORWARD_TRAVERSALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RELATIVE_REVERSE_TRAVERSALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_relative_position_traversal_counts_for_test() {
+    RELATIVE_FULL_SIZE_PREPASSES.set(0);
+    RELATIVE_FORWARD_TRAVERSALS.set(0);
+    RELATIVE_REVERSE_TRAVERSALS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn take_relative_position_traversal_counts_for_test() -> (usize, usize, usize) {
+    (
+        RELATIVE_FULL_SIZE_PREPASSES.replace(0),
+        RELATIVE_FORWARD_TRAVERSALS.replace(0),
+        RELATIVE_REVERSE_TRAVERSALS.replace(0),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelativePoint {
     pub sticky: StickyIndex,
@@ -37,6 +60,23 @@ pub fn doc_pos_to_relative_point<T: ReadTxn>(
 ) -> Option<RelativePoint> {
     let sticky = doc_pos_to_sticky_index(txn, fragment, doc_pos, affinity.into(), schema)?;
     Some(RelativePoint { sticky, affinity })
+}
+
+/// Materialize a relative point after the caller has admitted the complete
+/// ready-document scan budget and resolved `doc_pos` against the certified
+/// derived document. The forward traversal itself proves the position exists,
+/// so it deliberately avoids the general helper's full-fragment size prepass.
+pub(crate) fn admitted_doc_pos_to_relative_point<T: ReadTxn>(
+    txn: &T,
+    fragment: &XmlFragmentRef,
+    doc_pos: u32,
+    affinity: Affinity,
+    schema: &Schema,
+) -> Option<RelativePoint> {
+    let assoc = affinity.into();
+    let sticky = forward_doc_pos_to_sticky_index(txn, fragment, doc_pos, assoc, schema)?;
+    sticky.get_offset(txn)?;
+    (sticky.assoc == assoc).then_some(RelativePoint { sticky, affinity })
 }
 
 pub fn relative_point_to_doc_pos<T: ReadTxn>(
@@ -118,6 +158,8 @@ pub(crate) fn sticky_index_to_doc_pos<T: ReadTxn>(
     sticky_index: &StickyIndex,
     schema: &Schema,
 ) -> Option<u32> {
+    #[cfg(test)]
+    RELATIVE_REVERSE_TRAVERSALS.set(RELATIVE_REVERSE_TRAVERSALS.get().saturating_add(1));
     let offset = sticky_index.get_offset(txn)?;
     let root_branch = BranchPtr::from(<XmlFragmentRef as AsRef<Branch>>::as_ref(fragment));
     if offset.branch == root_branch {
@@ -272,10 +314,24 @@ pub(crate) fn doc_pos_to_sticky_index<T: ReadTxn>(
     assoc: Assoc,
     schema: &Schema,
 ) -> Option<StickyIndex> {
+    #[cfg(test)]
+    RELATIVE_FULL_SIZE_PREPASSES.set(RELATIVE_FULL_SIZE_PREPASSES.get().saturating_add(1));
     let content_size = xml_fragment_pm_content_size(txn, fragment, schema)?;
     if doc_pos > content_size {
         return None;
     }
+    forward_doc_pos_to_sticky_index(txn, fragment, doc_pos, assoc, schema)
+}
+
+fn forward_doc_pos_to_sticky_index<T: ReadTxn>(
+    txn: &T,
+    fragment: &XmlFragmentRef,
+    doc_pos: u32,
+    assoc: Assoc,
+    schema: &Schema,
+) -> Option<StickyIndex> {
+    #[cfg(test)]
+    RELATIVE_FORWARD_TRAVERSALS.set(RELATIVE_FORWARD_TRAVERSALS.get().saturating_add(1));
     doc_pos_to_sticky_index_in_sequence(
         txn,
         fragment.children(txn),

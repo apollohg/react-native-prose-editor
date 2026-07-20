@@ -1,0 +1,111 @@
+{
+    "schemaVersion": 1,
+    "benchmarkGroup": "yrs-editing",
+    "measurement": {
+        "sampleCount": 5,
+        "aggregation": "independent per-case median of five post-optimization standard-run p50Ms values",
+        "command": "cargo bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --json --filter yrs-editing",
+        "rustcVersion": "rustc 1.95.0 (59807616e 2026-04-14)",
+        "hostModel": "MacBook Pro Mac16,5",
+        "hostChip": "Apple M4 Max",
+        "hostCpuCores": 16,
+        "hostMemoryGb": 48,
+        "hostArchitecture": "arm64",
+        "hostOperatingSystem": "macOS 26.5.1 (25F80)",
+        "commit": "06e01250cfa166bd1764024a290d9bea6273c26a",
+        "workingTree": "Approved Task 15 Yrs editing, history-snapshot, and SHA backend changes present during measurement; 54 tracked/untracked status entries",
+        "environment": "Designated Phase 2 Rust benchmark host; best-effort load isolation without an exclusive scheduler",
+        "rawSources": [
+            {
+                "path": "/tmp/yrs-editing-semantics-sample-1.json",
+                "sha256": "adb18e694f48a8fdfeb129d6d31620ba7af9e5d8477fcfa8c075eb1fa8e7326b"
+            },
+            {
+                "path": "/tmp/yrs-editing-semantics-sample-2.json",
+                "sha256": "7cf289d7a6defd5998e12a950a3b32f9983875ed6c5e68b93194b46ebcc38834"
+            },
+            {
+                "path": "/tmp/yrs-editing-semantics-sample-3.json",
+                "sha256": "6de72479fcf7949243c921ad45750d10e9371681441d170441009bc3d3c43bb5"
+            },
+            {
+                "path": "/tmp/yrs-editing-semantics-sample-4.json",
+                "sha256": "61d20de49f2bba0033adb3fd75620d5ea4ff36256cbe420736c31990b2a81f78"
+            },
+            {
+                "path": "/tmp/yrs-editing-semantics-sample-5.json",
+                "sha256": "4359af317c3da1dacbc13194ed336064d81d460c1c6eeb0ba52acaad785887af"
+            }
+        ]
+    },
+    "results": [
+        {
+            "name": "legacy.edit.insert_char.article.1x",
+            "p50Ms": 0.646333
+        },
+        {
+            "name": "yrs.edit.insert_char.article.1x",
+            "p50Ms": 1.0093750000000001
+        },
+        {
+            "name": "legacy.edit.typing_burst.article.1x",
+            "p50Ms": 13.933167
+        },
+        {
+            "name": "yrs.edit.typing_burst.article.1x",
+            "p50Ms": 18.277333
+        },
+        {
+            "name": "legacy.state.selection_light.article.1x",
+            "p50Ms": 0.17966600000000002
+        },
+        {
+            "name": "yrs.state.selection_light.article.1x",
+            "p50Ms": 0.24883400000000003
+        },
+        {
+            "name": "legacy.command.toggle_mark.article.1x",
+            "p50Ms": 0.62825
+        },
+        {
+            "name": "yrs.command.toggle_mark.article.1x",
+            "p50Ms": 1.262792
+        },
+        {
+            "name": "legacy.command.wrap_list.article.1x",
+            "p50Ms": 0.589416
+        },
+        {
+            "name": "yrs.command.wrap_list.article.1x",
+            "p50Ms": 1.442584
+        },
+        {
+            "name": "legacy.history.undo.article.1x",
+            "p50Ms": 0.6277910000000001
+        },
+        {
+            "name": "yrs.history.undo.article.1x",
+            "p50Ms": 1.5037500000000001
+        },
+        {
+            "name": "legacy.history.redo.article.1x",
+            "p50Ms": 0.623459
+        },
+        {
+            "name": "yrs.history.redo.article.1x",
+            "p50Ms": 1.4775
+        },
+        {
+            "name": "yrs.edit.insert_char.article.2x",
+            "p50Ms": 2.0078750000000003
+        },
+        {
+            "name": "yrs.state.selection_light.article.2x",
+            "p50Ms": 0.487833
+        },
+        {
+            "name": "yrs.command.wrap_list.article.2x",
+            "p50Ms": 2.831584
+        }
+    ]
+}

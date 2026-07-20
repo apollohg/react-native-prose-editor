@@ -11,9 +11,22 @@ use yrs::types::Attrs;
 use yrs::{ReadTxn, TransactionMut};
 
 use crate::boundary::ResourceLimits;
-use crate::schema::Schema;
+use crate::schema::{NodeRole, Schema};
 
+use super::mutation::{
+    ImportElementAttributeWork, ImportLookupMaterializationCollector, ImportTextCaptureWork,
+};
 use super::{raw_storage_work_limit, YrsEngineError, YrsEngineResult};
+
+#[cfg(test)]
+std::thread_local! {
+    static JSON_PROJECTION_MATERIALIZATION_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn take_json_projection_materialization_count_for_test() -> usize {
+    JSON_PROJECTION_MATERIALIZATION_COUNT.with(|count| count.replace(0))
+}
 
 pub(crate) struct YrsDocumentCodec<'a> {
     schema: &'a Schema,
@@ -30,22 +43,60 @@ impl<'a> YrsDocumentCodec<'a> {
         fragment: &XmlFragmentRef,
         txn: &T,
     ) -> YrsEngineResult<serde_json::Value> {
-        self.read_json_with_budget(fragment, txn, ConversionBudget::new(self.limits))
+        self.read_json_with_budget(fragment, txn, ConversionBudget::new(self.limits), None)
     }
 
-    pub(crate) fn read_json_from_validated_source<T: ReadTxn>(
+    pub(crate) fn matches_validated_json_with_lookup<T: ReadTxn>(
         &self,
         fragment: &XmlFragmentRef,
         txn: &T,
-    ) -> YrsEngineResult<serde_json::Value> {
-        // This document was generated locally from the validated source. Keep
-        // traversal and Any work bounds, while avoiding a redundant output-size
-        // scan that untrusted snapshot materialization still performs below.
-        self.read_json_with_budget(
-            fragment,
-            txn,
-            ConversionBudget::for_validated_source(self.limits),
-        )
+        expected: &Value,
+    ) -> (
+        YrsEngineResult<bool>,
+        Option<super::mutation::ImportLookupMaterialization>,
+    ) {
+        let root_width = usize::try_from(fragment.len(txn)).unwrap_or(usize::MAX);
+        let mut collector = ImportLookupMaterializationCollector::new(
+            0,
+            AsRef::<yrs::branch::Branch>::as_ref(fragment).id(),
+            root_width,
+            None,
+        );
+        let matched = (|| {
+            let mut context = JsonProjectionContext {
+                schema: self.schema,
+                budget: ConversionBudget::for_validated_source(self.limits),
+            };
+            context.budget.admit_node(1)?;
+            let expected_object = expected.as_object();
+            let expected_content = expected_object
+                .and_then(|object| object.get("content"))
+                .and_then(Value::as_array)
+                .map(Vec::as_slice);
+            let mut matched = expected_object.is_some_and(|object| {
+                object.len() == 2
+                    && object.get("type").and_then(Value::as_str)
+                        == Some(self.schema.doc_node_type())
+                    && expected_content.is_some()
+            });
+            let mut cursor = JsonMatchCursor::new(expected_content);
+            for child in fragment.children(txn) {
+                match_xml_out_json(
+                    child,
+                    txn,
+                    2,
+                    &mut cursor,
+                    &mut matched,
+                    &mut context,
+                    Some(&mut collector),
+                )?;
+            }
+            collector.end_container();
+            cursor.finish(&mut matched);
+            Ok(matched)
+        })();
+        let lookup = matched.as_ref().ok().and_then(|_| collector.finish().ok());
+        (matched, lookup)
     }
 
     fn read_json_with_budget<T: ReadTxn>(
@@ -53,11 +104,26 @@ impl<'a> YrsDocumentCodec<'a> {
         fragment: &XmlFragmentRef,
         txn: &T,
         mut budget: ConversionBudget<'_>,
+        mut lookup: Option<&mut ImportLookupMaterializationCollector>,
     ) -> YrsEngineResult<serde_json::Value> {
+        #[cfg(test)]
+        JSON_PROJECTION_MATERIALIZATION_COUNT
+            .with(|count| count.set(count.get().saturating_add(1)));
         budget.admit_node(1)?;
         let mut content = Vec::new();
         for child in fragment.children(txn) {
-            append_xml_out_json(child, txn, self.schema, 2, &mut budget, &mut content)?;
+            append_xml_out_json(
+                child,
+                txn,
+                self.schema,
+                2,
+                &mut budget,
+                &mut content,
+                lookup.as_deref_mut(),
+            )?;
+        }
+        if let Some(lookup) = lookup {
+            lookup.end_container();
         }
         Ok(json!({
             "type": self.schema.doc_node_type(),
@@ -304,6 +370,572 @@ impl<'a> ConversionBudget<'a> {
     }
 }
 
+struct JsonMatchCursor<'a> {
+    expected: Option<&'a [Value]>,
+    index: usize,
+    pending_text: Option<PendingJsonText<'a>>,
+    previous_actual_marks: Option<Box<Attrs>>,
+    actual_text_pending: bool,
+}
+
+struct JsonProjectionContext<'schema, 'limits> {
+    schema: &'schema Schema,
+    budget: ConversionBudget<'limits>,
+}
+
+struct PendingJsonText<'a> {
+    text: Option<&'a str>,
+    offset: usize,
+}
+
+impl<'a> JsonMatchCursor<'a> {
+    fn new(expected: Option<&'a [Value]>) -> Self {
+        Self {
+            expected,
+            index: 0,
+            pending_text: None,
+            previous_actual_marks: None,
+            actual_text_pending: false,
+        }
+    }
+
+    fn finish_pending(&mut self, matched: &mut bool) {
+        if let Some(pending) = self.pending_text.take() {
+            *matched &= pending
+                .text
+                .is_some_and(|text| pending.offset == text.len());
+            self.index = self.index.saturating_add(1);
+        }
+        self.previous_actual_marks = None;
+        self.actual_text_pending = false;
+    }
+
+    fn next_node(&mut self, matched: &mut bool) -> Option<&'a Value> {
+        self.finish_pending(matched);
+        let node = self.expected.and_then(|values| values.get(self.index));
+        *matched &= node.is_some();
+        self.index = self.index.saturating_add(1);
+        node
+    }
+
+    fn observe_text(
+        &mut self,
+        text: &str,
+        attrs: Option<Box<Attrs>>,
+        schema: &Schema,
+        depth: usize,
+        budget: &mut ConversionBudget<'_>,
+        matched: &mut bool,
+    ) -> YrsEngineResult<()> {
+        let coalesces = self.actual_text_pending
+            && actual_marks_equal(self.previous_actual_marks.as_deref(), attrs.as_deref());
+        if !coalesces {
+            budget.admit_node(depth)?;
+            self.finish_pending(matched);
+            self.previous_actual_marks = attrs;
+            self.actual_text_pending = true;
+            if !*matched {
+                return Ok(());
+            }
+            let node = self.expected.and_then(|values| values.get(self.index));
+            let object = node.and_then(Value::as_object);
+            let expected_text = object
+                .and_then(|object| object.get("text"))
+                .and_then(Value::as_str);
+            let expected_marks = object
+                .and_then(|object| object.get("marks"))
+                .and_then(Value::as_array);
+            let shape_matches = object.is_some_and(|object| {
+                let marks_present = object.contains_key("marks");
+                object.len() == if marks_present { 3 } else { 2 }
+                    && object.get("type").and_then(Value::as_str) == Some("text")
+                    && expected_text.is_some()
+                    && (!marks_present || expected_marks.is_some_and(|marks| !marks.is_empty()))
+            });
+            *matched &= shape_matches
+                && marks_match_json(
+                    self.previous_actual_marks.as_deref(),
+                    expected_marks,
+                    schema,
+                );
+            if !*matched {
+                return Ok(());
+            }
+            self.pending_text = Some(PendingJsonText {
+                text: expected_text,
+                offset: 0,
+            });
+        }
+        if !*matched {
+            return Ok(());
+        }
+        let pending = self
+            .pending_text
+            .as_mut()
+            .expect("matching text is pending");
+        let segment_matches = pending.text.is_some_and(|expected| {
+            expected
+                .get(pending.offset..)
+                .is_some_and(|remaining| remaining.starts_with(text))
+        });
+        *matched &= segment_matches;
+        if segment_matches {
+            pending.offset = pending.offset.saturating_add(text.len());
+        }
+        Ok(())
+    }
+
+    fn finish(mut self, matched: &mut bool) -> usize {
+        self.finish_pending(matched);
+        *matched &= self.expected.map_or(0, <[Value]>::len) == self.index;
+        self.index
+    }
+}
+
+fn any_projection_equal(left: &Any, right: &Any) -> bool {
+    if any_projects_null(left) && any_projects_null(right) {
+        return true;
+    }
+    if matches!(left, Any::Number(_) | Any::BigInt(_))
+        || matches!(right, Any::Number(_) | Any::BigInt(_))
+    {
+        return projected_number(left)
+            .is_some_and(|left| projected_number(right).is_some_and(|right| left == right));
+    }
+    match (left, right) {
+        (Any::Bool(left), Any::Bool(right)) => left == right,
+        (Any::String(left), Any::String(right)) => left == right,
+        (Any::Buffer(left), Any::Buffer(right)) => left == right,
+        (Any::Buffer(left), Any::Array(right)) | (Any::Array(right), Any::Buffer(left)) => {
+            left.len() == right.len()
+                && left.iter().zip(right.iter()).all(|(left, right)| {
+                    projected_number(right)
+                        .is_some_and(|right| right == serde_json::Number::from(*left))
+                })
+        }
+        (Any::Array(left), Any::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right.iter())
+                    .all(|(left, right)| any_projection_equal(left, right))
+        }
+        (Any::Map(left), Any::Map(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(key, left)| {
+                    right
+                        .get(key)
+                        .is_some_and(|right| any_projection_equal(left, right))
+                })
+        }
+        _ => false,
+    }
+}
+
+fn projected_number(value: &Any) -> Option<serde_json::Number> {
+    match value {
+        Any::Number(value) => serde_json::Number::from_f64(*value),
+        Any::BigInt(value) => Some((*value).into()),
+        _ => None,
+    }
+}
+
+fn any_projects_null(value: &Any) -> bool {
+    matches!(value, Any::Null | Any::Undefined)
+        || matches!(value, Any::Number(number) if !number.is_finite())
+}
+
+fn mark_value_omits_attrs(value: &Any) -> bool {
+    matches!(value, Any::Bool(true)) || any_projects_null(value)
+}
+
+fn mark_value_projection_equal(left: &Any, right: &Any) -> bool {
+    let left_omits_attrs = mark_value_omits_attrs(left);
+    let right_omits_attrs = mark_value_omits_attrs(right);
+    (left_omits_attrs && right_omits_attrs)
+        || (!left_omits_attrs && !right_omits_attrs && any_projection_equal(left, right))
+}
+
+fn actual_marks_equal(left: Option<&Attrs>, right: Option<&Attrs>) -> bool {
+    let left_len = left.map_or(0, Attrs::len);
+    let right_len = right.map_or(0, Attrs::len);
+    if left_len != right_len {
+        return false;
+    }
+    if left_len == 0 {
+        return true;
+    }
+    let (Some(left), Some(right)) = (left, right) else {
+        return false;
+    };
+    left.iter().all(|(key, left)| {
+        right
+            .get(key)
+            .is_some_and(|right| mark_value_projection_equal(left, right))
+    })
+}
+
+fn validate_any_projection(
+    value: &Any,
+    budget: &mut ConversionBudget<'_>,
+    depth: usize,
+) -> YrsEngineResult<()> {
+    budget.admit_any(depth, 1)?;
+    match value {
+        Any::Null | Any::Undefined => budget.charge_output(4),
+        Any::Bool(value) => budget.charge_output(if *value { 4 } else { 5 }),
+        Any::Number(value) => {
+            let number = serde_json::Number::from_f64(*value);
+            budget.charge_computed_output(|| {
+                number.as_ref().map_or(4, |number| number.to_string().len())
+            })
+        }
+        Any::BigInt(value) => budget.charge_computed_output(|| value.to_string().len()),
+        Any::String(value) => budget.charge_computed_output(|| json_string_len(value)),
+        Any::Buffer(value) => {
+            budget.admit_any(depth, value.len())?;
+            budget.charge_output(2usize.saturating_add(value.len().saturating_sub(1)))?;
+            for byte in value.iter() {
+                budget.charge_output(decimal_u8_len(*byte))?;
+            }
+            Ok(())
+        }
+        Any::Array(values) => {
+            budget.charge_output(2usize.saturating_add(values.len().saturating_sub(1)))?;
+            for value in values.iter() {
+                validate_any_projection(value, budget, depth + 1)?;
+            }
+            Ok(())
+        }
+        Any::Map(values) => {
+            budget.charge_output(2usize.saturating_add(values.len().saturating_sub(1)))?;
+            for (key, value) in values.iter() {
+                budget.charge_computed_output(|| json_string_len(key).saturating_add(1))?;
+                validate_any_projection(value, budget, depth + 1)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn any_matches_json(value: &Any, expected: Option<&Value>) -> bool {
+    match value {
+        Any::Null | Any::Undefined => expected.is_some_and(Value::is_null),
+        Any::Bool(value) => expected.and_then(Value::as_bool) == Some(*value),
+        Any::Number(value) => serde_json::Number::from_f64(*value).map_or_else(
+            || expected.is_some_and(Value::is_null),
+            |number| Some(&number) == expected.and_then(Value::as_number),
+        ),
+        Any::BigInt(value) => expected.and_then(Value::as_i64) == Some(*value),
+        Any::String(value) => expected.and_then(Value::as_str) == Some(value.as_ref()),
+        Any::Buffer(value) => expected.and_then(Value::as_array).is_some_and(|expected| {
+            expected.len() == value.len()
+                && value
+                    .iter()
+                    .zip(expected)
+                    .all(|(byte, expected)| expected.as_u64() == Some(u64::from(*byte)))
+        }),
+        Any::Array(values) => expected.and_then(Value::as_array).is_some_and(|expected| {
+            expected.len() == values.len()
+                && values
+                    .iter()
+                    .zip(expected)
+                    .all(|(value, expected)| any_matches_json(value, Some(expected)))
+        }),
+        Any::Map(values) => expected.and_then(Value::as_object).is_some_and(|expected| {
+            expected.len() == values.len()
+                && values
+                    .iter()
+                    .all(|(key, value)| any_matches_json(value, expected.get(key.as_str())))
+        }),
+    }
+}
+
+fn marks_match_json(attrs: Option<&Attrs>, expected: Option<&Vec<Value>>, schema: &Schema) -> bool {
+    let attr_count = attrs.map_or(0, Attrs::len);
+    let Some(expected) = expected else {
+        return attr_count == 0;
+    };
+    if expected.len() != attr_count || expected.is_empty() {
+        return false;
+    }
+    let Some(attrs) = attrs else {
+        return false;
+    };
+    let mut previous: Option<(usize, &str)> = None;
+    for mark in expected {
+        let Some(object) = mark.as_object() else {
+            return false;
+        };
+        let Some(name) = object.get("type").and_then(Value::as_str) else {
+            return false;
+        };
+        let rank = schema.mark_rank(name).unwrap_or(usize::MAX);
+        if previous.is_some_and(|(previous_rank, previous_name)| {
+            (previous_rank, previous_name) >= (rank, name)
+        }) {
+            return false;
+        }
+        previous = Some((rank, name));
+        let Some(value) = attrs.get(name) else {
+            return false;
+        };
+        let omits_attrs = mark_value_omits_attrs(value);
+        if object.len() != if omits_attrs { 1 } else { 2 }
+            || (!omits_attrs && !any_matches_json(value, object.get("attrs")))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn heading_level<T: ReadTxn>(element: &XmlElementRef, txn: &T) -> Option<u8> {
+    match element.get_attribute(txn, "level") {
+        Some(yrs::Out::Any(Any::BigInt(value))) => u8::try_from(value).ok(),
+        Some(yrs::Out::Any(Any::Number(value))) => (value.is_finite() && value.fract() == 0.0)
+            .then(|| u8::try_from(value as i64).ok())
+            .flatten(),
+        Some(yrs::Out::Any(Any::String(value))) => {
+            crate::serialize::parse_wire_heading_level_str(&value)
+        }
+        _ => None,
+    }
+    .filter(|level| (1..=6).contains(level))
+}
+
+fn normalized_type(tag: &str, level: Option<u8>) -> (&str, bool) {
+    if tag != "heading" {
+        return (tag, false);
+    }
+    match level {
+        Some(1) => ("h1", true),
+        Some(2) => ("h2", true),
+        Some(3) => ("h3", true),
+        Some(4) => ("h4", true),
+        Some(5) => ("h5", true),
+        Some(6) => ("h6", true),
+        _ => (tag, false),
+    }
+}
+
+fn match_xml_out_json<T: ReadTxn>(
+    node: XmlOut,
+    txn: &T,
+    depth: usize,
+    cursor: &mut JsonMatchCursor<'_>,
+    matched: &mut bool,
+    context: &mut JsonProjectionContext<'_, '_>,
+    mut lookup: Option<&mut ImportLookupMaterializationCollector>,
+) -> YrsEngineResult<()> {
+    if lookup.as_deref().is_some_and(|lookup| lookup.has_failed()) {
+        lookup = None;
+    }
+    match node {
+        XmlOut::Element(element) => {
+            match_xml_element_json(&element, txn, depth, cursor, matched, context, lookup)
+        }
+        XmlOut::Text(text) => {
+            match_xml_text_json(&text, txn, depth, cursor, matched, context, lookup)
+        }
+        XmlOut::Fragment(fragment) => {
+            context.budget.admit_traversal_depth(depth)?;
+            if let Some(lookup) = lookup.as_deref_mut() {
+                lookup.begin_fragment();
+            }
+            for child in fragment.children(txn) {
+                match_xml_out_json(
+                    child,
+                    txn,
+                    depth + 1,
+                    cursor,
+                    matched,
+                    context,
+                    lookup.as_deref_mut(),
+                )?;
+            }
+            if let Some(lookup) = lookup {
+                lookup.end_container();
+            }
+            Ok(())
+        }
+    }
+}
+
+fn match_xml_element_json<T: ReadTxn>(
+    element: &XmlElementRef,
+    txn: &T,
+    depth: usize,
+    cursor: &mut JsonMatchCursor<'_>,
+    matched: &mut bool,
+    context: &mut JsonProjectionContext<'_, '_>,
+    mut lookup: Option<&mut ImportLookupMaterializationCollector>,
+) -> YrsEngineResult<()> {
+    if lookup.as_deref().is_some_and(|lookup| lookup.has_failed()) {
+        lookup = None;
+    }
+    context.budget.admit_node(depth)?;
+    // An element is always a projected-text coalescing boundary, including
+    // after an earlier comparison mismatch. Keep actual resource accounting
+    // independent from the sticky comparison result.
+    let expected_node = cursor.next_node(matched);
+    let expected_object = expected_node.and_then(Value::as_object);
+    let expected_attrs = expected_object
+        .and_then(|object| object.get("attrs"))
+        .and_then(Value::as_object);
+    let expected_content = expected_object
+        .and_then(|object| object.get("content"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice);
+
+    let tag = element.tag();
+    let level = (tag.as_ref() == "heading")
+        .then(|| heading_level(element, txn))
+        .flatten();
+    let (node_type, removes_level) = normalized_type(tag.as_ref(), level);
+    let mut local_match = expected_object
+        .is_some_and(|object| object.get("type").and_then(Value::as_str) == Some(node_type));
+    let collect_lookup = lookup.is_some();
+    let mut lookup_attribute_work = ImportElementAttributeWork::new();
+    let mut projected_attr_count = 0usize;
+    for (key, value) in element.attributes(txn) {
+        let yrs::Out::Any(value) = value else {
+            return Err(YrsEngineError::new(
+                "CODEC_INVARIANT_FAILED",
+                "Yrs XML attributes must be scalar Any values, not shared types",
+            )
+            .with_details(json!({
+                "phase": "candidateMaterialization",
+                "attribute": key,
+            })));
+        };
+        if collect_lookup && lookup_attribute_work.failure().is_none() {
+            lookup_attribute_work.observe(key, &value);
+        }
+        validate_any_projection(&value, &mut context.budget, 1)?;
+        if removes_level && key == "level" {
+            continue;
+        }
+        projected_attr_count = projected_attr_count.saturating_add(1);
+        local_match &= any_matches_json(&value, expected_attrs.and_then(|attrs| attrs.get(key)));
+    }
+    local_match &= expected_attrs.map_or(0, Map::len) == projected_attr_count;
+
+    let (is_void, is_textblock) = context
+        .schema
+        .node(node_type)
+        .map_or((true, false), |spec| {
+            (spec.is_void, matches!(spec.role, NodeRole::TextBlock))
+        });
+    let observe_children = lookup.as_deref_mut().is_none_or(|lookup| {
+        lookup.begin_element(
+            AsRef::<yrs::branch::Branch>::as_ref(element).id(),
+            lookup_attribute_work,
+            is_void,
+            is_textblock,
+        )
+    });
+    let mut children = JsonMatchCursor::new(expected_content);
+    for child in element.children(txn) {
+        match_xml_out_json(
+            child,
+            txn,
+            depth + 1,
+            &mut children,
+            &mut local_match,
+            context,
+            observe_children.then_some(lookup.as_deref_mut()).flatten(),
+        )?;
+    }
+    if observe_children {
+        if let Some(lookup) = lookup {
+            lookup.end_container();
+        }
+    }
+    let child_count = children.finish(&mut local_match);
+    let has_attrs = projected_attr_count != 0;
+    let has_content = child_count != 0;
+    local_match &= expected_object.is_some_and(|object| {
+        object.len() == 1 + usize::from(has_attrs) + usize::from(has_content)
+            && object.contains_key("type")
+            && object.contains_key("attrs") == has_attrs
+            && object.contains_key("content") == has_content
+    });
+    *matched &= local_match;
+    Ok(())
+}
+
+fn match_xml_text_json<T: ReadTxn>(
+    text: &XmlTextRef,
+    txn: &T,
+    depth: usize,
+    cursor: &mut JsonMatchCursor<'_>,
+    matched: &mut bool,
+    context: &mut JsonProjectionContext<'_, '_>,
+    mut lookup: Option<&mut ImportLookupMaterializationCollector>,
+) -> YrsEngineResult<()> {
+    if lookup.as_deref().is_some_and(|lookup| lookup.has_failed()) {
+        lookup = None;
+    }
+    let collect_lookup = lookup.is_some();
+    let mut lookup_capture_work = ImportTextCaptureWork::new();
+    for diff in text.diff(txn, YChange::identity) {
+        context.budget.admit_raw_text_run(depth)?;
+        let yrs::types::text::Diff {
+            insert, attributes, ..
+        } = diff;
+        let yrs::Out::Any(any) = insert else {
+            return Err(YrsEngineError::new(
+                "CODEC_INVARIANT_FAILED",
+                "Yrs XML text runs must contain scalar string values",
+            )
+            .with_details(json!({
+                "phase": "candidateMaterialization",
+                "field": "xmlTextRun"
+            })));
+        };
+        let Any::String(text_value) = any else {
+            return Err(YrsEngineError::new(
+                "CODEC_INVARIANT_FAILED",
+                "Yrs XML text runs must contain string values",
+            )
+            .with_details(json!({
+                "phase": "candidateMaterialization",
+                "field": "xmlTextRun"
+            })));
+        };
+        if collect_lookup && lookup_capture_work.failure().is_none() {
+            lookup_capture_work.observe(&text_value, attributes.as_deref());
+        }
+        context
+            .budget
+            .charge_computed_output(|| json_string_len(&text_value))?;
+        if text_value.is_empty() {
+            continue;
+        }
+        if let Some(attrs) = attributes.as_deref() {
+            for value in attrs.values() {
+                validate_any_projection(value, &mut context.budget, 1)?;
+            }
+        }
+        cursor.observe_text(
+            &text_value,
+            attributes,
+            context.schema,
+            depth,
+            &mut context.budget,
+            matched,
+        )?;
+    }
+    if let Some(lookup) = lookup {
+        lookup.observe_text(
+            AsRef::<yrs::branch::Branch>::as_ref(text).id(),
+            lookup_capture_work,
+        );
+    }
+    Ok(())
+}
+
 fn append_xml_out_json<T: ReadTxn>(
     node: XmlOut,
     txn: &T,
@@ -311,16 +943,37 @@ fn append_xml_out_json<T: ReadTxn>(
     depth: usize,
     budget: &mut ConversionBudget<'_>,
     output: &mut Vec<Value>,
+    mut lookup: Option<&mut ImportLookupMaterializationCollector>,
 ) -> YrsEngineResult<()> {
+    if lookup.as_deref().is_some_and(|lookup| lookup.has_failed()) {
+        lookup = None;
+    }
     match node {
-        XmlOut::Element(element) => {
-            output.push(xml_element_to_json(&element, txn, schema, depth, budget)?)
+        XmlOut::Element(element) => output.push(xml_element_to_json(
+            &element, txn, schema, depth, budget, lookup,
+        )?),
+        XmlOut::Text(text) => {
+            append_xml_text_json(&text, txn, schema, depth, budget, output, lookup)?
         }
-        XmlOut::Text(text) => append_xml_text_json(&text, txn, schema, depth, budget, output)?,
         XmlOut::Fragment(fragment) => {
             budget.admit_traversal_depth(depth)?;
+            let mut lookup = lookup;
+            if let Some(lookup) = lookup.as_deref_mut() {
+                lookup.begin_fragment();
+            }
             for child in fragment.children(txn) {
-                append_xml_out_json(child, txn, schema, depth + 1, budget, output)?;
+                append_xml_out_json(
+                    child,
+                    txn,
+                    schema,
+                    depth + 1,
+                    budget,
+                    output,
+                    lookup.as_deref_mut(),
+                )?;
+            }
+            if let Some(lookup) = lookup {
+                lookup.end_container();
             }
         }
     }
@@ -333,10 +986,16 @@ fn xml_element_to_json<T: ReadTxn>(
     schema: &Schema,
     depth: usize,
     budget: &mut ConversionBudget<'_>,
+    mut lookup: Option<&mut ImportLookupMaterializationCollector>,
 ) -> YrsEngineResult<Value> {
+    if lookup.as_deref().is_some_and(|lookup| lookup.has_failed()) {
+        lookup = None;
+    }
+    let collect_lookup = lookup.is_some();
     budget.admit_node(depth)?;
     let mut object = Map::new();
     let mut attrs = Map::new();
+    let mut lookup_attribute_work = ImportElementAttributeWork::new();
     for (key, value) in element.attributes(txn) {
         let yrs::Out::Any(value) = value else {
             return Err(YrsEngineError::new(
@@ -348,9 +1007,23 @@ fn xml_element_to_json<T: ReadTxn>(
                 "attribute": key,
             })));
         };
+        if collect_lookup && lookup_attribute_work.failure().is_none() {
+            lookup_attribute_work.observe(key, &value);
+        }
         attrs.insert(key.to_string(), any_to_json(&value, budget, 1)?);
     }
     let node_type = normalized_wire_element_node_type(element, txn);
+    let (is_void, is_textblock) = schema.node(&node_type).map_or((true, false), |spec| {
+        (spec.is_void, matches!(spec.role, NodeRole::TextBlock))
+    });
+    let observe_children = lookup.as_deref_mut().is_none_or(|lookup| {
+        lookup.begin_element(
+            AsRef::<yrs::branch::Branch>::as_ref(element).id(),
+            lookup_attribute_work,
+            is_void,
+            is_textblock,
+        )
+    });
     if node_type != element.tag().as_ref() {
         attrs.remove("level");
     }
@@ -361,7 +1034,20 @@ fn xml_element_to_json<T: ReadTxn>(
 
     let mut children = Vec::new();
     for child in element.children(txn) {
-        append_xml_out_json(child, txn, schema, depth + 1, budget, &mut children)?;
+        append_xml_out_json(
+            child,
+            txn,
+            schema,
+            depth + 1,
+            budget,
+            &mut children,
+            observe_children.then_some(lookup.as_deref_mut()).flatten(),
+        )?;
+    }
+    if observe_children {
+        if let Some(lookup) = lookup {
+            lookup.end_container();
+        }
     }
     if !children.is_empty() {
         object.insert("content".to_string(), Value::Array(children));
@@ -377,7 +1063,13 @@ fn append_xml_text_json<T: ReadTxn>(
     depth: usize,
     budget: &mut ConversionBudget<'_>,
     output: &mut Vec<Value>,
+    mut lookup: Option<&mut ImportLookupMaterializationCollector>,
 ) -> YrsEngineResult<()> {
+    if lookup.as_deref().is_some_and(|lookup| lookup.has_failed()) {
+        lookup = None;
+    }
+    let collect_lookup = lookup.is_some();
+    let mut lookup_capture_work = ImportTextCaptureWork::new();
     for diff in text.diff(txn, YChange::identity) {
         budget.admit_raw_text_run(depth)?;
         let yrs::Out::Any(any) = diff.insert else {
@@ -400,6 +1092,9 @@ fn append_xml_text_json<T: ReadTxn>(
                 "field": "xmlTextRun"
             })));
         };
+        if collect_lookup && lookup_capture_work.failure().is_none() {
+            lookup_capture_work.observe(&text_value, diff.attributes.as_deref());
+        }
         budget.charge_computed_output(|| json_string_len(&text_value))?;
         let text_value = text_value.to_string();
         if text_value.is_empty() {
@@ -426,6 +1121,12 @@ fn append_xml_text_json<T: ReadTxn>(
             object.insert("marks".to_string(), marks);
         }
         output.push(Value::Object(object));
+    }
+    if let Some(lookup) = lookup {
+        lookup.observe_text(
+            AsRef::<yrs::branch::Branch>::as_ref(text).id(),
+            lookup_capture_work,
+        );
     }
     Ok(())
 }
@@ -842,6 +1543,22 @@ pub(crate) fn normalized_wire_element_node_type<T: ReadTxn>(
         .map_or_else(|| tag.to_string(), |level| format!("h{level}"))
 }
 
+pub(crate) struct WireAttributeJsonBudget<'a> {
+    budget: ConversionBudget<'a>,
+}
+
+impl<'a> WireAttributeJsonBudget<'a> {
+    pub(crate) fn new(limits: &'a ResourceLimits) -> Self {
+        Self {
+            budget: ConversionBudget::new(limits),
+        }
+    }
+
+    pub(crate) fn convert(&mut self, value: &Any) -> YrsEngineResult<Value> {
+        any_to_json(value, &mut self.budget, 1)
+    }
+}
+
 fn element_name_for_json_node(node_type: &str, attrs: &mut Map<String, Value>) -> String {
     if let Some(level) = heading_level_from_internal_node_type(node_type) {
         attrs.insert("level".to_string(), Value::Number(u64::from(level).into()));
@@ -1020,14 +1737,17 @@ fn decimal_u8_len(value: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        any_to_json_bounded, attrs_to_marks, insert_prepared_node, marks_to_attrs,
-        prepare_xml_nodes, YrsDocumentCodec,
+        actual_marks_equal, any_to_json_bounded, attrs_to_marks, insert_prepared_node,
+        marks_to_attrs, prepare_xml_nodes, take_json_projection_materialization_count_for_test,
+        YrsDocumentCodec,
     };
     use crate::boundary::ResourceLimits;
     use crate::schema::presets::tiptap_schema;
     use serde_json::{json, Value};
     use yrs::types::text::{Text, YChange};
-    use yrs::types::xml::{XmlElementPrelim, XmlFragment, XmlTextPrelim};
+    use yrs::types::xml::{
+        Xml, XmlElementPrelim, XmlFragment, XmlFragmentPrelim, XmlIn, XmlTextPrelim,
+    };
     use yrs::types::Attrs;
     use yrs::{Any, ArrayPrelim};
     use yrs::{Doc, OffsetKind, Options, ReadTxn, Transact, WriteTxn};
@@ -1062,6 +1782,379 @@ mod tests {
         let txn = doc.transact();
         let fragment = txn.get_xml_fragment("prosemirror").unwrap();
         codec.read_json(&fragment, &txn).unwrap()
+    }
+
+    fn matches_round_trip(next: &Value) -> (bool, bool) {
+        let schema = tiptap_schema();
+        let limits = ResourceLimits::default();
+        let codec = YrsDocumentCodec::new(&schema, &limits);
+        let doc = utf16_doc();
+        {
+            let mut txn = doc.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            codec
+                .apply_json(&fragment, &mut txn, &empty_json("doc"), next)
+                .unwrap();
+        }
+        let txn = doc.transact();
+        let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+        let (matches, lookup) = codec.matches_validated_json_with_lookup(&fragment, &txn, next);
+        (matches.unwrap(), lookup.is_some())
+    }
+
+    fn match_raw(
+        doc: &Doc,
+        expected: &Value,
+        limits: &ResourceLimits,
+    ) -> (super::YrsEngineResult<bool>, bool) {
+        let schema = tiptap_schema();
+        let codec = YrsDocumentCodec::new(&schema, limits);
+        let txn = doc.transact();
+        let fragment = txn.get_xml_fragment("prosemirror").unwrap();
+        let (matched, lookup) = codec.matches_validated_json_with_lookup(&fragment, &txn, expected);
+        (matched, lookup.is_some())
+    }
+
+    #[test]
+    fn validated_json_matcher_avoids_old_value_projection() {
+        let input = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "attrs": { "nested": [true, null, { "emoji": "😀" }] },
+                "content": [{
+                    "type": "text",
+                    "text": "A😀e\u{301}",
+                    "marks": [
+                        { "type": "bold" },
+                        { "type": "link", "attrs": { "href": "https://example.test/😀" } }
+                    ]
+                }]
+            }, {
+                "type": "__opaque_json",
+                "attrs": {
+                    "original_type": "callout",
+                    "opaque_placement": "block",
+                    "original_json": { "type": "callout", "attrs": { "rank": 7 } }
+                }
+            }]
+        });
+
+        take_json_projection_materialization_count_for_test();
+        assert_eq!(matches_round_trip(&input), (true, true));
+        assert_eq!(take_json_projection_materialization_count_for_test(), 0);
+
+        let schema = tiptap_schema();
+        let limits = ResourceLimits::default();
+        let codec = YrsDocumentCodec::new(&schema, &limits);
+        let doc = utf16_doc();
+        let txn = doc.transact();
+        let fragment = txn.get_xml_fragment("prosemirror");
+        assert!(fragment.is_none());
+        drop(txn);
+        let mut txn = doc.transact_mut();
+        let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+        drop(txn);
+        let txn = doc.transact();
+        codec.read_json(&fragment, &txn).unwrap();
+        assert_eq!(take_json_projection_materialization_count_for_test(), 1);
+    }
+
+    #[test]
+    fn validated_json_matcher_coalesces_text_across_diffs_nodes_and_fragments() {
+        let doc = utf16_doc();
+        {
+            let mut txn = doc.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let heading = fragment.push_back(&mut txn, XmlElementPrelim::empty("heading"));
+            heading.insert_attribute(&mut txn, "level", 2_i64);
+            heading.push_back(&mut txn, XmlTextPrelim::new("A"));
+            let nested = XmlFragmentPrelim::new::<_, XmlIn>([
+                XmlIn::from(XmlTextPrelim::new("")),
+                XmlIn::from(XmlTextPrelim::new("😀")),
+            ]);
+            heading.push_back(&mut txn, XmlIn::from(nested));
+            let tail = heading.push_back(&mut txn, XmlTextPrelim::new(""));
+            tail.insert_with_attributes(&mut txn, 0, "e\u{301}", Attrs::default());
+        }
+        let expected = json!({
+            "type": "doc",
+            "content": [{
+                "type": "h2",
+                "content": [{ "type": "text", "text": "A😀e\u{301}" }]
+            }]
+        });
+        assert_eq!(
+            match_raw(&doc, &expected, &ResourceLimits::default()),
+            (Ok(true), true)
+        );
+
+        for mismatched in [
+            json!({ "type": "doc", "content": [{ "type": "h3", "content": [{ "type": "text", "text": "A😀e\u{301}" }] }] }),
+            json!({ "type": "doc", "content": [{ "type": "h2", "content": [{ "type": "text", "text": "different" }] }] }),
+            json!({ "type": "doc", "content": [{ "type": "h2", "content": [{ "type": "text", "text": "A😀e\u{301}", "marks": [] }] }] }),
+        ] {
+            assert_eq!(
+                match_raw(&doc, &mismatched, &ResourceLimits::default()).0,
+                Ok(false)
+            );
+        }
+
+        let null_projected_marks = utf16_doc();
+        {
+            let mut txn = null_projected_marks.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            let first = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+            first.insert_with_attributes(
+                &mut txn,
+                0,
+                "a",
+                mark_attrs_value("custom", Any::Bool(true)),
+            );
+            let second = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+            second.insert_with_attributes(
+                &mut txn,
+                0,
+                "b",
+                mark_attrs_value("custom", Any::Number(f64::NAN)),
+            );
+        }
+        let expected = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "ab",
+                    "marks": [{ "type": "custom" }]
+                }]
+            }]
+        });
+        assert_eq!(read_raw(&null_projected_marks), expected);
+        assert_eq!(
+            match_raw(&null_projected_marks, &expected, &ResourceLimits::default()),
+            (Ok(true), true)
+        );
+
+        let cross_variant_marks = utf16_doc();
+        {
+            let mut txn = cross_variant_marks.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            let first = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+            first.insert_with_attributes(
+                &mut txn,
+                0,
+                "a",
+                mark_attrs_value("custom", Any::Buffer(vec![1, 2].into())),
+            );
+            let second = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+            second.insert_with_attributes(
+                &mut txn,
+                0,
+                "b",
+                mark_attrs_value(
+                    "custom",
+                    Any::Array(vec![Any::BigInt(1), Any::BigInt(2)].into()),
+                ),
+            );
+        }
+        let expected = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "ab",
+                    "marks": [{ "type": "custom", "attrs": [1, 2] }]
+                }]
+            }]
+        });
+        assert_eq!(read_raw(&cross_variant_marks), expected);
+        assert_eq!(
+            match_raw(&cross_variant_marks, &expected, &ResourceLimits::default()),
+            (Ok(true), true)
+        );
+
+        let empty_attrs_then_absent = utf16_doc();
+        {
+            let mut txn = empty_attrs_then_absent.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            let first = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+            first.insert_with_attributes(&mut txn, 0, "a", Attrs::default());
+            paragraph.push_back(&mut txn, XmlTextPrelim::new("b"));
+        }
+        let expected = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "ab" }]
+            }]
+        });
+        assert_eq!(read_raw(&empty_attrs_then_absent), expected);
+        assert_eq!(
+            match_raw(
+                &empty_attrs_then_absent,
+                &expected,
+                &ResourceLimits::default()
+            ),
+            (Ok(true), true)
+        );
+    }
+
+    #[test]
+    fn validated_json_matcher_preserves_later_error_precedence_after_mismatch() {
+        let malformed = utf16_doc();
+        {
+            let mut txn = malformed.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            paragraph.push_back(&mut txn, XmlTextPrelim::new("first mismatch"));
+            let invalid = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+            invalid.insert_embed_with_attributes(&mut txn, 0, Any::Bool(false), Attrs::default());
+        }
+        let wrong = json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "wrong" }] }]
+        });
+        let error = match_raw(&malformed, &wrong, &ResourceLimits::default())
+            .0
+            .unwrap_err();
+        assert_eq!(error.code, "CODEC_INVARIANT_FAILED");
+        assert_eq!(error.details.unwrap()["field"], "xmlTextRun");
+
+        let fragmented = utf16_doc();
+        {
+            let mut txn = fragmented.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            for _ in 0..385 {
+                paragraph.push_back(&mut txn, XmlTextPrelim::new("x"));
+            }
+        }
+        let error = match_raw(
+            &fragmented,
+            &wrong,
+            &ResourceLimits {
+                max_document_nodes: 3,
+                ..ResourceLimits::default()
+            },
+        )
+        .0
+        .unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(error.details.unwrap()["dimension"], "rawTextRuns");
+
+        let distinct_text_nodes = utf16_doc();
+        {
+            let mut txn = distinct_text_nodes.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            paragraph.push_back(&mut txn, XmlTextPrelim::new("a"));
+            let bold = paragraph.push_back(&mut txn, XmlTextPrelim::new(""));
+            bold.insert_with_attributes(&mut txn, 0, "b", mark_attrs("bold"));
+            paragraph.push_back(&mut txn, XmlTextPrelim::new("c"));
+        }
+        let error = match_raw(
+            &distinct_text_nodes,
+            &wrong,
+            &ResourceLimits {
+                max_document_nodes: 4,
+                ..ResourceLimits::default()
+            },
+        )
+        .0
+        .unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(error.limit, Some(4));
+        assert_eq!(error.actual, Some(5));
+
+        let element_boundary = utf16_doc();
+        {
+            let mut txn = element_boundary.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            fragment.push_back(&mut txn, XmlTextPrelim::new("a"));
+            fragment.push_back(&mut txn, XmlElementPrelim::empty("hardBreak"));
+            fragment.push_back(&mut txn, XmlTextPrelim::new("b"));
+        }
+        let error = match_raw(
+            &element_boundary,
+            &json!({ "type": "wrong", "content": [] }),
+            &ResourceLimits {
+                max_document_nodes: 3,
+                ..ResourceLimits::default()
+            },
+        )
+        .0
+        .unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+        assert_eq!(error.limit, Some(3));
+        assert_eq!(error.actual, Some(4));
+    }
+
+    #[test]
+    fn validated_json_matcher_treats_lookup_collection_as_opportunistic() {
+        use crate::yrs_engine::mutation::{
+            set_lookup_seed_hydration_failpoint_for_test, LookupSeedHydrationFailpoint,
+        };
+
+        let input = json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "x" }] }]
+        });
+        let schema = tiptap_schema();
+        let limits = ResourceLimits::default();
+        let codec = YrsDocumentCodec::new(&schema, &limits);
+        let doc = utf16_doc();
+        {
+            let mut txn = doc.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            codec
+                .apply_json(&fragment, &mut txn, &empty_json("doc"), &input)
+                .unwrap();
+        }
+        set_lookup_seed_hydration_failpoint_for_test(Some(
+            LookupSeedHydrationFailpoint::InitialReservation,
+        ));
+        let result = match_raw(&doc, &input, &limits);
+        set_lookup_seed_hydration_failpoint_for_test(None);
+        assert_eq!(result, (Ok(true), false));
+    }
+
+    #[test]
+    fn validated_json_matcher_projects_nonfinite_any_only_as_null() {
+        let doc = utf16_doc();
+        {
+            let mut txn = doc.transact_mut();
+            let fragment = txn.get_or_insert_xml_fragment("prosemirror");
+            let paragraph = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            paragraph.insert_attribute(&mut txn, "nan", f64::NAN);
+            paragraph.insert_attribute(&mut txn, "positive", f64::INFINITY);
+            paragraph.insert_attribute(&mut txn, "negative", f64::NEG_INFINITY);
+        }
+        let expected = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "attrs": { "nan": null, "positive": null, "negative": null }
+            }]
+        });
+        assert_eq!(read_raw(&doc), expected);
+        assert_eq!(
+            match_raw(&doc, &expected, &ResourceLimits::default()),
+            (Ok(true), true)
+        );
+
+        for wrong in [json!(false), json!("null"), json!([]), json!({})] {
+            let mut mismatched = expected.clone();
+            mismatched["content"][0]["attrs"]["nan"] = wrong;
+            assert_eq!(
+                match_raw(&doc, &mismatched, &ResourceLimits::default()).0,
+                Ok(false)
+            );
+        }
     }
 
     fn read_raw(doc: &Doc) -> Value {
@@ -1396,6 +2489,9 @@ mod tests {
                 }),
             ]
         );
+        let empty = Attrs::default();
+        assert!(actual_marks_equal(None, Some(&empty)));
+        assert!(actual_marks_equal(Some(&empty), None));
     }
 
     #[test]

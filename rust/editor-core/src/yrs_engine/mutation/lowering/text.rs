@@ -6,7 +6,11 @@ impl MutationCompiler {
         text: &str,
         marks: &[Mark],
     ) -> OperationResult<()> {
-        self.charge_operation_work(operation_index, self.targets.len())?;
+        self.charge_operation_work(
+            operation_index,
+            self.localized_position_target_count
+                .unwrap_or(self.targets.len()),
+        )?;
         let attrs = marks_to_attrs(marks);
         self.charge_scan_work(operation_index, text.len())?;
         let (text_scalar_len, text_utf16) =
@@ -192,8 +196,8 @@ impl MutationCompiler {
         }
         self.charge_operation_work(
             operation_index,
-            self.targets
-                .len()
+            self.localized_position_target_count
+                .unwrap_or(self.targets.len())
                 .checked_add(boundaries.len())
                 .ok_or_else(|| {
                     work_overflow(self.request_id, operation_index, self.action_limit)
@@ -308,8 +312,8 @@ impl MutationCompiler {
         }
         self.charge_operation_work(
             operation_index,
-            self.targets
-                .len()
+            self.localized_position_target_count
+                .unwrap_or(self.targets.len())
                 .checked_add(boundaries.len())
                 .ok_or_else(|| {
                     work_overflow(self.request_id, operation_index, self.action_limit)
@@ -457,10 +461,7 @@ impl MutationCompiler {
             limits,
         } = context;
         let ReplacementInput {
-            from,
-            to,
-            content,
-            ..
+            from, to, content, ..
         } = replacement;
         let from_resolved = document.resolve(from).map_err(|message| {
             OperationError::operation_invalid(self.request_id, operation_index, "range", message)
@@ -632,7 +633,6 @@ impl MutationCompiler {
         }
         Ok(())
     }
-
 }
 
 fn insert_scalar(

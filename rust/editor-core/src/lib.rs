@@ -1,18 +1,36 @@
 pub mod backend;
 pub mod boundary;
 pub mod collaboration;
+#[cfg(feature = "ffi-v2-staging")]
+pub mod collaboration_runtime;
 pub(crate) mod command_planner;
+#[cfg(feature = "ffi-v2-staging")]
+mod document_api;
 pub mod editor;
 pub mod editor_state;
+#[cfg(any(test, feature = "ffi-v2-staging"))]
+#[allow(dead_code)]
+pub(crate) mod ffi_v2;
 pub mod history;
 pub mod intercept;
 pub mod model;
+#[cfg(feature = "ffi-v2-staging")]
+mod native_transaction_bridge;
+#[cfg(feature = "ffi-v2-staging")]
+pub use native_transaction_bridge::native_bridge_test_support;
 pub mod position;
 pub mod registry;
+#[cfg(feature = "ffi-v2-staging")]
+pub use document_api::session_initialization_test_support;
+#[cfg(feature = "ffi-v2-staging")]
+pub use registry::session_lifecycle_test_support;
 pub mod render;
 pub mod schema;
 pub mod selection;
 pub mod serialize;
+#[cfg(any(test, feature = "ffi-v2-staging"))]
+#[allow(dead_code)]
+pub(crate) mod session;
 pub mod transform;
 pub mod yrs_engine;
 

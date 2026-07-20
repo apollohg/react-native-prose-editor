@@ -59,5 +59,230 @@
         "byteArrivalMs": [0, 20, 40, 60, 80],
         "expectedTerminalMs": 60,
         "expectedOutcome": "timeout"
+    },
+    "ffiV2ErrorContract": {
+        "domains": ["boundary", "document", "operation", "lifecycle", "snapshot", "transport"],
+        "operationCodes": [
+            "ENGINE_NOT_READY",
+            "REVISION_MISMATCH",
+            "POSITION_INVALID",
+            "TRANSACTION_INVALID",
+            "OPERATION_INVALID",
+            "OPERATION_LIMIT_EXCEEDED",
+            "OPERATION_RESOURCE_EXHAUSTED",
+            "DOCUMENT_INVALID",
+            "DOCUMENT_LIMIT_EXCEEDED",
+            "ENGINE_INVARIANT_FAILED"
+        ],
+        "operationCodeDomains": {
+            "ENGINE_NOT_READY": "operation",
+            "REVISION_MISMATCH": "operation",
+            "POSITION_INVALID": "operation",
+            "TRANSACTION_INVALID": "operation",
+            "OPERATION_INVALID": "operation",
+            "OPERATION_LIMIT_EXCEEDED": "operation",
+            "OPERATION_RESOURCE_EXHAUSTED": "operation",
+            "DOCUMENT_INVALID": "document",
+            "DOCUMENT_LIMIT_EXCEEDED": "document",
+            "ENGINE_INVARIANT_FAILED": "operation"
+        },
+        "representativeCodes": {
+            "lifecycle": [
+                "ENGINE_DESTROYING",
+                "ENGINE_DESTROYED",
+                "WHOLE_DOCUMENT_REPLACEMENT_CONNECTED"
+            ],
+            "snapshot": ["SNAPSHOT_RESTORE_CONNECTED"],
+            "transport": ["TRANSPORT_PROTOCOL_INVALID"]
+        },
+        "goldenErrors": [
+            {
+                "domain": "boundary",
+                "code": "CONFIG_INVALID",
+                "message": "invalid config",
+                "requestId": null,
+                "operationIndex": null,
+                "limit": null,
+                "actual": null,
+                "details": null
+            },
+            {
+                "domain": "operation",
+                "code": "ENGINE_NOT_READY",
+                "message": "engine not ready",
+                "requestId": "1",
+                "operationIndex": null,
+                "limit": null,
+                "actual": null,
+                "details": null
+            },
+            {
+                "domain": "operation",
+                "code": "REVISION_MISMATCH",
+                "message": "revision mismatch",
+                "requestId": "2",
+                "operationIndex": null,
+                "limit": null,
+                "actual": null,
+                "details": { "expectedRevision": "4", "actualRevision": "5" }
+            },
+            {
+                "domain": "operation",
+                "code": "POSITION_INVALID",
+                "message": "position invalid",
+                "requestId": "3",
+                "operationIndex": 0,
+                "limit": null,
+                "actual": null,
+                "details": { "field": "at" }
+            },
+            {
+                "domain": "operation",
+                "code": "TRANSACTION_INVALID",
+                "message": "transaction invalid",
+                "requestId": "4",
+                "operationIndex": null,
+                "limit": null,
+                "actual": null,
+                "details": { "field": "operations" }
+            },
+            {
+                "domain": "operation",
+                "code": "OPERATION_INVALID",
+                "message": "operation invalid",
+                "requestId": "5",
+                "operationIndex": 0,
+                "limit": null,
+                "actual": null,
+                "details": { "field": "text" }
+            },
+            {
+                "domain": "document",
+                "code": "DOCUMENT_INVALID",
+                "message": "invalid document",
+                "requestId": "8",
+                "operationIndex": 0,
+                "limit": null,
+                "actual": null,
+                "details": { "field": "content" }
+            },
+            {
+                "domain": "operation",
+                "code": "OPERATION_LIMIT_EXCEEDED",
+                "message": "operation limit exceeded",
+                "requestId": "18446744073709551615",
+                "operationIndex": 7,
+                "limit": 256,
+                "actual": 257,
+                "details": { "field": "maxOperationsPerTransaction" }
+            },
+            {
+                "domain": "operation",
+                "code": "OPERATION_RESOURCE_EXHAUSTED",
+                "message": "allocation failed",
+                "requestId": "7",
+                "operationIndex": null,
+                "limit": null,
+                "actual": null,
+                "details": { "field": "outbox" }
+            },
+            {
+                "domain": "document",
+                "code": "DOCUMENT_LIMIT_EXCEEDED",
+                "message": "document limit exceeded",
+                "requestId": "9",
+                "operationIndex": 0,
+                "limit": 100000,
+                "actual": 100001,
+                "details": { "field": "maxDocumentNodes" }
+            },
+            {
+                "domain": "operation",
+                "code": "ENGINE_INVARIANT_FAILED",
+                "message": "engine invariant failed",
+                "requestId": "10",
+                "operationIndex": null,
+                "limit": null,
+                "actual": null,
+                "details": null
+            },
+            {
+                "domain": "lifecycle",
+                "code": "ENGINE_DESTROYED",
+                "message": "engine destroyed",
+                "requestId": null,
+                "operationIndex": null,
+                "limit": null,
+                "actual": null,
+                "details": null
+            },
+            {
+                "domain": "snapshot",
+                "code": "SNAPSHOT_RESTORE_CONNECTED",
+                "message": "restore requires a disconnected transport",
+                "requestId": "12",
+                "operationIndex": null,
+                "limit": null,
+                "actual": null,
+                "details": null
+            },
+            {
+                "domain": "transport",
+                "code": "TRANSPORT_PROTOCOL_INVALID",
+                "message": "invalid protocol frame",
+                "requestId": null,
+                "operationIndex": null,
+                "limit": 1024,
+                "actual": 1025,
+                "details": { "generation": "3" }
+            }
+        ],
+        "invalidRequestIds": ["", "-1", "01", "1.0", "1e3", "+1", " 1"],
+        "deterministicMappings": [
+            {
+                "cause": "traversalWork",
+                "sourceCode": "OPERATION_RESOURCE_EXHAUSTED",
+                "expectedDomain": "operation",
+                "expectedCode": "OPERATION_LIMIT_EXCEEDED"
+            },
+            {
+                "cause": "documentDepth",
+                "sourceCode": "OPERATION_RESOURCE_EXHAUSTED",
+                "expectedDomain": "document",
+                "expectedCode": "DOCUMENT_LIMIT_EXCEEDED"
+            },
+            {
+                "cause": "tryReserve",
+                "sourceCode": "OPERATION_RESOURCE_EXHAUSTED",
+                "expectedDomain": "operation",
+                "expectedCode": "OPERATION_RESOURCE_EXHAUSTED"
+            }
+        ],
+        "collaborationLimits": {
+            "defaults": {
+                "maxFramesPerMessage": 64,
+                "maxFrameBytes": 10485760,
+                "maxAggregateResponseBytes": 10485760,
+                "maxAwarenessPeers": 1024,
+                "maxAwarenessPeerBytes": 65536,
+                "maxAwarenessBytes": 10485760,
+                "maxPendingOutboxMessages": 256,
+                "maxPendingOutboxBytes": 10485760,
+                "maxPendingDependencyUpdateBytes": 10485760,
+                "maxPendingDependencyUpdateWork": 1000000
+            },
+            "ceilings": {
+                "maxFramesPerMessage": 1024,
+                "maxFrameBytes": 67108864,
+                "maxAggregateResponseBytes": 67108864,
+                "maxAwarenessPeers": 10000,
+                "maxAwarenessPeerBytes": 1048576,
+                "maxAwarenessBytes": 67108864,
+                "maxPendingOutboxMessages": 4096,
+                "maxPendingOutboxBytes": 67108864,
+                "maxPendingDependencyUpdateBytes": 67108864,
+                "maxPendingDependencyUpdateWork": 8000000
+            }
+        }
     }
 }

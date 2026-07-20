@@ -515,14 +515,31 @@ fn wire_element_is_semantic_void<T: ReadTxn>(
     txn: &T,
     schema: &Schema,
 ) -> bool {
+    wire_element_semantics(element, txn, schema).0
+}
+
+fn wire_element_semantics<T: ReadTxn>(
+    element: &XmlElementRef,
+    txn: &T,
+    schema: &Schema,
+) -> (bool, bool) {
+    let tag = element.tag();
+    if tag.as_ref() != "heading" {
+        if matches!(tag.as_ref(), "__opaque" | "__opaque_json" | "__skip") {
+            return (true, false);
+        }
+        return schema.node(tag.as_ref()).map_or((true, false), |spec| {
+            (spec.is_void, matches!(spec.role, NodeRole::TextBlock))
+        });
+    }
     let node_type = super::super::codec::normalized_wire_element_node_type(element, txn);
     if matches!(node_type.as_str(), "__opaque" | "__opaque_json" | "__skip") {
-        return true;
+        return (true, false);
     }
     if let Some(spec) = schema.node(&node_type) {
-        return spec.is_void;
+        return (spec.is_void, matches!(spec.role, NodeRole::TextBlock));
     }
-    true
+    (true, false)
 }
 
 fn materialize_text<T: ReadTxn>(

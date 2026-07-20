@@ -155,6 +155,9 @@ impl JsonValueMeter {
 
     fn count_string(&mut self, value: &str) -> Result<(), JsonMeterError> {
         self.charge_bytes(value.len().saturating_add(2))?;
+        if !string_requires_json_escape(value.as_bytes()) {
+            return Ok(());
+        }
         for byte in value.bytes() {
             let extra = match byte {
                 b'"' | b'\\' | b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' => 1,
@@ -167,6 +170,31 @@ impl JsonValueMeter {
         }
         Ok(())
     }
+}
+
+fn string_requires_json_escape(bytes: &[u8]) -> bool {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGHS: u64 = 0x8080_8080_8080_8080;
+    const CONTROLS: u64 = 0x2020_2020_2020_2020;
+    const QUOTES: u64 = 0x2222_2222_2222_2222;
+    const BACKSLASHES: u64 = 0x5c5c_5c5c_5c5c_5c5c;
+
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        let word = u64::from_ne_bytes(chunk.try_into().expect("exact chunk length"));
+        let has_control = word.wrapping_sub(CONTROLS) & !word & HIGHS != 0;
+        let quote_lanes = word ^ QUOTES;
+        let has_quote = quote_lanes.wrapping_sub(ONES) & !quote_lanes & HIGHS != 0;
+        let backslash_lanes = word ^ BACKSLASHES;
+        let has_backslash = backslash_lanes.wrapping_sub(ONES) & !backslash_lanes & HIGHS != 0;
+        if has_control || has_quote || has_backslash {
+            return true;
+        }
+    }
+    chunks
+        .remainder()
+        .iter()
+        .any(|byte| *byte < 0x20 || matches!(*byte, b'"' | b'\\'))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

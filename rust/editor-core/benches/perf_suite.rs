@@ -5,17 +5,33 @@ use std::time::{Duration, Instant};
 
 use editor_core::boundary::ResourceLimits;
 use editor_core::collaboration::CollaborationSession;
-use editor_core::editor::Editor;
+use editor_core::editor::{Editor, EditorSelectionState, EditorUpdate};
 use editor_core::intercept::InterceptorPipeline;
+use editor_core::render::RenderElement;
 use editor_core::schema::presets::tiptap_schema;
 use editor_core::transform::DocumentValidator;
 use editor_core::yrs_engine::{
-    InitializationMode, TransactionOrigin, YrsDocumentEngine, YrsEngineConfig,
+    Affinity, EditorOffsetKind, HistoryPolicy, InitializationMode, RenderUpdate, ResolvedSelection,
+    RevisionedPosition, SelectionInput, SelectionIntent, TransactionOrigin, TypedCommand,
+    TypedTransaction, TypedTransactionResult, YrsDocumentEngine, YrsEngineConfig,
 };
 use serde_json::{json, Value};
 
 #[path = "support/benchmark_filter.rs"]
 mod benchmark_filter;
+
+const EDITING_TYPING_BURST: usize = 20;
+const EDITING_CURSOR_SCALAR: u32 = 44;
+
+struct BackendExpectedDocuments {
+    legacy: Value,
+    yrs: Value,
+}
+
+struct EditingCaseExpectation {
+    before: BackendExpectedDocuments,
+    after: BackendExpectedDocuments,
+}
 
 #[derive(Clone, Copy)]
 enum BenchMode {
@@ -99,6 +115,15 @@ macro_rules! push_case {
     (
         $results:expr,
         $options:expr,
+        verified_bench_case($name:expr, $group:expr, $($arguments:tt)*),
+    ) => {
+        push_case_lazy($results, $options, $name, $group, || {
+            verified_bench_case($name, $group, $($arguments)*)
+        })
+    };
+    (
+        $results:expr,
+        $options:expr,
         bench_case($name:expr, $group:expr, $($arguments:tt)*),
     ) => {
         push_case_lazy($results, $options, $name, $group, || {
@@ -135,6 +160,84 @@ fn main() {
                 .expect("2x article benchmark fixture should serialize")
         })
     };
+    let editing_insert_expected_cell = OnceLock::new();
+    let editing_insert_expected = || {
+        editing_insert_expected_cell.get_or_init(|| {
+            build_editing_case_expectation(
+                article_doc(),
+                build_pure_insert_document(article_doc(), "!", 1),
+            )
+        })
+    };
+    let editing_original_expected_cell = OnceLock::new();
+    let editing_original_expected = || {
+        editing_original_expected_cell
+            .get_or_init(|| build_editing_case_expectation(article_doc(), article_doc().clone()))
+    };
+    let editing_burst_expected_cell = OnceLock::new();
+    let editing_burst_expected = || {
+        editing_burst_expected_cell.get_or_init(|| {
+            build_editing_case_expectation(
+                article_doc(),
+                build_pure_insert_document(article_doc(), "x", EDITING_TYPING_BURST),
+            )
+        })
+    };
+    let editing_bold_expected_cell = OnceLock::new();
+    let editing_bold_expected = || {
+        editing_bold_expected_cell.get_or_init(|| {
+            build_editing_case_expectation(
+                article_doc(),
+                build_pure_bold_document(
+                    article_doc(),
+                    EDITING_CURSOR_SCALAR,
+                    EDITING_CURSOR_SCALAR + 8,
+                ),
+            )
+        })
+    };
+    let editing_list_expected_cell = OnceLock::new();
+    let editing_list_expected = || {
+        editing_list_expected_cell.get_or_init(|| {
+            build_editing_case_expectation(
+                article_doc(),
+                build_pure_list_document(article_doc(), EDITING_CURSOR_SCALAR),
+            )
+        })
+    };
+    let editing_undo_expected_cell = OnceLock::new();
+    let editing_undo_expected = || {
+        editing_undo_expected_cell.get_or_init(|| {
+            build_editing_case_expectation(
+                &build_pure_insert_document(article_doc(), "!", 1),
+                article_doc().clone(),
+            )
+        })
+    };
+    let editing_insert_2x_expected_cell = OnceLock::new();
+    let editing_insert_2x_expected = || {
+        editing_insert_2x_expected_cell.get_or_init(|| {
+            build_editing_case_expectation(
+                article_doc_2x(),
+                build_pure_insert_document(article_doc_2x(), "!", 1),
+            )
+        })
+    };
+    let editing_original_2x_expected_cell = OnceLock::new();
+    let editing_original_2x_expected = || {
+        editing_original_2x_expected_cell.get_or_init(|| {
+            build_editing_case_expectation(article_doc_2x(), article_doc_2x().clone())
+        })
+    };
+    let editing_list_2x_expected_cell = OnceLock::new();
+    let editing_list_2x_expected = || {
+        editing_list_2x_expected_cell.get_or_init(|| {
+            build_editing_case_expectation(
+                article_doc_2x(),
+                build_pure_list_document(article_doc_2x(), EDITING_CURSOR_SCALAR),
+            )
+        })
+    };
     let opaque_json_cell = OnceLock::new();
     let opaque_json = || {
         opaque_json_cell.get_or_init(|| {
@@ -163,6 +266,790 @@ fn main() {
         || edited_article_doc_cell.get_or_init(|| build_edited_article_document(article_doc()));
 
     let mut results = Vec::new();
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "legacy.edit.insert_char.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                (
+                    legacy_editing_fixture(
+                        article_doc(),
+                        EDITING_CURSOR_SCALAR,
+                        EDITING_CURSOR_SCALAR,
+                    ),
+                    editing_insert_expected(),
+                )
+            },
+            |(editor, _)| {
+                black_box(
+                    editor
+                        .insert_text_scalar(EDITING_CURSOR_SCALAR, "!")
+                        .expect("legacy insert-character benchmark should succeed"),
+                )
+            },
+            |(editor, expectation), output| {
+                assert_legacy_editing_output(
+                    editor,
+                    expectation,
+                    output,
+                    3,
+                    EDITING_CURSOR_SCALAR + 1,
+                    EDITING_CURSOR_SCALAR + 1,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "yrs.edit.insert_char.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                (
+                    yrs_editing_fixture(
+                        article_json(),
+                        EDITING_CURSOR_SCALAR,
+                        EDITING_CURSOR_SCALAR,
+                    ),
+                    editing_insert_expected(),
+                )
+            },
+            |(engine, _)| {
+                black_box(
+                    engine
+                        .apply_command(2, TypedCommand::InsertText { text: "!".into() })
+                        .expect("Yrs insert-character benchmark should succeed")
+                        .expect("Yrs insert-character command should apply"),
+                )
+            },
+            |(engine, expectation), output| {
+                assert_yrs_editing_output(
+                    engine,
+                    expectation,
+                    output,
+                    2,
+                    TransactionOrigin::LocalCommand,
+                    true,
+                    2,
+                    3,
+                    EDITING_CURSOR_SCALAR + 1,
+                    EDITING_CURSOR_SCALAR + 1,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "legacy.edit.typing_burst.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            EDITING_TYPING_BURST,
+            || {
+                (
+                    legacy_editing_fixture(
+                        article_doc(),
+                        EDITING_CURSOR_SCALAR,
+                        EDITING_CURSOR_SCALAR,
+                    ),
+                    editing_burst_expected(),
+                )
+            },
+            |(editor, _)| {
+                let mut final_output = None;
+                for offset in 0..EDITING_TYPING_BURST as u32 {
+                    let output = editor
+                        .insert_text_scalar(EDITING_CURSOR_SCALAR + offset, "x")
+                        .expect("legacy typing-burst benchmark should succeed");
+                    if offset + 1 == EDITING_TYPING_BURST as u32 {
+                        final_output = Some(output);
+                    } else {
+                        black_box(output);
+                    }
+                }
+                black_box(final_output.expect("typing burst must produce a final output"))
+            },
+            |(editor, expectation), output| {
+                assert_legacy_editing_output(
+                    editor,
+                    expectation,
+                    output,
+                    2 + EDITING_TYPING_BURST as u64,
+                    EDITING_CURSOR_SCALAR + EDITING_TYPING_BURST as u32,
+                    EDITING_CURSOR_SCALAR + EDITING_TYPING_BURST as u32,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "yrs.edit.typing_burst.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            EDITING_TYPING_BURST,
+            || {
+                (
+                    yrs_editing_fixture(
+                        article_json(),
+                        EDITING_CURSOR_SCALAR,
+                        EDITING_CURSOR_SCALAR,
+                    ),
+                    editing_burst_expected(),
+                )
+            },
+            |(engine, _)| {
+                let mut final_output = None;
+                for index in 0..EDITING_TYPING_BURST {
+                    let output = engine
+                        .apply_command(
+                            index as u64 + 2,
+                            TypedCommand::InsertText { text: "x".into() },
+                        )
+                        .expect("Yrs typing-burst benchmark should succeed")
+                        .expect("Yrs typing-burst command should apply");
+                    if index + 1 == EDITING_TYPING_BURST {
+                        final_output = Some(output);
+                    } else {
+                        black_box(output);
+                    }
+                }
+                black_box(final_output.expect("typing burst must produce a final output"))
+            },
+            |(engine, expectation), output| {
+                assert_yrs_editing_output(
+                    engine,
+                    expectation,
+                    output,
+                    EDITING_TYPING_BURST as u64 + 1,
+                    TransactionOrigin::LocalCommand,
+                    true,
+                    1 + EDITING_TYPING_BURST as u64,
+                    2 + EDITING_TYPING_BURST as u64,
+                    EDITING_CURSOR_SCALAR + EDITING_TYPING_BURST as u32,
+                    EDITING_CURSOR_SCALAR + EDITING_TYPING_BURST as u32,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "legacy.state.selection_light.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                let editor = editor_with_document(article_doc());
+                let position = editor.doc_to_scalar(editor.document().content_size()) / 2;
+                (editor, position, editing_original_expected())
+            },
+            |(editor, position, _)| {
+                editor.set_selection_scalar(*position, *position);
+                black_box(editor.get_selection_state())
+            },
+            |(editor, position, expectation), output| {
+                assert_legacy_selection_output(
+                    editor,
+                    expectation,
+                    output,
+                    2,
+                    *position,
+                    *position,
+                    false,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "yrs.state.selection_light.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                let (engine, position) = yrs_selection_fixture(article_json());
+                (engine, position, editing_original_expected())
+            },
+            |(engine, position, _)| {
+                black_box(
+                    engine
+                        .apply_typed_transaction_with_result(yrs_selection_transaction(
+                            1,
+                            engine.revision(),
+                            *position,
+                            *position,
+                        ))
+                        .expect("Yrs light-selection benchmark should succeed"),
+                )
+            },
+            |(engine, position, expectation), output| {
+                assert_yrs_editing_output(
+                    engine,
+                    expectation,
+                    output,
+                    1,
+                    TransactionOrigin::LocalApi,
+                    true,
+                    1,
+                    2,
+                    *position,
+                    *position,
+                    false,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "legacy.command.toggle_mark.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                (
+                    legacy_editing_fixture(
+                        article_doc(),
+                        EDITING_CURSOR_SCALAR,
+                        EDITING_CURSOR_SCALAR + 8,
+                    ),
+                    editing_bold_expected(),
+                )
+            },
+            |(editor, _)| {
+                black_box(
+                    editor
+                        .toggle_mark("bold")
+                        .expect("legacy toggle-mark benchmark should succeed"),
+                )
+            },
+            |(editor, expectation), output| {
+                assert_legacy_editing_output(
+                    editor,
+                    expectation,
+                    output,
+                    3,
+                    EDITING_CURSOR_SCALAR,
+                    EDITING_CURSOR_SCALAR + 8,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "yrs.command.toggle_mark.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                (
+                    yrs_editing_fixture(
+                        article_json(),
+                        EDITING_CURSOR_SCALAR,
+                        EDITING_CURSOR_SCALAR + 8,
+                    ),
+                    editing_bold_expected(),
+                )
+            },
+            |(engine, _)| {
+                black_box(
+                    engine
+                        .apply_command(
+                            2,
+                            TypedCommand::ToggleMark {
+                                mark_type: "bold".into(),
+                            },
+                        )
+                        .expect("Yrs toggle-mark benchmark should succeed")
+                        .expect("Yrs toggle-mark command should apply"),
+                )
+            },
+            |(engine, expectation), output| {
+                assert_yrs_editing_output(
+                    engine,
+                    expectation,
+                    output,
+                    2,
+                    TransactionOrigin::LocalCommand,
+                    true,
+                    2,
+                    3,
+                    EDITING_CURSOR_SCALAR,
+                    EDITING_CURSOR_SCALAR + 8,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "legacy.command.wrap_list.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                (
+                    legacy_editing_fixture(
+                        article_doc(),
+                        EDITING_CURSOR_SCALAR,
+                        EDITING_CURSOR_SCALAR,
+                    ),
+                    editing_list_expected(),
+                )
+            },
+            |(editor, _)| {
+                let from = editor.selection().from(editor.document());
+                let to = editor.selection().to(editor.document());
+                black_box(
+                    editor
+                        .wrap_in_list(from, to, "bulletList")
+                        .expect("legacy wrap-list benchmark should succeed"),
+                )
+            },
+            |(editor, expectation), output| {
+                assert_legacy_editing_output(
+                    editor,
+                    expectation,
+                    output,
+                    3,
+                    EDITING_CURSOR_SCALAR + 2,
+                    EDITING_CURSOR_SCALAR + 2,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "yrs.command.wrap_list.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                (
+                    yrs_editing_fixture(
+                        article_json(),
+                        EDITING_CURSOR_SCALAR,
+                        EDITING_CURSOR_SCALAR,
+                    ),
+                    editing_list_expected(),
+                )
+            },
+            |(engine, _)| {
+                black_box(
+                    engine
+                        .apply_command(
+                            2,
+                            TypedCommand::WrapInList {
+                                list_type: "bulletList".into(),
+                                item_type: "listItem".into(),
+                            },
+                        )
+                        .expect("Yrs wrap-list benchmark should succeed")
+                        .expect("Yrs wrap-list command should apply"),
+                )
+            },
+            |(engine, expectation), output| {
+                assert_yrs_editing_output(
+                    engine,
+                    expectation,
+                    output,
+                    2,
+                    TransactionOrigin::LocalCommand,
+                    true,
+                    2,
+                    3,
+                    EDITING_CURSOR_SCALAR + 2,
+                    EDITING_CURSOR_SCALAR + 2,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "legacy.history.undo.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                let mut editor = legacy_editing_fixture(
+                    article_doc(),
+                    EDITING_CURSOR_SCALAR,
+                    EDITING_CURSOR_SCALAR,
+                );
+                editor
+                    .insert_text_scalar(EDITING_CURSOR_SCALAR, "!")
+                    .expect("legacy undo fixture edit should succeed");
+                (editor, editing_undo_expected())
+            },
+            |(editor, _)| {
+                black_box(
+                    editor
+                        .undo()
+                        .expect("legacy undo benchmark should have history"),
+                )
+            },
+            |(editor, expectation), output| {
+                assert_legacy_editing_output(
+                    editor,
+                    expectation,
+                    output,
+                    4,
+                    EDITING_CURSOR_SCALAR,
+                    EDITING_CURSOR_SCALAR,
+                    false,
+                    true,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "yrs.history.undo.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                let mut engine = yrs_editing_fixture(
+                    article_json(),
+                    EDITING_CURSOR_SCALAR,
+                    EDITING_CURSOR_SCALAR,
+                );
+                engine
+                    .apply_command(2, TypedCommand::InsertText { text: "!".into() })
+                    .expect("Yrs undo fixture edit should succeed")
+                    .expect("Yrs undo fixture edit should apply");
+                (engine, editing_undo_expected())
+            },
+            |(engine, _)| {
+                black_box(
+                    engine
+                        .undo_with_result(3)
+                        .expect("Yrs undo benchmark should succeed")
+                        .expect("Yrs undo benchmark should have history"),
+                )
+            },
+            |(engine, expectation), output| {
+                assert_yrs_editing_output(
+                    engine,
+                    expectation,
+                    output,
+                    3,
+                    TransactionOrigin::UndoRedo,
+                    true,
+                    3,
+                    4,
+                    EDITING_CURSOR_SCALAR,
+                    EDITING_CURSOR_SCALAR,
+                    false,
+                    true,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "legacy.history.redo.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                let mut editor = legacy_editing_fixture(
+                    article_doc(),
+                    EDITING_CURSOR_SCALAR,
+                    EDITING_CURSOR_SCALAR,
+                );
+                editor
+                    .insert_text_scalar(EDITING_CURSOR_SCALAR, "!")
+                    .expect("legacy redo fixture edit should succeed");
+                editor
+                    .undo()
+                    .expect("legacy redo fixture should create redo history");
+                (editor, editing_insert_expected())
+            },
+            |(editor, _)| {
+                black_box(
+                    editor
+                        .redo()
+                        .expect("legacy redo benchmark should have history"),
+                )
+            },
+            |(editor, expectation), output| {
+                assert_legacy_editing_output(
+                    editor,
+                    expectation,
+                    output,
+                    5,
+                    EDITING_CURSOR_SCALAR + 1,
+                    EDITING_CURSOR_SCALAR + 1,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "yrs.history.redo.article.1x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                let mut engine = yrs_editing_fixture(
+                    article_json(),
+                    EDITING_CURSOR_SCALAR,
+                    EDITING_CURSOR_SCALAR,
+                );
+                engine
+                    .apply_command(2, TypedCommand::InsertText { text: "!".into() })
+                    .expect("Yrs redo fixture edit should succeed")
+                    .expect("Yrs redo fixture edit should apply");
+                engine
+                    .undo(3)
+                    .expect("Yrs redo fixture undo should succeed")
+                    .expect("Yrs redo fixture should create redo history");
+                (engine, editing_insert_expected())
+            },
+            |(engine, _)| {
+                black_box(
+                    engine
+                        .redo_with_result(4)
+                        .expect("Yrs redo benchmark should succeed")
+                        .expect("Yrs redo benchmark should have history"),
+                )
+            },
+            |(engine, expectation), output| {
+                assert_yrs_editing_output(
+                    engine,
+                    expectation,
+                    output,
+                    4,
+                    TransactionOrigin::UndoRedo,
+                    true,
+                    4,
+                    5,
+                    EDITING_CURSOR_SCALAR + 1,
+                    EDITING_CURSOR_SCALAR + 1,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "yrs.edit.insert_char.article.2x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                (
+                    yrs_editing_fixture(
+                        article_json_2x(),
+                        EDITING_CURSOR_SCALAR,
+                        EDITING_CURSOR_SCALAR,
+                    ),
+                    editing_insert_2x_expected(),
+                )
+            },
+            |(engine, _)| {
+                black_box(
+                    engine
+                        .apply_command(2, TypedCommand::InsertText { text: "!".into() })
+                        .expect("2x Yrs insert-character benchmark should succeed")
+                        .expect("2x Yrs insert-character command should apply"),
+                )
+            },
+            |(engine, expectation), output| {
+                assert_yrs_editing_output(
+                    engine,
+                    expectation,
+                    output,
+                    2,
+                    TransactionOrigin::LocalCommand,
+                    true,
+                    2,
+                    3,
+                    EDITING_CURSOR_SCALAR + 1,
+                    EDITING_CURSOR_SCALAR + 1,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "yrs.state.selection_light.article.2x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                let (engine, position) = yrs_selection_fixture(article_json_2x());
+                (engine, position, editing_original_2x_expected())
+            },
+            |(engine, position, _)| {
+                black_box(
+                    engine
+                        .apply_typed_transaction_with_result(yrs_selection_transaction(
+                            1,
+                            engine.revision(),
+                            *position,
+                            *position,
+                        ))
+                        .expect("2x Yrs light-selection benchmark should succeed"),
+                )
+            },
+            |(engine, position, expectation), output| {
+                assert_yrs_editing_output(
+                    engine,
+                    expectation,
+                    output,
+                    1,
+                    TransactionOrigin::LocalApi,
+                    true,
+                    1,
+                    2,
+                    *position,
+                    *position,
+                    false,
+                    false,
+                );
+            },
+        ),
+    );
+
+    push_case!(
+        &mut results,
+        &options,
+        verified_bench_case(
+            "yrs.command.wrap_list.article.2x",
+            "yrs-editing",
+            profile.iterations,
+            profile.warmup_iterations,
+            1,
+            || {
+                (
+                    yrs_editing_fixture(
+                        article_json_2x(),
+                        EDITING_CURSOR_SCALAR,
+                        EDITING_CURSOR_SCALAR,
+                    ),
+                    editing_list_2x_expected(),
+                )
+            },
+            |(engine, _)| {
+                black_box(
+                    engine
+                        .apply_command(
+                            2,
+                            TypedCommand::WrapInList {
+                                list_type: "bulletList".into(),
+                                item_type: "listItem".into(),
+                            },
+                        )
+                        .expect("2x Yrs wrap-list benchmark should succeed")
+                        .expect("2x Yrs wrap-list command should apply"),
+                )
+            },
+            |(engine, expectation), output| {
+                assert_yrs_editing_output(
+                    engine,
+                    expectation,
+                    output,
+                    2,
+                    TransactionOrigin::LocalCommand,
+                    true,
+                    2,
+                    3,
+                    EDITING_CURSOR_SCALAR + 2,
+                    EDITING_CURSOR_SCALAR + 2,
+                    true,
+                    false,
+                );
+            },
+        ),
+    );
 
     push_case!(
         &mut results,
@@ -875,6 +1762,41 @@ where
     build_result(name, group, iterations, ops_per_iteration, samples)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn verified_bench_case<S, Setup, Run, Output, Verify>(
+    name: &'static str,
+    group: &'static str,
+    iterations: usize,
+    warmup_iterations: usize,
+    ops_per_iteration: usize,
+    mut setup: Setup,
+    mut run: Run,
+    mut verify: Verify,
+) -> BenchResult
+where
+    Setup: FnMut() -> S,
+    Run: FnMut(&mut S) -> Output,
+    Verify: FnMut(&S, &Output),
+{
+    for _ in 0..warmup_iterations {
+        let mut state = setup();
+        let output = black_box(run(&mut state));
+        verify(&state, &output);
+    }
+
+    let mut samples = Vec::with_capacity(iterations);
+    for _ in 0..iterations {
+        let mut state = setup();
+        let started_at = Instant::now();
+        let output = black_box(run(&mut state));
+        let elapsed = started_at.elapsed();
+        verify(&state, &output);
+        samples.push(elapsed);
+    }
+
+    build_result(name, group, iterations, ops_per_iteration, samples)
+}
+
 fn build_result(
     name: &'static str,
     group: &'static str,
@@ -960,6 +1882,7 @@ fn print_json_summary(mode: BenchMode, profile: BenchProfile, results: &[BenchRe
             "mappingPoints": profile.mapping_points,
             "selectionWidth": profile.selection_width,
             "typingBurst": profile.typing_burst,
+            "editingTypingBurst": EDITING_TYPING_BURST,
             "selectionScrubPoints": profile.selection_scrub_points,
             "awarenessPeerCount": profile.awareness_peer_count,
             "opaquePayloadBytes": profile.opaque_payload_bytes,
@@ -1016,6 +1939,375 @@ fn yrs_engine_with_document(document: &str) -> YrsDocumentEngine {
         .import_json(document, TransactionOrigin::DocumentImport)
         .expect("Yrs benchmark fixture document should import");
     engine
+}
+
+fn legacy_editing_fixture(doc: &Value, anchor: u32, head: u32) -> Editor {
+    let mut editor = editor_with_document(doc);
+    editor.set_selection_scalar(anchor, head);
+    editor
+}
+
+fn yrs_editing_fixture(document: &str, anchor: u32, head: u32) -> YrsDocumentEngine {
+    let mut engine = yrs_engine_with_document(document);
+    engine
+        .apply_typed_transaction(yrs_selection_transaction(
+            1,
+            engine.revision(),
+            anchor,
+            head,
+        ))
+        .expect("Yrs benchmark selection should apply");
+    engine
+}
+
+fn yrs_selection_fixture(document: &str) -> (YrsDocumentEngine, u32) {
+    let engine = yrs_engine_with_document(document);
+    let position = engine
+        .position_map()
+        .expect("populated Yrs benchmark engine should have a position map")
+        .total_scalars()
+        / 2;
+    (engine, position)
+}
+
+fn yrs_selection_transaction(
+    request_id: u64,
+    revision: u64,
+    anchor: u32,
+    head: u32,
+) -> TypedTransaction {
+    let point = |offset| RevisionedPosition {
+        offset,
+        kind: EditorOffsetKind::Scalar,
+        affinity: Affinity::Before,
+    };
+    TypedTransaction {
+        request_id,
+        base_document_revision: revision,
+        origin: TransactionOrigin::LocalApi,
+        operations: vec![],
+        selection_intent: SelectionIntent::Set(SelectionInput::Text {
+            anchor: point(anchor),
+            head: point(head),
+        }),
+        history_policy: HistoryPolicy::Skip,
+    }
+}
+
+fn build_pure_insert_document(doc: &Value, text: &str, count: usize) -> Value {
+    let mut expected = doc.clone();
+    let offset = first_article_paragraph_scalar_offset(&expected, EDITING_CURSOR_SCALAR);
+    let target = first_article_paragraph_text_mut(&mut expected);
+    let byte_offset = target
+        .char_indices()
+        .nth(offset)
+        .map(|(index, _)| index)
+        .unwrap_or(target.len());
+    target.insert_str(byte_offset, &text.repeat(count));
+    expected
+}
+
+fn build_pure_bold_document(doc: &Value, anchor: u32, head: u32) -> Value {
+    let mut expected = doc.clone();
+    let from = first_article_paragraph_scalar_offset(&expected, anchor);
+    let to = first_article_paragraph_scalar_offset(&expected, head);
+    assert!(from < to, "expected bold range must be non-empty");
+
+    let inline = first_article_paragraph_inline_mut(&mut expected);
+    let original = inline
+        .first()
+        .and_then(|node| node.get("text"))
+        .and_then(Value::as_str)
+        .expect("article benchmark first inline node must be text")
+        .chars()
+        .collect::<Vec<_>>();
+    assert!(
+        to <= original.len(),
+        "expected bold range must stay in the first text run"
+    );
+
+    let mut replacement = Vec::with_capacity(3);
+    let prefix = char_slice(&original, 0, from);
+    if !prefix.is_empty() {
+        replacement.push(text_node(prefix));
+    }
+    replacement.push(marked_text_node(
+        char_slice(&original, from, to),
+        json!({ "type": "bold" }),
+    ));
+    let suffix = char_slice(&original, to, original.len());
+    if !suffix.is_empty() {
+        replacement.push(text_node(suffix));
+    }
+    inline.splice(0..1, replacement);
+    expected
+}
+
+fn build_pure_list_document(doc: &Value, position: u32) -> Value {
+    let mut expected = doc.clone();
+    let offset = first_article_paragraph_scalar_offset(&expected, position);
+    assert!(
+        offset <= first_article_paragraph_text(&expected).chars().count(),
+        "expected list cursor must target the first article paragraph",
+    );
+    let content = expected
+        .get_mut("content")
+        .and_then(Value::as_array_mut)
+        .expect("article benchmark document must have content");
+    let paragraph = content.remove(1);
+    content.insert(
+        1,
+        json!({
+            "type": "bulletList",
+            "content": [{
+                "type": "listItem",
+                "content": [paragraph]
+            }]
+        }),
+    );
+    expected
+}
+
+fn first_article_paragraph_scalar_offset(doc: &Value, scalar: u32) -> usize {
+    let heading_text = doc
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|content| content.first())
+        .and_then(|heading| heading.get("content"))
+        .and_then(Value::as_array)
+        .and_then(|content| content.first())
+        .and_then(|text| text.get("text"))
+        .and_then(Value::as_str)
+        .expect("article benchmark heading must start with text");
+    let paragraph_start = heading_text.chars().count().saturating_add(1);
+    usize::try_from(scalar)
+        .expect("editing scalar must fit usize")
+        .checked_sub(paragraph_start)
+        .expect("editing scalar must target the first article paragraph")
+}
+
+fn first_article_paragraph_text(doc: &Value) -> &str {
+    doc.get("content")
+        .and_then(Value::as_array)
+        .and_then(|content| content.get(1))
+        .and_then(|paragraph| paragraph.get("content"))
+        .and_then(Value::as_array)
+        .and_then(|content| content.first())
+        .and_then(|text| text.get("text"))
+        .and_then(Value::as_str)
+        .expect("article benchmark first paragraph must start with text")
+}
+
+fn first_article_paragraph_inline_mut(doc: &mut Value) -> &mut Vec<Value> {
+    doc.get_mut("content")
+        .and_then(Value::as_array_mut)
+        .and_then(|content| content.get_mut(1))
+        .and_then(|paragraph| paragraph.get_mut("content"))
+        .and_then(Value::as_array_mut)
+        .expect("article benchmark first paragraph must have inline content")
+}
+
+fn first_article_paragraph_text_mut(doc: &mut Value) -> &mut String {
+    first_article_paragraph_inline_mut(doc)
+        .first_mut()
+        .and_then(|text| text.get_mut("text"))
+        .and_then(|value| match value {
+            Value::String(text) => Some(text),
+            _ => None,
+        })
+        .expect("article benchmark first paragraph must start with text")
+}
+
+fn build_backend_expected_documents(doc: &Value) -> BackendExpectedDocuments {
+    let legacy = editor_with_document(doc).get_json();
+    let encoded = serde_json::to_string(doc).expect("expected editing document should serialize");
+    let yrs = yrs_engine_with_document(&encoded)
+        .document_json()
+        .expect("expected Yrs editing document should import");
+    BackendExpectedDocuments { legacy, yrs }
+}
+
+fn build_editing_case_expectation(before: &Value, after: Value) -> EditingCaseExpectation {
+    EditingCaseExpectation {
+        before: build_backend_expected_documents(before),
+        after: build_backend_expected_documents(&after),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assert_legacy_editing_output(
+    editor: &Editor,
+    expectation: &EditingCaseExpectation,
+    output: &EditorUpdate,
+    document_version: u64,
+    anchor: u32,
+    head: u32,
+    can_undo: bool,
+    can_redo: bool,
+) {
+    let state = editor.get_selection_state();
+    assert_eq!(state.document_version, document_version);
+    assert_eq!(
+        state.selection_scalar,
+        editor_core::selection::Selection::text(anchor, head),
+    );
+    assert_eq!(state.history_state.can_undo, can_undo);
+    assert_eq!(state.history_state.can_redo, can_redo);
+    assert_eq!(&editor.get_json(), &expectation.after.legacy);
+
+    let expected_editor = legacy_editing_fixture(&expectation.after.legacy, anchor, head);
+    let expected = expected_editor.get_current_state();
+    assert_eq!(output.document_version, document_version);
+    assert_eq!(output.selection, expected.selection);
+    assert_eq!(output.selection_scalar, expected.selection_scalar);
+    assert_eq!(output.active_state, expected.active_state);
+    assert_eq!(output.history_state, state.history_state);
+    assert_eq!(output.render_elements, expected.render_elements);
+    assert_eq!(output.render_blocks, expected.render_blocks);
+    let patch = output
+        .render_patch
+        .as_ref()
+        .expect("changed legacy editing output must include a render patch");
+    assert_eq!(
+        apply_render_patch(&expectation.before.legacy, patch),
+        output.render_blocks,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assert_legacy_selection_output(
+    editor: &Editor,
+    expectation: &EditingCaseExpectation,
+    output: &EditorSelectionState,
+    document_version: u64,
+    anchor: u32,
+    head: u32,
+    can_undo: bool,
+    can_redo: bool,
+) {
+    let state = editor.get_selection_state();
+    assert_eq!(&editor.get_json(), &expectation.after.legacy);
+    assert_eq!(state.document_version, document_version);
+    assert_eq!(state.selection_scalar, output.selection_scalar);
+    assert_eq!(state.selection, output.selection);
+    assert_eq!(state.active_state, output.active_state);
+    assert_eq!(state.history_state, output.history_state);
+    assert_eq!(output.document_version, document_version);
+    assert_eq!(
+        output.selection_scalar,
+        editor_core::selection::Selection::text(anchor, head),
+    );
+    assert_eq!(output.history_state.can_undo, can_undo);
+    assert_eq!(output.history_state.can_redo, can_redo);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assert_yrs_editing_output(
+    engine: &YrsDocumentEngine,
+    expectation: &EditingCaseExpectation,
+    output: &TypedTransactionResult,
+    request_id: u64,
+    origin: TransactionOrigin,
+    changed: bool,
+    document_revision: u64,
+    state_revision: u64,
+    anchor: u32,
+    head: u32,
+    can_undo: bool,
+    can_redo: bool,
+) {
+    assert_eq!(engine.revision(), document_revision);
+    assert_eq!(engine.state_revision(), state_revision);
+    let selection = engine
+        .resolved_selection()
+        .expect("verified Yrs engine should have a resolved selection");
+    let expected_editor = legacy_editing_fixture(&expectation.after.legacy, anchor, head);
+    assert!(
+        expectation.after.legacy.to_string().is_ascii(),
+        "editing benchmark profile must remain ASCII for scalar/UTF-16 equality",
+    );
+    let expected_selection = ResolvedSelection::Text {
+        anchor: editor_core::yrs_engine::ResolvedPoint {
+            document: expected_editor.scalar_to_doc(anchor),
+            scalar: anchor,
+            utf16: anchor,
+        },
+        head: editor_core::yrs_engine::ResolvedPoint {
+            document: expected_editor.scalar_to_doc(head),
+            scalar: head,
+            utf16: head,
+        },
+    };
+    assert_eq!(selection, &expected_selection);
+    match selection {
+        ResolvedSelection::Text {
+            anchor: resolved_anchor,
+            head: resolved_head,
+        } => {
+            assert_eq!(
+                resolved_anchor.document,
+                expected_editor.scalar_to_doc(anchor)
+            );
+            assert_eq!(resolved_anchor.scalar, anchor);
+            assert_eq!(resolved_anchor.utf16, anchor);
+            assert_eq!(resolved_head.document, expected_editor.scalar_to_doc(head));
+            assert_eq!(resolved_head.scalar, head);
+            assert_eq!(resolved_head.utf16, head);
+        }
+        other => panic!("expected verified text selection, got {other:?}"),
+    }
+    assert_eq!(engine.can_undo(), can_undo);
+    assert_eq!(engine.can_redo(), can_redo);
+    let actual_document = engine
+        .document_json()
+        .expect("verified Yrs engine should have canonical JSON");
+    let expected_document = &expectation.after.yrs;
+    assert_eq!(&actual_document, expected_document);
+
+    assert_eq!(output.request_id, request_id);
+    assert_eq!(output.origin, origin);
+    assert_eq!(output.changed, changed);
+    assert_eq!(output.document_revision, document_revision);
+    assert_eq!(output.state_revision, state_revision);
+    assert_eq!(output.selection, expected_selection);
+    let expected_state = expected_editor.get_selection_state();
+    assert_eq!(output.active_state, expected_state.active_state);
+    assert_eq!(output.history_state.can_undo, can_undo);
+    assert_eq!(output.history_state.can_redo, can_redo);
+    if expectation.before.legacy != expectation.after.legacy {
+        assert_eq!(
+            apply_render_update(&expectation.before.legacy, &output.render_update),
+            expected_editor.get_current_state().render_blocks,
+        );
+    } else {
+        assert_eq!(output.render_update, RenderUpdate::None);
+    }
+}
+
+fn apply_render_patch(
+    before_document: &Value,
+    patch: &editor_core::render::incremental::RenderBlocksPatch,
+) -> Vec<Vec<RenderElement>> {
+    let mut blocks = editor_with_document(before_document)
+        .get_current_state()
+        .render_blocks;
+    blocks.splice(
+        patch.start_index..patch.start_index + patch.delete_count,
+        patch.blocks.clone(),
+    );
+    blocks
+}
+
+fn apply_render_update(before_document: &Value, update: &RenderUpdate) -> Vec<Vec<RenderElement>> {
+    match update {
+        RenderUpdate::None => {
+            editor_with_document(before_document)
+                .get_current_state()
+                .render_blocks
+        }
+        RenderUpdate::Patch(patch) => apply_render_patch(before_document, patch),
+        RenderUpdate::Full(blocks) => blocks.clone(),
+    }
 }
 
 fn collaboration_session_with_document(doc: &Value) -> CollaborationSession {

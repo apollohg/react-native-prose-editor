@@ -1,7 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { NativeEditorBoundaryError } from '../NativeEditorBoundaryError';
+import {
+    NATIVE_EDITOR_ERROR_DOMAINS,
+    NATIVE_EDITOR_OPERATION_ERROR_CODES,
+    NativeEditorBoundaryError,
+    normalizeNativeEditorV2Error,
+    parseNativeBoundaryError,
+} from '../NativeEditorBoundaryError';
 import { resolveDocumentDescriptor, type SchemaDefinition } from '../schemas';
 
 const fixturePath =
@@ -77,4 +83,108 @@ describe('shared hostile security fixtures', () => {
             expect(resolveDocumentDescriptor(schema).schema.nodes[0].name).toBe('doc');
         }
     );
+});
+
+describe('FFI v2 error contract', () => {
+    const contract = fixtures.ffiV2ErrorContract;
+
+    it('freezes all domains, operation codes, and representative domain codes', () => {
+        expect(NATIVE_EDITOR_ERROR_DOMAINS).toEqual(contract.domains);
+        expect(NATIVE_EDITOR_OPERATION_ERROR_CODES).toEqual(contract.operationCodes);
+        expect(contract.representativeCodes).toEqual({
+            lifecycle: [
+                'ENGINE_DESTROYING',
+                'ENGINE_DESTROYED',
+                'WHOLE_DOCUMENT_REPLACEMENT_CONNECTED',
+            ],
+            snapshot: ['SNAPSHOT_RESTORE_CONNECTED'],
+            transport: ['TRANSPORT_PROTOCOL_INVALID'],
+        });
+    });
+
+    it.each(contract.goldenErrors)(
+        'normalizes $domain/$code with explicit nullable fields',
+        (error: Record<string, unknown>) => {
+            expect(normalizeNativeEditorV2Error({ ok: false, error })).toEqual(error);
+        }
+    );
+
+    it.each(contract.operationCodes)(
+        'normalizes approved operation code %s with its frozen domain and nullability',
+        (code: string) => {
+            const error = contract.goldenErrors.find(
+                (candidate: Record<string, unknown>) => candidate.code === code
+            );
+            expect(error).toBeDefined();
+            expect(error.domain).toBe(contract.operationCodeDomains[code]);
+            expect(error.requestId).toMatch(/^(0|[1-9]\d*)$/);
+            expect(normalizeNativeEditorV2Error({ ok: false, error })).toEqual(error);
+        }
+    );
+
+    it.each(contract.invalidRequestIds)(
+        'rejects non-canonical decimal request ID %p',
+        (requestId: string) => {
+            const error = structuredClone(contract.goldenErrors[0]);
+            error.requestId = requestId;
+            expect(normalizeNativeEditorV2Error({ ok: false, error })).toBeNull();
+        }
+    );
+
+    it('normalizes raw UniFFI detailsJson and missing optionals without changing legacy parsing', () => {
+        expect(
+            normalizeNativeEditorV2Error({
+                error: {
+                    domain: 'document',
+                    code: 'DOCUMENT_INVALID',
+                    message: 'invalid document',
+                    detailsJson: '{"field":"content"}',
+                },
+            })
+        ).toEqual({
+            domain: 'document',
+            code: 'DOCUMENT_INVALID',
+            message: 'invalid document',
+            requestId: null,
+            operationIndex: null,
+            limit: null,
+            actual: null,
+            details: { field: 'content' },
+        });
+
+        const legacy = parseNativeBoundaryError({
+            error: { code: 'CONFIG_INVALID', message: 'invalid config' },
+        });
+        expect(legacy).toBeInstanceOf(NativeEditorBoundaryError);
+        expect(legacy).toMatchObject({
+            code: 'CONFIG_INVALID',
+            message: 'invalid config',
+            limit: undefined,
+            actual: undefined,
+            details: undefined,
+        });
+    });
+
+    it('freezes deterministic limit remapping and allocation failure preservation', () => {
+        expect(contract.deterministicMappings).toEqual([
+            {
+                cause: 'traversalWork',
+                sourceCode: 'OPERATION_RESOURCE_EXHAUSTED',
+                expectedDomain: 'operation',
+                expectedCode: 'OPERATION_LIMIT_EXCEEDED',
+            },
+            {
+                cause: 'documentDepth',
+                sourceCode: 'OPERATION_RESOURCE_EXHAUSTED',
+                expectedDomain: 'document',
+                expectedCode: 'DOCUMENT_LIMIT_EXCEEDED',
+            },
+            {
+                cause: 'tryReserve',
+                sourceCode: 'OPERATION_RESOURCE_EXHAUSTED',
+                expectedDomain: 'operation',
+                expectedCode: 'OPERATION_RESOURCE_EXHAUSTED',
+            },
+        ]);
+    });
 });

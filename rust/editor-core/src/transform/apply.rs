@@ -6,6 +6,26 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+#[cfg(test)]
+thread_local! {
+    static MARK_SET_HASH_ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_mark_set_hash_allocation() {
+    MARK_SET_HASH_ALLOCATIONS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+fn reset_mark_set_hash_allocations_for_test() {
+    MARK_SET_HASH_ALLOCATIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn take_mark_set_hash_allocations_for_test() -> usize {
+    MARK_SET_HASH_ALLOCATIONS.with(|count| count.replace(0))
+}
+
 use crate::boundary::{
     BoundaryError, BoundaryResult, JsonMeterDimension, JsonMeterError, JsonValueMeter,
     ResourceLimits,
@@ -80,21 +100,55 @@ pub(crate) fn apply_step_canonical_marks(
     step: &Step,
     schema: &Schema,
 ) -> Result<(Document, StepMap), TransformError> {
+    #[cfg(test)]
+    crate::yrs_engine::observability::record_ordinary_step_application();
     let (document, step_map) = apply_step(doc, step, schema)?;
     Ok((canonicalize_yrs_document(&document, schema), step_map))
 }
 
 pub(crate) fn canonicalize_yrs_document(document: &Document, schema: &Schema) -> Document {
+    fn compare_marks(left: &Mark, right: &Mark, schema: &Schema) -> std::cmp::Ordering {
+        schema
+            .mark_rank(left.mark_type())
+            .unwrap_or(usize::MAX)
+            .cmp(&schema.mark_rank(right.mark_type()).unwrap_or(usize::MAX))
+            .then_with(|| left.mark_type().cmp(right.mark_type()))
+    }
+
+    fn is_canonical_node(node: &Node, schema: &Schema) -> bool {
+        #[cfg(test)]
+        crate::yrs_engine::observability::record_canonical_identity_predicate_node_visited();
+        if node
+            .marks()
+            .windows(2)
+            .any(|marks| compare_marks(&marks[0], &marks[1], schema).is_gt())
+        {
+            return false;
+        }
+        let Some(content) = node.content() else {
+            return true;
+        };
+        let mut previous = None;
+        for child in content.iter() {
+            if child.text_str().is_some_and(str::is_empty)
+                || previous.is_some_and(|previous: &Node| {
+                    previous.is_text()
+                        && child.is_text()
+                        && super::steps::marks_eq(previous.marks(), child.marks())
+                })
+                || !is_canonical_node(child, schema)
+            {
+                return false;
+            }
+            previous = Some(child);
+        }
+        true
+    }
+
     fn canonicalize_node(node: &Node, schema: &Schema) -> Node {
         if let Some(text) = node.text_str() {
             let mut marks = node.marks().to_vec();
-            marks.sort_by(|left, right| {
-                schema
-                    .mark_rank(left.mark_type())
-                    .unwrap_or(usize::MAX)
-                    .cmp(&schema.mark_rank(right.mark_type()).unwrap_or(usize::MAX))
-                    .then_with(|| left.mark_type().cmp(right.mark_type()))
-            });
+            marks.sort_by(|left, right| compare_marks(left, right, schema));
             return Node::text(text.to_string(), marks);
         }
         let Some(content) = node.content() else {
@@ -108,7 +162,36 @@ pub(crate) fn canonicalize_yrs_document(document: &Document, schema: &Schema) ->
         rebuild_element(node, children)
     }
 
+    if is_canonical_node(document.root(), schema) {
+        return document.clone();
+    }
     Document::new(canonicalize_node(document.root(), schema))
+}
+
+/// Canonicality proof produced as a by-product of canonical mark validation.
+///
+/// The proof is intentionally non-cloneable and bound to the exact immutable
+/// root storage that was traversed.
+#[derive(Debug)]
+pub(crate) struct CanonicalMarksEvidence<'schema> {
+    source_root: Node,
+    source_schema: &'schema Schema,
+    is_canonical: bool,
+}
+
+pub(crate) fn canonicalize_yrs_document_with_evidence(
+    document: &Document,
+    schema: &Schema,
+    evidence: CanonicalMarksEvidence<'_>,
+) -> Document {
+    if evidence.is_canonical
+        && document.root().shares_storage_with(&evidence.source_root)
+        && std::ptr::eq(schema, evidence.source_schema)
+    {
+        document.clone()
+    } else {
+        canonicalize_yrs_document(document, schema)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2166,6 +2249,22 @@ pub struct DocumentStats {
     pub max_depth: usize,
 }
 
+/// Exact reusable evidence from a complete document-validation pass.
+///
+/// This stays separate from [`DocumentStats`] so adding internal admission
+/// evidence does not change the public struct-literal contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DocumentValidationMetrics {
+    pub(crate) metadata_bytes: usize,
+    pub(crate) validation_work: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DocumentValidationReport {
+    pub(crate) stats: DocumentStats,
+    pub(crate) metrics: DocumentValidationMetrics,
+}
+
 pub struct DocumentValidator;
 
 impl DocumentValidator {
@@ -2179,6 +2278,16 @@ impl DocumentValidator {
         Self::validate_with_budget(doc, schema, limits, &budget, work_limit)
     }
 
+    pub(crate) fn validate_report(
+        doc: &Document,
+        schema: &Schema,
+        limits: &ResourceLimits,
+    ) -> BoundaryResult<DocumentValidationReport> {
+        let work_limit = limits.max_document_nodes.saturating_mul(128);
+        let budget = WorkBudget::new(work_limit);
+        Self::validate_report_with_budget(doc, schema, limits, &budget, work_limit)
+    }
+
     pub(crate) fn validate_with_budget(
         doc: &Document,
         schema: &Schema,
@@ -2186,6 +2295,20 @@ impl DocumentValidator {
         budget: &WorkBudget,
         work_limit: usize,
     ) -> BoundaryResult<DocumentStats> {
+        Self::validate_report_with_budget(doc, schema, limits, budget, work_limit)
+            .map(|report| report.stats)
+    }
+
+    fn validate_report_with_budget(
+        doc: &Document,
+        schema: &Schema,
+        limits: &ResourceLimits,
+        budget: &WorkBudget,
+        work_limit: usize,
+    ) -> BoundaryResult<DocumentValidationReport> {
+        #[cfg(test)]
+        crate::yrs_engine::observability::record_document_validation();
+        let work_before = budget.consumed(work_limit);
         let root_spec = schema.node(doc.root().node_type()).ok_or_else(|| {
             BoundaryError::new("DOCUMENT_INVALID", "document root is not in the schema")
         })?;
@@ -2223,7 +2346,13 @@ impl DocumentValidator {
             budget,
             work_limit,
         )?;
-        Ok(state.stats)
+        Ok(DocumentValidationReport {
+            stats: state.stats,
+            metrics: DocumentValidationMetrics {
+                metadata_bytes: state.metadata_meter.bytes(),
+                validation_work: budget.consumed(work_limit).saturating_sub(work_before),
+            },
+        })
     }
 }
 
@@ -2249,10 +2378,20 @@ fn validate_mark_set(
 ) -> BoundaryResult<()> {
     let work_limit = marks.len().saturating_mul(128).max(128);
     let budget = WorkBudget::new(work_limit);
-    let mut seen = HashSet::new();
+    let mut seen = (marks.len() > 8).then(|| {
+        #[cfg(test)]
+        record_mark_set_hash_allocation();
+        HashSet::with_capacity(marks.len())
+    });
     let mut previous_rank = None;
-    for mark in marks {
-        if !seen.insert(mark.mark_type()) {
+    for (index, mark) in marks.iter().enumerate() {
+        let duplicate = match &mut seen {
+            Some(seen) => !seen.insert(mark.mark_type()),
+            None => marks[..index]
+                .iter()
+                .any(|previous| previous.mark_type() == mark.mark_type()),
+        };
+        if duplicate {
             let mut error = BoundaryError::new(
                 "DOCUMENT_INVALID",
                 "duplicate same-type marks cannot be represented by standard Yjs attributes",
@@ -2299,19 +2438,55 @@ fn validate_mark_set(
 
 /// Validate canonical mark representation throughout an immutable document.
 pub(crate) fn validate_canonical_marks(document: &Document, schema: &Schema) -> BoundaryResult<()> {
-    fn visit(node: &Node, schema: &Schema) -> BoundaryResult<()> {
+    validate_canonical_marks_with_evidence(document, schema).map(|_| ())
+}
+
+pub(crate) fn validate_canonical_marks_with_evidence<'schema>(
+    document: &Document,
+    schema: &'schema Schema,
+) -> BoundaryResult<CanonicalMarksEvidence<'schema>> {
+    fn visit(node: &Node, schema: &Schema) -> BoundaryResult<bool> {
+        #[cfg(test)]
+        crate::yrs_engine::observability::record_canonical_mark_node_visited();
         if node.is_text() {
             validate_canonical_mark_set(node.marks(), schema)?;
         }
+        let mut is_canonical = true;
         if let Some(content) = node.content() {
+            let mut previous = None;
             for child in content.iter() {
-                visit(child, schema)?;
+                if child.text_str().is_some_and(str::is_empty)
+                    || previous.is_some_and(|previous: &Node| {
+                        previous.is_text()
+                            && child.is_text()
+                            && super::steps::marks_eq(previous.marks(), child.marks())
+                    })
+                {
+                    is_canonical = false;
+                }
+                // A normalization trigger is evidence, not validation control
+                // flow. Preserve the established DFS error and visit order.
+                if !visit(child, schema)? {
+                    is_canonical = false;
+                }
+                previous = Some(child);
             }
         }
-        Ok(())
+        Ok(is_canonical)
     }
 
-    visit(document.root(), schema)
+    #[cfg(test)]
+    crate::yrs_engine::observability::record_canonical_mark_validation_attempt();
+    let result = visit(document.root(), schema).map(|is_canonical| CanonicalMarksEvidence {
+        source_root: document.root().clone(),
+        source_schema: schema,
+        is_canonical,
+    });
+    #[cfg(test)]
+    if result.is_ok() {
+        crate::yrs_engine::observability::record_canonical_mark_validation_completion();
+    }
+    result
 }
 
 struct DocumentValidationState {
@@ -2383,11 +2558,11 @@ fn validate_node(
     let content = node.content().ok_or_else(|| {
         BoundaryError::new("DOCUMENT_INVALID", "non-void schema node has no content")
     })?;
-    let children = content.iter().collect::<Vec<_>>();
+    let children = content.children();
     let matches = spec
         .content
         .matches_with_budget(
-            &children,
+            children,
             |child, symbol| child_matches_group(child, symbol, schema),
             budget,
         )
@@ -2664,6 +2839,836 @@ fn validate_opaque(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod document_validation_stats_tests {
+    use std::collections::HashMap;
+
+    use serde_json::json;
+
+    use super::{
+        canonicalize_yrs_document, canonicalize_yrs_document_with_evidence,
+        reset_mark_set_hash_allocations_for_test, take_mark_set_hash_allocations_for_test,
+        validate_canonical_mark_set, validate_canonical_marks,
+        validate_canonical_marks_with_evidence, validate_input_mark_set, DocumentValidator,
+    };
+    use crate::boundary::ResourceLimits;
+    use crate::model::{Document, Fragment, Mark, Node};
+    use crate::schema::content_rule::WorkBudget;
+    use crate::schema::presets::tiptap_schema;
+    use crate::schema::{MarkSpec, Schema};
+    use crate::serialize::{from_prosemirror_json, UnknownTypeMode};
+
+    #[test]
+    fn document_validation_preserves_nested_empty_and_opaque_work_metrics() {
+        let schema = tiptap_schema();
+        let document = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "blockquote",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": "nested"}]
+                        }]
+                    },
+                    {
+                        "type": "bulletList",
+                        "content": [{
+                            "type": "listItem",
+                            "content": [{
+                                "type": "paragraph",
+                                "content": [{"type": "text", "text": "item"}]
+                            }]
+                        }]
+                    },
+                    {"type": "paragraph"},
+                    {"type": "futureBlock", "attrs": {"payload": "opaque"}},
+                    {"type": "horizontalRule"}
+                ]
+            }),
+            &schema,
+            UnknownTypeMode::Preserve,
+        )
+        .unwrap();
+        let report =
+            DocumentValidator::validate_report(&document, &schema, &ResourceLimits::default())
+                .unwrap();
+
+        assert_eq!(report.stats.node_count, 11);
+        assert_eq!(report.stats.max_depth, 5);
+        assert!(report.metrics.metadata_bytes > 0);
+        assert_eq!(report.metrics.validation_work, 104);
+    }
+
+    #[test]
+    fn direct_content_match_preserves_invalid_child_type_order_work_and_error() {
+        let schema = tiptap_schema();
+        let document = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [{
+                    "type": "bulletList",
+                    "content": [
+                        {"type": "paragraph"},
+                        {"type": "listItem", "content": [{"type": "paragraph"}]}
+                    ]
+                }]
+            }),
+            &schema,
+            UnknownTypeMode::Error,
+        )
+        .unwrap();
+        let limits = ResourceLimits::default();
+        let work_limit = limits.max_document_nodes.saturating_mul(128);
+        let budget = WorkBudget::new(work_limit);
+        let error = DocumentValidator::validate_with_budget(
+            &document, &schema, &limits, &budget, work_limit,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "DOCUMENT_INVALID");
+        assert_eq!(
+            error.message,
+            "node 'bulletList' content [paragraph, listItem] does not match its content expression"
+        );
+        assert_eq!(budget.consumed(work_limit), 15);
+    }
+
+    #[test]
+    fn canonicalization_preserves_exact_root_identity_for_an_already_canonical_tree() {
+        let schema = tiptap_schema();
+        let document = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "ordered",
+                            "marks": [{"type": "bold"}, {"type": "italic"}]
+                        },
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "tail"}
+                    ]
+                }]
+            }),
+            &schema,
+            UnknownTypeMode::Error,
+        )
+        .unwrap();
+
+        let canonical = canonicalize_yrs_document(&document, &schema);
+
+        assert_eq!(canonical, document);
+        assert!(canonical.shares_root_storage_with(&document));
+    }
+
+    #[test]
+    fn root_bound_canonical_evidence_skips_the_separate_identity_predicate() {
+        use crate::yrs_engine::observability::{
+            reset_full_pass_counts_for_test, take_full_pass_counts_for_test,
+        };
+
+        let schema = tiptap_schema();
+        let document = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "canonical"}]
+                }]
+            }),
+            &schema,
+            UnknownTypeMode::Error,
+        )
+        .unwrap();
+
+        reset_full_pass_counts_for_test();
+        let evidence = validate_canonical_marks_with_evidence(&document, &schema).unwrap();
+        let canonical = canonicalize_yrs_document_with_evidence(&document, &schema, evidence);
+        let counts = take_full_pass_counts_for_test();
+
+        assert!(canonical.shares_root_storage_with(&document));
+        assert_eq!(counts.canonical_mark_validation_attempts, 1);
+        assert_eq!(counts.canonical_mark_validation_completions, 1);
+        assert_eq!(counts.canonical_mark_nodes_visited, 3);
+        assert_eq!(counts.canonical_identity_predicate_nodes_visited, 0);
+    }
+
+    #[test]
+    fn canonical_evidence_rejects_an_equal_but_distinct_root_and_uses_the_fallback() {
+        use crate::yrs_engine::observability::{
+            reset_full_pass_counts_for_test, take_full_pass_counts_for_test,
+        };
+
+        let schema = tiptap_schema();
+        let input = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{"type": "text", "text": "same value"}]
+            }]
+        });
+        let source = from_prosemirror_json(&input, &schema, UnknownTypeMode::Error).unwrap();
+        let equal_distinct =
+            from_prosemirror_json(&input, &schema, UnknownTypeMode::Error).unwrap();
+        assert_eq!(source, equal_distinct);
+        assert!(!source.shares_root_storage_with(&equal_distinct));
+        let evidence = validate_canonical_marks_with_evidence(&source, &schema).unwrap();
+
+        reset_full_pass_counts_for_test();
+        let canonical = canonicalize_yrs_document_with_evidence(&equal_distinct, &schema, evidence);
+        let counts = take_full_pass_counts_for_test();
+
+        assert!(canonical.shares_root_storage_with(&equal_distinct));
+        assert!(!canonical.shares_root_storage_with(&source));
+        assert_eq!(counts.canonical_identity_predicate_nodes_visited, 3);
+    }
+
+    #[test]
+    fn canonical_evidence_rejects_the_same_root_under_a_differently_ranked_schema() {
+        use crate::yrs_engine::observability::{
+            reset_full_pass_counts_for_test, take_full_pass_counts_for_test,
+        };
+
+        let source_schema = tiptap_schema();
+        let mut reversed_marks = source_schema.all_marks().cloned().collect::<Vec<_>>();
+        reversed_marks.swap(0, 1);
+        let reversed_schema =
+            Schema::new(source_schema.all_nodes().cloned().collect(), reversed_marks);
+        let input = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "ranked",
+                    "marks": [{"type": "bold"}, {"type": "italic"}]
+                }]
+            }]
+        });
+        let document =
+            from_prosemirror_json(&input, &source_schema, UnknownTypeMode::Error).unwrap();
+        let evidence = validate_canonical_marks_with_evidence(&document, &source_schema).unwrap();
+
+        reset_full_pass_counts_for_test();
+        let canonical =
+            canonicalize_yrs_document_with_evidence(&document, &reversed_schema, evidence);
+        let counts = take_full_pass_counts_for_test();
+
+        assert!(!canonical.shares_root_storage_with(&document));
+        assert_eq!(counts.canonical_identity_predicate_nodes_visited, 3);
+        assert_eq!(
+            crate::serialize::to_prosemirror_json(&canonical, &reversed_schema),
+            json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": "ranked",
+                        "marks": [{"type": "italic"}, {"type": "bold"}]
+                    }]
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn canonical_evidence_detects_structural_rewrite_triggers_at_any_depth() {
+        let schema = tiptap_schema();
+        let cases = [
+            json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": ""},
+                        {"type": "hardBreak"}
+                    ]
+                }]
+            }),
+            json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "text", "text": "b"}
+                    ]
+                }]
+            }),
+            json!({
+                "type": "doc",
+                "content": [{
+                    "type": "blockquote",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [
+                            {"type": "text", "text": "nested"},
+                            {"type": "text", "text": " tail"}
+                        ]
+                    }]
+                }]
+            }),
+        ];
+
+        for input in cases {
+            let document = from_prosemirror_json(&input, &schema, UnknownTypeMode::Error).unwrap();
+            let evidence = validate_canonical_marks_with_evidence(&document, &schema).unwrap();
+            assert!(!evidence.is_canonical);
+            let canonical = canonicalize_yrs_document_with_evidence(&document, &schema, evidence);
+            assert!(!canonical.shares_root_storage_with(&document));
+        }
+    }
+
+    #[test]
+    fn normalization_evidence_never_short_circuits_later_mark_validation_errors() {
+        use crate::yrs_engine::observability::{
+            reset_full_pass_counts_for_test, take_full_pass_counts_for_test,
+        };
+
+        let schema = tiptap_schema();
+        let document = Document::new(Node::element(
+            "doc".into(),
+            HashMap::new(),
+            Fragment::from(vec![Node::element(
+                "paragraph".into(),
+                HashMap::new(),
+                Fragment::from(vec![
+                    Node::text(String::new(), Vec::new()),
+                    Node::text(
+                        "invalid".into(),
+                        vec![Mark::new("notInSchema".into(), HashMap::new())],
+                    ),
+                ]),
+            )]),
+        ));
+
+        reset_full_pass_counts_for_test();
+        let error = validate_canonical_marks_with_evidence(&document, &schema).unwrap_err();
+        let counts = take_full_pass_counts_for_test();
+
+        assert_eq!(error.code, "UNKNOWN_MARK");
+        assert_eq!(error.message, "unknown mark 'notInSchema'");
+        assert_eq!(counts.canonical_mark_validation_attempts, 1);
+        assert_eq!(counts.canonical_mark_validation_completions, 0);
+        assert_eq!(counts.canonical_mark_nodes_visited, 4);
+    }
+
+    #[test]
+    fn noncanonical_mark_order_preserves_its_exact_error_instead_of_minting_evidence() {
+        let schema = tiptap_schema();
+        let document = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": "ordered",
+                        "marks": [{"type": "italic"}, {"type": "bold"}]
+                    }]
+                }]
+            }),
+            &schema,
+            UnknownTypeMode::Error,
+        )
+        .unwrap();
+
+        let error = match validate_canonical_marks_with_evidence(&document, &schema) {
+            Ok(_) => panic!("noncanonical order must not mint canonicality evidence"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, "DOCUMENT_INVALID");
+        assert_eq!(
+            error.message,
+            "mark order does not match ProseMirror schema rank"
+        );
+        assert_eq!(
+            error.details,
+            Some(json!({"field": "marks", "reason": "nonCanonicalOrder"}))
+        );
+    }
+
+    #[test]
+    fn canonicalization_identity_proof_preserves_equal_comparator_mark_order() {
+        let schema = tiptap_schema();
+        let input = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "stable",
+                    "marks": [
+                        {"type": "link", "attrs": {"href": "/first"}},
+                        {"type": "link", "attrs": {"href": "/second"}}
+                    ]
+                }]
+            }]
+        });
+        let document = from_prosemirror_json(&input, &schema, UnknownTypeMode::Error).unwrap();
+
+        let canonical = canonicalize_yrs_document(&document, &schema);
+
+        assert!(canonical.shares_root_storage_with(&document));
+        assert_eq!(
+            crate::serialize::to_prosemirror_json(&canonical, &schema),
+            input
+        );
+    }
+
+    #[test]
+    fn canonicalization_identity_proof_falls_back_for_every_tree_rewrite_trigger() {
+        let schema = tiptap_schema();
+        let bold = json!({"type": "bold"});
+        let italic = json!({"type": "italic"});
+        let cases = [
+            (
+                "schema mark order",
+                json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{
+                            "type": "text",
+                            "text": "marked",
+                            "marks": [italic.clone(), bold.clone()]
+                        }]
+                    }]
+                }),
+                json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{
+                            "type": "text",
+                            "text": "marked",
+                            "marks": [bold.clone(), italic.clone()]
+                        }]
+                    }]
+                }),
+            ),
+            (
+                "empty text child",
+                json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [
+                            {"type": "text", "text": ""},
+                            {"type": "text", "text": "tail"}
+                        ]
+                    }]
+                }),
+                json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": "tail"}]
+                    }]
+                }),
+            ),
+            (
+                "adjacent equal marks",
+                json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [
+                            {"type": "text", "text": "a", "marks": [bold.clone()]},
+                            {"type": "text", "text": "b", "marks": [bold.clone()]}
+                        ]
+                    }]
+                }),
+                json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": "ab", "marks": [bold.clone()]}]
+                    }]
+                }),
+            ),
+            (
+                "adjacent equivalent marks in different orders",
+                json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "a",
+                                "marks": [bold.clone(), italic.clone()]
+                            },
+                            {
+                                "type": "text",
+                                "text": "b",
+                                "marks": [italic.clone(), bold.clone()]
+                            }
+                        ]
+                    }]
+                }),
+                json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{
+                            "type": "text",
+                            "text": "ab",
+                            "marks": [bold.clone(), italic.clone()]
+                        }]
+                    }]
+                }),
+            ),
+            (
+                "nested descendant requiring ancestor rebuild",
+                json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "blockquote",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "nested"},
+                                {"type": "text", "text": " tail"}
+                            ]
+                        }]
+                    }]
+                }),
+                json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "blockquote",
+                        "content": [{
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": "nested tail"}]
+                        }]
+                    }]
+                }),
+            ),
+        ];
+
+        for (name, input, expected) in cases {
+            let document = from_prosemirror_json(&input, &schema, UnknownTypeMode::Error).unwrap();
+            let canonical = canonicalize_yrs_document(&document, &schema);
+            let actual = crate::serialize::to_prosemirror_json(&canonical, &schema);
+
+            assert!(!canonical.shares_root_storage_with(&document), "{name}");
+            assert_eq!(actual, expected, "{name}");
+            assert_eq!(
+                serde_json::to_vec(&actual).unwrap(),
+                serde_json::to_vec(&expected).unwrap(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_stats_capture_exact_reusable_work_metrics() {
+        let schema = tiptap_schema();
+        let document = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "a🙂", "marks": [{"type": "bold"}]}]
+                }]
+            }),
+            &schema,
+            UnknownTypeMode::Error,
+        )
+        .unwrap();
+
+        let report =
+            DocumentValidator::validate_report(&document, &schema, &ResourceLimits::default())
+                .expect("fixture is valid");
+        let stats = report.stats;
+
+        assert_eq!(stats.node_count, 3);
+        assert_eq!(stats.max_depth, 3);
+        assert_eq!(report.metrics.metadata_bytes, 0);
+        assert!(report.metrics.validation_work >= stats.node_count);
+    }
+
+    #[test]
+    fn canonical_mark_observability_counts_attempt_completion_and_nodes_at_entrypoint() {
+        use crate::yrs_engine::observability::{
+            reset_full_pass_counts_for_test, take_full_pass_counts_for_test,
+        };
+        use std::collections::HashMap;
+
+        let schema = tiptap_schema();
+        let valid = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "x"}]}]
+            }),
+            &schema,
+            UnknownTypeMode::Error,
+        )
+        .unwrap();
+        reset_full_pass_counts_for_test();
+        validate_canonical_marks(&valid, &schema).unwrap();
+        let counts = take_full_pass_counts_for_test();
+        assert_eq!(counts.canonical_mark_validation_attempts, 1);
+        assert_eq!(counts.canonical_mark_validation_completions, 1);
+        assert_eq!(counts.canonical_mark_nodes_visited, 3);
+
+        let invalid = Document::new(Node::element(
+            "doc".into(),
+            HashMap::new(),
+            Fragment::from(vec![Node::element(
+                "paragraph".into(),
+                HashMap::new(),
+                Fragment::from(vec![Node::text(
+                    "x".into(),
+                    vec![Mark::new("unknown".into(), HashMap::new())],
+                )]),
+            )]),
+        ));
+        reset_full_pass_counts_for_test();
+        assert!(validate_canonical_marks(&invalid, &schema).is_err());
+        let counts = take_full_pass_counts_for_test();
+        assert_eq!(counts.canonical_mark_validation_attempts, 1);
+        assert_eq!(counts.canonical_mark_validation_completions, 0);
+        assert_eq!(counts.canonical_mark_nodes_visited, 3);
+    }
+
+    #[test]
+    fn validation_stats_preserve_exact_and_one_under_resource_boundaries() {
+        let schema = tiptap_schema();
+        let document = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "abc"}]
+                }]
+            }),
+            &schema,
+            UnknownTypeMode::Error,
+        )
+        .unwrap();
+        let exact = ResourceLimits {
+            max_document_nodes: 3,
+            max_document_depth: 3,
+            ..ResourceLimits::default()
+        };
+        assert!(DocumentValidator::validate(&document, &schema, &exact).is_ok());
+        let mut one_under_nodes = exact.clone();
+        one_under_nodes.max_document_nodes = 2;
+        let node_error =
+            DocumentValidator::validate(&document, &schema, &one_under_nodes).unwrap_err();
+        assert_eq!(node_error.limit, Some(2));
+        assert_eq!(node_error.actual, Some(3));
+        let mut one_under_depth = exact;
+        one_under_depth.max_document_depth = 2;
+        let depth_error =
+            DocumentValidator::validate(&document, &schema, &one_under_depth).unwrap_err();
+        assert_eq!(depth_error.limit, Some(2));
+        assert_eq!(depth_error.actual, Some(3));
+
+        let opaque = from_prosemirror_json(
+            &json!({
+                "type": "doc",
+                "content": [{
+                    "type": "futureBlock",
+                    "attrs": {"payload": "\\\"🙂\\n"}
+                }]
+            }),
+            &schema,
+            UnknownTypeMode::Preserve,
+        )
+        .unwrap();
+        let baseline =
+            DocumentValidator::validate_report(&opaque, &schema, &ResourceLimits::default())
+                .unwrap();
+        assert!(baseline.metrics.metadata_bytes > 0);
+        let exact_input = ResourceLimits {
+            max_input_bytes: baseline.metrics.metadata_bytes,
+            ..ResourceLimits::default()
+        };
+        assert_eq!(
+            DocumentValidator::validate_report(&opaque, &schema, &exact_input)
+                .unwrap()
+                .metrics
+                .metadata_bytes,
+            baseline.metrics.metadata_bytes
+        );
+        let mut one_under_input = exact_input;
+        one_under_input.max_input_bytes -= 1;
+        let input_error =
+            DocumentValidator::validate(&opaque, &schema, &one_under_input).unwrap_err();
+        assert_eq!(input_error.limit, Some(baseline.metrics.metadata_bytes - 1));
+        assert_eq!(input_error.actual, Some(baseline.metrics.metadata_bytes));
+    }
+
+    fn mark(mark_type: &str) -> Mark {
+        Mark::new(mark_type.to_string(), HashMap::new())
+    }
+
+    fn mark_with_attrs(mark_type: &str, attrs: &[(&str, serde_json::Value)]) -> Mark {
+        Mark::new(
+            mark_type.to_string(),
+            attrs
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), value.clone()))
+                .collect(),
+        )
+    }
+
+    fn schema_with_ten_marks() -> Schema {
+        let base = tiptap_schema();
+        let nodes = base.all_nodes().cloned().collect();
+        let marks = (0..10)
+            .map(|index| MarkSpec {
+                name: format!("mark{index}"),
+                html_tag: None,
+                attrs: HashMap::new(),
+                excludes: None,
+                allow_undeclared_attrs: false,
+            })
+            .collect();
+        Schema::new(nodes, marks)
+    }
+
+    #[test]
+    fn mark_set_duplicate_detection_uses_bounded_allocation_strategy_at_indices_1_7_8_9() {
+        let schema = schema_with_ten_marks();
+        for (duplicate_index, expected_allocations) in [(1, 0), (7, 0), (8, 1), (9, 1)] {
+            let mut marks = (0..duplicate_index)
+                .map(|index| mark(&format!("mark{index}")))
+                .collect::<Vec<_>>();
+            marks.push(mark("mark0"));
+
+            reset_mark_set_hash_allocations_for_test();
+            let error = validate_input_mark_set(&marks, &schema).unwrap_err();
+
+            assert_eq!(error.code, "DOCUMENT_INVALID", "index {duplicate_index}");
+            assert_eq!(
+                error.message,
+                "duplicate same-type marks cannot be represented by standard Yjs attributes",
+                "index {duplicate_index}"
+            );
+            assert_eq!(
+                error.details,
+                Some(json!({
+                    "field": "marks",
+                    "markType": "mark0",
+                    "reason": "duplicateType",
+                })),
+                "index {duplicate_index}"
+            );
+            assert_eq!(
+                take_mark_set_hash_allocations_for_test(),
+                expected_allocations,
+                "index {duplicate_index}"
+            );
+        }
+    }
+
+    #[test]
+    fn mark_set_hash_fallback_allocates_once_for_more_than_eight_unique_marks() {
+        let schema = schema_with_ten_marks();
+        let marks = (0..9)
+            .map(|index| mark(&format!("mark{index}")))
+            .collect::<Vec<_>>();
+
+        reset_mark_set_hash_allocations_for_test();
+        validate_input_mark_set(&marks, &schema).unwrap();
+
+        assert_eq!(take_mark_set_hash_allocations_for_test(), 1);
+    }
+
+    #[test]
+    fn mark_sets_through_eight_entries_do_not_allocate_duplicate_storage() {
+        let schema = schema_with_ten_marks();
+        for mark_count in [0, 1, 8] {
+            let marks = (0..mark_count)
+                .map(|index| mark(&format!("mark{index}")))
+                .collect::<Vec<_>>();
+
+            reset_mark_set_hash_allocations_for_test();
+            validate_input_mark_set(&marks, &schema).unwrap();
+
+            assert_eq!(
+                take_mark_set_hash_allocations_for_test(),
+                0,
+                "mark count {mark_count}"
+            );
+        }
+    }
+
+    #[test]
+    fn mark_set_validation_preserves_error_precedence_and_exact_errors() {
+        let schema = tiptap_schema();
+
+        let unknown_first = [mark("unknown"), mark("unknown")];
+        let error = validate_input_mark_set(&unknown_first, &schema).unwrap_err();
+        assert_eq!(error.code, "UNKNOWN_MARK");
+        assert_eq!(error.message, "unknown mark 'unknown'");
+        assert_eq!(error.details, None);
+
+        let duplicate_before_bad_attrs = [
+            mark("bold"),
+            mark_with_attrs("bold", &[("invalid", json!(true))]),
+        ];
+        let error = validate_input_mark_set(&duplicate_before_bad_attrs, &schema).unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_INVALID");
+        assert_eq!(
+            error.message,
+            "duplicate same-type marks cannot be represented by standard Yjs attributes"
+        );
+        assert_eq!(
+            error.details,
+            Some(json!({
+                "field": "marks",
+                "markType": "bold",
+                "reason": "duplicateType",
+            }))
+        );
+
+        let noncanonical_before_bad_attrs = [
+            mark("italic"),
+            mark_with_attrs("bold", &[("invalid", json!(true))]),
+        ];
+        let error =
+            validate_canonical_mark_set(&noncanonical_before_bad_attrs, &schema).unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_INVALID");
+        assert_eq!(
+            error.message,
+            "mark order does not match ProseMirror schema rank"
+        );
+        assert_eq!(
+            error.details,
+            Some(json!({"field": "marks", "reason": "nonCanonicalOrder"}))
+        );
+
+        let error = validate_input_mark_set(&[mark("link")], &schema).unwrap_err();
+        assert_eq!(error.code, "REQUIRED_ATTRIBUTE_MISSING");
+        assert_eq!(error.message, "'link' requires attribute 'href'");
+        assert_eq!(error.details, None);
+
+        let error = validate_input_mark_set(
+            &[mark_with_attrs("bold", &[("invalid", json!(true))])],
+            &schema,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "DOCUMENT_INVALID");
+        assert_eq!(
+            error.message,
+            "'bold' contains undeclared attribute 'invalid'"
+        );
+        assert_eq!(error.details, None);
+    }
 }
 
 fn map_opaque_metadata_limit(error: JsonMeterError) -> BoundaryError {

@@ -5,6 +5,17 @@ use editor_core::schema::presets::tiptap_schema;
 use editor_core::schema::{AttrSpec, Schema};
 use editor_core::transform::{Source, Step, Transaction};
 
+#[test]
+fn document_stats_remains_constructible_with_the_original_public_fields() {
+    let stats = editor_core::transform::apply::DocumentStats {
+        node_count: 3,
+        max_depth: 2,
+    };
+
+    assert_eq!(stats.node_count, 3);
+    assert_eq!(stats.max_depth, 2);
+}
+
 // ---------------------------------------------------------------------------
 // Helper builders (matching model_test.rs conventions)
 // ---------------------------------------------------------------------------
