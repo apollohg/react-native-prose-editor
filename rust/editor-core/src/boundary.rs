@@ -3,17 +3,12 @@ use serde::{Deserialize, Serialize};
 pub(crate) const HARD_MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const HARD_MAX_DOCUMENT_DEPTH: usize = 1_024;
 
-const DOCUMENT_STACK_RED_ZONE_BYTES: usize = 256 * 1024;
 const DOCUMENT_STACK_SEGMENT_BYTES: usize = 8 * 1024 * 1024;
 
-/// Run a bounded document lifecycle operation on a segmented stack whenever
-/// the caller cannot supply enough native stack for admitted depth 1024.
+/// Run every bounded document lifecycle operation on a segmented stack sized
+/// for admitted depth 1024.
 pub(crate) fn with_document_stack<T>(operation: impl FnOnce() -> T) -> T {
-    stacker::maybe_grow(
-        DOCUMENT_STACK_RED_ZONE_BYTES,
-        DOCUMENT_STACK_SEGMENT_BYTES,
-        operation,
-    )
+    stacker::grow(DOCUMENT_STACK_SEGMENT_BYTES, operation)
 }
 
 pub(crate) fn deserialize_non_null_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>

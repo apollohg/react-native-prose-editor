@@ -561,6 +561,62 @@ fn max_depth_document_lifecycle_is_stack_safe_on_a_constrained_thread() {
 }
 
 #[test]
+fn deep_mark_attribute_render_grows_the_document_stack_on_a_mid_sized_thread() {
+    const ATTRIBUTE_DEPTH: usize = 1_000;
+
+    let result = std::thread::Builder::new()
+        .name("deep-mark-attribute-render".into())
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            let mut attribute = String::new();
+            for _ in 0..ATTRIBUTE_DEPTH {
+                attribute.push_str(r#"{"nested":"#);
+            }
+            attribute.push_str("null");
+            for _ in 0..ATTRIBUTE_DEPTH {
+                attribute.push('}');
+            }
+
+            let mut config = String::from(
+                r#"{"initialization":{"type":"localJson","json":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"x","marks":[{"type":"link","attrs":{"href":"#,
+            );
+            config.push_str(&attribute);
+            config.push_str(r#"}}"#);
+            config.push_str(r#"]}"#);
+            config.push_str(r#"]}"#);
+            config.push_str(r#"]}"#);
+            config.push_str(r#"},"limits":{"resource":{"maxDocumentDepth":1024}}}"#);
+
+            let created = super::editor::editor_v2_create(config, None);
+            let editor_id: String = serde_json::from_str::<serde_json::Value>(
+                created.value.as_deref().unwrap_or_else(|| {
+                    panic!("deep mark create failed: {:?}", created.error)
+                }),
+            )
+            .unwrap()["editorId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let stack_reservation = [0_u8; 200 * 1024];
+            std::hint::black_box(&stack_reservation);
+            assert!(
+                super::render::editor_v2_render_update(editor_id.clone(), None, None)
+                    .value
+                    .is_some()
+            );
+            std::hint::black_box(&stack_reservation);
+            assert_eq!(super::editor::editor_v2_destroy(editor_id).value, Some(true));
+        })
+        .expect("mid-sized-stack render thread should spawn")
+        .join();
+
+    assert!(
+        result.is_ok(),
+        "deep mark-attribute render must not panic or overflow"
+    );
+}
+
+#[test]
 fn create_uses_configured_max_input_bytes_above_the_default_for_html() {
     let html = " ".repeat(ResourceLimits::default().max_input_bytes + 1);
     let config_json = format!(
