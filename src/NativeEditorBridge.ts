@@ -1508,6 +1508,7 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
     envelope: Record<string, unknown>;
     limits: NativeEditorV2CreateConfig['limits'];
     snapshotState: Uint8Array | null;
+    schemaForDescriptor: SchemaDefinition | undefined;
 } {
     if (!isV2CreateRecord(config)) {
         throw invalidV2CreateRequestError('NativeEditorBridge: invalid v2 create config');
@@ -1550,6 +1551,7 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
     }
     const envelope = emptyV2CreateRecord();
     const schema = ownV2CreateValue(config, 'schema');
+    let schemaForDescriptor: SchemaDefinition | undefined;
     if (schema === null) {
         throw invalidV2CreateRequestError('NativeEditorBridge: invalid schema for v2 create');
     }
@@ -1557,6 +1559,7 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
         if (!isV2CreateRecord(schema)) {
             throw invalidV2CreateRequestError('NativeEditorBridge: invalid schema for v2 create');
         }
+        schemaForDescriptor = schema as unknown as SchemaDefinition;
         envelope.schema = normalizeV2JsonValue(schema, 'schema', jsonTraversal);
     }
     const fragmentName = ownV2CreateValue(config, 'fragmentName');
@@ -1644,13 +1647,14 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
         envelope,
         limits: limits as NativeEditorV2CreateConfig['limits'],
         snapshotState,
+        schemaForDescriptor,
     };
 }
 
 function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
     configJson: string;
     snapshotState: Uint8Array | null;
-    documentDescriptor: Pick<ResolvedDocumentSchema, 'documentNodeName' | 'emptyDocument'>;
+    documentDescriptor: ResolvedDocumentSchema;
 } {
     let normalized: ReturnType<typeof buildV2CreateRequestUnchecked>;
     try {
@@ -1665,7 +1669,7 @@ function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
 
     validateV2CreateLimits(normalized.limits);
     const documentDescriptor = resolveDocumentDescriptor(
-        normalized.envelope.schema as SchemaDefinition | undefined,
+        normalized.schemaForDescriptor,
         normalized.limits?.resource as EditorResourceLimits | undefined
     );
     try {
@@ -2072,7 +2076,7 @@ const NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN = Object.freeze({});
 const AUTHENTIC_NATIVE_EDITOR_DOCUMENT_HANDLES = new WeakSet<object>();
 const NATIVE_EDITOR_DOCUMENT_HANDLE_DESCRIPTORS = new WeakMap<
     object,
-    Pick<ResolvedDocumentSchema, 'documentNodeName' | 'emptyDocument'>
+    ResolvedDocumentSchema
 >();
 
 /** The nominal public type returned only by createNativeEditorDocumentHandle. */
@@ -2092,7 +2096,7 @@ class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandle {
         token: typeof NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN,
         public readonly editorId: string,
         public readonly bridge: NativeEditorV2Bridge,
-        documentDescriptor: Pick<ResolvedDocumentSchema, 'documentNodeName' | 'emptyDocument'>
+        documentDescriptor: ResolvedDocumentSchema
     ) {
         if (token !== NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN) {
             throw invalidV2RequestError(
@@ -2119,7 +2123,7 @@ class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandle {
 /** @internal Handle-owned schema metadata for source-module view bindings. */
 export function _getNativeEditorDocumentHandleDescriptor(
     handle: NativeEditorDocumentHandle
-): Pick<ResolvedDocumentSchema, 'documentNodeName' | 'emptyDocument'> {
+): ResolvedDocumentSchema {
     _assertNativeEditorDocumentHandle(handle);
     const documentDescriptor = NATIVE_EDITOR_DOCUMENT_HANDLE_DESCRIPTORS.get(handle);
     if (documentDescriptor === undefined) {

@@ -316,6 +316,33 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
+    it('normalizes an empty controlled custom-root document from its handle descriptor', () => {
+        const handle = createNativeEditorDocumentHandle({
+            schema: HANDLE_OWNED_ARTICLE_SCHEMA,
+            initialization: { type: 'localEmpty' },
+        });
+        const { rerender } = render(<NativeRichTextEditor documentHandle={handle} />);
+        mockNativeModule.editorV2ApplyLocalApi.mockClear();
+
+        rerender(
+            <NativeRichTextEditor
+                documentHandle={handle}
+                valueJSON={{ type: 'article', content: [] }}
+            />
+        );
+
+        expect(mockNativeModule.editorV2ApplyLocalApi).toHaveBeenCalledTimes(1);
+        const request = JSON.parse(
+            mockNativeModule.editorV2ApplyLocalApi.mock.calls[0][1] as string
+        ) as Record<string, unknown>;
+        expect(request.setJson).toEqual({
+            type: 'article',
+            content: [{ type: 'title' }],
+        });
+
+        handle.destroy();
+    });
+
     it('drives the retained document API through the v2 handle', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const ref = createRef<NativeRichTextEditorRef>();

@@ -48,6 +48,7 @@ import { serializeEditorAddons, type EditorAddons } from './addons';
 import {
     buildImageFragmentJson,
     IMAGE_NODE_NAME,
+    normalizeDocumentJson,
     type ImageNodeAttributes,
 } from './schemas';
 
@@ -623,7 +624,7 @@ export const NativeRichTextEditor = forwardRef<
 
     const serializedValueJson = useSerializedValue(
         valueJSON,
-        stringifyCachedJson,
+        (doc) => stringifyCachedJson(normalizeDocumentJson(doc, documentDescriptor)),
         valueJSONRevision
     );
     const controlledValueJSON = useMemo(
