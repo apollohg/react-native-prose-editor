@@ -5,10 +5,68 @@ pub(crate) const HARD_MAX_DOCUMENT_DEPTH: usize = 1_024;
 
 const DOCUMENT_STACK_SEGMENT_BYTES: usize = 8 * 1024 * 1024;
 
+std::thread_local! {
+    static DOCUMENT_STACK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct DocumentStackScope;
+
+impl DocumentStackScope {
+    fn enter() -> (Self, bool) {
+        let outermost = DOCUMENT_STACK_DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(
+                current
+                    .checked_add(1)
+                    .expect("document stack boundary nesting exceeds usize"),
+            );
+            current == 0
+        });
+        (Self, outermost)
+    }
+}
+
+impl Drop for DocumentStackScope {
+    fn drop(&mut self) {
+        DOCUMENT_STACK_DEPTH.with(|depth| {
+            if let Some(remaining) = depth.get().checked_sub(1) {
+                depth.set(remaining);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static DOCUMENT_STACK_SEGMENT_GROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_document_stack_segment_grow_for_test() {
+    DOCUMENT_STACK_SEGMENT_GROWS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+fn reset_document_stack_segment_grows_for_test() {
+    DOCUMENT_STACK_SEGMENT_GROWS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn document_stack_segment_grows_for_test() -> usize {
+    DOCUMENT_STACK_SEGMENT_GROWS.with(|count| count.get())
+}
+
 /// Run every bounded document lifecycle operation on a segmented stack sized
 /// for admitted depth 1024.
 pub(crate) fn with_document_stack<T>(operation: impl FnOnce() -> T) -> T {
-    stacker::grow(DOCUMENT_STACK_SEGMENT_BYTES, operation)
+    let (_scope, outermost) = DocumentStackScope::enter();
+    if outermost {
+        #[cfg(test)]
+        record_document_stack_segment_grow_for_test();
+        stacker::grow(DOCUMENT_STACK_SEGMENT_BYTES, operation)
+    } else {
+        operation()
+    }
 }
 
 pub(crate) fn deserialize_non_null_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -184,6 +242,50 @@ pub(crate) fn json_values_equal_stack_safe(
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn document_stack_reuses_nested_segment_and_resets_after_unwind() {
+        reset_document_stack_segment_grows_for_test();
+
+        with_document_stack(|| {
+            assert_eq!(document_stack_segment_grows_for_test(), 1);
+            with_document_stack(|| {
+                assert_eq!(document_stack_segment_grows_for_test(), 1);
+            });
+
+            let child_thread_grows = std::thread::spawn(|| {
+                reset_document_stack_segment_grows_for_test();
+                with_document_stack(|| {
+                    assert_eq!(document_stack_segment_grows_for_test(), 1);
+                    with_document_stack(|| {
+                        assert_eq!(document_stack_segment_grows_for_test(), 1);
+                    });
+                });
+                document_stack_segment_grows_for_test()
+            })
+            .join()
+            .expect("child thread stack boundary should not panic");
+            assert_eq!(child_thread_grows, 1);
+        });
+        assert_eq!(document_stack_segment_grows_for_test(), 1);
+
+        with_document_stack(|| {});
+        assert_eq!(document_stack_segment_grows_for_test(), 2);
+
+        assert!(std::panic::catch_unwind(|| {
+            with_document_stack(|| panic!("intentional stack-boundary unwind"));
+        })
+        .is_err());
+        assert_eq!(document_stack_segment_grows_for_test(), 3);
+
+        with_document_stack(|| {});
+        assert_eq!(document_stack_segment_grows_for_test(), 4);
+    }
 }
 
 pub(crate) fn json_objects_equal_stack_safe(
