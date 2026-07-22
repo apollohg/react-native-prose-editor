@@ -877,12 +877,16 @@ class RenderBridgeTest {
         val rendered = RenderBridge.buildSpannable(maxJson, baseFontSize, textColor).toString()
         assertTrue("u32::MAX marker must remain exact. Got: '$rendered'", rendered.contains("4294967295. "))
 
-        val aboveMax = org.json.JSONObject("""{"ordered": true, "index": 4294967296}""")
-        assertEquals(
-            "out-of-range marker index must be rejected before signed narrowing",
-            "1. ",
-            RenderBridge.listMarkerString(aboveMax)
-        )
+        for (malformedIndex in listOf<Any>(-1, 1.5, org.json.JSONObject.NULL, "1", 4_294_967_296L)) {
+            val context = org.json.JSONObject()
+                .put("ordered", true)
+                .put("index", malformedIndex)
+            assertEquals(
+                "present malformed ordered-list index must be rejected before signed narrowing",
+                "",
+                RenderBridge.listMarkerString(context)
+            )
+        }
     }
 
     // ── Unordered List ──────────────────────────────────────────────────

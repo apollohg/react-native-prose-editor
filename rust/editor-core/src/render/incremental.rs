@@ -1002,6 +1002,18 @@ fn max_cached_elements(limits: &ResourceLimits) -> Result<usize, CachedRenderErr
         .ok_or(CachedRenderError::ResourceLimitExceeded)
 }
 
+fn ordered_list_start(node: &Node) -> Result<u32, CachedRenderError> {
+    match node.attrs().get("start") {
+        None => Ok(1),
+        Some(start) => start
+            .as_u64()
+            .ok_or(CachedRenderError::PositionOverflow)
+            .and_then(|start| {
+                u32::try_from(start).map_err(|_| CachedRenderError::PositionOverflow)
+            }),
+    }
+}
+
 fn ensure_document_render_limits(
     document: &Document,
     schema: &Schema,
@@ -1029,12 +1041,7 @@ fn ensure_document_render_limits(
             .node(node.node_type())
             .is_some_and(|spec| matches!(spec.role, NodeRole::List { ordered: true }))
         {
-            let start = node
-                .attrs()
-                .get("start")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(1);
-            let start = u32::try_from(start).map_err(|_| CachedRenderError::PositionOverflow)?;
+            let start = ordered_list_start(node)?;
             let total = u32::try_from(node.child_count())
                 .map_err(|_| CachedRenderError::PositionOverflow)?;
             if total > 0 {
@@ -1085,12 +1092,7 @@ fn ensure_document_render_arithmetic(
             .node(node.node_type())
             .is_some_and(|spec| matches!(spec.role, NodeRole::List { ordered: true }))
         {
-            let start = node
-                .attrs()
-                .get("start")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(1);
-            let start = u32::try_from(start).map_err(|_| CachedRenderError::PositionOverflow)?;
+            let start = ordered_list_start(node)?;
             let total = u32::try_from(node.child_count())
                 .map_err(|_| CachedRenderError::PositionOverflow)?;
             if total > 0 {
@@ -1575,14 +1577,7 @@ fn generate_block_inner(
         }
         Some(NodeRole::List { ordered }) => {
             let ordered = *ordered;
-            let start_attr = node
-                .attrs()
-                .get("start")
-                .and_then(|v| v.as_u64())
-                .map(u32::try_from)
-                .transpose()
-                .map_err(|_| CachedRenderError::PositionOverflow)?
-                .unwrap_or(1);
+            let start_attr = ordered_list_start(node)?;
             let total = u32::try_from(node.child_count())
                 .map_err(|_| CachedRenderError::PositionOverflow)?;
 
@@ -1830,11 +1825,15 @@ mod tests {
     }
 
     fn ordered_list(start: u32, children: Vec<Node>) -> Node {
-        Node::element(
-            "orderedList".to_string(),
-            HashMap::from([("start".to_string(), serde_json::Value::Number(start.into()))]),
-            Fragment::from(children),
-        )
+        ordered_list_with_start(Some(serde_json::Value::Number(start.into())), children)
+    }
+
+    fn ordered_list_with_start(start: Option<serde_json::Value>, children: Vec<Node>) -> Node {
+        let mut attrs = HashMap::new();
+        if let Some(start) = start {
+            attrs.insert("start".to_string(), start);
+        }
+        Node::element("orderedList".to_string(), attrs, Fragment::from(children))
     }
 
     fn list_item(children: Vec<Node>) -> Node {
@@ -2597,6 +2596,47 @@ mod tests {
             try_render_blocks(&overflow, &schema),
             Err(super::CachedRenderError::PositionOverflow)
         ));
+    }
+
+    #[test]
+    fn ordered_list_start_defaults_only_when_absent_and_rejects_present_malformed_values() {
+        let schema = tiptap_schema();
+        let limits = ResourceLimits::default();
+        let missing = doc(vec![ordered_list_with_start(
+            None,
+            vec![list_item(vec![paragraph(vec![text("first")])])],
+        )]);
+
+        let blocks = try_render_blocks(&missing, &schema).expect("missing start defaults to one");
+        let RenderElement::BlockStart {
+            list_context: Some(context),
+            ..
+        } = &blocks[0][0]
+        else {
+            panic!("ordered-list item must carry a list context");
+        };
+        assert_eq!(context.index, 1);
+
+        for start in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::Value::Null,
+            serde_json::json!("1"),
+            serde_json::json!(u64::from(u32::MAX) + 1),
+        ] {
+            let malformed = doc(vec![ordered_list_with_start(
+                Some(start),
+                vec![list_item(vec![paragraph(vec![text("bad")])])],
+            )]);
+            assert!(matches!(
+                CachedRenderBlocks::build(&malformed, &schema, &limits),
+                Err(super::CachedRenderError::PositionOverflow)
+            ));
+            assert!(matches!(
+                try_render_blocks(&malformed, &schema),
+                Err(super::CachedRenderError::PositionOverflow)
+            ));
+        }
     }
 
     proptest! {

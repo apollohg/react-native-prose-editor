@@ -2275,8 +2275,20 @@ final class RenderBridgeTests: XCTestCase {
         let max: [String: Any] = ["ordered": true, "index": NSNumber(value: UInt32.max)]
         XCTAssertEqual(RenderBridge.listMarkerString(listContext: max), "4294967295. ")
 
-        let aboveMax: [String: Any] = ["ordered": true, "index": NSNumber(value: UInt64(UInt32.max) + 1)]
-        XCTAssertEqual(RenderBridge.listMarkerString(listContext: aboveMax), "1. ")
+        for malformedIndex: Any in [
+            NSNumber(value: -1),
+            NSNumber(value: 1.5),
+            NSNull(),
+            "1",
+            NSNumber(value: UInt64(UInt32.max) + 1),
+        ] {
+            let context: [String: Any] = ["ordered": true, "index": malformedIndex]
+            XCTAssertEqual(
+                RenderBridge.listMarkerString(listContext: context),
+                "",
+                "present malformed ordered-list index must be rejected: \(malformedIndex)"
+            )
+        }
     }
 
     func testListMarker_unordered() {

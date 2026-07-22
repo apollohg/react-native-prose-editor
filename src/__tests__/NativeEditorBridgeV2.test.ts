@@ -1657,6 +1657,24 @@ describe('NativeEditorBridge v2', () => {
             });
         });
 
+        it('accepts u64::MAX once then rejects request-ID exhaustion locally', () => {
+            const handle = createHandle();
+            const bridgeForTest = handle.bridge as unknown as { _nextRequestId: bigint };
+            bridgeForTest._nextRequestId = BigInt(HUGE_U64_DECIMAL) - 1n;
+
+            handle.bridge.undo();
+            expect(JSON.parse(mockNativeModule.editorV2Undo.mock.calls[0][1])).toEqual({
+                version: 1,
+                requestId: HUGE_U64_DECIMAL,
+            });
+
+            const error = catchThrown(() => handle.bridge.redo());
+            expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
+            expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+            expect((error as NativeEditorV2ErrorBase).domain).toBe('boundary');
+            expect(mockNativeModule.editorV2Redo).not.toHaveBeenCalled();
+        });
+
         it('embeds a huge baseDocumentRevision as canonical decimal text without Number()', () => {
             const handle = createHandle();
             handle.bridge.applyInput({ baseDocumentRevision: HUGE_U64_DECIMAL, text: 'x' });

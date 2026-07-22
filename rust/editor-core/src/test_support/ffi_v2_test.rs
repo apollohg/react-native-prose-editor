@@ -1758,12 +1758,22 @@ fn local_json_config(document: &str) -> Value {
 }
 
 const FIXTURE_MULTI_BLOCK: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"ab"}]},{"type":"paragraph","content":[{"type":"text","text":"cd"}]}]}"#;
+const ORDERED_LIST_START_MISSING: &str = r#"{"type":"doc","content":[{"type":"orderedList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"first"}]}]}]}]}"#;
 const ORDERED_LIST_START_MAX: &str = r#"{"type":"doc","content":[{"type":"orderedList","attrs":{"start":4294967295},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"last"}]}]}]}]}"#;
 const ORDERED_LIST_START_ABOVE_U32: &str = r#"{"type":"doc","content":[{"type":"orderedList","attrs":{"start":4294967296},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"overflow"}]}]}]}]}"#;
 const ORDERED_LIST_INDEX_ABOVE_U32: &str = r#"{"type":"doc","content":[{"type":"orderedList","attrs":{"start":4294967295},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"last"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"overflow"}]}]}]}]}"#;
 
 #[test]
 fn render_update_ordered_list_u32_boundary_is_exact_or_rejected() {
+    let id = create_handle(local_json_config(ORDERED_LIST_START_MISSING));
+    let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
+    assert_eq!(
+        update["renderBlocks"][0][0]["listContext"]["index"],
+        json!(1),
+        "an absent ordered-list start must default to one"
+    );
+    destroy_handle(&id);
+
     let id = create_handle(local_json_config(ORDERED_LIST_START_MAX));
     let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
     assert_eq!(
@@ -1773,9 +1783,40 @@ fn render_update_ordered_list_u32_boundary_is_exact_or_rejected() {
     );
     destroy_handle(&id);
 
-    for document in [ORDERED_LIST_START_ABOVE_U32, ORDERED_LIST_INDEX_ABOVE_U32] {
+    let malformed_starts = [
+        json!(-1),
+        json!(1.5),
+        Value::Null,
+        json!("1"),
+        json!(u64::from(u32::MAX) + 1),
+    ];
+    let malformed_documents = malformed_starts.into_iter().map(|start| {
+        json!({
+            "type": "doc",
+            "content": [{
+                "type": "orderedList",
+                "attrs": { "start": start },
+                "content": [{
+                    "type": "listItem",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{ "type": "text", "text": "bad" }],
+                    }],
+                }],
+            }],
+        })
+        .to_string()
+    });
+
+    for document in [
+        ORDERED_LIST_START_ABOVE_U32.to_string(),
+        ORDERED_LIST_INDEX_ABOVE_U32.to_string(),
+    ]
+    .into_iter()
+    .chain(malformed_documents)
+    {
         let error = err_json(&v2::editor_v2_create(
-            local_json_config(document).to_string(),
+            local_json_config(&document).to_string(),
             None,
         ));
         assert_error(&error, "boundary", "CODEC_INVARIANT_FAILED", None);

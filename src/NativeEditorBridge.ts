@@ -1793,6 +1793,9 @@ export class NativeEditorV2Bridge {
     }
 
     private nextRequestId(): string {
+        if (this._nextRequestId >= 18_446_744_073_709_551_615n) {
+            throw invalidV2RequestError('NativeEditorBridge: v2 request id exhausted');
+        }
         this._nextRequestId += 1n;
         return this._nextRequestId.toString();
     }
