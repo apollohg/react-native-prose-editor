@@ -172,21 +172,20 @@ Props restored for the interactive contract: `editable` (default true),
 `toolbarItems`, `onToolbarAction`, `onRequestLink`, `onRequestImage`,
 `allowImageResizing`, `imageLoadingPolicy`, `onSelectionChange`,
 `onActiveStateChange`, `onFocus`, and `onBlur`. Props that intentionally did
-not return: `initialContent` / `initialJSON` (initialization lives in the
-handle's creation config), `maxLength` / engine-enforced `allowBase64Images`
-/ `readOnly` / `inputFilter` (also creation config), and `autoDetectLinks`,
+not return: `initialContent` / `initialJSON`, `schema`, `fragmentName`,
+`resourceLimits`, `maxLength`, engine-enforced `allowBase64Images`,
+`readOnly`, and `inputFilter` (all belong to the handle's creation config),
+and `autoDetectLinks`,
 `preserveSelectionOnValueJSONReset`, `selectionOnValueJSONReset` (removed
-with the legacy bridge; no v2 equivalent). The `allowBase64Images` prop that
-remains is advisory only — it is surfaced as
-`ImageRequestContext.allowBase64` for the host image picker; enforcement
-belongs to the handle config.
+with the legacy bridge; no v2 equivalent). `editable` only gates interaction
+in this mounted view; it never changes the handle's `policy.readOnly`.
 
 ## Customization
 
 The main extension points today are:
 
-- `documentHandle` (required): the shared document session; initialization, schema, read-only, and input limits are set at handle creation
-- `schema`: provide a custom schema definition (also settable on the handle config)
+- `documentHandle` (required): the shared document session; initialization,
+  schema, fragment, engine policy, and all limits are set at handle creation
 - `editable`, `autoFocus`, `autoCapitalize`, `autoCorrect`, `keyboardType`: interactive behavior and keyboard configuration
 - `showToolbar`, `toolbarPlacement`, `toolbarItems`, `onToolbarAction`, `onRequestLink`, `onRequestImage`: formatting toolbar (native keyboard accessory or inline React toolbar)
 - `heightBehavior`: internal scrolling or grow-with-content layout
@@ -194,7 +193,6 @@ The main extension points today are:
 - `theme`: style text blocks, blockquotes, lists, horizontal rules, background, and toolbar chrome
 - `addons`: configure optional features like @-mentions
 - `remoteSelections`: render collaboration peers' selections as native overlays
-- `resourceLimits`: bound schema, document, HTML/JSON, and collaboration admission
 
 For setup and customization details, start with the [Documentation Index](https://github.com/apollohg/react-native-prose-editor/wiki).
 
@@ -307,21 +305,23 @@ prose viewer when needed:
 
 ### Security and resource limits
 
-All document, schema, collaboration, and image inputs are admitted through configurable limits with safe defaults and non-configurable hard ceilings. Resource limits can be set on editors, viewers, and document handles:
+All document, schema, collaboration, and image inputs are admitted through configurable limits with safe defaults and non-configurable hard ceilings. Editor resource limits are set when creating the document handle (viewer limits remain viewer props):
 
 ```tsx
-<NativeRichTextEditor
-  documentHandle={documentHandle}
-  resourceLimits={{
-    maxInputBytes: 20 * 1024 * 1024,
-    maxDocumentNodes: 100_000,
-    maxDocumentDepth: 256,
-    maxSchemaNodes: 1_024,
-    maxSchemaExpressionBytes: 64 * 1024,
-    maxCollaborationMessageBytes: 10 * 1024 * 1024,
-    maxEncodedStateBytes: 50 * 1024 * 1024,
-  }}
-/>
+const documentHandle = createNativeEditorDocumentHandle({
+  initialization: { type: 'localEmpty' },
+  limits: {
+    resource: {
+      maxInputBytes: 20 * 1024 * 1024,
+      maxDocumentNodes: 100_000,
+      maxDocumentDepth: 256,
+      maxSchemaNodes: 1_024,
+      maxSchemaExpressionBytes: 64 * 1024,
+      maxCollaborationMessageBytes: 10 * 1024 * 1024,
+      maxEncodedStateBytes: 50 * 1024 * 1024,
+    },
+  },
+});
 ```
 
 Failures cross the native boundary as structured v2 error envelopes

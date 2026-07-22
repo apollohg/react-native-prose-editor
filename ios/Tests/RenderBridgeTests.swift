@@ -580,7 +580,7 @@ final class RenderBridgeTests: XCTestCase {
             policy: imagePolicy(maxSourceBytes: 333),
             transport: transport
         )
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
         let textView = EditorTextView(frame: .zero, textContainer: nil)
         textView.imageLoadOwner = owner
@@ -596,7 +596,7 @@ final class RenderBridgeTests: XCTestCase {
     func testPolicyChangeForcesUnchangedEditorStateToRebuildImageAttachments() {
         let transport = HoldingImageTransport()
         let owner = RenderImageLoadOwner(policy: imagePolicy(maxDecodeDimension: 2_048), transport: transport)
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
         _ = EditorV2Shadow.setJson(
             id: editorId,

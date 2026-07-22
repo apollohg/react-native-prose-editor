@@ -7,7 +7,11 @@ import {
     type EditorEditingLimits,
     type EditorResourceLimits,
 } from './ResourceLimits';
-import type { SchemaDefinition } from './schemas';
+import {
+    resolveDocumentDescriptor,
+    type ResolvedDocumentSchema,
+    type SchemaDefinition,
+} from './schemas';
 import {
     NativeEditorBoundaryError,
     NativeEditorV2BoundaryError,
@@ -1646,6 +1650,7 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
 function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
     configJson: string;
     snapshotState: Uint8Array | null;
+    documentDescriptor: Pick<ResolvedDocumentSchema, 'documentNodeName' | 'emptyDocument'>;
 } {
     let normalized: ReturnType<typeof buildV2CreateRequestUnchecked>;
     try {
@@ -1659,9 +1664,13 @@ function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
     }
 
     validateV2CreateLimits(normalized.limits);
+    const documentDescriptor = resolveDocumentDescriptor(
+        normalized.envelope.schema as SchemaDefinition | undefined,
+        normalized.limits?.resource as EditorResourceLimits | undefined
+    );
     try {
         const configJson = serializeV2CreateEnvelope(normalized.envelope);
-        return { configJson, snapshotState: normalized.snapshotState };
+        return { configJson, snapshotState: normalized.snapshotState, documentDescriptor };
     } catch {
         throw invalidV2RequestError('NativeEditorBridge: invalid v2 create config');
     }
@@ -2061,6 +2070,10 @@ const NATIVE_EDITOR_DOCUMENT_HANDLE_BRAND: unique symbol = Symbol(
 );
 const NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN = Object.freeze({});
 const AUTHENTIC_NATIVE_EDITOR_DOCUMENT_HANDLES = new WeakSet<object>();
+const NATIVE_EDITOR_DOCUMENT_HANDLE_DESCRIPTORS = new WeakMap<
+    object,
+    Pick<ResolvedDocumentSchema, 'documentNodeName' | 'emptyDocument'>
+>();
 
 /** The nominal public type returned only by createNativeEditorDocumentHandle. */
 export interface NativeEditorDocumentHandle {
@@ -2078,7 +2091,8 @@ class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandle {
     constructor(
         token: typeof NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN,
         public readonly editorId: string,
-        public readonly bridge: NativeEditorV2Bridge
+        public readonly bridge: NativeEditorV2Bridge,
+        documentDescriptor: Pick<ResolvedDocumentSchema, 'documentNodeName' | 'emptyDocument'>
     ) {
         if (token !== NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN) {
             throw invalidV2RequestError(
@@ -2086,6 +2100,7 @@ class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandle {
             );
         }
         AUTHENTIC_NATIVE_EDITOR_DOCUMENT_HANDLES.add(this);
+        NATIVE_EDITOR_DOCUMENT_HANDLE_DESCRIPTORS.set(this, documentDescriptor);
     }
 
     get isDestroyed(): boolean {
@@ -2099,6 +2114,20 @@ class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandle {
     addErrorListener(listener: (error: NativeEditorV2ErrorBase) => void): () => void {
         return this.bridge.addErrorListener(listener);
     }
+}
+
+/** @internal Handle-owned schema metadata for source-module view bindings. */
+export function _getNativeEditorDocumentHandleDescriptor(
+    handle: NativeEditorDocumentHandle
+): Pick<ResolvedDocumentSchema, 'documentNodeName' | 'emptyDocument'> {
+    _assertNativeEditorDocumentHandle(handle);
+    const documentDescriptor = NATIVE_EDITOR_DOCUMENT_HANDLE_DESCRIPTORS.get(handle);
+    if (documentDescriptor === undefined) {
+        throw invalidV2RequestError(
+            'NativeEditorBridge: authentic NativeEditorDocumentHandle has no document descriptor'
+        );
+    }
+    return documentDescriptor;
 }
 
 /** @internal Source-module boundary assertion; intentionally absent from the package index. */
@@ -2119,7 +2148,7 @@ export function _assertNativeEditorDocumentHandle(
 export function createNativeEditorDocumentHandle(
     config: NativeEditorV2CreateConfig
 ): NativeEditorDocumentHandle {
-    const { configJson, snapshotState } = buildV2CreateRequest(config);
+    const { configJson, snapshotState, documentDescriptor } = buildV2CreateRequest(config);
     const value = unwrapNativeEditorV2Result(
         invokeNativeEditorV2('editorV2Create', configJson, snapshotState),
         normalizeNativeEditorV2CreateValue
@@ -2127,6 +2156,7 @@ export function createNativeEditorDocumentHandle(
     return new NativeEditorDocumentHandleImpl(
         NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN,
         value.editorId,
-        new NativeEditorV2Bridge(value.editorId)
+        new NativeEditorV2Bridge(value.editorId),
+        documentDescriptor
     );
 }

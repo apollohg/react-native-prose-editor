@@ -119,20 +119,28 @@ private func v2UInt64Argument(_ raw: String) -> UInt64? {
     UInt64(raw)
 }
 
-/// Parse the created v2 session's decimal-string editor id from the frozen
-/// create value (`{"editorId":"<decimal>"}` — the v2 handle is a string,
-/// unlike the legacy numeric create shape `createdEditorId` matches).
-private func createdV2SessionEditorId(_ resultJson: String) -> UInt64? {
+/// A created v2 handle preserves its exact engine-issued string for adapter
+/// binding while retaining the current numeric native-view registry id.
+private struct CreatedV2SessionHandle {
+    let handle: String
+    let nativeViewId: UInt64
+}
+
+/// Parse the created v2 session's canonical decimal handle from the frozen
+/// create value (`{"editorId":"<decimal>"}`). The adapter must receive the
+/// exact engine-issued string rather than a numeric reconstruction.
+private func createdV2SessionHandle(_ resultJson: String) -> CreatedV2SessionHandle? {
     guard let data = resultJson.data(using: .utf8),
           let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let editorIdString = result["editorId"] as? String,
           let editorId = UInt64(editorIdString),
           editorId > 0,
-          editorId <= UInt64(Int64.max)
+          editorId <= UInt64(Int64.max),
+          editorIdString == String(editorId)
     else {
         return nil
     }
-    return editorId
+    return CreatedV2SessionHandle(handle: editorIdString, nativeViewId: editorId)
 }
 
 /// Whether the JS-facing create config initializes a room-bound session
@@ -145,6 +153,61 @@ private func v2ConfigIndicatesRoomBinding(_ configJson: String) -> Bool {
         return false
     }
     return initialization["type"] as? String == "room"
+}
+
+/// Stateless viewer rendering still needs a transient engine session, but it
+/// receives the complete v2 create envelope from TypeScript. Pairing only
+/// attaches to that existing session; it never recreates or patches config.
+private func renderDocumentProbe(
+    configJson: String,
+    apply: (EditorV2Adapter) -> String?
+) -> String {
+    let created = editorV2Create(configJson: configJson, snapshotState: nil)
+    if let error = created.error { return v2ErrorJson(error) }
+    guard let value = created.value,
+          let createdHandle = createdV2SessionHandle(value)
+    else {
+        return v2ErrorJson(
+            FfiError(
+                domain: "boundary",
+                code: "FFI_RESULT_INVALID",
+                message: "v2 render probe could not bind its created editor",
+                requestId: nil,
+                operationIndex: nil,
+                limit: nil,
+                actual: nil,
+                detailsJson: nil
+            )
+        )
+    }
+    guard let adapter = EditorV2Adapter.attach(editorId: createdHandle.handle, roomBound: false) else {
+        _ = editorV2Destroy(editorId: createdHandle.handle)
+        return v2ErrorJson(
+            FfiError(
+                domain: "boundary",
+                code: "FFI_RESULT_INVALID",
+                message: "v2 render probe could not bind its created editor",
+                requestId: nil,
+                operationIndex: nil,
+                limit: nil,
+                actual: nil,
+                detailsJson: nil
+            )
+        )
+    }
+    defer { _ = adapter.destroy() }
+    return apply(adapter) ?? v2ErrorJson(
+        FfiError(
+            domain: "boundary",
+            code: "FFI_RESULT_INVALID",
+            message: "v2 render probe could not apply content",
+            requestId: nil,
+            operationIndex: nil,
+            limit: nil,
+            actual: nil,
+            detailsJson: nil
+        )
+    )
 }
 
 public class NativeEditorModule: Module {
@@ -164,15 +227,19 @@ public class NativeEditorModule: Module {
             // mark the public id live so views may bind to it: the Expo view
             // receives the handle's editorId and routes every interaction
             // through the shared session.
-            if let value = result.value, let editorId = createdV2SessionEditorId(value) {
-                EditorV2Registry.register(
-                    EditorV2Adapter.attach(
-                        editorId: String(editorId),
-                        roomBound: v2ConfigIndicatesRoomBinding(configJson)
-                    ),
-                    forLegacyId: editorId
-                )
-                NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
+            if let value = result.value {
+                guard let createdHandle = createdV2SessionHandle(value) else {
+                    return v2InvalidResultDictionary("v2 create value carries no canonical editor id")
+                }
+                guard let adapter = EditorV2Adapter.attach(
+                    editorId: createdHandle.handle,
+                    roomBound: v2ConfigIndicatesRoomBinding(configJson)
+                ) else {
+                    _ = editorV2Destroy(editorId: createdHandle.handle)
+                    return v2InvalidResultDictionary("v2 create could not bind its editor handle")
+                }
+                EditorV2Registry.register(adapter, forLegacyId: createdHandle.nativeViewId)
+                NativeEditorViewRegistry.shared.markEditorCreated(editorId: createdHandle.nativeViewId)
             }
             return v2JsonResultDictionary(result)
         }
@@ -290,14 +357,8 @@ public class NativeEditorModule: Module {
         }
 
         Function("renderDocumentJson") { (configJson: String, json: String) -> String in
-            // Stateless render probe: a transient v2 session renders the
-            // document and is destroyed immediately (NativeProseViewer).
-            switch EditorV2Adapter.create(legacyConfigJson: configJson) {
-            case .failure(let error):
-                return v2ErrorJson(error)
-            case .success(let adapter):
-                defer { adapter.destroy() }
-                return adapter.setContentJson(json) ?? "{}"
+            renderDocumentProbe(configJson: configJson) { adapter in
+                adapter.setContentJson(json)
             }
         }
         Function("measureContentHeight") { (renderJson: String, themeJson: String?, width: Double) -> Double in
@@ -309,12 +370,8 @@ public class NativeEditorModule: Module {
             return Double(height)
         }
         Function("renderDocumentHtml") { (configJson: String, html: String) -> String in
-            switch EditorV2Adapter.create(legacyConfigJson: configJson) {
-            case .failure(let error):
-                return v2ErrorJson(error)
-            case .success(let adapter):
-                defer { adapter.destroy() }
-                return adapter.setContentHtml(html) ?? "{}"
+            renderDocumentProbe(configJson: configJson) { adapter in
+                adapter.setContentHtml(html)
             }
         }
         View(NativeEditorExpoView.self) {

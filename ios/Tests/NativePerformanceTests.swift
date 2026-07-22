@@ -75,7 +75,7 @@ final class NativePerformanceTests: XCTestCase {
     }
 
     func testPerformance_applyUpdateJSONLargeDocument() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let updateJSON = NativePerformanceFixtureFactory.loadLargeDocument(into: editorId)
@@ -109,7 +109,7 @@ final class NativePerformanceTests: XCTestCase {
     }
 
     func testPerformance_typingRoundTripLargeDocument() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         _ = NativePerformanceFixtureFactory.loadLargeDocument(into: editorId)
@@ -279,7 +279,7 @@ final class NativePerformanceTests: XCTestCase {
     }
 
     func testPerformance_selectionScrubLargeDocument() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         _ = NativePerformanceFixtureFactory.loadLargeDocument(into: editorId)
@@ -306,7 +306,7 @@ final class NativePerformanceTests: XCTestCase {
     }
 
     func testPerformance_remoteSelectionOverlayRefreshMultiPeerLargeDocument() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let updateJSON = NativePerformanceFixtureFactory.loadLargeDocument(into: editorId)
@@ -361,7 +361,7 @@ private enum NativePerformanceFixtureFactory {
     }
 
     static func largeRenderJSON() -> String {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
         return EditorV2Shadow.setJson(id: editorId, json: largeDocumentJSONString())
     }
@@ -403,7 +403,7 @@ private enum NativePerformanceFixtureFactory {
 
     static func paragraphSplitSessions(count: Int, autoGrow: Bool = false) -> [ParagraphSplitSession] {
         (0..<count).map { _ in
-            let editorId = makeV2Editor(configJson: "{}")
+            let editorId = makeV2Editor()
             _ = loadLargeDocument(into: editorId)
 
             let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
@@ -423,7 +423,7 @@ private enum NativePerformanceFixtureFactory {
 
     static func hostedParagraphSplitSessions(count: Int) -> [HostedParagraphSplitSession] {
         (0..<count).map { _ in
-            let editorId = makeV2Editor(configJson: "{}")
+            let editorId = makeV2Editor()
 
             let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 390, height: 0))
             let window = hostEditorView(view, size: CGSize(width: 390, height: 844))

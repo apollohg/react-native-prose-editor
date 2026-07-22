@@ -588,12 +588,7 @@ class NativeDeviceOutsideTapTest {
         }
     }
 
-    private fun createV2EditorId(): Long =
-        when (val created = EditorV2Registry.createPair(UniffiEditorV2Backend, "{}")) {
-            is EditorV2CallResult.Ok -> created.value
-            is EditorV2CallResult.Err ->
-                error("v2 editor create failed: ${created.error.code}: ${created.error.message}")
-        }
+    private fun createV2EditorId(): Long = createPairedV2TestEditor().second
 
     private fun tapCenterOnScreen(
         view: View,

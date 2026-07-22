@@ -118,12 +118,7 @@ class NativeDeviceCollaborationInitialSyncTest {
     }
 
     private fun createV2Editor(): Pair<EditorV2Adapter, Long> {
-        val publicId = when (val created = EditorV2Registry.createPair(UniffiEditorV2Backend, "{}")) {
-            is EditorV2CallResult.Ok -> created.value
-            is EditorV2CallResult.Err ->
-                error("v2 editor create failed: ${created.error.code}: ${created.error.message}")
-        }
-        return EditorV2Registry.adapterFor(publicId)!! to publicId
+        return createPairedV2TestEditor()
     }
 
     private fun replaceDocumentV2(adapter: EditorV2Adapter, documentJson: String) {

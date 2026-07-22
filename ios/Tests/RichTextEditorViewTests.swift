@@ -2,7 +2,7 @@ import XCTest
 
 final class RichTextEditorViewTests: XCTestCase {
     func testNonTextSelectionApplicationsClearBackwardTextDirection() throws {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -36,7 +36,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testUnbindClearsBackwardTextDirection() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -51,7 +51,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBackwardSelectionRoundTripsLogicalAnchorHeadAndUsesHeadAsCaretEdge() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -199,7 +199,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testEmptyDocumentSelectionStaysBeforePlaceholderForAutocapitalization() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -217,7 +217,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testEmptyDocumentFocusRepositionsCaretBeforePlaceholderForAutocapitalization() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -242,7 +242,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testFirstCharacterEmojiInsertedIntoEmptyDocumentRendersVisibleGlyph() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -305,7 +305,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testEmptyDocumentSelectionDriftSnapsBackBeforePlaceholderForAutocapitalization() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -325,7 +325,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testNativeEditReclaimsKeyboardProviderTextViewDelegateBeforeRustUpdate() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -380,7 +380,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testParagraphSplitAppliesTopLevelRenderPatch() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -426,7 +426,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSequentialParagraphSplitsKeepUsingTopLevelRenderPatch() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
@@ -464,7 +464,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testTypingInsideListItemFallsBackToFullRenderAndPreservesTextOrder() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -493,7 +493,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testReturnInsideListItemFallsBackToFullRenderAndKeepsTypingInNewItem() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
@@ -524,7 +524,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testFullCurrentStateLocalEditUsesSynthesizedTopLevelPatch() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -552,7 +552,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testIdenticalFullCurrentStateSkipsNativeTextReapply() throws {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -570,7 +570,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRustDrivenSelectionApplyDoesNotNotifySelectionDelegate() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -660,7 +660,9 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRemoteSelectionOverlayShowsFocusedCaretWithoutBadge() {
-        let editorId = makeV2Editor(configJson: #"{"allowBase64Images":true}"#)
+        let editorId = makeV2Editor(
+            configJson: #"{"initialization":{"type":"localEmpty"},"policy":{"allowBase64Images":true}}"#
+        )
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
@@ -692,7 +694,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRemoteSelectionOverlayShowsFocusedCaretAtEndOfDocument() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
@@ -719,7 +721,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRemoteSelectionOverlayUsesCorrectWrappedVisualLine() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 140, height: 220))
@@ -756,7 +758,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRemoteSelectionOverlayHidesCaretAndBadgeForUnfocusedCollapsedSelection() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
@@ -900,7 +902,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testInlineAccessoryPlaceholderRemainsAttachedAfterNativeEdit() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello</p>")
@@ -1835,7 +1837,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testManualSelectionInMiddleOfWordSyncsInteriorCaretPositionToRust() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -1861,7 +1863,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testManualSelectionIntoListItemRefreshesSelectionDependentActiveState() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
@@ -1891,7 +1893,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testManualSelectionInMiddleOfWordPersistsAfterDeferredSelectionSync() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -1912,7 +1914,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testManualSelectionAfterBlockquoteSyncsInteriorCaretPositionToRust() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -1936,7 +1938,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testUnauthorizedTextMutationReconcilesOnNextRunLoop() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -1959,7 +1961,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testFocusedNativeTextMutationCommitsToRustInsteadOfReconciling() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -1988,7 +1990,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testFocusedNativeAutocompleteInsertionCommitsToRustOnNextRunLoop() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2017,7 +2019,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testNativeAutocompleteInsertionMapsStaleCaretBeforeNextTypedCharacter() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2048,7 +2050,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testNativeAutocompleteInsertionMapsStaleCaretOnScheduledCommit() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2086,7 +2088,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testNativeReplacementKeepsCollapsedStaleCaretCollapsedInsideReplacementRange() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2117,7 +2119,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testInlinePredictionMutationIsNotCommittedToRust() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2162,7 +2164,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testInlinePredictionDoesNotCauseReconciliation() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2196,7 +2198,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testFocusedNativeDeletionCorrectionCommitsToRustOnNextRunLoop() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2225,7 +2227,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingNativeTextMutationFlushesBeforeNextTypedCharacter() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2257,7 +2259,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingNativeTextMutationInListUsesAdjustedScalarOffsetsBeforeNextTypedCharacter() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2287,7 +2289,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingNativeTextMutationInListMapsStaleCaretBeforeNextTypedCharacter() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2318,7 +2320,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingNativeTextMutationInSecondListItemUsesAdjustedScalarOffsets() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 140))
@@ -2349,7 +2351,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingNativeTextMutationInNestedListUsesAdjustedScalarOffsets() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -2380,7 +2382,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingNativeTextMutationInTwoDigitOrderedListUsesAdjustedScalarOffsets() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
@@ -2411,7 +2413,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPasteFlushesPendingNativeAutocorrectBeforePlainTextPaste() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2442,7 +2444,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testNativeMutationUsesUIKitSelectionAlreadyMovedBeforeCapture() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2482,7 +2484,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPasteFlushesPendingNativeAutocorrectBeforeReplacingSelectedText() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2515,7 +2517,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testHTMLPasteFlushesPendingNativeAutocorrectBeforePaste() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2549,7 +2551,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRTFPasteFlushesPendingNativeAutocorrectBeforePaste() throws {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2593,7 +2595,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testInterceptWindowAutocorrectCommitsBeforeImmediateNextCharacter() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2624,7 +2626,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testNativeReplaceAutocorrectWithEmojiPrefixCommitsBeforeNextCharacter() throws {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2654,7 +2656,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testNativeEmojiReplacementAutocorrectDoesNotSplitSurrogatePairs() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2684,7 +2686,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testNativeAutocorrectAfterComplexEmojiGraphemesPreservesScalarMapping() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2713,7 +2715,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testLengthChangingAutocorrectAfterComplexEmojiGraphemesMapsStaleCaret() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2750,7 +2752,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testLengthChangingAutocorrectInvalidatesCachedPositionMappingBeforeSelectionCapture() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2780,7 +2782,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testLengthChangingAutocorrectMapsStaleCaretBeforeNextTypedCharacter() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2811,7 +2813,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testLengthShrinkingAutocorrectMapsStaleCaretBeforeNextTypedCharacter() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2842,7 +2844,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSetMarkedTextFlushesPendingStaleNativeAutocorrectBeforeComposition() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2876,7 +2878,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlurTimeAutocorrectAfterResignStillCommitsToRust() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2905,7 +2907,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlurTimeAutocorrectAfterNextMainQueueTurnStillCommitsToRust() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2935,7 +2937,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlurTimeAutocorrectAfterGracePeriodReconcilesInsteadOfCommitting() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2965,7 +2967,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlurTimeAutocorrectAfterContentReplacementReconcilesInsteadOfCommitting() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -2995,7 +2997,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlurTimeAutocorrectGraceWindowIsConsumedAfterCommit() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3034,7 +3036,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testThemeRefreshDrainsPendingNativeAutocorrectBeforeApplyingRustState() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3064,7 +3066,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSetEditableFalseDrainsPendingNativeAutocorrectBeforeReadOnly() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
         _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>teh </p>")
 
@@ -3106,7 +3108,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testInputTraitChangeFlushesActiveMarkedCompositionBeforeReload() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3131,7 +3133,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockedAutoCorrectRetryDoesNotOverrideNewerValue() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3153,7 +3155,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockedAutoCapitalizeRetryDoesNotOverrideNewerValue() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3174,7 +3176,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockedKeyboardTypeRetryDoesNotOverrideNewerValue() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3195,8 +3197,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingAutoCorrectRetryIsInvalidatedAndDesiredTraitReplayedOnEditorRebind() {
-        let firstEditorId = makeV2Editor(configJson: "{}")
-        let secondEditorId = makeV2Editor(configJson: "{}")
+        let firstEditorId = makeV2Editor()
+        let secondEditorId = makeV2Editor()
         defer {
             destroyV2Editor(id: firstEditorId)
             destroyV2Editor(id: secondEditorId)
@@ -3221,8 +3223,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingAutoCapitalizeRetryIsInvalidatedAndDesiredTraitReplayedOnEditorRebind() {
-        let firstEditorId = makeV2Editor(configJson: "{}")
-        let secondEditorId = makeV2Editor(configJson: "{}")
+        let firstEditorId = makeV2Editor()
+        let secondEditorId = makeV2Editor()
         defer {
             destroyV2Editor(id: firstEditorId)
             destroyV2Editor(id: secondEditorId)
@@ -3246,8 +3248,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingKeyboardTypeRetryIsInvalidatedAndDesiredTraitReplayedOnEditorRebind() {
-        let firstEditorId = makeV2Editor(configJson: "{}")
-        let secondEditorId = makeV2Editor(configJson: "{}")
+        let firstEditorId = makeV2Editor()
+        let secondEditorId = makeV2Editor()
         defer {
             destroyV2Editor(id: firstEditorId)
             destroyV2Editor(id: secondEditorId)
@@ -3295,7 +3297,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockedThemeRetryIsClearedWhenDesiredThemeRevertsBeforeRetry() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
         _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello</p>")
 
@@ -3330,8 +3332,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockedThemeRetryAppliesDesiredThemeAfterEditorRebind() {
-        let firstEditorId = makeV2Editor(configJson: "{}")
-        let secondEditorId = makeV2Editor(configJson: "{}")
+        let firstEditorId = makeV2Editor()
+        let secondEditorId = makeV2Editor()
         defer {
             destroyV2Editor(id: firstEditorId)
             destroyV2Editor(id: secondEditorId)
@@ -3514,7 +3516,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testApplyEditorUpdateRetriesAfterBlockedCompositionOnSameEditor() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
         _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>First</p>")
 
@@ -3541,8 +3543,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testApplyEditorUpdateRetryIsDroppedAfterEditorRebind() {
-        let firstEditorId = makeV2Editor(configJson: "{}")
-        let secondEditorId = makeV2Editor(configJson: "{}")
+        let firstEditorId = makeV2Editor()
+        let secondEditorId = makeV2Editor()
         defer {
             destroyV2Editor(id: firstEditorId)
             destroyV2Editor(id: secondEditorId)
@@ -3571,7 +3573,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSameEditorIdUpdateDoesNotDropPendingNativeAutocorrect() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
         _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>teh </p>")
 
@@ -3601,8 +3603,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingNativeAutocorrectIsDroppedAfterEditorRebind() {
-        let firstEditorId = makeV2Editor(configJson: "{}")
-        let secondEditorId = makeV2Editor(configJson: "{}")
+        let firstEditorId = makeV2Editor()
+        let secondEditorId = makeV2Editor()
         defer {
             destroyV2Editor(id: firstEditorId)
             destroyV2Editor(id: secondEditorId)
@@ -3636,8 +3638,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPrepareForCommandAfterEditorRebindDoesNotDrainPreviousEditorMutation() {
-        let firstEditorId = makeV2Editor(configJson: "{}")
-        let secondEditorId = makeV2Editor(configJson: "{}")
+        let firstEditorId = makeV2Editor()
+        let secondEditorId = makeV2Editor()
         defer {
             destroyV2Editor(id: firstEditorId)
             destroyV2Editor(id: secondEditorId)
@@ -3676,7 +3678,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDestroyedEditorInvalidatesRegistryAndUnbindsView() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
 
         let view = NativeEditorExpoView()
@@ -3704,7 +3706,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDestroyedEditorInvalidatesEveryBoundView() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
         let first = NativeEditorExpoView()
         let second = NativeEditorExpoView()
@@ -3719,7 +3721,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testUnregisterRemovesOnlyCallingViewFromEditorRegistry() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
         let first = NativeEditorExpoView()
         let second = NativeEditorExpoView()
@@ -3736,7 +3738,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDestroyBoundaryBlocksReentrantRegistrationAndCommandsUntilInvalidation() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         let registry = NativeEditorViewRegistry.shared
         registry.markEditorCreated(editorId: editorId)
         let first = NativeEditorExpoView()
@@ -3760,7 +3762,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDestroyBoundaryInvalidatesViewsWhenDestroyOperationDoesNotRemoveEditor() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         let registry = NativeEditorViewRegistry.shared
         registry.markEditorCreated(editorId: editorId)
         let view = NativeEditorExpoView()
@@ -3777,7 +3779,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDestroyedEditorIdCannotRegisterNewView() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
         NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: editorId)
         destroyV2Editor(id: editorId)
@@ -3795,7 +3797,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPrepareForCommandReportsCompositionBlockedReasonWhenMarkedTextPreflightDefers() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
         _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello</p>")
 
@@ -3822,7 +3824,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPrepareForCommandIncludesUpdateJSONAfterNativeAutocorrectDrain() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
         _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>teh </p>")
 
@@ -3856,7 +3858,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPrepareForCommandIncludesUpdateJSONAfterSameTextCompositionChangesSelectionState() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3878,7 +3880,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMarkedTextDoesNotReconcileWhileCompositionIsTransient() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3897,7 +3899,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testUnmarkTextCommitsAtOriginalAuthorizedOffset() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3912,7 +3914,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testUnmarkTextReplacesOriginalAuthorizedSelection() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3927,7 +3929,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSetMarkedTextNilCommitsVisibleComposition() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3943,7 +3945,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSetMarkedTextNilCommitsEmptyReplacementOverOriginalSelection() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3959,7 +3961,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testExternalUpdatePreflightCommitsActiveCompositionOnce() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3979,7 +3981,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testToolbarCommandsCommitActiveMarkedCompositionBeforeMutatingEditor() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -4008,7 +4010,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testExternalUpdatePreflightCommitsEmptySelectedCompositionAsDeletion() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -4028,7 +4030,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testInsertTextDuringMarkedCompositionUsesOriginalReplacementRange() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -4043,7 +4045,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testUpdatedMarkedTextStillUsesOriginalAuthorizedOffset() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -4061,7 +4063,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDeleteBackwardDuringMarkedCompositionDoesNotMutateRust() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -4120,7 +4122,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRichTextEditorViewAutoGrowReportsIntrinsicHeightFromContent() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
@@ -4136,7 +4138,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testApplyThemeRerendersExistingContentWhenTextIsUnchanged() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -4166,7 +4168,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testEditorTextViewMeasuredAutoGrowHeightMatchesSizeThatFits() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
@@ -4188,7 +4190,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRichTextEditorViewAutoGrowHeightAfterParagraphSplitMatchesSizeThatFits() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
@@ -4225,7 +4227,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRichTextEditorViewAutoGrowIntrinsicHeightGrowsWhenHostAppliesMeasuredHeight() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
@@ -4264,7 +4266,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRichTextEditorViewAutoGrowIntrinsicHeightShrinksAfterDeletingContent() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
@@ -4578,7 +4580,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBoundEditorCaretRectAfterBlockquoteMatchesPlainTextViewHorizontalPosition() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
@@ -4621,7 +4623,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testTypingAtParagraphEndAfterBlockquoteKeepsCaretAtRenderedEnd() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
@@ -4669,7 +4671,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockquoteStripeRectStaysStableAcrossReturnDrivenLayoutPasses() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 220))
@@ -4776,7 +4778,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockquoteStripeDrawPassStaysStableAfterReturn() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 220))
@@ -5192,7 +5194,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testReturnInsideBlockquoteAfterPlainParagraphKeepsOneStripeGroup() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 260))
@@ -5225,7 +5227,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockquoteHardBreakAndFollowingParagraphShareOneStripeGroup() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 260))
@@ -5249,7 +5251,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testTrailingHardBreakInBlockquoteKeepsStripeConnectedToFollowingParagraph() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 260))
@@ -5328,7 +5330,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDirectScalarHardBreakTwiceInListItemPreservesExistingText() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         _ = EditorV2Shadow.setHtml(id: editorId, html: "<ul><li><p>A</p></li></ul>")
@@ -5361,7 +5363,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testToolbarHardBreakTwiceInListItemPreservesExistingText() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: .zero)
@@ -5386,7 +5388,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testToolbarHardBreakMovesCaretToNextVisualLine() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let theme = EditorTheme(dictionary: [
@@ -5428,7 +5430,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testToolbarHardBreakReservesTrailingVisualLineBeforeTyping() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let theme = EditorTheme(dictionary: [
@@ -5461,7 +5463,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testCaretBeforeHorizontalRuleUsesPreviousParagraphLine() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 220))
@@ -5497,7 +5499,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testCaretAfterHorizontalRuleUsesFollowingParagraphLine() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 220))
@@ -5533,7 +5535,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testToolbarHorizontalRulePlacesCaretInTrailingParagraphLine() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 220))
@@ -6210,7 +6212,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapStillWorksAfterRebindingToMentionSchemaEditor() {
-        let initialEditorId = makeV2Editor(configJson: "{}")
+        let initialEditorId = makeV2Editor()
         let mentionEditorId = makeV2Editor(configJson: mentionEditorConfigJson())
         defer {
             destroyV2Editor(id: initialEditorId)
@@ -6287,7 +6289,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBackspaceBelowHorizontalRuleReplacesItWithParagraph() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
@@ -6319,7 +6321,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testTypingAndBackspacingAroundImageUsesTrailingParagraphCaret() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
@@ -6378,7 +6380,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSelectingImageShowsResizeOverlayAndPersistsResizedDimensions() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
@@ -6425,7 +6427,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSelectedImageOverlayAllowsTouchesOutsideResizeHandles() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
@@ -6466,7 +6468,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSelectingImageHidesNativeSelectionChromeUntilCaretMovesAway() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
@@ -6502,7 +6504,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testUnfocusedImageTapSelectsImageOnFirstTap() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
@@ -6561,7 +6563,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testFocusedImageTapSelectsImageOnFirstTap() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
@@ -6618,7 +6620,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDisablingImageResizingRemovesImageSelectionOverlayBehavior() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
@@ -6656,7 +6658,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSelectedImageOverlayHidesWhenEditorLosesFocus() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
@@ -6698,7 +6700,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDeferredImageTapSelectionWinsAfterUIKitCaretPlacement() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
@@ -6758,7 +6760,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testImageTapOverlayInterceptsImagePointsOnly() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
@@ -6785,7 +6787,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testOversizedImageResizeClampsToContentWidthAndKeepsAutoGrowHeightBounded() {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
@@ -6835,7 +6837,9 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testImageResizePreviewUsesOverlayImageAndDefersDocumentMutationUntilCommit() {
-        let editorId = makeV2Editor(configJson: #"{"allowBase64Images":true}"#)
+        let editorId = makeV2Editor(
+            configJson: #"{"initialization":{"type":"localEmpty"},"policy":{"allowBase64Images":true}}"#
+        )
         defer { destroyV2Editor(id: editorId) }
 
         let dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg=="
@@ -7203,7 +7207,7 @@ final class RichTextEditorViewTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -7251,7 +7255,7 @@ final class RichTextEditorViewTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let editorId = makeV2Editor(configJson: "{}")
+        let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
         _ = EditorV2Shadow.setHtml(id: editorId, html: initialHTML)
 
@@ -7384,6 +7388,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
     private func mentionEditorConfigJson() -> String {
         let config: [String: Any] = [
+            "initialization": ["type": "localEmpty"],
             "schema": [
                 "nodes": [
                     [
@@ -7572,21 +7577,17 @@ final class EditorV2StagingViewTests: XCTestCase {
     }
 
     private func makeBoundView(
-        configJson: String = "{}",
+        configJson: String = #"{"initialization":{"type":"localEmpty"}}"#,
         html: String = "<p>Hello</p>",
         file: StaticString = #filePath,
         line: UInt = #line
     ) -> (view: RichTextEditorView, adapter: EditorV2Adapter, window: UIWindow) {
-        let adapter: EditorV2Adapter
-        switch EditorV2Adapter.create(legacyConfigJson: configJson) {
-        case .success(let created):
-            adapter = created
-        case .failure(let error):
-            XCTFail("v2 create failed: \(error.code): \(error.message)", file: file, line: line)
+        let syntheticId = makeV2Editor(configJson: configJson, file: file, line: line)
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: syntheticId) else {
+            XCTFail("v2 adapter was not paired to its created handle", file: file, line: line)
             fatalError("unreachable")
         }
         adapters.append(adapter)
-        let syntheticId = EditorV2Registry.registerSyntheticPairing(adapter)
         syntheticIds.append(syntheticId)
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostStagingView(view)
@@ -7712,7 +7713,10 @@ final class EditorV2StagingViewTests: XCTestCase {
     }
 
     func testStagingReadOnlyRejectsAccessibilityStyleEditAtomically() {
-        let (view, adapter, window) = makeBoundView(configJson: "{\"readOnly\":true}", html: "<p>ab</p>")
+        let (view, adapter, window) = makeBoundView(
+            configJson: #"{"initialization":{"type":"localEmpty"},"policy":{"readOnly":true}}"#,
+            html: "<p>ab</p>"
+        )
         defer { view.removeFromSuperview(); window.isHidden = true }
         setCollapsedCaret(in: view.textView, utf16Offset: 2)
         flushMain()

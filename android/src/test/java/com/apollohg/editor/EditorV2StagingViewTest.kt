@@ -24,6 +24,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class EditorV2StagingViewTest {
 
+    private val localEmptyConfig = """{"initialization":{"type":"localEmpty"}}"""
     private lateinit var backend: FakeEditorV2Backend
     private lateinit var editText: EditorEditText
     private lateinit var adapter: EditorV2Adapter
@@ -31,13 +32,21 @@ class EditorV2StagingViewTest {
     @Before
     fun setUp() {
         backend = FakeEditorV2Backend()
-        val created = EditorV2Adapter.create(backend, "{}") as EditorV2CallResult.Ok
-        adapter = created.value
+        adapter = attachCreatedEditor(localEmptyConfig)
         editText = EditorEditText(RuntimeEnvironment.getApplication())
         editText.editorId = 4242L
         editText.v2Driver = adapter
         adapter.setContentHtml("<p>Hello</p>")?.let { editText.applyUpdateJSON(it, notifyListener = false) }
         assertEquals("Hello", editText.text.toString())
+    }
+
+    private fun attachCreatedEditor(configJson: String): EditorV2Adapter {
+        val editorId = when (val created = backend.create(configJson, null)) {
+            is EditorV2CallResult.Ok -> JSONObject(created.value).getString("editorId")
+            is EditorV2CallResult.Err -> throw AssertionError("create failed: ${created.error}")
+        }
+        return EditorV2Adapter.attach(backend, editorId, roomBound = false)
+            ?: throw AssertionError("created editor could not be attached")
     }
 
     private fun documentText(): String {
@@ -112,7 +121,9 @@ class EditorV2StagingViewTest {
 
     @Test
     fun `read only rejects view edits atomically and keeps selection`() {
-        val readOnly = (EditorV2Adapter.create(backend, "{\"readOnly\":true}") as EditorV2CallResult.Ok).value
+        val readOnly = attachCreatedEditor(
+            """{"initialization":{"type":"localEmpty"},"policy":{"readOnly":true}}"""
+        )
         val view = EditorEditText(RuntimeEnvironment.getApplication())
         view.editorId = 4343L
         view.v2Driver = readOnly

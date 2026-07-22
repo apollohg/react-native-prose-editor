@@ -26,6 +26,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class EditorV2AdapterTest {
 
+    private val localEmptyConfig = """{"initialization":{"type":"localEmpty"}}"""
     private lateinit var backend: FakeEditorV2Backend
     private val createdAdapters = mutableListOf<EditorV2Adapter>()
 
@@ -34,32 +35,51 @@ class EditorV2AdapterTest {
         backend = FakeEditorV2Backend()
     }
 
-    private fun makeAdapter(configJson: String = "{}"): EditorV2Adapter {
-        val adapter = when (val created = EditorV2Adapter.create(backend, configJson)) {
-            is EditorV2CallResult.Ok -> created.value
-            is EditorV2CallResult.Err -> throw AssertionError("create failed: ${created.error}")
-        }
+    private fun makeAdapter(configJson: String = localEmptyConfig): EditorV2Adapter {
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            createEditorId(configJson),
+            roomBound = false,
+        ) ?: throw AssertionError("created editor could not be attached")
         createdAdapters.add(adapter)
         return adapter
+    }
+
+    private fun createEditorId(configJson: String, snapshotState: ByteArray? = null): String = when (
+        val created = backend.create(configJson, snapshotState)
+    ) {
+        is EditorV2CallResult.Ok -> JSONObject(created.value).getString("editorId")
+        is EditorV2CallResult.Err -> throw AssertionError("create failed: ${created.error}")
+    }
+
+    @Test
+    fun `attach rejects non canonical and unknown editor ids`() {
+        assertNull(EditorV2Adapter.attach(backend, "01", roomBound = false))
+        assertNull(EditorV2Adapter.attach(backend, "not-an-editor", roomBound = false))
+        assertNull(EditorV2Adapter.attach(backend, "999999", roomBound = false))
     }
 
     private fun makeRoomAdapter(): EditorV2Adapter {
         val seed = makeAdapter()
         seed.setContentHtml("<p>seed</p>")
         val snapshot = (backend.snapshotExport(seed.editorId) as EditorV2CallResult.Ok).value
-        val adapter = when (
-            val created = EditorV2Adapter.createRoom(
-                backend,
-                "{}",
-                documentId = "doc",
-                lineageId = "lineage",
-                snapshotMetadataJson = snapshot.first,
-                snapshotState = snapshot.second,
-            )
-        ) {
-            is EditorV2CallResult.Ok -> created.value
-            is EditorV2CallResult.Err -> throw AssertionError("room create failed: ${created.error}")
-        }
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            createEditorId(
+                JSONObject()
+                    .put(
+                        "initialization",
+                        JSONObject()
+                            .put("type", "room")
+                            .put("documentId", "doc")
+                            .put("lineageId", "lineage")
+                            .put("snapshot", JSONObject(snapshot.first)),
+                    )
+                    .toString(),
+                snapshot.second,
+            ),
+            roomBound = true,
+        ) ?: throw AssertionError("created room editor could not be attached")
         createdAdapters.add(adapter)
         return adapter
     }
@@ -94,7 +114,9 @@ class EditorV2AdapterTest {
 
     @Test
     fun `create yields decimal handle and detached local state`() {
-        val adapter = makeAdapter("{\"readOnly\":false}")
+        val adapter = makeAdapter(
+            """{"initialization":{"type":"localEmpty"},"policy":{"readOnly":false}}"""
+        )
         assertTrue(adapter.editorId.toULongOrNull() != null)
         assertEquals(0uL, adapter.baseDocumentRevision)
         val state = JSONObject((backend.getState(adapter.editorId) as EditorV2CallResult.Ok).value)
@@ -309,7 +331,9 @@ class EditorV2AdapterTest {
 
     @Test
     fun `read only rejects every mutation path atomically`() {
-        val adapter = makeAdapter("{\"readOnly\":true}")
+        val adapter = makeAdapter(
+            """{"initialization":{"type":"localEmpty"},"policy":{"readOnly":true}}"""
+        )
         val errors = mutableListOf<EditorV2Error>()
         adapter.onAutonomousError = { errors.add(it) }
 
@@ -477,7 +501,9 @@ class EditorV2AdapterTest {
 
     @Test
     fun `structured error envelope fields`() {
-        val adapter = makeAdapter("{\"readOnly\":true}")
+        val adapter = makeAdapter(
+            """{"initialization":{"type":"localEmpty"},"policy":{"readOnly":true}}"""
+        )
         val errors = mutableListOf<EditorV2Error>()
         adapter.onAutonomousError = { errors.add(it) }
         assertNull(adapter.insertText("x", 0))

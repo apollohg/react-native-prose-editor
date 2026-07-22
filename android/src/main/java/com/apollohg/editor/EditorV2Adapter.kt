@@ -48,70 +48,24 @@ internal class EditorV2Adapter private constructor(
          * shared session (the TS document handle and collaboration
          * controller drive the same session over the module surface).
          */
-        fun attach(backend: EditorV2Backend, editorId: String, roomBound: Boolean): EditorV2Adapter =
-            EditorV2Adapter(backend, editorId, roomBound)
-
-        fun create(backend: EditorV2Backend, legacyConfigJson: String): EditorV2CallResult<EditorV2Adapter> =
-            createWithInitialization(
-                backend,
-                legacyConfigJson,
-                JSONObject().put("type", "localEmpty"),
-                snapshotState = null,
-                roomBound = false,
-            )
-
-        fun createRoom(
-            backend: EditorV2Backend,
-            legacyConfigJson: String,
-            documentId: String,
-            lineageId: String,
-            snapshotMetadataJson: String?,
-            snapshotState: ByteArray?,
-        ): EditorV2CallResult<EditorV2Adapter> {
-            val initialization = JSONObject()
-                .put("type", "room")
-                .put("documentId", documentId)
-                .put("lineageId", lineageId)
-            if (snapshotMetadataJson != null) {
-                initialization.put("snapshot", JSONObject(snapshotMetadataJson))
-            }
-            return createWithInitialization(
-                backend,
-                legacyConfigJson,
-                initialization,
-                snapshotState,
-                roomBound = true,
-            )
-        }
-
-        private fun createWithInitialization(
-            backend: EditorV2Backend,
-            legacyConfigJson: String,
-            initialization: JSONObject,
-            snapshotState: ByteArray?,
-            roomBound: Boolean,
-        ): EditorV2CallResult<EditorV2Adapter> {
-            val envelope = JSONObject().put("initialization", initialization)
-            try {
-                val legacy = JSONObject(legacyConfigJson)
-                for (key in listOf("schema", "maxLength", "readOnly", "inputFilter", "allowBase64Images")) {
-                    if (legacy.has(key)) envelope.put(key, legacy.get(key))
-                }
+        fun attach(backend: EditorV2Backend, editorId: String, roomBound: Boolean): EditorV2Adapter? {
+            if (!isCanonicalDecimalEditorId(editorId)) return null
+            val state = backend.getState(editorId) as? EditorV2CallResult.Ok ?: return null
+            val documentRevision = try {
+                JSONObject(state.value).getLong("documentRevision").toULong()
             } catch (_: Exception) {
-                // A non-object legacy config carries no keys to translate.
+                return null
             }
-            return when (val result = backend.create(envelope.toString(), snapshotState)) {
-                is EditorV2CallResult.Err -> EditorV2CallResult.Err(result.error)
-                is EditorV2CallResult.Ok -> {
-                    val editorId = try {
-                        JSONObject(result.value).getString("editorId")
-                    } catch (error: Exception) {
-                        return EditorV2CallResult.Err(contractError("v2 create value carries no decimal editorId"))
-                    }
-                    EditorV2CallResult.Ok(EditorV2Adapter(backend, editorId, roomBound))
-                }
+            return EditorV2Adapter(backend, editorId, roomBound).also {
+                it.baseDocumentRevision = documentRevision
             }
         }
+
+        private fun isCanonicalDecimalEditorId(editorId: String): Boolean =
+            editorId.isNotEmpty() &&
+                editorId.all { it in '0'..'9' } &&
+                (editorId == "0" || editorId.first() != '0') &&
+                editorId.toULongOrNull() != null
 
         fun contractError(message: String): EditorV2Error =
             EditorV2Error(domain = "boundary", code = "FFI_RESULT_INVALID", message = message)

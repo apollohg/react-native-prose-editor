@@ -24,18 +24,22 @@ final class EditorV2AdapterTests: XCTestCase {
     }
 
     private func makeAdapter(
-        configJson: String = "{}",
+        configJson: String = #"{"initialization":{"type":"localEmpty"}}"#,
         file: StaticString = #filePath,
         line: UInt = #line
     ) -> EditorV2Adapter {
-        switch EditorV2Adapter.create(legacyConfigJson: configJson) {
-        case .success(let adapter):
-            adapters.append(adapter)
-            return adapter
-        case .failure(let error):
-            XCTFail("v2 create failed: \(error.domain)/\(error.code): \(error.message)", file: file, line: line)
-            fatalError("unreachable")
-        }
+        makeAttachedAdapter(
+            configJson: configJson,
+            roomBound: false,
+            file: file,
+            line: line
+        )
+    }
+
+    func testAttachRejectsNonCanonicalAndUnknownEditorIds() {
+        XCTAssertNil(EditorV2Adapter.attach(editorId: "01", roomBound: false))
+        XCTAssertNil(EditorV2Adapter.attach(editorId: "not-an-editor", roomBound: false))
+        XCTAssertNil(EditorV2Adapter.attach(editorId: "999999", roomBound: false))
     }
 
     private func makeRoomAdapter(
@@ -46,20 +50,36 @@ final class EditorV2AdapterTests: XCTestCase {
     ) -> EditorV2Adapter {
         // A snapshot-less room starts AwaitRemote; the test drives the y-sync
         // handshake to promote it before editing.
-        switch EditorV2Adapter.createRoom(
-            legacyConfigJson: "{}",
-            documentId: documentId,
-            lineageId: lineageId,
-            snapshotMetadataJson: nil,
-            snapshotState: nil
-        ) {
-        case .success(let adapter):
-            adapters.append(adapter)
-            return adapter
-        case .failure(let error):
-            XCTFail("v2 room create failed: \(error.domain)/\(error.code): \(error.message)", file: file, line: line)
+        makeAttachedAdapter(
+            configJson: #"{"initialization":{"type":"room","documentId":"\#(documentId)","lineageId":"\#(lineageId)"}}"#,
+            roomBound: true,
+            file: file,
+            line: line
+        )
+    }
+
+    private func makeAttachedAdapter(
+        configJson: String,
+        roomBound: Bool,
+        file: StaticString,
+        line: UInt
+    ) -> EditorV2Adapter {
+        let result = editorV2Create(configJson: configJson, snapshotState: nil)
+        guard let value = result.value,
+              result.error == nil,
+              let createdHandle = createdV2TestEditorHandle(value),
+              let adapter = EditorV2Adapter.attach(editorId: createdHandle.handle, roomBound: roomBound)
+        else {
+            let error = result.error
+            XCTFail(
+                "v2 create/attach failed: \(error?.domain ?? "boundary")/\(error?.code ?? "FFI_RESULT_INVALID"): \(error?.message ?? "missing canonical editor id")",
+                file: file,
+                line: line
+            )
             fatalError("unreachable")
         }
+        adapters.append(adapter)
+        return adapter
     }
 
     private func parseObject(_ json: String?, file: StaticString = #filePath, line: UInt = #line) -> [String: Any] {
@@ -138,8 +158,10 @@ final class EditorV2AdapterTests: XCTestCase {
 
     // MARK: - Construction / state
 
-    func testCreateProducesDecimalV2HandleAndDetachedLocalState() {
-        let adapter = makeAdapter(configJson: "{\"readOnly\":false}")
+    func testAttachesDecimalV2HandleAndDetachedLocalState() {
+        let adapter = makeAdapter(
+            configJson: #"{"initialization":{"type":"localEmpty"},"policy":{"readOnly":false}}"#
+        )
         XCTAssertFalse(adapter.editorId.isEmpty)
         XCTAssertNotNil(UInt64(adapter.editorId), "editor id must be a decimal string, got \(adapter.editorId)")
         XCTAssertEqual(adapter.baseDocumentRevision, 0)
@@ -286,7 +308,9 @@ final class EditorV2AdapterTests: XCTestCase {
     // MARK: - Read-only atomicity
 
     func testReadOnlyRejectsEveryMutationPathAtomically() {
-        let adapter = makeAdapter(configJson: "{\"readOnly\":true}")
+        let adapter = makeAdapter(
+            configJson: #"{"initialization":{"type":"localEmpty"},"policy":{"readOnly":true}}"#
+        )
         let spy = ErrorSpy()
         adapter.onAutonomousError = spy.record
 
@@ -595,7 +619,9 @@ final class EditorV2AdapterTests: XCTestCase {
     }
 
     func testStructuredErrorEnvelopeFields() {
-        let adapter = makeAdapter(configJson: "{\"readOnly\":true}")
+        let adapter = makeAdapter(
+            configJson: #"{"initialization":{"type":"localEmpty"},"policy":{"readOnly":true}}"#
+        )
         _ = adapter.setContentHtml("<p>seed</p>")
         let spy = ErrorSpy()
         adapter.onAutonomousError = spy.record

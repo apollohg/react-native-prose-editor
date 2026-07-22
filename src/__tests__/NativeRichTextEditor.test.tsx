@@ -42,12 +42,25 @@ jest.mock('expo-modules-core', () => {
     };
 });
 
+jest.mock('../schemas', () => {
+    const actual = jest.requireActual('../schemas');
+    const mockResolveDocumentDescriptor = jest.fn(actual.resolveDocumentDescriptor);
+    return {
+        ...actual,
+        resolveDocumentDescriptor: mockResolveDocumentDescriptor,
+    };
+});
+
 // ─── Imports (after mock setup) ─────────────────────────────────
 
 import React, { createRef } from 'react';
 import { render, act } from '@testing-library/react-native';
 
-import { NativeRichTextEditor, type NativeRichTextEditorRef } from '../NativeRichTextEditor';
+import {
+    NativeRichTextEditor,
+    type NativeRichTextEditorProps,
+    type NativeRichTextEditorRef,
+} from '../NativeRichTextEditor';
 import {
     createNativeEditorDocumentHandle,
     type NativeEditorDocumentHandle,
@@ -67,6 +80,20 @@ import {
     V2_FAKE_UPDATE_FRAME,
     type FakeNativeEditorV2Runtime,
 } from './helpers/nativeEditorV2Fake';
+import type { SchemaDefinition } from '../schemas';
+
+const mockResolveDocumentDescriptor = require('../schemas')
+    .resolveDocumentDescriptor as jest.Mock;
+
+const HANDLE_OWNED_ARTICLE_SCHEMA: SchemaDefinition = {
+    nodes: [
+        { name: 'article', content: '(title | image)+', role: 'doc' },
+        { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
+        { name: 'image', content: '', group: 'block', role: 'block', attrs: { src: {} } },
+        { name: 'text', content: '', group: 'inline', role: 'text' },
+    ],
+    marks: [],
+};
 
 // ─── Tests ──────────────────────────────────────────────────────
 
@@ -177,12 +204,116 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         mockNativeFocus.mockClear();
         mockNativeBlur.mockClear();
         mockNativeGetCaretRect.mockReset();
+        mockResolveDocumentDescriptor.mockClear();
         global.WebSocket = V2MockWebSocket as unknown as typeof WebSocket;
     });
 
     afterEach(() => {
         jest.useRealTimers();
         global.WebSocket = OriginalWebSocket;
+    });
+
+    it('accepts only handle-bound view props and never creates a session on mount', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+
+        // The @ts-expect-error assertions are the public hard-cutover
+        // contract. Each field belongs to NativeEditorV2CreateConfig, never
+        // to the mounted view.
+        const removedComponentProps: readonly NativeRichTextEditorProps[] = [
+            {
+                documentHandle: handle,
+                // @ts-expect-error schema belongs to handle creation
+                schema: undefined,
+            },
+            {
+                documentHandle: handle,
+                // @ts-expect-error resource limits belong to handle creation
+                resourceLimits: undefined,
+            },
+            {
+                documentHandle: handle,
+                // @ts-expect-error base64 policy belongs to handle creation
+                allowBase64Images: false,
+            },
+            {
+                documentHandle: handle,
+                // @ts-expect-error maximum length belongs to handle creation
+                maxLength: 1,
+            },
+            {
+                documentHandle: handle,
+                // @ts-expect-error engine read-only belongs to handle creation
+                readOnly: true,
+            },
+            {
+                documentHandle: handle,
+                // @ts-expect-error input filtering belongs to handle creation
+                inputFilter: '[a-z]',
+            },
+            {
+                documentHandle: handle,
+                // @ts-expect-error fragment selection belongs to handle creation
+                fragmentName: 'prosemirror',
+            },
+            {
+                documentHandle: handle,
+                // @ts-expect-error initial HTML belongs to handle creation
+                initialContent: '<p>legacy</p>',
+            },
+            {
+                documentHandle: handle,
+                // @ts-expect-error initial JSON belongs to handle creation
+                initialJSON: V2_INITIAL_DOC,
+            },
+        ];
+        expect(removedComponentProps).toHaveLength(9);
+
+        mockNativeModule.editorV2Create.mockClear();
+        mockResolveDocumentDescriptor.mockClear();
+        const { getByTestId } = render(
+            <NativeRichTextEditor documentHandle={handle} editable={false} />
+        );
+
+        expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
+        expect(mockResolveDocumentDescriptor).not.toHaveBeenCalled();
+        expect(getByTestId('native-editor-view').props.editorId).toBe(Number(handle.editorId));
+        handle.destroy();
+    });
+
+    it('uses custom-root metadata owned by the handle for clear and image fragments', () => {
+        const handle = createNativeEditorDocumentHandle({
+            schema: HANDLE_OWNED_ARTICLE_SCHEMA,
+            initialization: { type: 'localEmpty' },
+        });
+        const ref = createRef<NativeRichTextEditorRef>();
+        render(<NativeRichTextEditor ref={ref} documentHandle={handle} />);
+
+        act(() => ref.current!.clearContent());
+        const clearRequest = JSON.parse(
+            mockNativeModule.editorV2ReplaceDocument.mock.calls[
+                mockNativeModule.editorV2ReplaceDocument.mock.calls.length - 1
+            ][1] as string
+        ) as Record<string, unknown>;
+        expect(clearRequest.setJson).toEqual({
+            type: 'article',
+            content: [{ type: 'title' }],
+        });
+
+        act(() => ref.current!.insertImage('https://example.test/image.png'));
+        const imageRequest = JSON.parse(
+            mockNativeModule.editorV2ApplyCommand.mock.calls[
+                mockNativeModule.editorV2ApplyCommand.mock.calls.length - 1
+            ][1] as string
+        ) as { command: Record<string, unknown> };
+        expect(imageRequest.command).toEqual({
+            type: 'insertContentJson',
+            json: {
+                type: 'article',
+                content: [{ type: 'image', attrs: { src: 'https://example.test/image.png' } }],
+            },
+        });
+
+        handle.destroy();
     });
 
     it('drives the retained document API through the v2 handle', () => {

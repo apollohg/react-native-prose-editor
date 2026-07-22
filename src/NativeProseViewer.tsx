@@ -652,9 +652,10 @@ export function NativeProseViewer({ ...props }: NativeProseViewerProps) {
     );
     const renderJson = useMemo(() => {
         const configJson = JSON.stringify({
+            initialization: { type: 'localEmpty' },
             schema: documentDescriptor.schema,
-            ...(allowBase64Images ? { allowBase64Images } : {}),
-            ...(hasResourceLimits ? { resourceLimits: resolvedResourceLimits } : {}),
+            ...(allowBase64Images ? { policy: { allowBase64Images: true } } : {}),
+            ...(hasResourceLimits ? { limits: { resource: resolvedResourceLimits } } : {}),
         });
         const nextRenderJson =
             serializedContentJson != null

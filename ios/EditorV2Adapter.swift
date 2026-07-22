@@ -20,22 +20,9 @@ import Foundation
 // No legacy editor is ever created for derivation, and no legacy call
 // touches the v2 session.
 
-/// Creation outcome (Swift.Result requires Failure: Swift.Error, which the
-/// UniFFI FfiError record does not conform to).
-enum EditorV2CreateResult {
-    case success(EditorV2Adapter)
-    case failure(FfiError)
-}
-
 /// Normalized v2 string-result (exactly one of value/error).
 enum EditorV2ValueResult {
     case success(String)
-    case failure(FfiError)
-}
-
-/// Pairing-create outcome: the public module-visible editor id.
-enum EditorV2CreatePairResult {
-    case success(UInt64)
     case failure(FfiError)
 }
 
@@ -82,86 +69,30 @@ final class EditorV2Adapter {
     /// adapter routes the bound view's interactions through the shared
     /// session (the TS document handle and collaboration controller drive
     /// the same session over the module surface).
-    static func attach(editorId: String, roomBound: Bool) -> EditorV2Adapter {
-        EditorV2Adapter(editorId: editorId, roomBound: roomBound, baseDocumentRevision: 0)
-    }
-
-    /// Create a local v2 session from a legacy editor config JSON. The
-    /// legacy config keys schema/maxLength/readOnly/inputFilter/
-    /// allowBase64Images map onto the v2 create envelope; resourceLimits are
-    /// owned by the v2 session's compiled policy.
-    static func create(legacyConfigJson: String) -> EditorV2CreateResult {
-        createWithInitialization(legacyConfigJson: legacyConfigJson, initialization: ["type": "localEmpty"], snapshotState: nil, roomBound: false)
-    }
-
-    /// Create a room-bound v2 session (collaboration runtime attached from
-    /// creation; offline edits queue against the bounded outbox).
-    static func createRoom(
-        legacyConfigJson: String,
-        documentId: String,
-        lineageId: String,
-        snapshotMetadataJson: String?,
-        snapshotState: Data?
-    ) -> EditorV2CreateResult {
-        var initialization: [String: Any] = [
-            "type": "room",
-            "documentId": documentId,
-            "lineageId": lineageId,
-        ]
-        if let snapshotMetadataJson,
-           let data = snapshotMetadataJson.data(using: .utf8),
-           let metadata = try? JSONSerialization.jsonObject(with: data)
-        {
-            initialization["snapshot"] = metadata
+    static func attach(editorId: String, roomBound: Bool) -> EditorV2Adapter? {
+        guard isCanonicalDecimalEditorId(editorId),
+              case .success(let stateJson) = normalizeJsonResult(editorV2GetState(editorId: editorId)),
+              let data = stateJson.data(using: .utf8),
+              let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let documentRevision = uint64Field(state, "documentRevision")
+        else {
+            return nil
         }
-        return createWithInitialization(
-            legacyConfigJson: legacyConfigJson,
-            initialization: initialization,
-            snapshotState: snapshotState,
-            roomBound: true
+        return EditorV2Adapter(
+            editorId: editorId,
+            roomBound: roomBound,
+            baseDocumentRevision: documentRevision
         )
     }
 
-    private static func createWithInitialization(
-        legacyConfigJson: String,
-        initialization: [String: Any],
-        snapshotState: Data?,
-        roomBound: Bool
-    ) -> EditorV2CreateResult {
-        var envelope: [String: Any] = ["initialization": initialization]
-        if let legacyConfig = (try? JSONSerialization.jsonObject(with: Data(legacyConfigJson.utf8))) as? [String: Any] {
-            if let schema = legacyConfig["schema"] { envelope["schema"] = schema }
-            if let maxLength = legacyConfig["maxLength"] { envelope["maxLength"] = maxLength }
-            if let readOnly = legacyConfig["readOnly"] { envelope["readOnly"] = readOnly }
-            if let inputFilter = legacyConfig["inputFilter"] { envelope["inputFilter"] = inputFilter }
-            if let allowBase64Images = legacyConfig["allowBase64Images"] {
-                envelope["allowBase64Images"] = allowBase64Images
-            }
-        }
-        guard let envelopeData = try? JSONSerialization.data(withJSONObject: envelope),
-              let envelopeJson = String(data: envelopeData, encoding: .utf8)
+    private static func isCanonicalDecimalEditorId(_ editorId: String) -> Bool {
+        guard !editorId.isEmpty,
+              editorId.allSatisfy({ $0 >= "0" && $0 <= "9" }),
+              editorId == "0" || editorId.first != "0"
         else {
-            return .failure(contractError("v2 create config is not serializable"))
+            return false
         }
-        let result = editorV2Create(configJson: envelopeJson, snapshotState: snapshotState)
-        switch normalizeJsonResult(result) {
-        case .failure(let error):
-            return .failure(error)
-        case .success(let value):
-            guard let data = value.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let editorId = object["editorId"] as? String
-            else {
-                return .failure(contractError("v2 create value carries no decimal editorId"))
-            }
-            return .success(
-                EditorV2Adapter(
-                    editorId: editorId,
-                    roomBound: roomBound,
-                    baseDocumentRevision: 0
-                )
-            )
-        }
+        return UInt64(editorId) != nil
     }
 
     /// Destroy the v2 session. Repeated destroy is safe; an already-destroyed
@@ -1202,13 +1133,10 @@ final class EditorV2Adapter {
 
 /// Maps the public (module-visible) editor id to the v2 adapter backing it.
 /// The module's create path registers one pairing per editor; views bound
-/// to a paired id route every interaction through the adapter. Ids
-/// allocated by `registerSyntheticPairing` (test support) count down from
-/// UInt64.max and never collide with real session ids.
+/// to a paired id route every interaction through the adapter.
 enum EditorV2Registry {
     private static let lock = NSLock()
     private static var pairings: [UInt64: EditorV2Adapter] = [:]
-    private static var nextSyntheticId: UInt64 = UInt64.max
 
     static func register(_ adapter: EditorV2Adapter, forLegacyId legacyId: UInt64) {
         lock.lock()
@@ -1223,16 +1151,6 @@ enum EditorV2Registry {
     }
 
     @discardableResult
-    static func registerSyntheticPairing(_ adapter: EditorV2Adapter) -> UInt64 {
-        lock.lock()
-        let id = nextSyntheticId
-        nextSyntheticId &-= 1
-        pairings[id] = adapter
-        lock.unlock()
-        return id
-    }
-
-    @discardableResult
     static func removePairing(forLegacyId legacyId: UInt64) -> EditorV2Adapter? {
         lock.lock()
         defer { lock.unlock() }
@@ -1244,30 +1162,4 @@ enum EditorV2Registry {
         removePairing(forLegacyId: legacyId)?.destroy()
     }
 
-    /// The module's create path: one v2 session per editor; the public id
-    /// IS the v2 session id (decimal handle as u64).
-    static func createPair(legacyConfigJson: String) -> EditorV2CreatePairResult {
-        switch EditorV2Adapter.create(legacyConfigJson: legacyConfigJson) {
-        case .failure(let error):
-            return .failure(error)
-        case .success(let adapter):
-            guard let publicId = UInt64(adapter.editorId) else {
-                _ = adapter.destroy()
-                return .failure(
-                    FfiError(
-                        domain: "boundary",
-                        code: "FFI_RESULT_INVALID",
-                        message: "v2 editor handle is not a u64",
-                        requestId: nil,
-                        operationIndex: nil,
-                        limit: nil,
-                        actual: nil,
-                        detailsJson: nil
-                    )
-                )
-            }
-            register(adapter, forLegacyId: publicId)
-            return .success(publicId)
-        }
-    }
 }

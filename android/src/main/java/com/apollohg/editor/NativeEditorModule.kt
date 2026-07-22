@@ -44,6 +44,17 @@ private fun FfiError.toJSMap(): Map<String, Any?> = mapOf(
     "detailsJson" to detailsJson,
 )
 
+private fun EditorV2Error.toJSMap(): Map<String, Any?> = mapOf(
+    "domain" to domain,
+    "code" to code,
+    "message" to message,
+    "requestId" to requestId,
+    "operationIndex" to operationIndex?.toLong(),
+    "limit" to limit?.toLong(),
+    "actual" to actual?.toLong(),
+    "detailsJson" to detailsJson,
+)
+
 private fun FfiJsonResult.toJSMap(): Map<String, Any?> =
     mapOf("value" to value, "error" to error?.toJSMap())
 
@@ -85,12 +96,23 @@ class NativeEditorModule : Module() {
 
         Function("editorV2Create") { configJson: String, snapshotState: ByteArray? ->
             val result = editorV2Create(configJson, snapshotState)
+            var pairingError: Map<String, Any?>? = null
             result.value?.let { value ->
                 val editorId = runCatching {
                     JSONObject(value).getString("editorId")
                 }.getOrNull()
                 val signedId = editorId?.toLongOrNull()
-                if (editorId != null && signedId != null && signedId > 0) {
+                if (editorId == null || signedId == null || signedId <= 0) {
+                    editorId?.let(::editorV2Destroy)
+                    pairingError = mapOf(
+                        "value" to null,
+                        "error" to EditorV2Error(
+                            domain = "boundary",
+                            code = "FFI_RESULT_INVALID",
+                            message = "v2 create value carries no native-view editor id",
+                        ).toJSMap(),
+                    )
+                } else {
                     // Mark the public id live so views may bind to it, and
                     // pair the view-facing adapter with the JS-created
                     // session: the Expo view receives the handle's editorId
@@ -102,13 +124,24 @@ class NativeEditorModule : Module() {
                         JSONObject(configJson).optJSONObject("initialization")
                             ?.optString("type") == "room"
                     }.getOrDefault(false)
-                    EditorV2Registry.register(
-                        EditorV2Adapter.attach(UniffiEditorV2Backend, editorId, roomBound),
-                        signedId
-                    )
+                    val adapter = EditorV2Adapter.attach(UniffiEditorV2Backend, editorId, roomBound)
+                    if (adapter == null) {
+                        editorV2Destroy(editorId)
+                        NativeEditorViewRegistry.invalidateDestroyedEditor(signedId)
+                        pairingError = mapOf(
+                            "value" to null,
+                            "error" to EditorV2Error(
+                                domain = "boundary",
+                                code = "FFI_RESULT_INVALID",
+                                message = "v2 create could not bind its editor handle",
+                            ).toJSMap(),
+                        )
+                    } else {
+                        EditorV2Registry.register(adapter, signedId)
+                    }
                 }
             }
-            result.toJSMap()
+            pairingError ?: result.toJSMap()
         }
         Function("editorV2Destroy") { editorId: String ->
             val result = editorV2Destroy(editorId)
@@ -409,9 +442,18 @@ internal fun renderElementsJsonFromUpdate(updateJson: String): String {
 }
 
 private fun renderDocumentProbe(configJson: String, apply: (EditorV2Adapter) -> String?): String {
-    val adapter = when (val created = EditorV2Adapter.create(UniffiEditorV2Backend, configJson)) {
+    val adapter = when (val created = UniffiEditorV2Backend.create(configJson, snapshotState = null)) {
         is EditorV2CallResult.Err -> return probeErrorJson(created.error)
-        is EditorV2CallResult.Ok -> created.value
+        is EditorV2CallResult.Ok -> {
+            val editorId = runCatching { JSONObject(created.value).getString("editorId") }.getOrNull()
+                ?: return probeContractErrorJson("v2 render probe create carries no editor id")
+            val adapter = EditorV2Adapter.attach(UniffiEditorV2Backend, editorId, roomBound = false)
+            if (adapter == null) {
+                UniffiEditorV2Backend.destroy(editorId)
+                return probeContractErrorJson("v2 render probe could not bind its created editor")
+            }
+            adapter
+        }
     }
     try {
         val updateJson = apply(adapter)

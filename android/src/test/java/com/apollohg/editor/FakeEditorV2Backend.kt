@@ -132,7 +132,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         val roomBound = initialization?.optString("type") == "room"
         val session = FakeSession(
             editorId = editorId,
-            readOnly = config.optBoolean("readOnly", false),
+            readOnly = config.optJSONObject("policy")?.optBoolean("readOnly", false) ?: false,
             roomBound = roomBound,
         )
         if (roomBound && initialization.has("snapshot")) {

@@ -20,6 +20,7 @@ import { requireNativeViewManager } from 'expo-modules-core';
 
 import {
     _assertNativeEditorDocumentHandle,
+    _getNativeEditorDocumentHandleDescriptor,
     type ActiveState,
     type DocumentJSON,
     type HistoryState,
@@ -43,20 +44,11 @@ import {
     serializeEditorImageLoadingPolicy,
     type EditorImageLoadingPolicy,
 } from './ImageLoadingPolicy';
-import {
-    resolveEditorResourceLimits,
-    type EditorResourceLimits,
-    type ResolvedEditorResourceLimits,
-} from './ResourceLimits';
-import { serializeEditorAddons, type EditorAddons, withMentionsSchema } from './addons';
+import { serializeEditorAddons, type EditorAddons } from './addons';
 import {
     buildImageFragmentJson,
     IMAGE_NODE_NAME,
-    normalizeDocumentJson,
-    resolveDocumentDescriptor,
-    tiptapSchema,
     type ImageNodeAttributes,
-    type SchemaDefinition,
 } from './schemas';
 
 interface NativeEditorViewHandle {
@@ -392,14 +384,6 @@ export interface LinkRequestContext {
 export interface ImageRequestContext {
     /** The selection the request was issued for (engine doc positions). */
     selection: Selection;
-    /**
-     * Advisory: whether the host picker may offer base64/data-URL sources.
-     * Enforcement lives in the handle's creation config
-     * (`NativeEditorV2CreateConfig.policy.allowBase64Images`); this flag only
-     * mirrors it for the host UI and should be kept in sync via the
-     * `allowBase64Images` prop.
-     */
-    allowBase64: boolean;
     /** Insert a block image node at the engine selection. */
     insertImage: (src: string, attrs?: Omit<ImageNodeAttributes, 'src'>) => void;
 }
@@ -409,8 +393,12 @@ export interface ImageRequestContext {
  * - `initialContent` / `initialJSON` are gone: initial document state
  *   belongs to the handle's creation config (`NativeEditorV2Initialization`:
  *   `localEmpty` / `localJson` / `localHtml` / `room`).
+ * - `schema` and `fragmentName` belong to `NativeEditorV2CreateConfig`.
  * - `maxLength`, engine-enforced `allowBase64Images`, `readOnly`, and
- *   `inputFilter` moved to `NativeEditorV2CreateConfig.policy` as well.
+ *   `inputFilter` belong to `NativeEditorV2CreateConfig.policy`.
+ * - `resourceLimits` belongs to `NativeEditorV2CreateConfig.limits.resource`.
+ *   `editable` is only a per-view interaction gate; it never changes the
+ *   handle's engine read-only policy.
  * - `autoDetectLinks`, `preserveSelectionOnValueJSONReset`, and
  *   `selectionOnValueJSONReset` were removed with the legacy bridge and have
  *   no v2 equivalent.
@@ -428,8 +416,6 @@ export interface NativeRichTextEditorProps {
     valueJSONRevision?: string | number;
     /** Controls how external `valueJSON` changes are applied. Defaults to preserving undo history. */
     valueJSONUpdateMode?: NativeRichTextEditorValueJSONUpdateMode;
-    /** Schema definition. Defaults to tiptapSchema if not provided. */
-    schema?: SchemaDefinition;
     /** Placeholder text shown when editor is empty. */
     placeholder?: string;
     /** Whether the editor is editable. Defaults to true. When false, every mutation ref method rejects with MUTATION_REJECTED; selection and controlled content still flow. */
@@ -456,12 +442,8 @@ export interface NativeRichTextEditorProps {
     onRequestLink?: (context: LinkRequestContext) => void;
     /** Called when a toolbar image item is pressed so the host can choose an image source. */
     onRequestImage?: (context: ImageRequestContext) => void;
-    /** Advisory base64/data-URL acceptance surfaced on ImageRequestContext.allowBase64; enforcement belongs to the handle's creation config. */
-    allowBase64Images?: boolean;
     /** Bounds native data-URL and remote image loading. */
     imageLoadingPolicy?: EditorImageLoadingPolicy;
-    /** Bounds document, schema, and input processing at the native boundary. */
-    resourceLimits?: EditorResourceLimits;
     /** Whether selected images show native resize handles. */
     allowImageResizing?: boolean;
     /** Called when content changes with the current HTML. */
@@ -603,7 +585,6 @@ export const NativeRichTextEditor = forwardRef<
         valueJSON,
         valueJSONRevision,
         valueJSONUpdateMode = 'replace',
-        schema,
         placeholder,
         editable = true,
         autoFocus = false,
@@ -617,7 +598,6 @@ export const NativeRichTextEditor = forwardRef<
         onToolbarAction,
         onRequestLink,
         onRequestImage,
-        allowBase64Images = false,
         imageLoadingPolicy,
         accessibilityLabel,
         accessibilityHint,
@@ -625,7 +605,6 @@ export const NativeRichTextEditor = forwardRef<
         containerStyle,
         theme,
         addons,
-        resourceLimits,
         remoteSelections,
         allowImageResizing = true,
         onContentChange,
@@ -640,36 +619,14 @@ export const NativeRichTextEditor = forwardRef<
     ref
 ) {
     _assertNativeEditorDocumentHandle(documentHandle);
+    const documentDescriptor = _getNativeEditorDocumentHandleDescriptor(documentHandle);
 
-    const resourceLimitsKey = useMemo(
-        () =>
-            resourceLimits == null
-                ? undefined
-                : JSON.stringify(resolveEditorResourceLimits(resourceLimits)),
-        [resourceLimits]
-    );
-    const resolvedResourceLimits = useMemo(
-        () =>
-            resourceLimitsKey == null
-                ? undefined
-                : (JSON.parse(resourceLimitsKey) as ResolvedEditorResourceLimits),
-        [resourceLimitsKey]
-    );
-    const hasMentionsAddon = addons?.mentions != null;
-    const bridgeSchema = useMemo(
-        () => (hasMentionsAddon ? withMentionsSchema(schema ?? tiptapSchema) : schema),
-        [hasMentionsAddon, schema]
-    );
-    const documentDescriptor = useMemo(
-        () => resolveDocumentDescriptor(bridgeSchema, resolvedResourceLimits),
-        [bridgeSchema, resolvedResourceLimits]
-    );
     const serializedValueJson = useSerializedValue(
         valueJSON,
-        (doc) => stringifyCachedJson(normalizeDocumentJson(doc, documentDescriptor)),
+        stringifyCachedJson,
         valueJSONRevision
     );
-    const normalizedValueJSON = useMemo(
+    const controlledValueJSON = useMemo(
         () =>
             serializedValueJson == null
                 ? undefined
@@ -680,9 +637,8 @@ export const NativeRichTextEditor = forwardRef<
     const document = useNativeEditorDocument({
         handle: documentHandle,
         value,
-        valueJSON: normalizedValueJSON,
+        valueJSON: controlledValueJSON,
         valueJSONUpdateMode,
-        emptyDocument: documentDescriptor.emptyDocument,
         revisionSignal: documentRevision ?? null,
         onContentChange,
         onContentChangeJSON,
@@ -906,10 +862,10 @@ export const NativeRichTextEditor = forwardRef<
         (src: string, attrs?: Omit<ImageNodeAttributes, 'src'>) => {
             applyEngineCommand({
                 type: 'insertContentJson',
-                json: buildImageFragmentJson({ src, ...attrs }),
+                json: buildImageFragmentJson({ src, ...attrs }, documentDescriptor),
             });
         },
-        [applyEngineCommand]
+        [applyEngineCommand, documentDescriptor]
     );
     const commandInsertText = useCallback(
         (text: string) => {
@@ -944,10 +900,9 @@ export const NativeRichTextEditor = forwardRef<
     const openImageRequest = useCallback(() => {
         onRequestImageRef.current?.({
             selection: selectionRef.current,
-            allowBase64: allowBase64Images === true,
             insertImage: commandInsertImage,
         });
-    }, [allowBase64Images, commandInsertImage]);
+    }, [commandInsertImage]);
 
     // ── Ref surface ─────────────────────────────────────────────
     const nativeViewRef = useRef<NativeEditorViewHandle | null>(null);

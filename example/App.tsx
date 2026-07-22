@@ -5,6 +5,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 
 import {
     createNativeEditorDocumentHandle,
+    DEFAULT_EDITOR_RESOURCE_LIMITS,
     tiptapSchema,
     useYjsCollaboration,
     withMentionsSchema,
@@ -221,12 +222,22 @@ function AppScreen() {
         roomKey: string;
         snapshot: NativeEditorV2RoomSnapshot;
     } | null>(null);
+    // Engine schema, policy, and limits are fixed when the handle is created.
+    // NativeRichTextEditor receives only this handle and per-view options.
+    const documentConfig = useMemo(
+        () => ({
+            schema: documentSchema,
+            policy: { allowBase64Images: false },
+            limits: { resource: DEFAULT_EDITOR_RESOURCE_LIMITS },
+        }),
+        [documentSchema]
+    );
 
     const documentHandle = useMemo(() => {
         if (!collaborationEnabled) {
             const localJson = localContentRef.current;
             return createNativeEditorDocumentHandle({
-                schema: documentSchema,
+                ...documentConfig,
                 initialization: localJson
                     ? { type: 'localJson', json: localJson }
                     : { type: 'localHtml', html: INITIAL_CONTENT },
@@ -234,7 +245,7 @@ function AppScreen() {
         }
         const stored = roomSnapshotRef.current;
         return createNativeEditorDocumentHandle({
-            schema: documentSchema,
+            ...documentConfig,
             initialization: {
                 type: 'room',
                 documentId: collaborationDocumentId,
@@ -248,7 +259,7 @@ function AppScreen() {
                         : undefined,
             },
         });
-    }, [collaborationEnabled, collaborationDocumentId, documentSchema]);
+    }, [collaborationEnabled, collaborationDocumentId, documentConfig]);
 
     useEffect(() => () => documentHandle.destroy(), [documentHandle]);
 

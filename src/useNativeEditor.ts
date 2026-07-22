@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
     _assertNativeEditorDocumentHandle,
+    _getNativeEditorDocumentHandleDescriptor,
     type DocumentJSON,
     type HistoryState,
     type NativeEditorDocumentHandle,
@@ -39,8 +40,6 @@ export interface UseNativeEditorDocumentOptions {
     valueJSON?: DocumentJSON;
     /** History policy for controlled replacements. Defaults to 'replace'. */
     valueJSONUpdateMode?: 'replace' | 'reset';
-    /** Schema-empty document used by clearContent. */
-    emptyDocument?: DocumentJSON;
     /** External revision signal (e.g. from the collaboration controller) forcing an engine re-read. */
     revisionSignal?: string | null;
     onContentChange?: (html: string) => void;
@@ -75,7 +74,6 @@ export interface UseNativeEditorDocumentReturn {
     canRedo(): boolean;
 }
 
-const DEFAULT_V2_EMPTY_DOCUMENT: DocumentJSON = { type: 'doc', content: [{ type: 'paragraph' }] };
 const DEFAULT_V2_HISTORY_STATE: HistoryState = { canUndo: false, canRedo: false };
 
 function isRevisionMismatchError(error: unknown): boolean {
@@ -100,7 +98,6 @@ export function useNativeEditorDocument(
         value,
         valueJSON,
         valueJSONUpdateMode = 'replace',
-        emptyDocument,
         revisionSignal,
         onLocalDocumentCommit,
     } = options;
@@ -279,11 +276,11 @@ export function useNativeEditorDocument(
     const clearContent = useCallback(() => {
         mutate(() =>
             handle.bridge.replaceDocument({
-                setJson: emptyDocument ?? DEFAULT_V2_EMPTY_DOCUMENT,
+                setJson: _getNativeEditorDocumentHandleDescriptor(handle).emptyDocument,
                 history: 'resetAndClear',
             })
         );
-    }, [handle, mutate, emptyDocument]);
+    }, [handle, mutate]);
 
     const undo = useCallback(() => {
         mutate(() => handle.bridge.undo());
