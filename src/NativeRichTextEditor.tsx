@@ -730,16 +730,16 @@ export const NativeRichTextEditor = forwardRef<
 
     const pushEngineUpdateToView = useCallback(() => {
         if (documentHandle.isDestroyed) return;
+        const allocation = allocateEditorUpdateRevision(pushRevisionRef.current);
+        if ('error' in allocation) {
+            bridge._emitAutonomousError(allocation.error);
+            return;
+        }
         const updateJson = bridge.renderUpdate();
         const parsed = applyUpdateState(updateJson);
         const documentVersion = parsed?.documentVersion;
         if (typeof documentVersion === 'string') {
             lastPushedEngineRevisionRef.current = documentVersion;
-        }
-        const allocation = allocateEditorUpdateRevision(pushRevisionRef.current);
-        if ('error' in allocation) {
-            bridge._emitAutonomousError(allocation.error);
-            return;
         }
         pushRevisionRef.current = allocation.revision;
         setPushedUpdate({ json: updateJson, revision: allocation.revision });

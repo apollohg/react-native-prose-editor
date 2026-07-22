@@ -15,7 +15,7 @@ use crate::boundary::{BoundaryError, BoundedInput, InputKind, ResourceLimits};
 use crate::session::SessionError;
 use crate::yrs_engine::DocumentSnapshot;
 
-use super::editor::{json_result, with_editor, ABSENT_REQUEST_ID};
+use super::editor::{json_result, with_editor, INTERNAL_UNCORRELATED_REQUEST_ID};
 use super::types::{decimal_u64, FfiJsonResult, FfiSnapshotExport, FfiSnapshotExportResult};
 
 /// The five snapshot manifest fields, wire-named; the encoded state rides
@@ -58,7 +58,7 @@ fn metadata_json(snapshot: &DocumentSnapshot) -> String {
 pub fn editor_v2_snapshot_export(editor_id: String) -> FfiSnapshotExportResult {
     match with_editor(&editor_id, |session| {
         session
-            .export_snapshot(ABSENT_REQUEST_ID)
+            .export_snapshot(INTERNAL_UNCORRELATED_REQUEST_ID)
             .map(|snapshot| FfiSnapshotExport {
                 metadata_json: metadata_json(&snapshot),
                 encoded_state: snapshot.encoded_state.clone(),
@@ -85,7 +85,7 @@ pub fn editor_v2_snapshot_restore(
             .map_err(|error| SessionError::from(BoundaryError::parse("CONFIG_INVALID", error)))?;
         let snapshot = metadata.into_snapshot(encoded_state);
         session
-            .restore_snapshot(ABSENT_REQUEST_ID, &snapshot)
+            .restore_snapshot(INTERNAL_UNCORRELATED_REQUEST_ID, &snapshot)
             .map(|commit| {
                 serde_json::json!({
                     "changed": commit.changed,

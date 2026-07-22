@@ -3705,6 +3705,19 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(view.richTextView.textView.editorId, 0)
     }
 
+    func testMalformedEditorIdPropRetainsExistingBinding() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let view = NativeEditorExpoView()
+        view.setEditorId(editorId)
+
+        applyNativeEditorIdProp("01", to: view)
+
+        XCTAssertEqual(view.richTextView.editorId, editorId)
+        XCTAssertEqual(view.richTextView.textView.editorId, editorId)
+    }
+
     func testDestroyedEditorInvalidatesEveryBoundView() {
         let editorId = makeV2Editor()
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)

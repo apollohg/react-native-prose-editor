@@ -117,6 +117,11 @@ private func v2UInt64Argument(_ raw: String) -> UInt64? {
     return UInt64(canonical)
 }
 
+func applyNativeEditorIdProp(_ raw: String, to view: NativeEditorExpoView) {
+    guard let editorId = v2UInt64Argument(raw) else { return }
+    view.setEditorId(editorId)
+}
+
 /// NSNumber is the Expo/Foundation numeric boundary. Do not use `uint32Value`:
 /// it truncates fractions and wraps values outside the u32 domain.
 func v2ExactUInt32(_ raw: NSNumber?) -> UInt32? {
@@ -432,7 +437,7 @@ public class NativeEditorModule: Module {
             )
 
             Prop("editorId") { (view: NativeEditorExpoView, id: String) in
-                view.setEditorId(v2UInt64Argument(id) ?? 0)
+                applyNativeEditorIdProp(id, to: view)
             }
             Prop("editable") { (view: NativeEditorExpoView, editable: Bool) in
                 view.setEditable(editable)

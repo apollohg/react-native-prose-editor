@@ -30,6 +30,47 @@ fn decimal_u64_serializer_keeps_the_full_u64_domain_as_canonical_strings() {
     }
 }
 
+#[test]
+fn request_envelope_errors_preserve_admitted_zero_but_omit_unadmitted_ids() {
+    let editor_id = create_editor(json!({
+        "initialization": { "type": "localEmpty" },
+    }));
+
+    let admitted = super::editor::editor_v2_replace_document(
+        editor_id.clone(),
+        json!({
+            "version": 1,
+            "requestId": "0",
+            "history": "resetAndClear",
+            "unexpected": true,
+        })
+        .to_string(),
+    )
+    .error
+    .expect("invalid request must carry an error");
+    assert_eq!(admitted.code, "CONFIG_INVALID");
+    assert_eq!(admitted.request_id.as_deref(), Some("0"));
+
+    let unadmitted = super::editor::editor_v2_replace_document(
+        editor_id.clone(),
+        json!({
+            "version": 1,
+            "requestId": "00",
+            "history": "resetAndClear",
+        })
+        .to_string(),
+    )
+    .error
+    .expect("invalid request id must carry an error");
+    assert_eq!(unadmitted.code, "CONFIG_INVALID");
+    assert_eq!(unadmitted.request_id, None);
+
+    assert_eq!(
+        super::editor::editor_v2_destroy(editor_id).value,
+        Some(true)
+    );
+}
+
 const CREATE_LIMIT_CASES: [(&str, &str, u64); 21] = [
     ("resource", "maxInputBytes", 64 * 1024 * 1024),
     ("resource", "maxDocumentNodes", 1_000_000),

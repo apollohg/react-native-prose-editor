@@ -4,9 +4,9 @@
 //! Every entry follows the frozen contract: decimal-string handle parsing,
 //! registry lookup, `slot.with_alive` under-lock recheck, and a typed
 //! result record carrying exactly one of value or error — never a panic,
-//! never a stringly error. Internal seams stamp `u64` request ids; entries
-//! that take no request envelope use [`ABSENT_REQUEST_ID`], which the
-//! boundary strips back to absent per the Task 1 nullability rules.
+//! never a stringly error. Internal seams still require a `u64` request id,
+//! while FFI error correlation retains request-id presence separately so an
+//! admitted external `0` remains distinguishable from no request envelope.
 //!
 //! `create` reuses the Task 4 session config format: room initialization
 //! carries `documentId`/`lineageId` plus optional snapshot *metadata* in
@@ -47,12 +47,10 @@ use super::types::{
     FfiUnitResult,
 };
 
-/// The request-id sentinel for entries that take no request envelope: the
-/// internal seams stamp it, and the boundary strips it back to absent so
-/// `requestId` is omitted per the frozen nullability rules. Envelopes that
-/// carry an explicit request id keep it (a caller-supplied `0` is
-/// indistinguishable from absent by design and documented as reserved).
-pub(crate) const ABSENT_REQUEST_ID: u64 = 0;
+/// Session operations require a concrete `u64` even when their FFI entry has
+/// no request envelope. This value is internal-only: FFI error conversion
+/// explicitly clears its correlation field for envelope-less entries.
+pub(crate) const INTERNAL_UNCORRELATED_REQUEST_ID: u64 = 0;
 
 /// One supported version for every v2 request envelope.
 const V2_ENVELOPE_VERSION: u32 = 1;
@@ -462,7 +460,7 @@ fn match_expected_byte(
 }
 
 fn create_scan_invalid(message: impl Into<String>) -> SessionError {
-    config_invalid(ABSENT_REQUEST_ID, message)
+    config_invalid(None, message)
 }
 
 fn scan_create_root(json: &str) -> Result<CreateRootSpans, SessionError> {
@@ -616,19 +614,38 @@ fn unknown_editor_error() -> FfiError {
     )
 }
 
-/// Convert a session error, stripping the absent-request sentinel so
-/// envelope-less entries omit `requestId` per the nullability rules.
+/// Convert a session error without changing its correlation. This keeps an
+/// admitted external request id, including canonical `0`, in structured FFI
+/// errors.
 pub(crate) fn ffi_error(error: SessionError) -> FfiError {
-    let mut error = FfiError::from(error);
-    if error.request_id.as_deref() == Some("0") {
-        error.request_id = None;
-    }
-    error
+    FfiError::from(error)
+}
+
+fn ffi_error_without_request(mut error: SessionError) -> FfiError {
+    error.request_id = None;
+    ffi_error(error)
 }
 
 /// Registry lookup -> `slot.with_alive` under-lock recheck -> typed error on
-/// failure. The absent-request-id sentinel is stripped on the way out.
+/// failure. These entries take no request envelope, so any internal request
+/// id is intentionally omitted from their FFI errors.
 pub(crate) fn with_editor<T>(
+    handle: &str,
+    operation: impl FnOnce(&mut EditorSession) -> Result<T, SessionError>,
+) -> Result<T, FfiError> {
+    let id = parse_editor_id(handle)?;
+    let slot = registry::get_session(id).ok_or_else(unknown_editor_error)?;
+    crate::boundary::with_document_stack(|| {
+        slot.with_alive(operation)
+            .and_then(|value| value)
+            .map_err(ffi_error_without_request)
+    })
+}
+
+/// As [`with_editor`], but preserves correlation from a request-envelope
+/// entry. Parse failures before request-id admission naturally remain absent;
+/// failures after admission retain the canonical decimal id, including `0`.
+fn with_editor_request_envelope<T>(
     handle: &str,
     operation: impl FnOnce(&mut EditorSession) -> Result<T, SessionError>,
 ) -> Result<T, FfiError> {
@@ -658,7 +675,7 @@ pub(crate) fn unit_result(result: Result<(), FfiError>) -> FfiUnitResult {
 /// Serialize a session error for the receive outcome's structured close
 /// cause, honoring the same nullability rules as the boundary envelope.
 pub(crate) fn session_error_json(error: &SessionError) -> Value {
-    let error = FfiError::from(error.clone());
+    let error = ffi_error_without_request(error.clone());
     let mut value = serde_json::json!({
         "domain": error.domain,
         "code": error.code,
@@ -666,9 +683,7 @@ pub(crate) fn session_error_json(error: &SessionError) -> Value {
     });
     let object = value.as_object_mut().expect("error base is an object");
     if let Some(request_id) = error.request_id {
-        if request_id != ABSENT_REQUEST_ID.to_string() {
-            object.insert("requestId".into(), Value::String(request_id));
-        }
+        object.insert("requestId".into(), Value::String(request_id));
     }
     if let Some(operation_index) = error.operation_index {
         object.insert("operationIndex".into(), Value::String(operation_index));
@@ -696,14 +711,33 @@ fn parse_request_envelope<'a, T: serde::Deserialize<'a>>(
     json: &'a str,
 ) -> Result<T, SessionError> {
     let input = BoundedInput::new(json, InputKind::Config, session.engine.resource_limits())?;
-    serde_json::from_str(input.as_str())
-        .map_err(|error| SessionError::from(BoundaryError::parse("CONFIG_INVALID", error)))
+    serde_json::from_str(input.as_str()).map_err(|error| {
+        config_invalid(
+            admit_request_id(input.as_str()),
+            BoundaryError::parse("CONFIG_INVALID", error).message,
+        )
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct RequestIdAdmission {
+    #[serde(rename = "requestId", deserialize_with = "deserialize_canonical_u64")]
+    request_id: u64,
+}
+
+/// Extract an already-valid canonical request id from a malformed request
+/// envelope. The complete envelope still receives its normal exact parse;
+/// this probe only preserves correlation for a later validation failure.
+fn admit_request_id(json: &str) -> Option<u64> {
+    serde_json::from_str::<RequestIdAdmission>(json)
+        .ok()
+        .map(|envelope| envelope.request_id)
 }
 
 fn admit_version(version: u32, request_id: u64) -> Result<(), SessionError> {
     if version != V2_ENVELOPE_VERSION {
         return Err(config_invalid(
-            request_id,
+            Some(request_id),
             format!(
                 "unsupported v2 envelope version {version}; supported version is {V2_ENVELOPE_VERSION}"
             ),
@@ -712,9 +746,9 @@ fn admit_version(version: u32, request_id: u64) -> Result<(), SessionError> {
     Ok(())
 }
 
-fn config_invalid(request_id: u64, message: impl Into<String>) -> SessionError {
+fn config_invalid(request_id: Option<u64>, message: impl Into<String>) -> SessionError {
     let mut error = SessionError::new(ErrorDomain::Boundary, "CONFIG_INVALID", message);
-    error.request_id = Some(request_id);
+    error.request_id = request_id;
     error
 }
 
@@ -984,7 +1018,7 @@ fn build_config(
         .transpose()?;
     if !matches!(initialization_probe.kind, InitializationKind::Room) && snapshot_state.is_some() {
         return Err(config_invalid(
-            ABSENT_REQUEST_ID,
+            None,
             "snapshot state bytes require a room initialization with snapshot metadata",
         ));
     }
@@ -1037,7 +1071,7 @@ fn build_config(
                 (None, None) => None,
                 _ => {
                     return Err(config_invalid(
-                        ABSENT_REQUEST_ID,
+                        None,
                         "room snapshot metadata and snapshot state bytes must arrive together",
                     ));
                 }
@@ -1181,7 +1215,7 @@ pub fn editor_v2_get_content_snapshot(editor_id: String) -> FfiJsonResult {
 
 #[uniffi::export]
 pub fn editor_v2_replace_document(editor_id: String, request_json: String) -> FfiJsonResult {
-    json_result(with_editor(&editor_id, |session| {
+    json_result(with_editor_request_envelope(&editor_id, |session| {
         let envelope: ReplaceDocumentEnvelope<'_> = parse_request_envelope(session, &request_json)?;
         admit_version(envelope.version, envelope.request_id)?;
         let request_id = envelope.request_id;
@@ -1191,7 +1225,7 @@ pub fn editor_v2_replace_document(editor_id: String, request_json: String) -> Ff
             (None, Some(html)) => session.replace_document_html(request_id, &html, history)?,
             _ => {
                 return Err(config_invalid(
-                    request_id,
+                    Some(request_id),
                     "replace requests carry exactly one of setJson or setHtml",
                 ));
             }
@@ -1228,7 +1262,7 @@ fn bridge_entry(
     editor_id: &str,
     entry: impl FnOnce(&mut NativeTransactionBridge<'_>) -> Result<NativeBridgeOutcome, SessionError>,
 ) -> FfiJsonResult {
-    json_result(with_editor(editor_id, |session| {
+    json_result(with_editor_request_envelope(editor_id, |session| {
         let mut bridge = NativeTransactionBridge::new(session);
         entry(&mut bridge).map(|outcome| match outcome {
             NativeBridgeOutcome::Transaction(result) => serde_json::json!({
@@ -1272,7 +1306,7 @@ fn history_entry(
     request_json: &str,
     which: impl FnOnce(&mut NativeTransactionBridge<'_>, u64) -> Result<bool, SessionError>,
 ) -> FfiJsonResult {
-    json_result(with_editor(editor_id, |session| {
+    json_result(with_editor_request_envelope(editor_id, |session| {
         let envelope: HistoryRequestEnvelope = parse_request_envelope(session, request_json)?;
         admit_version(envelope.version, envelope.request_id)?;
         let mut bridge = NativeTransactionBridge::new(session);

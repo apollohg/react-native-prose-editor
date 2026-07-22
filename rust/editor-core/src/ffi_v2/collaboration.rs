@@ -19,7 +19,9 @@
 use crate::collaboration_runtime::protocol::ReceiveDisposition;
 use crate::collaboration_runtime::state::{SocketCloseDisposition, TransportGeneration};
 
-use super::editor::{json_result, session_error_json, unit_result, with_editor, ABSENT_REQUEST_ID};
+use super::editor::{
+    json_result, session_error_json, unit_result, with_editor, INTERNAL_UNCORRELATED_REQUEST_ID,
+};
 use super::types::{
     decimal_u64, parse_canonical_u64, FfiBytesResult, FfiError, FfiJsonResult, FfiUnitResult,
 };
@@ -44,9 +46,11 @@ fn bytes_result(result: Result<Vec<u8>, super::types::FfiError>) -> FfiBytesResu
 #[uniffi::export]
 pub fn editor_v2_collaboration_begin_connect(editor_id: String) -> FfiJsonResult {
     json_result(with_editor(&editor_id, |session| {
-        session.begin_connect(ABSENT_REQUEST_ID).map(|generation| {
-            serde_json::json!({ "generation": decimal_u64(generation.value()) }).to_string()
-        })
+        session
+            .begin_connect(INTERNAL_UNCORRELATED_REQUEST_ID)
+            .map(|generation| {
+                serde_json::json!({ "generation": decimal_u64(generation.value()) }).to_string()
+            })
     }))
 }
 
@@ -63,10 +67,10 @@ pub fn editor_v2_collaboration_socket_open(
     };
     bytes_result(with_editor(&editor_id, |session| {
         session.socket_opened(
-            ABSENT_REQUEST_ID,
+            INTERNAL_UNCORRELATED_REQUEST_ID,
             TransportGeneration::from_value(generation),
         )?;
-        session.sync_step1_message(ABSENT_REQUEST_ID)
+        session.sync_step1_message(INTERNAL_UNCORRELATED_REQUEST_ID)
     }))
 }
 
@@ -82,7 +86,7 @@ pub fn editor_v2_collaboration_receive(
     };
     json_result(with_editor(&editor_id, |session| {
         let outcome = session.receive_message(
-            ABSENT_REQUEST_ID,
+            INTERNAL_UNCORRELATED_REQUEST_ID,
             TransportGeneration::from_value(generation),
             &message,
         )?;
@@ -131,7 +135,7 @@ pub fn editor_v2_collaboration_socket_close(
     json_result(with_editor(&editor_id, |session| {
         session
             .socket_closed(
-                ABSENT_REQUEST_ID,
+                INTERNAL_UNCORRELATED_REQUEST_ID,
                 TransportGeneration::from_value(generation),
                 disposition,
             )
@@ -155,7 +159,7 @@ pub fn editor_v2_collaboration_take_outbound(
     bytes_result(with_editor(&editor_id, |session| {
         session
             .take_next_outbound_frame(
-                ABSENT_REQUEST_ID,
+                INTERNAL_UNCORRELATED_REQUEST_ID,
                 TransportGeneration::from_value(generation),
             )
             .map(Option::unwrap_or_default)
@@ -171,9 +175,9 @@ pub fn editor_v2_collaboration_set_awareness(
 ) -> FfiUnitResult {
     unit_result(with_editor(&editor_id, |session| {
         if awareness_json.trim() == "null" {
-            session.clear_desired_awareness(ABSENT_REQUEST_ID)
+            session.clear_desired_awareness(INTERNAL_UNCORRELATED_REQUEST_ID)
         } else {
-            session.set_desired_awareness(ABSENT_REQUEST_ID, &awareness_json)
+            session.set_desired_awareness(INTERNAL_UNCORRELATED_REQUEST_ID, &awareness_json)
         }
     }))
 }

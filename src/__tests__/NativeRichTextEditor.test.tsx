@@ -68,9 +68,11 @@ import {
     type DocumentJSON,
 } from '../NativeEditorBridge';
 import {
+    NativeEditorV2BoundaryError,
     NativeEditorV2NonRetryableError,
     NativeEditorV2OperationError,
 } from '../NativeEditorBoundaryError';
+import * as EditorUpdateRevision from '../EditorUpdateRevision';
 import { createYjsCollaborationController } from '../YjsCollaboration';
 import {
     createFakeNativeEditorV2Runtime,
@@ -1063,6 +1065,58 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         view = getByTestId('native-editor-view');
         pushed = JSON.parse(view.props.editorUpdateJson as string);
         expect(pushed.activeState.marks.bold).toBe(false);
+        handle.destroy();
+    });
+
+    it('suppresses the view update after the editor update revision is exhausted', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const ref = createRef<NativeRichTextEditorRef>();
+        const onActiveStateChange = jest.fn();
+        const errors: unknown[] = [];
+        const allocateEditorUpdateRevision = jest
+            .spyOn(EditorUpdateRevision, 'allocateEditorUpdateRevision')
+            .mockImplementation((currentRevision) =>
+                currentRevision === 0
+                    ? { revision: 0xffff_ffff }
+                    : jest
+                          .requireActual<typeof import('../EditorUpdateRevision')>(
+                              '../EditorUpdateRevision'
+                          )
+                          .allocateEditorUpdateRevision(currentRevision)
+            );
+        const renderUpdate = jest.spyOn(handle.bridge, 'renderUpdate');
+        handle.addErrorListener((error) => errors.push(error));
+        const { getByTestId } = render(
+            <NativeRichTextEditor
+                ref={ref}
+                documentHandle={handle}
+                onActiveStateChange={onActiveStateChange}
+            />
+        );
+
+        act(() => {
+            ref.current!.toggleMark('bold');
+        });
+        const view = getByTestId('native-editor-view');
+        const pushedUpdateJson = view.props.editorUpdateJson;
+        const pushedUpdateRevision = view.props.editorUpdateRevision;
+        expect(pushedUpdateRevision).toBe(0xffff_ffff);
+
+        renderUpdate.mockClear();
+        onActiveStateChange.mockClear();
+        act(() => {
+            ref.current!.toggleMark('bold');
+        });
+
+        expect(renderUpdate).not.toHaveBeenCalled();
+        expect(getByTestId('native-editor-view').props.editorUpdateJson).toBe(pushedUpdateJson);
+        expect(getByTestId('native-editor-view').props.editorUpdateRevision).toBe(
+            pushedUpdateRevision
+        );
+        expect(onActiveStateChange).not.toHaveBeenCalled();
+        expect(errors.at(-1)).toBeInstanceOf(NativeEditorV2BoundaryError);
+        expect((errors.at(-1) as NativeEditorV2BoundaryError).code).toBe('CONFIG_INVALID');
+        allocateEditorUpdateRevision.mockRestore();
         handle.destroy();
     });
 
