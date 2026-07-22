@@ -1,3 +1,5 @@
+import { normalizeNativeEditorV2U64 } from './NativeEditorV2Decimal';
+
 export const NATIVE_EDITOR_BOUNDARY_ERROR_CODES = [
     'INVALID_RESOURCE_LIMIT',
     'CONFIG_INVALID',
@@ -91,12 +93,9 @@ export function parseNativeBoundaryError(value: unknown): NativeEditorBoundaryEr
     );
 }
 
-const CANONICAL_DECIMAL_ID = /^(0|[1-9]\d*)$/;
-
 function nullableCanonicalDecimal(value: unknown): string | null | undefined {
     if (value == null) return null;
-    if (typeof value !== 'string' || !CANONICAL_DECIMAL_ID.test(value)) return undefined;
-    return value;
+    return normalizeNativeEditorV2U64(value) ?? undefined;
 }
 
 function parseDetails(
@@ -121,7 +120,7 @@ function parseDetails(
 }
 
 function isCanonicalDecimalDetail(value: unknown): value is string {
-    return typeof value === 'string' && CANONICAL_DECIMAL_ID.test(value);
+    return normalizeNativeEditorV2U64(value) != null;
 }
 
 /**
@@ -164,18 +163,13 @@ export function normalizeNativeEditorV2Error(value: unknown): NativeEditorV2Erro
         return null;
     }
 
-    const requestId = nativeError.requestId;
-    if (
-        requestId != null &&
-        (typeof requestId !== 'string' || !CANONICAL_DECIMAL_ID.test(requestId))
-    ) {
-        return null;
-    }
+    const requestId = nullableCanonicalDecimal(nativeError.requestId);
     const operationIndex = nullableCanonicalDecimal(nativeError.operationIndex);
     const limit = nullableCanonicalDecimal(nativeError.limit);
     const actual = nullableCanonicalDecimal(nativeError.actual);
     const details = parseDetails(nativeError);
     if (
+        requestId === undefined ||
         operationIndex === undefined ||
         limit === undefined ||
         actual === undefined ||
@@ -189,7 +183,7 @@ export function normalizeNativeEditorV2Error(value: unknown): NativeEditorV2Erro
         domain: domain as NativeEditorErrorDomain,
         code,
         message,
-        requestId: requestId == null ? null : requestId,
+        requestId,
         operationIndex,
         limit,
         actual,

@@ -21,6 +21,7 @@ import {
     normalizeNativeEditorV2Error,
     type NativeEditorV2Error,
 } from './NativeEditorBoundaryError';
+import { normalizeNativeEditorV2U64 } from './NativeEditorV2Decimal';
 
 // ─── Shared types ───────────────────────────────────────────────
 // Neutral document/render state types shared by the v2 document
@@ -155,7 +156,6 @@ export function _resetNativeModuleCache(): void {
 const ERR_V2_NATIVE_RESPONSE = 'NativeEditorBridge: invalid v2 result record from native module';
 const ERR_V2_DESTROYED = 'NativeEditorBridge: v2 editor handle has been destroyed';
 const V2_ENVELOPE_VERSION = 1;
-const CANONICAL_V2_DECIMAL_ID = /^(0|[1-9]\d*)$/;
 
 /**
  * The v2 surface of the NativeEditor native module — the complete
@@ -280,7 +280,7 @@ export function normalizeNativeEditorV2Unit(value: unknown): true | null {
  * represent the complete Rust u64 domain.
  */
 export function normalizeNativeEditorV2DecimalId(value: unknown): string | null {
-    return typeof value === 'string' && CANONICAL_V2_DECIMAL_ID.test(value) ? value : null;
+    return normalizeNativeEditorV2U64(value);
 }
 
 function normalizeRevisionField(record: Record<string, unknown>, field: string): string | null {

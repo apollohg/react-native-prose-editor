@@ -50,6 +50,7 @@ const MOCK_SNAPSHOT_BYTES = new Uint8Array([0, 1, 2, 127, 128, 255, 7]);
 const MOCK_PROTOCOL_FRAME = new Uint8Array([0, 3, 9, 200, 17]);
 
 const HUGE_U64_DECIMAL = '18446744073709551615';
+const ONE_OVER_U64_DECIMAL = '18446744073709551616';
 
 function mockV2Error(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
@@ -585,6 +586,14 @@ describe('NativeEditorBridge v2', () => {
                 }),
             ],
             [
+                'revision mismatch value above u64 max',
+                mockV2Error({
+                    code: 'REVISION_MISMATCH',
+                    detailsJson:
+                        '{"expectedRevision":"18446744073709551615","actualRevision":"18446744073709551616"}',
+                }),
+            ],
+            [
                 'stale generation numeric detailsJson value',
                 mockV2Error({
                     domain: 'transport',
@@ -599,6 +608,15 @@ describe('NativeEditorBridge v2', () => {
                     domain: 'transport',
                     code: 'TRANSPORT_STALE_GENERATION',
                     detailsJson: '{"presentedGeneration":"1e3","liveGeneration":null}',
+                }),
+            ],
+            [
+                'stale generation value above u64 max',
+                mockV2Error({
+                    domain: 'transport',
+                    code: 'TRANSPORT_STALE_GENERATION',
+                    detailsJson:
+                        '{"presentedGeneration":"18446744073709551616","liveGeneration":"18446744073709551615"}',
                 }),
             ],
         ])('rejects malformed known nested u64 details: %s', (_label, error) => {
@@ -667,6 +685,12 @@ describe('NativeEditorBridge v2', () => {
             expect(normalizeNativeEditorV2DecimalId('0')).toBe('0');
             expect(normalizeNativeEditorV2DecimalId('42')).toBe('42');
             expect(normalizeNativeEditorV2DecimalId(HUGE_U64_DECIMAL)).toBe(HUGE_U64_DECIMAL);
+        });
+
+        it('accepts u64::MAX and rejects larger decimal strings without Number()', () => {
+            expect(normalizeNativeEditorV2DecimalId(HUGE_U64_DECIMAL)).toBe(HUGE_U64_DECIMAL);
+            expect(normalizeNativeEditorV2DecimalId(ONE_OVER_U64_DECIMAL)).toBeNull();
+            expect(normalizeNativeEditorV2DecimalId('9'.repeat(256))).toBeNull();
         });
 
         it.each([0, 42, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1])(

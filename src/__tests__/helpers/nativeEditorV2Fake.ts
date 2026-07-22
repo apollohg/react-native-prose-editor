@@ -24,6 +24,7 @@
 // awareness frame carrying a Rust-side monotonically increasing clock.
 
 import type { DocumentJSON, NativeEditorV2PeerInfo } from '../NativeEditorBridge';
+import { normalizeNativeEditorV2U64 } from '../NativeEditorV2Decimal';
 
 export const V2_FAKE_STEP1_FRAME = new Uint8Array([0, 0, 1]);
 export const V2_FAKE_STEP2_FRAME = new Uint8Array([0, 0, 2]);
@@ -110,17 +111,9 @@ function boundaryError(code: string, message: string): Record<string, unknown> {
     return errRecord(errorRecord('boundary', code, message));
 }
 
-const CANONICAL_V2_U64 = /^(0|[1-9]\d*)$/;
-const U64_MAX = 0xffff_ffff_ffff_ffffn;
-
 /** Match the production v2 boundary: u64s are canonical decimal strings only. */
 function canonicalV2U64(value: unknown): string | null {
-    if (typeof value !== 'string' || !CANONICAL_V2_U64.test(value)) return null;
-    try {
-        return BigInt(value) <= U64_MAX ? value : null;
-    } catch {
-        return null;
-    }
+    return normalizeNativeEditorV2U64(value);
 }
 
 /** Match platform/JS exact-u32 admission before a native integer conversion. */
