@@ -207,7 +207,7 @@ fn delete_set_before_insert_is_quarantined_and_converges() {
 }
 
 #[test]
-fn deferred_limit_failure_discards_poison_and_allows_recovery() {
+fn deferred_limit_failure_preserves_quarantine_and_blocks_unrelated_update() {
     let (base, delta_a, delta_b, _) = dependent_text_updates();
     let mut target = engine_with(
         tiptap_schema(),
@@ -216,23 +216,41 @@ fn deferred_limit_failure_discards_poison_and_allows_recovery() {
         EditingLimits::default(),
         Some(1),
     );
-    target.apply_remote_update_v1(20, &delta_b).unwrap();
-    target.apply_remote_update_v1(21, &delta_a).unwrap();
+    assert!(!target.apply_remote_update_v1(20, &delta_b).unwrap().changed);
+    assert!(!target.apply_remote_update_v1(21, &delta_a).unwrap().changed);
     let before = audit(&target);
+    let before_dependencies = target.pending_remote_dependency_bytes();
+    assert!(before_dependencies > 0);
     let error = target.apply_remote_update_v1(22, &base).unwrap_err();
     assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
     assert_eq!(error.details.as_ref().unwrap()["field"], "maxLength");
     assert_eq!(audit(&target), before);
+    assert_eq!(
+        target.pending_remote_dependency_bytes(),
+        before_dependencies,
+        "rejected preparation must preserve the live dependency candidate",
+    );
 
     let mut valid = engine(InitializationMode::LocalEmpty);
     valid
         .apply_command(23, TypedCommand::InsertText { text: "z".into() })
         .unwrap();
-    let recovered = target
-        .apply_remote_update_v1(24, &valid.encoded_state().unwrap())
-        .unwrap();
-    assert!(recovered.changed);
-    assert_eq!(target.document().unwrap().root().text_content(), "z");
+    let unrelated = valid.encoded_state().unwrap();
+    let prepared = target.prepare_remote_update_v1(24, &unrelated).unwrap();
+    assert!(prepared.has_pending_dependencies());
+    let expected_retained = prepared.retained_dependency_bytes();
+    drop(prepared);
+    assert_eq!(
+        target.pending_remote_dependency_bytes(),
+        before_dependencies
+    );
+
+    let still_pending = target.apply_remote_update_v1(25, &unrelated).unwrap();
+    assert!(!still_pending.changed);
+    assert_eq!(audit(&target), before);
+    assert_eq!(target.pending_remote_dependency_bytes(), expected_retained,);
+    assert!(!target.is_ready());
+    assert!(target.document().is_none());
 }
 
 #[test]
@@ -607,7 +625,7 @@ mod staging {
     }
 
     #[test]
-    fn prepare_commit_matches_one_shot_across_the_full_admission_matrix() {
+    fn prepare_commit_matches_one_shot_and_preserves_rejected_dependency_state() {
         // Valid + duplicate no-op.
         let mut source = engine(InitializationMode::LocalEmpty);
         source
@@ -667,8 +685,9 @@ mod staging {
             expected.encoded_state().unwrap()
         );
 
-        // Deferred over-ceiling failure discards quarantined poison on both
-        // paths, then both recover identically.
+        // A deferred over-ceiling failure preserves the live dependency
+        // candidate on both paths. An unrelated update joins that candidate;
+        // it cannot bypass the retained dependency state and publish itself.
         let (base, delta_a, delta_b, _) = dependent_text_updates();
         let deferred_engine = |mode| {
             engine_with(
@@ -683,18 +702,54 @@ mod staging {
         let mut split = deferred_engine(InitializationMode::AwaitRemote);
         assert_step_parity(&mut one_shot, &mut split, 709, &delta_b);
         assert_step_parity(&mut one_shot, &mut split, 710, &delta_a);
+        let one_shot_before = audit(&one_shot);
+        let split_before = audit(&split);
+        let one_shot_dependencies_before = one_shot.pending_remote_dependency_bytes();
+        let split_dependencies_before = split.pending_remote_dependency_bytes();
+        assert_eq!(one_shot_dependencies_before, split_dependencies_before);
+        assert!(one_shot_dependencies_before > 0);
         assert_step_parity(&mut one_shot, &mut split, 711, &base);
+        assert_eq!(audit(&one_shot), one_shot_before);
+        assert_eq!(audit(&split), split_before);
+        assert_eq!(
+            one_shot.pending_remote_dependency_bytes(),
+            one_shot_dependencies_before,
+        );
+        assert_eq!(
+            split.pending_remote_dependency_bytes(),
+            split_dependencies_before,
+        );
+
         let mut valid = engine(InitializationMode::LocalEmpty);
         valid
             .apply_command(712, TypedCommand::InsertText { text: "z".into() })
             .unwrap();
-        assert_step_parity(
-            &mut one_shot,
-            &mut split,
-            713,
-            &valid.encoded_state().unwrap(),
+        let unrelated = valid.encoded_state().unwrap();
+        let expected = one_shot.apply_remote_update_v1(713, &unrelated).unwrap();
+        let prepared = split.prepare_remote_update_v1(713, &unrelated).unwrap();
+        assert!(prepared.has_pending_dependencies());
+        let expected_retained = prepared.retained_dependency_bytes();
+        assert_eq!(
+            split.pending_remote_dependency_bytes(),
+            split_dependencies_before,
         );
-        assert_eq!(split.document().unwrap().root().text_content(), "z");
+        let actual = split.commit_prepared_remote_update(prepared).unwrap();
+
+        assert!(!expected.changed);
+        assert!(!actual.changed);
+        assert_eq!(expected.revision, actual.revision);
+        assert_eq!(audit(&one_shot), one_shot_before);
+        assert_eq!(audit(&split), split_before);
+        assert_eq!(audit(&one_shot), audit(&split));
+        assert_eq!(
+            one_shot.pending_remote_dependency_bytes(),
+            expected_retained,
+        );
+        assert_eq!(split.pending_remote_dependency_bytes(), expected_retained,);
+        assert!(!one_shot.is_ready());
+        assert!(!split.is_ready());
+        assert!(one_shot.document().is_none());
+        assert!(split.document().is_none());
     }
 
     #[test]
