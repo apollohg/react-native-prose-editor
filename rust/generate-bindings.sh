@@ -94,12 +94,14 @@ fi
 RUST_TOOLCHAIN_DIR="${RUST_TOOLCHAIN_DIR:-$HOME/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin}"
 if [[ -x "$RUST_TOOLCHAIN_DIR/cargo" ]]; then
     export RUSTC="$RUST_TOOLCHAIN_DIR/rustc"
-    export PATH="$RUST_TOOLCHAIN_DIR:$PATH"
+    export RUSTDOC="$RUST_TOOLCHAIN_DIR/rustdoc"
     CARGO_CMD=("$RUST_TOOLCHAIN_DIR/cargo")
 elif command -v rustup >/dev/null 2>&1; then
     CARGO_BIN="$(rustup which cargo)"
     RUSTC_BIN="$(rustup which rustc)"
+    RUSTDOC_BIN="$(rustup which rustdoc)"
     export RUSTC="$RUSTC_BIN"
+    export RUSTDOC="$RUSTDOC_BIN"
     CARGO_CMD=("$CARGO_BIN")
 else
     CARGO_CMD=(cargo)

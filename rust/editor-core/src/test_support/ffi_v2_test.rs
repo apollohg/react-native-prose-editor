@@ -120,12 +120,49 @@ fn state_of(id: &str) -> Value {
 
 fn revision_of(id: &str) -> u64 {
     state_of(id)["documentRevision"]
-        .as_u64()
-        .expect("state carries a numeric documentRevision")
+        .as_str()
+        .expect("state carries a canonical decimal-string documentRevision")
+        .parse()
+        .expect("document revision decimal string parses as u64")
 }
 
 fn document_json_of(id: &str) -> Value {
     ok_json(&v2::editor_v2_get_document_json(id.to_string()))
+}
+
+#[test]
+fn v2_u64_wire_fields_are_canonical_decimal_strings_and_inputs_reject_numeric_compatibility() {
+    let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
+
+    let state = state_of(&id);
+    assert_eq!(state["documentRevision"], json!("0"));
+    assert_eq!(state["stateRevision"], json!("0"));
+
+    let room_id = create_handle(room_config(None));
+    let generation = ok_json(&v2_collab::editor_v2_collaboration_begin_connect(
+        room_id.clone(),
+    ));
+    assert_eq!(generation["generation"], json!("1"));
+    destroy_handle(&room_id);
+
+    let maximum = u64::MAX.to_string();
+    let error = err_json(&v2::editor_v2_apply_input(
+        id.clone(),
+        format!(r#"{{"version":1,"requestId":"{maximum}","baseDocumentRevision":"0","text":""}}"#),
+    ));
+    assert_error(&error, "boundary", "CONFIG_INVALID", Some(&maximum));
+
+    for rejected in ["+1", "01", " 1", "1 ", "1e3"] {
+        let error = err_json(&v2::editor_v2_apply_input(
+            id.clone(),
+            format!(
+                r#"{{"version":1,"requestId":"{rejected}","baseDocumentRevision":"0","text":"x"}}"#
+            ),
+        ));
+        assert_error(&error, "boundary", "CONFIG_INVALID", None);
+    }
+
+    destroy_handle(&id);
 }
 
 // ---------------------------------------------------------------------------
@@ -135,8 +172,8 @@ fn document_json_of(id: &str) -> Value {
 fn input_envelope(request_id: u64, base_revision: u64, text: &str) -> String {
     json!({
         "version": 1,
-        "requestId": request_id,
-        "baseDocumentRevision": base_revision,
+        "requestId": request_id.to_string(),
+        "baseDocumentRevision": base_revision.to_string(),
         "text": text,
     })
     .to_string()
@@ -145,8 +182,8 @@ fn input_envelope(request_id: u64, base_revision: u64, text: &str) -> String {
 fn command_envelope(request_id: u64, base_revision: u64, command: Value) -> String {
     json!({
         "version": 1,
-        "requestId": request_id,
-        "baseDocumentRevision": base_revision,
+        "requestId": request_id.to_string(),
+        "baseDocumentRevision": base_revision.to_string(),
         "command": command,
     })
     .to_string()
@@ -155,8 +192,8 @@ fn command_envelope(request_id: u64, base_revision: u64, command: Value) -> Stri
 fn selection_envelope(request_id: u64, base_revision: u64, anchor: u32, head: u32) -> String {
     json!({
         "version": 1,
-        "requestId": request_id,
-        "baseDocumentRevision": base_revision,
+        "requestId": request_id.to_string(),
+        "baseDocumentRevision": base_revision.to_string(),
         "selection": {
             "type": "text",
             "anchor": { "offset": anchor, "kind": "scalar" },
@@ -169,8 +206,8 @@ fn selection_envelope(request_id: u64, base_revision: u64, anchor: u32, head: u3
 fn replace_envelope(request_id: u64, base_revision: u64, json_doc: &str, history: &str) -> String {
     json!({
         "version": 1,
-        "requestId": request_id,
-        "baseDocumentRevision": base_revision,
+        "requestId": request_id.to_string(),
+        "baseDocumentRevision": base_revision.to_string(),
         "setJson": serde_json::from_str::<Value>(json_doc).unwrap(),
         "history": history,
     })
@@ -178,7 +215,7 @@ fn replace_envelope(request_id: u64, base_revision: u64, json_doc: &str, history
 }
 
 fn history_envelope(request_id: u64) -> String {
-    json!({ "version": 1, "requestId": request_id }).to_string()
+    json!({ "version": 1, "requestId": request_id.to_string() }).to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -302,26 +339,27 @@ fn step1_state_vector(step1: &[u8]) -> StateVector {
 /// Drive a RoomReady editor to Synchronized through the v2 boundary: open,
 /// answer the owed Step 1 with a raw peer's Step 2, and return the live
 /// generation.
-fn synchronize_v2(id: &str, server: &RawPeer) -> u64 {
-    let generation = ok_json(&v2_collab::editor_v2_collaboration_begin_connect(
+fn synchronize_v2(id: &str, server: &RawPeer) -> String {
+    let begin = ok_json(&v2_collab::editor_v2_collaboration_begin_connect(
         id.to_string(),
-    ))["generation"]
-        .as_u64()
+    ));
+    let generation = begin["generation"]
+        .as_str()
         .expect("begin_connect returns a generation");
     let step1 = ok_bytes(&v2_collab::editor_v2_collaboration_socket_open(
         id.to_string(),
-        generation,
+        generation.to_string(),
     ));
     let step2 = server.diff_for(&step1_state_vector(&step1).encode_v1());
     let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
         id.to_string(),
-        generation,
+        generation.to_string(),
         step2_frame(step2),
     ));
     assert_eq!(outcome["close"], Value::Null, "{outcome:?}");
     assert_eq!(outcome["transportState"], "Synchronized", "{outcome:?}");
     assert_eq!(state_of(id)["transportState"], "Synchronized");
-    generation
+    generation.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -344,8 +382,8 @@ fn create_local_editor_exposes_full_state_surface_and_destroy_lifecycle() {
             "documentState": "LocalReady",
             "transportState": "Detached",
             "renderState": "Ready",
-            "documentRevision": 0,
-            "stateRevision": 0,
+            "documentRevision": "0",
+            "stateRevision": "0",
             "canUndo": false,
             "canRedo": false,
         }),
@@ -478,7 +516,8 @@ fn malformed_handles_fail_with_structured_boundary_errors() {
             input_envelope(401, 0, "x"),
         ));
         assert_error(&error, "boundary", "CONFIG_INVALID", None);
-        let result = v2_collab::editor_v2_collaboration_take_outbound(handle.to_string(), 1);
+        let result =
+            v2_collab::editor_v2_collaboration_take_outbound(handle.to_string(), "1".into());
         assert!(result.value.is_none(), "{result:?}");
         assert_error(
             &result.error.expect("error"),
@@ -506,7 +545,7 @@ fn unknown_editor_id_fails_every_entry_with_a_lifecycle_error() {
         unknown.clone(),
         json!({
             "version": 1,
-            "requestId": 501,
+            "requestId": "501",
             "setJson": { "type": "doc" },
             "history": "resetAndClear",
         })
@@ -542,20 +581,20 @@ fn unknown_editor_id_fails_every_entry_with_a_lifecycle_error() {
     )));
     assert_lifecycle(err_bytes(&v2_collab::editor_v2_collaboration_socket_open(
         unknown.clone(),
-        1,
+        "1".into(),
     )));
     assert_lifecycle(err_json(&v2_collab::editor_v2_collaboration_receive(
         unknown.clone(),
-        1,
+        "1".into(),
         vec![0],
     )));
     assert_lifecycle(err_json(&v2_collab::editor_v2_collaboration_socket_close(
         unknown.clone(),
-        1,
+        "1".into(),
         None,
         None,
     )));
-    let result = v2_collab::editor_v2_collaboration_take_outbound(unknown.clone(), 1);
+    let result = v2_collab::editor_v2_collaboration_take_outbound(unknown.clone(), "1".into());
     assert!(result.value.is_none(), "{result:?}");
     assert_lifecycle(result.error.expect("error"));
     let result = v2_collab::editor_v2_collaboration_set_awareness(unknown.clone(), "{}".into());
@@ -597,7 +636,11 @@ fn destroy_during_in_flight_calls_refuses_without_partial_work() {
                 match (state.value, state.error) {
                     (Some(value), None) => {
                         let parsed: Value = serde_json::from_str(&value).unwrap();
-                        let revision = parsed["documentRevision"].as_u64().unwrap();
+                        let revision = parsed["documentRevision"]
+                            .as_str()
+                            .unwrap()
+                            .parse::<u64>()
+                            .unwrap();
                         revisions.push(Ok(revision));
                         let input = v2::editor_v2_apply_input(
                             id.clone(),
@@ -682,7 +725,7 @@ fn apply_input_command_selection_and_local_api_outcome_matrix() {
         json!({
             "type": "transaction",
             "changed": true,
-            "documentRevision": base + 1,
+            "documentRevision": (base + 1).to_string(),
             "stateRevision": outcome["stateRevision"],
             "canUndo": true,
             "canRedo": false,
@@ -717,15 +760,15 @@ fn apply_input_command_selection_and_local_api_outcome_matrix() {
     for (label, envelope) in [
         (
             "bad version",
-            json!({ "version": 2, "requestId": 603, "baseDocumentRevision": revision_of(&id), "text": "x" }),
+            json!({ "version": 2, "requestId": "603", "baseDocumentRevision": revision_of(&id).to_string(), "text": "x" }),
         ),
         (
             "forged origin",
-            json!({ "version": 1, "requestId": 604, "baseDocumentRevision": revision_of(&id), "text": "x", "origin": "remote" }),
+            json!({ "version": 1, "requestId": "604", "baseDocumentRevision": revision_of(&id).to_string(), "text": "x", "origin": "remote" }),
         ),
         (
             "empty text",
-            json!({ "version": 1, "requestId": 605, "baseDocumentRevision": revision_of(&id), "text": "" }),
+            json!({ "version": 1, "requestId": "605", "baseDocumentRevision": revision_of(&id).to_string(), "text": "" }),
         ),
     ] {
         // Envelope parse rejections (forged origin) carry no request id —
@@ -734,7 +777,7 @@ fn apply_input_command_selection_and_local_api_outcome_matrix() {
         let expected_request_id = if label == "forged origin" {
             None
         } else {
-            Some(envelope["requestId"].as_u64().unwrap().to_string())
+            envelope["requestId"].as_str().map(str::to_owned)
         };
         let error = err_json(&v2::editor_v2_apply_input(id.clone(), envelope.to_string()));
         assert_error(
@@ -767,7 +810,7 @@ fn apply_input_command_selection_and_local_api_outcome_matrix() {
         selection_envelope(608, base, 1, 3),
     ));
     assert_eq!(outcome["type"], "transaction", "{outcome:?}");
-    assert_eq!(outcome["documentRevision"], base, "{outcome:?}");
+    assert_eq!(outcome["documentRevision"], base.to_string(), "{outcome:?}");
 
     // Local-API whole-document replacement: replacement outcome shape.
     let outcome = ok_json(&v2::editor_v2_apply_local_api(
@@ -790,7 +833,7 @@ fn replace_document_session_seam_and_policy_gate() {
         id.clone(),
         json!({
             "version": 1,
-            "requestId": 651,
+            "requestId": "651",
             "setJson": serde_json::from_str::<Value>(JSON_SEED).unwrap(),
             "history": "resetAndClear",
         })
@@ -810,7 +853,7 @@ fn replace_document_session_seam_and_policy_gate() {
     // Exactly one of setJson/setHtml is required.
     let error = err_json(&v2::editor_v2_replace_document(
         id.clone(),
-        json!({ "version": 1, "requestId": 652, "history": "resetAndClear" }).to_string(),
+        json!({ "version": 1, "requestId": "652", "history": "resetAndClear" }).to_string(),
     ));
     assert_error(&error, "boundary", "CONFIG_INVALID", Some("652"));
     destroy_handle(&id);
@@ -821,7 +864,7 @@ fn replace_document_session_seam_and_policy_gate() {
         id.clone(),
         json!({
             "version": 1,
-            "requestId": 653,
+            "requestId": "653",
             "setJson": serde_json::from_str::<Value>(JSON_SEED).unwrap(),
             "history": "resetAndClear",
         })
@@ -870,7 +913,7 @@ fn undo_redo_success_and_read_only_rejection_with_atomic_audit() {
     // structured policy refusal; selection, local-API, and getters pass.
     let id = create_handle(json!({
         "initialization": { "type": "localJson", "json": serde_json::from_str::<Value>(JSON_SEED).unwrap() },
-        "readOnly": true,
+        "policy": { "readOnly": true },
     }));
     let state_before = state_of(&id);
     let document_before = document_json_of(&id);
@@ -938,7 +981,7 @@ fn input_filter_preserves_exact_semantics_and_replays_compile_errors() {
     // is kept only if it matches the cached pattern.
     let id = create_handle(json!({
         "initialization": { "type": "localEmpty" },
-        "inputFilter": "^[0-9]$",
+        "policy": { "inputFilter": "^[0-9]$" },
     }));
     for index in 0..40u64 {
         let text = format!("a{index}b");
@@ -959,7 +1002,7 @@ fn input_filter_preserves_exact_semantics_and_replays_compile_errors() {
     // A fully filtered commit lowers to a real no-op transaction.
     let id = create_handle(json!({
         "initialization": { "type": "localEmpty" },
-        "inputFilter": "^[0-9]$",
+        "policy": { "inputFilter": "^[0-9]$" },
     }));
     let outcome = ok_json(&v2::editor_v2_apply_input(
         id.clone(),
@@ -972,7 +1015,7 @@ fn input_filter_preserves_exact_semantics_and_replays_compile_errors() {
     // request (cached compile failure, never a panic).
     let id = create_handle(json!({
         "initialization": { "type": "localEmpty" },
-        "inputFilter": "[unclosed",
+        "policy": { "inputFilter": "[unclosed" },
     }));
     let first = err_json(&v2::editor_v2_apply_input(
         id.clone(),
@@ -1042,9 +1085,11 @@ fn collaboration_generation_flow_with_stale_and_disposition_refusals() {
     let generation = ok_json(&v2_collab::editor_v2_collaboration_begin_connect(
         id.clone(),
     ))["generation"]
-        .as_u64()
-        .unwrap();
-    assert_eq!(generation, 1, "first issued generation");
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(generation, "1", "first issued generation");
+    let stale_generation = (generation.parse::<u64>().unwrap() + 100).to_string();
     let error = err_json(&v2_collab::editor_v2_collaboration_begin_connect(
         id.clone(),
     ));
@@ -1052,12 +1097,12 @@ fn collaboration_generation_flow_with_stale_and_disposition_refusals() {
 
     let error = err_bytes(&v2_collab::editor_v2_collaboration_socket_open(
         id.clone(),
-        generation + 100,
+        stale_generation.clone(),
     ));
     assert_error(&error, "transport", "TRANSPORT_STALE_GENERATION", None);
     let step1 = ok_bytes(&v2_collab::editor_v2_collaboration_socket_open(
         id.clone(),
-        generation,
+        generation.clone(),
     ));
     let our_sv = step1_state_vector(&step1);
     assert!(!step1.is_empty(), "step 1 bytes ride directly");
@@ -1065,7 +1110,7 @@ fn collaboration_generation_flow_with_stale_and_disposition_refusals() {
     // receive on a stale generation refuses before any decode work.
     let error = err_json(&v2_collab::editor_v2_collaboration_receive(
         id.clone(),
-        generation + 100,
+        stale_generation.clone(),
         step2_frame(server.diff_for(&our_sv.encode_v1())),
     ));
     assert_error(&error, "transport", "TRANSPORT_STALE_GENERATION", None);
@@ -1074,7 +1119,7 @@ fn collaboration_generation_flow_with_stale_and_disposition_refusals() {
     // synchronized transport with no close.
     let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
         id.clone(),
-        generation,
+        generation.clone(),
         step2_frame(server.diff_for(&our_sv.encode_v1())),
     ));
     assert_eq!(outcome["transportState"], "Synchronized", "{outcome:?}");
@@ -1085,13 +1130,13 @@ fn collaboration_generation_flow_with_stale_and_disposition_refusals() {
     // one frame per call as direct bytes, then the documented empty value.
     let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
         id.clone(),
-        generation,
+        generation.clone(),
         step1_frame(&server.state_vector_bytes()),
     ));
     assert_eq!(outcome["repliesEnqueued"], 1, "{outcome:?}");
     let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
         id.clone(),
-        generation,
+        generation.clone(),
     ));
     match Message::decode_v1(&frame).expect("outbound frame must decode") {
         Message::Sync(SyncMessage::SyncStep2(update)) => server.apply(&update),
@@ -1099,7 +1144,7 @@ fn collaboration_generation_flow_with_stale_and_disposition_refusals() {
     }
     let empty = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
         id.clone(),
-        generation,
+        generation.clone(),
     ));
     assert!(
         empty.is_empty(),
@@ -1109,12 +1154,12 @@ fn collaboration_generation_flow_with_stale_and_disposition_refusals() {
     // Stale generation refuses the take; the close retires the generation.
     let error = err_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
         id.clone(),
-        generation + 100,
+        stale_generation,
     ));
     assert_error(&error, "transport", "TRANSPORT_STALE_GENERATION", None);
     let outcome = ok_json(&v2_collab::editor_v2_collaboration_socket_close(
         id.clone(),
-        generation,
+        generation.clone(),
         None,
         None,
     ));
@@ -1125,7 +1170,7 @@ fn collaboration_generation_flow_with_stale_and_disposition_refusals() {
     );
     let error = err_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
         id.clone(),
-        generation,
+        generation.clone(),
     ));
     assert_error(&error, "transport", "TRANSPORT_STALE_GENERATION", None);
 
@@ -1134,9 +1179,10 @@ fn collaboration_generation_flow_with_stale_and_disposition_refusals() {
     let generation = ok_json(&v2_collab::editor_v2_collaboration_begin_connect(
         id.clone(),
     ))["generation"]
-        .as_u64()
-        .unwrap();
-    assert_eq!(generation, 2, "generations stay monotonic");
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(generation, "2", "generations stay monotonic");
     let outcome = ok_json(&v2_collab::editor_v2_collaboration_socket_close(
         id.clone(),
         generation,
@@ -1174,7 +1220,7 @@ fn collaboration_binary_round_trip_and_awareness_flow_with_a_raw_peer() {
     assert_eq!(outcome["changed"], true, "{outcome:?}");
     let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
         id.clone(),
-        generation,
+        generation.clone(),
     ));
     match Message::decode_v1(&frame).expect("update frame must decode") {
         Message::Sync(SyncMessage::Update(update)) => server.apply(&update),
@@ -1211,7 +1257,7 @@ fn collaboration_binary_round_trip_and_awareness_flow_with_a_raw_peer() {
     );
     let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
         id.clone(),
-        generation,
+        generation.clone(),
     ));
     let mut raw_awareness = Awareness::new(Doc::new());
     match Message::decode_v1(&frame).expect("awareness frame must decode") {
@@ -1220,7 +1266,7 @@ fn collaboration_binary_round_trip_and_awareness_flow_with_a_raw_peer() {
     }
     let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
         id.clone(),
-        generation,
+        generation.clone(),
     ));
     assert!(frame.is_empty(), "queues fully drained");
 
@@ -1233,7 +1279,7 @@ fn collaboration_binary_round_trip_and_awareness_flow_with_a_raw_peer() {
     assert_eq!(peers["peers"], json!([]), "{peers:?}");
     let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
         id.clone(),
-        generation,
+        generation.clone(),
     ));
     match Message::decode_v1(&frame).expect("tombstone frame must decode") {
         Message::Awareness(update) => raw_awareness.apply_update(update).unwrap(),
@@ -1287,7 +1333,7 @@ fn take_outbound_drains_protocol_replies_before_document_updates() {
     ));
     let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
         id.clone(),
-        generation,
+        generation.clone(),
         step1_frame(&server.state_vector_bytes()),
     ));
     assert_eq!(outcome["repliesEnqueued"], 1, "{outcome:?}");
@@ -1318,7 +1364,7 @@ fn take_outbound_drains_protocol_replies_before_document_updates() {
     loop {
         let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
             id.clone(),
-            generation,
+            generation.clone(),
         ));
         if frame.is_empty() {
             break;
@@ -1516,7 +1562,7 @@ fn full_drive_local_editing_to_synchronized_room() {
     server.push_text(" from server");
     let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
         id.clone(),
-        generation,
+        generation.clone(),
         sync_frame(SyncMessage::Update(
             server.diff_for(&snapshot.encoded_state),
         )),
@@ -1557,7 +1603,7 @@ fn oversize_inputs_fail_with_structured_limit_errors() {
     let result = v2::editor_v2_create(
         json!({
             "initialization": { "type": "localEmpty" },
-            "inputFilter": huge,
+            "policy": { "inputFilter": huge },
         })
         .to_string(),
         None,
@@ -1565,7 +1611,16 @@ fn oversize_inputs_fail_with_structured_limit_errors() {
     let error = err_json(&result);
     assert_error(&error, "boundary", "INPUT_LIMIT_EXCEEDED", None);
     assert!(error.limit.is_some(), "{error:?}");
-    assert!(error.actual > error.limit, "{error:?}");
+    assert!(
+        error
+            .actual
+            .as_deref()
+            .zip(error.limit.as_deref())
+            .is_some_and(
+                |(actual, limit)| actual.parse::<u64>().unwrap() > limit.parse::<u64>().unwrap()
+            ),
+        "{error:?}"
+    );
 
     // Mutation envelope beyond the same bounded limit.
     let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));

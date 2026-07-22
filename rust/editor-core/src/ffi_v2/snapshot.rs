@@ -16,7 +16,7 @@ use crate::session::SessionError;
 use crate::yrs_engine::DocumentSnapshot;
 
 use super::editor::{json_result, with_editor, ABSENT_REQUEST_ID};
-use super::types::{FfiJsonResult, FfiSnapshotExport, FfiSnapshotExportResult};
+use super::types::{decimal_u64, FfiJsonResult, FfiSnapshotExport, FfiSnapshotExportResult};
 
 /// The five snapshot manifest fields, wire-named; the encoded state rides
 /// separately as direct bytes.
@@ -89,7 +89,7 @@ pub fn editor_v2_snapshot_restore(
             .map(|commit| {
                 serde_json::json!({
                     "changed": commit.changed,
-                    "documentRevision": commit.revision,
+                    "documentRevision": decimal_u64(commit.revision),
                 })
                 .to_string()
             })

@@ -21,6 +21,8 @@ import { requireNativeViewManager } from 'expo-modules-core';
 import {
     _assertNativeEditorDocumentHandle,
     _getNativeEditorDocumentHandleDescriptor,
+    normalizeNativeEditorV2DecimalId,
+    requireNativeEditorV2U32,
     type ActiveState,
     type DocumentJSON,
     type HistoryState,
@@ -62,7 +64,7 @@ interface NativeEditorViewProps {
     style?: StyleProp<ViewStyle>;
     accessibilityLabel?: string;
     accessibilityHint?: string;
-    editorId: number;
+    editorId: string;
     placeholder?: string;
     editable: boolean;
     autoFocus: boolean;
@@ -79,7 +81,7 @@ interface NativeEditorViewProps {
     toolbarItemsJson?: string;
     remoteSelectionsJson?: string;
     editorUpdateJson?: string;
-    editorUpdateEditorId?: number;
+    editorUpdateEditorId?: string;
     editorUpdateRevision?: number;
     onEditorUpdate: (event: NativeSyntheticEvent<NativeUpdateEvent>) => void;
     onSelectionChange: (event: NativeSyntheticEvent<NativeSelectionEvent>) => void;
@@ -95,39 +97,39 @@ const NativeEditorView = requireNativeViewManager('NativeEditor') as React.Compo
 
 interface NativeUpdateEvent {
     updateJson?: string;
-    editorId?: number;
-    documentVersion?: number;
+    editorId?: string;
+    documentVersion?: string;
 }
 
 interface NativeSelectionEvent {
     anchor: number;
     head: number;
     stateJson?: string;
-    editorId?: number;
-    documentVersion?: number;
+    editorId?: string;
+    documentVersion?: string;
 }
 
 interface NativeFocusEvent {
     isFocused: boolean;
-    editorId?: number;
+    editorId?: string;
 }
 
 interface NativeContentHeightEvent {
     contentHeight: number;
-    editorId?: number;
+    editorId?: string;
 }
 
 interface NativeToolbarActionEvent {
     key: string;
-    editorId?: number;
+    editorId?: string;
     updateJson?: string;
     stateJson?: string;
-    documentVersion?: number;
+    documentVersion?: string;
 }
 
 interface NativeAddonEvent {
     eventJson: string;
-    editorId?: number;
+    editorId?: string;
 }
 
 const LINK_TOOLBAR_ACTION_KEY = '__native-editor-link__';
@@ -259,7 +261,19 @@ function serializeRemoteSelections(
     if (!remoteSelections || remoteSelections.length === 0) {
         return undefined;
     }
-    return stringifyCachedJson(remoteSelections);
+    const normalized = remoteSelections.map((selection) => {
+        const clientId = normalizeNativeEditorV2DecimalId(selection.clientId);
+        if (clientId == null) {
+            throw new Error('NativeRichTextEditor: remote clientId must be canonical decimal u64');
+        }
+        return {
+            ...selection,
+            clientId,
+            anchor: requireNativeEditorV2U32(selection.anchor, 'remote selection anchor'),
+            head: requireNativeEditorV2U32(selection.head, 'remote selection head'),
+        };
+    });
+    return stringifyCachedJson(normalized);
 }
 
 function parseCaretRectJson(raw: string | null | undefined): NativeRichTextEditorCaretRect | null {
@@ -360,7 +374,7 @@ export type NativeRichTextEditorKeyboardType =
     | 'ascii-capable-number-pad';
 
 export interface RemoteSelectionDecoration {
-    clientId: number | string;
+    clientId: string;
     anchor: number;
     head: number;
     color: string;
@@ -414,7 +428,7 @@ export interface NativeRichTextEditorProps {
     /** Controlled ProseMirror JSON content. Ignored if value is set. */
     valueJSON?: DocumentJSON;
     /** Optional stable revision hint for `valueJSON` to avoid reserializing equal docs on rerender. */
-    valueJSONRevision?: string | number;
+    valueJSONRevision?: string;
     /** Controls how external `valueJSON` changes are applied. Defaults to preserving undo history. */
     valueJSONUpdateMode?: NativeRichTextEditorValueJSONUpdateMode;
     /** Placeholder text shown when editor is empty. */
@@ -648,10 +662,7 @@ export const NativeRichTextEditor = forwardRef<
     });
 
     const bridge = documentHandle.bridge;
-    const editorIdNumber = useMemo(() => {
-        const parsed = Number(documentHandle.editorId);
-        return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
-    }, [documentHandle.editorId]);
+    const editorId = documentHandle.editorId;
 
     // ── Prop refs ───────────────────────────────────────────────
     const onSelectionChangeRef = useRef(onSelectionChange);
@@ -721,8 +732,8 @@ export const NativeRichTextEditor = forwardRef<
         const updateJson = bridge.renderUpdate();
         const parsed = applyUpdateState(updateJson);
         const documentVersion = parsed?.documentVersion;
-        if (typeof documentVersion === 'number') {
-            lastPushedEngineRevisionRef.current = String(documentVersion);
+        if (typeof documentVersion === 'string') {
+            lastPushedEngineRevisionRef.current = documentVersion;
         }
         pushRevisionRef.current += 1;
         setPushedUpdate({ json: updateJson, revision: pushRevisionRef.current });
@@ -966,17 +977,16 @@ export const NativeRichTextEditor = forwardRef<
 
     // ── Native event handlers ───────────────────────────────────
     const isForThisEditor = useCallback(
-        (payload: { editorId?: number }) =>
-            payload.editorId == null || payload.editorId === editorIdNumber,
-        [editorIdNumber]
+        (payload: { editorId?: string }) => payload.editorId == null || payload.editorId === editorId,
+        [editorId]
     );
 
     const handleEditorUpdate = useCallback(
         (event: NativeSyntheticEvent<NativeUpdateEvent>) => {
             if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
             const { updateJson, documentVersion } = event.nativeEvent;
-            if (typeof documentVersion === 'number') {
-                lastNativeDrivenRevisionRef.current = String(documentVersion);
+            if (typeof documentVersion === 'string') {
+                lastNativeDrivenRevisionRef.current = documentVersion;
             }
             applyUpdateState(updateJson);
             // The adapter already committed; re-read for content callbacks
@@ -1035,8 +1045,8 @@ export const NativeRichTextEditor = forwardRef<
         (event: NativeSyntheticEvent<NativeToolbarActionEvent>) => {
             if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
             const { key, updateJson, stateJson, documentVersion } = event.nativeEvent;
-            if (typeof documentVersion === 'number') {
-                lastNativeDrivenRevisionRef.current = String(documentVersion);
+            if (typeof documentVersion === 'string') {
+                lastNativeDrivenRevisionRef.current = documentVersion;
             }
             applyUpdateState(typeof updateJson === 'string' ? updateJson : stateJson);
             // The native toolbar already applied the engine command through
@@ -1152,7 +1162,7 @@ export const NativeRichTextEditor = forwardRef<
                 style={nativeViewStyle}
                 accessibilityLabel={accessibilityLabel}
                 accessibilityHint={accessibilityHint}
-                editorId={editorIdNumber}
+                editorId={editorId}
                 placeholder={placeholder}
                 editable={editable}
                 autoFocus={autoFocus}
@@ -1169,7 +1179,7 @@ export const NativeRichTextEditor = forwardRef<
                 toolbarItemsJson={toolbarItemsJson}
                 remoteSelectionsJson={remoteSelectionsJson}
                 editorUpdateJson={pushedUpdate?.json}
-                editorUpdateEditorId={pushedUpdate != null ? editorIdNumber : undefined}
+                editorUpdateEditorId={pushedUpdate != null ? editorId : undefined}
                 editorUpdateRevision={pushedUpdate?.revision ?? 0}
                 onEditorUpdate={handleEditorUpdate}
                 onSelectionChange={handleSelectionChange}

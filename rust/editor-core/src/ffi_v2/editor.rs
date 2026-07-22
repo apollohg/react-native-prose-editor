@@ -42,7 +42,10 @@ use crate::yrs_engine::{
 };
 
 use super::snapshot::SnapshotMetadataEnvelope;
-use super::types::{FfiError, FfiJsonResult, FfiUnitResult};
+use super::types::{
+    decimal_u64, deserialize_canonical_u64, parse_canonical_u64, FfiError, FfiJsonResult,
+    FfiUnitResult,
+};
 
 /// The request-id sentinel for entries that take no request envelope: the
 /// internal seams stamp it, and the boundary strips it back to absent so
@@ -52,7 +55,7 @@ use super::types::{FfiError, FfiJsonResult, FfiUnitResult};
 pub(crate) const ABSENT_REQUEST_ID: u64 = 0;
 
 /// One supported version for every v2 request envelope.
-const V2_ENVELOPE_VERSION: u64 = 1;
+const V2_ENVELOPE_VERSION: u32 = 1;
 
 /// Non-payload create metadata is intentionally tiny. Schema and local
 /// document/HTML values are borrowed as `RawValue`s and excluded from this
@@ -596,7 +599,7 @@ fn admit_create_retained_envelope(json: &str) -> Result<(), SessionError> {
 /// Decimal-string handles at the boundary; malformed handles are structured
 /// boundary errors, never panics.
 fn parse_editor_id(handle: &str) -> Result<u64, FfiError> {
-    handle.parse::<u64>().map_err(|_| {
+    parse_canonical_u64(handle).ok_or_else(|| {
         FfiError::new(
             ErrorDomain::Boundary,
             "CONFIG_INVALID",
@@ -668,13 +671,13 @@ pub(crate) fn session_error_json(error: &SessionError) -> Value {
         }
     }
     if let Some(operation_index) = error.operation_index {
-        object.insert("operationIndex".into(), operation_index.into());
+        object.insert("operationIndex".into(), Value::String(operation_index));
     }
     if let Some(limit) = error.limit {
-        object.insert("limit".into(), limit.into());
+        object.insert("limit".into(), Value::String(limit));
     }
     if let Some(actual) = error.actual {
-        object.insert("actual".into(), actual.into());
+        object.insert("actual".into(), Value::String(actual));
     }
     if let Some(details_json) = error.details_json {
         if let Ok(details) = serde_json::from_str::<Value>(&details_json) {
@@ -697,7 +700,7 @@ fn parse_request_envelope<'a, T: serde::Deserialize<'a>>(
         .map_err(|error| SessionError::from(BoundaryError::parse("CONFIG_INVALID", error)))
 }
 
-fn admit_version(version: u64, request_id: u64) -> Result<(), SessionError> {
+fn admit_version(version: u32, request_id: u64) -> Result<(), SessionError> {
     if version != V2_ENVELOPE_VERSION {
         return Err(config_invalid(
             request_id,
@@ -720,7 +723,8 @@ fn config_invalid(request_id: u64, message: impl Into<String>) -> SessionError {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReplaceDocumentEnvelope<'a> {
-    version: u64,
+    version: u32,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
     request_id: u64,
     #[serde(default, borrow, deserialize_with = "deserialize_non_null_raw_value")]
     set_json: Option<&'a RawValue>,
@@ -731,7 +735,8 @@ struct ReplaceDocumentEnvelope<'a> {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct HistoryRequestEnvelope {
-    version: u64,
+    version: u32,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
     request_id: u64,
 }
 
@@ -1130,8 +1135,8 @@ pub fn editor_v2_get_state(editor_id: String) -> FfiJsonResult {
             "documentState": session.document_state.as_str(),
             "transportState": session.transport_state().as_str(),
             "renderState": render_state,
-            "documentRevision": session.engine.revision(),
-            "stateRevision": session.engine.state_revision(),
+            "documentRevision": decimal_u64(session.engine.revision()),
+            "stateRevision": decimal_u64(session.engine.state_revision()),
             "canUndo": session.engine.can_undo(),
             "canRedo": session.engine.can_redo(),
         })
@@ -1193,7 +1198,7 @@ pub fn editor_v2_replace_document(editor_id: String, request_json: String) -> Ff
         };
         Ok(serde_json::json!({
             "changed": commit.changed,
-            "documentRevision": commit.document_revision,
+            "documentRevision": decimal_u64(commit.document_revision),
         })
         .to_string())
     }))
@@ -1229,8 +1234,8 @@ fn bridge_entry(
             NativeBridgeOutcome::Transaction(result) => serde_json::json!({
                 "type": "transaction",
                 "changed": result.changed,
-                "documentRevision": result.document_revision,
-                "stateRevision": result.state_revision,
+                "documentRevision": decimal_u64(result.document_revision),
+                "stateRevision": decimal_u64(result.state_revision),
                 "canUndo": result.history_state.can_undo,
                 "canRedo": result.history_state.can_redo,
             })
@@ -1241,7 +1246,7 @@ fn bridge_entry(
             NativeBridgeOutcome::Replacement(commit) => serde_json::json!({
                 "type": "replacement",
                 "changed": commit.changed,
-                "documentRevision": commit.document_revision,
+                "documentRevision": decimal_u64(commit.document_revision),
             })
             .to_string(),
         })

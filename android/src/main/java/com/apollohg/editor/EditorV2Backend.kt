@@ -11,9 +11,9 @@ internal data class EditorV2Error(
     val code: String,
     val message: String,
     val requestId: String? = null,
-    val operationIndex: ULong? = null,
-    val limit: ULong? = null,
-    val actual: ULong? = null,
+    val operationIndex: String? = null,
+    val limit: String? = null,
+    val actual: String? = null,
     val detailsJson: String? = null,
 )
 
@@ -36,7 +36,7 @@ internal interface EditorV2Backend {
     fun setSelection(editorId: String, requestJson: String): EditorV2CallResult<String>
     fun undo(editorId: String, requestJson: String): EditorV2CallResult<String>
     fun redo(editorId: String, requestJson: String): EditorV2CallResult<String>
-    fun collaborationTakeOutbound(editorId: String, generation: ULong): EditorV2CallResult<ByteArray>
+    fun collaborationTakeOutbound(editorId: String, generation: String): EditorV2CallResult<ByteArray>
     fun snapshotExport(editorId: String): EditorV2CallResult<Pair<String, ByteArray>>
 
     /**

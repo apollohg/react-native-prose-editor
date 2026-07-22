@@ -3,7 +3,11 @@ use serde::{Deserialize, Serialize};
 pub(crate) const HARD_MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const HARD_MAX_DOCUMENT_DEPTH: usize = 1_024;
 
-const DOCUMENT_STACK_SEGMENT_BYTES: usize = 8 * 1024 * 1024;
+// A whole-root ReplaceStructure compilation retains the source and preview
+// trees while lowering an admitted 1,024-deep document.  Its bounded peak is
+// larger than the generic import/read paths covered by the original 8 MiB
+// segment, so reserve the next fixed tier at the FFI lifecycle boundary.
+const DOCUMENT_STACK_SEGMENT_BYTES: usize = 16 * 1024 * 1024;
 
 std::thread_local! {
     static DOCUMENT_STACK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

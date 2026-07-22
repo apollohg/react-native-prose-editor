@@ -42,6 +42,14 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertNil(EditorV2Adapter.attach(editorId: "999999", roomBound: false))
     }
 
+    func testAdapterEmitsCanonicalDecimalDocumentVersion() {
+        let adapter = makeAdapter()
+        let update = parseObject(adapter.currentStateJSON())
+
+        XCTAssertEqual(update["documentVersion"] as? String, "0")
+        XCTAssertFalse(update["documentVersion"] is NSNumber)
+    }
+
     private func makeRoomAdapter(
         documentId: String = "doc-staging",
         lineageId: String = "lineage-staging",
@@ -181,7 +189,7 @@ final class EditorV2AdapterTests: XCTestCase {
         // resetAndClear history: not undoable.
         XCTAssertEqual(historyState(update)["canUndo"] as? Bool, false)
         let parsed = parseObject(update)
-        XCTAssertEqual(parsed["documentVersion"] as? Int, 1)
+        XCTAssertEqual(parsed["documentVersion"] as? String, "1")
         XCTAssertEqual(adapter.baseDocumentRevision, 1)
         XCTAssertEqual(documentText(adapter), "Hello")
     }
@@ -379,7 +387,7 @@ final class EditorV2AdapterTests: XCTestCase {
         // base revision goes stale.
         let external = editorV2ApplyCommand(
             editorId: adapter.editorId,
-            requestJson: #"{"version":1,"requestId":990001,"baseDocumentRevision":\#(adapter.baseDocumentRevision),"command":{"type":"insertText","text":"EXT"}}"#
+            requestJson: #"{"version":1,"requestId":"990001","baseDocumentRevision":"\#(adapter.baseDocumentRevision)","command":{"type":"insertText","text":"EXT"}}"#
         )
         XCTAssertNil(external.error, "external mutation failed: \(String(describing: external.error))")
         XCTAssertEqual(documentText(adapter), "EXTbase")
@@ -547,11 +555,12 @@ final class EditorV2AdapterTests: XCTestCase {
         let adapterA = makeRoomAdapter(documentId: "doc-room", lineageId: "lineage-room")
         let adapterB = makeRoomAdapter(documentId: "doc-room", lineageId: "lineage-room")
 
-        func beginGeneration(_ adapter: EditorV2Adapter, file: StaticString = #filePath, line: UInt = #line) -> UInt64 {
+        func beginGeneration(_ adapter: EditorV2Adapter, file: StaticString = #filePath, line: UInt = #line) -> String {
             let begin = editorV2CollaborationBeginConnect(editorId: adapter.editorId)
-            let raw = parseObject(begin.value)["generation"]
-            let generation = (raw as? NSNumber)?.uint64Value ?? (raw as? String).flatMap(UInt64.init)
-            guard let generation else {
+            guard let generation = parseObject(begin.value)["generation"] as? String,
+                  UInt64(generation) != nil,
+                  generation == "0" || generation.first != "0"
+            else {
                 XCTFail("beginConnect returned no generation: \(begin.value ?? "nil")", file: file, line: line)
                 fatalError("unreachable")
             }
@@ -596,7 +605,7 @@ final class EditorV2AdapterTests: XCTestCase {
         let adapter = makeAdapter()
         var frames: [Data] = []
         adapter.outboundFrameSink = { frames.append($0) }
-        adapter.collaborationGeneration = 1
+        adapter.collaborationGeneration = "1"
         _ = adapter.insertText("x", atScalar: 0)
         XCTAssertTrue(frames.isEmpty, "local-only sessions own no outbox; the ping must not fire")
     }
@@ -608,14 +617,14 @@ final class EditorV2AdapterTests: XCTestCase {
         _ = adapter.setContentHtml("<p>ab</p>")
         let update = parseObject(adapter.insertText("c", atScalar: 2))
 
-        XCTAssertEqual(update["documentVersion"] as? Int, 2)
+        XCTAssertEqual(update["documentVersion"] as? String, "2")
         let history = historyState(adapter.insertText("d", atScalar: 3))
         XCTAssertEqual(history["canUndo"] as? Bool, true)
         XCTAssertEqual(history["canRedo"] as? Bool, false)
         // Toolbar state derives from the authoritative document+selection.
         let state = parseObject(adapter.currentStateJSON())
         XCTAssertNotNil(state["activeState"])
-        XCTAssertEqual(state["documentVersion"] as? Int, 3)
+        XCTAssertEqual(state["documentVersion"] as? String, "3")
     }
 
     func testStructuredErrorEnvelopeFields() {

@@ -1305,7 +1305,7 @@ final class RenderBridge {
 
             case "voidInline":
                 let nodeType = element["nodeType"] as? String ?? ""
-                let docPos = jsonUInt32(element["docPos"])
+                guard let docPos = jsonUInt32(element["docPos"]) else { continue }
                 let attrs = element["attrs"] as? [String: Any] ?? [:]
                 if nodeType == "hardBreak" {
                     overrideTrailingParagraphSpacing(in: result, paragraphSpacing: 0)
@@ -1330,7 +1330,7 @@ final class RenderBridge {
 
             case "voidBlock":
                 let nodeType = element["nodeType"] as? String ?? ""
-                let docPos = jsonUInt32(element["docPos"])
+                guard let docPos = jsonUInt32(element["docPos"]) else { continue }
                 let attrs = element["attrs"] as? [String: Any] ?? [:]
 
                 // Add inter-block newline if not the first block.
@@ -1371,7 +1371,7 @@ final class RenderBridge {
             case "opaqueInlineAtom":
                 let nodeType = element["nodeType"] as? String ?? ""
                 let label = element["label"] as? String ?? "?"
-                let docPos = jsonUInt32(element["docPos"])
+                guard let docPos = jsonUInt32(element["docPos"]) else { continue }
                 let mentionTheme = (element["mentionTheme"] as? [String: Any]).map(
                     EditorMentionTheme.init(dictionary:)
                 )
@@ -1397,7 +1397,7 @@ final class RenderBridge {
             case "opaqueBlockAtom":
                 let nodeType = element["nodeType"] as? String ?? ""
                 let label = element["label"] as? String ?? "?"
-                let docPos = jsonUInt32(element["docPos"])
+                guard let docPos = jsonUInt32(element["docPos"]) else { continue }
 
                 if !isFirstBlock {
                     applyPendingTrailingParagraphSpacing(
@@ -2032,11 +2032,8 @@ final class RenderBridge {
     // MARK: - Private Helpers
 
     /// Extract a `UInt32` from a JSON value produced by `JSONSerialization`.
-    static func jsonUInt32(_ value: Any?) -> UInt32 {
-        if let number = value as? NSNumber {
-            return number.uint32Value
-        }
-        return 0
+    static func jsonUInt32(_ value: Any?) -> UInt32? {
+        v2ExactUInt32(value as? NSNumber)
     }
 
     /// Extract a `UInt8` from a JSON value produced by `JSONSerialization`.

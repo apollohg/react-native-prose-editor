@@ -42,7 +42,8 @@ class NativeEditorExpoViewTest {
 
         runCatching {
             destroyEditorThenInvalidate(
-                editorId = 42uL,
+                editorHandle = "42",
+                viewToken = 42L,
                 beginDestroy = {
                     calls += "begin:$it"
                     true
@@ -68,7 +69,8 @@ class NativeEditorExpoViewTest {
         assertTrue(NativeEditorViewRegistry.register(editorId, view))
 
         destroyEditorThenInvalidate(
-            editorId = editorId.toULong(),
+            editorHandle = "9200000",
+            viewToken = editorId,
             destroy = {
                 rustDestroyCalls += 1
                 assertTrue(NativeEditorViewRegistry.isDestroyed(editorId))
@@ -79,14 +81,16 @@ class NativeEditorExpoViewTest {
                 assertFalse(preparation.getBoolean("ready"))
                 assertEquals("destroyed", preparation.getString("blockedReason"))
                 destroyEditorThenInvalidate(
-                    editorId = editorId.toULong(),
+                    editorHandle = "9200000",
+                    viewToken = editorId,
                     destroy = { rustDestroyCalls += 1 }
                 )
             }
         )
 
         destroyEditorThenInvalidate(
-            editorId = editorId.toULong(),
+            editorHandle = "9200000",
+            viewToken = editorId,
             destroy = { rustDestroyCalls += 1 }
         )
 
@@ -534,7 +538,7 @@ class NativeEditorExpoViewTest {
         assertEquals(0, view.pendingEditorUpdateRevisionForTesting())
         assertEquals("first", editText.text?.toString())
         assertEquals(1, readyPayloads.size)
-        assertEquals(1, readyPayloads.single()["editorUpdateRevision"])
+        assertEquals(1L, readyPayloads.single()["editorUpdateRevision"])
     }
 
     @Test
@@ -542,9 +546,9 @@ class NativeEditorExpoViewTest {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
 
-        view.setLastDocumentVersionForTesting(20)
+        view.setLastDocumentVersionForTesting("20")
 
-        assertEquals(20, view.lastDocumentVersionForTesting())
+        assertEquals("20", view.lastDocumentVersionForTesting())
 
         view.setEditorId(66778L)
 
@@ -569,7 +573,7 @@ class NativeEditorExpoViewTest {
         view.onAddonEventForTesting = {}
         view.onRefreshToolbarStateFromEditorSelectionForTesting = {
             JSONObject(renderUpdateJson(""))
-                .put("documentVersion", 7)
+                .put("documentVersion", "7")
                 .toString()
         }
         view.onToolbarActionForTesting = { payload ->
@@ -585,8 +589,8 @@ class NativeEditorExpoViewTest {
             )
         )
 
-        assertEquals(7, view.lastDocumentVersionForTesting())
-        assertEquals(7, toolbarActionPayload?.get("documentVersion"))
+        assertEquals("7", view.lastDocumentVersionForTesting())
+        assertEquals("7", toolbarActionPayload?.get("documentVersion"))
 
         NativeEditorViewRegistry.unregister(editorId, view)
     }
@@ -799,7 +803,7 @@ class NativeEditorExpoViewTest {
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1000))
 
         assertNull(view.pendingEditorUpdateJsonForTesting())
-        assertEquals(9, readyPayloads.last()["editorUpdateRevision"])
+        assertEquals(9L, readyPayloads.last()["editorUpdateRevision"])
 
         NativeEditorViewRegistry.unregister(editorId, view)
     }
@@ -1026,8 +1030,8 @@ class NativeEditorExpoViewTest {
         assertTrue(view.emitEditorReadyForTesting(editorUpdateRevision = 4))
 
         assertEquals(1, readyPayloads.size)
-        assertEquals(editorId, readyPayloads.single()["editorId"])
-        assertEquals(4, readyPayloads.single()["editorUpdateRevision"])
+        assertEquals("0", readyPayloads.single()["editorId"])
+        assertEquals(4L, readyPayloads.single()["editorUpdateRevision"])
 
         NativeEditorViewRegistry.unregister(editorId, view)
     }
@@ -1106,7 +1110,7 @@ class NativeEditorExpoViewTest {
         val editText = view.richTextView.editorEditText
         val updateJson = renderUpdateJson("")
         val acknowledgedUpdateJson = JSONObject(updateJson)
-            .put("documentVersion", 2)
+            .put("documentVersion", "2")
             .toString()
         var toolbarActionPayload: Map<String, Any>? = null
 
@@ -1115,7 +1119,7 @@ class NativeEditorExpoViewTest {
         editText.setSelection(0)
         editText.editorId = editorId
         view.setAttachedToNativeWindowForTesting(true)
-        view.setLastDocumentVersionForTesting(1)
+        view.setLastDocumentVersionForTesting("1")
         view.onAddonEventForTesting = {}
         view.setPendingEditorUpdateJson(acknowledgedUpdateJson)
         view.setPendingEditorUpdateEditorId(editorId)
@@ -1147,7 +1151,7 @@ class NativeEditorExpoViewTest {
 
         assertFalse(view.hasPendingNativeActionForTesting())
         assertEquals("custom", toolbarActionPayload?.get("key"))
-        assertEquals(2, toolbarActionPayload?.get("documentVersion"))
+        assertEquals("2", toolbarActionPayload?.get("documentVersion"))
 
         NativeEditorViewRegistry.unregister(editorId, view)
     }
@@ -1160,10 +1164,10 @@ class NativeEditorExpoViewTest {
         val editText = view.richTextView.editorEditText
         val updateJson = renderUpdateJson("")
         val acknowledgedUpdateJson = JSONObject(updateJson)
-            .put("documentVersion", 2)
+            .put("documentVersion", "2")
             .toString()
         val unrelatedUpdateJson = JSONObject(updateJson)
-            .put("documentVersion", 3)
+            .put("documentVersion", "3")
             .toString()
         var toolbarActionPayload: Map<String, Any>? = null
 
@@ -1172,7 +1176,7 @@ class NativeEditorExpoViewTest {
         editText.setSelection(0)
         editText.editorId = editorId
         view.setAttachedToNativeWindowForTesting(true)
-        view.setLastDocumentVersionForTesting(1)
+        view.setLastDocumentVersionForTesting("1")
         view.setPendingEditorUpdateJson(acknowledgedUpdateJson)
         view.setPendingEditorUpdateEditorId(editorId)
         view.setPendingEditorUpdateRevision(1)
@@ -1215,7 +1219,7 @@ class NativeEditorExpoViewTest {
         val editText = view.richTextView.editorEditText
         val updateJson = renderUpdateJson("Hi @ali")
         val acknowledgedUpdateJson = JSONObject(updateJson)
-            .put("documentVersion", 2)
+            .put("documentVersion", "2")
             .toString()
         val suggestion = NativeMentionSuggestion(
             key = "u1",
@@ -1231,7 +1235,7 @@ class NativeEditorExpoViewTest {
         editText.setSelection(7)
         editText.editorId = editorId
         view.setAttachedToNativeWindowForTesting(true)
-        view.setLastDocumentVersionForTesting(1)
+        view.setLastDocumentVersionForTesting("1")
         view.onAddonEventForTesting = { payload ->
             addonPayload = payload
         }
@@ -1280,7 +1284,7 @@ class NativeEditorExpoViewTest {
         val eventJson = JSONObject(addonPayload?.get("eventJson") as String)
         assertEquals("mentionsSelectRequest", eventJson.getString("type"))
         assertEquals("u1", eventJson.getString("suggestionKey"))
-        assertEquals(2, eventJson.getInt("documentVersion"))
+        assertEquals("2", eventJson.getString("documentVersion"))
 
         NativeEditorViewRegistry.unregister(editorId, view)
     }
@@ -2357,7 +2361,7 @@ class NativeEditorExpoViewTest {
         assertTrue(events.isNotEmpty())
         val initialEvent = events.last()
         val contentHeight = initialEvent["contentHeight"] as Int
-        assertEquals(0L, initialEvent["editorId"])
+        assertEquals("0", initialEvent["editorId"])
 
         events.clear()
         val editorId = 779902L
@@ -2368,7 +2372,7 @@ class NativeEditorExpoViewTest {
 
         assertEquals(1, events.size)
         assertEquals(contentHeight, events.single()["contentHeight"])
-        assertEquals(editorId, events.single()["editorId"])
+        assertEquals("0", events.single()["editorId"])
 
         NativeEditorViewRegistry.unregister(editorId, view)
     }
@@ -2493,7 +2497,7 @@ class NativeEditorExpoViewTest {
 
         assertFalse(view.hasPendingNativeActionForTesting())
         assertEquals("custom", toolbarActionPayload?.get("key"))
-        assertEquals(88990L, toolbarActionPayload?.get("editorId"))
+        assertEquals("0", toolbarActionPayload?.get("editorId"))
 
         NativeEditorViewRegistry.unregister(88990L, view)
     }

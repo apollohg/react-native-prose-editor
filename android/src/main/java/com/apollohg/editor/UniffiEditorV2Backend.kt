@@ -92,7 +92,7 @@ internal object UniffiEditorV2Backend : EditorV2Backend {
     override fun redo(editorId: String, requestJson: String): EditorV2CallResult<String> =
         normalize(editorV2Redo(editorId, requestJson))
 
-    override fun collaborationTakeOutbound(editorId: String, generation: ULong): EditorV2CallResult<ByteArray> =
+    override fun collaborationTakeOutbound(editorId: String, generation: String): EditorV2CallResult<ByteArray> =
         normalize(editorV2CollaborationTakeOutbound(editorId, generation))
 
     override fun snapshotExport(editorId: String): EditorV2CallResult<Pair<String, ByteArray>> {
@@ -112,21 +112,33 @@ internal object UniffiEditorV2Backend : EditorV2Backend {
         editorId: String,
         mirrorAnchor: Int?,
         mirrorHead: Int?,
-    ): EditorV2CallResult<String> =
-        normalize(
-            editorV2RenderUpdate(
-                editorId,
-                mirrorAnchor?.toUInt(),
-                mirrorHead?.toUInt(),
-            )
-        )
+    ): EditorV2CallResult<String> {
+        val anchor = mirrorAnchor?.let(::exactV2U32)
+        val head = mirrorHead?.let(::exactV2U32)
+        if ((mirrorAnchor != null && anchor == null) || (mirrorHead != null && head == null)) {
+            return EditorV2CallResult.Err(contractError("render mirror is not an exact u32"))
+        }
+        return normalize(editorV2RenderUpdate(editorId, anchor, head))
+    }
 
-    override fun resolveScalarSelection(editorId: String, anchor: Int, head: Int): EditorV2CallResult<String> =
-        normalize(editorV2ResolveScalarSelection(editorId, anchor.toUInt(), head.toUInt()))
+    override fun resolveScalarSelection(editorId: String, anchor: Int, head: Int): EditorV2CallResult<String> {
+        val exactAnchor = exactV2U32(anchor)
+        val exactHead = exactV2U32(head)
+        if (exactAnchor == null || exactHead == null) {
+            return EditorV2CallResult.Err(contractError("selection offset is not an exact u32"))
+        }
+        return normalize(editorV2ResolveScalarSelection(editorId, exactAnchor, exactHead))
+    }
 
-    override fun docToScalar(editorId: String, docPos: Int): EditorV2CallResult<String> =
-        normalize(editorV2DocToScalar(editorId, docPos.toUInt()))
+    override fun docToScalar(editorId: String, docPos: Int): EditorV2CallResult<String> {
+        val exact = exactV2U32(docPos)
+            ?: return EditorV2CallResult.Err(contractError("document position is not an exact u32"))
+        return normalize(editorV2DocToScalar(editorId, exact))
+    }
 
-    override fun scalarToDoc(editorId: String, scalar: Int): EditorV2CallResult<String> =
-        normalize(editorV2ScalarToDoc(editorId, scalar.toUInt()))
+    override fun scalarToDoc(editorId: String, scalar: Int): EditorV2CallResult<String> {
+        val exact = exactV2U32(scalar)
+            ?: return EditorV2CallResult.Err(contractError("scalar position is not an exact u32"))
+        return normalize(editorV2ScalarToDoc(editorId, exact))
+    }
 }

@@ -259,7 +259,7 @@ class EditorV2AdapterTest {
     fun `resize image converts doc position through rust mapping`() {
         val adapter = makeAdapter()
         adapter.setContentHtml("<p>ab</p>")
-        assertNotNull(adapter.resizeImageAtDocPos(0, 120, 80))
+        assertNotNull(adapter.resizeImageAtDocPos(1, 120, 80))
         val command = sessionOf(adapter).commands.last()
         assertEquals("resizeImage", command.getString("type"))
         assertEquals(120, command.getInt("width"))
@@ -465,7 +465,7 @@ class EditorV2AdapterTest {
         adapter.insertText("x", 0)
         assertTrue("no live generation: the ping must not fire", frames.isEmpty())
 
-        adapter.collaborationGeneration = 7uL
+        adapter.collaborationGeneration = "7"
         val update = adapter.insertText("x", 0)
         assertNotNull(update)
         assertTrue("a local commit on a live generation drains the outbox", frames.isNotEmpty())
@@ -477,7 +477,7 @@ class EditorV2AdapterTest {
         val adapter = makeAdapter()
         val frames = mutableListOf<ByteArray>()
         adapter.outboundFrameSink = { frames.add(it) }
-        adapter.collaborationGeneration = 1uL
+        adapter.collaborationGeneration = "1"
         adapter.insertText("x", 0)
         assertTrue(frames.isEmpty())
     }

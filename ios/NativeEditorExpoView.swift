@@ -2077,7 +2077,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         let query: String
         let anchor: UInt32
         let head: UInt32
-        let documentVersion: Int?
+        let documentVersion: String?
         let textSnapshot: String
     }
 
@@ -3096,20 +3096,14 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         onAddonEvent(["eventJson": json])
     }
 
-    private func documentVersion(fromUpdateJSON updateJSON: String?) -> Int? {
+    private func documentVersion(fromUpdateJSON updateJSON: String?) -> String? {
         guard let updateJSON,
               let data = updateJSON.data(using: .utf8),
               let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             return nil
         }
-        if let version = raw["documentVersion"] as? Int {
-            return version
-        }
-        if let number = raw["documentVersion"] as? NSNumber {
-            return number.intValue
-        }
-        return nil
+        return (raw["documentVersion"] as? String).flatMap(v2CanonicalUInt64String)
     }
 
     private func filteredMentionSuggestions(
@@ -3361,7 +3355,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private func doesMentionQueryState(
         _ queryState: MentionQueryState,
         match retry: PendingMentionSuggestionRetry,
-        acceptingPreflightDocumentVersion preflightDocumentVersion: Int? = nil,
+        acceptingPreflightDocumentVersion preflightDocumentVersion: String? = nil,
         currentText: String? = nil
     ) -> Bool {
         guard doesMentionQueryStateMatchRetryIdentity(queryState, match: retry) else {
@@ -3487,7 +3481,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         return nil
     }
 
-    private func currentDocumentVersion() -> Int? {
+    private func currentDocumentVersion() -> String? {
         guard richTextView.editorId != 0 else { return nil }
         return documentVersion(fromUpdateJSON: EditorV2Shadow.getCurrentState(id: richTextView.editorId))
     }

@@ -25,6 +25,7 @@
 use std::collections::HashMap;
 
 use crate::boundary::{BoundaryError, BoundedInput, InputKind};
+use crate::ffi_v2::types::deserialize_canonical_u64;
 use crate::session::{EditorSession, ErrorDomain, OperationFailureClass, SessionError};
 use crate::yrs_engine::{
     Affinity, CommandPlan, EditorOffsetKind, HistoryPolicy, OperationError, ReplacementHistory,
@@ -33,7 +34,7 @@ use crate::yrs_engine::{
 };
 
 /// The one supported native bridge envelope version.
-const NATIVE_BRIDGE_ENVELOPE_VERSION: u64 = 1;
+const NATIVE_BRIDGE_ENVELOPE_VERSION: u32 = 1;
 
 /// Affinity used when a data-only position envelope omits it: typing and
 /// selection anchors stick after the addressed position.
@@ -57,8 +58,10 @@ pub(crate) struct NativeTransactionBridge<'session> {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InputRequestEnvelope {
-    version: u64,
+    version: u32,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
     request_id: u64,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
     base_document_revision: u64,
     text: String,
 }
@@ -66,8 +69,10 @@ struct InputRequestEnvelope {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CommandRequestEnvelope {
-    version: u64,
+    version: u32,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
     request_id: u64,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
     base_document_revision: u64,
     command: CommandEnvelope,
 }
@@ -75,8 +80,10 @@ struct CommandRequestEnvelope {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SelectionRequestEnvelope {
-    version: u64,
+    version: u32,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
     request_id: u64,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
     base_document_revision: u64,
     selection: SelectionEnvelope,
 }
@@ -84,8 +91,10 @@ struct SelectionRequestEnvelope {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LocalApiRequestEnvelope {
-    version: u64,
+    version: u32,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
     request_id: u64,
+    #[serde(deserialize_with = "deserialize_canonical_u64")]
     base_document_revision: u64,
     #[serde(default)]
     set_json: Option<serde_json::Value>,
@@ -510,7 +519,7 @@ fn parse_envelope<T: serde::de::DeserializeOwned>(
         .map_err(|error| SessionError::from(BoundaryError::parse("CONFIG_INVALID", error)))
 }
 
-fn admit_version(version: u64, request_id: u64) -> Result<(), SessionError> {
+fn admit_version(version: u32, request_id: u64) -> Result<(), SessionError> {
     if version != NATIVE_BRIDGE_ENVELOPE_VERSION {
         return Err(config_invalid(
             request_id,

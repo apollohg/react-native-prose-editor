@@ -387,7 +387,7 @@ private enum NativePerformanceFixtureFactory {
             let anchorDoc = EditorV2Shadow.scalarToDoc(id: editorId, scalar: UInt32(scalar))
             let headDoc = EditorV2Shadow.scalarToDoc(id: editorId, scalar: UInt32(headScalar))
             return RemoteSelectionDecoration(
-                clientId: index + 1,
+                clientId: String(index + 1),
                 anchor: anchorDoc,
                 head: headDoc,
                 color: indexedColor(index),

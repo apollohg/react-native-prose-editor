@@ -23,8 +23,8 @@ const MOCK_V2_STATE = {
     documentState: 'LocalReady',
     transportState: 'Detached',
     renderState: 'Ready',
-    documentRevision: 4,
-    stateRevision: 2,
+    documentRevision: '4',
+    stateRevision: '2',
     canUndo: true,
     canRedo: false,
 };
@@ -32,8 +32,8 @@ const MOCK_V2_STATE = {
 const MOCK_V2_TRANSACTION = {
     type: 'transaction',
     changed: true,
-    documentRevision: 5,
-    stateRevision: 3,
+    documentRevision: '5',
+    stateRevision: '3',
     canUndo: true,
     canRedo: false,
 };
@@ -97,7 +97,7 @@ function resetMockNativeModule() {
         )
     );
     mockNativeModule.editorV2ReplaceDocument = jest.fn(() =>
-        okRecord(JSON.stringify({ changed: true, documentRevision: 6 }))
+        okRecord(JSON.stringify({ changed: true, documentRevision: '6' }))
     );
     mockNativeModule.editorV2ApplyInput = jest.fn(() =>
         okRecord(JSON.stringify(MOCK_V2_TRANSACTION))
@@ -106,7 +106,7 @@ function resetMockNativeModule() {
         okRecord(JSON.stringify(MOCK_V2_TRANSACTION))
     );
     mockNativeModule.editorV2ApplyLocalApi = jest.fn(() =>
-        okRecord(JSON.stringify({ type: 'replacement', changed: true, documentRevision: 9 }))
+        okRecord(JSON.stringify({ type: 'replacement', changed: true, documentRevision: '9' }))
     );
     mockNativeModule.editorV2SetSelection = jest.fn(() =>
         okRecord(JSON.stringify({ type: 'notApplicable' }))
@@ -123,7 +123,7 @@ function resetMockNativeModule() {
         okRecord(JSON.stringify({ changed: true, documentRevision: HUGE_U64_DECIMAL }))
     );
     mockNativeModule.editorV2CollaborationBeginConnect = jest.fn(() =>
-        okRecord(JSON.stringify({ generation: 7 }))
+        okRecord(JSON.stringify({ generation: '7' }))
     );
     mockNativeModule.editorV2CollaborationSocketOpen = jest.fn(() => okRecord(MOCK_PROTOCOL_FRAME));
     mockNativeModule.editorV2CollaborationReceive = jest.fn(() =>
@@ -180,6 +180,7 @@ import {
     normalizeNativeEditorV2DecimalId,
     normalizeNativeEditorV2Result,
     normalizeNativeEditorV2Unit,
+    requireNativeEditorV2U32,
     unwrapNativeEditorV2Result,
     _resetNativeModuleCache,
 } from '../NativeEditorBridge';
@@ -386,9 +387,9 @@ describe('NativeEditorBridge v2', () => {
                             mockV2Error({
                                 domain,
                                 requestId: '7',
-                                operationIndex: 2,
-                                limit: 10,
-                                actual: 11,
+                                operationIndex: '2',
+                                limit: '10',
+                                actual: '11',
                                 details: { field: 'text' },
                             })
                         ),
@@ -403,9 +404,9 @@ describe('NativeEditorBridge v2', () => {
                 expect(typed.code).toBe('OPERATION_INVALID');
                 expect(typed.message).toBe('operation invalid');
                 expect(typed.requestId).toBe('7');
-                expect(typed.operationIndex).toBe(2);
-                expect(typed.limit).toBe(10);
-                expect(typed.actual).toBe(11);
+                expect(typed.operationIndex).toBe('2');
+                expect(typed.limit).toBe('10');
+                expect(typed.actual).toBe('11');
                 expect(typed.details).toEqual({ field: 'text' });
             }
         );
@@ -473,7 +474,9 @@ describe('NativeEditorBridge v2', () => {
             ).toBeNull();
         });
 
-        it.each([0, 7, 1024])('accepts unsigned integer %s for limit fields', (fieldValue) => {
+        it.each(['0', '7', '1024', HUGE_U64_DECIMAL])(
+            'accepts canonical decimal string %s for u64 error fields',
+            (fieldValue) => {
             const result = normalizeNativeEditorV2Result(
                 errRecord(
                     mockV2Error({ operationIndex: fieldValue, limit: fieldValue, actual: fieldValue })
@@ -481,9 +484,10 @@ describe('NativeEditorBridge v2', () => {
                 identity
             );
             expect(result).not.toBeNull();
-        });
+            }
+        );
 
-        it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '7', NaN])(
+        it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '01', '+1', '7', NaN])(
             'rejects invalid limit field value %p',
             (fieldValue) => {
                 expect(
@@ -588,23 +592,29 @@ describe('NativeEditorBridge v2', () => {
             expect(normalizeNativeEditorV2DecimalId(HUGE_U64_DECIMAL)).toBe(HUGE_U64_DECIMAL);
         });
 
-        it('normalizes safe integers to their decimal string', () => {
-            expect(normalizeNativeEditorV2DecimalId(0)).toBe('0');
-            expect(normalizeNativeEditorV2DecimalId(42)).toBe('42');
-            expect(normalizeNativeEditorV2DecimalId(Number.MAX_SAFE_INTEGER)).toBe(
-                String(Number.MAX_SAFE_INTEGER)
-            );
-        });
-
-        it.each([Number.MAX_SAFE_INTEGER + 1, -1, 1.5, NaN, Infinity])(
-            'rejects unsafe or non-integer number %p',
+        it.each([0, 42, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1])(
+            'rejects numeric compatibility value %p even when safely representable',
             (value) => {
                 expect(normalizeNativeEditorV2DecimalId(value)).toBeNull();
             }
         );
 
-        it.each(['', '01', '-1', '1.0', ' 1', '1 '])(
-            'rejects non-canonical decimal string %p',
+        it.each([
+            '',
+            '01',
+            '-1',
+            '1.0',
+            '+1',
+            ' 1',
+            '1 ',
+            '1e3',
+            '1E3',
+        ])('rejects every non-canonical decimal string %p', (value) => {
+            expect(normalizeNativeEditorV2DecimalId(value)).toBeNull();
+        });
+
+        it.each([Number.MAX_SAFE_INTEGER + 1, -1, 1.5, NaN, Infinity])(
+            'rejects unsafe or non-integer number %p',
             (value) => {
                 expect(normalizeNativeEditorV2DecimalId(value)).toBeNull();
             }
@@ -627,12 +637,30 @@ describe('NativeEditorBridge v2', () => {
             expect(typeof state.documentRevision).toBe('string');
         });
 
-        it('normalizes safe numeric revisions to decimal strings', () => {
+        it('rejects numeric revision compatibility values even below the JavaScript safe limit', () => {
             const handle = createHandle();
-            const state = handle.bridge.getState();
-            expect(state.documentRevision).toBe('4');
-            expect(state.stateRevision).toBe('2');
+            mockNativeModule.editorV2GetState.mockReturnValueOnce(
+                okRecord(JSON.stringify({ ...MOCK_V2_STATE, documentRevision: 4 }))
+            );
+            expectNonRetryable(catchThrown(() => handle.bridge.getState()), 'FFI_RESULT_INVALID');
         });
+
+        it.each([
+            [0, 0],
+            [1, 1],
+            [0xffff_ffff, 0xffff_ffff],
+        ])('accepts exact u32 value %p for %s', (value, expected) => {
+            expect(requireNativeEditorV2U32(value, 'scalar')).toBe(expected);
+        });
+
+        it.each([-1, 1.5, NaN, Infinity, 0x1_0000_0000])(
+            'rejects non-exact or out-of-range u32 value %p',
+            (value) => {
+                expect(() => requireNativeEditorV2U32(value, 'scalar')).toThrow(
+                    'invalid u32 scalar'
+                );
+            }
+        );
 
         it('rejects an unsafe integer revision in a state result', () => {
             const handle = createHandle();
@@ -679,7 +707,9 @@ describe('NativeEditorBridge v2', () => {
                 )
             );
             expectNonRetryable(
-                catchThrown(() => handle.bridge.applyInput({ baseDocumentRevision: 4, text: 'x' })),
+                catchThrown(() =>
+                    handle.bridge.applyInput({ baseDocumentRevision: 4 as never, text: 'x' })
+                ),
                 'FFI_RESULT_INVALID'
             );
         });
@@ -1514,24 +1544,24 @@ describe('NativeEditorBridge v2', () => {
             expect(calls[0][0]).toBe('1');
             expect(JSON.parse(calls[0][1])).toEqual({
                 version: 1,
-                requestId: 1,
-                baseDocumentRevision: 4,
+                requestId: '1',
+                baseDocumentRevision: '4',
                 text: 'hi',
             });
             expect(JSON.parse(calls[1][1])).toEqual({
                 version: 1,
-                requestId: 2,
-                baseDocumentRevision: 5,
+                requestId: '2',
+                baseDocumentRevision: '5',
                 text: 'there',
             });
         });
 
-        it('embeds a huge baseDocumentRevision as raw digits without Number()', () => {
+        it('embeds a huge baseDocumentRevision as canonical decimal text without Number()', () => {
             const handle = createHandle();
             handle.bridge.applyInput({ baseDocumentRevision: HUGE_U64_DECIMAL, text: 'x' });
             const requestJson = mockNativeModule.editorV2ApplyInput.mock.calls[0][1];
             expect(requestJson).toBe(
-                `{"version":1,"requestId":1,"baseDocumentRevision":${HUGE_U64_DECIMAL},"text":"x"}`
+                `{"version":1,"requestId":"1","baseDocumentRevision":"${HUGE_U64_DECIMAL}","text":"x"}`
             );
         });
 
@@ -1548,11 +1578,11 @@ describe('NativeEditorBridge v2', () => {
             }
         );
 
-        it('rejects an unsafe numeric baseDocumentRevision before any native call', () => {
+        it('rejects every numeric baseDocumentRevision before any native call', () => {
             const handle = createHandle();
             const error = catchThrown(() =>
                 handle.bridge.applyInput({
-                    baseDocumentRevision: Number.MAX_SAFE_INTEGER + 1,
+                    baseDocumentRevision: Number.MAX_SAFE_INTEGER as never,
                     text: 'x',
                 })
             );
@@ -1566,11 +1596,11 @@ describe('NativeEditorBridge v2', () => {
             expect(handle.bridge.redo()).toBe(false);
             expect(JSON.parse(mockNativeModule.editorV2Undo.mock.calls[0][1])).toEqual({
                 version: 1,
-                requestId: 1,
+                requestId: '1',
             });
             expect(JSON.parse(mockNativeModule.editorV2Redo.mock.calls[0][1])).toEqual({
                 version: 1,
-                requestId: 2,
+                requestId: '2',
             });
         });
 
@@ -1582,7 +1612,7 @@ describe('NativeEditorBridge v2', () => {
             });
             expect(JSON.parse(mockNativeModule.editorV2ReplaceDocument.mock.calls[0][1])).toEqual({
                 version: 1,
-                requestId: 1,
+                requestId: '1',
                 setJson: { type: 'doc', content: [] },
                 history: 'resetAndClear',
             });
@@ -1718,8 +1748,8 @@ describe('NativeEditorBridge v2', () => {
                                 domain: 'transport',
                                 code: 'TRANSPORT_PROTOCOL_INVALID',
                                 message: 'invalid protocol frame',
-                                limit: 1024,
-                                actual: 1025,
+                                limit: '1024',
+                                actual: '1025',
                             },
                         },
                     })
@@ -1735,8 +1765,8 @@ describe('NativeEditorBridge v2', () => {
                     message: 'invalid protocol frame',
                     requestId: null,
                     operationIndex: null,
-                    limit: 1024,
-                    actual: 1025,
+                    limit: '1024',
+                    actual: '1025',
                     details: null,
                 },
             });

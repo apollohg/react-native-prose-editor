@@ -664,8 +664,8 @@ fn transport_teardown_never_drops_pending_outbox_entries() {
     let revision = bridge::session_audit(id).unwrap().document_revision;
     let envelope = serde_json::json!({
         "version": 1,
-        "requestId": 161,
-        "baseDocumentRevision": revision,
+        "requestId": "161",
+        "baseDocumentRevision": revision.to_string(),
         "text": "offline edit",
     })
     .to_string();
@@ -722,8 +722,8 @@ fn transport_teardown_clears_awareness_peers_and_retains_desired_awareness() {
     let revision = bridge::session_audit(id).unwrap().document_revision;
     let envelope = serde_json::json!({
         "version": 1,
-        "requestId": 171,
-        "baseDocumentRevision": revision,
+        "requestId": "171",
+        "baseDocumentRevision": revision.to_string(),
         "text": "offline edit",
     })
     .to_string();

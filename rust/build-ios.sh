@@ -28,7 +28,7 @@ LIB_NAME="libeditor_core.a"
 TC="${RUST_TOOLCHAIN_DIR:-$HOME/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin}"
 TARGET_DIR="${CARGO_TARGET_DIR:-$CRATE_DIR/target}"
 export RUSTC="$TC/rustc"
-export PATH="$TC:$PATH"
+export RUSTDOC="$TC/rustdoc"
 
 IOS_TARGETS=(
     "aarch64-apple-ios"

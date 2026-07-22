@@ -28,7 +28,7 @@ internal class EditorV2Adapter private constructor(
 
     var onAutonomousError: ((EditorV2Error) -> Unit)? = null
     var outboundFrameSink: ((ByteArray) -> Unit)? = null
-    var collaborationGeneration: ULong? = null
+    var collaborationGeneration: String? = null
 
     var baseDocumentRevision: ULong = 0uL
         private set
@@ -52,10 +52,9 @@ internal class EditorV2Adapter private constructor(
             if (!isCanonicalDecimalEditorId(editorId)) return null
             val state = backend.getState(editorId) as? EditorV2CallResult.Ok ?: return null
             val documentRevision = try {
-                JSONObject(state.value).getLong("documentRevision").toULong()
-            } catch (_: Exception) {
-                return null
-            }
+                canonicalV2U64(JSONObject(state.value).opt("documentRevision") as? String)
+                    ?.toULong()
+            } catch (_: Exception) { null } ?: return null
             return EditorV2Adapter(backend, editorId, roomBound).also {
                 it.baseDocumentRevision = documentRevision
             }
@@ -86,9 +85,12 @@ internal class EditorV2Adapter private constructor(
 
     private fun buildEnvelope(payload: JSONObject, includeBaseRevision: Boolean = true): String {
         nextRequestId += 1u
-        val parts = mutableListOf("\"version\":1", "\"requestId\":$nextRequestId")
+        val parts = mutableListOf(
+            "\"version\":1",
+            "\"requestId\":${JSONObject.quote(nextRequestId.toString())}",
+        )
         if (includeBaseRevision) {
-            parts.add("\"baseDocumentRevision\":$baseDocumentRevision")
+            parts.add("\"baseDocumentRevision\":${JSONObject.quote(baseDocumentRevision.toString())}")
         }
         val payloadJson = payload.toString()
         if (payloadJson.length > 2) {
@@ -125,14 +127,11 @@ internal class EditorV2Adapter private constructor(
         onAutonomousError?.invoke(error)
     }
 
-    private fun ulongField(object_: JSONObject, key: String): ULong? {
-        val raw = object_.opt(key) ?: return null
-        return when (raw) {
-            is Number -> raw.toLong().toULong()
-            is String -> raw.toULongOrNull()
-            else -> null
-        }
-    }
+    private fun ulongField(object_: JSONObject, key: String): ULong? =
+        canonicalV2U64(object_.opt(key) as? String)?.toULong()
+
+    private fun scalarField(object_: JSONObject, key: String): Int? =
+        exactV2ScalarInt(object_.opt(key) as? Number)
 
     private fun fetchState(): V2State? {
         return when (val result = backend.getState(editorId)) {
@@ -196,7 +195,8 @@ internal class EditorV2Adapter private constructor(
         }
         return try {
             val update = JSONObject(derived)
-            cachedScalarLength = update.getLong("scalarLength").toInt()
+            cachedScalarLength = scalarField(update, "scalarLength")
+                ?: return null
             // The scalar extent feeds the adapter's IME clamp only; the
             // view-facing update keeps the exact legacy update JSON shape.
             update.remove("scalarLength")
@@ -206,7 +206,7 @@ internal class EditorV2Adapter private constructor(
                 "historyState",
                 JSONObject().put("canUndo", state.canUndo).put("canRedo", state.canRedo),
             )
-            update.put("documentVersion", state.documentRevision.toLong())
+            update.put("documentVersion", state.documentRevision.toString())
             if (mirrorSelection == null) {
                 // Native-originated edits keep the native caret.
                 update.remove("selection")
@@ -342,7 +342,10 @@ internal class EditorV2Adapter private constructor(
             is SelectionSyncOutcome.Refreshed -> {
                 return try {
                     val selection = JSONObject(outcome.updateJson).getJSONObject("selection")
-                    intArrayOf(selection.getInt("anchor"), selection.getInt("head"))
+                    intArrayOf(
+                        scalarField(selection, "anchor") ?: return null,
+                        scalarField(selection, "head") ?: return null,
+                    )
                 } catch (error: Exception) {
                     null
                 }
@@ -360,7 +363,10 @@ internal class EditorV2Adapter private constructor(
         }
         return try {
             val selection = JSONObject(resolved)
-            intArrayOf(selection.getInt("anchor"), selection.getInt("head"))
+            intArrayOf(
+                scalarField(selection, "anchor") ?: return null,
+                scalarField(selection, "head") ?: return null,
+            )
         } catch (error: Exception) {
             null
         }
@@ -384,10 +390,8 @@ internal class EditorV2Adapter private constructor(
                 null
             }
             is EditorV2CallResult.Ok -> try {
-                JSONObject(result.value).getLong(key).toInt()
-            } catch (error: Exception) {
-                null
-            }
+                scalarField(JSONObject(result.value), key)
+            } catch (error: Exception) { null }
         }
 
     // ── Mutation driver ──

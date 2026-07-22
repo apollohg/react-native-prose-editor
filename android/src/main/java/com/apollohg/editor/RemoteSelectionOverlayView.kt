@@ -13,7 +13,7 @@ import androidx.appcompat.content.res.AppCompatResources
 import org.json.JSONArray
 
 data class RemoteSelectionDecoration(
-    val clientId: Int,
+    val clientId: String,
     val anchor: Int,
     val head: Int,
     val color: Int,
@@ -33,12 +33,15 @@ data class RemoteSelectionDecoration(
             return buildList {
                 for (index in 0 until array.length()) {
                     val item = array.optJSONObject(index) ?: continue
+                    val clientId = canonicalV2U64(item.opt("clientId") as? String) ?: continue
+                    val anchor = exactV2ScalarInt(item.opt("anchor") as? Number) ?: continue
+                    val head = exactV2ScalarInt(item.opt("head") as? Number) ?: continue
                     val color = parseColor(item.optString("color", ""), fallbackColor)
                     add(
                         RemoteSelectionDecoration(
-                            clientId = item.optInt("clientId", 0),
-                            anchor = item.optInt("anchor", 0),
-                            head = item.optInt("head", 0),
+                            clientId = clientId,
+                            anchor = anchor,
+                            head = head,
                             color = color,
                             name = item.optString("name").takeIf { it.isNotBlank() },
                             isFocused = item.optBoolean("isFocused", false),
@@ -82,7 +85,7 @@ data class RemoteSelectionDecoration(
 }
 
 data class RemoteSelectionDebugSnapshot(
-    val clientId: Int,
+    val clientId: String,
     val caretRect: RectF?,
 )
 
@@ -92,7 +95,7 @@ class RemoteSelectionOverlayView @JvmOverloads constructor(
     defStyleAttr: Int = 0,
 ) : View(context, attrs, defStyleAttr) {
     private data class CachedSelectionGeometry(
-        val clientId: Int,
+        val clientId: String,
         val selectionPath: Path?,
         val selectionColor: Int,
         val caretRect: RectF?,
@@ -123,7 +126,7 @@ class RemoteSelectionOverlayView @JvmOverloads constructor(
     private var cachedGeometry: List<CachedSelectionGeometry> = emptyList()
     internal var editorIdOverrideForTesting: Long? = null
     internal var docToScalarResolver: (Long, Int) -> Int = { editorId, docPos ->
-        EditorV2Registry.adapterFor(editorId)?.scalarPositionForDoc(docPos) ?: 0
+        EditorV2Registry.adapterForViewToken(editorId)?.scalarPositionForDoc(docPos) ?: 0
     }
     private val selectionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL

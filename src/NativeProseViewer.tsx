@@ -105,8 +105,8 @@ export interface NativeProseViewerAddons {
 }
 
 interface NativeProseViewerBaseProps {
-    contentRevision?: string | number;
-    contentJSONRevision?: string | number;
+    contentRevision?: string;
+    contentJSONRevision?: string;
     schema?: SchemaDefinition;
     theme?: EditorTheme;
     style?: StyleProp<ViewStyle>;

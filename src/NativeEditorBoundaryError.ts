@@ -54,9 +54,9 @@ export interface NativeEditorV2Error {
     code: NativeEditorBoundaryErrorCode;
     message: string;
     requestId: string | null;
-    operationIndex: number | null;
-    limit: number | null;
-    actual: number | null;
+    operationIndex: string | null;
+    limit: string | null;
+    actual: string | null;
     details: Record<string, unknown> | null;
 }
 
@@ -93,9 +93,9 @@ export function parseNativeBoundaryError(value: unknown): NativeEditorBoundaryEr
 
 const CANONICAL_DECIMAL_ID = /^(0|[1-9]\d*)$/;
 
-function nullableUnsignedInteger(value: unknown): number | null | undefined {
+function nullableCanonicalDecimal(value: unknown): string | null | undefined {
     if (value == null) return null;
-    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return undefined;
+    if (typeof value !== 'string' || !CANONICAL_DECIMAL_ID.test(value)) return undefined;
     return value;
 }
 
@@ -144,9 +144,9 @@ export function normalizeNativeEditorV2Error(value: unknown): NativeEditorV2Erro
     ) {
         return null;
     }
-    const operationIndex = nullableUnsignedInteger(nativeError.operationIndex);
-    const limit = nullableUnsignedInteger(nativeError.limit);
-    const actual = nullableUnsignedInteger(nativeError.actual);
+    const operationIndex = nullableCanonicalDecimal(nativeError.operationIndex);
+    const limit = nullableCanonicalDecimal(nativeError.limit);
+    const actual = nullableCanonicalDecimal(nativeError.actual);
     const details = parseDetails(nativeError);
     if (operationIndex === undefined || limit === undefined || actual === undefined || details === undefined) {
         return null;
@@ -187,9 +187,9 @@ export class NativeEditorV2ErrorBase extends Error {
     readonly domain: NativeEditorErrorDomain;
     readonly code: NativeEditorBoundaryErrorCode;
     readonly requestId: string | null;
-    readonly operationIndex: number | null;
-    readonly limit: number | null;
-    readonly actual: number | null;
+    readonly operationIndex: string | null;
+    readonly limit: string | null;
+    readonly actual: string | null;
     readonly details: Record<string, unknown> | null;
 
     constructor(

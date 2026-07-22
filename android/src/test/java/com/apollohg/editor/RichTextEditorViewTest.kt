@@ -1376,7 +1376,7 @@ class RichTextEditorViewTest {
         view.setRemoteSelections(
             listOf(
                 RemoteSelectionDecoration(
-                    clientId = 7,
+                    clientId = "7",
                     anchor = 6,
                     head = 6,
                     color = Color.parseColor("#ff6b35"),
@@ -1387,7 +1387,7 @@ class RichTextEditorViewTest {
         )
 
         val snapshot = view.remoteSelectionDebugSnapshotsForTesting().single()
-        assertEquals(7, snapshot.clientId)
+        assertEquals("7", snapshot.clientId)
         assertNotNull(snapshot.caretRect)
         assertTrue(snapshot.caretRect!!.height() > 0f)
     }
@@ -1408,7 +1408,7 @@ class RichTextEditorViewTest {
         view.setRemoteSelections(
             listOf(
                 RemoteSelectionDecoration(
-                    clientId = 8,
+                    clientId = "8",
                     anchor = 6,
                     head = 6,
                     color = Color.parseColor("#007aff"),
@@ -1419,7 +1419,7 @@ class RichTextEditorViewTest {
         )
 
         val snapshot = view.remoteSelectionDebugSnapshotsForTesting().single()
-        assertEquals(8, snapshot.clientId)
+        assertEquals("8", snapshot.clientId)
         assertTrue(snapshot.caretRect == null)
     }
 
@@ -1444,7 +1444,7 @@ class RichTextEditorViewTest {
         view.setRemoteSelections(
             listOf(
                 RemoteSelectionDecoration(
-                    clientId = 11,
+                    clientId = "11",
                     anchor = 6,
                     head = 12,
                     color = Color.parseColor("#ff9500"),
@@ -1484,7 +1484,7 @@ class RichTextEditorViewTest {
 
         val initialSelections = listOf(
             RemoteSelectionDecoration(
-                clientId = 12,
+                clientId = "12",
                 anchor = 6,
                 head = 12,
                 color = Color.parseColor("#34c759"),
@@ -1498,7 +1498,7 @@ class RichTextEditorViewTest {
         resolverCalls = 0
         val identicalSelections = listOf(
             RemoteSelectionDecoration(
-                clientId = 12,
+                clientId = "12",
                 anchor = 6,
                 head = 12,
                 color = Color.parseColor("#34c759"),
@@ -1521,7 +1521,7 @@ class RichTextEditorViewTest {
             """
             [
               {
-                "clientId": 19,
+                "clientId": "19",
                 "anchor": 2,
                 "head": 2,
                 "color": "not-a-color",
@@ -1533,7 +1533,7 @@ class RichTextEditorViewTest {
         )
 
         assertEquals(1, selections.size)
-        assertEquals(19, selections.single().clientId)
+        assertEquals("19", selections.single().clientId)
     }
 
     @Test

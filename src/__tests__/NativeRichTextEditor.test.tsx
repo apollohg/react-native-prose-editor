@@ -276,7 +276,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
         expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
         expect(mockResolveDocumentDescriptor).not.toHaveBeenCalled();
-        expect(getByTestId('native-editor-view').props.editorId).toBe(Number(handle.editorId));
+        expect(getByTestId('native-editor-view').props.editorId).toBe(handle.editorId);
         handle.destroy();
     });
 
@@ -500,7 +500,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         ) as Record<string, unknown>;
         expect(request.history).toBe('undoableBoundary');
         expect(request.setJson).toEqual(V2_DOC_B);
-        expect(String(request.baseDocumentRevision)).toBe('1');
+        expect(request.baseDocumentRevision).toBe('1');
         // Verified through engine undo state, not document content.
         expect(ref.current!.canUndo()).toBe(true);
         // Release the controlled prop first — a controlled value always
@@ -887,7 +887,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const { getByTestId } = render(<NativeRichTextEditor documentHandle={handle} />);
         const view = getByTestId('native-editor-view');
-        expect(view.props.editorId).toBe(Number(handle.editorId));
+        expect(view.props.editorId).toBe(handle.editorId);
         expect(view.props.editable).toBe(true);
         expect(view.props.showToolbar).toBe(true);
         expect(view.props.autoFocus).toBe(false);
@@ -932,8 +932,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         // then the view emits the resulting update.
         const commitRequest = JSON.stringify({
             version: 1,
-            requestId: 1,
-            baseDocumentRevision: Number(handle.bridge.getState().documentRevision),
+            requestId: '1',
+            baseDocumentRevision: handle.bridge.getState().documentRevision,
             text: '!',
         });
         let commitOutcome: { value: string } | undefined;
@@ -948,9 +948,9 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         act(() => {
             getByTestId('native-editor-view').props.onEditorUpdate({
                 nativeEvent: {
-                    editorId: Number(handle.editorId),
+                    editorId: handle.editorId,
                     updateJson: renderUpdateValue(handle.editorId),
-                    documentVersion: Number(handle.bridge.getState().documentRevision),
+                    documentVersion: handle.bridge.getState().documentRevision,
                 },
             });
         });
@@ -990,7 +990,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                 nativeEvent: {
                     anchor: 1,
                     head: 3,
-                    editorId: Number(handle.editorId),
+                    editorId: handle.editorId,
                     stateJson: renderUpdateValue(handle.editorId, 1, 3),
                 },
             });
@@ -1001,27 +1001,27 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         // Without a state payload the raw scalar range is forwarded.
         act(() => {
             getByTestId('native-editor-view').props.onSelectionChange({
-                nativeEvent: { anchor: 2, head: 4, editorId: Number(handle.editorId) },
+                nativeEvent: { anchor: 2, head: 4, editorId: handle.editorId },
             });
         });
         expect(onSelectionChange).toHaveBeenLastCalledWith({ type: 'text', anchor: 2, head: 4 });
 
         act(() => {
             getByTestId('native-editor-view').props.onFocusChange({
-                nativeEvent: { isFocused: true, editorId: Number(handle.editorId) },
+                nativeEvent: { isFocused: true, editorId: handle.editorId },
             });
         });
         expect(onFocus).toHaveBeenCalledTimes(1);
         expect(onBlur).not.toHaveBeenCalled();
         act(() => {
             getByTestId('native-editor-view').props.onFocusChange({
-                nativeEvent: { isFocused: true, editorId: Number(handle.editorId) },
+                nativeEvent: { isFocused: true, editorId: handle.editorId },
             });
         });
         expect(onFocus).toHaveBeenCalledTimes(1);
         act(() => {
             getByTestId('native-editor-view').props.onFocusChange({
-                nativeEvent: { isFocused: false, editorId: Number(handle.editorId) },
+                nativeEvent: { isFocused: false, editorId: handle.editorId },
             });
         });
         expect(onBlur).toHaveBeenCalledTimes(1);
@@ -1050,7 +1050,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         };
         expect(pushed.activeState.marks.bold).toBe(true);
         expect(view.props.editorUpdateRevision).toBeGreaterThan(0);
-        expect(view.props.editorUpdateEditorId).toBe(Number(handle.editorId));
+        expect(view.props.editorUpdateEditorId).toBe(handle.editorId);
         expect(onActiveStateChange).toHaveBeenCalled();
         expect(
             (onActiveStateChange.mock.calls.at(-1)![0] as { marks: Record<string, boolean> })
@@ -1338,7 +1338,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         // Selection still flows.
         act(() => {
             getByTestId('native-editor-view').props.onSelectionChange({
-                nativeEvent: { anchor: 0, head: 2, editorId: Number(handle.editorId) },
+                nativeEvent: { anchor: 0, head: 2, editorId: handle.editorId },
             });
         });
         expect(onSelectionChange).toHaveBeenCalledWith({ type: 'text', anchor: 0, head: 2 });
@@ -1387,7 +1387,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         onContentChange.mockClear();
         act(() => {
             view.props.onEditorUpdate({
-                nativeEvent: { editorId: Number(handle.editorId), updateJson: '{}' },
+                nativeEvent: { editorId: handle.editorId, updateJson: '{}' },
             });
         });
         expect(onContentChange).not.toHaveBeenCalled();
@@ -1415,7 +1415,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
         act(() => {
             getByTestId('native-editor-view').props.onToolbarAction({
-                nativeEvent: { key: '__native-editor-link__', editorId: Number(handle.editorId) },
+                nativeEvent: { key: '__native-editor-link__', editorId: handle.editorId },
             });
         });
         expect(onRequestLink).toHaveBeenCalledTimes(1);
@@ -1439,7 +1439,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
         act(() => {
             getByTestId('native-editor-view').props.onToolbarAction({
-                nativeEvent: { key: '__native-editor-image__', editorId: Number(handle.editorId) },
+                nativeEvent: { key: '__native-editor-image__', editorId: handle.editorId },
             });
         });
         expect(onRequestImage).toHaveBeenCalledTimes(1);
@@ -1462,7 +1462,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
         act(() => {
             getByTestId('native-editor-view').props.onToolbarAction({
-                nativeEvent: { key: 'action:custom:0', editorId: Number(handle.editorId) },
+                nativeEvent: { key: 'action:custom:0', editorId: handle.editorId },
             });
         });
         expect(onToolbarAction).toHaveBeenCalledWith('action:custom:0');

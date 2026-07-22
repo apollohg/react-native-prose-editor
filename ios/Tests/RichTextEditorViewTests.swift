@@ -673,7 +673,7 @@ final class RichTextEditorViewTests: XCTestCase {
         let docPos = EditorV2Shadow.scalarToDoc(id: editorId, scalar: 6)
         view.setRemoteSelections([
             RemoteSelectionDecoration(
-                clientId: 7,
+                clientId: "7",
                 anchor: docPos,
                 head: docPos,
                 color: .systemOrange,
@@ -705,7 +705,7 @@ final class RichTextEditorViewTests: XCTestCase {
         let endDocPos = EditorV2Shadow.scalarToDoc(id: editorId, scalar: 11)
         view.setRemoteSelections([
             RemoteSelectionDecoration(
-                clientId: 9,
+                clientId: "9",
                 anchor: endDocPos,
                 head: endDocPos,
                 color: .systemGreen,
@@ -741,7 +741,7 @@ final class RichTextEditorViewTests: XCTestCase {
         let docPos = EditorV2Shadow.scalarToDoc(id: editorId, scalar: targetScalar)
         view.setRemoteSelections([
             RemoteSelectionDecoration(
-                clientId: 10,
+                clientId: "10",
                 anchor: docPos,
                 head: docPos,
                 color: .systemPurple,
@@ -769,7 +769,7 @@ final class RichTextEditorViewTests: XCTestCase {
         let docPos = EditorV2Shadow.scalarToDoc(id: editorId, scalar: 6)
         view.setRemoteSelections([
             RemoteSelectionDecoration(
-                clientId: 8,
+                clientId: "8",
                 anchor: docPos,
                 head: docPos,
                 color: .systemBlue,
@@ -5726,7 +5726,7 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertFalse(updateJSON?.contains("teh @al") == true, "select request should not carry stale pre-correction text")
 
         let update = parseJSONObject(updateJSON)
-        XCTAssertEqual(jsonInt(event["documentVersion"]), jsonInt(update["documentVersion"]))
+        XCTAssertEqual(event["documentVersion"] as? String, update["documentVersion"] as? String)
     }
 
     func testMentionSuggestionTapDrainsPendingNativeAutocorrectInsideListItem() {

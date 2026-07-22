@@ -266,8 +266,8 @@ fn local_edit(id: u64, request_id: u64, text: &str) {
     let revision = bridge::session_audit(id).unwrap().document_revision;
     let envelope = serde_json::json!({
         "version": 1,
-        "requestId": request_id,
-        "baseDocumentRevision": revision,
+        "requestId": request_id.to_string(),
+        "baseDocumentRevision": revision.to_string(),
         "text": text,
     })
     .to_string();
@@ -1191,8 +1191,8 @@ fn local_operation_errors_do_not_disconnect_a_synchronized_transport() {
     // must leave the healthy transport untouched.
     let stale_envelope = serde_json::json!({
         "version": 1,
-        "requestId": 361,
-        "baseDocumentRevision": 999_999,
+        "requestId": "361",
+        "baseDocumentRevision": "999999",
         "text": "stale local edit",
     })
     .to_string();

@@ -1,34 +1,21 @@
 import ExpoModulesCore
 
-private func nativeUInt64(_ value: Int) -> UInt64? {
-    guard value >= 0 else { return nil }
-    return UInt64(value)
-}
-
-func createdEditorId(_ resultJson: String) -> UInt64? {
+/// Test-facing parser for the v2 create value. Handles are never bridged
+/// through signed native numbers: the frozen wire shape is a canonical
+/// decimal string.
+func createdEditorId(_ resultJson: String) -> String? {
     guard let data = resultJson.data(using: .utf8),
           let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           result["error"] == nil,
-          result["editorId"] != nil,
-          let expression = try? NSRegularExpression(
-              pattern: #"^\s*\{\s*"editorId"\s*:\s*(0|[1-9][0-9]*)\s*\}\s*$"#
-          )
-    else {
-        return nil
-    }
-    let range = NSRange(resultJson.startIndex..., in: resultJson)
-    let matches = expression.matches(in: resultJson, range: range)
-    guard matches.count == 1,
-          let valueRange = Range(matches[0].range(at: 1), in: resultJson),
-          let editorId = UInt64(resultJson[valueRange]),
-          editorId > 0,
-          editorId <= UInt64(Int64.max)
+          let editorId = result["editorId"] as? String,
+          let value = v2UInt64Argument(editorId),
+          value > 0,
+          editorId == String(value)
     else {
         return nil
     }
     return editorId
 }
-
 
 /// Serialize a structured v2 failure into the legacy `{"error":...}` envelope
 /// shape the JS boundary already understands.
@@ -60,11 +47,9 @@ private func v2FfiErrorDictionary(_ error: FfiError) -> [String: Any] {
         "message": error.message,
     ]
     if let requestId = error.requestId { dictionary["requestId"] = requestId }
-    if let operationIndex = error.operationIndex {
-        dictionary["operationIndex"] = NSNumber(value: operationIndex)
-    }
-    if let limit = error.limit { dictionary["limit"] = NSNumber(value: limit) }
-    if let actual = error.actual { dictionary["actual"] = NSNumber(value: actual) }
+    if let operationIndex = error.operationIndex { dictionary["operationIndex"] = operationIndex }
+    if let limit = error.limit { dictionary["limit"] = limit }
+    if let actual = error.actual { dictionary["actual"] = actual }
     if let detailsJson = error.detailsJson { dictionary["detailsJson"] = detailsJson }
     return dictionary
 }
@@ -114,9 +99,41 @@ private func v2SnapshotExportResultDictionary(_ result: FfiSnapshotExportResult)
     return v2InvalidResultDictionary("v2 result carries neither value nor error")
 }
 
-/// Decimal-string u64 (generations cross the JS boundary as strings).
+/// Canonical decimal u64 values are the only v2 wire representation.
+func v2CanonicalUInt64String(_ raw: String) -> String? {
+    guard !raw.isEmpty,
+          raw.allSatisfy({ $0 >= "0" && $0 <= "9" }),
+          raw == "0" || raw.first != "0",
+          UInt64(raw) != nil
+    else {
+        return nil
+    }
+    return raw
+}
+
+/// Native-only conversion after canonical syntax and range verification.
 private func v2UInt64Argument(_ raw: String) -> UInt64? {
-    UInt64(raw)
+    guard let canonical = v2CanonicalUInt64String(raw) else { return nil }
+    return UInt64(canonical)
+}
+
+/// NSNumber is the Expo/Foundation numeric boundary. Do not use `uint32Value`:
+/// it truncates fractions and wraps values outside the u32 domain.
+func v2ExactUInt32(_ raw: NSNumber?) -> UInt32? {
+    guard let raw,
+          CFGetTypeID(raw) != CFBooleanGetTypeID()
+    else {
+        return nil
+    }
+    let value = raw.doubleValue
+    guard value.isFinite,
+          value >= 0,
+          value.rounded(.towardZero) == value,
+          value <= Double(UInt32.max)
+    else {
+        return nil
+    }
+    return UInt32(exactly: value)
 }
 
 /// A created v2 handle preserves its exact engine-issued string for adapter
@@ -133,9 +150,8 @@ private func createdV2SessionHandle(_ resultJson: String) -> CreatedV2SessionHan
     guard let data = resultJson.data(using: .utf8),
           let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let editorIdString = result["editorId"] as? String,
-          let editorId = UInt64(editorIdString),
+          let editorId = v2UInt64Argument(editorIdString),
           editorId > 0,
-          editorId <= UInt64(Int64.max),
           editorIdString == String(editorId)
     else {
         return nil
@@ -245,9 +261,9 @@ public class NativeEditorModule: Module {
         }
         Function("editorV2Destroy") { (editorId: String) -> [String: Any] in
             let result = editorV2Destroy(editorId: editorId)
-            if let signedId = UInt64(editorId), signedId > 0, signedId <= UInt64(Int64.max) {
-                NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: signedId)
-                EditorV2Registry.destroyPair(forLegacyId: signedId)
+            if let nativeViewId = v2UInt64Argument(editorId), nativeViewId > 0 {
+                NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: nativeViewId)
+                EditorV2Registry.destroyPair(forLegacyId: nativeViewId)
             }
             return v2UnitResultDictionary(result)
         }
@@ -284,12 +300,15 @@ public class NativeEditorModule: Module {
         Function("editorV2Redo") { (editorId: String, requestJson: String) -> [String: Any] in
             v2JsonResultDictionary(editorV2Redo(editorId: editorId, requestJson: requestJson))
         }
-        Function("editorV2RenderUpdate") { (editorId: String, mirrorScalarAnchor: Int?, mirrorScalarHead: Int?) -> [String: Any] in
+        Function("editorV2RenderUpdate") { (editorId: String, mirrorScalarAnchor: Double?, mirrorScalarHead: Double?) -> [String: Any] in
             // The render accessor for the interactive component: after a
             // JS-driven engine change the component fetches the current
             // render update here and pushes it to the bound view.
-            let anchor = mirrorScalarAnchor.flatMap { $0 >= 0 ? UInt32($0) : nil }
-            let head = mirrorScalarHead.flatMap { $0 >= 0 ? UInt32($0) : nil }
+            let anchor = mirrorScalarAnchor.flatMap { v2ExactUInt32(NSNumber(value: $0)) }
+            let head = mirrorScalarHead.flatMap { v2ExactUInt32(NSNumber(value: $0)) }
+            if (mirrorScalarAnchor != nil && anchor == nil) || (mirrorScalarHead != nil && head == nil) {
+                return v2InvalidResultDictionary("invalid render scalar position")
+            }
             return v2JsonResultDictionary(
                 editorV2RenderUpdate(
                     editorId: editorId,
@@ -302,7 +321,7 @@ public class NativeEditorModule: Module {
             v2JsonResultDictionary(editorV2CollaborationBeginConnect(editorId: editorId))
         }
         Function("editorV2CollaborationSocketOpen") { (editorId: String, generation: String) -> [String: Any] in
-            guard let generation = v2UInt64Argument(generation) else {
+            guard v2UInt64Argument(generation) != nil else {
                 return v2InvalidResultDictionary("invalid generation")
             }
             return v2BytesResultDictionary(
@@ -310,18 +329,21 @@ public class NativeEditorModule: Module {
             )
         }
         Function("editorV2CollaborationReceive") { (editorId: String, generation: String, message: Data) -> [String: Any] in
-            guard let generation = v2UInt64Argument(generation) else {
+            guard v2UInt64Argument(generation) != nil else {
                 return v2InvalidResultDictionary("invalid generation")
             }
             return v2JsonResultDictionary(
                 editorV2CollaborationReceive(editorId: editorId, generation: generation, message: message)
             )
         }
-        Function("editorV2CollaborationSocketClose") { (editorId: String, generation: String, code: Int?, reason: String?) -> [String: Any] in
-            guard let generation = v2UInt64Argument(generation) else {
+        Function("editorV2CollaborationSocketClose") { (editorId: String, generation: String, code: Double?, reason: String?) -> [String: Any] in
+            guard v2UInt64Argument(generation) != nil else {
                 return v2InvalidResultDictionary("invalid generation")
             }
-            let closeCode = code.flatMap { $0 >= 0 ? UInt32($0) : nil }
+            let closeCode = code.flatMap { v2ExactUInt32(NSNumber(value: $0)) }
+            if code != nil && closeCode == nil {
+                return v2InvalidResultDictionary("invalid close code")
+            }
             return v2JsonResultDictionary(
                 editorV2CollaborationSocketClose(
                     editorId: editorId,
@@ -332,7 +354,7 @@ public class NativeEditorModule: Module {
             )
         }
         Function("editorV2CollaborationTakeOutbound") { (editorId: String, generation: String) -> [String: Any] in
-            guard let generation = v2UInt64Argument(generation) else {
+            guard v2UInt64Argument(generation) != nil else {
                 return v2InvalidResultDictionary("invalid generation")
             }
             return v2BytesResultDictionary(
@@ -384,8 +406,8 @@ public class NativeEditorModule: Module {
                 "onAddonEvent"
             )
 
-            Prop("editorId") { (view: NativeEditorExpoView, id: Int) in
-                view.setEditorId(nativeUInt64(id) ?? 0)
+            Prop("editorId") { (view: NativeEditorExpoView, id: String) in
+                view.setEditorId(v2UInt64Argument(id) ?? 0)
             }
             Prop("editable") { (view: NativeEditorExpoView, editable: Bool) in
                 view.setEditable(editable)
@@ -444,8 +466,11 @@ public class NativeEditorModule: Module {
             Prop("editorUpdateJson") { (view: NativeEditorExpoView, editorUpdateJson: String?) in
                 view.setPendingEditorUpdateJson(editorUpdateJson)
             }
-            Prop("editorUpdateRevision") { (view: NativeEditorExpoView, editorUpdateRevision: Int) in
-                view.setPendingEditorUpdateRevision(editorUpdateRevision)
+            Prop("editorUpdateRevision") { (view: NativeEditorExpoView, editorUpdateRevision: Double) in
+                guard let exactRevision = v2ExactUInt32(NSNumber(value: editorUpdateRevision)) else {
+                    return
+                }
+                view.setPendingEditorUpdateRevision(Int(exactRevision))
             }
             OnViewDidUpdateProps { (view: NativeEditorExpoView) in
                 view.applyPendingEditorUpdateIfNeeded()

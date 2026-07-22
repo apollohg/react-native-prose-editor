@@ -39,8 +39,8 @@ fn revision(id: u64) -> u64 {
 fn input_envelope(request_id: u64, base_revision: u64, text: &str) -> String {
     serde_json::json!({
         "version": 1,
-        "requestId": request_id,
-        "baseDocumentRevision": base_revision,
+        "requestId": request_id.to_string(),
+        "baseDocumentRevision": base_revision.to_string(),
         "text": text,
     })
     .to_string()
@@ -49,8 +49,8 @@ fn input_envelope(request_id: u64, base_revision: u64, text: &str) -> String {
 fn command_envelope(request_id: u64, base_revision: u64, command: serde_json::Value) -> String {
     serde_json::json!({
         "version": 1,
-        "requestId": request_id,
-        "baseDocumentRevision": base_revision,
+        "requestId": request_id.to_string(),
+        "baseDocumentRevision": base_revision.to_string(),
         "command": command,
     })
     .to_string()
@@ -59,8 +59,8 @@ fn command_envelope(request_id: u64, base_revision: u64, command: serde_json::Va
 fn selection_envelope(request_id: u64, base_revision: u64, anchor: u32, head: u32) -> String {
     serde_json::json!({
         "version": 1,
-        "requestId": request_id,
-        "baseDocumentRevision": base_revision,
+        "requestId": request_id.to_string(),
+        "baseDocumentRevision": base_revision.to_string(),
         "selection": {
             "type": "text",
             "anchor": { "offset": anchor, "kind": "scalar" },
@@ -73,8 +73,8 @@ fn selection_envelope(request_id: u64, base_revision: u64, anchor: u32, head: u3
 fn replace_envelope(request_id: u64, base_revision: u64, json: &str, history: &str) -> String {
     serde_json::json!({
         "version": 1,
-        "requestId": request_id,
-        "baseDocumentRevision": base_revision,
+        "requestId": request_id.to_string(),
+        "baseDocumentRevision": base_revision.to_string(),
         "setJson": serde_json::from_str::<serde_json::Value>(json).unwrap(),
         "history": history,
     })
@@ -252,8 +252,8 @@ fn envelope_admission_rejects_bad_version_unknown_fields_and_forged_origins() {
     for ((label, submit), (_, payload)) in submitters.iter().zip(payloads.iter()) {
         let mut valid = serde_json::json!({
             "version": 1,
-            "requestId": 31,
-            "baseDocumentRevision": base,
+            "requestId": "31",
+            "baseDocumentRevision": base.to_string(),
         });
         for (key, value) in payload.as_object().unwrap() {
             valid[key] = value.clone();

@@ -43,7 +43,7 @@ final class EditorV2Adapter {
     /// The live collaboration generation, set by the transport owner while a
     /// socket is current. `nil` disables the local-commit drain ping (the TS
     /// controller's "no current socket" case).
-    var collaborationGeneration: UInt64?
+    var collaborationGeneration: String?
 
     /// The document revision the next mutation will be based on.
     private(set) var baseDocumentRevision: UInt64 = 0
@@ -146,13 +146,13 @@ final class EditorV2Adapter {
         onAutonomousError?(error)
     }
 
-    /// Serialize one request envelope, splicing the base revision in as raw
-    /// decimal digits so full u64 revisions survive (mirrors the TS bridge).
+    /// Serialize one request envelope with canonical decimal-string u64
+    /// fields, so Foundation never bridges them through NSNumber.
     private func buildEnvelope(_ payload: [String: Any], includeBaseRevision: Bool = true) -> String {
         nextRequestId &+= 1
-        var parts = ["\"version\":1", "\"requestId\":\(nextRequestId)"]
+        var parts = ["\"version\":1", "\"requestId\":\"\(nextRequestId)\""]
         if includeBaseRevision {
-            parts.append("\"baseDocumentRevision\":\(baseDocumentRevision)")
+            parts.append("\"baseDocumentRevision\":\"\(baseDocumentRevision)\"")
         }
         if let data = try? JSONSerialization.data(withJSONObject: payload),
            let payloadJson = String(data: data, encoding: .utf8),
@@ -180,9 +180,10 @@ final class EditorV2Adapter {
     }
 
     private static func uint64Field(_ object: [String: Any], _ key: String) -> UInt64? {
-        if let number = object[key] as? NSNumber { return number.uint64Value }
-        if let string = object[key] as? String { return UInt64(string) }
-        return nil
+        guard let string = object[key] as? String,
+              isCanonicalDecimalEditorId(string)
+        else { return nil }
+        return UInt64(string)
     }
 
     private func fetchState() -> V2State? {
@@ -237,9 +238,7 @@ final class EditorV2Adapter {
     }
 
     private static func uint32Field(_ object: [String: Any], _ key: String) -> UInt32? {
-        if let number = object[key] as? NSNumber { return number.uint32Value }
-        if let string = object[key] as? String { return UInt32(string) }
-        return nil
+        v2ExactUInt32(object[key] as? NSNumber)
     }
 
     /// The v2 render accessor: one synthesized update JSON carrying
@@ -272,7 +271,7 @@ final class EditorV2Adapter {
                 return nil
             }
             update["historyState"] = ["canUndo": canUndo, "canRedo": canRedo]
-            update["documentVersion"] = documentVersion
+            update["documentVersion"] = documentVersion.description
             // The scalar extent feeds the adapter's IME clamp only; the
             // view-facing update keeps the exact legacy update JSON shape.
             update.removeValue(forKey: "scalarLength")
@@ -487,8 +486,8 @@ final class EditorV2Adapter {
             guard let data = updateJSON.data(using: .utf8),
                   let update = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let selection = update["selection"] as? [String: Any],
-                  let docAnchor = (selection["anchor"] as? NSNumber)?.uint32Value,
-                  let docHead = (selection["head"] as? NSNumber)?.uint32Value
+                  let docAnchor = Self.uint32Field(selection, "anchor"),
+                  let docHead = Self.uint32Field(selection, "head")
             else {
                 return nil
             }

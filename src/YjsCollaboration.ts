@@ -214,9 +214,22 @@ function selectionFromPeerState(
     const selection = state.selection;
     if (!selection || typeof selection !== 'object') return undefined;
 
-    const anchor = Number((selection as Record<string, unknown>).anchor);
-    const head = Number((selection as Record<string, unknown>).head);
-    if (!Number.isFinite(anchor) || !Number.isFinite(head)) return undefined;
+    const anchor = (selection as Record<string, unknown>).anchor;
+    const head = (selection as Record<string, unknown>).head;
+    if (
+        typeof anchor !== 'number' ||
+        typeof head !== 'number' ||
+        !Number.isFinite(anchor) ||
+        !Number.isFinite(head) ||
+        !Number.isInteger(anchor) ||
+        !Number.isInteger(head) ||
+        anchor < 0 ||
+        head < 0 ||
+        anchor > 0xffff_ffff ||
+        head > 0xffff_ffff
+    ) {
+        return undefined;
+    }
 
     return { anchor, head };
 }

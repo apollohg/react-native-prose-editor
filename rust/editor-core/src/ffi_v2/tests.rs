@@ -19,6 +19,17 @@ fn shared_contract() -> serde_json::Value {
     fixtures["ffiV2ErrorContract"].clone()
 }
 
+#[test]
+fn decimal_u64_serializer_keeps_the_full_u64_domain_as_canonical_strings() {
+    for value in [0, (1_u64 << 53) + 1, u64::MAX] {
+        assert_eq!(
+            super::types::decimal_u64(value),
+            json!(value.to_string()),
+            "u64 {value} must cross the v2 wire as decimal text"
+        );
+    }
+}
+
 const CREATE_LIMIT_CASES: [(&str, &str, u64); 21] = [
     ("resource", "maxInputBytes", 64 * 1024 * 1024),
     ("resource", "maxDocumentNodes", 1_000_000),
@@ -327,8 +338,8 @@ fn create_pre_serde_retained_envelope_admission_is_exact() {
     );
     let error = create_error_from_json(one_over);
     assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
-    assert_eq!(error.limit, Some(LIMIT as u64));
-    assert_eq!(error.actual, Some((LIMIT + 1) as u64));
+    assert_eq!(error.limit, Some((LIMIT as u64).to_string()));
+    assert_eq!(error.actual, Some(((LIMIT + 1) as u64).to_string()));
 }
 
 #[test]
@@ -350,8 +361,8 @@ fn create_pre_serde_rejects_oversized_escaped_metadata() {
             "config length: {}",
             config.len()
         );
-        assert_eq!(error.limit, Some(LIMIT as u64));
-        assert_eq!(error.actual, Some(config.len() as u64));
+        assert_eq!(error.limit, Some((LIMIT as u64).to_string()));
+        assert_eq!(error.actual, Some((config.len() as u64).to_string()));
     }
 }
 
@@ -389,8 +400,8 @@ fn create_local_json_depth_reaches_the_configured_semantic_limit() {
         (
             error.domain.as_str(),
             error.code.as_str(),
-            error.limit,
-            error.actual,
+            error.limit.clone(),
+            error.actual.clone(),
         )
     });
     if exact_error.is_none() {
@@ -419,8 +430,8 @@ fn create_local_json_depth_reaches_the_configured_semantic_limit() {
             (
                 "document",
                 "DOCUMENT_LIMIT_EXCEEDED",
-                Some(LIMIT as u64),
-                Some((LIMIT + 1) as u64),
+                Some((LIMIT as u64).to_string()),
+                Some(((LIMIT + 1) as u64).to_string()),
             ),
         )
     );
@@ -486,7 +497,7 @@ fn max_depth_document_lifecycle_is_stack_safe_on_a_constrained_thread() {
             );
 
             let replacement = format!(
-                r#"{{"version":1,"requestId":1,"setJson":{document},"history":"resetAndClear"}}"#
+                r#"{{"version":1,"requestId":"1","setJson":{document},"history":"resetAndClear"}}"#
             );
             assert!(
                 super::editor::editor_v2_replace_document(local.clone(), replacement)
@@ -652,8 +663,8 @@ fn create_escaped_html_uses_decoded_bytes_and_allows_the_configured_hard_limit()
         .to_string(),
     );
     assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
-    assert_eq!(error.limit, Some(31));
-    assert_eq!(error.actual, Some(32));
+    assert_eq!(error.limit, Some("31".into()));
+    assert_eq!(error.actual, Some("32".into()));
 
     let large_escaped = "\0".repeat(22 * 1024 * 1024);
     let config_json = json!({
@@ -970,9 +981,9 @@ fn ffi_error_conversion_uses_decimal_request_ids_and_true_nullability() {
     ));
     assert_eq!(rich.domain, "operation");
     assert_eq!(rich.request_id.as_deref(), Some("18446744073709551615"));
-    assert_eq!(rich.operation_index, Some(7));
-    assert_eq!(rich.limit, Some(256));
-    assert_eq!(rich.actual, Some(257));
+    assert_eq!(rich.operation_index.as_deref(), Some("7"));
+    assert_eq!(rich.limit.as_deref(), Some("256"));
+    assert_eq!(rich.actual.as_deref(), Some("257"));
     assert_eq!(
         rich.details_json.as_deref(),
         Some(r#"{"field":"maxOperationsPerTransaction"}"#)

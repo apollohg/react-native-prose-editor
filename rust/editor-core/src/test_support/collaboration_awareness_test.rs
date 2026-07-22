@@ -1201,8 +1201,8 @@ fn refused_broadcast_keeps_the_publish_clock_and_a_tick_heals_it_after_drain() {
         id,
         &json!({
             "version": 1,
-            "requestId": 543,
-            "baseDocumentRevision": revision,
+            "requestId": "543",
+            "baseDocumentRevision": revision.to_string(),
             "selection": {
                 "type": "text",
                 "anchor": { "offset": 0, "kind": "scalar" },
@@ -1217,8 +1217,8 @@ fn refused_broadcast_keeps_the_publish_clock_and_a_tick_heals_it_after_drain() {
         id,
         &json!({
             "version": 1,
-            "requestId": 544,
-            "baseDocumentRevision": revision,
+            "requestId": "544",
+            "baseDocumentRevision": revision.to_string(),
             "text": "fill",
         })
         .to_string(),
@@ -1488,8 +1488,8 @@ fn cursor_projections_resolve_and_recompute_after_every_document_revision() {
         id,
         &json!({
             "version": 1,
-            "requestId": 602,
-            "baseDocumentRevision": revision,
+            "requestId": "602",
+            "baseDocumentRevision": revision.to_string(),
             "selection": {
                 "type": "text",
                 "anchor": { "offset": 0, "kind": "scalar" },
@@ -1504,8 +1504,8 @@ fn cursor_projections_resolve_and_recompute_after_every_document_revision() {
         id,
         &json!({
             "version": 1,
-            "requestId": 603,
-            "baseDocumentRevision": revision,
+            "requestId": "603",
+            "baseDocumentRevision": revision.to_string(),
             "text": "xx",
         })
         .to_string(),

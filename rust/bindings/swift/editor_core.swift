@@ -416,22 +416,6 @@ fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
-    typealias FfiType = UInt64
-    typealias SwiftType = UInt64
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt64 {
-        return try lift(readInt(&buf))
-    }
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -588,14 +572,14 @@ public struct FfiError {
     public var code: String
     public var message: String
     public var requestId: String?
-    public var operationIndex: UInt64?
-    public var limit: UInt64?
-    public var actual: UInt64?
+    public var operationIndex: String?
+    public var limit: String?
+    public var actual: String?
     public var detailsJson: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(domain: String, code: String, message: String, requestId: String?, operationIndex: UInt64?, limit: UInt64?, actual: UInt64?, detailsJson: String?) {
+    public init(domain: String, code: String, message: String, requestId: String?, operationIndex: String?, limit: String?, actual: String?, detailsJson: String?) {
         self.domain = domain
         self.code = code
         self.message = message
@@ -666,9 +650,9 @@ public struct FfiConverterTypeFfiError: FfiConverterRustBuffer {
                 code: FfiConverterString.read(from: &buf),
                 message: FfiConverterString.read(from: &buf),
                 requestId: FfiConverterOptionString.read(from: &buf),
-                operationIndex: FfiConverterOptionUInt64.read(from: &buf),
-                limit: FfiConverterOptionUInt64.read(from: &buf),
-                actual: FfiConverterOptionUInt64.read(from: &buf),
+                operationIndex: FfiConverterOptionString.read(from: &buf),
+                limit: FfiConverterOptionString.read(from: &buf),
+                actual: FfiConverterOptionString.read(from: &buf),
                 detailsJson: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -678,9 +662,9 @@ public struct FfiConverterTypeFfiError: FfiConverterRustBuffer {
         FfiConverterString.write(value.code, into: &buf)
         FfiConverterString.write(value.message, into: &buf)
         FfiConverterOptionString.write(value.requestId, into: &buf)
-        FfiConverterOptionUInt64.write(value.operationIndex, into: &buf)
-        FfiConverterOptionUInt64.write(value.limit, into: &buf)
-        FfiConverterOptionUInt64.write(value.actual, into: &buf)
+        FfiConverterOptionString.write(value.operationIndex, into: &buf)
+        FfiConverterOptionString.write(value.limit, into: &buf)
+        FfiConverterOptionString.write(value.actual, into: &buf)
         FfiConverterOptionString.write(value.detailsJson, into: &buf)
     }
 }
@@ -1011,30 +995,6 @@ fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
-    typealias SwiftType = UInt64?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterUInt64.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterUInt64.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
     typealias SwiftType = Bool?
 
@@ -1202,11 +1162,11 @@ public func editorV2CollaborationPeers(editorId: String) -> FfiJsonResult  {
     )
 })
 }
-public func editorV2CollaborationReceive(editorId: String, generation: UInt64, message: Data) -> FfiJsonResult  {
+public func editorV2CollaborationReceive(editorId: String, generation: String, message: Data) -> FfiJsonResult  {
     return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_v2_collaboration_receive(
         FfiConverterString.lower(editorId),
-        FfiConverterUInt64.lower(generation),
+        FfiConverterString.lower(generation),
         FfiConverterData.lower(message),$0
     )
 })
@@ -1228,11 +1188,11 @@ public func editorV2CollaborationSetAwareness(editorId: String, awarenessJson: S
  * eligibility); a policy-violation close code (1008) parks the transport
  * `Incompatible`, every other reported close is retryable.
  */
-public func editorV2CollaborationSocketClose(editorId: String, generation: UInt64, code: UInt32?, reason: String?) -> FfiJsonResult  {
+public func editorV2CollaborationSocketClose(editorId: String, generation: String, code: UInt32?, reason: String?) -> FfiJsonResult  {
     return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_v2_collaboration_socket_close(
         FfiConverterString.lower(editorId),
-        FfiConverterUInt64.lower(generation),
+        FfiConverterString.lower(generation),
         FfiConverterOptionUInt32.lower(code),
         FfiConverterOptionString.lower(reason),$0
     )
@@ -1242,11 +1202,11 @@ public func editorV2CollaborationSocketClose(editorId: String, generation: UInt6
  * On acceptance the socket owes Sync Step 1 immediately; the framed
  * message rides back as direct bytes.
  */
-public func editorV2CollaborationSocketOpen(editorId: String, generation: UInt64) -> FfiBytesResult  {
+public func editorV2CollaborationSocketOpen(editorId: String, generation: String) -> FfiBytesResult  {
     return try!  FfiConverterTypeFfiBytesResult_lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(
         FfiConverterString.lower(editorId),
-        FfiConverterUInt64.lower(generation),$0
+        FfiConverterString.lower(generation),$0
     )
 })
 }
@@ -1256,11 +1216,11 @@ public func editorV2CollaborationSocketOpen(editorId: String, generation: UInt64
  * framing at pickup, so every frame is a complete y-protocols message);
  * an empty queue returns the documented empty value (empty bytes).
  */
-public func editorV2CollaborationTakeOutbound(editorId: String, generation: UInt64) -> FfiBytesResult  {
+public func editorV2CollaborationTakeOutbound(editorId: String, generation: String) -> FfiBytesResult  {
     return try!  FfiConverterTypeFfiBytesResult_lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_v2_collaboration_take_outbound(
         FfiConverterString.lower(editorId),
-        FfiConverterUInt64.lower(generation),$0
+        FfiConverterString.lower(generation),$0
     )
 })
 }
@@ -1423,19 +1383,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_peers() != 754) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 17199) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 49592) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness() != 49061) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 59730) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 60112) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open() != 61882) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open() != 10599) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_take_outbound() != 65258) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_take_outbound() != 44572) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_create() != 9333) {

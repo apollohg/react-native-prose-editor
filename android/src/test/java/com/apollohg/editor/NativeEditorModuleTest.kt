@@ -1,5 +1,6 @@
 package com.apollohg.editor
 
+import java.math.BigDecimal
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -14,14 +15,31 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class NativeEditorModuleTest {
     @Test
-    fun `native unsigned argument helper rejects negative values`() {
-        assertNull(nativeULong(-1))
+    fun `generation parser rejects every non-canonical decimal spelling`() {
+        val parser = Class.forName("com.apollohg.editor.NativeEditorModuleKt")
+            .getDeclaredMethod("parseGeneration", String::class.java)
+            .apply { isAccessible = true }
+
+        assertEquals("18446744073709551615", parser.invoke(null, "18446744073709551615"))
+        for (value in listOf("+1", "01", " 1", "1 ", "1e3")) {
+            assertNull("generation $value must be rejected", parser.invoke(null, value))
+        }
     }
 
     @Test
-    fun `native unsigned argument helper keeps non-negative values`() {
-        assertEquals(0UL, nativeULong(0))
-        assertEquals(42UL, nativeULong(42))
+    fun `v2 u32 parser admits only exact finite integral values`() {
+        assertEquals(UInt.MAX_VALUE, exactV2U32(4_294_967_295L))
+        assertEquals(0u, exactV2U32(0))
+        for (value in listOf<Number>(
+            -1,
+            1.5,
+            Double.NaN,
+            Double.POSITIVE_INFINITY,
+            4_294_967_296L,
+            BigDecimal("1.0000000000000000001"),
+        )) {
+            assertNull("u32 $value must be rejected", exactV2U32(value))
+        }
     }
 
     @Test

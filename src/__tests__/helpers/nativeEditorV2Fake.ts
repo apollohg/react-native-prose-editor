@@ -51,9 +51,9 @@ interface FakeErrorRecord {
     code: string;
     message: string;
     requestId: string | null;
-    operationIndex: number | null;
-    limit: number | null;
-    actual: number | null;
+    operationIndex: string | null;
+    limit: string | null;
+    actual: string | null;
     details: Record<string, unknown> | null;
 }
 
@@ -96,6 +96,61 @@ function snapshotError(code: string, message: string): Record<string, unknown> {
 
 function boundaryError(code: string, message: string): Record<string, unknown> {
     return errRecord(errorRecord('boundary', code, message));
+}
+
+const CANONICAL_V2_U64 = /^(0|[1-9]\d*)$/;
+const U64_MAX = 0xffff_ffff_ffff_ffffn;
+
+/** Match the production v2 boundary: u64s are canonical decimal strings only. */
+function canonicalV2U64(value: unknown): string | null {
+    if (typeof value !== 'string' || !CANONICAL_V2_U64.test(value)) return null;
+    try {
+        return BigInt(value) <= U64_MAX ? value : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Match platform/JS exact-u32 admission before a native integer conversion. */
+function exactV2U32(value: unknown): number | null {
+    return typeof value === 'number' &&
+        Number.isFinite(value) &&
+        Number.isInteger(value) &&
+        value >= 0 &&
+        value <= 0xffff_ffff
+        ? value
+        : null;
+}
+
+function parseV2RequestEnvelope(
+    requestJson: string,
+    requiresBaseRevision: boolean
+): Record<string, unknown> | Record<string, unknown> {
+    let request: unknown;
+    try {
+        request = JSON.parse(requestJson);
+    } catch {
+        return { __v2RequestError: boundaryError('CONFIG_INVALID', 'malformed v2 request envelope') };
+    }
+    if (
+        request == null ||
+        typeof request !== 'object' ||
+        Array.isArray(request) ||
+        (request as Record<string, unknown>).version !== 1 ||
+        canonicalV2U64((request as Record<string, unknown>).requestId) == null ||
+        (requiresBaseRevision &&
+            canonicalV2U64((request as Record<string, unknown>).baseDocumentRevision) == null)
+    ) {
+        return { __v2RequestError: boundaryError('CONFIG_INVALID', 'invalid v2 request envelope') };
+    }
+    return request as Record<string, unknown>;
+}
+
+function requestEnvelopeError(
+    parsed: Record<string, unknown>
+): Record<string, unknown> | null {
+    const error = parsed.__v2RequestError;
+    return error != null && typeof error === 'object' ? (error as Record<string, unknown>) : null;
 }
 
 /** Deterministic single-paragraph HTML used by the fake for html round-trips. */
@@ -276,11 +331,10 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         generation: string,
         action: string
     ): Record<string, unknown> | null {
-        const parsed = Number(generation);
         if (
             session.liveGeneration == null ||
-            !Number.isSafeInteger(parsed) ||
-            parsed !== session.liveGeneration
+            canonicalV2U64(generation) == null ||
+            generation !== String(session.liveGeneration)
         ) {
             return transportError(
                 'TRANSPORT_STALE_GENERATION',
@@ -575,7 +629,9 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         ),
         editorV2ReplaceDocument: jest.fn((editorId: string, requestJson: string) =>
             withSession(editorId, (session) => {
-                const request = JSON.parse(requestJson) as Record<string, unknown>;
+                const request = parseV2RequestEnvelope(requestJson, false);
+                const envelopeError = requestEnvelopeError(request);
+                if (envelopeError) return envelopeError;
                 const rejected = admitReplacement(session);
                 if (rejected) return rejected;
                 const nextDoc =
@@ -593,14 +649,16 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         ),
         editorV2ApplyInput: jest.fn((editorId: string, requestJson: string) =>
             withSession(editorId, (session) => {
-                const request = JSON.parse(requestJson) as Record<string, unknown>;
+                const request = parseV2RequestEnvelope(requestJson, true);
+                const envelopeError = requestEnvelopeError(request);
+                if (envelopeError) return envelopeError;
                 if (session.documentState === 'AwaitRemote') {
                     return operationError(
                         'ENGINE_NOT_READY',
                         'room document is awaiting the remote initial state'
                     );
                 }
-                if (String(request.baseDocumentRevision) !== String(session.documentRevision)) {
+                if (request.baseDocumentRevision !== String(session.documentRevision)) {
                     return operationError(
                         'REVISION_MISMATCH',
                         'base document revision does not match the engine revision'
@@ -628,14 +686,16 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             withSession(editorId, (session) => {
                 const injected = pendingFor(session.editorId).applyCommandErrors.shift();
                 if (injected) return errRecord(injected);
-                const request = JSON.parse(requestJson) as Record<string, unknown>;
+                const request = parseV2RequestEnvelope(requestJson, true);
+                const envelopeError = requestEnvelopeError(request);
+                if (envelopeError) return envelopeError;
                 if (session.documentState === 'AwaitRemote') {
                     return operationError(
                         'ENGINE_NOT_READY',
                         'room document is awaiting the remote initial state'
                     );
                 }
-                if (String(request.baseDocumentRevision) !== String(session.documentRevision)) {
+                if (request.baseDocumentRevision !== String(session.documentRevision)) {
                     return operationError(
                         'REVISION_MISMATCH',
                         'base document revision does not match the engine revision'
@@ -768,8 +828,15 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             })
         ),
         editorV2RenderUpdate: jest.fn(
-            (editorId: string, mirrorAnchor: number | null, mirrorHead: number | null) =>
+            (editorId: string, mirrorAnchor: unknown, mirrorHead: unknown) =>
                 withSession(editorId, (session) => {
+                    if (
+                        (mirrorAnchor == null) !== (mirrorHead == null) ||
+                        (mirrorAnchor != null && exactV2U32(mirrorAnchor) == null) ||
+                        (mirrorHead != null && exactV2U32(mirrorHead) == null)
+                    ) {
+                        return boundaryError('CONFIG_INVALID', 'invalid render mirror scalar offsets');
+                    }
                     if (session.documentState === 'AwaitRemote') {
                         return operationError(
                             'ENGINE_NOT_READY',
@@ -808,16 +875,18 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                             canUndo: session.undoStack.length > 0,
                             canRedo: session.redoStack.length > 0,
                         },
-                        documentVersion: session.documentRevision,
+                        documentVersion: String(session.documentRevision),
                         scalarLength,
                     };
-                    if (typeof mirrorAnchor === 'number' && typeof mirrorHead === 'number') {
+                    if (mirrorAnchor != null && mirrorHead != null) {
+                        const anchor = exactV2U32(mirrorAnchor)!;
+                        const head = exactV2U32(mirrorHead)!;
                         update.selection = {
                             type: 'text',
-                            anchor: mirrorAnchor,
-                            head: mirrorHead,
-                            anchorScalar: mirrorAnchor,
-                            headScalar: mirrorHead,
+                            anchor,
+                            head,
+                            anchorScalar: anchor,
+                            headScalar: head,
                         };
                     }
                     return okRecord(JSON.stringify(update));
@@ -827,8 +896,10 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             withSession(editorId, (session) => {
                 const injected = pendingFor(session.editorId).applyLocalApiErrors.shift();
                 if (injected) return errRecord(injected);
-                const request = JSON.parse(requestJson) as Record<string, unknown>;
-                if (String(request.baseDocumentRevision) !== String(session.documentRevision)) {
+                const request = parseV2RequestEnvelope(requestJson, true);
+                const envelopeError = requestEnvelopeError(request);
+                if (envelopeError) return envelopeError;
+                if (request.baseDocumentRevision !== String(session.documentRevision)) {
                     return operationError(
                         'REVISION_MISMATCH',
                         'base document revision does not match the engine revision'
@@ -850,13 +921,25 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 );
             })
         ),
-        editorV2SetSelection: jest.fn((editorId: string, _requestJson: string) =>
-            withSession(editorId, (_session) =>
-                okRecord(JSON.stringify({ type: 'notApplicable' }))
-            )
-        ),
-        editorV2Undo: jest.fn((editorId: string, _requestJson: string) =>
+        editorV2SetSelection: jest.fn((editorId: string, requestJson: string) =>
             withSession(editorId, (session) => {
+                const request = parseV2RequestEnvelope(requestJson, true);
+                const envelopeError = requestEnvelopeError(request);
+                if (envelopeError) return envelopeError;
+                if (request.baseDocumentRevision !== String(session.documentRevision)) {
+                    return operationError(
+                        'REVISION_MISMATCH',
+                        'base document revision does not match the engine revision'
+                    );
+                }
+                return okRecord(JSON.stringify({ type: 'notApplicable' }));
+            })
+        ),
+        editorV2Undo: jest.fn((editorId: string, requestJson: string) =>
+            withSession(editorId, (session) => {
+                const request = parseV2RequestEnvelope(requestJson, false);
+                const envelopeError = requestEnvelopeError(request);
+                if (envelopeError) return envelopeError;
                 const previous = session.undoStack.pop();
                 if (!previous) return okRecord(JSON.stringify({ changed: false }));
                 session.redoStack.push(cloneDoc(session.doc));
@@ -866,8 +949,11 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 return okRecord(JSON.stringify({ changed: true }));
             })
         ),
-        editorV2Redo: jest.fn((editorId: string, _requestJson: string) =>
+        editorV2Redo: jest.fn((editorId: string, requestJson: string) =>
             withSession(editorId, (session) => {
+                const request = parseV2RequestEnvelope(requestJson, false);
+                const envelopeError = requestEnvelopeError(request);
+                if (envelopeError) return envelopeError;
                 const next = session.redoStack.pop();
                 if (!next) return okRecord(JSON.stringify({ changed: false }));
                 session.undoStack.push(cloneDoc(session.doc));
@@ -902,7 +988,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 session.lastIssuedGeneration += 1;
                 session.liveGeneration = session.lastIssuedGeneration;
                 session.transportState = 'Connecting';
-                return okRecord(JSON.stringify({ generation: session.liveGeneration }));
+                return okRecord(JSON.stringify({ generation: String(session.liveGeneration) }));
             })
         ),
         editorV2CollaborationSocketOpen: jest.fn((editorId: string, generation: string) =>
@@ -937,10 +1023,13 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 })
         ),
         editorV2CollaborationSocketClose: jest.fn(
-            (editorId: string, generation: string, code: number | null, _reason: string | null) =>
+            (editorId: string, generation: string, code: unknown, _reason: string | null) =>
                 withSession(editorId, (session) => {
                     const stale = requireLiveGeneration(session, generation, 'socketClose');
                     if (stale) return stale;
+                    if (code != null && exactV2U32(code) == null) {
+                        return boundaryError('CONFIG_INVALID', 'invalid collaboration close code');
+                    }
                     const next: FakeTransportState =
                         code === 1008 ? 'Incompatible' : 'Disconnected';
                     retireGeneration(session, next);

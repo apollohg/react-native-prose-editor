@@ -919,7 +919,7 @@ class EditorEditText @JvmOverloads constructor(
             discardTransientNativeInputForEditorRebind()
         }
         editorId = id
-        v2Driver = EditorV2Registry.adapterFor(id)
+        v2Driver = EditorV2Registry.adapterForViewToken(id)
         val driver = v2Driver
         if (driver != null) {
             if (!initialHTML.isNullOrEmpty()) {
@@ -4674,8 +4674,8 @@ class EditorEditText @JvmOverloads constructor(
             val currentText = text?.toString() ?: ""
             when (type) {
                 "text" -> {
-                    val docAnchor = selection.optInt("anchor", 0)
-                    val docHead = selection.optInt("head", 0)
+                    val docAnchor = exactV2ScalarInt(selection.opt("anchor") as? Number) ?: return
+                    val docHead = exactV2ScalarInt(selection.opt("head") as? Number) ?: return
                     // Convert doc positions to scalar offsets.
                     val selectionDriver = v2Driver ?: return
                     val scalarAnchor = selectionDriver.scalarPositionForDoc(docAnchor) ?: docAnchor
@@ -4689,7 +4689,7 @@ class EditorEditText @JvmOverloads constructor(
                     )
                 }
                 "node" -> {
-                    val docPos = selection.optInt("pos", 0)
+                    val docPos = exactV2ScalarInt(selection.opt("pos") as? Number) ?: return
                     // Convert doc position to scalar offset.
                     val nodeSelectionDriver = v2Driver ?: return
                     val scalarPos = nodeSelectionDriver.scalarPositionForDoc(docPos) ?: docPos

@@ -172,7 +172,7 @@ internal object NativePerformanceFixtureFactory {
                     scalar
                 }
                 RemoteSelectionDecoration(
-                    clientId = index + 1,
+                    clientId = (index + 1).toString(),
                     anchor = scalar,
                     head = head,
                     color = colors[index % colors.size],

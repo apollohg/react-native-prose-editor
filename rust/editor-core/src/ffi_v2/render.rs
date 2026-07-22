@@ -62,7 +62,7 @@ use crate::session::SessionError;
 use crate::yrs_engine::YrsEngineError;
 
 use super::editor::{json_result, with_editor};
-use super::types::FfiJsonResult;
+use super::types::{decimal_u64, parse_canonical_u64, FfiJsonResult};
 
 /// Schemas resolved at `editor_v2_create` time, keyed by session id. The
 /// engine owns its schema privately; this registry is the render accessor's
@@ -141,9 +141,8 @@ fn selection_json(document: &Document, position_map: &PositionMap, selection: &S
 }
 
 fn registered_schema(editor_id: &str) -> Result<Schema, SessionError> {
-    let id = editor_id
-        .parse::<u64>()
-        .map_err(|_| config_invalid(format!("malformed editor handle: {editor_id:?}")))?;
+    let id = parse_canonical_u64(editor_id)
+        .ok_or_else(|| config_invalid(format!("malformed editor handle: {editor_id:?}")))?;
     SESSION_SCHEMAS
         .lock()
         .expect("session schema registry poisoned")
@@ -227,7 +226,7 @@ pub fn editor_v2_render_update(
         );
         update.insert(
             "documentVersion".to_string(),
-            Value::from(engine.revision()),
+            decimal_u64(engine.revision()),
         );
         update.insert("scalarLength".to_string(), Value::from(scalar_length));
         Ok(Value::Object(update).to_string())

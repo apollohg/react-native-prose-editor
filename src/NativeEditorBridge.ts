@@ -98,7 +98,7 @@ export interface EditorUpdate {
     selection: Selection;
     activeState: ActiveState;
     historyState: HistoryState;
-    documentVersion?: number;
+    documentVersion?: string;
 }
 
 export interface ContentSnapshot {
@@ -111,7 +111,7 @@ export interface DocumentJSON {
 }
 
 export interface CollaborationPeer {
-    clientId: number;
+    clientId: string;
     isLocal: boolean;
     state: Record<string, unknown> | null;
 }
@@ -276,25 +276,30 @@ export function normalizeNativeEditorV2Unit(value: unknown): true | null {
 
 /**
  * Normalize a request/revision identifier to its canonical decimal string.
- * Decimal strings of any size pass verbatim (never Number()'d); numbers must
- * be non-negative safe integers. Everything else is rejected.
+ * V2 never accepts numeric compatibility values: JavaScript numbers cannot
+ * represent the complete Rust u64 domain.
  */
 export function normalizeNativeEditorV2DecimalId(value: unknown): string | null {
-    if (typeof value === 'string') {
-        return CANONICAL_V2_DECIMAL_ID.test(value) ? value : null;
-    }
-    if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
-        return String(value);
-    }
-    return null;
+    return typeof value === 'string' && CANONICAL_V2_DECIMAL_ID.test(value) ? value : null;
 }
 
 function normalizeRevisionField(record: Record<string, unknown>, field: string): string | null {
     return normalizeNativeEditorV2DecimalId(record[field]);
 }
 
-function unsignedSafeInteger(value: unknown): number | null {
-    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+function nativeEditorV2U32(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value >= 0 && value <= 0xffff_ffff
+        ? value
+        : null;
+}
+
+/** Require one exact JavaScript/platform u32 value at the v2 boundary. */
+export function requireNativeEditorV2U32(value: unknown, field: string): number {
+    const normalized = nativeEditorV2U32(value);
+    if (normalized == null) {
+        throw invalidV2RequestError(`NativeEditorBridge: invalid u32 ${field}`);
+    }
+    return normalized;
 }
 
 function optionalBoolean(value: unknown): boolean | null {
@@ -455,7 +460,10 @@ export function normalizeNativeEditorV2HtmlValue(value: unknown): string | null 
  */
 export function normalizeNativeEditorV2RenderUpdateValue(value: unknown): string | null {
     const parsed = parseNativeEditorV2JsonValue(value);
-    return isPlainRecord(parsed) ? (value as string) : null;
+    if (!isPlainRecord(parsed)) return null;
+    if (normalizeRevisionField(parsed, 'documentVersion') == null) return null;
+    if (nativeEditorV2U32(parsed.scalarLength) == null) return null;
+    return value as string;
 }
 
 export function normalizeNativeEditorV2DocumentJsonValue(value: unknown): DocumentJSON | null {
@@ -524,15 +532,15 @@ export function normalizeNativeEditorV2PeersValue(value: unknown): NativeEditorV
     for (const rawPeer of parsed.peers) {
         if (!isPlainRecord(rawPeer)) return null;
         const clientId = normalizeNativeEditorV2DecimalId(rawPeer.clientId);
-        const clock = unsignedSafeInteger(rawPeer.clock);
+        const clock = nativeEditorV2U32(rawPeer.clock);
         const isLocal = optionalBoolean(rawPeer.isLocal);
         if (clientId == null || clock == null || isLocal == null) return null;
         if (rawPeer.state !== null && !isPlainRecord(rawPeer.state)) return null;
         let cursor: NativeEditorV2PeerInfo['cursor'] = null;
         if (rawPeer.cursor !== null && rawPeer.cursor !== undefined) {
             if (!isPlainRecord(rawPeer.cursor)) return null;
-            const anchor = unsignedSafeInteger(rawPeer.cursor.anchor);
-            const head = unsignedSafeInteger(rawPeer.cursor.head);
+            const anchor = nativeEditorV2U32(rawPeer.cursor.anchor);
+            const head = nativeEditorV2U32(rawPeer.cursor.head);
             if (anchor == null || head == null) return null;
             cursor = { anchor, head };
         }
@@ -567,9 +575,9 @@ export function normalizeNativeEditorV2ReceiveValue(
 ): NativeEditorV2ReceiveOutcome | null {
     const parsed = parseNativeEditorV2JsonValue(value);
     if (!isPlainRecord(parsed)) return null;
-    const framesDecoded = unsignedSafeInteger(parsed.framesDecoded);
-    const repliesEnqueued = unsignedSafeInteger(parsed.repliesEnqueued);
-    const replyBytesEnqueued = unsignedSafeInteger(parsed.replyBytesEnqueued);
+    const framesDecoded = nativeEditorV2U32(parsed.framesDecoded);
+    const repliesEnqueued = nativeEditorV2U32(parsed.repliesEnqueued);
+    const replyBytesEnqueued = nativeEditorV2U32(parsed.replyBytesEnqueued);
     const remoteCommitApplied = optionalBoolean(parsed.remoteCommitApplied);
     const documentPromoted = optionalBoolean(parsed.documentPromoted);
     const transportState = whitelisted(parsed.transportState, V2_TRANSPORT_STATES);
@@ -659,7 +667,7 @@ export function unwrapNativeEditorV2Result<T>(
     return result.value;
 }
 
-function requireV2DecimalId(value: string | number, field: string): string {
+function requireV2DecimalId(value: string, field: string): string {
     const normalized = normalizeNativeEditorV2DecimalId(value);
     if (normalized == null) {
         throw invalidV2RequestError(`NativeEditorBridge: invalid ${field} for v2 request`);
@@ -721,24 +729,24 @@ export interface NativeEditorV2CreateConfig {
 }
 
 export interface NativeEditorV2InputRequest {
-    baseDocumentRevision: string | number;
+    baseDocumentRevision: string;
     text: string;
 }
 
 export interface NativeEditorV2CommandRequest {
-    baseDocumentRevision: string | number;
+    baseDocumentRevision: string;
     command: Record<string, unknown>;
 }
 
 export interface NativeEditorV2LocalApiRequest {
-    baseDocumentRevision: string | number;
+    baseDocumentRevision: string;
     setJson?: DocumentJSON;
     setHtml?: string;
     history: NativeEditorV2HistoryMode;
 }
 
 export interface NativeEditorV2SelectionRequest {
-    baseDocumentRevision: string | number;
+    baseDocumentRevision: string;
     selection: Record<string, unknown>;
 }
 
@@ -838,8 +846,8 @@ function validateV2CreateLimits(limits: NativeEditorV2CreateConfig['limits']): v
             message: error.message,
             requestId: null,
             operationIndex: null,
-            limit: error.limit ?? null,
-            actual: error.actual ?? null,
+            limit: error.limit == null ? null : String(error.limit),
+            actual: error.actual == null ? null : String(error.actual),
             details: error.details ?? null,
         });
     }
@@ -1755,7 +1763,7 @@ function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
 export class NativeEditorV2Bridge {
     private readonly _editorId: string;
     private _destroyed = false;
-    private _nextRequestId = 0;
+    private _nextRequestId = 0n;
     private readonly _errorListeners = new Set<(error: NativeEditorV2ErrorBase) => void>();
 
     /** @internal Created by createNativeEditorDocumentHandle. */
@@ -1784,27 +1792,25 @@ export class NativeEditorV2Bridge {
         return unwrapNativeEditorV2Result(raw, normalizeValue);
     }
 
-    private nextRequestId(): number {
-        this._nextRequestId += 1;
-        return this._nextRequestId;
+    private nextRequestId(): string {
+        this._nextRequestId += 1n;
+        return this._nextRequestId.toString();
     }
 
     /**
-     * Serialize a request envelope. The base revision is spliced in as raw
-     * canonical decimal digits so full u64 revisions survive without
-     * Number()'ing them.
+     * Serialize a request envelope with canonical decimal-string u64 fields.
      */
     private buildEnvelopeJson(
         payload: Record<string, unknown>,
-        baseDocumentRevision?: string | number
+        baseDocumentRevision?: string
     ): string {
         const parts: string[] = [
             `"version":${V2_ENVELOPE_VERSION}`,
-            `"requestId":${this.nextRequestId()}`,
+            `"requestId":"${this.nextRequestId()}"`,
         ];
         if (baseDocumentRevision !== undefined) {
             const digits = requireV2DecimalId(baseDocumentRevision, 'baseDocumentRevision');
-            parts.push(`"baseDocumentRevision":${digits}`);
+            parts.push(`"baseDocumentRevision":"${digits}"`);
         }
         const payloadJson = JSON.stringify(payload);
         const inner = payloadJson.slice(1, payloadJson.length - 1);
@@ -1912,6 +1918,8 @@ export class NativeEditorV2Bridge {
                 'NativeEditorBridge: render update mirror requires both scalar anchor and head'
             );
         }
+        if (mirrorAnchor != null) requireNativeEditorV2U32(mirrorAnchor, 'mirrorScalarAnchor');
+        if (mirrorHead != null) requireNativeEditorV2U32(mirrorHead, 'mirrorScalarHead');
         return this.callV2(
             () =>
                 invokeNativeEditorV2(
@@ -2079,13 +2087,7 @@ export class NativeEditorV2Bridge {
     ): NativeEditorV2TransportState {
         this.assertAlive();
         const acceptedGeneration = requireV2DecimalId(generation, 'generation');
-        const acceptedCode = code ?? null;
-        if (
-            acceptedCode !== null &&
-            (!Number.isInteger(acceptedCode) || acceptedCode < 0 || acceptedCode > 0xffff_ffff)
-        ) {
-            throw invalidV2RequestError('NativeEditorBridge: invalid close code for v2 request');
-        }
+        const acceptedCode = code == null ? null : requireNativeEditorV2U32(code, 'closeCode');
         return this.callV2(
             () =>
                 invokeNativeEditorV2(

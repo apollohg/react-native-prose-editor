@@ -1267,8 +1267,8 @@ mod staging {
             id,
             &serde_json::json!({
                 "version": 1,
-                "requestId": 904,
-                "baseDocumentRevision": base,
+                "requestId": "904",
+                "baseDocumentRevision": base.to_string(),
                 "text": "local",
             })
             .to_string(),

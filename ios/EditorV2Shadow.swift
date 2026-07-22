@@ -27,9 +27,8 @@ enum EditorV2Shadow {
             return (0, 0)
         }
         func scalar(_ scalarKey: String, docKey: String) -> UInt32? {
-            if let number = (object[scalarKey] as? NSNumber)?.uint32Value { return number }
-            if let string = object[scalarKey] as? String, let value = UInt32(string) { return value }
-            if let doc = (object[docKey] as? NSNumber)?.uint32Value {
+            if let value = v2ExactUInt32(object[scalarKey] as? NSNumber) { return value }
+            if let doc = v2ExactUInt32(object[docKey] as? NSNumber) {
                 return adapter.scalarPosition(forDoc: doc)
             }
             return nil

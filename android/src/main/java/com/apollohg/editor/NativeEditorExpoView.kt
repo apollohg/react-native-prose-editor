@@ -317,9 +317,8 @@ internal object NativeEditorViewRegistry {
         return result.get()
     }
 
-    private fun rustEditorExists(editorId: Long): Boolean = runCatching {
-        editorV2GetState(editorId.toString()).let { it.value != null && it.error == null }
-    }.getOrDefault(false)
+    private fun rustEditorExists(viewToken: Long): Boolean =
+        EditorV2Registry.adapterForViewToken(viewToken) != null
 
     fun commandPreparationJSON(
         ready: Boolean,
@@ -678,8 +677,8 @@ class NativeEditorExpoView(
 
     private data class PendingNativeActionScope(
         val editorId: Long,
-        val documentVersion: Int?,
-        val allowedDocumentVersion: Int?,
+        val documentVersion: String?,
+        val allowedDocumentVersion: String?,
         val hadFocus: Boolean,
         val hadVisibleToolbar: Boolean,
         val selectionAnchor: Int?,
@@ -754,19 +753,19 @@ class NativeEditorExpoView(
     private var lastRemoteSelectionsJson: String? = null
     private var lastToolbarItemsJson: String? = null
     private var lastToolbarFrameJson: String? = null
-    private var lastDocumentVersion: Int? = null
+    private var lastDocumentVersion: String? = null
     private var toolbarState = NativeToolbarState.empty
     private var showsToolbar = true
     private var toolbarPlacement = ToolbarPlacement.KEYBOARD
     private var currentImeBottom = 0
     private var pendingEditorUpdateJson: String? = null
     private var pendingEditorUpdateEditorId: Long? = null
-    private var pendingEditorUpdateRevision = 0
-    private var appliedEditorUpdateRevision = 0
+    private var pendingEditorUpdateRevision = 0L
+    private var appliedEditorUpdateRevision = 0L
     private var pendingEditorResetUpdateJson: String? = null
     private var pendingEditorResetUpdateEditorId: Long? = null
-    private var pendingEditorResetUpdateRevision = 0
-    private var appliedEditorResetUpdateRevision = 0
+    private var pendingEditorResetUpdateRevision = 0L
+    private var appliedEditorResetUpdateRevision = 0L
     private var lastEditorResetUpdateJsonProp: String? = null
     private var lastEditorResetUpdateEditorIdProp: Long? = null
     private var pendingEditorUpdateRetryScheduled = false
@@ -799,6 +798,14 @@ class NativeEditorExpoView(
     private val pendingEditorUpdateEvents = java.util.ArrayDeque<PendingEditorUpdateEvent>()
     private var pendingEditorUpdateDispatchGeneration = 0
     private var pendingEditorUpdateDispatchScheduled = false
+
+    /** Public v2 handles are decimal strings; [RichTextEditorView] uses an opaque local token. */
+    private fun publicHandleForViewToken(viewToken: Long): String? =
+        EditorV2Registry.handleForViewToken(viewToken)
+
+    /** Events never expose a signed widget token as a v2 editor id. */
+    private fun eventEditorId(viewToken: Long): String =
+        publicHandleForViewToken(viewToken) ?: "0"
 
     init {
         addView(richTextView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -839,12 +846,21 @@ class NativeEditorExpoView(
             updateKeyboardToolbarVisibility()
             val event = mapOf<String, Any>(
                 "isFocused" to hasFocus,
-                "editorId" to richTextView.editorId
+                "editorId" to eventEditorId(richTextView.editorId)
             )
             onFocusChangeForTesting?.invoke(event) ?: onFocusChange(event)
         }
     }
 
+    fun setEditorHandle(handle: String?) {
+        val viewToken = handle?.let(EditorV2Registry::viewTokenForHandle)
+        setEditorId(viewToken ?: 0L)
+    }
+
+    /**
+     * Internal-only widget binding. This token is allocated by
+     * [EditorV2Registry] and is never a public session identifier.
+     */
     fun setEditorId(id: Long) {
         if (id != 0L && NativeEditorViewRegistry.isDestroyed(id)) {
             setEditorId(0L)
@@ -885,8 +901,8 @@ class NativeEditorExpoView(
             if (pendingEditorResetUpdateEditorId != null && pendingEditorResetUpdateEditorId != id) {
                 clearPendingEditorResetUpdateState()
             }
-            appliedEditorUpdateRevision = 0
-            appliedEditorResetUpdateRevision = 0
+            appliedEditorUpdateRevision = 0L
+            appliedEditorResetUpdateRevision = 0L
             clearPendingViewCommandUpdateRetry()
             cancelPendingThemeRetry()
             if (hasPendingTheme) {
@@ -1140,11 +1156,17 @@ class NativeEditorExpoView(
         pendingEditorUpdateJson = editorUpdateJson
     }
 
-    fun setPendingEditorUpdateEditorId(editorUpdateEditorId: Long?) {
-        pendingEditorUpdateEditorId = editorUpdateEditorId
+    fun setPendingEditorUpdateEditorHandle(editorUpdateEditorHandle: String?) {
+        pendingEditorUpdateEditorId = editorUpdateEditorHandle
+            ?.let(EditorV2Registry::viewTokenForHandle)
     }
 
-    fun setPendingEditorUpdateRevision(editorUpdateRevision: Int) {
+    /** Internal widget/test hook; production props always use decimal handles. */
+    internal fun setPendingEditorUpdateEditorId(viewToken: Long?) {
+        pendingEditorUpdateEditorId = viewToken
+    }
+
+    fun setPendingEditorUpdateRevision(editorUpdateRevision: Long) {
         if (pendingEditorUpdateRevision != editorUpdateRevision) {
             pendingEditorUpdateRetryAttempts = 0
             pendingEditorUpdateForcedRecoveryAttempted = false
@@ -1157,20 +1179,27 @@ class NativeEditorExpoView(
         pendingEditorResetUpdateJson = editorResetUpdateJson
     }
 
-    fun setPendingEditorResetUpdateEditorId(editorResetUpdateEditorId: Long?) {
-        lastEditorResetUpdateEditorIdProp = editorResetUpdateEditorId
-        pendingEditorResetUpdateEditorId = editorResetUpdateEditorId
+    fun setPendingEditorResetUpdateEditorHandle(editorResetUpdateEditorHandle: String?) {
+        val viewToken = editorResetUpdateEditorHandle?.let(EditorV2Registry::viewTokenForHandle)
+        lastEditorResetUpdateEditorIdProp = viewToken
+        pendingEditorResetUpdateEditorId = viewToken
     }
 
-    fun setPendingEditorResetUpdateRevision(editorResetUpdateRevision: Int) {
+    /** Internal widget/test hook; production props always use decimal handles. */
+    internal fun setPendingEditorResetUpdateEditorId(viewToken: Long?) {
+        lastEditorResetUpdateEditorIdProp = viewToken
+        pendingEditorResetUpdateEditorId = viewToken
+    }
+
+    fun setPendingEditorResetUpdateRevision(editorResetUpdateRevision: Long) {
         if (pendingEditorResetUpdateRevision != editorResetUpdateRevision) {
             pendingEditorUpdateRetryAttempts = 0
             pendingEditorUpdateForcedRecoveryAttempted = false
         }
-        if (editorResetUpdateRevision != 0 && pendingEditorResetUpdateJson == null) {
+        if (editorResetUpdateRevision != 0L && pendingEditorResetUpdateJson == null) {
             pendingEditorResetUpdateJson = lastEditorResetUpdateJsonProp
         }
-        if (editorResetUpdateRevision != 0 && pendingEditorResetUpdateEditorId == null) {
+        if (editorResetUpdateRevision != 0L && pendingEditorResetUpdateEditorId == null) {
             pendingEditorResetUpdateEditorId = lastEditorResetUpdateEditorIdProp
         }
         pendingEditorResetUpdateRevision = editorResetUpdateRevision
@@ -1178,13 +1207,13 @@ class NativeEditorExpoView(
 
     private fun hasPendingEditorUpdateForEditor(editorId: Long): Boolean =
         pendingEditorUpdateJson != null &&
-            pendingEditorUpdateRevision != 0 &&
+            pendingEditorUpdateRevision != 0L &&
             pendingEditorUpdateRevision != appliedEditorUpdateRevision &&
             pendingEditorUpdateEditorId == editorId
 
     private fun hasPendingEditorResetUpdateForEditor(editorId: Long): Boolean =
         pendingEditorResetUpdateJson != null &&
-            pendingEditorResetUpdateRevision != 0 &&
+            pendingEditorResetUpdateRevision != 0L &&
             pendingEditorResetUpdateRevision != appliedEditorResetUpdateRevision &&
             pendingEditorResetUpdateEditorId == editorId
 
@@ -1216,7 +1245,7 @@ class NativeEditorExpoView(
 
     fun applyPendingEditorResetUpdateIfNeeded() {
         if (handleDestroyedCurrentEditorIfNeeded()) return
-        if (pendingEditorResetUpdateRevision == 0) return
+        if (pendingEditorResetUpdateRevision == 0L) return
         val revision = pendingEditorResetUpdateRevision
         val editorId = richTextView.editorId
         val expectedEditorId = pendingEditorResetUpdateEditorId
@@ -1264,7 +1293,7 @@ class NativeEditorExpoView(
 
     fun applyPendingEditorUpdateIfNeeded() {
         if (handleDestroyedCurrentEditorIfNeeded()) return
-        if (pendingEditorUpdateRevision == 0) return
+        if (pendingEditorUpdateRevision == 0L) return
         val revision = pendingEditorUpdateRevision
         val editorId = richTextView.editorId
         val expectedEditorId = pendingEditorUpdateEditorId
@@ -1298,7 +1327,7 @@ class NativeEditorExpoView(
                 appliedEditorUpdateRevision = revision
                 pendingEditorUpdateJson = null
                 pendingEditorUpdateEditorId = null
-                pendingEditorUpdateRevision = 0
+                pendingEditorUpdateRevision = 0L
                 pendingEditorUpdateRetryAttempts = 0
                 pendingEditorUpdateForcedRecoveryAttempted = false
                 cancelPendingEditorUpdateRetry()
@@ -1318,9 +1347,9 @@ class NativeEditorExpoView(
     private fun clearPendingEditorUpdateState(resetAppliedRevision: Boolean = true) {
         pendingEditorUpdateJson = null
         pendingEditorUpdateEditorId = null
-        pendingEditorUpdateRevision = 0
+        pendingEditorUpdateRevision = 0L
         if (resetAppliedRevision) {
-            appliedEditorUpdateRevision = 0
+            appliedEditorUpdateRevision = 0L
         }
         cancelPendingEditorUpdateRetry()
     }
@@ -1328,9 +1357,9 @@ class NativeEditorExpoView(
     private fun clearPendingEditorResetUpdateState(resetAppliedRevision: Boolean = true) {
         pendingEditorResetUpdateJson = null
         pendingEditorResetUpdateEditorId = null
-        pendingEditorResetUpdateRevision = 0
+        pendingEditorResetUpdateRevision = 0L
         if (resetAppliedRevision) {
-            appliedEditorResetUpdateRevision = 0
+            appliedEditorResetUpdateRevision = 0L
         }
     }
 
@@ -1677,13 +1706,10 @@ class NativeEditorExpoView(
         }
     }
 
-    private fun documentVersionFromUpdateJSON(updateJSON: String?): Int? =
+    private fun documentVersionFromUpdateJSON(updateJSON: String?): String? =
         try {
             if (updateJSON == null) null
-            else {
-                val version = JSONObject(updateJSON).optInt("documentVersion", Int.MIN_VALUE)
-                version.takeIf { it != Int.MIN_VALUE }
-            }
+            else canonicalV2U64(JSONObject(updateJSON).opt("documentVersion") as? String)
         } catch (_: Throwable) {
             null
         }
@@ -1922,12 +1948,12 @@ class NativeEditorExpoView(
         clearMentionQueryState(resetLastEvent = true)
         pendingEditorUpdateJson = null
         pendingEditorUpdateEditorId = null
-        pendingEditorUpdateRevision = 0
-        appliedEditorUpdateRevision = 0
+        pendingEditorUpdateRevision = 0L
+        appliedEditorUpdateRevision = 0L
         pendingEditorResetUpdateJson = null
         pendingEditorResetUpdateEditorId = null
-        pendingEditorResetUpdateRevision = 0
-        appliedEditorResetUpdateRevision = 0
+        pendingEditorResetUpdateRevision = 0L
+        appliedEditorResetUpdateRevision = 0L
         lastEditorResetUpdateJsonProp = null
         lastEditorResetUpdateEditorIdProp = null
         lastDocumentVersion = null
@@ -1975,7 +2001,7 @@ class NativeEditorExpoView(
         applyAutoFocusIfNeeded()
     }
 
-    private fun emitEditorReady(editorUpdateRevision: Int? = null): Boolean {
+    private fun emitEditorReady(editorUpdateRevision: Long? = null): Boolean {
         val editorId = richTextView.editorId
         if (editorId == 0L) return false
         if (!isAttachedToNativeWindow) return false
@@ -1983,7 +2009,7 @@ class NativeEditorExpoView(
         if (hasPendingEditorResetUpdateForCurrentEditor()) return false
         if (hasPendingEditorUpdateForCurrentEditor()) return false
         lastReadyEditorId = editorId
-        val payload = mutableMapOf<String, Any>("editorId" to editorId)
+        val payload = mutableMapOf<String, Any>("editorId" to eventEditorId(editorId))
         editorUpdateRevision?.let { payload["editorUpdateRevision"] = it }
         onEditorReadyForTesting?.invoke(payload) ?: onEditorReady(payload)
         return true
@@ -2162,7 +2188,7 @@ class NativeEditorExpoView(
         lastEmittedContentHeightEditorId = editorId
         val event = mapOf(
             "contentHeight" to contentHeight,
-            "editorId" to editorId
+            "editorId" to eventEditorId(editorId)
         )
         onContentHeightChangeForTesting?.invoke(event) ?: onContentHeightChange(event)
     }
@@ -2324,7 +2350,7 @@ class NativeEditorExpoView(
         val event = mutableMapOf<String, Any>(
             "anchor" to anchor,
             "head" to head,
-            "editorId" to richTextView.editorId
+            "editorId" to eventEditorId(richTextView.editorId)
         )
         lastDocumentVersion?.let {
             event["documentVersion"] = it
@@ -2435,7 +2461,7 @@ class NativeEditorExpoView(
         if (emitToJS) {
             val payload = mapOf<String, Any>(
                 "updateJson" to updateJSON,
-                "editorId" to event.editorId
+                "editorId" to eventEditorId(event.editorId)
             )
             onEditorUpdateForTesting?.invoke(payload) ?: onEditorUpdate(payload)
         }
@@ -2662,9 +2688,9 @@ class NativeEditorExpoView(
 
     internal fun pendingNativeActionRetryAttemptsForTesting(): Int = pendingNativeActionRetryAttempts
 
-    internal fun lastDocumentVersionForTesting(): Int? = lastDocumentVersion
+    internal fun lastDocumentVersionForTesting(): String? = lastDocumentVersion
 
-    internal fun setLastDocumentVersionForTesting(documentVersion: Int?) {
+    internal fun setLastDocumentVersionForTesting(documentVersion: String?) {
         lastDocumentVersion = documentVersion
     }
 
@@ -2683,19 +2709,19 @@ class NativeEditorExpoView(
         wakePendingPreflightWork()
     }
 
-    internal fun emitEditorReadyForTesting(editorUpdateRevision: Int? = null): Boolean =
+    internal fun emitEditorReadyForTesting(editorUpdateRevision: Long? = null): Boolean =
         emitEditorReady(editorUpdateRevision)
 
     internal fun pendingEditorUpdateJsonForTesting(): String? = pendingEditorUpdateJson
 
-    internal fun pendingEditorUpdateRevisionForTesting(): Int = pendingEditorUpdateRevision
+    internal fun pendingEditorUpdateRevisionForTesting(): Long = pendingEditorUpdateRevision
 
     internal fun pendingEditorResetUpdateJsonForTesting(): String? = pendingEditorResetUpdateJson
 
-    internal fun pendingEditorResetUpdateRevisionForTesting(): Int =
+    internal fun pendingEditorResetUpdateRevisionForTesting(): Long =
         pendingEditorResetUpdateRevision
 
-    internal fun setAppliedEditorUpdateRevisionForTesting(editorUpdateRevision: Int) {
+    internal fun setAppliedEditorUpdateRevisionForTesting(editorUpdateRevision: Long) {
         appliedEditorUpdateRevision = editorUpdateRevision
     }
 
@@ -2908,7 +2934,7 @@ class NativeEditorExpoView(
         if (eventJson == lastMentionEventJson && editorId == lastMentionEventEditorId) return
         lastMentionEventJson = eventJson
         lastMentionEventEditorId = editorId
-        emitAddonEvent(mapOf("eventJson" to eventJson, "editorId" to editorId))
+        emitAddonEvent(mapOf("eventJson" to eventJson, "editorId" to eventEditorId(editorId)))
     }
 
     private fun resolvedMentionAttrs(
@@ -2935,7 +2961,7 @@ class NativeEditorExpoView(
                 lastDocumentVersion?.let { put("documentVersion", it) }
             }
             .toString()
-        emitAddonEvent(mapOf("eventJson" to eventJson, "editorId" to richTextView.editorId))
+        emitAddonEvent(mapOf("eventJson" to eventJson, "editorId" to eventEditorId(richTextView.editorId)))
     }
 
     private fun emitMentionSelectRequest(
@@ -2959,7 +2985,7 @@ class NativeEditorExpoView(
                     ?.let { put("documentVersion", it) }
             }
             .toString()
-        emitAddonEvent(mapOf("eventJson" to eventJson, "editorId" to richTextView.editorId))
+        emitAddonEvent(mapOf("eventJson" to eventJson, "editorId" to eventEditorId(richTextView.editorId)))
     }
 
     private fun insertMentionSuggestion(
@@ -3214,7 +3240,7 @@ class NativeEditorExpoView(
                 if (handleDestroyedCurrentEditorIfNeeded()) return
                 val payload = mutableMapOf<String, Any>(
                     "key" to it,
-                    "editorId" to richTextView.editorId
+                    "editorId" to eventEditorId(richTextView.editorId)
                 )
                 addPreflightUpdateToEvent(payload, preflightUpdateJSON)
                 if (!payload.containsKey("documentVersion")) {

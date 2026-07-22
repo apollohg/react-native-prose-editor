@@ -893,7 +893,7 @@ internal interface UniffiLib : Library {
 
     fun uniffi_editor_core_fn_func_editor_v2_collaboration_receive(
         `editorId`: RustBuffer.ByValue,
-        `generation`: Long,
+        `generation`: RustBuffer.ByValue,
         `message`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
@@ -906,7 +906,7 @@ internal interface UniffiLib : Library {
 
     fun uniffi_editor_core_fn_func_editor_v2_collaboration_socket_close(
         `editorId`: RustBuffer.ByValue,
-        `generation`: Long,
+        `generation`: RustBuffer.ByValue,
         `code`: RustBuffer.ByValue,
         `reason`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
@@ -914,13 +914,13 @@ internal interface UniffiLib : Library {
 
     fun uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(
         `editorId`: RustBuffer.ByValue,
-        `generation`: Long,
+        `generation`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
     fun uniffi_editor_core_fn_func_editor_v2_collaboration_take_outbound(
         `editorId`: RustBuffer.ByValue,
-        `generation`: Long,
+        `generation`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
@@ -1264,19 +1264,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_peers() != 754.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 17199.toShort()) {
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 49592.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness() != 49061.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 59730.toShort()) {
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 60112.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open() != 61882.toShort()) {
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open() != 10599.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_take_outbound() != 65258.toShort()) {
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_take_outbound() != 44572.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_create() != 9333.toShort()) {
@@ -1434,26 +1434,6 @@ public object FfiConverterUInt : FfiConverter<UInt, Int> {
 /**
  * @suppress
  */
-public object FfiConverterULong : FfiConverter<ULong, Long> {
-    override fun lift(value: Long): ULong = value.toULong()
-
-    override fun read(buf: ByteBuffer): ULong = lift(buf.getLong())
-
-    override fun lower(value: ULong): Long = value.toLong()
-
-    override fun allocationSize(value: ULong) = 8UL
-
-    override fun write(
-        value: ULong,
-        buf: ByteBuffer,
-    ) {
-        buf.putLong(value.toLong())
-    }
-}
-
-/**
- * @suppress
- */
 public object FfiConverterBoolean : FfiConverter<Boolean, Byte> {
     override fun lift(value: Byte): Boolean = value.toInt() != 0
 
@@ -1590,9 +1570,9 @@ data class FfiError(
     var `code`: kotlin.String,
     var `message`: kotlin.String,
     var `requestId`: kotlin.String?,
-    var `operationIndex`: kotlin.ULong?,
-    var `limit`: kotlin.ULong?,
-    var `actual`: kotlin.ULong?,
+    var `operationIndex`: kotlin.String?,
+    var `limit`: kotlin.String?,
+    var `actual`: kotlin.String?,
     var `detailsJson`: kotlin.String?,
 ) {
     companion object
@@ -1608,9 +1588,9 @@ public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiError> {
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
-            FfiConverterOptionalULong.read(buf),
-            FfiConverterOptionalULong.read(buf),
-            FfiConverterOptionalULong.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
         )
 
@@ -1620,9 +1600,9 @@ public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiError> {
                 FfiConverterString.allocationSize(value.`code`) +
                 FfiConverterString.allocationSize(value.`message`) +
                 FfiConverterOptionalString.allocationSize(value.`requestId`) +
-                FfiConverterOptionalULong.allocationSize(value.`operationIndex`) +
-                FfiConverterOptionalULong.allocationSize(value.`limit`) +
-                FfiConverterOptionalULong.allocationSize(value.`actual`) +
+                FfiConverterOptionalString.allocationSize(value.`operationIndex`) +
+                FfiConverterOptionalString.allocationSize(value.`limit`) +
+                FfiConverterOptionalString.allocationSize(value.`actual`) +
                 FfiConverterOptionalString.allocationSize(value.`detailsJson`)
         )
 
@@ -1634,9 +1614,9 @@ public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiError> {
         FfiConverterString.write(value.`code`, buf)
         FfiConverterString.write(value.`message`, buf)
         FfiConverterOptionalString.write(value.`requestId`, buf)
-        FfiConverterOptionalULong.write(value.`operationIndex`, buf)
-        FfiConverterOptionalULong.write(value.`limit`, buf)
-        FfiConverterOptionalULong.write(value.`actual`, buf)
+        FfiConverterOptionalString.write(value.`operationIndex`, buf)
+        FfiConverterOptionalString.write(value.`limit`, buf)
+        FfiConverterOptionalString.write(value.`actual`, buf)
         FfiConverterOptionalString.write(value.`detailsJson`, buf)
     }
 }
@@ -1801,38 +1781,6 @@ public object FfiConverterOptionalUInt : FfiConverterRustBuffer<kotlin.UInt?> {
         } else {
             buf.put(1)
             FfiConverterUInt.write(value, buf)
-        }
-    }
-}
-
-/**
- * @suppress
- */
-public object FfiConverterOptionalULong : FfiConverterRustBuffer<kotlin.ULong?> {
-    override fun read(buf: ByteBuffer): kotlin.ULong? {
-        if (buf.get().toInt() == 0) {
-            return null
-        }
-        return FfiConverterULong.read(buf)
-    }
-
-    override fun allocationSize(value: kotlin.ULong?): ULong {
-        if (value == null) {
-            return 1UL
-        } else {
-            return 1UL + FfiConverterULong.allocationSize(value)
-        }
-    }
-
-    override fun write(
-        value: kotlin.ULong?,
-        buf: ByteBuffer,
-    ) {
-        if (value == null) {
-            buf.put(0)
-        } else {
-            buf.put(1)
-            FfiConverterULong.write(value, buf)
         }
     }
 }
@@ -2072,14 +2020,14 @@ fun `editorV2CollaborationPeers`(`editorId`: kotlin.String): FfiJsonResult =
 
 fun `editorV2CollaborationReceive`(
     `editorId`: kotlin.String,
-    `generation`: kotlin.ULong,
+    `generation`: kotlin.String,
     `message`: kotlin.ByteArray,
 ): FfiJsonResult =
     FfiConverterTypeFfiJsonResult.lift(
         uniffiRustCall { _status ->
             UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_receive(
                 FfiConverterString.lower(`editorId`),
-                FfiConverterULong.lower(`generation`),
+                FfiConverterString.lower(`generation`),
                 FfiConverterByteArray.lower(`message`),
                 _status,
             )
@@ -2111,7 +2059,7 @@ fun `editorV2CollaborationSetAwareness`(
  */
 fun `editorV2CollaborationSocketClose`(
     `editorId`: kotlin.String,
-    `generation`: kotlin.ULong,
+    `generation`: kotlin.String,
     `code`: kotlin.UInt?,
     `reason`: kotlin.String?,
 ): FfiJsonResult =
@@ -2119,7 +2067,7 @@ fun `editorV2CollaborationSocketClose`(
         uniffiRustCall { _status ->
             UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_socket_close(
                 FfiConverterString.lower(`editorId`),
-                FfiConverterULong.lower(`generation`),
+                FfiConverterString.lower(`generation`),
                 FfiConverterOptionalUInt.lower(`code`),
                 FfiConverterOptionalString.lower(`reason`),
                 _status,
@@ -2133,13 +2081,13 @@ fun `editorV2CollaborationSocketClose`(
  */
 fun `editorV2CollaborationSocketOpen`(
     `editorId`: kotlin.String,
-    `generation`: kotlin.ULong,
+    `generation`: kotlin.String,
 ): FfiBytesResult =
     FfiConverterTypeFfiBytesResult.lift(
         uniffiRustCall { _status ->
             UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(
                 FfiConverterString.lower(`editorId`),
-                FfiConverterULong.lower(`generation`),
+                FfiConverterString.lower(`generation`),
                 _status,
             )
         },
@@ -2153,13 +2101,13 @@ fun `editorV2CollaborationSocketOpen`(
  */
 fun `editorV2CollaborationTakeOutbound`(
     `editorId`: kotlin.String,
-    `generation`: kotlin.ULong,
+    `generation`: kotlin.String,
 ): FfiBytesResult =
     FfiConverterTypeFfiBytesResult.lift(
         uniffiRustCall { _status ->
             UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_take_outbound(
                 FfiConverterString.lower(`editorId`),
-                FfiConverterULong.lower(`generation`),
+                FfiConverterString.lower(`generation`),
                 _status,
             )
         },

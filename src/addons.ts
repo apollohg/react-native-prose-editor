@@ -23,14 +23,14 @@ export interface MentionQueryChangeEvent {
         head: number;
     };
     isActive: boolean;
-    documentVersion?: number;
+    documentVersion?: string;
 }
 
 export interface MentionSelectEvent {
     trigger: string;
     suggestion: MentionSuggestion;
     attrs: Record<string, unknown>;
-    documentVersion?: number;
+    documentVersion?: string;
 }
 
 export interface MentionSelectionAttrsEvent {
@@ -41,7 +41,7 @@ export interface MentionSelectionAttrsEvent {
         anchor: number;
         head: number;
     };
-    documentVersion?: number;
+    documentVersion?: string;
 }
 
 export type MentionThemeResolveEvent = MentionSelectionAttrsEvent;
@@ -92,7 +92,7 @@ export type EditorAddonEvent =
               head: number;
           };
           isActive: boolean;
-          documentVersion?: number;
+          documentVersion?: string;
       }
     | {
           type: 'mentionsSelectRequest';
@@ -103,7 +103,7 @@ export type EditorAddonEvent =
               anchor: number;
               head: number;
           };
-          documentVersion?: number;
+          documentVersion?: string;
           updateJson?: string;
       }
     | {
@@ -111,7 +111,7 @@ export type EditorAddonEvent =
           trigger: string;
           suggestionKey: string;
           attrs: Record<string, unknown>;
-          documentVersion?: number;
+          documentVersion?: string;
       };
 
 export const MENTION_NODE_NAME = 'mention';

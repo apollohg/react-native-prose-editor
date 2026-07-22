@@ -23,7 +23,13 @@ final class RenderBridgeTests: XCTestCase {
     }
 
     func testStructuredEditorCreationIdUsesExactIntegerSemantics() {
-        XCTAssertEqual(createdEditorId(#"{"editorId":42}"#), 42)
+        XCTAssertEqual(createdEditorId(#"{"editorId":"42"}"#), "42")
+        XCTAssertEqual(createdEditorId(#"{"editorId":"18446744073709551615"}"#), "18446744073709551615")
+        XCTAssertNil(createdEditorId(#"{"editorId":"+1"}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":"01"}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":" 1"}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":"1 "}"#))
+        XCTAssertNil(createdEditorId(#"{"editorId":"1e3"}"#))
         XCTAssertNil(createdEditorId(#"{"editorId":true}"#))
         XCTAssertNil(createdEditorId(#"{"editorId":-1}"#))
         XCTAssertNil(createdEditorId(#"{"editorId":1.5}"#))
@@ -34,6 +40,23 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertNil(createdEditorId(#"{"editorId":7,"editorId":8}"#))
         XCTAssertNil(createdEditorId(#"{"editorId":1.5,"nested":{"editorId":7}}"#))
         XCTAssertNil(createdEditorId(#"{"error":{"code":"CONFIG_INVALID"},"editorId":7}"#))
+    }
+
+    func testV2UInt32AcceptsOnlyExactFiniteIntegralNSNumberValues() {
+        XCTAssertEqual(v2ExactUInt32(NSNumber(value: UInt32.max)), UInt32.max)
+        XCTAssertEqual(v2ExactUInt32(NSNumber(value: 0)), 0)
+
+        for invalid: NSNumber in [
+            NSNumber(value: -1),
+            NSNumber(value: 1.5),
+            NSNumber(value: Double.nan),
+            NSNumber(value: Double.infinity),
+            NSNumber(value: UInt64(UInt32.max) + 1),
+            NSNumber(value: Double(UInt32.max) + 0.5),
+            NSNumber(value: true),
+        ] {
+            XCTAssertNil(v2ExactUInt32(invalid), "must reject \(invalid)")
+        }
     }
 
     // MARK: - Test Fixtures

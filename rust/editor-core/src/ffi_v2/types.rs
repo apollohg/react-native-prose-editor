@@ -1,5 +1,32 @@
 use crate::session::{ErrorDomain, SessionError};
 
+/// The one JSON representation for every u64-shaped v2 wire field.
+pub(crate) fn decimal_u64(value: u64) -> serde_json::Value {
+    serde_json::Value::String(value.to_string())
+}
+
+/// Parse only the frozen decimal u64 spelling: ASCII digits, no leading zero
+/// except zero itself, and no sign, exponent, fraction, or whitespace.
+pub(crate) fn parse_canonical_u64(value: &str) -> Option<u64> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || (bytes.len() > 1 && bytes[0] == b'0')
+        || !bytes.iter().all(u8::is_ascii_digit)
+    {
+        return None;
+    }
+    value.parse().ok()
+}
+
+pub(crate) fn deserialize_canonical_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+    parse_canonical_u64(&value)
+        .ok_or_else(|| serde::de::Error::custom("expected a canonical decimal u64 string"))
+}
+
 /// Frozen non-retryable transport code exposed across the FFI boundary when
 /// the current editor identity cannot advance its awareness clock safely.
 pub const AWARENESS_CLOCK_EXHAUSTED: &str = "AWARENESS_CLOCK_EXHAUSTED";
@@ -34,9 +61,9 @@ pub struct FfiError {
     pub code: String,
     pub message: String,
     pub request_id: Option<String>,
-    pub operation_index: Option<u64>,
-    pub limit: Option<u64>,
-    pub actual: Option<u64>,
+    pub operation_index: Option<String>,
+    pub limit: Option<String>,
+    pub actual: Option<String>,
     pub details_json: Option<String>,
 }
 
@@ -68,9 +95,10 @@ impl From<SessionError> for FfiError {
             request_id: error.request_id.map(|value| value.to_string()),
             operation_index: error
                 .operation_index
-                .and_then(|value| u64::try_from(value).ok()),
-            limit: error.limit,
-            actual: error.actual,
+                .and_then(|value| u64::try_from(value).ok())
+                .map(|value| value.to_string()),
+            limit: error.limit.map(|value| value.to_string()),
+            actual: error.actual.map(|value| value.to_string()),
             details_json: error
                 .details
                 .filter(serde_json::Value::is_object)

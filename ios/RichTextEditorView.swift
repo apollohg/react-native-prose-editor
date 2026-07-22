@@ -26,7 +26,7 @@ enum EditorHeightBehavior: String {
 }
 
 struct RemoteSelectionDecoration {
-    let clientId: Int
+    let clientId: String
     let anchor: UInt32
     let head: UInt32
     let color: UIColor
@@ -42,9 +42,13 @@ struct RemoteSelectionDecoration {
         }
 
         return raw.compactMap { item in
-            guard let clientId = item["clientId"] as? NSNumber,
-                  let anchor = item["anchor"] as? NSNumber,
-                  let head = item["head"] as? NSNumber,
+            guard let clientId = item["clientId"] as? String,
+                  !clientId.isEmpty,
+                  clientId.allSatisfy({ $0 >= "0" && $0 <= "9" }),
+                  (clientId == "0" || clientId.first != "0"),
+                  UInt64(clientId) != nil,
+                  let anchor = v2ExactUInt32(item["anchor"] as? NSNumber),
+                  let head = v2ExactUInt32(item["head"] as? NSNumber),
                   let colorRaw = item["color"] as? String,
                   let color = colorFromString(colorRaw)
             else {
@@ -52,9 +56,9 @@ struct RemoteSelectionDecoration {
             }
 
             return RemoteSelectionDecoration(
-                clientId: clientId.intValue,
-                anchor: anchor.uint32Value,
-                head: head.uint32Value,
+                clientId: clientId,
+                anchor: anchor,
+                head: head,
                 color: color,
                 name: item["name"] as? String,
                 isFocused: (item["isFocused"] as? Bool) ?? false
@@ -2815,11 +2819,11 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard let type = selection["type"] as? String else { return "unknown" }
         switch type {
         case "text":
-            let anchor = (selection["anchor"] as? NSNumber)?.uint32Value ?? 0
-            let head = (selection["head"] as? NSNumber)?.uint32Value ?? 0
+            let anchor = v2ExactUInt32(selection["anchor"] as? NSNumber) ?? 0
+            let head = v2ExactUInt32(selection["head"] as? NSNumber) ?? 0
             return "text doc=\(anchor)-\(head)"
         case "node":
-            let pos = (selection["pos"] as? NSNumber)?.uint32Value ?? 0
+            let pos = v2ExactUInt32(selection["pos"] as? NSNumber) ?? 0
             return "node doc=\(pos)"
         case "all":
             return "all"
@@ -4114,7 +4118,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             return nil
         }
 
-        let docPos = (attrs[RenderBridgeAttributes.docPos] as? NSNumber)?.uint32Value
+        let docPos = v2ExactUInt32(attrs[RenderBridgeAttributes.docPos] as? NSNumber)
             ?? (attrs[RenderBridgeAttributes.docPos] as? UInt32)
         guard let docPos else { return nil }
         return (docPos, selectedRange.location)
@@ -4147,7 +4151,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             guard let attachment = value as? BlockImageAttachment, range.length > 0 else { return }
             let attrs = textStorage.attributes(at: range.location, effectiveRange: nil)
             guard (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "image" else { return }
-            let attributeDocPos = (attrs[RenderBridgeAttributes.docPos] as? NSNumber)?.uint32Value
+            let attributeDocPos = v2ExactUInt32(attrs[RenderBridgeAttributes.docPos] as? NSNumber)
                 ?? (attrs[RenderBridgeAttributes.docPos] as? UInt32)
             guard attributeDocPos == docPos else { return }
             resolved = (range, attachment)
@@ -5418,16 +5422,30 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         switch type {
         case "text":
             let resolveStartedAt = DispatchTime.now().uptimeNanoseconds
-            guard let anchorNum = selection["anchor"] as? NSNumber,
-                  let headNum = selection["head"] as? NSNumber
+            guard let anchor = v2ExactUInt32(selection["anchor"] as? NSNumber),
+                  let head = v2ExactUInt32(selection["head"] as? NSNumber)
             else {
                 return SelectionApplyTrace(totalNanos: 0, resolveNanos: 0, assignmentNanos: 0, chromeNanos: 0)
             }
             // anchor/head from Rust are document positions; convert to scalar offsets first.
-            let anchorScalar = (selection["anchorScalar"] as? NSNumber)?.uint32Value
-                ?? EditorV2Shadow.docToScalar(id: editorId, docPos: anchorNum.uint32Value)
-            let headScalar = (selection["headScalar"] as? NSNumber)?.uint32Value
-                ?? EditorV2Shadow.docToScalar(id: editorId, docPos: headNum.uint32Value)
+            let anchorScalar: UInt32
+            if let rawAnchorScalar = selection["anchorScalar"] {
+                guard let exactAnchorScalar = v2ExactUInt32(rawAnchorScalar as? NSNumber) else {
+                    return SelectionApplyTrace(totalNanos: 0, resolveNanos: 0, assignmentNanos: 0, chromeNanos: 0)
+                }
+                anchorScalar = exactAnchorScalar
+            } else {
+                anchorScalar = EditorV2Shadow.docToScalar(id: editorId, docPos: anchor)
+            }
+            let headScalar: UInt32
+            if let rawHeadScalar = selection["headScalar"] {
+                guard let exactHeadScalar = v2ExactUInt32(rawHeadScalar as? NSNumber) else {
+                    return SelectionApplyTrace(totalNanos: 0, resolveNanos: 0, assignmentNanos: 0, chromeNanos: 0)
+                }
+                headScalar = exactHeadScalar
+            } else {
+                headScalar = EditorV2Shadow.docToScalar(id: editorId, docPos: head)
+            }
             let startUtf16 = PositionBridge.scalarToUtf16Offset(
                 min(anchorScalar, headScalar),
                 in: self
@@ -5468,7 +5486,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             showNativeSelectionChromeIfNeeded()
             let chromeNanos = DispatchTime.now().uptimeNanoseconds - chromeStartedAt
             Self.selectionLog.debug(
-                "[applySelectionFromJSON.text] doc=\(anchorNum.uint32Value)-\(headNum.uint32Value) scalar=\(anchorScalar)-\(headScalar) final=\(self.selectionSummary(), privacy: .public)"
+                "[applySelectionFromJSON.text] doc=\(anchor)-\(head) scalar=\(anchorScalar)-\(headScalar) final=\(self.selectionSummary(), privacy: .public)"
             )
             return SelectionApplyTrace(
                 totalNanos: DispatchTime.now().uptimeNanoseconds - totalStartedAt,
@@ -5480,12 +5498,19 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         case "node":
             // Node selection: select the object replacement character at that position.
             let resolveStartedAt = DispatchTime.now().uptimeNanoseconds
-            guard let posNum = selection["pos"] as? NSNumber else {
+            guard let pos = v2ExactUInt32(selection["pos"] as? NSNumber) else {
                 return SelectionApplyTrace(totalNanos: 0, resolveNanos: 0, assignmentNanos: 0, chromeNanos: 0)
             }
             // pos from Rust is a document position; convert to scalar offset.
-            let posScalar = (selection["posScalar"] as? NSNumber)?.uint32Value
-                ?? EditorV2Shadow.docToScalar(id: editorId, docPos: posNum.uint32Value)
+            let posScalar: UInt32
+            if let rawPosScalar = selection["posScalar"] {
+                guard let exactPosScalar = v2ExactUInt32(rawPosScalar as? NSNumber) else {
+                    return SelectionApplyTrace(totalNanos: 0, resolveNanos: 0, assignmentNanos: 0, chromeNanos: 0)
+                }
+                posScalar = exactPosScalar
+            } else {
+                posScalar = EditorV2Shadow.docToScalar(id: editorId, docPos: pos)
+            }
             let startUtf16 = PositionBridge.scalarToUtf16Offset(posScalar, in: self)
             let targetRange = NSRange(location: startUtf16, length: 1)
             let resolveNanos = DispatchTime.now().uptimeNanoseconds - resolveStartedAt
@@ -5500,7 +5525,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             refreshNativeSelectionChromeVisibility()
             let chromeNanos = DispatchTime.now().uptimeNanoseconds - chromeStartedAt
             Self.selectionLog.debug(
-                "[applySelectionFromJSON.node] doc=\(posNum.uint32Value) scalar=\(posScalar) final=\(self.selectionSummary(), privacy: .public)"
+                "[applySelectionFromJSON.node] doc=\(pos) scalar=\(posScalar) final=\(self.selectionSummary(), privacy: .public)"
             )
             return SelectionApplyTrace(
                 totalNanos: DispatchTime.now().uptimeNanoseconds - totalStartedAt,

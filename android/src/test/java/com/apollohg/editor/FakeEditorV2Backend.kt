@@ -42,49 +42,61 @@ internal class FakeEditorV2Backend : EditorV2Backend {
     private fun destroyedError(): EditorV2Error =
         EditorV2Error(domain = "lifecycle", code = "ENGINE_DESTROYED", message = "editor session is not registered")
 
-    private fun admitBase(session: FakeSession, request: JSONObject): EditorV2Error? {
-        val base = request.getLong("baseDocumentRevision").toULong()
-        if (base != session.revision) {
+    private fun configInvalid(message: String, requestId: String? = null): EditorV2Error =
+        EditorV2Error(
+            domain = "boundary",
+            code = "CONFIG_INVALID",
+            message = message,
+            requestId = requestId,
+        )
+
+    private fun canonicalRequestId(request: JSONObject): String? =
+        canonicalV2U64(request.opt("requestId") as? String)
+
+    private fun admitBase(
+        session: FakeSession,
+        request: JSONObject,
+        requestId: String,
+    ): EditorV2Error? {
+        val base = canonicalV2U64(request.opt("baseDocumentRevision") as? String)
+            ?: return configInvalid("baseDocumentRevision must be canonical decimal u64 text", requestId)
+        if (base != session.revision.toString()) {
             return EditorV2Error(
                 domain = "operation",
                 code = "REVISION_MISMATCH",
                 message = "document revision mismatch: expected $base, actual ${session.revision}",
-                requestId = request.getLong("requestId").toString(),
+                requestId = requestId,
                 detailsJson = JSONObject()
-                    .put("expectedRevision", base.toLong())
-                    .put("actualRevision", session.revision.toLong())
+                    .put("expectedRevision", base)
+                    .put("actualRevision", session.revision.toString())
                     .toString(),
             )
         }
         return null
     }
 
-    private fun admitWritable(session: FakeSession, requestId: ULong): EditorV2Error? {
+    private fun admitWritable(session: FakeSession, requestId: String): EditorV2Error? {
         if (!session.readOnly) return null
         return EditorV2Error(
             domain = "boundary",
             code = "MUTATION_REJECTED",
             message = "document is read-only; only selection and local-API requests are allowed",
-            requestId = requestId.toString(),
+            requestId = requestId,
         )
     }
 
     private fun admissionError(editorId: String, request: JSONObject, mutation: Boolean): Pair<FakeSession?, EditorV2Error?> {
         val session = liveSession(editorId) ?: return null to destroyedError()
-        val version = request.getLong("version")
-        if (version != 1L) {
-            return null to EditorV2Error(
-                domain = "boundary",
-                code = "CONFIG_INVALID",
-                message = "unsupported v2 envelope version $version",
-                requestId = request.optLong("requestId").toString(),
-            )
+        val requestId = canonicalRequestId(request)
+            ?: return null to configInvalid("requestId must be canonical decimal u64 text")
+        val version = exactV2U32(request.opt("version") as? Number)
+        if (version != 1u) {
+            return null to configInvalid("unsupported v2 envelope version ${request.opt("version")}", requestId)
         }
-        val requestId = request.getLong("requestId").toULong()
         if (mutation) {
             admitWritable(session, requestId)?.let { return null to it }
         }
-        admitBase(session, request)?.let { return null to it }
+        admitBase(session, request, requestId)?.let { return null to it }
         return session to null
     }
 
@@ -92,8 +104,8 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         JSONObject()
             .put("type", "transaction")
             .put("changed", changed)
-            .put("documentRevision", session.revision.toLong())
-            .put("stateRevision", session.revision.toLong())
+            .put("documentRevision", session.revision.toString())
+            .put("stateRevision", session.revision.toString())
             .put("canUndo", session.undoStack.isNotEmpty())
             .put("canRedo", session.redoStack.isNotEmpty())
             .toString()
@@ -157,8 +169,8 @@ internal class FakeEditorV2Backend : EditorV2Backend {
                 .put("documentState", "LocalReady")
                 .put("transportState", "Detached")
                 .put("renderState", "Ready")
-                .put("documentRevision", session.revision.toLong())
-                .put("stateRevision", session.revision.toLong())
+                .put("documentRevision", session.revision.toString())
+                .put("stateRevision", session.revision.toString())
                 .put("canUndo", session.undoStack.isNotEmpty())
                 .put("canRedo", session.redoStack.isNotEmpty())
                 .toString()
@@ -191,7 +203,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
                     domain = "boundary",
                     code = "CONFIG_INVALID",
                     message = "input commits require non-empty text",
-                    requestId = request.getLong("requestId").toString(),
+                    requestId = canonicalRequestId(request),
                 )
             )
         }
@@ -314,7 +326,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
                         domain = "boundary",
                         code = "CONFIG_INVALID",
                         message = "local-API requests carry exactly one of setJson or setHtml",
-                        requestId = request.getLong("requestId").toString(),
+                        requestId = canonicalRequestId(request),
                     )
                 )
             }
@@ -326,7 +338,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
             JSONObject()
                 .put("type", "replacement")
                 .put("changed", true)
-                .put("documentRevision", session.revision.toLong())
+                .put("documentRevision", session.revision.toString())
                 .toString()
         )
     }
@@ -354,7 +366,8 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         calls.add("undo")
         val request = JSONObject(requestJson)
         val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
-        val requestId = request.getLong("requestId").toULong()
+        val requestId = canonicalRequestId(request)
+            ?: return EditorV2CallResult.Err(configInvalid("requestId must be canonical decimal u64 text"))
         admitWritable(session, requestId)?.let { return EditorV2CallResult.Err(it) }
         val snapshot = session.undoStack.removeLastOrNull()
             ?: return EditorV2CallResult.Ok(JSONObject().put("changed", false).toString())
@@ -371,7 +384,8 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         calls.add("redo")
         val request = JSONObject(requestJson)
         val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
-        val requestId = request.getLong("requestId").toULong()
+        val requestId = canonicalRequestId(request)
+            ?: return EditorV2CallResult.Err(configInvalid("requestId must be canonical decimal u64 text"))
         admitWritable(session, requestId)?.let { return EditorV2CallResult.Err(it) }
         val snapshot = session.redoStack.removeLastOrNull()
             ?: return EditorV2CallResult.Ok(JSONObject().put("changed", false).toString())
@@ -384,9 +398,12 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         return EditorV2CallResult.Ok(JSONObject().put("changed", true).toString())
     }
 
-    override fun collaborationTakeOutbound(editorId: String, generation: ULong): EditorV2CallResult<ByteArray> {
+    override fun collaborationTakeOutbound(editorId: String, generation: String): EditorV2CallResult<ByteArray> {
         calls.add("takeOutbound")
         val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        if (canonicalV2U64(generation) == null) {
+            return EditorV2CallResult.Err(configInvalid("generation must be canonical decimal u64 text"))
+        }
         return EditorV2CallResult.Ok(session.outbox.removeFirstOrNull() ?: ByteArray(0))
     }
 
@@ -455,7 +472,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         // Deliberately wrong sentinel values: the adapter MUST override both
         // from the authoritative v2 outcome.
         update.put("historyState", JSONObject().put("canUndo", false).put("canRedo", true))
-        update.put("documentVersion", 424242)
+        update.put("documentVersion", "424242")
         update.put("scalarLength", text.length)
         return EditorV2CallResult.Ok(update.toString())
     }

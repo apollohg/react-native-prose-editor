@@ -6,41 +6,40 @@ import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.editor_core.*
 
-internal fun nativeULong(value: Int): ULong? =
-    if (value >= 0) value.toULong() else null
-
 /**
- * Destroy one v2 session and invalidate every view bound to its public id.
- * The registry bookkeeping always runs, even when the engine destroy fails.
+ * Destroy one v2 session through its canonical public handle and invalidate
+ * the associated opaque widget token. The token is supplied separately so a
+ * public u64 handle is never narrowed through a signed Android id.
  */
 internal fun destroyEditorThenInvalidate(
-    editorId: ULong,
-    destroy: (ULong) -> Unit = { id -> editorV2Destroy(id.toString()) },
+    editorHandle: String,
+    viewToken: Long,
+    destroy: (String) -> Unit = ::editorV2Destroy,
     beginDestroy: (Long) -> Boolean = NativeEditorViewRegistry::beginDestroy,
     finalizeDestroy: (Long) -> Unit = NativeEditorViewRegistry::finalizeDestroy
 ) {
-    val signedEditorId = editorId.toLong()
-    if (!beginDestroy(signedEditorId)) return
+    val canonicalHandle = canonicalV2U64(editorHandle) ?: return
+    if (!beginDestroy(viewToken)) return
     try {
-        destroy(editorId)
+        destroy(canonicalHandle)
     } finally {
-        finalizeDestroy(signedEditorId)
+        finalizeDestroy(viewToken)
     }
 }
 
 // ── Frozen v2 result-record bridging ─────────────────────────────────────
 // Every editorV2* module entry returns the raw UniFFI result record as a
 // plain map ({ value, error } with exactly one side set); the JS bridge
-// normalizes it. ULong error fields cross as safe-integer numbers.
+// normalizes it. Every u64-shaped diagnostic is already a canonical string.
 
 private fun FfiError.toJSMap(): Map<String, Any?> = mapOf(
     "domain" to domain,
     "code" to code,
     "message" to message,
     "requestId" to requestId,
-    "operationIndex" to operationIndex?.toLong(),
-    "limit" to limit?.toLong(),
-    "actual" to actual?.toLong(),
+    "operationIndex" to operationIndex,
+    "limit" to limit,
+    "actual" to actual,
     "detailsJson" to detailsJson,
 )
 
@@ -49,9 +48,9 @@ private fun EditorV2Error.toJSMap(): Map<String, Any?> = mapOf(
     "code" to code,
     "message" to message,
     "requestId" to requestId,
-    "operationIndex" to operationIndex?.toLong(),
-    "limit" to limit?.toLong(),
-    "actual" to actual?.toLong(),
+    "operationIndex" to operationIndex,
+    "limit" to limit,
+    "actual" to actual,
     "detailsJson" to detailsJson,
 )
 
@@ -85,8 +84,7 @@ private fun v2BoundaryErrorRecord(message: String): Map<String, Any?> = mapOf(
     ),
 )
 
-private fun parseGeneration(generation: String): ULong? =
-    generation.toULongOrNull()
+private fun parseGeneration(generation: String): String? = canonicalV2U64(generation)
 
 class NativeEditorModule : Module() {
     override fun definition() = ModuleDefinition {
@@ -99,10 +97,10 @@ class NativeEditorModule : Module() {
             var pairingError: Map<String, Any?>? = null
             result.value?.let { value ->
                 val editorId = runCatching {
-                    JSONObject(value).getString("editorId")
+                    JSONObject(value).opt("editorId") as? String
                 }.getOrNull()
-                val signedId = editorId?.toLongOrNull()
-                if (editorId == null || signedId == null || signedId <= 0) {
+                val canonicalEditorId = canonicalV2U64(editorId)
+                if (canonicalEditorId == null || canonicalEditorId == "0") {
                     editorId?.let(::editorV2Destroy)
                     pairingError = mapOf(
                         "value" to null,
@@ -113,21 +111,13 @@ class NativeEditorModule : Module() {
                         ).toJSMap(),
                     )
                 } else {
-                    // Mark the public id live so views may bind to it, and
-                    // pair the view-facing adapter with the JS-created
-                    // session: the Expo view receives the handle's editorId
-                    // and routes every interaction through the shared
-                    // session. Ids beyond Long range skip view-registry
-                    // tracking.
-                    NativeEditorViewRegistry.markEditorCreated(signedId)
                     val roomBound = runCatching {
                         JSONObject(configJson).optJSONObject("initialization")
                             ?.optString("type") == "room"
                     }.getOrDefault(false)
-                    val adapter = EditorV2Adapter.attach(UniffiEditorV2Backend, editorId, roomBound)
+                    val adapter = EditorV2Adapter.attach(UniffiEditorV2Backend, canonicalEditorId, roomBound)
                     if (adapter == null) {
-                        editorV2Destroy(editorId)
-                        NativeEditorViewRegistry.invalidateDestroyedEditor(signedId)
+                        editorV2Destroy(canonicalEditorId)
                         pairingError = mapOf(
                             "value" to null,
                             "error" to EditorV2Error(
@@ -137,7 +127,7 @@ class NativeEditorModule : Module() {
                             ).toJSMap(),
                         )
                     } else {
-                        EditorV2Registry.register(adapter, signedId)
+                        NativeEditorViewRegistry.markEditorCreated(EditorV2Registry.register(adapter))
                     }
                 }
             }
@@ -145,9 +135,11 @@ class NativeEditorModule : Module() {
         }
         Function("editorV2Destroy") { editorId: String ->
             val result = editorV2Destroy(editorId)
-            editorId.toLongOrNull()?.let { signedId ->
-                NativeEditorViewRegistry.invalidateDestroyedEditor(signedId)
-                EditorV2Registry.destroyPair(signedId)
+            canonicalV2U64(editorId)?.let { canonicalEditorId ->
+                EditorV2Registry.viewTokenForHandle(canonicalEditorId)?.let(
+                    NativeEditorViewRegistry::invalidateDestroyedEditor,
+                )
+                EditorV2Registry.dropPair(canonicalEditorId)
             }
             result.toJSMap()
         }
@@ -184,15 +176,16 @@ class NativeEditorModule : Module() {
         Function("editorV2Redo") { editorId: String, requestJson: String ->
             editorV2Redo(editorId, requestJson).toJSMap()
         }
-        Function("editorV2RenderUpdate") { editorId: String, mirrorScalarAnchor: Int?, mirrorScalarHead: Int? ->
+        Function("editorV2RenderUpdate") { editorId: String, mirrorScalarAnchor: Number?, mirrorScalarHead: Number? ->
             // The render accessor for the interactive component: after a
             // JS-driven engine change the component fetches the current
             // render update here and pushes it to the bound view.
-            editorV2RenderUpdate(
-                editorId,
-                mirrorScalarAnchor?.let { if (it >= 0) it.toUInt() else null },
-                mirrorScalarHead?.let { if (it >= 0) it.toUInt() else null },
-            ).toJSMap()
+            val anchor = mirrorScalarAnchor?.let(::exactV2U32)
+            val head = mirrorScalarHead?.let(::exactV2U32)
+            if ((mirrorScalarAnchor != null && anchor == null) || (mirrorScalarHead != null && head == null)) {
+                return@Function v2BoundaryErrorRecord("invalid render mirror")
+            }
+            editorV2RenderUpdate(editorId, anchor, head).toJSMap()
         }
 
         // ── v2 collaboration runtime ─────────────────────────────────────
@@ -213,14 +206,15 @@ class NativeEditorModule : Module() {
         Function("editorV2CollaborationSocketClose") {
             editorId: String,
             generation: String,
-            code: Int?,
+            code: Number?,
             reason: String? ->
             val parsed = parseGeneration(generation)
                 ?: return@Function v2BoundaryErrorRecord("invalid generation")
-            if (code != null && code < 0) {
+            val exactCode = code?.let(::exactV2U32)
+            if (code != null && exactCode == null) {
                 return@Function v2BoundaryErrorRecord("invalid close code")
             }
-            editorV2CollaborationSocketClose(editorId, parsed, code?.toUInt(), reason).toJSMap()
+            editorV2CollaborationSocketClose(editorId, parsed, exactCode, reason).toJSMap()
         }
         Function("editorV2CollaborationTakeOutbound") { editorId: String, generation: String ->
             val parsed = parseGeneration(generation)
@@ -275,8 +269,8 @@ class NativeEditorModule : Module() {
                 "onAddonEvent"
             )
 
-            Prop("editorId") { view: NativeEditorExpoView, id: Int ->
-                view.setEditorId(nativeULong(id)?.toLong() ?: 0L)
+            Prop("editorId") { view: NativeEditorExpoView, id: String? ->
+                view.setEditorHandle(canonicalV2U64(id))
             }
             Prop("editable") { view: NativeEditorExpoView, editable: Boolean ->
                 view.setEditable(editable)
@@ -335,20 +329,26 @@ class NativeEditorModule : Module() {
             Prop("editorUpdateJson") { view: NativeEditorExpoView, editorUpdateJson: String? ->
                 view.setPendingEditorUpdateJson(editorUpdateJson)
             }
-            Prop("editorUpdateEditorId") { view: NativeEditorExpoView, editorUpdateEditorId: Int? ->
-                view.setPendingEditorUpdateEditorId(editorUpdateEditorId?.let { nativeULong(it)?.toLong() })
+            Prop("editorUpdateEditorId") { view: NativeEditorExpoView, editorUpdateEditorId: String? ->
+                view.setPendingEditorUpdateEditorHandle(canonicalV2U64(editorUpdateEditorId))
             }
-            Prop("editorUpdateRevision") { view: NativeEditorExpoView, editorUpdateRevision: Int ->
-                view.setPendingEditorUpdateRevision(editorUpdateRevision)
+            Prop("editorUpdateRevision") { view: NativeEditorExpoView, editorUpdateRevision: Number? ->
+                view.setPendingEditorUpdateRevision(
+                    exactV2U32(editorUpdateRevision)?.toLong()
+                        ?: throw IllegalArgumentException("editorUpdateRevision must be an exact u32"),
+                )
             }
             Prop("editorResetUpdateJson") { view: NativeEditorExpoView, editorResetUpdateJson: String? ->
                 view.setPendingEditorResetUpdateJson(editorResetUpdateJson)
             }
-            Prop("editorResetUpdateEditorId") { view: NativeEditorExpoView, editorResetUpdateEditorId: Int? ->
-                view.setPendingEditorResetUpdateEditorId(editorResetUpdateEditorId?.let { nativeULong(it)?.toLong() })
+            Prop("editorResetUpdateEditorId") { view: NativeEditorExpoView, editorResetUpdateEditorId: String? ->
+                view.setPendingEditorResetUpdateEditorHandle(canonicalV2U64(editorResetUpdateEditorId))
             }
-            Prop("editorResetUpdateRevision") { view: NativeEditorExpoView, editorResetUpdateRevision: Int ->
-                view.setPendingEditorResetUpdateRevision(editorResetUpdateRevision)
+            Prop("editorResetUpdateRevision") { view: NativeEditorExpoView, editorResetUpdateRevision: Number? ->
+                view.setPendingEditorResetUpdateRevision(
+                    exactV2U32(editorResetUpdateRevision)?.toLong()
+                        ?: throw IllegalArgumentException("editorResetUpdateRevision must be an exact u32"),
+                )
             }
             OnViewDidUpdateProps { view: NativeEditorExpoView ->
                 view.applyPendingEditorResetUpdateIfNeeded()

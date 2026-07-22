@@ -1,26 +1,47 @@
 package com.apollohg.editor
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The v2 pairing registry: maps the public (module-visible) editor id to
- * the v2 adapter backing it. Views bound to a paired id route every
- * interaction through the adapter; an unpaired id has no engine traffic.
+ * The v2 pairing registry keeps the public editor handle as its canonical
+ * decimal string. A separate, opaque view token exists only for the Android
+ * widget lifecycle; it never crosses the JS/native or native/Rust boundary.
  */
 internal object EditorV2Registry {
-    private val pairings = ConcurrentHashMap<Long, EditorV2Adapter>()
+    private data class Pairing(
+        val handle: String,
+        val viewToken: Long,
+        val adapter: EditorV2Adapter,
+    )
 
-    fun register(adapter: EditorV2Adapter, publicId: Long) {
-        pairings[publicId] = adapter
+    private val pairingsByHandle = ConcurrentHashMap<String, Pairing>()
+    private val pairingsByViewToken = ConcurrentHashMap<Long, Pairing>()
+    private val nextViewToken = AtomicLong(0)
+
+    fun register(adapter: EditorV2Adapter): Long {
+        val token = nextViewToken.incrementAndGet()
+        check(token > 0L) { "native editor view token overflow" }
+        val pairing = Pairing(adapter.editorId, token, adapter)
+        pairingsByHandle[adapter.editorId] = pairing
+        pairingsByViewToken[token] = pairing
+        return token
     }
 
-    fun adapterFor(publicId: Long): EditorV2Adapter? = pairings[publicId]
+    fun viewTokenForHandle(handle: String): Long? = pairingsByHandle[handle]?.viewToken
 
-    fun remove(publicId: Long): EditorV2Adapter? = pairings.remove(publicId)
+    fun adapterForViewToken(viewToken: Long): EditorV2Adapter? = pairingsByViewToken[viewToken]?.adapter
 
-    /** Destroy the v2 session backing a pairing and drop the pairing. */
-    fun destroyPair(publicId: Long) {
-        remove(publicId)?.destroy()
+    fun handleForViewToken(viewToken: Long): String? = pairingsByViewToken[viewToken]?.handle
+
+    fun remove(handle: String): EditorV2Adapter? {
+        val pairing = pairingsByHandle.remove(handle) ?: return null
+        pairingsByViewToken.remove(pairing.viewToken)
+        return pairing.adapter
     }
 
+    /** Drop a pairing after the public v2 destroy entry has handled its session. */
+    fun dropPair(handle: String) {
+        remove(handle)
+    }
 }

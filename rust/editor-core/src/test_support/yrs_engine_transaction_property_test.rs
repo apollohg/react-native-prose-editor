@@ -1650,8 +1650,8 @@ mod outbound_update_bounds {
                 id,
                 &serde_json::json!({
                     "version": 1,
-                    "requestId": 1,
-                    "baseDocumentRevision": revision(id),
+                    "requestId": "1",
+                    "baseDocumentRevision": revision(id).to_string(),
                     "text": typed,
                 })
                 .to_string(),
@@ -1669,8 +1669,8 @@ mod outbound_update_bounds {
                 id,
                 &serde_json::json!({
                     "version": 1,
-                    "requestId": 2,
-                    "baseDocumentRevision": revision(id),
+                    "requestId": "2",
+                    "baseDocumentRevision": revision(id).to_string(),
                     "selection": {
                         "type": "text",
                         "anchor": { "offset": 0, "kind": "scalar" },
@@ -1687,8 +1687,8 @@ mod outbound_update_bounds {
                 id,
                 &serde_json::json!({
                     "version": 1,
-                    "requestId": 3,
-                    "baseDocumentRevision": revision(id),
+                    "requestId": "3",
+                    "baseDocumentRevision": revision(id).to_string(),
                     "command": { "type": "toggleBlockquote" },
                 })
                 .to_string(),
@@ -1706,8 +1706,8 @@ mod outbound_update_bounds {
                 id,
                 &serde_json::json!({
                     "version": 1,
-                    "requestId": 4,
-                    "baseDocumentRevision": revision(id),
+                    "requestId": "4",
+                    "baseDocumentRevision": revision(id).to_string(),
                     "text": typed_second,
                 })
                 .to_string(),
@@ -1726,8 +1726,8 @@ mod outbound_update_bounds {
                 id,
                 &serde_json::json!({
                     "version": 1,
-                    "requestId": 7,
-                    "baseDocumentRevision": revision(id),
+                    "requestId": "7",
+                    "baseDocumentRevision": revision(id).to_string(),
                     "setJson": serde_json::from_str::<serde_json::Value>(
                         &paragraphs_json(&replace_texts),
                     )
@@ -1753,8 +1753,8 @@ mod outbound_update_bounds {
                 id,
                 &serde_json::json!({
                     "version": 1,
-                    "requestId": 8,
-                    "baseDocumentRevision": revision(id),
+                    "requestId": "8",
+                    "baseDocumentRevision": revision(id).to_string(),
                     "setJson": serde_json::from_str::<serde_json::Value>(
                         &paragraphs_json(&reset_texts),
                     )

@@ -17,8 +17,8 @@ const PLAIN_DOC: &str =
 fn input_envelope(request_id: u64, revision: u64, text: &str) -> String {
     serde_json::json!({
         "version": 1,
-        "requestId": request_id,
-        "baseDocumentRevision": revision,
+        "requestId": request_id.to_string(),
+        "baseDocumentRevision": revision.to_string(),
         "text": text,
     })
     .to_string()
@@ -330,8 +330,8 @@ fn detached_session_editing_matches_direct_engine_behavior() {
         id,
         &serde_json::json!({
             "version": 1,
-            "requestId": 202,
-            "baseDocumentRevision": revision,
+            "requestId": "202",
+            "baseDocumentRevision": revision.to_string(),
             "command": { "type": "toggleBlockquote" },
         })
         .to_string(),

@@ -202,8 +202,8 @@ fn local_edit(id: u64, request_id: u64, text: &str) {
     let revision = bridge::session_audit(id).unwrap().document_revision;
     let envelope = serde_json::json!({
         "version": 1,
-        "requestId": request_id,
-        "baseDocumentRevision": revision,
+        "requestId": request_id.to_string(),
+        "baseDocumentRevision": revision.to_string(),
         "text": text,
     })
     .to_string();
