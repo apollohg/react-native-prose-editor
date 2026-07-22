@@ -5,6 +5,14 @@ use crate::render::{
 };
 use crate::schema::{NodeRole, Schema};
 
+/// Failure while deriving a flat render sequence before emitting any output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerateError {
+    OrderedListStartOutOfRange,
+    ListItemCountOutOfRange,
+    OrderedListIndexOverflow,
+}
+
 // Not reachable from production call paths after the Task 16C legacy runtime
 // removal; exercised by crate tests.
 #[allow(dead_code)]
@@ -27,14 +35,14 @@ fn render_marks(node: &Node) -> Vec<RenderMark> {
 // Not reachable from production call paths after the Task 16C legacy runtime
 // removal; exercised by crate tests.
 #[allow(dead_code)]
-pub fn generate(doc: &Document, schema: &Schema) -> Vec<RenderElement> {
+pub fn generate(doc: &Document, schema: &Schema) -> Result<Vec<RenderElement>, GenerateError> {
     let mut elements = Vec::new();
     // Position starts at 0 (inside the doc root's open tag).
     // The root doc node itself is not emitted; we walk its children.
     let root = doc.root();
     let mut pos: u32 = 0; // position within doc content (after root open tag)
-    walk_children(root, schema, &mut elements, &mut pos, 0, None);
-    elements
+    walk_children(root, schema, &mut elements, &mut pos, 0, None)?;
+    Ok(elements)
 }
 
 /// Walk the children of `parent`, emitting render elements.
@@ -52,7 +60,7 @@ fn walk_children(
     pos: &mut u32,
     depth: u16,
     list_info: Option<(String, bool, u32, u32)>,
-) {
+) -> Result<(), GenerateError> {
     for i in 0..parent.child_count() {
         let child = parent.child(i).expect("child index in bounds");
         let spec = schema.node(child.node_type());
@@ -83,8 +91,12 @@ fn walk_children(
                     .attrs()
                     .get("start")
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(1) as u32;
-                let total = child.child_count() as u32;
+                    .map(u32::try_from)
+                    .transpose()
+                    .map_err(|_| GenerateError::OrderedListStartOutOfRange)?
+                    .unwrap_or(1);
+                let total = u32::try_from(child.child_count())
+                    .map_err(|_| GenerateError::ListItemCountOutOfRange)?;
 
                 *pos += 1; // list open tag
                 walk_children(
@@ -94,40 +106,45 @@ fn walk_children(
                     pos,
                     depth,
                     Some((child.node_type().to_string(), ordered, start_attr, total)),
-                );
+                )?;
                 *pos += 1; // list close tag
             }
             Some(NodeRole::ListItem) => {
                 // ListItem: emit BlockStart with ListContext, walk children, emit BlockEnd
                 let list_context =
-                    list_info
-                        .as_ref()
-                        .map(|(list_node_type, ordered, start, total)| {
-                            let index_0based = i as u32;
-                            let index = if *ordered {
-                                *start + index_0based
-                            } else {
-                                index_0based + 1
-                            };
-                            let (kind, checked) = task_list_marker_metadata(list_node_type, child);
-                            ListContext {
-                                ordered: *ordered,
-                                index,
-                                total: *total,
-                                start: *start,
-                                is_first: i == 0,
-                                is_last: i == (*total as usize - 1),
-                                kind,
-                                checked,
-                            }
-                        });
+                    if let Some((list_node_type, ordered, start, total)) = list_info.as_ref() {
+                        let index_0based =
+                            u32::try_from(i).map_err(|_| GenerateError::ListItemCountOutOfRange)?;
+                        let index = if *ordered {
+                            start
+                                .checked_add(index_0based)
+                                .ok_or(GenerateError::OrderedListIndexOverflow)?
+                        } else {
+                            index_0based
+                                .checked_add(1)
+                                .ok_or(GenerateError::ListItemCountOutOfRange)?
+                        };
+                        let (kind, checked) = task_list_marker_metadata(list_node_type, child);
+                        Some(ListContext {
+                            ordered: *ordered,
+                            index,
+                            total: *total,
+                            start: *start,
+                            is_first: i == 0,
+                            is_last: i == (*total as usize - 1),
+                            kind,
+                            checked,
+                        })
+                    } else {
+                        None
+                    };
                 elements.push(RenderElement::BlockStart {
                     node_type: child.node_type().to_string(),
                     depth,
                     list_context,
                 });
                 *pos += 1; // listItem open tag
-                walk_children(child, schema, elements, pos, depth + 1, None);
+                walk_children(child, schema, elements, pos, depth + 1, None)?;
                 *pos += 1; // listItem close tag
                 elements.push(RenderElement::BlockEnd);
             }
@@ -145,7 +162,7 @@ fn walk_children(
                         marks: vec![],
                     });
                 } else {
-                    walk_children(child, schema, elements, pos, depth + 1, None);
+                    walk_children(child, schema, elements, pos, depth + 1, None)?;
                 }
                 *pos += 1; // close tag
                 elements.push(RenderElement::BlockEnd);
@@ -167,7 +184,7 @@ fn walk_children(
                     list_context: None,
                 });
                 *pos += 1; // open tag
-                walk_children(child, schema, elements, pos, depth + 1, None);
+                walk_children(child, schema, elements, pos, depth + 1, None)?;
                 *pos += 1; // close tag
                 elements.push(RenderElement::BlockEnd);
             }
@@ -188,7 +205,7 @@ fn walk_children(
             Some(NodeRole::Doc) => {
                 // Nested doc (unusual): just walk children
                 *pos += 1;
-                walk_children(child, schema, elements, pos, depth, None);
+                walk_children(child, schema, elements, pos, depth, None)?;
                 *pos += 1;
             }
             None => {
@@ -227,4 +244,5 @@ fn walk_children(
             }
         }
     }
+    Ok(())
 }

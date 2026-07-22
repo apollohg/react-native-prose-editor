@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::model::{Document, Fragment, Mark, Node};
 use crate::render;
-use crate::render::generate::generate;
+use crate::render::generate::{generate as try_generate, GenerateError};
 use crate::render::incremental::{contiguous_render_blocks_patch, incremental, render_blocks};
 use crate::render::{ListContext, RenderElement, RenderMark};
 use crate::tiptap_schema;
@@ -54,10 +54,14 @@ fn bullet_list(children: Vec<Node>) -> Node {
     )
 }
 
-fn ordered_list(start: u32, children: Vec<Node>) -> Node {
+fn ordered_list(start: u64, children: Vec<Node>) -> Node {
     let mut attrs = HashMap::new();
     attrs.insert("start".to_string(), serde_json::Value::Number(start.into()));
     Node::element("orderedList".to_string(), attrs, Fragment::from(children))
+}
+
+fn generate(doc: &Document, schema: &crate::schema::Schema) -> Vec<RenderElement> {
+    try_generate(doc, schema).expect("test document should render")
 }
 
 fn list_item(children: Vec<Node>) -> Node {
@@ -448,6 +452,46 @@ fn test_ordered_list_start_3() {
             }),
         },
         "Second item in ordered list starting at 3 should have index=4"
+    );
+}
+
+#[test]
+fn test_ordered_list_start_requires_exact_u32() {
+    let schema = tiptap_schema();
+    let max_document = Document::new(doc(vec![ordered_list(
+        u64::from(u32::MAX),
+        vec![list_item(vec![paragraph(vec![text("Last")])])],
+    )]));
+
+    let max_elements = generate(&max_document, &schema);
+    assert_eq!(
+        max_elements[0],
+        RenderElement::BlockStart {
+            node_type: "listItem".to_string(),
+            depth: 0,
+            list_context: Some(ListContext {
+                ordered: true,
+                index: u32::MAX,
+                total: 1,
+                start: u32::MAX,
+                is_first: true,
+                is_last: true,
+                kind: None,
+                checked: None,
+            }),
+        },
+        "u32::MAX must remain exact in ordered-list render output"
+    );
+
+    let overflow_document = Document::new(doc(vec![ordered_list(
+        u64::from(u32::MAX) + 1,
+        vec![list_item(vec![paragraph(vec![text("Overflow")])])],
+    )]));
+
+    assert_eq!(
+        try_generate(&overflow_document, &schema),
+        Err(GenerateError::OrderedListStartOutOfRange),
+        "an ordered-list start above u32::MAX must be rejected before rendering"
     );
 }
 

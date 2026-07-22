@@ -861,6 +861,30 @@ class RenderBridgeTest {
         assertTrue("Should contain second item text", string.contains("Second item"))
     }
 
+    @Test
+    fun `render - ordered list preserves exact u32 marker index`() {
+        val maxJson = """
+        [
+            {"type": "blockStart", "nodeType": "listItem", "depth": 1,
+             "listContext": {"ordered": true, "index": 4294967295, "total": 1, "start": 4294967295, "isFirst": true, "isLast": true}},
+            {"type": "blockStart", "nodeType": "paragraph", "depth": 2},
+            {"type": "textRun", "text": "Last item", "marks": []},
+            {"type": "blockEnd"},
+            {"type": "blockEnd"}
+        ]
+        """.trimIndent()
+
+        val rendered = RenderBridge.buildSpannable(maxJson, baseFontSize, textColor).toString()
+        assertTrue("u32::MAX marker must remain exact. Got: '$rendered'", rendered.contains("4294967295. "))
+
+        val aboveMax = org.json.JSONObject("""{"ordered": true, "index": 4294967296}""")
+        assertEquals(
+            "out-of-range marker index must be rejected before signed narrowing",
+            "1. ",
+            RenderBridge.listMarkerString(aboveMax)
+        )
+    }
+
     // ── Unordered List ──────────────────────────────────────────────────
 
     @Test

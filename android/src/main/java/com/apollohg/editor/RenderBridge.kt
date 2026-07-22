@@ -2996,7 +2996,7 @@ object RenderBridge {
         }
         val ordered = listContext.optBoolean("ordered", false)
         return if (ordered) {
-            val index = listContext.optInt("index", 1)
+            val index = exactV2U32(listContext.opt("index") as? Number)?.toLong() ?: 1L
             "$index. "
         } else {
             LayoutConstants.UNORDERED_LIST_BULLET

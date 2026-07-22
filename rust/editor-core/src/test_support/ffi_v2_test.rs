@@ -1758,6 +1758,26 @@ fn local_json_config(document: &str) -> Value {
 }
 
 const FIXTURE_MULTI_BLOCK: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"ab"}]},{"type":"paragraph","content":[{"type":"text","text":"cd"}]}]}"#;
+const ORDERED_LIST_START_MAX: &str = r#"{"type":"doc","content":[{"type":"orderedList","attrs":{"start":4294967295},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"last"}]}]}]}]}"#;
+const ORDERED_LIST_START_ABOVE_U32: &str = r#"{"type":"doc","content":[{"type":"orderedList","attrs":{"start":4294967296},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"overflow"}]}]}]}]}"#;
+
+#[test]
+fn render_update_ordered_list_start_is_exact_or_rejected() {
+    let id = create_handle(local_json_config(ORDERED_LIST_START_MAX));
+    let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
+    assert_eq!(
+        update["renderBlocks"][0][0]["listContext"]["index"],
+        json!(u32::MAX),
+        "the v2 render accessor must preserve u32::MAX exactly"
+    );
+    destroy_handle(&id);
+
+    let error = err_json(&v2::editor_v2_create(
+        local_json_config(ORDERED_LIST_START_ABOVE_U32).to_string(),
+        None,
+    ));
+    assert_error(&error, "boundary", "CODEC_INVARIANT_FAILED", None);
+}
 
 #[test]
 fn staging_render_update_carries_v2_history_revision_and_frozen_shape() {

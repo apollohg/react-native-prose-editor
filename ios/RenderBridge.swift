@@ -2022,7 +2022,7 @@ final class RenderBridge {
         let ordered = (listContext["ordered"] as? NSNumber)?.boolValue ?? false
 
         if ordered {
-            let index = (listContext["index"] as? NSNumber)?.intValue ?? 1
+            let index = v2ExactUInt32(listContext["index"] as? NSNumber) ?? 1
             return "\(index). "
         } else {
             return LayoutConstants.unorderedListBullet

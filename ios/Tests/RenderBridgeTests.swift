@@ -2271,6 +2271,14 @@ final class RenderBridgeTests: XCTestCase {
         XCTAssertEqual(marker, "3. ", "Ordered list item 3 should produce '3. '")
     }
 
+    func testListMarker_orderedPreservesExactU32Boundary() {
+        let max: [String: Any] = ["ordered": true, "index": NSNumber(value: UInt32.max)]
+        XCTAssertEqual(RenderBridge.listMarkerString(listContext: max), "4294967295. ")
+
+        let aboveMax: [String: Any] = ["ordered": true, "index": NSNumber(value: UInt64(UInt32.max) + 1)]
+        XCTAssertEqual(RenderBridge.listMarkerString(listContext: aboveMax), "1. ")
+    }
+
     func testListMarker_unordered() {
         let ctx: [String: Any] = ["ordered": false, "index": 1]
         let marker = RenderBridge.listMarkerString(listContext: ctx)
