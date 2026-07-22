@@ -118,6 +118,7 @@ export type {
 } from './NativeEditorBridge';
 
 export {
+    createNativeEditorDocumentHandle,
     NativeEditorDocumentHandle,
     type NativeEditorV2CreateConfig,
     type NativeEditorV2Initialization,
@@ -140,6 +141,8 @@ export {
     DEFAULT_EDITOR_RESOURCE_LIMITS,
     HARD_EDITOR_RESOURCE_LIMITS,
     resolveEditorResourceLimits,
+    type EditorCollaborationLimits,
+    type EditorEditingLimits,
     type EditorResourceLimits,
     type ResolvedEditorResourceLimits,
 } from './ResourceLimits';

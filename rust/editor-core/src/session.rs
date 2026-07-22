@@ -87,6 +87,21 @@ pub(crate) struct CollaborationLimits {
     pub(crate) max_pending_dependency_update_work: usize,
 }
 
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CollaborationLimitOverrides {
+    max_frames_per_message: Option<usize>,
+    max_frame_bytes: Option<usize>,
+    max_aggregate_response_bytes: Option<usize>,
+    max_awareness_peers: Option<usize>,
+    max_awareness_peer_bytes: Option<usize>,
+    max_awareness_bytes: Option<usize>,
+    max_pending_outbox_messages: Option<usize>,
+    max_pending_outbox_bytes: Option<usize>,
+    max_pending_dependency_update_bytes: Option<usize>,
+    max_pending_dependency_update_work: Option<usize>,
+}
+
 impl Default for CollaborationLimits {
     fn default() -> Self {
         Self {
@@ -105,6 +120,44 @@ impl Default for CollaborationLimits {
 }
 
 impl CollaborationLimits {
+    pub(crate) fn resolve(overrides: CollaborationLimitOverrides) -> Result<Self, SessionError> {
+        let defaults = Self::default();
+        let limits = Self {
+            max_frames_per_message: overrides
+                .max_frames_per_message
+                .unwrap_or(defaults.max_frames_per_message),
+            max_frame_bytes: overrides
+                .max_frame_bytes
+                .unwrap_or(defaults.max_frame_bytes),
+            max_aggregate_response_bytes: overrides
+                .max_aggregate_response_bytes
+                .unwrap_or(defaults.max_aggregate_response_bytes),
+            max_awareness_peers: overrides
+                .max_awareness_peers
+                .unwrap_or(defaults.max_awareness_peers),
+            max_awareness_peer_bytes: overrides
+                .max_awareness_peer_bytes
+                .unwrap_or(defaults.max_awareness_peer_bytes),
+            max_awareness_bytes: overrides
+                .max_awareness_bytes
+                .unwrap_or(defaults.max_awareness_bytes),
+            max_pending_outbox_messages: overrides
+                .max_pending_outbox_messages
+                .unwrap_or(defaults.max_pending_outbox_messages),
+            max_pending_outbox_bytes: overrides
+                .max_pending_outbox_bytes
+                .unwrap_or(defaults.max_pending_outbox_bytes),
+            max_pending_dependency_update_bytes: overrides
+                .max_pending_dependency_update_bytes
+                .unwrap_or(defaults.max_pending_dependency_update_bytes),
+            max_pending_dependency_update_work: overrides
+                .max_pending_dependency_update_work
+                .unwrap_or(defaults.max_pending_dependency_update_work),
+        };
+        limits.validate()?;
+        Ok(limits)
+    }
+
     pub(crate) const fn hard_ceiling() -> Self {
         Self {
             max_frames_per_message: 1_024,
@@ -1074,6 +1127,11 @@ impl EditorSession {
     /// ceiling coverage.
     pub(crate) fn set_collaboration_limit_for_test(&mut self, field: &str, value: usize) {
         self.collaboration.limits.set_for_test(field, value);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn collaboration_limits(&self) -> &CollaborationLimits {
+        &self.collaboration.limits
     }
 
     /// Test-only transport-state injection, routed through the state

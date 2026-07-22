@@ -173,7 +173,9 @@ jest.mock('expo-modules-core', () => ({
 // ─── Imports ────────────────────────────────────────────────────
 
 import {
+    createNativeEditorDocumentHandle,
     NativeEditorDocumentHandle,
+    type NativeEditorV2CreateConfig,
     normalizeNativeEditorV2Bytes,
     normalizeNativeEditorV2DecimalId,
     normalizeNativeEditorV2Result,
@@ -192,13 +194,83 @@ import {
     NativeEditorV2TransportError,
     type NativeEditorV2Error,
 } from '../NativeEditorBoundaryError';
+import { join } from 'path';
+import ts from 'typescript';
 
 // ─── Helpers ────────────────────────────────────────────────────
 
 function createHandle(): NativeEditorDocumentHandle {
-    return NativeEditorDocumentHandle.create({
+    return createNativeEditorDocumentHandle({
         initialization: { type: 'localEmpty' },
     });
+}
+
+function parsedTypeScriptConfig(): ts.ParsedCommandLine {
+    const configPath = join(process.cwd(), 'tsconfig.json');
+    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    if (config.error) {
+        throw new Error(ts.formatDiagnostic(config.error, formatDiagnosticHost));
+    }
+    return ts.parseJsonConfigFileContent(config.config, ts.sys, process.cwd());
+}
+
+const formatDiagnosticHost: ts.FormatDiagnosticsHost = {
+    getCanonicalFileName: (fileName) => fileName,
+    getCurrentDirectory: () => process.cwd(),
+    getNewLine: () => '\n',
+};
+
+function compileCreateContractFixture(sourceText: string): string {
+    const parsed = parsedTypeScriptConfig();
+    const fixturePath = join(
+        process.cwd(),
+        'src',
+        '__tests__',
+        '__task_4_create_contract_fixture.ts'
+    );
+    const options: ts.CompilerOptions = {
+        ...parsed.options,
+        noEmit: true,
+        types: [],
+    };
+    const host = ts.createCompilerHost(options);
+    const fileExists = host.fileExists.bind(host);
+    const readFile = host.readFile.bind(host);
+    const getSourceFile = host.getSourceFile.bind(host);
+    host.fileExists = (fileName) => fileName === fixturePath || fileExists(fileName);
+    host.readFile = (fileName) => (fileName === fixturePath ? sourceText : readFile(fileName));
+    host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) =>
+        fileName === fixturePath
+            ? ts.createSourceFile(fileName, sourceText, languageVersion, true, ts.ScriptKind.TS)
+            : getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile);
+    const program = ts.createProgram([fixturePath], options, host);
+    return ts.formatDiagnosticsWithColorAndContext(
+        ts.getPreEmitDiagnostics(program),
+        formatDiagnosticHost
+    );
+}
+
+function emitNativeEditorBridgeDeclaration(): { declaration: string; diagnostics: string } {
+    const parsed = parsedTypeScriptConfig();
+    const sourcePath = join(process.cwd(), 'src', 'NativeEditorBridge.ts');
+    const options: ts.CompilerOptions = {
+        ...parsed.options,
+        declaration: true,
+        declarationMap: false,
+        emitDeclarationOnly: true,
+        noEmit: false,
+    };
+    const host = ts.createCompilerHost(options);
+    let declaration = '';
+    const program = ts.createProgram([sourcePath], options, host);
+    const emit = program.emit(undefined, (fileName, output) => {
+        if (fileName.endsWith('/NativeEditorBridge.d.ts')) declaration = output;
+    });
+    const diagnostics = ts.formatDiagnosticsWithColorAndContext(
+        [...ts.getPreEmitDiagnostics(program), ...emit.diagnostics],
+        formatDiagnosticHost
+    );
+    return { declaration, diagnostics };
 }
 
 function expectNonRetryable(error: unknown, code: string): void {
@@ -611,6 +683,84 @@ describe('NativeEditorBridge v2', () => {
     });
 
     describe('document handle lifecycle', () => {
+        it('type-checks only the exact grouped create shape and sole factory constructor', () => {
+            const diagnostics = compileCreateContractFixture(`
+                import {
+                    createNativeEditorDocumentHandle,
+                    NativeEditorDocumentHandle,
+                    type NativeEditorV2CreateConfig,
+                } from '../NativeEditorBridge';
+                import type {
+                    EditorCollaborationLimits,
+                    EditorEditingLimits,
+                    EditorResourceLimits,
+                } from '../ResourceLimits';
+
+                const resource: EditorResourceLimits = {
+                    maxInputBytes: 1,
+                    maxDocumentNodes: 1,
+                    maxDocumentDepth: 1,
+                    maxSchemaNodes: 1,
+                    maxSchemaExpressionBytes: 1,
+                    maxCollaborationMessageBytes: 1,
+                    maxEncodedStateBytes: 1,
+                };
+                const editing: EditorEditingLimits = {
+                    maxOperationsPerTransaction: 1,
+                    maxUndoGroups: 1,
+                    maxUndoRetainedUnits: 1,
+                    maxDerivedOutputBytes: 1,
+                };
+                const collaboration: EditorCollaborationLimits = {
+                    maxFramesPerMessage: 1,
+                    maxFrameBytes: 1,
+                    maxAggregateResponseBytes: 1,
+                    maxAwarenessPeers: 1,
+                    maxAwarenessPeerBytes: 1,
+                    maxAwarenessBytes: 1,
+                    maxPendingOutboxMessages: 1,
+                    maxPendingOutboxBytes: 1,
+                    maxPendingDependencyUpdateBytes: 1,
+                    maxPendingDependencyUpdateWork: 1,
+                };
+                const config: NativeEditorV2CreateConfig = {
+                    initialization: { type: 'localEmpty' },
+                    schema: undefined,
+                    fragmentName: 'prosemirror',
+                    policy: {
+                        maxLength: 100,
+                        readOnly: true,
+                        inputFilter: '[a-z]',
+                        allowBase64Images: false,
+                    },
+                    limits: { resource, editing, collaboration },
+                };
+                createNativeEditorDocumentHandle(config);
+                const removedRootPolicy: NativeEditorV2CreateConfig = {
+                    initialization: { type: 'localEmpty' },
+                    // @ts-expect-error maxLength belongs under policy
+                    maxLength: 100,
+                };
+                void removedRootPolicy;
+                // @ts-expect-error the class has no public static create constructor
+                NativeEditorDocumentHandle.create(config);
+            `);
+            expect(diagnostics).toBe('');
+        });
+
+        it('omits the removed static constructor from declaration output', () => {
+            const { declaration, diagnostics } = emitNativeEditorBridgeDeclaration();
+            expect(diagnostics).toBe('');
+            expect(declaration).toContain(
+                'export declare function createNativeEditorDocumentHandle(config: NativeEditorV2CreateConfig): NativeEditorDocumentHandle;'
+            );
+            expect(declaration).not.toMatch(/static create\s*\(/);
+        });
+
+        it('exposes no runtime static create alias', () => {
+            expect('create' in NativeEditorDocumentHandle).toBe(false);
+        });
+
         it('creates a handle with a decimal-string editorId and its bridge', () => {
             const handle = createHandle();
             expect(handle.editorId).toBe('1');
@@ -620,13 +770,45 @@ describe('NativeEditorBridge v2', () => {
         });
 
         it('serializes the local initialization create envelope exactly', () => {
-            NativeEditorDocumentHandle.create({
+            createNativeEditorDocumentHandle({
                 schema: { nodes: [], marks: [] } as never,
                 fragmentName: 'prosemirror',
                 initialization: { type: 'localJson', json: { type: 'doc', content: [] } },
-                maxLength: 100,
-                readOnly: true,
-                allowBase64Images: true,
+                policy: {
+                    maxLength: 100,
+                    readOnly: true,
+                    inputFilter: '[a-z]',
+                    allowBase64Images: true,
+                },
+                limits: {
+                    resource: {
+                        maxInputBytes: 64 * 1024 * 1024,
+                        maxDocumentNodes: 1_000_000,
+                        maxDocumentDepth: 1_024,
+                        maxSchemaNodes: 10_000,
+                        maxSchemaExpressionBytes: 1024 * 1024,
+                        maxCollaborationMessageBytes: 64 * 1024 * 1024,
+                        maxEncodedStateBytes: 256 * 1024 * 1024,
+                    },
+                    editing: {
+                        maxOperationsPerTransaction: 4_096,
+                        maxUndoGroups: 2_000,
+                        maxUndoRetainedUnits: 8_000_000,
+                        maxDerivedOutputBytes: 128 * 1024 * 1024,
+                    },
+                    collaboration: {
+                        maxFramesPerMessage: 1_024,
+                        maxFrameBytes: 64 * 1024 * 1024,
+                        maxAggregateResponseBytes: 64 * 1024 * 1024,
+                        maxAwarenessPeers: 10_000,
+                        maxAwarenessPeerBytes: 1024 * 1024,
+                        maxAwarenessBytes: 64 * 1024 * 1024,
+                        maxPendingOutboxMessages: 4_096,
+                        maxPendingOutboxBytes: 64 * 1024 * 1024,
+                        maxPendingDependencyUpdateBytes: 64 * 1024 * 1024,
+                        maxPendingDependencyUpdateWork: 8_000_000,
+                    },
+                },
             });
             expect(mockNativeModule.editorV2Create).toHaveBeenCalledTimes(1);
             const [configJson, snapshotState] = mockNativeModule.editorV2Create.mock.calls[0];
@@ -634,15 +816,117 @@ describe('NativeEditorBridge v2', () => {
                 schema: { nodes: [], marks: [] },
                 fragmentName: 'prosemirror',
                 initialization: { type: 'localJson', json: { type: 'doc', content: [] } },
-                maxLength: 100,
-                readOnly: true,
-                allowBase64Images: true,
+                policy: {
+                    maxLength: 100,
+                    readOnly: true,
+                    inputFilter: '[a-z]',
+                    allowBase64Images: true,
+                },
+                limits: {
+                    resource: {
+                        maxInputBytes: 64 * 1024 * 1024,
+                        maxDocumentNodes: 1_000_000,
+                        maxDocumentDepth: 1_024,
+                        maxSchemaNodes: 10_000,
+                        maxSchemaExpressionBytes: 1024 * 1024,
+                        maxCollaborationMessageBytes: 64 * 1024 * 1024,
+                        maxEncodedStateBytes: 256 * 1024 * 1024,
+                    },
+                    editing: {
+                        maxOperationsPerTransaction: 4_096,
+                        maxUndoGroups: 2_000,
+                        maxUndoRetainedUnits: 8_000_000,
+                        maxDerivedOutputBytes: 128 * 1024 * 1024,
+                    },
+                    collaboration: {
+                        maxFramesPerMessage: 1_024,
+                        maxFrameBytes: 64 * 1024 * 1024,
+                        maxAggregateResponseBytes: 64 * 1024 * 1024,
+                        maxAwarenessPeers: 10_000,
+                        maxAwarenessPeerBytes: 1024 * 1024,
+                        maxAwarenessBytes: 64 * 1024 * 1024,
+                        maxPendingOutboxMessages: 4_096,
+                        maxPendingOutboxBytes: 64 * 1024 * 1024,
+                        maxPendingDependencyUpdateBytes: 64 * 1024 * 1024,
+                        maxPendingDependencyUpdateWork: 8_000_000,
+                    },
+                },
             });
             expect(snapshotState).toBeNull();
         });
 
+        it('rejects unknown and removed create fields before native invocation', () => {
+            const invalidConfigs: unknown[] = [
+                { initialization: { type: 'localEmpty' }, unknown: true },
+                { initialization: { type: 'localEmpty' }, maxLength: 1 },
+                { initialization: { type: 'localEmpty' }, readOnly: true },
+                { initialization: { type: 'localEmpty' }, inputFilter: 'x' },
+                { initialization: { type: 'localEmpty' }, allowBase64Images: true },
+                { initialization: { type: 'localEmpty' }, policy: { unknown: true } },
+                { initialization: { type: 'localEmpty' }, limits: { unknown: {} } },
+                {
+                    initialization: { type: 'localEmpty' },
+                    limits: { resource: { unknown: 1 } },
+                },
+                {
+                    initialization: { type: 'localEmpty' },
+                    limits: { editing: { unknown: 1 } },
+                },
+                {
+                    initialization: { type: 'localEmpty' },
+                    limits: { collaboration: { unknown: 1 } },
+                },
+            ];
+
+            for (const config of invalidConfigs) {
+                const error = catchThrown(() =>
+                    createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+                );
+                expect((error as { code?: string }).code).toBe('CONFIG_INVALID');
+            }
+            expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
+        });
+
+        it('rejects every non-positive, fractional, unsafe, and one-over integer limit', () => {
+            const limitCases: Array<[string, string, number]> = [
+                ['resource', 'maxInputBytes', 64 * 1024 * 1024],
+                ['resource', 'maxDocumentNodes', 1_000_000],
+                ['resource', 'maxDocumentDepth', 1_024],
+                ['resource', 'maxSchemaNodes', 10_000],
+                ['resource', 'maxSchemaExpressionBytes', 1024 * 1024],
+                ['resource', 'maxCollaborationMessageBytes', 64 * 1024 * 1024],
+                ['resource', 'maxEncodedStateBytes', 256 * 1024 * 1024],
+                ['editing', 'maxOperationsPerTransaction', 4_096],
+                ['editing', 'maxUndoGroups', 2_000],
+                ['editing', 'maxUndoRetainedUnits', 8_000_000],
+                ['editing', 'maxDerivedOutputBytes', 128 * 1024 * 1024],
+                ['collaboration', 'maxFramesPerMessage', 1_024],
+                ['collaboration', 'maxFrameBytes', 64 * 1024 * 1024],
+                ['collaboration', 'maxAggregateResponseBytes', 64 * 1024 * 1024],
+                ['collaboration', 'maxAwarenessPeers', 10_000],
+                ['collaboration', 'maxAwarenessPeerBytes', 1024 * 1024],
+                ['collaboration', 'maxAwarenessBytes', 64 * 1024 * 1024],
+                ['collaboration', 'maxPendingOutboxMessages', 4_096],
+                ['collaboration', 'maxPendingOutboxBytes', 64 * 1024 * 1024],
+                ['collaboration', 'maxPendingDependencyUpdateBytes', 64 * 1024 * 1024],
+                ['collaboration', 'maxPendingDependencyUpdateWork', 8_000_000],
+            ];
+
+            for (const [group, field, ceiling] of limitCases) {
+                for (const value of [0, 1.5, Number.MAX_SAFE_INTEGER + 1, ceiling + 1]) {
+                    const config = {
+                        initialization: { type: 'localEmpty' },
+                        limits: { [group]: { [field]: value } },
+                    } as unknown as NativeEditorV2CreateConfig;
+                    const error = catchThrown(() => createNativeEditorDocumentHandle(config));
+                    expect((error as { code?: string }).code).toBe('INVALID_RESOURCE_LIMIT');
+                }
+            }
+            expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
+        });
+
         it('serializes the room create envelope with snapshot metadata and direct bytes', () => {
-            NativeEditorDocumentHandle.create({
+            createNativeEditorDocumentHandle({
                 initialization: {
                     type: 'room',
                     documentId: 'doc-1',

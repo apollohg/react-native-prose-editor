@@ -211,17 +211,14 @@ pub struct ResourceLimits {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-// Not reachable from production call paths after the Task 16C legacy runtime
-// removal; exercised by crate tests.
-#[allow(dead_code)]
-struct ResourceLimitOverrides {
-    max_input_bytes: Option<usize>,
-    max_document_nodes: Option<usize>,
-    max_document_depth: Option<usize>,
-    max_schema_nodes: Option<usize>,
-    max_schema_expression_bytes: Option<usize>,
-    max_collaboration_message_bytes: Option<usize>,
-    max_encoded_state_bytes: Option<usize>,
+pub(crate) struct ResourceLimitOverrides {
+    pub(crate) max_input_bytes: Option<usize>,
+    pub(crate) max_document_nodes: Option<usize>,
+    pub(crate) max_document_depth: Option<usize>,
+    pub(crate) max_schema_nodes: Option<usize>,
+    pub(crate) max_schema_expression_bytes: Option<usize>,
+    pub(crate) max_collaboration_message_bytes: Option<usize>,
+    pub(crate) max_encoded_state_bytes: Option<usize>,
 }
 
 impl Default for ResourceLimits {
@@ -248,6 +245,10 @@ impl ResourceLimits {
                 .map_err(|error| BoundaryError::parse("INVALID_RESOURCE_LIMIT", error))?,
             None => ResourceLimitOverrides::default(),
         };
+        Self::resolve(overrides)
+    }
+
+    pub(crate) fn resolve(overrides: ResourceLimitOverrides) -> BoundaryResult<Self> {
         let defaults = Self::default();
         let limits = Self {
             max_input_bytes: overrides

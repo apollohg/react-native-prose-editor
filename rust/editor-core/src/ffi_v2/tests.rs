@@ -19,6 +19,208 @@ fn shared_contract() -> serde_json::Value {
     fixtures["ffiV2ErrorContract"].clone()
 }
 
+const CREATE_LIMIT_CASES: [(&str, &str, u64); 21] = [
+    ("resource", "maxInputBytes", 64 * 1024 * 1024),
+    ("resource", "maxDocumentNodes", 1_000_000),
+    ("resource", "maxDocumentDepth", 1_024),
+    ("resource", "maxSchemaNodes", 10_000),
+    ("resource", "maxSchemaExpressionBytes", 1024 * 1024),
+    ("resource", "maxCollaborationMessageBytes", 64 * 1024 * 1024),
+    ("resource", "maxEncodedStateBytes", 256 * 1024 * 1024),
+    ("editing", "maxOperationsPerTransaction", 4_096),
+    ("editing", "maxUndoGroups", 2_000),
+    ("editing", "maxUndoRetainedUnits", 8_000_000),
+    ("editing", "maxDerivedOutputBytes", 128 * 1024 * 1024),
+    ("collaboration", "maxFramesPerMessage", 1_024),
+    ("collaboration", "maxFrameBytes", 64 * 1024 * 1024),
+    (
+        "collaboration",
+        "maxAggregateResponseBytes",
+        64 * 1024 * 1024,
+    ),
+    ("collaboration", "maxAwarenessPeers", 10_000),
+    ("collaboration", "maxAwarenessPeerBytes", 1024 * 1024),
+    ("collaboration", "maxAwarenessBytes", 64 * 1024 * 1024),
+    ("collaboration", "maxPendingOutboxMessages", 4_096),
+    ("collaboration", "maxPendingOutboxBytes", 64 * 1024 * 1024),
+    (
+        "collaboration",
+        "maxPendingDependencyUpdateBytes",
+        64 * 1024 * 1024,
+    ),
+    ("collaboration", "maxPendingDependencyUpdateWork", 8_000_000),
+];
+
+fn create_config_with_limit(
+    group: &str,
+    field: &str,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    let group_fields = serde_json::Map::from_iter([(field.to_owned(), value)]);
+    let limits = serde_json::Map::from_iter([(group.to_owned(), group_fields.into())]);
+    json!({
+        "initialization": { "type": "localEmpty" },
+        "limits": limits,
+    })
+}
+
+fn create_editor(config: serde_json::Value) -> String {
+    let result = super::editor::editor_v2_create(config.to_string(), None);
+    if let Some(error) = result.error {
+        panic!("create failed unexpectedly: {error:?}");
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(result.value.as_deref().expect("create value")).unwrap();
+    value["editorId"]
+        .as_str()
+        .expect("decimal editor id")
+        .into()
+}
+
+fn assert_create_rejected(config: serde_json::Value) {
+    let result = super::editor::editor_v2_create(config.to_string(), None);
+    if let Some(value) = result.value {
+        let value: serde_json::Value = serde_json::from_str(&value).unwrap();
+        let editor_id = value["editorId"].as_str().unwrap().to_owned();
+        let _ = super::editor::editor_v2_destroy(editor_id);
+        panic!("create unexpectedly accepted the config");
+    }
+    assert!(result.error.is_some(), "rejection must carry an error");
+}
+
+#[test]
+fn create_installs_every_limit_override_in_the_created_session() {
+    let config = json!({
+        "initialization": { "type": "localEmpty" },
+        "limits": {
+            "resource": {
+                "maxInputBytes": 64 * 1024 * 1024,
+                "maxDocumentNodes": 1_000_000,
+                "maxDocumentDepth": 1_024,
+                "maxSchemaNodes": 10_000,
+                "maxSchemaExpressionBytes": 1024 * 1024,
+                "maxCollaborationMessageBytes": 64 * 1024 * 1024,
+                "maxEncodedStateBytes": 256 * 1024 * 1024
+            },
+            "editing": {
+                "maxOperationsPerTransaction": 4_096,
+                "maxUndoGroups": 2_000,
+                "maxUndoRetainedUnits": 8_000_000,
+                "maxDerivedOutputBytes": 128 * 1024 * 1024
+            },
+            "collaboration": {
+                "maxFramesPerMessage": 1_024,
+                "maxFrameBytes": 64 * 1024 * 1024,
+                "maxAggregateResponseBytes": 64 * 1024 * 1024,
+                "maxAwarenessPeers": 10_000,
+                "maxAwarenessPeerBytes": 1024 * 1024,
+                "maxAwarenessBytes": 64 * 1024 * 1024,
+                "maxPendingOutboxMessages": 4_096,
+                "maxPendingOutboxBytes": 64 * 1024 * 1024,
+                "maxPendingDependencyUpdateBytes": 64 * 1024 * 1024,
+                "maxPendingDependencyUpdateWork": 8_000_000
+            }
+        }
+    });
+    let editor_id = create_editor(config);
+
+    super::editor::with_editor(&editor_id, |session| {
+        let resource = session.engine.resource_limits();
+        assert_eq!(resource.max_input_bytes, 64 * 1024 * 1024);
+        assert_eq!(resource.max_document_nodes, 1_000_000);
+        assert_eq!(resource.max_document_depth, 1_024);
+        assert_eq!(resource.max_schema_nodes, 10_000);
+        assert_eq!(resource.max_schema_expression_bytes, 1024 * 1024);
+        assert_eq!(resource.max_collaboration_message_bytes, 64 * 1024 * 1024);
+        assert_eq!(resource.max_encoded_state_bytes, 256 * 1024 * 1024);
+
+        let editing = session.engine.editing_limits();
+        assert_eq!(editing.max_operations_per_transaction, 4_096);
+        assert_eq!(editing.max_undo_groups, 2_000);
+        assert_eq!(editing.max_undo_retained_units, 8_000_000);
+        assert_eq!(editing.max_derived_output_bytes, 128 * 1024 * 1024);
+
+        let collaboration = session.collaboration_limits();
+        for (group, field, ceiling) in CREATE_LIMIT_CASES {
+            if group == "collaboration" {
+                assert_eq!(collaboration.value(field) as u64, ceiling, "{field}");
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        super::editor::editor_v2_destroy(editor_id).value,
+        Some(true)
+    );
+}
+
+#[test]
+fn create_limit_tables_reject_zero_and_one_over_and_accept_exact_ceiling() {
+    for (group, field, ceiling) in CREATE_LIMIT_CASES {
+        assert_create_rejected(create_config_with_limit(group, field, json!(0)));
+
+        let editor_id = create_editor(create_config_with_limit(group, field, json!(ceiling)));
+        assert_eq!(
+            super::editor::editor_v2_destroy(editor_id).value,
+            Some(true),
+            "{group}.{field} exact ceiling"
+        );
+
+        assert_create_rejected(create_config_with_limit(group, field, json!(ceiling + 1)));
+    }
+}
+
+#[test]
+fn create_rejects_fractional_limit_json_for_every_limit_field() {
+    for (group, field, _) in CREATE_LIMIT_CASES {
+        assert_create_rejected(create_config_with_limit(group, field, json!(1.5)));
+    }
+}
+
+#[test]
+fn create_rejects_unknown_root_and_nested_group_fields() {
+    for config in [
+        json!({ "initialization": { "type": "localEmpty" }, "unknown": true }),
+        json!({
+            "initialization": { "type": "localEmpty" },
+            "policy": { "unknown": true }
+        }),
+        json!({
+            "initialization": { "type": "localEmpty" },
+            "limits": { "unknown": {} }
+        }),
+        json!({
+            "initialization": { "type": "localEmpty" },
+            "limits": { "resource": { "unknown": 1 } }
+        }),
+        json!({
+            "initialization": { "type": "localEmpty" },
+            "limits": { "editing": { "unknown": 1 } }
+        }),
+        json!({
+            "initialization": { "type": "localEmpty" },
+            "limits": { "collaboration": { "unknown": 1 } }
+        }),
+    ] {
+        assert_create_rejected(config);
+    }
+}
+
+#[test]
+fn create_rejects_removed_flat_policy_keys() {
+    for (field, value) in [
+        ("maxLength", json!(1)),
+        ("readOnly", json!(true)),
+        ("inputFilter", json!("x")),
+        ("allowBase64Images", json!(true)),
+    ] {
+        let mut config = json!({ "initialization": { "type": "localEmpty" } });
+        config[field] = value;
+        assert_create_rejected(config);
+    }
+}
+
 #[test]
 fn freezes_document_and_transport_states() {
     assert_eq!(

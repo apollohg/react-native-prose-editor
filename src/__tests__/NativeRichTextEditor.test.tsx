@@ -49,6 +49,7 @@ import { render, act } from '@testing-library/react-native';
 
 import { NativeRichTextEditor, type NativeRichTextEditorRef } from '../NativeRichTextEditor';
 import {
+    createNativeEditorDocumentHandle,
     NativeEditorDocumentHandle,
     _resetNativeModuleCache,
     type DocumentJSON,
@@ -113,7 +114,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
     const V2_SERVER_UPDATE_DOC = fakeDocForText('server update');
 
     function createV2RoomHandle(options: { withSnapshot?: boolean } = {}) {
-        return NativeEditorDocumentHandle.create({
+        return createNativeEditorDocumentHandle({
             initialization: {
                 type: 'room',
                 documentId: 'doc-1',
@@ -139,7 +140,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
     }
 
     function createV2LocalHandle(doc?: DocumentJSON) {
-        return NativeEditorDocumentHandle.create({
+        return createNativeEditorDocumentHandle({
             initialization: doc ? { type: 'localJson', json: doc } : { type: 'localEmpty' },
         });
     }

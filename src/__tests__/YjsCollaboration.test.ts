@@ -50,6 +50,7 @@ import {
     type YjsRetryContext,
 } from '../YjsCollaboration';
 import {
+    createNativeEditorDocumentHandle,
     NativeEditorDocumentHandle,
     _resetNativeModuleCache,
     type DocumentJSON,
@@ -126,7 +127,7 @@ function createRoomHandle(
     options: { documentId?: string; withSnapshot?: boolean } = {}
 ): NativeEditorDocumentHandle {
     const documentId = options.documentId ?? 'doc-1';
-    return NativeEditorDocumentHandle.create({
+    return createNativeEditorDocumentHandle({
         initialization: {
             type: 'room',
             documentId,
@@ -150,7 +151,7 @@ function createRoomHandle(
 }
 
 function createLocalHandle(doc?: DocumentJSON): NativeEditorDocumentHandle {
-    return NativeEditorDocumentHandle.create({
+    return createNativeEditorDocumentHandle({
         initialization: doc ? { type: 'localJson', json: doc } : { type: 'localEmpty' },
     });
 }

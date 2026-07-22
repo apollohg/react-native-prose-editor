@@ -1,5 +1,11 @@
 import { requireNativeModule } from 'expo-modules-core';
 import type { EditorMentionTheme } from './EditorTheme';
+import {
+    validateEditorCreateLimits,
+    type EditorCollaborationLimits,
+    type EditorEditingLimits,
+    type EditorResourceLimits,
+} from './ResourceLimits';
 import type { SchemaDefinition } from './schemas';
 import {
     NativeEditorV2BoundaryError,
@@ -692,13 +698,20 @@ export type NativeEditorV2Initialization =
       };
 
 export interface NativeEditorV2CreateConfig {
+    initialization: NativeEditorV2Initialization;
     schema?: SchemaDefinition;
     fragmentName?: string;
-    initialization: NativeEditorV2Initialization;
-    maxLength?: number;
-    readOnly?: boolean;
-    inputFilter?: string;
-    allowBase64Images?: boolean;
+    policy?: {
+        maxLength?: number;
+        readOnly?: boolean;
+        inputFilter?: string;
+        allowBase64Images?: boolean;
+    };
+    limits?: {
+        resource?: EditorResourceLimits;
+        editing?: EditorEditingLimits;
+        collaboration?: EditorCollaborationLimits;
+    };
 }
 
 export interface NativeEditorV2InputRequest {
@@ -729,6 +742,58 @@ export interface NativeEditorV2ReplaceDocumentRequest {
     history: NativeEditorV2HistoryMode;
 }
 
+const V2_CREATE_CONFIG_KEYS = new Set([
+    'initialization',
+    'schema',
+    'fragmentName',
+    'policy',
+    'limits',
+]);
+const V2_CREATE_POLICY_KEYS = new Set([
+    'maxLength',
+    'readOnly',
+    'inputFilter',
+    'allowBase64Images',
+]);
+const V2_CREATE_LIMIT_KEYS = new Set(['resource', 'editing', 'collaboration']);
+const V2_CREATE_RESOURCE_LIMIT_KEYS = new Set([
+    'maxInputBytes',
+    'maxDocumentNodes',
+    'maxDocumentDepth',
+    'maxSchemaNodes',
+    'maxSchemaExpressionBytes',
+    'maxCollaborationMessageBytes',
+    'maxEncodedStateBytes',
+]);
+const V2_CREATE_EDITING_LIMIT_KEYS = new Set([
+    'maxOperationsPerTransaction',
+    'maxUndoGroups',
+    'maxUndoRetainedUnits',
+    'maxDerivedOutputBytes',
+]);
+const V2_CREATE_COLLABORATION_LIMIT_KEYS = new Set([
+    'maxFramesPerMessage',
+    'maxFrameBytes',
+    'maxAggregateResponseBytes',
+    'maxAwarenessPeers',
+    'maxAwarenessPeerBytes',
+    'maxAwarenessBytes',
+    'maxPendingOutboxMessages',
+    'maxPendingOutboxBytes',
+    'maxPendingDependencyUpdateBytes',
+    'maxPendingDependencyUpdateWork',
+]);
+
+function requireKnownV2CreateKeys(
+    value: unknown,
+    allowed: ReadonlySet<string>,
+    label: string
+): asserts value is Record<string, unknown> {
+    if (!isPlainRecord(value) || Object.keys(value).some((key) => !allowed.has(key))) {
+        throw invalidV2RequestError(`NativeEditorBridge: invalid ${label} for v2 create`);
+    }
+}
+
 function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
     configJson: string;
     snapshotState: Uint8Array | null;
@@ -736,6 +801,24 @@ function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
     if (!isPlainRecord(config) || !isPlainRecord(config.initialization)) {
         throw invalidV2RequestError('NativeEditorBridge: invalid v2 create config');
     }
+    requireKnownV2CreateKeys(config, V2_CREATE_CONFIG_KEYS, 'config');
+    if (config.policy !== undefined) {
+        requireKnownV2CreateKeys(config.policy, V2_CREATE_POLICY_KEYS, 'policy');
+    }
+    if (config.limits !== undefined) {
+        requireKnownV2CreateKeys(config.limits, V2_CREATE_LIMIT_KEYS, 'limits');
+        for (const [group, keys] of [
+            ['resource', V2_CREATE_RESOURCE_LIMIT_KEYS],
+            ['editing', V2_CREATE_EDITING_LIMIT_KEYS],
+            ['collaboration', V2_CREATE_COLLABORATION_LIMIT_KEYS],
+        ] as const) {
+            const overrides = config.limits[group];
+            if (overrides !== undefined) {
+                requireKnownV2CreateKeys(overrides, keys, `${group} limits`);
+            }
+        }
+    }
+    validateEditorCreateLimits(config.limits);
     const envelope: Record<string, unknown> = {};
     if (config.schema !== undefined) envelope.schema = config.schema;
     if (config.fragmentName !== undefined) envelope.fragmentName = config.fragmentName;
@@ -770,10 +853,8 @@ function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
         default:
             throw invalidV2RequestError('NativeEditorBridge: unknown v2 initialization type');
     }
-    if (config.maxLength !== undefined) envelope.maxLength = config.maxLength;
-    if (config.readOnly !== undefined) envelope.readOnly = config.readOnly;
-    if (config.inputFilter !== undefined) envelope.inputFilter = config.inputFilter;
-    if (config.allowBase64Images !== undefined) envelope.allowBase64Images = config.allowBase64Images;
+    if (config.policy !== undefined) envelope.policy = config.policy;
+    if (config.limits !== undefined) envelope.limits = config.limits;
     return { configJson: JSON.stringify(envelope), snapshotState };
 }
 
@@ -789,7 +870,7 @@ export class NativeEditorV2Bridge {
     private _nextRequestId = 0;
     private readonly _errorListeners = new Set<(error: NativeEditorV2ErrorBase) => void>();
 
-    /** @internal Created by NativeEditorDocumentHandle.create. */
+    /** @internal Created by createNativeEditorDocumentHandle. */
     constructor(editorId: string) {
         this._editorId = editorId;
     }
@@ -1171,20 +1252,21 @@ export class NativeEditorV2Bridge {
  * Created only through the v2 create entry; destroy and autonomous error
  * subscription mirror the bridge.
  */
+let instantiateNativeEditorDocumentHandle!: (
+    editorId: string,
+    bridge: NativeEditorV2Bridge
+) => NativeEditorDocumentHandle;
+
 export class NativeEditorDocumentHandle {
     private constructor(
         public readonly editorId: string,
         public readonly bridge: NativeEditorV2Bridge
     ) {}
 
-    static create(config: NativeEditorV2CreateConfig): NativeEditorDocumentHandle {
-        const { configJson, snapshotState } = buildV2CreateRequest(config);
-        const value = unwrapNativeEditorV2Result(
-            invokeNativeEditorV2('editorV2Create', configJson, snapshotState),
-            normalizeNativeEditorV2CreateValue
-        );
-        return new NativeEditorDocumentHandle(value.editorId, new NativeEditorV2Bridge(value.editorId));
-    }
+    private static readonly installFactory = (() => {
+        instantiateNativeEditorDocumentHandle = (editorId, bridge) =>
+            new NativeEditorDocumentHandle(editorId, bridge);
+    })();
 
     get isDestroyed(): boolean {
         return this.bridge.isDestroyed;
@@ -1197,4 +1279,18 @@ export class NativeEditorDocumentHandle {
     addErrorListener(listener: (error: NativeEditorV2ErrorBase) => void): () => void {
         return this.bridge.addErrorListener(listener);
     }
+}
+
+export function createNativeEditorDocumentHandle(
+    config: NativeEditorV2CreateConfig
+): NativeEditorDocumentHandle {
+    const { configJson, snapshotState } = buildV2CreateRequest(config);
+    const value = unwrapNativeEditorV2Result(
+        invokeNativeEditorV2('editorV2Create', configJson, snapshotState),
+        normalizeNativeEditorV2CreateValue
+    );
+    return instantiateNativeEditorDocumentHandle(
+        value.editorId,
+        new NativeEditorV2Bridge(value.editorId)
+    );
 }

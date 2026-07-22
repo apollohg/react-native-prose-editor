@@ -23,17 +23,21 @@
 
 use serde_json::Value;
 
-use crate::boundary::{BoundaryError, BoundedInput, InputKind, ResourceLimits};
+use crate::boundary::{
+    BoundaryError, BoundedInput, InputKind, ResourceLimitOverrides, ResourceLimits,
+};
 use crate::document_api::DocumentApiFacade;
 use crate::native_transaction_bridge::{
     HistoryModeEnvelope, NativeBridgeOutcome, NativeTransactionBridge,
 };
 use crate::registry;
 use crate::session::{
-    EditorInitialization, EditorSession, EditorSessionConfig, ErrorDomain, InitialContent,
-    SessionError,
+    CollaborationLimitOverrides, CollaborationLimits, EditorInitialization, EditorSession,
+    EditorSessionConfig, ErrorDomain, InitialContent, SessionError,
 };
-use crate::yrs_engine::{DocumentScope, EngineRenderState, ReplacementHistory};
+use crate::yrs_engine::{
+    DocumentScope, EditingLimitOverrides, EditingLimits, EngineRenderState, ReplacementHistory,
+};
 
 use super::snapshot::SnapshotMetadataEnvelope;
 use super::types::{FfiError, FfiJsonResult, FfiUnitResult};
@@ -197,10 +201,25 @@ struct CreateEnvelope {
     schema: Option<Value>,
     fragment_name: Option<String>,
     initialization: InitializationEnvelope,
+    policy: Option<PolicyEnvelope>,
+    limits: Option<LimitsEnvelope>,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PolicyEnvelope {
     max_length: Option<u32>,
     read_only: Option<bool>,
     input_filter: Option<String>,
     allow_base64_images: Option<bool>,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LimitsEnvelope {
+    resource: Option<ResourceLimitOverrides>,
+    editing: Option<EditingLimitOverrides>,
+    collaboration: Option<CollaborationLimitOverrides>,
 }
 
 /// `deny_unknown_fields` cannot be enforced inside an internally tagged
@@ -242,11 +261,11 @@ fn create_impl(config_json: &str, snapshot_state: Option<Vec<u8>>) -> Result<Str
     let envelope: CreateEnvelope = serde_json::from_str(input.as_str())
         .map_err(|error| SessionError::from(BoundaryError::parse("CONFIG_INVALID", error)))
         .map_err(ffi_error)?;
-    // Task 16B: resolve the schema before construction so the render
-    // accessor can be registered with it below; an invalid schema fails here
-    // with the identical error the session admission would produce.
-    let schema = super::render::resolve_create_schema(&envelope.schema).map_err(ffi_error)?;
     let (config, room_bound) = build_config(envelope, snapshot_state).map_err(ffi_error)?;
+    // Resolve create limits before schema/document/snapshot work. The outer
+    // JSON alone uses the fixed default envelope ceiling above; all payload
+    // admission from this point uses the configured resource limits.
+    let schema = resolve_configured_create_schema(&config).map_err(ffi_error)?;
     let id = DocumentApiFacade::create(config).map_err(ffi_error)?;
     if room_bound {
         // Room sessions own the collaboration runtime (bounded outbox,
@@ -264,6 +283,19 @@ fn create_impl(config_json: &str, snapshot_state: Option<Vec<u8>>) -> Result<Str
     Ok(serde_json::json!({ "editorId": id.to_string() }).to_string())
 }
 
+fn resolve_configured_create_schema(
+    config: &EditorSessionConfig,
+) -> Result<crate::schema::Schema, SessionError> {
+    let Some(schema_json) = config.schema_json.as_deref() else {
+        return super::render::resolve_create_schema(&None);
+    };
+    let input = BoundedInput::new(schema_json, InputKind::Config, &config.resource_limits)?;
+    let schema: Value = serde_json::from_str(input.as_str())
+        .map_err(|error| BoundaryError::parse("SCHEMA_INVALID", error))?;
+    crate::schema::Schema::from_json_with_limits(&schema, &config.resource_limits)
+        .map_err(SessionError::from)
+}
+
 fn build_config(
     envelope: CreateEnvelope,
     snapshot_state: Option<Vec<u8>>,
@@ -272,11 +304,23 @@ fn build_config(
         schema,
         fragment_name,
         initialization,
+        policy,
+        limits,
+    } = envelope;
+    let PolicyEnvelope {
         max_length,
         read_only,
         input_filter,
         allow_base64_images,
-    } = envelope;
+    } = policy.unwrap_or_default();
+    let LimitsEnvelope {
+        resource,
+        editing,
+        collaboration,
+    } = limits.unwrap_or_default();
+    let resource_limits = ResourceLimits::resolve(resource.unwrap_or_default())?;
+    let editing_limits = EditingLimits::resolve(editing.unwrap_or_default())?;
+    let collaboration_limits = CollaborationLimits::resolve(collaboration.unwrap_or_default())?;
     if !matches!(initialization, InitializationEnvelope::Room { .. }) && snapshot_state.is_some() {
         return Err(config_invalid(
             ABSENT_REQUEST_ID,
@@ -336,9 +380,9 @@ fn build_config(
             schema_json: schema.map(|schema| schema.to_string()),
             fragment_name: fragment_name.unwrap_or_else(|| "prosemirror".into()),
             initialization,
-            resource_limits: ResourceLimits::default(),
-            editing_limits: crate::yrs_engine::EditingLimits::default(),
-            collaboration_limits: crate::session::CollaborationLimits::default(),
+            resource_limits,
+            editing_limits,
+            collaboration_limits,
             max_length,
             read_only: read_only.unwrap_or(false),
             input_filter,
