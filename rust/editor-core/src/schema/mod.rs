@@ -19,6 +19,21 @@ use crate::schema::content_rule::{
     ContentRule, ContentRuleError, WorkBudget, DEFAULT_RUNTIME_WORK_LIMIT,
 };
 
+#[cfg(test)]
+std::thread_local! {
+    static SCHEMA_FROM_JSON_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_schema_from_json_count_for_test() {
+    SCHEMA_FROM_JSON_COUNT.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn take_schema_from_json_count_for_test() -> usize {
+    SCHEMA_FROM_JSON_COUNT.replace(0)
+}
+
 #[derive(Debug)]
 enum SchemaValidationError {
     Semantic(String),
@@ -894,6 +909,9 @@ impl Schema {
         value: &serde_json::Value,
         limits: &ResourceLimits,
     ) -> BoundaryResult<Self> {
+        #[cfg(test)]
+        SCHEMA_FROM_JSON_COUNT.with(|count| count.set(count.get() + 1));
+
         let nodes_arr = value
             .get("nodes")
             .and_then(|v| v.as_array())

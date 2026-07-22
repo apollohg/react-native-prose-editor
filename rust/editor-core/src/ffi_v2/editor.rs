@@ -58,11 +58,52 @@ const V2_ENVELOPE_VERSION: u64 = 1;
 /// retained-envelope budget until configured limits have resolved.
 const CREATE_ENVELOPE_MAX_BYTES: usize = 64 * 1024;
 
-/// A create can carry at most two configured-input payloads: one schema and
-/// one local document/HTML value. This hard pre-parse bound prevents an
-/// unbounded syntax scan while still permitting each payload up to the
-/// authoritative hard max plus the fixed envelope allowance.
-const CREATE_WIRE_MAX_BYTES: usize = HARD_MAX_INPUT_BYTES * 2 + CREATE_ENVELOPE_MAX_BYTES;
+/// A create can carry one schema plus one local document or HTML payload.
+/// Schema/document JSON is bounded in its encoded form. HTML is bounded after
+/// decoding and a valid JSON string can use at most six wire bytes per decoded
+/// byte (`\u00XX`), plus its quotes. This finite pre-parse ceiling therefore
+/// admits every payload allowed by the authoritative decoded limits without
+/// permitting an unbounded syntax scan.
+const fn create_wire_max_bytes() -> usize {
+    let payload_bytes = match HARD_MAX_INPUT_BYTES.checked_mul(7) {
+        Some(bytes) => bytes,
+        None => panic!("create payload wire ceiling overflow"),
+    };
+    let with_envelope = match payload_bytes.checked_add(CREATE_ENVELOPE_MAX_BYTES) {
+        Some(bytes) => bytes,
+        None => panic!("create envelope wire ceiling overflow"),
+    };
+    match with_envelope.checked_add(2) {
+        Some(bytes) => bytes,
+        None => panic!("create string quote wire ceiling overflow"),
+    }
+}
+
+const CREATE_WIRE_MAX_BYTES: usize = create_wire_max_bytes();
+
+#[cfg(test)]
+std::thread_local! {
+    static CREATE_METADATA_MATERIALIZATION_COUNT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_create_metadata_materialization_count_for_test() {
+    CREATE_METADATA_MATERIALIZATION_COUNT.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn take_create_metadata_materialization_count_for_test() -> usize {
+    CREATE_METADATA_MATERIALIZATION_COUNT.replace(0)
+}
+
+#[cfg(test)]
+fn note_create_metadata_materialization_for_test() {
+    CREATE_METADATA_MATERIALIZATION_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(not(test))]
+fn note_create_metadata_materialization_for_test() {}
 
 // ---------------------------------------------------------------------------
 // Shared session access (used by the collaboration and snapshot modules too)
@@ -212,14 +253,14 @@ struct HistoryRequestEnvelope {
 struct CreateEnvelope<'a> {
     #[serde(default, borrow, deserialize_with = "deserialize_non_null_raw_value")]
     schema: Option<&'a RawValue>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    fragment_name: Option<String>,
+    #[serde(default, borrow, deserialize_with = "deserialize_non_null_raw_value")]
+    fragment_name: Option<&'a RawValue>,
     #[serde(borrow)]
     initialization: &'a RawValue,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    policy: Option<PolicyEnvelope>,
-    #[serde(default, deserialize_with = "deserialize_non_null_option")]
-    limits: Option<LimitsEnvelope>,
+    #[serde(default, borrow, deserialize_with = "deserialize_non_null_raw_value")]
+    policy: Option<&'a RawValue>,
+    #[serde(default, borrow, deserialize_with = "deserialize_non_null_raw_value")]
+    limits: Option<&'a RawValue>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -295,7 +336,7 @@ struct LocalEmptyInitialization {
 struct LocalJsonInitialization<'a> {
     #[serde(rename = "type")]
     _kind: InitializationKind,
-    #[serde(borrow)]
+    #[serde(borrow, deserialize_with = "deserialize_required_non_null_raw_value")]
     json: &'a RawValue,
 }
 
@@ -328,6 +369,19 @@ enum InitializationKind {
     Room,
 }
 
+fn deserialize_required_non_null_raw_value<'de, D>(
+    deserializer: D,
+) -> Result<&'de RawValue, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = <&RawValue as serde::Deserialize>::deserialize(deserializer)?;
+    if raw.get() == "null" {
+        return Err(serde::de::Error::custom("null is not allowed"));
+    }
+    Ok(raw)
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -351,7 +405,7 @@ fn create_impl(config_json: &str, snapshot_state: Option<Vec<u8>>) -> Result<Str
     let (config, room_bound) =
         build_config(envelope, initialization_probe, snapshot_state).map_err(ffi_error)?;
     let schema = resolve_configured_create_schema(&config).map_err(ffi_error)?;
-    let id = DocumentApiFacade::create(config).map_err(ffi_error)?;
+    let id = DocumentApiFacade::create_with_schema(config, schema.clone()).map_err(ffi_error)?;
     if room_bound {
         // Room sessions own the collaboration runtime (bounded outbox,
         // awareness bookkeeping) from creation; attachment is idempotent
@@ -422,20 +476,30 @@ fn build_config(
         policy,
         limits,
     } = envelope;
+    note_create_metadata_materialization_for_test();
+    let LimitsEnvelope {
+        resource,
+        editing,
+        collaboration,
+    } = limits
+        .map(|limits| parse_create_json(limits.get()))
+        .transpose()?
+        .unwrap_or_default();
+    let resource_limits = ResourceLimits::resolve(resource.unwrap_or_default())?;
+    let editing_limits = EditingLimits::resolve(editing.unwrap_or_default())?;
+    let collaboration_limits = CollaborationLimits::resolve(collaboration.unwrap_or_default())?;
     let PolicyEnvelope {
         max_length,
         read_only,
         input_filter,
         allow_base64_images,
-    } = policy.unwrap_or_default();
-    let LimitsEnvelope {
-        resource,
-        editing,
-        collaboration,
-    } = limits.unwrap_or_default();
-    let resource_limits = ResourceLimits::resolve(resource.unwrap_or_default())?;
-    let editing_limits = EditingLimits::resolve(editing.unwrap_or_default())?;
-    let collaboration_limits = CollaborationLimits::resolve(collaboration.unwrap_or_default())?;
+    } = policy
+        .map(|policy| parse_create_json(policy.get()))
+        .transpose()?
+        .unwrap_or_default();
+    let fragment_name = fragment_name
+        .map(|fragment_name| parse_create_json(fragment_name.get()))
+        .transpose()?;
     if !matches!(initialization_probe.kind, InitializationKind::Room) && snapshot_state.is_some() {
         return Err(config_invalid(
             ABSENT_REQUEST_ID,

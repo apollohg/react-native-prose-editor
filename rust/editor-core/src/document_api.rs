@@ -3,9 +3,12 @@
     reason = "SessionError is the established unboxed six-domain boundary envelope"
 )]
 
+#[cfg(test)]
 use crate::boundary::{BoundaryError, BoundedInput, InputKind};
 use crate::registry::{self, SessionId};
-use crate::schema::{presets::tiptap_schema, Schema};
+#[cfg(test)]
+use crate::schema::presets::tiptap_schema;
+use crate::schema::Schema;
 use crate::serialize::FromHtmlOptions;
 use crate::session::{
     DocumentState, EditorInitialization, EditorSession, EditorSessionConfig, InitialContent,
@@ -28,8 +31,19 @@ pub(crate) struct ContentSnapshot {
 }
 
 impl DocumentApiFacade {
+    #[cfg(test)]
     pub(crate) fn create(config: EditorSessionConfig) -> Result<SessionId, SessionError> {
-        registry::create_session(|| Self::admit(config))
+        registry::create_session(|| {
+            let schema = resolve_schema(&config)?;
+            Self::admit(config, schema)
+        })
+    }
+
+    pub(crate) fn create_with_schema(
+        config: EditorSessionConfig,
+        schema: Schema,
+    ) -> Result<SessionId, SessionError> {
+        registry::create_session(|| Self::admit(config, schema))
     }
 
     // Not reachable from production call paths after the Task 16C legacy runtime
@@ -89,9 +103,8 @@ impl DocumentApiFacade {
         })
     }
 
-    fn admit(config: EditorSessionConfig) -> Result<EditorSession, SessionError> {
+    fn admit(config: EditorSessionConfig, schema: Schema) -> Result<EditorSession, SessionError> {
         config.collaboration_limits.validate()?;
-        let schema = resolve_schema(&config)?;
         let policy = SessionPolicy::from_config(&config);
         let (engine, document_state) = match &config.initialization {
             EditorInitialization::Local { initial_content } => {
@@ -160,6 +173,7 @@ fn engine_config(
     }
 }
 
+#[cfg(test)]
 fn resolve_schema(config: &EditorSessionConfig) -> Result<Schema, SessionError> {
     let Some(schema_json) = &config.schema_json else {
         return Ok(tiptap_schema());

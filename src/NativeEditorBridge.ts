@@ -8,6 +8,7 @@ import {
 } from './ResourceLimits';
 import type { SchemaDefinition } from './schemas';
 import {
+    NativeEditorBoundaryError,
     NativeEditorV2BoundaryError,
     NativeEditorV2ErrorBase,
     NativeEditorV2NonRetryableError,
@@ -797,6 +798,41 @@ const V2_CREATE_SNAPSHOT_METADATA_KEYS = new Set([
     'fragmentName',
     'schemaFingerprint',
 ]);
+const V2_CREATE_MAX_U32 = 0xffff_ffff;
+const V2_CREATE_BOUNDARY_ERRORS = new WeakSet<object>();
+
+function trustedV2CreateBoundaryError(error: NativeEditorV2BoundaryError): NativeEditorV2BoundaryError {
+    V2_CREATE_BOUNDARY_ERRORS.add(error);
+    return error;
+}
+
+function invalidV2CreateRequestError(message: string): NativeEditorV2BoundaryError {
+    return trustedV2CreateBoundaryError(invalidV2RequestError(message));
+}
+
+function validateV2CreateLimits(limits: NativeEditorV2CreateConfig['limits']): void {
+    try {
+        validateEditorCreateLimits(limits);
+    } catch (error) {
+        if (!(error instanceof NativeEditorBoundaryError)) throw error;
+        throw trustedV2CreateBoundaryError(
+            new NativeEditorV2BoundaryError({
+                domain: 'boundary',
+                code: error.code,
+                message: error.message,
+                requestId: null,
+                operationIndex: null,
+                limit: error.limit ?? null,
+                actual: error.actual ?? null,
+                details: error.details ?? null,
+            })
+        );
+    }
+}
+
+function emptyV2CreateRecord(): Record<string, unknown> {
+    return Object.create(null) as Record<string, unknown>;
+}
 
 function isV2CreateRecord(value: unknown): value is Record<string, unknown> {
     if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -809,7 +845,14 @@ function hasOwnV2CreateKey(value: Record<string, unknown>, key: string): boolean
 }
 
 function ownV2CreateValue(value: Record<string, unknown>, key: string): unknown {
-    return hasOwnV2CreateKey(value, key) ? value[key] : undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined) return undefined;
+    if (!('value' in descriptor)) {
+        throw invalidV2CreateRequestError(
+            `NativeEditorBridge: accessor ${key} is not allowed for v2 create`
+        );
+    }
+    return descriptor.value;
 }
 
 function requireKnownV2CreateKeys(
@@ -817,8 +860,11 @@ function requireKnownV2CreateKeys(
     allowed: ReadonlySet<string>,
     label: string
 ): asserts value is Record<string, unknown> {
-    if (!isV2CreateRecord(value) || Object.keys(value).some((key) => !allowed.has(key))) {
-        throw invalidV2RequestError(`NativeEditorBridge: invalid ${label} for v2 create`);
+    if (
+        !isV2CreateRecord(value) ||
+        Reflect.ownKeys(value).some((key) => typeof key !== 'string' || !allowed.has(key))
+    ) {
+        throw invalidV2CreateRequestError(`NativeEditorBridge: invalid ${label} for v2 create`);
     }
 }
 
@@ -828,46 +874,168 @@ function normalizeV2CreateRecord(
     label: string
 ): Record<string, unknown> {
     requireKnownV2CreateKeys(value, allowed, label);
-    const normalized: Record<string, unknown> = {};
+    const normalized = emptyV2CreateRecord();
     for (const key of allowed) {
         if (!hasOwnV2CreateKey(value, key)) continue;
-        const fieldValue = value[key];
+        const fieldValue = ownV2CreateValue(value, key);
         if (fieldValue === null) {
-            throw invalidV2RequestError(`NativeEditorBridge: invalid ${label} for v2 create`);
+            throw invalidV2CreateRequestError(`NativeEditorBridge: invalid ${label} for v2 create`);
         }
         if (fieldValue !== undefined) normalized[key] = fieldValue;
     }
     return normalized;
 }
 
-function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
+function invalidV2JsonValue(label: string): never {
+    throw invalidV2CreateRequestError(`NativeEditorBridge: invalid ${label} for v2 create`);
+}
+
+function normalizeV2JsonValue(
+    value: unknown,
+    label: string,
+    ancestors: WeakSet<object> = new WeakSet<object>()
+): unknown {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value)) invalidV2JsonValue(label);
+        return value;
+    }
+    if (typeof value !== 'object') invalidV2JsonValue(label);
+
+    if (ancestors.has(value)) invalidV2JsonValue(label);
+    ancestors.add(value);
+    try {
+        if (Array.isArray(value)) {
+            const prototype = Object.getPrototypeOf(value);
+            if (prototype !== Array.prototype && prototype !== null) invalidV2JsonValue(label);
+            const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+            if (
+                lengthDescriptor === undefined ||
+                !('value' in lengthDescriptor) ||
+                typeof lengthDescriptor.value !== 'number'
+            ) {
+                invalidV2JsonValue(label);
+            }
+            const length = lengthDescriptor.value;
+            const normalized = new Array<unknown>(length);
+            let elementCount = 0;
+            for (const key of Reflect.ownKeys(value)) {
+                if (key === 'length') continue;
+                if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/.test(key)) {
+                    invalidV2JsonValue(label);
+                }
+                const index = Number(key);
+                if (!Number.isSafeInteger(index) || index < 0 || index >= length) {
+                    invalidV2JsonValue(label);
+                }
+                const descriptor = Object.getOwnPropertyDescriptor(value, key);
+                if (
+                    descriptor === undefined ||
+                    !('value' in descriptor) ||
+                    descriptor.enumerable !== true
+                ) {
+                    invalidV2JsonValue(label);
+                }
+                normalized[index] = normalizeV2JsonValue(descriptor.value, label, ancestors);
+                elementCount += 1;
+            }
+            if (elementCount !== length) invalidV2JsonValue(label);
+            Object.setPrototypeOf(normalized, null);
+            return normalized;
+        }
+
+        if (!isV2CreateRecord(value)) invalidV2JsonValue(label);
+        const normalized = emptyV2CreateRecord();
+        for (const key of Reflect.ownKeys(value)) {
+            if (typeof key !== 'string') invalidV2JsonValue(label);
+            const descriptor = Object.getOwnPropertyDescriptor(value, key);
+            if (
+                descriptor === undefined ||
+                !('value' in descriptor) ||
+                descriptor.enumerable !== true
+            ) {
+                invalidV2JsonValue(label);
+            }
+            normalized[key] = normalizeV2JsonValue(descriptor.value, label, ancestors);
+        }
+        return normalized;
+    } finally {
+        ancestors.delete(value);
+    }
+}
+
+function normalizeV2CreatePolicy(value: Record<string, unknown>): Record<string, unknown> {
+    const policy = normalizeV2CreateRecord(value, V2_CREATE_POLICY_KEYS, 'policy');
+    const maxLength = ownV2CreateValue(policy, 'maxLength');
+    if (
+        maxLength !== undefined &&
+        (typeof maxLength !== 'number' ||
+            !Number.isSafeInteger(maxLength) ||
+            maxLength < 0 ||
+            maxLength > V2_CREATE_MAX_U32)
+    ) {
+        invalidV2JsonValue('policy.maxLength');
+    }
+    for (const key of ['readOnly', 'allowBase64Images']) {
+        const value = ownV2CreateValue(policy, key);
+        if (value !== undefined && typeof value !== 'boolean') {
+            invalidV2JsonValue(`policy.${key}`);
+        }
+    }
+    const inputFilter = ownV2CreateValue(policy, 'inputFilter');
+    if (inputFilter !== undefined && typeof inputFilter !== 'string') {
+        invalidV2JsonValue('policy.inputFilter');
+    }
+    return policy;
+}
+
+function normalizeV2SnapshotMetadata(value: unknown): Record<string, unknown> {
+    const metadata = normalizeV2CreateRecord(
+        value as Record<string, unknown>,
+        V2_CREATE_SNAPSHOT_METADATA_KEYS,
+        'snapshot metadata'
+    );
+    const formatVersion = ownV2CreateValue(metadata, 'formatVersion');
+    if (
+        typeof formatVersion !== 'number' ||
+        !Number.isSafeInteger(formatVersion) ||
+        formatVersion < 0 ||
+        formatVersion > V2_CREATE_MAX_U32
+    ) {
+        invalidV2JsonValue('snapshot metadata.formatVersion');
+    }
+    for (const key of ['documentId', 'lineageId', 'fragmentName', 'schemaFingerprint']) {
+        if (typeof ownV2CreateValue(metadata, key) !== 'string') {
+            invalidV2JsonValue(`snapshot metadata.${key}`);
+        }
+    }
+    return metadata;
+}
+
+function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
     configJson: string;
     snapshotState: Uint8Array | null;
 } {
     if (!isV2CreateRecord(config)) {
-        throw invalidV2RequestError('NativeEditorBridge: invalid v2 create config');
+        throw invalidV2CreateRequestError('NativeEditorBridge: invalid v2 create config');
     }
     requireKnownV2CreateKeys(config, V2_CREATE_CONFIG_KEYS, 'config');
     const initializationValue = ownV2CreateValue(config, 'initialization');
     if (!isV2CreateRecord(initializationValue)) {
-        throw invalidV2RequestError('NativeEditorBridge: invalid v2 create config');
+        throw invalidV2CreateRequestError('NativeEditorBridge: invalid v2 create config');
     }
 
     const policyValue = ownV2CreateValue(config, 'policy');
     const policy =
         policyValue === undefined
             ? undefined
-            : normalizeV2CreateRecord(
-                  policyValue as Record<string, unknown>,
-                  V2_CREATE_POLICY_KEYS,
-                  'policy'
-              );
+            : normalizeV2CreatePolicy(policyValue as Record<string, unknown>);
 
     const limitsValue = ownV2CreateValue(config, 'limits');
     let limits: Record<string, unknown> | undefined;
     if (limitsValue !== undefined) {
         requireKnownV2CreateKeys(limitsValue, V2_CREATE_LIMIT_KEYS, 'limits');
-        limits = {};
+        limits = emptyV2CreateRecord();
         for (const [group, keys] of [
             ['resource', V2_CREATE_RESOURCE_LIMIT_KEYS],
             ['editing', V2_CREATE_EDITING_LIMIT_KEYS],
@@ -883,17 +1051,22 @@ function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
             }
         }
     }
-    validateEditorCreateLimits(limits as NativeEditorV2CreateConfig['limits']);
+    validateV2CreateLimits(limits as NativeEditorV2CreateConfig['limits']);
 
-    const envelope: Record<string, unknown> = {};
+    const envelope = emptyV2CreateRecord();
     const schema = ownV2CreateValue(config, 'schema');
     if (schema === null) {
-        throw invalidV2RequestError('NativeEditorBridge: invalid schema for v2 create');
+        throw invalidV2CreateRequestError('NativeEditorBridge: invalid schema for v2 create');
     }
-    if (schema !== undefined) envelope.schema = schema;
+    if (schema !== undefined) {
+        if (!isV2CreateRecord(schema)) {
+            throw invalidV2CreateRequestError('NativeEditorBridge: invalid schema for v2 create');
+        }
+        envelope.schema = normalizeV2JsonValue(schema, 'schema');
+    }
     const fragmentName = ownV2CreateValue(config, 'fragmentName');
-    if (fragmentName === null) {
-        throw invalidV2RequestError('NativeEditorBridge: invalid fragmentName for v2 create');
+    if (fragmentName !== undefined && typeof fragmentName !== 'string') {
+        throw invalidV2CreateRequestError('NativeEditorBridge: invalid fragmentName for v2 create');
     }
     if (fragmentName !== undefined) envelope.fragmentName = fragmentName;
 
@@ -905,55 +1078,59 @@ function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
             ? V2_CREATE_INITIALIZATION_KEYS[initializationType]
             : undefined;
     if (initializationKeys === undefined) {
-        throw invalidV2RequestError('NativeEditorBridge: unknown v2 initialization type');
+        throw invalidV2CreateRequestError('NativeEditorBridge: unknown v2 initialization type');
     }
     requireKnownV2CreateKeys(initialization, initializationKeys, 'initialization');
     switch (initializationType) {
-        case 'localEmpty':
-            envelope.initialization = { type: 'localEmpty' };
+        case 'localEmpty': {
+            const localEmpty = emptyV2CreateRecord();
+            localEmpty.type = 'localEmpty';
+            envelope.initialization = localEmpty;
             break;
+        }
         case 'localJson': {
             const json = ownV2CreateValue(initialization, 'json');
             if (!isV2CreateRecord(json)) {
-                throw invalidV2RequestError(
+                throw invalidV2CreateRequestError(
                     'NativeEditorBridge: invalid localJson initialization for v2 create'
                 );
             }
-            envelope.initialization = { type: 'localJson', json };
+            const localJson = emptyV2CreateRecord();
+            localJson.type = 'localJson';
+            localJson.json = normalizeV2JsonValue(json, 'localJson initialization');
+            envelope.initialization = localJson;
             break;
         }
         case 'localHtml': {
             const html = ownV2CreateValue(initialization, 'html');
             if (typeof html !== 'string') {
-                throw invalidV2RequestError(
+                throw invalidV2CreateRequestError(
                     'NativeEditorBridge: invalid localHtml initialization for v2 create'
                 );
             }
-            envelope.initialization = { type: 'localHtml', html };
+            const localHtml = emptyV2CreateRecord();
+            localHtml.type = 'localHtml';
+            localHtml.html = html;
+            envelope.initialization = localHtml;
             break;
         }
         case 'room': {
             const documentId = ownV2CreateValue(initialization, 'documentId');
             const lineageId = ownV2CreateValue(initialization, 'lineageId');
             if (typeof documentId !== 'string' || typeof lineageId !== 'string') {
-                throw invalidV2RequestError(
+                throw invalidV2CreateRequestError(
                     'NativeEditorBridge: invalid room initialization for v2 create'
                 );
             }
-            const room: Record<string, unknown> = {
-                type: 'room',
-                documentId,
-                lineageId,
-            };
+            const room = emptyV2CreateRecord();
+            room.type = 'room';
+            room.documentId = documentId;
+            room.lineageId = lineageId;
             const snapshot = ownV2CreateValue(initialization, 'snapshot');
             if (snapshot !== undefined) {
                 requireKnownV2CreateKeys(snapshot, V2_CREATE_ROOM_SNAPSHOT_KEYS, 'room snapshot');
                 const metadataValue = ownV2CreateValue(snapshot, 'metadata');
-                const metadata = normalizeV2CreateRecord(
-                    metadataValue as Record<string, unknown>,
-                    V2_CREATE_SNAPSHOT_METADATA_KEYS,
-                    'snapshot metadata'
-                );
+                const metadata = normalizeV2SnapshotMetadata(metadataValue);
                 room.snapshot = metadata;
                 snapshotState = requireV2Bytes(
                     ownV2CreateValue(snapshot, 'encodedState'),
@@ -964,11 +1141,29 @@ function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
             break;
         }
         default:
-            throw invalidV2RequestError('NativeEditorBridge: unknown v2 initialization type');
+            throw invalidV2CreateRequestError('NativeEditorBridge: unknown v2 initialization type');
     }
     if (policy !== undefined) envelope.policy = policy;
     if (limits !== undefined) envelope.limits = limits;
-    return { configJson: JSON.stringify(envelope), snapshotState };
+    const configJson = JSON.stringify(envelope);
+    if (configJson === undefined) {
+        throw invalidV2CreateRequestError('NativeEditorBridge: v2 create config is not serializable');
+    }
+    return { configJson, snapshotState };
+}
+
+function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
+    configJson: string;
+    snapshotState: Uint8Array | null;
+} {
+    try {
+        return buildV2CreateRequestUnchecked(config);
+    } catch (error) {
+        if (typeof error === 'object' && error !== null && V2_CREATE_BOUNDARY_ERRORS.has(error)) {
+            throw error;
+        }
+        throw invalidV2RequestError('NativeEditorBridge: invalid v2 create config');
+    }
 }
 
 /**

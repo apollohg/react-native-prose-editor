@@ -184,6 +184,7 @@ import {
     _resetNativeModuleCache,
 } from '../NativeEditorBridge';
 import {
+    NativeEditorBoundaryError,
     NativeEditorV2BoundaryError,
     NativeEditorV2DocumentError,
     NativeEditorV2ErrorBase,
@@ -944,6 +945,194 @@ describe('NativeEditorBridge v2', () => {
             expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
         });
 
+        it('rejects accessor-backed contract fields without invoking them', () => {
+            let getterCalls = 0;
+            const root = {} as Record<string, unknown>;
+            Object.defineProperty(root, 'initialization', {
+                enumerable: true,
+                get() {
+                    getterCalls += 1;
+                    throw new Error('root getter must not run');
+                },
+            });
+            const policy = {} as Record<string, unknown>;
+            Object.defineProperty(policy, 'readOnly', {
+                enumerable: true,
+                get() {
+                    getterCalls += 1;
+                    throw new Error('policy getter must not run');
+                },
+            });
+            const document = { type: 'doc' } as Record<string, unknown>;
+            Object.defineProperty(document, 'content', {
+                enumerable: true,
+                get() {
+                    getterCalls += 1;
+                    throw new Error('document getter must not run');
+                },
+            });
+
+            for (const config of [
+                root,
+                { initialization: { type: 'localEmpty' }, policy },
+                { initialization: { type: 'localJson', json: document } },
+            ]) {
+                const error = catchThrown(() =>
+                    createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+                );
+                expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
+                expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+            }
+            expect(getterCalls).toBe(0);
+            expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
+        });
+
+        it('translates attacker-thrown boundary errors from contract traps to CONFIG_INVALID', () => {
+            const config = new Proxy(
+                { initialization: { type: 'localEmpty' } },
+                {
+                    getPrototypeOf() {
+                        throw new NativeEditorBoundaryError(
+                            'INVALID_RESOURCE_LIMIT',
+                            'attacker-controlled trap'
+                        );
+                    },
+                }
+            );
+
+            const error = catchThrown(() =>
+                createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+            );
+            expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
+            expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+            expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
+        });
+
+        it('rejects attacker toJSON hooks without invoking them', () => {
+            let toJsonCalls = 0;
+            const schema = {
+                nodes: [],
+                marks: [],
+                toJSON() {
+                    toJsonCalls += 1;
+                    return { nodes: [], marks: [] };
+                },
+            };
+            const document = {
+                type: 'doc',
+                toJSON() {
+                    toJsonCalls += 1;
+                    throw new Error('document toJSON must not run');
+                },
+            };
+
+            for (const config of [
+                { initialization: { type: 'localEmpty' }, schema },
+                { initialization: { type: 'localJson', json: document } },
+            ]) {
+                const error = catchThrown(() =>
+                    createNativeEditorDocumentHandle(
+                        config as unknown as NativeEditorV2CreateConfig
+                    )
+                );
+                expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
+                expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+            }
+            expect(toJsonCalls).toBe(0);
+            expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
+        });
+
+        it('serializes through containers that cannot inherit an attacker toJSON hook', () => {
+            let toJsonCalls = 0;
+            const original = Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON');
+            Object.defineProperty(Object.prototype, 'toJSON', {
+                configurable: true,
+                value() {
+                    toJsonCalls += 1;
+                    throw new Error('inherited toJSON must not run');
+                },
+            });
+            mockNativeModule.editorV2Create.mockReturnValueOnce(okRecord('{"editorId":"1"}'));
+
+            try {
+                createNativeEditorDocumentHandle({
+                    schema: { nodes: [], marks: [] } as never,
+                    initialization: {
+                        type: 'localJson',
+                        json: { type: 'doc', content: [] },
+                    },
+                });
+            } finally {
+                if (original === undefined) {
+                    delete (Object.prototype as { toJSON?: unknown }).toJSON;
+                } else {
+                    Object.defineProperty(Object.prototype, 'toJSON', original);
+                }
+            }
+
+            expect(toJsonCalls).toBe(0);
+            expect(mockNativeModule.editorV2Create).toHaveBeenCalledTimes(1);
+        });
+
+        it('translates cyclic schema and document serialization failures to CONFIG_INVALID', () => {
+            const schema: Record<string, unknown> = { nodes: [], marks: [] };
+            schema.self = schema;
+            const document: Record<string, unknown> = { type: 'doc' };
+            document.self = document;
+
+            for (const config of [
+                { initialization: { type: 'localEmpty' }, schema },
+                { initialization: { type: 'localJson', json: document } },
+            ]) {
+                const error = catchThrown(() =>
+                    createNativeEditorDocumentHandle(
+                        config as unknown as NativeEditorV2CreateConfig
+                    )
+                );
+                expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
+                expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+            }
+            expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
+        });
+
+        it('validates create policy and metadata scalars before native invocation', () => {
+            const invalidConfigs: unknown[] = [
+                { initialization: { type: 'localEmpty' }, fragmentName: 1 },
+                { initialization: { type: 'localEmpty' }, policy: { maxLength: -1 } },
+                { initialization: { type: 'localEmpty' }, policy: { maxLength: 1.5 } },
+                {
+                    initialization: { type: 'localEmpty' },
+                    policy: { maxLength: 0x1_0000_0000 },
+                },
+                { initialization: { type: 'localEmpty' }, policy: { readOnly: 'true' } },
+                { initialization: { type: 'localEmpty' }, policy: { inputFilter: 1 } },
+                {
+                    initialization: { type: 'localEmpty' },
+                    policy: { allowBase64Images: 1 },
+                },
+                ...Object.keys(MOCK_SNAPSHOT_METADATA).map((field) => ({
+                    initialization: {
+                        type: 'room',
+                        documentId: 'doc-1',
+                        lineageId: 'lineage-1',
+                        snapshot: {
+                            metadata: { ...MOCK_SNAPSHOT_METADATA, [field]: true },
+                            encodedState: MOCK_SNAPSHOT_BYTES,
+                        },
+                    },
+                })),
+            ];
+
+            for (const config of invalidConfigs) {
+                const error = catchThrown(() =>
+                    createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+                );
+                expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
+                expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+            }
+            expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
+        });
+
         it('serializes normalized own-property copies from null-prototype records', () => {
             const initialization = Object.assign(Object.create(null), { type: 'localEmpty' });
             const policy = Object.assign(Object.create(null), { readOnly: true });
@@ -965,14 +1154,30 @@ describe('NativeEditorBridge v2', () => {
             });
         });
 
-        it('rejects explicit null for optional create fields before native invocation', () => {
+        it('rejects explicit null throughout the complete create contract', () => {
             const invalidConfigs: unknown[] = [
+                { initialization: null },
+                { initialization: { type: null } },
                 { initialization: { type: 'localEmpty' }, schema: null },
                 { initialization: { type: 'localEmpty' }, fragmentName: null },
                 { initialization: { type: 'localEmpty' }, policy: null },
                 { initialization: { type: 'localEmpty' }, limits: null },
-                { initialization: { type: 'localEmpty' }, policy: { maxLength: null } },
-                { initialization: { type: 'localEmpty' }, limits: { resource: null } },
+                { initialization: { type: 'localJson', json: null } },
+                { initialization: { type: 'localHtml', html: null } },
+                {
+                    initialization: {
+                        type: 'room',
+                        documentId: null,
+                        lineageId: 'lineage-1',
+                    },
+                },
+                {
+                    initialization: {
+                        type: 'room',
+                        documentId: 'doc-1',
+                        lineageId: null,
+                    },
+                },
                 {
                     initialization: {
                         type: 'room',
@@ -981,7 +1186,74 @@ describe('NativeEditorBridge v2', () => {
                         snapshot: null,
                     },
                 },
+                ...Object.keys(MOCK_SNAPSHOT_METADATA).map((field) => ({
+                    initialization: {
+                        type: 'room',
+                        documentId: 'doc-1',
+                        lineageId: 'lineage-1',
+                        snapshot: {
+                            metadata: { ...MOCK_SNAPSHOT_METADATA, [field]: null },
+                            encodedState: MOCK_SNAPSHOT_BYTES,
+                        },
+                    },
+                })),
+                {
+                    initialization: {
+                        type: 'room',
+                        documentId: 'doc-1',
+                        lineageId: 'lineage-1',
+                        snapshot: { metadata: null, encodedState: MOCK_SNAPSHOT_BYTES },
+                    },
+                },
+                {
+                    initialization: {
+                        type: 'room',
+                        documentId: 'doc-1',
+                        lineageId: 'lineage-1',
+                        snapshot: { metadata: MOCK_SNAPSHOT_METADATA, encodedState: null },
+                    },
+                },
             ];
+            for (const field of ['maxLength', 'readOnly', 'inputFilter', 'allowBase64Images']) {
+                invalidConfigs.push({
+                    initialization: { type: 'localEmpty' },
+                    policy: { [field]: null },
+                });
+            }
+            for (const group of ['resource', 'editing', 'collaboration']) {
+                invalidConfigs.push({
+                    initialization: { type: 'localEmpty' },
+                    limits: { [group]: null },
+                });
+            }
+            for (const [group, field] of [
+                ['resource', 'maxInputBytes'],
+                ['resource', 'maxDocumentNodes'],
+                ['resource', 'maxDocumentDepth'],
+                ['resource', 'maxSchemaNodes'],
+                ['resource', 'maxSchemaExpressionBytes'],
+                ['resource', 'maxCollaborationMessageBytes'],
+                ['resource', 'maxEncodedStateBytes'],
+                ['editing', 'maxOperationsPerTransaction'],
+                ['editing', 'maxUndoGroups'],
+                ['editing', 'maxUndoRetainedUnits'],
+                ['editing', 'maxDerivedOutputBytes'],
+                ['collaboration', 'maxFramesPerMessage'],
+                ['collaboration', 'maxFrameBytes'],
+                ['collaboration', 'maxAggregateResponseBytes'],
+                ['collaboration', 'maxAwarenessPeers'],
+                ['collaboration', 'maxAwarenessPeerBytes'],
+                ['collaboration', 'maxAwarenessBytes'],
+                ['collaboration', 'maxPendingOutboxMessages'],
+                ['collaboration', 'maxPendingOutboxBytes'],
+                ['collaboration', 'maxPendingDependencyUpdateBytes'],
+                ['collaboration', 'maxPendingDependencyUpdateWork'],
+            ]) {
+                invalidConfigs.push({
+                    initialization: { type: 'localEmpty' },
+                    limits: { [group]: { [field]: null } },
+                });
+            }
 
             for (const config of invalidConfigs) {
                 const error = catchThrown(() =>

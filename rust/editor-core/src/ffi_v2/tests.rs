@@ -300,6 +300,26 @@ fn create_resolves_limits_before_materializing_initialization_payload() {
 }
 
 #[test]
+fn create_rejects_oversized_metadata_before_materializing_policy_strings() {
+    super::editor::reset_create_metadata_materialization_count_for_test();
+    let input_filter = "x".repeat(120 * 1024 * 1024);
+    let error = create_error_from_json(
+        json!({
+            "initialization": { "type": "localEmpty" },
+            "policy": { "inputFilter": input_filter }
+        })
+        .to_string(),
+    );
+
+    assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
+    assert_eq!(error.limit, Some(64 * 1024));
+    assert_eq!(
+        super::editor::take_create_metadata_materialization_count_for_test(),
+        0
+    );
+}
+
+#[test]
 fn create_uses_configured_max_input_bytes_above_the_default_for_html() {
     let html = " ".repeat(ResourceLimits::default().max_input_bytes + 1);
     let config_json = format!(
@@ -312,6 +332,79 @@ fn create_uses_configured_max_input_bytes_above_the_default_for_html() {
     let value: serde_json::Value =
         serde_json::from_str(result.value.as_deref().expect("create value")).unwrap();
     let editor_id = value["editorId"].as_str().unwrap().to_owned();
+    assert_eq!(
+        super::editor::editor_v2_destroy(editor_id).value,
+        Some(true)
+    );
+}
+
+#[test]
+fn create_escaped_html_uses_decoded_bytes_and_allows_the_configured_hard_limit() {
+    let escaped = "\0".repeat(32);
+    let exact_id = create_editor(json!({
+        "initialization": { "type": "localHtml", "html": escaped },
+        "limits": { "resource": { "maxInputBytes": 32 } }
+    }));
+    assert_eq!(super::editor::editor_v2_destroy(exact_id).value, Some(true));
+
+    let error = create_error_from_json(
+        json!({
+            "initialization": { "type": "localHtml", "html": escaped },
+            "limits": { "resource": { "maxInputBytes": 31 } }
+        })
+        .to_string(),
+    );
+    assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
+    assert_eq!(error.limit, Some(31));
+    assert_eq!(error.actual, Some(32));
+
+    let large_escaped = "\0".repeat(22 * 1024 * 1024);
+    let config_json = json!({
+        "initialization": { "type": "localHtml", "html": large_escaped },
+        "limits": { "resource": { "maxInputBytes": 64 * 1024 * 1024 } }
+    })
+    .to_string();
+    assert!(config_json.len() > 128 * 1024 * 1024);
+    let result = super::editor::editor_v2_create(config_json, None);
+    let error = result.error.as_ref();
+    assert!(error.is_none(), "configured escaped HTML failed: {error:?}");
+    let value: serde_json::Value =
+        serde_json::from_str(result.value.as_deref().expect("create value")).unwrap();
+    let editor_id = value["editorId"].as_str().unwrap().to_owned();
+    assert_eq!(
+        super::editor::editor_v2_destroy(editor_id).value,
+        Some(true)
+    );
+}
+
+#[test]
+fn create_rejects_local_json_null_before_document_import() {
+    let error = create_error_from_json(
+        json!({
+            "initialization": { "type": "localJson", "json": null }
+        })
+        .to_string(),
+    );
+    assert_eq!(error.domain, "boundary");
+    assert_eq!(error.code, "CONFIG_INVALID");
+}
+
+#[test]
+fn create_constructs_a_configured_schema_exactly_once() {
+    crate::schema::reset_schema_from_json_count_for_test();
+    let editor_id = create_editor(json!({
+        "schema": {
+            "nodes": [
+                { "name": "doc", "content": "paragraph", "role": "doc" },
+                { "name": "paragraph", "content": "text*", "role": "textBlock" },
+                { "name": "text", "role": "text" }
+            ],
+            "marks": []
+        },
+        "initialization": { "type": "localEmpty" }
+    }));
+
+    assert_eq!(crate::schema::take_schema_from_json_count_for_test(), 1);
     assert_eq!(
         super::editor::editor_v2_destroy(editor_id).value,
         Some(true)
