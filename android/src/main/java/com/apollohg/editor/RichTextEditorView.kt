@@ -10,7 +10,6 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import uniffi.editor_core.*
 
 /** Container view that owns the native editor text field. */
 class RichTextEditorView @JvmOverloads constructor(
@@ -208,22 +207,26 @@ class RichTextEditorView @JvmOverloads constructor(
 
     fun setContent(html: String) {
         if (editorId == 0L) return
-        editorSetHtml(editorId.toULong(), html)
-        editorEditText.applyUpdateJSON(
-            editorGetCurrentState(editorId.toULong()),
-            notifyListener = false,
-            refreshInputConnectionForExternalUpdate = true
-        )
+        val driver = editorEditText.v2Driver ?: return
+        driver.setContentHtml(html)?.let {
+            editorEditText.applyUpdateJSON(
+                it,
+                notifyListener = false,
+                refreshInputConnectionForExternalUpdate = true
+            )
+        }
     }
 
     fun setContent(json: org.json.JSONObject) {
         if (editorId == 0L) return
-        editorSetJson(editorId.toULong(), json.toString())
-        editorEditText.applyUpdateJSON(
-            editorGetCurrentState(editorId.toULong()),
-            notifyListener = false,
-            refreshInputConnectionForExternalUpdate = true
-        )
+        val driver = editorEditText.v2Driver ?: return
+        driver.setContentJson(json.toString())?.let {
+            editorEditText.applyUpdateJSON(
+                it,
+                notifyListener = false,
+                refreshInputConnectionForExternalUpdate = true
+            )
+        }
     }
 
     internal fun rebindEditorIfNeeded(notifyListener: Boolean = true) {

@@ -25,6 +25,9 @@ impl DeltaTree {
     }
 
     /// Number of delta entries.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.deltas.len()
     }
@@ -81,6 +84,9 @@ impl DeltaTree {
     }
 
     /// Iterate over raw entries (for folding into block mappings).
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn iter(&self) -> impl Iterator<Item = &(usize, i32, i32)> {
         self.deltas.iter()
     }

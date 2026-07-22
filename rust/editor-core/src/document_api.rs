@@ -19,6 +19,9 @@ use crate::yrs_engine::{
 pub(crate) struct DocumentApiFacade;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 pub(crate) struct ContentSnapshot {
     html: String,
     json: serde_json::Value,
@@ -29,14 +32,23 @@ impl DocumentApiFacade {
         registry::create_session(|| Self::admit(config))
     }
 
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub(crate) fn get_json(id: SessionId) -> Result<serde_json::Value, SessionError> {
         with_session(id, |session| session.get_json())
     }
 
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub(crate) fn get_html(id: SessionId) -> Result<String, SessionError> {
         with_session(id, |session| session.get_html())
     }
 
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub(crate) fn get_content_snapshot(id: SessionId) -> Result<ContentSnapshot, SessionError> {
         with_session(id, |session| {
             Ok(ContentSnapshot {
@@ -48,6 +60,9 @@ impl DocumentApiFacade {
 
     /// Whole-document replacement from ProseMirror JSON. The session policy
     /// gate runs first; allowed rows lower to one same-store root transaction.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub(crate) fn write_json(
         id: SessionId,
         request_id: u64,
@@ -60,6 +75,9 @@ impl DocumentApiFacade {
     }
 
     /// Whole-document replacement from HTML under the same policy gate.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub(crate) fn write_html(
         id: SessionId,
         request_id: u64,
@@ -152,6 +170,9 @@ fn resolve_schema(config: &EditorSessionConfig) -> Result<Schema, SessionError> 
     Schema::from_json_with_limits(&value, &config.resource_limits).map_err(SessionError::from)
 }
 
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 fn with_session<T>(
     id: SessionId,
     operation: impl FnOnce(&mut EditorSession) -> Result<T, SessionError>,
@@ -167,14 +188,14 @@ fn with_session<T>(
         .and_then(|value| value)
 }
 
-#[cfg(feature = "ffi-v2-staging")]
+#[cfg(test)]
 pub mod session_initialization_test_support {
     use super::*;
     use crate::session::{
         CollaborationLimits, EditorInitialization, InitialContent, OperationFailureClass,
         TransportState as InternalTransportState,
     };
-    use crate::yrs_engine::EngineRenderState;
+    use crate::yrs_engine::{DocumentSnapshot, EngineRenderState};
 
     #[derive(Debug, Clone, PartialEq)]
     pub struct TestError {
@@ -839,6 +860,49 @@ pub mod session_initialization_test_support {
 
     pub fn can_redo(id: u64) -> Result<bool, TestError> {
         with_live(id, |session| Ok(session.engine.can_redo()))
+    }
+
+    /// Commit surface of a session-level snapshot restore for staging tests.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SnapshotRestoreOutcome {
+        pub changed: bool,
+        pub document_revision: u64,
+    }
+
+    /// Task 11: session-level snapshot export (read-only, allowed while
+    /// connected).
+    pub fn export_snapshot(id: u64, request_id: u64) -> Result<DocumentSnapshot, TestError> {
+        with_live(id, |session| session.export_snapshot(request_id))
+    }
+
+    /// Task 11: session-level snapshot restore behind the lifecycle policy
+    /// gate.
+    pub fn restore_snapshot(
+        id: u64,
+        request_id: u64,
+        snapshot: &DocumentSnapshot,
+    ) -> Result<SnapshotRestoreOutcome, TestError> {
+        with_live(id, |session| {
+            session
+                .restore_snapshot(request_id, snapshot)
+                .map(|commit| SnapshotRestoreOutcome {
+                    changed: commit.changed,
+                    document_revision: commit.revision,
+                })
+        })
+    }
+
+    /// `(pending protocol reply count, bytes)`; `None` when the session has
+    /// no attached runtime (and therefore no protocol queue).
+    pub fn pending_protocol_replies(id: u64) -> Result<Option<(usize, usize)>, TestError> {
+        with_live(id, |session| {
+            Ok(session.collaboration_outbox().map(|outbox| {
+                (
+                    outbox.pending_protocol_reply_count(),
+                    outbox.pending_protocol_reply_bytes(),
+                )
+            }))
+        })
     }
 
     pub fn undo(id: u64, request_id: u64) -> Result<bool, TestError> {

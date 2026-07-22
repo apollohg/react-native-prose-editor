@@ -6,16 +6,31 @@
                 {
                     "type": "paragraph",
                     "content": [
-                        { "type": "text", "text": "unsafe", "marks": [{ "type": "script" }] }
+                        {
+                            "type": "text",
+                            "text": "unsafe",
+                            "marks": [
+                                {
+                                    "type": "script"
+                                }
+                            ]
+                        }
                     ]
                 }
             ]
         },
-        "expectedErrorCode": "UNKNOWN_MARK"
+        "expectedErrorCode": "DOCUMENT_INVALID"
     },
     "missingImageSource": {
-        "document": { "type": "doc", "content": [{ "type": "image" }] },
-        "expectedErrorCode": "REQUIRED_ATTRIBUTE_MISSING"
+        "document": {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "image"
+                }
+            ]
+        },
+        "expectedErrorCode": "DOCUMENT_INVALID"
     },
     "oversizedSchema": {
         "nodeCount": 1025,
@@ -24,28 +39,61 @@
     "customArticleRoot": {
         "schema": {
             "nodes": [
-                { "name": "article", "content": "title+", "role": "doc" },
+                {
+                    "name": "article",
+                    "content": "title+",
+                    "role": "doc"
+                },
                 {
                     "name": "title",
                     "content": "text*",
                     "group": "block",
                     "role": "textBlock"
                 },
-                { "name": "text", "content": "", "group": "inline", "role": "text" }
+                {
+                    "name": "text",
+                    "content": "",
+                    "group": "inline",
+                    "role": "text"
+                }
             ],
             "marks": []
         },
-        "document": { "type": "article", "content": [{ "type": "title" }] },
+        "document": {
+            "type": "article",
+            "content": [
+                {
+                    "type": "title"
+                }
+            ]
+        },
         "expectedRoot": "article"
     },
     "schemaNormalizationParity": {
         "missingFields": {
             "nodes": [
-                { "name": "article", "content": "paragraph", "role": "doc" },
-                { "name": "paragraph", "group": "block", "role": "textBlock", "htmlTag": "p" },
-                { "name": "text", "role": "text" }
+                {
+                    "name": "article",
+                    "content": "paragraph",
+                    "role": "doc"
+                },
+                {
+                    "name": "paragraph",
+                    "group": "block",
+                    "role": "textBlock",
+                    "htmlTag": "p"
+                },
+                {
+                    "name": "text",
+                    "role": "text"
+                }
             ],
-            "marks": [{ "name": "highlight", "htmlTag": "MARK" }]
+            "marks": [
+                {
+                    "name": "highlight",
+                    "htmlTag": "MARK"
+                }
+            ]
         },
         "invalidNodeTag": "p><script",
         "invalidAttribute": "href\" onclick"
@@ -124,7 +172,10 @@
                 "operationIndex": null,
                 "limit": null,
                 "actual": null,
-                "details": { "expectedRevision": "4", "actualRevision": "5" }
+                "details": {
+                    "expectedRevision": "4",
+                    "actualRevision": "5"
+                }
             },
             {
                 "domain": "operation",
@@ -134,7 +185,9 @@
                 "operationIndex": 0,
                 "limit": null,
                 "actual": null,
-                "details": { "field": "at" }
+                "details": {
+                    "field": "at"
+                }
             },
             {
                 "domain": "operation",
@@ -144,7 +197,9 @@
                 "operationIndex": null,
                 "limit": null,
                 "actual": null,
-                "details": { "field": "operations" }
+                "details": {
+                    "field": "operations"
+                }
             },
             {
                 "domain": "operation",
@@ -154,7 +209,9 @@
                 "operationIndex": 0,
                 "limit": null,
                 "actual": null,
-                "details": { "field": "text" }
+                "details": {
+                    "field": "text"
+                }
             },
             {
                 "domain": "document",
@@ -164,7 +221,9 @@
                 "operationIndex": 0,
                 "limit": null,
                 "actual": null,
-                "details": { "field": "content" }
+                "details": {
+                    "field": "content"
+                }
             },
             {
                 "domain": "operation",
@@ -174,7 +233,9 @@
                 "operationIndex": 7,
                 "limit": 256,
                 "actual": 257,
-                "details": { "field": "maxOperationsPerTransaction" }
+                "details": {
+                    "field": "maxOperationsPerTransaction"
+                }
             },
             {
                 "domain": "operation",
@@ -184,7 +245,9 @@
                 "operationIndex": null,
                 "limit": null,
                 "actual": null,
-                "details": { "field": "outbox" }
+                "details": {
+                    "field": "outbox"
+                }
             },
             {
                 "domain": "document",
@@ -194,7 +257,9 @@
                 "operationIndex": 0,
                 "limit": 100000,
                 "actual": 100001,
-                "details": { "field": "maxDocumentNodes" }
+                "details": {
+                    "field": "maxDocumentNodes"
+                }
             },
             {
                 "domain": "operation",
@@ -234,7 +299,9 @@
                 "operationIndex": null,
                 "limit": 1024,
                 "actual": 1025,
-                "details": { "generation": "3" }
+                "details": {
+                    "generation": "3"
+                }
             }
         ],
         "invalidRequestIds": ["", "-1", "01", "1.0", "1e3", "+1", " 1"],

@@ -22,6 +22,19 @@ use super::{YrsEngineError, YrsEngineResult};
 /// The y-protocols awareness tombstone payload marking a removed state.
 const AWARENESS_TOMBSTONE_JSON: &str = "null";
 
+/// The highest clock a remote awareness entry may carry. yrs advances
+/// stored clocks with `+= 1` (a remote removal of the local state bumps the
+/// local clock; `remove_state` bumps the removed client's clock), so
+/// admitting `u32::MAX` would let a remote peer drive those paths into an
+/// overflow — a wrap to 0 in release builds, a UniFFI-crossing panic in
+/// overflow-checked builds.
+const MAX_ADMITTED_AWARENESS_CLOCK: u32 = u32::MAX - 1;
+
+/// `details.field` of the clock-ceiling refusal. The ceiling is a
+/// protocol-safety constant, not a configurable `CollaborationLimits`
+/// field, hence the distinct naming.
+const AWARENESS_CLOCK_FIELD: &str = "awarenessClock";
+
 /// Awareness ceilings, mirroring the `max_awareness_*` fields of the
 /// session-level `CollaborationLimits`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +72,9 @@ pub struct AwarenessApplied {
 
 /// The desired local presence, retained beside the live `Awareness` so it
 /// survives store swaps (snapshot restore, import) with a fresh clock.
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 struct DesiredLocalState {
     value: Value,
     raw: String,
@@ -98,6 +114,9 @@ impl AwarenessCodec {
     }
 
     /// The desired local presence state, if one is currently published.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn local_state(&self) -> Option<&Value> {
         self.desired_local_state.as_ref().map(|state| &state.value)
     }
@@ -119,6 +138,22 @@ impl AwarenessCodec {
             ));
         }
         let local_client = self.awareness.client_id();
+        if self
+            .awareness
+            .meta(local_client)
+            .is_some_and(|(clock, _)| clock == u32::MAX)
+        {
+            // The next publish would overflow yrs's `clock += 1`. The clock
+            // can only reach u32::MAX through a remote clock-squatting
+            // tombstone for the local client; refuse structurally instead of
+            // wrapping to 0 (release) or panicking across UniFFI
+            // (overflow-checked builds).
+            return Err(awareness_limit_error(
+                AWARENESS_CLOCK_FIELD,
+                MAX_ADMITTED_AWARENESS_CLOCK as usize,
+                u32::MAX as usize,
+            ));
+        }
         let remote_alive_bytes: usize = self
             .awareness
             .iter()
@@ -144,7 +179,18 @@ impl AwarenessCodec {
     /// Withdraws the local presence state, broadcasting a removal tombstone
     /// through the next [`Self::encode_local_update_v1`].
     pub fn clear_local_state(&mut self) {
-        self.awareness.clean_local_state();
+        // At the u32::MAX clock ceiling (reachable only through a remote
+        // clock-squatting tombstone for the local client) the removal
+        // tombstone cannot advance the clock; dropping the desired state
+        // still withdraws presence logically and the next transport-scoped
+        // reset retires the pinned entry.
+        let at_ceiling = self
+            .awareness
+            .meta(self.awareness.client_id())
+            .is_some_and(|(clock, _)| clock == u32::MAX);
+        if !at_ceiling {
+            self.awareness.clean_local_state();
+        }
         self.desired_local_state = None;
     }
 
@@ -180,11 +226,14 @@ impl AwarenessCodec {
 
     /// Applies a remote awareness update. The raw payload is bounded before
     /// any decode work; every entry is then validated (JSON payload, per-peer
-    /// bytes) and the post-application peer count and aggregate bytes are
-    /// admitted before anything is applied, so rejections are atomic. The
-    /// returned [`AwarenessApplied`] reports which clients the update
-    /// actually touched, so the runtime can stamp deterministic activity
-    /// deadlines without duplicating the codec's clock state.
+    /// bytes, clock ceiling) and admitted before anything is applied, so
+    /// rejections are atomic — a `u32::MAX` clock is refused even inside an
+    /// otherwise-droppable tombstone. Removal tombstones for never-seen
+    /// clients are dropped as protocol no-ops after admission, so they never
+    /// mint stored entries. The returned [`AwarenessApplied`] reports which
+    /// clients the update actually touched, so the runtime can stamp
+    /// deterministic activity deadlines without duplicating the codec's
+    /// clock state.
     pub fn apply_remote_update_v1(
         &mut self,
         update_v1: &[u8],
@@ -201,6 +250,7 @@ impl AwarenessCodec {
             awareness_decode_error(format!("awareness update cannot decode: {error}"))
         })?;
         self.admit_update(&update, limits)?;
+        let update = self.without_unknown_tombstones(update);
         let summary = self
             .awareness
             .apply_update_summary(update)
@@ -252,6 +302,26 @@ impl AwarenessCodec {
         peers
     }
 
+    /// Drops removal tombstones for clients this node has never seen. A
+    /// removal of an unknown client is a protocol no-op — there is nothing
+    /// to remove, matching the y-protocols reference behavior — and yrs
+    /// would otherwise permanently store the tombstone entry, bypassing the
+    /// live-state ceilings (unbounded remote memory growth) and squatting
+    /// the victim's clock space. Tombstones for KNOWN clients are kept:
+    /// they carry the clock ordering a later re-announce must beat.
+    fn without_unknown_tombstones(&self, update: AwarenessUpdate) -> AwarenessUpdate {
+        let mut clients = HashMap::with_capacity(update.clients.len());
+        for (client_id, entry) in update.clients {
+            if entry.json.as_ref() == AWARENESS_TOMBSTONE_JSON
+                && self.awareness.meta(client_id).is_none()
+            {
+                continue;
+            }
+            clients.insert(client_id, entry);
+        }
+        AwarenessUpdate { clients }
+    }
+
     /// Validates an already-decoded update against every ceiling by mirroring
     /// the exact `yrs` application rule over a projection of the current
     /// states, so admission can never diverge from what `apply_update` would
@@ -268,6 +338,16 @@ impl AwarenessCodec {
             .map(|(client, state)| (client, (state.clock, state.data.map(|data| data.len()))))
             .collect();
         for (client_id, entry) in &update.clients {
+            if entry.clock > MAX_ADMITTED_AWARENESS_CLOCK {
+                // yrs advances admitted clocks with `+= 1` (remote removal of
+                // the local state; expiry through `remove_state`), so
+                // u32::MAX is inadmissible regardless of payload.
+                return Err(awareness_limit_error(
+                    AWARENESS_CLOCK_FIELD,
+                    MAX_ADMITTED_AWARENESS_CLOCK as usize,
+                    entry.clock as usize,
+                ));
+            }
             let incoming_alive = entry.json.as_ref() != AWARENESS_TOMBSTONE_JSON;
             if incoming_alive {
                 if entry.json.len() > limits.max_awareness_peer_bytes {
@@ -293,6 +373,9 @@ impl AwarenessCodec {
                         if !incoming_alive && *client_id == local_client && current_data.is_some() {
                             // A remote peer never removes the local state; the
                             // local clock is bumped instead (yrs semantics).
+                            // The admission clock ceiling keeps this bump —
+                            // and yrs's own `clock += 1` — overflow-free, so
+                            // the mirror never diverges from yrs here.
                             *current = (entry.clock.saturating_add(1), current_data);
                         } else {
                             *current = incoming;
@@ -333,6 +416,13 @@ impl AwarenessCodec {
         self.awareness.doc()
     }
 
+    /// Test seam: total stored awareness entries, live and tombstoned, so
+    /// tests can prove admission never accumulates hidden state.
+    #[cfg(test)]
+    pub(crate) fn stored_entry_count(&self) -> usize {
+        self.awareness.iter().count()
+    }
+
     /// Rebinds the codec after the engine replaced its store with a different
     /// document (snapshot restore, import). Stale remote peers are dropped,
     /// the desired local state is re-published under the new client identity
@@ -348,15 +438,22 @@ impl AwarenessCodec {
     /// Tombstones one remote client's state (deterministic expiry): the
     /// standard y-protocols removal that bumps the client's clock by one, so
     /// only a strictly newer re-announce reappears. The local client is
-    /// never expired and unknown clients are ignored (a vacant removal
-    /// would otherwise mint a spurious clock-1 tombstone).
-    #[cfg(feature = "ffi-v2-staging")]
+    /// never expired, unknown clients are ignored (a vacant removal would
+    /// otherwise mint a spurious clock-1 tombstone), and already-tombstoned
+    /// clients are ignored (a second bump has no protocol effect and would
+    /// overflow at the u32::MAX ceiling).
     pub(crate) fn remove_remote_state(&mut self, client_id: u64) {
         let client = ClientID::new(client_id);
-        if client == self.awareness.client_id() || self.awareness.meta(client).is_none() {
+        if client == self.awareness.client_id() {
             return;
         }
-        self.awareness.remove_state(client);
+        let has_live_state = self
+            .awareness
+            .iter()
+            .any(|(known, state)| known == client && state.data.is_some());
+        if has_live_state {
+            self.awareness.remove_state(client);
+        }
     }
 
     /// Transport-scoped reset on generation close/detach/reattach: every
@@ -367,7 +464,6 @@ impl AwarenessCodec {
     /// the clock once more, so a peer that tombstoned us at `clock + 1`
     /// observes the reappearance at `clock + 2` — the designed mitigation
     /// for the undo/redo tombstone-migration gap.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn clear_transport_states(&mut self) {
         let local_client = self.awareness.client_id();
         let migrated = self
@@ -416,7 +512,7 @@ impl AwarenessCodec {
     }
 }
 
-#[cfg(all(test, feature = "ffi-v2-staging"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -546,5 +642,34 @@ mod tests {
         fresh.clear_transport_states();
         assert!(fresh.peer_snapshot().is_empty());
         assert_eq!(fresh.local_state(), None);
+    }
+
+    #[test]
+    fn remove_remote_state_at_the_clock_ceiling_never_bumps_past_max() {
+        let mut codec = codec();
+        codec
+            .apply_remote_update_v1(
+                &remote_update(9_030, u32::MAX - 1, r#"{"peer":true}"#),
+                &limits(),
+            )
+            .unwrap();
+        let stored_clock = |codec: &AwarenessCodec| {
+            codec
+                .awareness
+                .iter()
+                .find(|(client, _)| *client == ClientID::new(9_030))
+                .map(|(_, state)| (state.clock, state.data.is_some()))
+        };
+
+        // Expiry of a u32::MAX - 1 peer lands the tombstone exactly at
+        // u32::MAX without overflowing.
+        codec.remove_remote_state(9_030);
+        assert_eq!(stored_clock(&codec), Some((u32::MAX, false)));
+
+        // Re-expiring an already-tombstoned client is a no-op: the clock can
+        // never advance past u32::MAX (panic in overflow-checked builds,
+        // wrap in release).
+        codec.remove_remote_state(9_030);
+        assert_eq!(stored_clock(&codec), Some((u32::MAX, false)));
     }
 }

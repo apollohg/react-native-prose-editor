@@ -140,6 +140,9 @@ impl ContentRule {
     }
 
     /// Whether this expression contains no symbols (the empty content rule).
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.symbols.is_empty()
     }
@@ -196,6 +199,9 @@ impl ContentRule {
     }
 
     /// Return symbols accepted immediately after the supplied prefix.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn accepting_symbols_after<T, F>(&self, children: &[T], mut symbol_matches: F) -> Vec<&str>
     where
         F: FnMut(&T, &str) -> bool,
@@ -289,6 +295,9 @@ impl ContentRule {
     }
 
     /// Return every symbol accepted at the start of the expression.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn initial_symbols(&self) -> Vec<&str> {
         self.initial_symbols_with_budget(&WorkBudget::new(DEFAULT_RUNTIME_WORK_LIMIT))
             .unwrap_or_default()
@@ -350,6 +359,9 @@ impl ContentRule {
     }
 
     /// Whether some accepted sequence can be built using only allowed symbols.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn is_constructible_with<F>(&self, mut symbol_is_constructible: F) -> bool
     where
         F: FnMut(&str) -> bool,

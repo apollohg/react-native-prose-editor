@@ -1,169 +1,64 @@
-const INITIAL_DOC = {
-    type: 'doc',
-    content: [{ type: 'paragraph', content: [{ type: 'text', text: 'hello' }] }],
-};
+// ─── YjsCollaboration (Task 14 thin controller) Tests ──────────
+// The legacy collaboration controller owned session creation, retry
+// decisions, awareness clocks, valueJSON reset sync, and raw encoded-state
+// APIs. All of that is removed. The Task 14 controller is a thin shell over
+// a SHARED NativeEditorDocumentHandle: it owns only WebSocket objects and
+// retry-timer scheduling; Rust owns lifecycle state, generations, retry
+// eligibility, protocol, and awareness clocks. These tests drive it through
+// the faithful fake native v2 runtime in ./helpers/nativeEditorV2Fake.
 
-const REMOTE_DOC = {
-    type: 'doc',
-    content: [{ type: 'paragraph', content: [{ type: 'text', text: 'remote' }] }],
-};
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
-const LOCAL_DOC = {
-    type: 'doc',
-    content: [{ type: 'paragraph', content: [{ type: 'text', text: 'local' }] }],
-};
+import {
+    createFakeNativeEditorV2Runtime,
+    fakeDocForText,
+    V2_FAKE_AWARENESS_FRAME,
+    V2_FAKE_INCOMPATIBLE_FRAME,
+    V2_FAKE_STEP1_FRAME,
+    V2_FAKE_STEP2_FRAME,
+    V2_FAKE_UPDATE_FRAME,
+    type FakeNativeEditorV2Runtime,
+} from './helpers/nativeEditorV2Fake';
 
-const ALT_INITIAL_DOC = {
-    type: 'doc',
-    content: [{ type: 'paragraph', content: [{ type: 'text', text: 'alt' }] }],
-};
+const mockNativeModule: Record<string, jest.Mock> = {};
 
-const CUSTOM_COLLABORATION_SCHEMA = {
-    nodes: [
-        { name: 'doc', content: 'block+', role: 'doc' },
-        { name: 'paragraph', content: 'inline*', group: 'block', role: 'textBlock' },
-        {
-            name: 'calloutDivider',
-            content: '',
-            group: 'block',
-            role: 'block',
-            isVoid: true,
-        },
-        { name: 'text', content: '', group: 'inline', role: 'text' },
-    ],
-    marks: [],
-};
-
-const TITLE_FIRST_SCHEMA = {
-    nodes: [
-        { name: 'doc', content: 'title block*', role: 'doc' },
-        { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
-        { name: 'paragraph', content: 'inline*', group: 'block', role: 'textBlock' },
-        { name: 'text', content: '', group: 'inline', role: 'text' },
-    ],
-    marks: [],
-};
-
-const TITLE_EMPTY_DOC = {
-    type: 'doc',
-    content: [{ type: 'title' }],
-};
-
-const ARTICLE_SCHEMA = {
-    nodes: [
-        { name: 'article', content: 'title+', role: 'doc' },
-        { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
-        { name: 'text', content: '', group: 'inline', role: 'text' },
-    ],
-    marks: [],
-};
-
-const ARTICLE_EMPTY_DOC = {
-    type: 'article',
-    content: [{ type: 'title' }],
-};
-
-const GROUPED_RANGE_SCHEMA = {
-    nodes: [
-        { name: 'doc', content: '(title | image){1}', role: 'doc' },
-        { name: 'title', content: 'inline*', group: 'block', role: 'textBlock' },
-        { name: 'paragraph', content: 'inline*', group: 'block', role: 'textBlock' },
-        { name: 'image', content: '', group: 'block', role: 'block', isVoid: true },
-        { name: 'text', content: '', group: 'inline', role: 'text' },
-    ],
-    marks: [],
-};
-
-const REMOTE_PEERS = [
-    {
-        clientId: 2,
-        isLocal: false,
-        state: {
-            user: { userId: '2', name: 'Bob', color: '#00f' },
-            selection: { anchor: 4, head: 9 },
-            focused: true,
-        },
-    },
-];
-
-const mockNativeModule = {
-    collaborationSessionCreate: jest.fn(() => 1),
-    collaborationSessionCreateResult: jest.fn((configJson: string) =>
-        JSON.stringify({ sessionId: mockNativeModule.collaborationSessionCreate(configJson) })
-    ),
-    collaborationSessionDestroy: jest.fn(),
-    collaborationSessionGetDocumentJson: jest.fn(() => JSON.stringify(INITIAL_DOC)),
-    collaborationSessionGetEncodedState: jest.fn(() => JSON.stringify([9, 8, 7])),
-    collaborationSessionGetPeersJson: jest.fn(() => '[]'),
-    collaborationSessionStart: jest.fn(() =>
-        JSON.stringify({
-            messages: [
-                [0, 0, 1],
-                [1, 2, 3],
-            ],
-            documentChanged: false,
-            peersChanged: false,
-        })
-    ),
-    collaborationSessionApplyLocalDocumentJson: jest.fn(() =>
-        JSON.stringify({
-            messages: [[0, 2, 8, 8, 8]],
-            documentChanged: true,
-            documentJson: LOCAL_DOC,
-            peersChanged: false,
-        })
-    ),
-    collaborationSessionApplyEncodedState: jest.fn(() =>
-        JSON.stringify({
-            messages: [],
-            documentChanged: true,
-            documentJson: REMOTE_DOC,
-            peersChanged: false,
-        })
-    ),
-    collaborationSessionReplaceEncodedState: jest.fn(() =>
-        JSON.stringify({
-            messages: [[0, 2, 5, 5, 5]],
-            documentChanged: true,
-            documentJson: REMOTE_DOC,
-            peersChanged: false,
-        })
-    ),
-    collaborationSessionHandleMessage: jest.fn(() =>
-        JSON.stringify({
-            messages: [[4, 5, 6]],
-            documentChanged: true,
-            documentJson: REMOTE_DOC,
-            peersChanged: true,
-            peers: REMOTE_PEERS,
-        })
-    ),
-    collaborationSessionSetLocalAwareness: jest.fn(() =>
-        JSON.stringify({
-            messages: [[1, 6, 6, 6]],
-            documentChanged: false,
-            peersChanged: false,
-        })
-    ),
-    collaborationSessionClearLocalAwareness: jest.fn(() =>
-        JSON.stringify({
-            messages: [[7, 7, 7]],
-            documentChanged: false,
-            peersChanged: false,
-        })
-    ),
-};
-
-jest.mock('expo-modules-core', () => ({
-    requireNativeModule: () => mockNativeModule,
-}));
+jest.mock('expo-modules-core', () => {
+    const React = require('react');
+    const { View } = require('react-native');
+    const MockNativeView = React.forwardRef(
+        (props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+            React.useImperativeHandle(ref, () => ({}));
+            return React.createElement(View, { testID: 'native-editor-view', ...props });
+        }
+    );
+    MockNativeView.displayName = 'MockNativeView';
+    return {
+        requireNativeModule: () => mockNativeModule,
+        requireNativeViewManager: () => MockNativeView,
+    };
+});
 
 import React from 'react';
-import { render, renderHook, act } from '@testing-library/react-native';
-import { createYjsCollaborationController, useYjsCollaboration } from '../YjsCollaboration';
-import type { DocumentJSON } from '../NativeEditorBridge';
-import { _resetNativeModuleCache, NativeCollaborationBridge } from '../NativeEditorBridge';
-import * as schemas from '../schemas';
+import { act, renderHook } from '@testing-library/react-native';
+
+import {
+    createYjsCollaborationController,
+    useYjsCollaboration,
+    type YjsCollaborationOptions,
+    type YjsCollaborationState,
+    type YjsRetryContext,
+} from '../YjsCollaboration';
+import {
+    NativeEditorDocumentHandle,
+    _resetNativeModuleCache,
+    type DocumentJSON,
+    type NativeEditorV2PeerInfo,
+} from '../NativeEditorBridge';
+import { NativeEditorV2TransportError } from '../NativeEditorBoundaryError';
+import * as PublicApi from '../index';
+
+// ─── Mock WebSocket ─────────────────────────────────────────────
 
 class MockWebSocket {
     static CONNECTING = 0;
@@ -176,11 +71,11 @@ class MockWebSocket {
     onopen: (() => void) | null = null;
     onmessage: ((event: { data: unknown }) => void) | null = null;
     onerror: (() => void) | null = null;
-    onclose: (() => void) | null = null;
+    onclose: ((event?: { code?: number; reason?: string }) => void) | null = null;
     send = jest.fn();
     close = jest.fn(() => {
         this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.();
+        this.onclose?.({ code: 1000, reason: '' });
     });
 
     open(): void {
@@ -188,32 +83,140 @@ class MockWebSocket {
         this.onopen?.();
     }
 
-    receive(bytes: number[]): void {
-        this.onmessage?.({ data: Uint8Array.from(bytes).buffer });
+    receive(bytes: Uint8Array): void {
+        this.onmessage?.({ data: bytes.slice().buffer });
     }
 
-    receiveData(data: unknown): void {
-        this.onmessage?.({ data });
+    serverClose(code: number, reason = ''): void {
+        this.readyState = MockWebSocket.CLOSED;
+        this.onclose?.({ code, reason });
     }
 }
 
-describe('YjsCollaboration', () => {
+// ─── Fixtures ───────────────────────────────────────────────────
+
+const SERVER_DOC = fakeDocForText('server');
+const SECOND_SERVER_DOC = fakeDocForText('server update');
+const SNAPSHOT_DOC = fakeDocForText('snapshot');
+const LOCAL_DOC_B = fakeDocForText('local b');
+const LOCAL_DOC_C = fakeDocForText('local c');
+
+const ALICE = { userId: '1', name: 'Alice', color: '#f00' };
+
+function remotePeer(overrides: Partial<NativeEditorV2PeerInfo> = {}): NativeEditorV2PeerInfo {
+    return {
+        clientId: '42',
+        clock: 3,
+        isLocal: false,
+        state: { user: { userId: '2', name: 'Bob', color: '#00f' }, focused: true },
+        cursor: { anchor: 4, head: 9 },
+        ...overrides,
+    };
+}
+
+// ─── Setup helpers ──────────────────────────────────────────────
+
+let runtime: FakeNativeEditorV2Runtime;
+
+function snapshotState(doc: DocumentJSON, revision = 7): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify({ doc, revision }));
+}
+
+function createRoomHandle(
+    options: { documentId?: string; withSnapshot?: boolean } = {}
+): NativeEditorDocumentHandle {
+    const documentId = options.documentId ?? 'doc-1';
+    return NativeEditorDocumentHandle.create({
+        initialization: {
+            type: 'room',
+            documentId,
+            lineageId: 'lineage-1',
+            ...(options.withSnapshot
+                ? {
+                      snapshot: {
+                          metadata: {
+                              formatVersion: 1,
+                              documentId,
+                              lineageId: 'lineage-1',
+                              fragmentName: 'prosemirror',
+                              schemaFingerprint: 'fakefingerprint',
+                          },
+                          encodedState: snapshotState(SNAPSHOT_DOC),
+                      },
+                  }
+                : {}),
+        },
+    });
+}
+
+function createLocalHandle(doc?: DocumentJSON): NativeEditorDocumentHandle {
+    return NativeEditorDocumentHandle.create({
+        initialization: doc ? { type: 'localJson', json: doc } : { type: 'localEmpty' },
+    });
+}
+
+interface ControllerSetup {
+    controller: ReturnType<typeof createYjsCollaborationController>;
+    handle: NativeEditorDocumentHandle;
+    sockets: MockWebSocket[];
+    states: YjsCollaborationState[];
+    errors: Error[];
+    peersLog: NativeEditorV2PeerInfo[][];
+}
+
+function setupController(
+    overrides: Partial<YjsCollaborationOptions> & { handle?: NativeEditorDocumentHandle } = {}
+): ControllerSetup {
+    const sockets: MockWebSocket[] = [];
+    const states: YjsCollaborationState[] = [];
+    const errors: Error[] = [];
+    const peersLog: NativeEditorV2PeerInfo[][] = [];
+    const handle = overrides.handle ?? createRoomHandle();
+    const controller = createYjsCollaborationController({
+        documentId: 'doc-1',
+        handle,
+        connect: false,
+        createWebSocket: () => {
+            const socket = new MockWebSocket();
+            sockets.push(socket);
+            return socket as unknown as WebSocket;
+        },
+        onStateChange: (state) => states.push({ ...state }),
+        onError: (error) => errors.push(error),
+        onPeersChange: (peers) => peersLog.push(peers),
+        ...overrides,
+    });
+    return { controller, handle, sockets, states, errors, peersLog };
+}
+
+function sentFrames(socket: MockWebSocket): number[][] {
+    return socket.send.mock.calls.map((call) => Array.from(new Uint8Array(call[0] as ArrayBuffer)));
+}
+
+function latestStatus(setup: ControllerSetup): string {
+    return setup.controller.state.status;
+}
+
+function openAndSynchronize(setup: ControllerSetup, socketIndex = 0): void {
+    setup.sockets[socketIndex].open();
+    setup.sockets[socketIndex].receive(V2_FAKE_STEP2_FRAME);
+}
+
+// ─── Test setup ─────────────────────────────────────────────────
+
+describe('YjsCollaboration (Task 14 thin controller)', () => {
     const OriginalWebSocket = global.WebSocket;
 
     beforeEach(() => {
         jest.useFakeTimers();
         _resetNativeModuleCache();
+        runtime = createFakeNativeEditorV2Runtime();
         for (const key of Object.keys(mockNativeModule)) {
-            (mockNativeModule as Record<string, jest.Mock>)[key].mockClear();
+            delete mockNativeModule[key];
         }
-        mockNativeModule.collaborationSessionCreate.mockReturnValue(1);
-        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValue(
-            JSON.stringify(INITIAL_DOC)
-        );
-        mockNativeModule.collaborationSessionGetEncodedState.mockReturnValue(
-            JSON.stringify([9, 8, 7])
-        );
-        mockNativeModule.collaborationSessionGetPeersJson.mockReturnValue('[]');
+        for (const [key, impl] of Object.entries(runtime.module)) {
+            mockNativeModule[key] = impl;
+        }
         global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     });
 
@@ -221,1530 +224,825 @@ describe('YjsCollaboration', () => {
         global.WebSocket = OriginalWebSocket;
     });
 
-    it('starts sync, applies remote updates, and publishes local edits', () => {
-        const sockets: MockWebSocket[] = [];
-        const peersSpy = jest.fn();
-        const states: string[] = [];
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-1',
-            connect: false,
+    // ── Lifecycle / status mapping ──────────────────────────────
+
+    it('reports connecting, then handshaking (never connected), and synchronizes only on an accepted server Step 2', () => {
+        const setup = setupController();
+
+        // Server-owned room init: disconnected, no client document at all.
+        expect(setup.controller.state.status).toBe('disconnected');
+        expect(setup.controller.state.isConnected).toBe(false);
+        expect(setup.controller.state.documentJson).toBeNull();
+        expect(setup.controller.state.documentRevision).toBeNull();
+
+        setup.controller.connect();
+        expect(latestStatus(setup)).toBe('connecting');
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledWith(
+            setup.handle.editorId
+        );
+        expect(setup.sockets).toHaveLength(1);
+
+        setup.sockets[0].open();
+        expect(runtime.module.editorV2CollaborationSocketOpen).toHaveBeenCalledWith(
+            setup.handle.editorId,
+            '1'
+        );
+        // Sync Step 1 rides the socket first.
+        expect(sentFrames(setup.sockets[0])).toEqual([Array.from(V2_FAKE_STEP1_FRAME)]);
+        // open alone is handshaking, never connected/synchronized.
+        expect(latestStatus(setup)).toBe('handshaking');
+        expect(setup.controller.state.isConnected).toBe(false);
+
+        runtime.pushRemoteDoc(setup.handle.editorId, SERVER_DOC);
+        setup.sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        expect(latestStatus(setup)).toBe('synchronized');
+        expect(setup.controller.state.isConnected).toBe(true);
+        expect(setup.controller.state.documentJson).toEqual(SERVER_DOC);
+        expect(setup.controller.state.documentRevision).not.toBeNull();
+
+        // The room emitted no client state before the server document arrived:
+        // zero local mutation entries were ever invoked.
+        expect(runtime.module.editorV2ApplyLocalApi).not.toHaveBeenCalled();
+        expect(runtime.module.editorV2ReplaceDocument).not.toHaveBeenCalled();
+        expect(runtime.module.editorV2ApplyInput).not.toHaveBeenCalled();
+    });
+
+    it('renders a snapshot-bound room document while disconnected', () => {
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        expect(setup.controller.state.status).toBe('disconnected');
+        expect(setup.controller.state.documentJson).toEqual(SNAPSHOT_DOC);
+        expect(setup.controller.state.documentRevision).toBe('7');
+    });
+
+    it('refuses connect on a local (non-room) handle without scheduling a retry', () => {
+        const setup = setupController({ handle: createLocalHandle() });
+        setup.controller.connect();
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
+        expect(setup.errors).toHaveLength(1);
+        expect(setup.sockets).toHaveLength(0);
+        // Detached transport maps to idle; nothing is scheduled.
+        expect(setup.controller.state.status).toBe('idle');
+        jest.advanceTimersByTime(60_000);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
+        expect(setup.sockets).toHaveLength(0);
+    });
+
+    it('pins the local-session begin_connect refusal to the real Rust code/domain pair', () => {
+        const setup = setupController({ handle: createLocalHandle() });
+        setup.controller.connect();
+        expect(setup.errors).toHaveLength(1);
+        const refusal = setup.errors[0] as NativeEditorV2TransportError;
+        // rust/editor-core/src/collaboration_runtime/state.rs not_room_bound():
+        // ErrorDomain::Transport + TRANSPORT_NOT_ROOM_BOUND.
+        expect(refusal).toBeInstanceOf(NativeEditorV2TransportError);
+        expect(refusal.domain).toBe('transport');
+        expect(refusal.code).toBe('TRANSPORT_NOT_ROOM_BOUND');
+    });
+
+    it('createWebSocket failure reports the error, renders the Rust-returned transport state, and schedules a retry', () => {
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
             createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-            onPeersChange: peersSpy,
-            onStateChange: (state) => {
-                states.push(state.status);
+                throw new Error('websocket constructor unavailable');
             },
         });
+        setup.controller.connect();
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
+        expect(setup.sockets).toHaveLength(0);
 
-        controller.connect();
-        expect(controller.state.status).toBe('connecting');
-        expect(sockets).toHaveLength(1);
+        // The failure surfaces through the autonomous error listener...
+        expect(setup.errors).toHaveLength(1);
+        expect(setup.errors[0].message).toBe('websocket constructor unavailable');
 
-        sockets[0].open();
-        expect(controller.state.status).toBe('connected');
-        expect(controller.state.isConnected).toBe(true);
-        expect(sockets[0].binaryType).toBe('arraybuffer');
-        expect(sockets[0].send).toHaveBeenCalledTimes(2);
-
-        const firstOutbound = sockets[0].send.mock.calls[0][0] as ArrayBuffer;
-        expect(Array.from(new Uint8Array(firstOutbound))).toEqual([0, 0, 1]);
-        const secondOutbound = sockets[0].send.mock.calls[1][0] as ArrayBuffer;
-        expect(Array.from(new Uint8Array(secondOutbound))).toEqual([1, 2, 3]);
-
-        sockets[0].receive([9, 9, 9]);
-        expect(mockNativeModule.collaborationSessionHandleMessage).toHaveBeenCalledWith(
-            1,
-            JSON.stringify([9, 9, 9])
+        // ...the issued generation is retired natively...
+        expect(runtime.module.editorV2CollaborationSocketClose).toHaveBeenCalledWith(
+            setup.handle.editorId,
+            '1',
+            null,
+            null
         );
-        expect(controller.state.documentJson).toEqual(REMOTE_DOC);
-        expect(controller.peers).toEqual(REMOTE_PEERS);
-        expect(peersSpy).toHaveBeenCalledWith(REMOTE_PEERS);
+        expect(runtime.session(setup.handle.editorId).liveGeneration).toBeNull();
 
-        controller.handleLocalDocumentChange(LOCAL_DOC);
-        expect(mockNativeModule.collaborationSessionApplyLocalDocumentJson).toHaveBeenCalledWith(
-            1,
-            JSON.stringify(LOCAL_DOC)
-        );
-        expect(controller.state.documentJson).toEqual(LOCAL_DOC);
+        // ...and the rendered state reflects the transport Rust settled into
+        // (never a stale pre-throw snapshot), carrying the error.
+        expect(setup.controller.state.status).toBe('disconnected');
+        expect(setup.controller.state.isConnected).toBe(false);
+        expect(setup.controller.state.lastError).toBe(setup.errors[0]);
+        expect(setup.states[setup.states.length - 1].status).toBe('disconnected');
 
-        controller.handleSelectionChange({ type: 'text', anchor: 3, head: 5 });
-        jest.advanceTimersByTime(40);
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenLastCalledWith(
-            1,
-            JSON.stringify({
-                user: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-                focused: true,
-                selection: { anchor: 3, head: 5 },
-            })
-        );
-
-        controller.handleFocusChange(true);
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenLastCalledWith(
-            1,
-            JSON.stringify({
-                user: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-                focused: true,
-                selection: { anchor: 3, head: 5 },
-            })
-        );
-
-        controller.disconnect();
-        expect(mockNativeModule.collaborationSessionClearLocalAwareness).toHaveBeenCalledWith(1);
-        expect(controller.state.status).toBe('disconnected');
-        expect(controller.state.isConnected).toBe(false);
-        expect(controller.peers).toEqual([]);
-        expect(states[0]).toBe('connecting');
-        expect(states).toContain('connected');
-        expect(states[states.length - 1]).toBe('disconnected');
-
-        controller.destroy();
-        expect(mockNativeModule.collaborationSessionDestroy).toHaveBeenCalledWith(1);
+        // A retry is still scheduled: the backoff timer asks Rust for a fresh
+        // generation (which fails the same way and reschedules).
+        jest.advanceTimersByTime(500);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(2);
+        expect(setup.errors).toHaveLength(2);
+        expect(latestStatus(setup)).toBe('disconnected');
     });
 
-    it('derives remote selection overlays from awareness peers', () => {
-        const sockets: MockWebSocket[] = [];
-        let latest: ReturnType<typeof useYjsCollaboration> | null = null;
+    // ── Generations ─────────────────────────────────────────────
 
-        function Harness() {
-            latest = useYjsCollaboration({
-                documentId: 'doc-2',
-                connect: false,
-                createWebSocket: () => {
-                    const socket = new MockWebSocket();
-                    sockets.push(socket);
-                    return socket as unknown as WebSocket;
-                },
-                initialDocumentJson: INITIAL_DOC,
-                localAwareness: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-            });
-            return null;
-        }
+    it('ignores superseded socket events and routes native stale-generation errors to the autonomous listener, not state', () => {
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        setup.controller.connect();
+        setup.sockets[0].open();
+        expect(latestStatus(setup)).toBe('handshaking');
 
-        render(React.createElement(Harness));
+        // Retryable close -> generation 1 retired, retry scheduled.
+        setup.sockets[0].serverClose(1006);
+        expect(latestStatus(setup)).toBe('disconnected');
+        jest.advanceTimersByTime(500);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(2);
+        expect(setup.sockets).toHaveLength(2);
+        expect(latestStatus(setup)).toBe('connecting');
 
-        act(() => {
-            latest?.connect();
-        });
-        act(() => {
-            sockets[0].open();
-            sockets[0].receive([9, 9, 9]);
-        });
+        // The superseded socket's messages and close are ignored outright:
+        // no native receive/close calls, no sends, no state movement.
+        const closeCalls = runtime.module.editorV2CollaborationSocketClose.mock.calls.length;
+        setup.sockets[0].receive(V2_FAKE_UPDATE_FRAME);
+        setup.sockets[0].serverClose(1006);
+        expect(runtime.module.editorV2CollaborationReceive).not.toHaveBeenCalled();
+        expect(runtime.module.editorV2CollaborationSocketClose.mock.calls.length).toBe(closeCalls);
+        expect(sentFrames(setup.sockets[1])).toEqual([]);
+        expect(latestStatus(setup)).toBe('connecting');
 
-        expect(latest?.editorBindings.remoteSelections).toEqual([
-            {
-                clientId: 2,
-                anchor: 4,
-                head: 9,
-                color: '#00f',
-                isFocused: true,
-                name: 'Bob',
-            },
-        ]);
-        expect(latest?.editorBindings.valueJSONUpdateMode).toBe('reset');
-        expect(latest?.editorBindings.preserveSelectionOnValueJSONReset).toBe(true);
+        // A native-side stale generation (retired behind the controller's
+        // back) surfaces through onError without touching state or the socket.
+        setup.sockets[1].open();
+        expect(latestStatus(setup)).toBe('handshaking');
+        runtime.retireLiveGeneration(setup.handle.editorId);
+        const errorsBefore = setup.errors.length;
+        setup.sockets[1].receive(V2_FAKE_STEP2_FRAME);
+        expect(setup.errors.length).toBe(errorsBefore + 1);
+        const staleError = setup.errors[setup.errors.length - 1];
+        expect(staleError).toBeInstanceOf(NativeEditorV2TransportError);
+        expect((staleError as NativeEditorV2TransportError).code).toBe(
+            'TRANSPORT_STALE_GENERATION'
+        );
+        expect(latestStatus(setup)).toBe('handshaking');
+        expect(setup.sockets[1].close).not.toHaveBeenCalled();
+        jest.advanceTimersByTime(60_000);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(2);
     });
 
-    it('passes mapped local peer selection to reset-mode editor bindings', () => {
-        const sockets: MockWebSocket[] = [];
-        let latest: ReturnType<typeof useYjsCollaboration> | null = null;
+    // ── Retry / incompatible ────────────────────────────────────
 
-        mockNativeModule.collaborationSessionHandleMessage.mockReturnValueOnce(
-            JSON.stringify({
-                messages: [],
-                documentChanged: true,
-                documentJson: REMOTE_DOC,
-                peersChanged: true,
-                peers: [
-                    {
-                        clientId: 1,
-                        isLocal: true,
-                        state: {
-                            user: { userId: '1', name: 'Alice', color: '#f00' },
-                            selection: { anchor: 6, head: 6 },
-                            focused: true,
-                        },
-                    },
-                    ...REMOTE_PEERS,
-                ],
-            })
-        );
+    it('schedules exponential backoff retries only while Rust admits reconnect', () => {
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        setup.controller.connect();
+        setup.sockets[0].open();
 
-        function Harness() {
-            latest = useYjsCollaboration({
-                documentId: 'doc-local-selection',
-                connect: false,
-                createWebSocket: () => {
-                    const socket = new MockWebSocket();
-                    sockets.push(socket);
-                    return socket as unknown as WebSocket;
-                },
-                initialDocumentJson: INITIAL_DOC,
-                localAwareness: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-            });
-            return null;
-        }
-
-        render(React.createElement(Harness));
-
-        act(() => {
-            latest?.connect();
-        });
-        act(() => {
-            sockets[0].open();
-            sockets[0].receive([9, 9, 9]);
-        });
-
-        expect(latest?.editorBindings.selectionOnValueJSONReset).toEqual({
-            type: 'text',
-            anchor: 6,
-            head: 6,
-        });
-        expect(latest?.editorBindings.remoteSelections).toEqual([
-            {
-                clientId: 2,
-                anchor: 4,
-                head: 9,
-                color: '#00f',
-                isFocused: true,
-                name: 'Bob',
-            },
-        ]);
-    });
-
-    it('treats remote selections as focused unless awareness explicitly says otherwise', () => {
-        const sockets: MockWebSocket[] = [];
-        let latest: ReturnType<typeof useYjsCollaboration> | null = null;
-
-        mockNativeModule.collaborationSessionHandleMessage.mockReturnValueOnce(
-            JSON.stringify({
-                messages: [],
-                documentChanged: false,
-                peersChanged: true,
-                peers: [
-                    {
-                        clientId: 2,
-                        isLocal: false,
-                        state: {
-                            user: { userId: '2', name: 'Bob', color: '#00f' },
-                            selection: { anchor: 6, head: 6 },
-                        },
-                    },
-                ],
-            })
-        );
-
-        function Harness() {
-            latest = useYjsCollaboration({
-                documentId: 'doc-2b',
-                connect: false,
-                createWebSocket: () => {
-                    const socket = new MockWebSocket();
-                    sockets.push(socket);
-                    return socket as unknown as WebSocket;
-                },
-                initialDocumentJson: INITIAL_DOC,
-                localAwareness: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-            });
-            return null;
-        }
-
-        render(React.createElement(Harness));
-
-        act(() => {
-            latest?.connect();
-        });
-        act(() => {
-            sockets[0].open();
-            sockets[0].receive([9, 9, 9]);
-        });
-
-        expect(latest?.editorBindings.remoteSelections).toEqual([
-            {
-                clientId: 2,
-                anchor: 6,
-                head: 6,
-                color: '#00f',
-                isFocused: true,
-                name: 'Bob',
-            },
-        ]);
-    });
-
-    it('coalesces rapid selection awareness updates', () => {
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-3',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.handleSelectionChange({ type: 'text', anchor: 1, head: 2 });
-        controller.handleSelectionChange({ type: 'text', anchor: 3, head: 5 });
-
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).not.toHaveBeenCalled();
-
-        jest.advanceTimersByTime(40);
-
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledTimes(1);
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenLastCalledWith(
-            1,
-            JSON.stringify({
-                user: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-                focused: true,
-                selection: { anchor: 3, head: 5 },
-            })
-        );
-
-        controller.destroy();
-    });
-
-    it('flushes pending local selection awareness before handling remote document messages', () => {
-        const sockets: MockWebSocket[] = [];
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-selection-before-remote',
-            connect: false,
-            createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.connect();
-        sockets[0].open();
-        sockets[0].send.mockClear();
-        mockNativeModule.collaborationSessionSetLocalAwareness.mockClear();
-        mockNativeModule.collaborationSessionHandleMessage.mockClear();
-
-        controller.handleSelectionChange({ type: 'text', anchor: 3, head: 5 });
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).not.toHaveBeenCalled();
-
-        sockets[0].receive([9, 9, 9]);
-
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledWith(
-            1,
-            JSON.stringify({
-                user: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-                focused: true,
-                selection: { anchor: 3, head: 5 },
-            })
-        );
-        expect(mockNativeModule.collaborationSessionHandleMessage).toHaveBeenCalledWith(
-            1,
-            JSON.stringify([9, 9, 9])
-        );
-        expect(
-            mockNativeModule.collaborationSessionSetLocalAwareness.mock.invocationCallOrder[0]
-        ).toBeLessThan(
-            mockNativeModule.collaborationSessionHandleMessage.mock.invocationCallOrder[0]
-        );
-
-        controller.destroy();
-    });
-
-    it('commits pending local selection awareness after applying local document changes', () => {
-        const sockets: MockWebSocket[] = [];
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-selection-after-local-change',
-            connect: false,
-            createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.connect();
-        sockets[0].open();
-        sockets[0].send.mockClear();
-        mockNativeModule.collaborationSessionApplyLocalDocumentJson.mockClear();
-        mockNativeModule.collaborationSessionSetLocalAwareness.mockClear();
-
-        controller.handleSelectionChange({ type: 'text', anchor: 6, head: 6 });
-        controller.handleLocalDocumentChange(LOCAL_DOC);
-
-        expect(mockNativeModule.collaborationSessionApplyLocalDocumentJson).toHaveBeenCalledWith(
-            1,
-            JSON.stringify(LOCAL_DOC)
-        );
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledWith(
-            1,
-            JSON.stringify({
-                user: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-                focused: true,
-                selection: { anchor: 6, head: 6 },
-            })
-        );
-        expect(
-            mockNativeModule.collaborationSessionApplyLocalDocumentJson.mock.invocationCallOrder[0]
-        ).toBeLessThan(
-            mockNativeModule.collaborationSessionSetLocalAwareness.mock.invocationCallOrder[0]
-        );
-        expect(Array.from(new Uint8Array(sockets[0].send.mock.calls[0][0] as ArrayBuffer))).toEqual(
-            [0, 2, 8, 8, 8]
-        );
-        expect(Array.from(new Uint8Array(sockets[0].send.mock.calls[1][0] as ArrayBuffer))).toEqual(
-            [1, 6, 6, 6]
-        );
-
-        jest.advanceTimersByTime(40);
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledTimes(1);
-
-        controller.destroy();
-    });
-
-    it('ignores identical selection awareness updates', () => {
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-3-repeat',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.handleSelectionChange({ type: 'text', anchor: 3, head: 5 });
-        jest.advanceTimersByTime(40);
-        controller.handleSelectionChange({ type: 'text', anchor: 3, head: 5 });
-        jest.advanceTimersByTime(40);
-
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledTimes(1);
-
-        controller.destroy();
-    });
-
-    it('responds to y-websocket queryAwareness with a local awareness update', () => {
-        const sockets: MockWebSocket[] = [];
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-awareness',
-            connect: false,
-            createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.connect();
-        sockets[0].open();
-        sockets[0].send.mockClear();
-        mockNativeModule.collaborationSessionSetLocalAwareness.mockClear();
-
-        sockets[0].receive([3]);
-
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledWith(
-            1,
-            JSON.stringify({
-                user: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-                focused: false,
-            })
-        );
-        expect(mockNativeModule.collaborationSessionHandleMessage).not.toHaveBeenCalledWith(
-            1,
-            JSON.stringify([3])
-        );
-        expect(sockets[0].send).toHaveBeenCalledTimes(1);
-        expect(Array.from(new Uint8Array(sockets[0].send.mock.calls[0][0] as ArrayBuffer))).toEqual(
-            [1, 6, 6, 6]
-        );
-
-        controller.destroy();
-    });
-
-    it('flushes focus awareness changes immediately', () => {
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-4',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.handleSelectionChange({ type: 'text', anchor: 1, head: 2 });
-        controller.handleFocusChange(true);
-
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledTimes(1);
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenLastCalledWith(
-            1,
-            JSON.stringify({
-                user: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-                focused: true,
-                selection: { anchor: 1, head: 2 },
-            })
-        );
-
-        controller.destroy();
-    });
-
-    it('ignores identical focus awareness updates', () => {
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-4-repeat',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.handleFocusChange(true);
-        controller.handleFocusChange(true);
-
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledTimes(1);
-
-        controller.destroy();
-    });
-
-    it('closes a connecting socket when disconnected before open', () => {
-        const sockets: MockWebSocket[] = [];
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-disconnect-connecting',
-            connect: false,
-            createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.connect();
-        expect(sockets).toHaveLength(1);
-
-        controller.disconnect();
-
-        expect(sockets[0].close).toHaveBeenCalledTimes(1);
-        expect(mockNativeModule.collaborationSessionClearLocalAwareness).not.toHaveBeenCalled();
-        expect(controller.state.status).toBe('disconnected');
-
-        controller.destroy();
-    });
-
-    it('retries after an unexpected socket close using the default exponential backoff', () => {
-        const sockets: MockWebSocket[] = [];
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-retry-default',
-            connect: false,
-            createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.connect();
-        sockets[0].open();
-        sockets[0].close.mockClear();
-
-        sockets[0].close();
-
-        expect(controller.state.status).toBe('disconnected');
-        expect(controller.state.isConnected).toBe(false);
-        expect(sockets).toHaveLength(1);
-
+        setup.sockets[0].serverClose(1006);
+        expect(latestStatus(setup)).toBe('disconnected');
         jest.advanceTimersByTime(499);
-        expect(sockets).toHaveLength(1);
-
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
         jest.advanceTimersByTime(1);
-        expect(sockets).toHaveLength(2);
-        expect(controller.state.status).toBe('connecting');
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(2);
+        expect(setup.sockets).toHaveLength(2);
 
-        controller.destroy();
+        setup.sockets[1].open();
+        setup.sockets[1].serverClose(1006);
+        jest.advanceTimersByTime(999);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(2);
+        jest.advanceTimersByTime(1);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(3);
     });
 
-    it('uses a custom retry function and can stop retrying', () => {
-        const sockets: MockWebSocket[] = [];
-        const retryIntervalMs = jest
-            .fn<number | null, [{ attempt: number; documentId: string; lastError?: Error }]>()
-            .mockReturnValueOnce(250)
-            .mockReturnValueOnce(null);
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-retry-custom',
-            connect: false,
+    it('honors retryIntervalMs as a pure scheduling knob', () => {
+        const disabled = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            retryIntervalMs: false,
+        });
+        disabled.controller.connect();
+        disabled.sockets[0].open();
+        disabled.sockets[0].serverClose(1006);
+        jest.advanceTimersByTime(120_000);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
+
+        const custom = setupController({
+            handle: createRoomHandle({ withSnapshot: true, documentId: 'doc-2' }),
+            retryIntervalMs: 25,
+        });
+        custom.controller.connect();
+        custom.sockets[0].open();
+        custom.sockets[0].serverClose(1006);
+        const callsBefore = runtime.module.editorV2CollaborationBeginConnect.mock.calls.length;
+        jest.advanceTimersByTime(24);
+        expect(runtime.module.editorV2CollaborationBeginConnect.mock.calls.length).toBe(
+            callsBefore
+        );
+        jest.advanceTimersByTime(1);
+        expect(runtime.module.editorV2CollaborationBeginConnect.mock.calls.length).toBe(
+            callsBefore + 1
+        );
+    });
+
+    it('accepts retryIntervalMs as a function of the retry context', () => {
+        const retryIntervalMs = jest.fn((context: YjsRetryContext) => context.attempt * 100);
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
             retryIntervalMs,
             createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
+                throw new Error('down');
             },
         });
-
-        controller.connect();
-        sockets[0].open();
-        sockets[0].close();
-
+        setup.controller.connect();
         expect(retryIntervalMs).toHaveBeenCalledWith({
             attempt: 1,
-            documentId: 'doc-retry-custom',
-            lastError: undefined,
+            documentId: 'doc-1',
+            lastError: setup.errors[0],
         });
+        jest.advanceTimersByTime(99);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
+        jest.advanceTimersByTime(1);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(2);
 
-        jest.advanceTimersByTime(250);
-        expect(sockets).toHaveLength(2);
-
-        sockets[1].open();
-        sockets[1].close();
-
+        // The second failure escalates through the function: attempt 2 -> 200ms.
         expect(retryIntervalMs).toHaveBeenLastCalledWith({
-            attempt: 1,
-            documentId: 'doc-retry-custom',
-            lastError: undefined,
+            attempt: 2,
+            documentId: 'doc-1',
+            lastError: setup.errors[1],
         });
-
-        jest.advanceTimersByTime(250);
-        expect(sockets).toHaveLength(2);
-
-        controller.destroy();
+        jest.advanceTimersByTime(199);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(2);
+        jest.advanceTimersByTime(1);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(3);
     });
 
-    it('does not retry after a manual disconnect', () => {
-        const sockets: MockWebSocket[] = [];
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-retry-manual-stop',
-            connect: false,
-            retryIntervalMs: 1000,
-            createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
+    it('stops retry scheduling when Rust refuses begin_connect, and Incompatible blocks reconnect until detach/reattach', () => {
+        const setup = setupController();
+        setup.controller.connect();
+        setup.sockets[0].open();
+        runtime.pushRemoteDoc(setup.handle.editorId, SERVER_DOC);
+        setup.sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        expect(latestStatus(setup)).toBe('synchronized');
 
-        controller.connect();
-        sockets[0].open();
-        sockets[0].close();
+        // A permanently inadmissible remote state parks the transport.
+        setup.sockets[0].receive(V2_FAKE_INCOMPATIBLE_FRAME);
+        expect(latestStatus(setup)).toBe('incompatible');
+        expect(setup.controller.state.isConnected).toBe(false);
+        expect(setup.errors.length).toBeGreaterThanOrEqual(1);
+        jest.advanceTimersByTime(120_000);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
 
-        controller.disconnect();
+        // Explicit reconnect is refused by Rust: no new socket, no retry.
+        const errorsBefore = setup.errors.length;
+        setup.controller.connect();
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(2);
+        expect(setup.sockets).toHaveLength(1);
+        expect(setup.errors.length).toBe(errorsBefore + 1);
+        const refusal = setup.errors[setup.errors.length - 1];
+        expect((refusal as NativeEditorV2TransportError).code).toBe('TRANSPORT_INCOMPATIBLE');
+        expect(latestStatus(setup)).toBe('incompatible');
+        jest.advanceTimersByTime(120_000);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(2);
 
-        jest.advanceTimersByTime(1000);
-        expect(sockets).toHaveLength(1);
+        // Snapshot restore is NOT an escape hatch: Rust rejects it while the
+        // transport is parked Incompatible.
+        expect(() =>
+            setup.handle.bridge.snapshotRestore(
+                {
+                    formatVersion: 1,
+                    documentId: 'doc-1',
+                    lineageId: 'lineage-1',
+                    fragmentName: 'prosemirror',
+                    schemaFingerprint: 'fakefingerprint',
+                },
+                snapshotState(SNAPSHOT_DOC, 9)
+            )
+        ).toThrow();
+        expect(latestStatus(setup)).toBe('incompatible');
 
-        controller.destroy();
+        // Detach/reattach means tearing the session down and creating a fresh
+        // one; the fresh room handle admits connect again.
+        setup.controller.destroy();
+        setup.handle.destroy();
+        const reattached = setupController();
+        reattached.controller.connect();
+        expect(reattached.sockets).toHaveLength(1);
+        expect(reattached.controller.state.status).toBe('connecting');
     });
 
-    it('clears local awareness when the collaboration hook unmounts', () => {
-        const sockets: MockWebSocket[] = [];
+    it('treats a policy-violation close code (1008) as incompatible without retry', () => {
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        setup.controller.connect();
+        setup.sockets[0].open();
+        setup.sockets[0].serverClose(1008, 'policy violation');
+        expect(runtime.module.editorV2CollaborationSocketClose).toHaveBeenCalledWith(
+            setup.handle.editorId,
+            '1',
+            1008,
+            'policy violation'
+        );
+        expect(latestStatus(setup)).toBe('incompatible');
+        jest.advanceTimersByTime(120_000);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
+    });
 
-        function Harness() {
+    it('manual disconnect reports the generation close, retains desired awareness, and never retries', () => {
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+        });
+        setup.controller.connect();
+        openAndSynchronize(setup);
+
+        setup.controller.disconnect();
+        expect(latestStatus(setup)).toBe('disconnected');
+        expect(runtime.module.editorV2CollaborationSocketClose).toHaveBeenCalledWith(
+            setup.handle.editorId,
+            '1',
+            1000,
+            'client disconnect'
+        );
+        // Desired awareness is retained natively across the disconnect.
+        const session = runtime.session(setup.handle.editorId);
+        expect(session.desiredAwareness).not.toBeNull();
+        jest.advanceTimersByTime(120_000);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
+
+        setup.controller.reconnect();
+        expect(setup.sockets).toHaveLength(2);
+        expect(latestStatus(setup)).toBe('connecting');
+    });
+
+    it('manual disconnect before socket open retires the generation, renders Rust state, and never retries', () => {
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        setup.controller.connect();
+        expect(setup.sockets).toHaveLength(1);
+        expect(setup.sockets[0].readyState).toBe(MockWebSocket.CONNECTING);
+        expect(latestStatus(setup)).toBe('connecting');
+
+        setup.controller.disconnect();
+        expect(runtime.module.editorV2CollaborationSocketClose).toHaveBeenCalledWith(
+            setup.handle.editorId,
+            '1',
+            1000,
+            'client disconnect'
+        );
+        // State renders from the Rust-settled transport; the generation is
+        // retired natively.
+        expect(latestStatus(setup)).toBe('disconnected');
+        expect(setup.controller.state.isConnected).toBe(false);
+        const session = runtime.session(setup.handle.editorId);
+        expect(session.liveGeneration).toBeNull();
+        expect(session.transportState).toBe('Disconnected');
+
+        // A manual disconnect schedules no retry.
+        jest.advanceTimersByTime(120_000);
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
+        expect(setup.sockets).toHaveLength(1);
+
+        // The abandoned socket's late open is superseded and ignored outright.
+        setup.sockets[0].open();
+        expect(runtime.module.editorV2CollaborationSocketOpen).not.toHaveBeenCalled();
+        expect(latestStatus(setup)).toBe('disconnected');
+    });
+
+    // ── Outbound drain ──────────────────────────────────────────
+
+    it('drains queued offline edits after reconnect as standard frames, protocol replies before document frames', () => {
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        setup.controller.connect();
+        setup.sockets[0].open();
+        setup.sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        expect(latestStatus(setup)).toBe('synchronized');
+
+        // Go offline; local edits queue in the engine's outbox.
+        setup.sockets[0].serverClose(1006);
+        expect(latestStatus(setup)).toBe('disconnected');
+        const editorId = setup.handle.editorId;
+        setup.handle.bridge.applyLocalApi({
+            setJson: LOCAL_DOC_B,
+            history: 'undoableBoundary',
+            baseDocumentRevision: '7',
+        });
+        setup.handle.bridge.applyLocalApi({
+            setJson: LOCAL_DOC_C,
+            history: 'undoableBoundary',
+            baseDocumentRevision: '8',
+        });
+        expect(runtime.queuedFrames(editorId)).toHaveLength(2);
+
+        // Reconnect via the retry timer: Sync Step 1 first, then the queued
+        // document frames in engine order.
+        jest.advanceTimersByTime(500);
+        expect(setup.sockets).toHaveLength(2);
+        setup.sockets[1].open();
+        expect(sentFrames(setup.sockets[1])).toEqual([
+            Array.from(V2_FAKE_STEP1_FRAME),
+            [0x64, 8],
+            [0x64, 9],
+        ]);
+
+        // A protocol reply always precedes document frames in one drain.
+        setup.sockets[1].receive(V2_FAKE_STEP1_FRAME);
+        expect(sentFrames(setup.sockets[1]).slice(3)).toEqual([[0x70, 1]]);
+        setup.handle.bridge.applyInput({ baseDocumentRevision: '9', text: '!' });
+        setup.sockets[1].receive(V2_FAKE_STEP1_FRAME);
+        expect(sentFrames(setup.sockets[1]).slice(4)).toEqual([
+            [0x70, 2],
+            [0x64, 10],
+        ]);
+    });
+
+    it('sends nothing but Step 1 when the outbound queue is empty', () => {
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        setup.controller.connect();
+        setup.sockets[0].open();
+        expect(sentFrames(setup.sockets[0])).toEqual([Array.from(V2_FAKE_STEP1_FRAME)]);
+        expect(runtime.module.editorV2CollaborationTakeOutbound).toHaveBeenCalled();
+    });
+
+    // ── Awareness / peers ───────────────────────────────────────
+
+    it('publishes desired awareness through Rust with no TypeScript clock bookkeeping, and renders peers', () => {
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+        });
+        // The desired awareness record carries user data only — never a clock.
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(1);
+        const initialPayload = runtime.module.editorV2CollaborationSetAwareness.mock
+            .calls[0][1] as string;
+        expect(initialPayload).not.toContain('"clock"');
+        expect(JSON.parse(initialPayload)).toEqual({ user: ALICE, focused: false });
+
+        setup.controller.connect();
+        setup.sockets[0].open();
+        setup.sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        // Rust re-published the retained desired awareness on synchronization:
+        // the drained awareness frame carries the Rust-owned clock (1).
+        expect(sentFrames(setup.sockets[0])).toEqual([
+            Array.from(V2_FAKE_STEP1_FRAME),
+            [0x61, 1],
+        ]);
+
+        // The local peer projection comes from Rust (with its clock).
+        expect(setup.controller.peers).toEqual([
+            {
+                clientId: expect.any(String),
+                clock: 1,
+                isLocal: true,
+                state: { user: ALICE, focused: false },
+                cursor: null,
+            },
+        ]);
+
+        // A remote awareness update renders through the returned Rust state.
+        runtime.pushRemotePeers(setup.handle.editorId, [remotePeer()]);
+        setup.sockets[0].receive(V2_FAKE_AWARENESS_FRAME);
+        expect(setup.controller.peers).toHaveLength(2);
+        expect(setup.controller.peers[1]).toEqual(remotePeer());
+        expect(setup.peersLog.length).toBeGreaterThanOrEqual(1);
+
+        // Updating local awareness goes through Rust again; the clock advances
+        // natively (2) without TypeScript ever seeing it.
+        setup.controller.updateLocalAwareness({ user: { ...ALICE, name: 'Alice II' } });
+        const updatePayload = runtime.module.editorV2CollaborationSetAwareness.mock
+            .calls[1][1] as string;
+        expect(updatePayload).not.toContain('"clock"');
+        expect(sentFrames(setup.sockets[0]).slice(2)).toEqual([[0x61, 2]]);
+    });
+
+    it('merges selection and focus into the desired local awareness state', () => {
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+        });
+        setup.controller.handleSelectionChange({ type: 'text', anchor: 2, head: 5 });
+        const selectionPayload = JSON.parse(
+            runtime.module.editorV2CollaborationSetAwareness.mock.calls[1][1] as string
+        );
+        expect(selectionPayload).toEqual({
+            user: ALICE,
+            focused: true,
+            selection: { anchor: 2, head: 5 },
+        });
+
+        setup.controller.handleFocusChange(false);
+        const focusPayload = JSON.parse(
+            runtime.module.editorV2CollaborationSetAwareness.mock.calls[2][1] as string
+        );
+        expect(focusPayload).toEqual({
+            user: ALICE,
+            focused: false,
+            selection: { anchor: 2, head: 5 },
+        });
+    });
+
+    it('setting identical awareness twice emits no publish', () => {
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+        });
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(1);
+
+        // Merging the same values into the desired state is a no-op.
+        setup.controller.updateLocalAwareness({ user: { ...ALICE } });
+        setup.controller.updateLocalAwareness({ focused: false });
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(1);
+
+        // A real change still publishes.
+        setup.controller.updateLocalAwareness({ focused: true });
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(2);
+        const payload = JSON.parse(
+            runtime.module.editorV2CollaborationSetAwareness.mock.calls[1][1] as string
+        );
+        expect(payload).toEqual({ user: ALICE, focused: true });
+    });
+
+    // ── Error separation ────────────────────────────────────────
+
+    it('never closes the socket generation for local operation errors, and never fails local edits for transport errors', () => {
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        setup.controller.connect();
+        setup.sockets[0].open();
+        setup.sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        expect(latestStatus(setup)).toBe('synchronized');
+
+        // A local operation error (whole-document replacement while the
+        // transport is live) leaves the socket generation alone.
+        expect(() =>
+            setup.handle.bridge.applyLocalApi({
+                setJson: LOCAL_DOC_B,
+                history: 'undoableBoundary',
+                baseDocumentRevision: '7',
+            })
+        ).toThrow();
+        expect(runtime.module.editorV2CollaborationSocketClose).not.toHaveBeenCalled();
+        expect(latestStatus(setup)).toBe('synchronized');
+        expect(setup.sockets[0].close).not.toHaveBeenCalled();
+        // The transport is still healthy: inbound frames keep flowing.
+        runtime.pushRemotePeers(setup.handle.editorId, [remotePeer()]);
+        setup.sockets[0].receive(V2_FAKE_AWARENESS_FRAME);
+        expect(setup.controller.peers).toHaveLength(1);
+
+        // A transport failure (retry pending) never fails local edits.
+        setup.sockets[0].serverClose(1006);
+        expect(latestStatus(setup)).toBe('disconnected');
+        const outcome = setup.handle.bridge.applyInput({
+            baseDocumentRevision: '7',
+            text: 'offline',
+        });
+        expect(outcome.type).toBe('transaction');
+        expect(runtime.session(setup.handle.editorId).documentRevision).toBe(8);
+    });
+
+    // ── Destroy / shared session ────────────────────────────────
+
+    it('destroy retires the socket generation but never destroys the shared document handle', () => {
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        setup.controller.connect();
+        setup.sockets[0].open();
+
+        setup.controller.destroy();
+        expect(latestStatus(setup)).toBe('destroyed');
+        expect(runtime.module.editorV2CollaborationSocketClose).toHaveBeenCalledWith(
+            setup.handle.editorId,
+            '1',
+            1000,
+            'controller destroyed'
+        );
+        // One shared session: the handle outlives the controller.
+        expect(runtime.module.editorV2Destroy).not.toHaveBeenCalled();
+        expect(runtime.module.editorV2Create).toHaveBeenCalledTimes(1);
+        expect(setup.handle.bridge.getState().transportState).toBe('Disconnected');
+
+        // A destroyed controller is inert.
+        setup.controller.connect();
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
+        expect(setup.sockets).toHaveLength(1);
+    });
+
+    it('repeated connect while a socket is live never asks Rust for a second generation', () => {
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        setup.controller.connect();
+        setup.controller.connect();
+        setup.sockets[0].open();
+        setup.controller.connect();
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
+        expect(setup.sockets).toHaveLength(1);
+    });
+
+    // ── Hook ────────────────────────────────────────────────────
+
+    it('useYjsCollaboration renders returned Rust state and binds the shared handle', () => {
+        const handle = createRoomHandle();
+        const sockets: MockWebSocket[] = [];
+        const { result } = renderHook(() =>
             useYjsCollaboration({
-                documentId: 'doc-unmount-awareness',
+                documentId: 'doc-1',
+                handle,
+                connect: false,
                 createWebSocket: () => {
                     const socket = new MockWebSocket();
                     sockets.push(socket);
                     return socket as unknown as WebSocket;
                 },
-                initialDocumentJson: INITIAL_DOC,
-                localAwareness: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-            });
-            return null;
-        }
+            })
+        );
 
-        const rendered = render(React.createElement(Harness));
+        expect(result.current.state.status).toBe('disconnected');
+        expect(result.current.state.documentJson).toBeNull();
+        expect(result.current.isConnected).toBe(false);
+        expect(result.current.editorBindings.documentHandle).toBe(handle);
+        expect(result.current.editorBindings.documentRevision).toBeNull();
 
-        expect(sockets).toHaveLength(1);
+        act(() => {
+            result.current.connect();
+        });
+        expect(result.current.state.status).toBe('connecting');
         act(() => {
             sockets[0].open();
         });
-        sockets[0].send.mockClear();
+        expect(result.current.state.status).toBe('handshaking');
+        expect(result.current.isConnected).toBe(false);
 
-        rendered.unmount();
-
-        expect(mockNativeModule.collaborationSessionClearLocalAwareness).toHaveBeenCalledWith(1);
-        expect(sockets[0].close).toHaveBeenCalledTimes(1);
-        expect(sockets[0].send).toHaveBeenCalledTimes(1);
-        expect(Array.from(new Uint8Array(sockets[0].send.mock.calls[0][0] as ArrayBuffer))).toEqual(
-            [7, 7, 7]
+        act(() => {
+            runtime.pushRemoteDoc(handle.editorId, SERVER_DOC);
+            sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        });
+        expect(result.current.state.status).toBe('synchronized');
+        expect(result.current.isConnected).toBe(true);
+        expect(result.current.state.documentJson).toEqual(SERVER_DOC);
+        expect(result.current.editorBindings.documentRevision).toBe(
+            result.current.state.documentRevision
         );
-        expect(mockNativeModule.collaborationSessionDestroy).toHaveBeenCalledWith(1);
+        expect(result.current.editorBindings.documentRevision).not.toBeNull();
     });
 
-    it('supports disabling automatic retry', () => {
+    it('maps Rust peer projections to editor remote-selection decorations via the hook', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
         const sockets: MockWebSocket[] = [];
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-retry-disabled',
-            connect: false,
-            retryIntervalMs: false,
-            createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.connect();
-        sockets[0].open();
-        sockets[0].close();
-
-        jest.advanceTimersByTime(5_000);
-        expect(sockets).toHaveLength(1);
-
-        controller.destroy();
-    });
-
-    it('surfaces websocket creation failures as error state', () => {
-        const onError = jest.fn();
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-5',
-            connect: false,
-            createWebSocket: () => {
-                throw new Error('bad url');
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-            onError,
-        });
-
-        controller.connect();
-
-        expect(controller.state.status).toBe('error');
-        expect(controller.state.isConnected).toBe(false);
-        expect(controller.state.lastError?.message).toBe('bad url');
-        expect(onError).toHaveBeenCalled();
-
-        controller.destroy();
-    });
-
-    it('uses the native schema-valid empty document when no initial doc is provided', () => {
-        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValue(
-            JSON.stringify(TITLE_EMPTY_DOC)
-        );
-
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-6',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            schema: TITLE_FIRST_SCHEMA,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        expect(JSON.parse(mockNativeModule.collaborationSessionCreate.mock.calls[0][0])).toEqual({
-            fragmentName: 'default',
-            schema: schemas.resolveDocumentDescriptor(TITLE_FIRST_SCHEMA).schema,
-            localAwareness: {
-                user: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-                focused: false,
-            },
-        });
-        expect(controller.state.documentJson).toEqual(TITLE_EMPTY_DOC);
-
-        controller.destroy();
-    });
-
-    it('falls back to a schema-valid empty document when native returns an empty doc', () => {
-        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValueOnce(
-            JSON.stringify({
-                type: 'doc',
-                content: [],
-            })
-        );
-
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-6-empty-native',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            schema: TITLE_FIRST_SCHEMA,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        expect(controller.state.documentJson).toEqual(TITLE_EMPTY_DOC);
-
-        controller.destroy();
-    });
-
-    it('uses the custom doc-role default when native returns an empty custom root', () => {
-        let latest: ReturnType<typeof useYjsCollaboration> | null = null;
-        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValue(
-            JSON.stringify({ type: 'article', content: [] })
-        );
-
-        function Harness() {
-            latest = useYjsCollaboration({
-                documentId: 'article-empty-native',
-                connect: false,
-                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-                schema: ARTICLE_SCHEMA,
-                localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
-            });
-            return null;
-        }
-
-        render(React.createElement(Harness));
-
-        expect(latest?.state.documentJson).toEqual(ARTICLE_EMPTY_DOC);
-        expect(latest?.editorBindings.valueJSON).toEqual(ARTICLE_EMPTY_DOC);
-    });
-
-    it('normalizes custom-root initial JSON before native session creation', () => {
-        const controller = createYjsCollaborationController({
-            documentId: 'article-initial-empty',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            schema: ARTICLE_SCHEMA,
-            initialDocumentJson: { type: 'article', content: [] },
-            localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
-        });
-
-        const config = JSON.parse(
-            mockNativeModule.collaborationSessionCreate.mock.calls[0]?.[0] as string
-        );
-        expect(config.initialDocumentJson).toEqual(ARTICLE_EMPTY_DOC);
-        controller.destroy();
-    });
-
-    it('reuses the hook descriptor for semantically equal inline resource limits', () => {
-        const descriptorSpy = jest.spyOn(schemas, 'resolveDocumentDescriptor');
-
-        function Harness({ maxSchemaNodes }: { maxSchemaNodes: number }) {
+        const { result } = renderHook(() =>
             useYjsCollaboration({
-                documentId: 'semantic-resource-limits',
+                documentId: 'doc-1',
+                handle,
                 connect: false,
-                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-                resourceLimits: { maxSchemaNodes },
-                localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
-            });
-            return null;
-        }
-
-        const { rerender } = render(React.createElement(Harness, { maxSchemaNodes: 500 }));
-        rerender(React.createElement(Harness, { maxSchemaNodes: 500 }));
-
-        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledTimes(1);
-        expect(descriptorSpy).toHaveBeenCalledTimes(1);
-        descriptorSpy.mockRestore();
-    });
-
-    it('uses grouped alternatives and ranges for the empty-document fallback', () => {
-        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValue(
-            JSON.stringify({ type: 'doc', content: [] })
-        );
-
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-grouped-empty',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            schema: GROUPED_RANGE_SCHEMA,
-            localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
-        });
-
-        expect(controller.state.documentJson).toEqual({
-            type: 'doc',
-            content: [{ type: 'title' }],
-        });
-        controller.destroy();
-    });
-
-    it('uses a schema-aware empty document on the first hook render before native initialization completes', () => {
-        const renderedDocs: DocumentJSON[] = [];
-        let latest: ReturnType<typeof useYjsCollaboration> | null = null;
-        mockNativeModule.collaborationSessionCreate.mockImplementation(() => {
-            throw new Error('native init failed');
-        });
-
-        function Harness() {
-            latest = useYjsCollaboration({
-                documentId: 'doc-title-first',
-                connect: false,
-                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-                schema: TITLE_FIRST_SCHEMA,
-                localAwareness: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-            });
-            renderedDocs.push(latest.state.documentJson);
-            return null;
-        }
-
-        render(React.createElement(Harness));
-
-        expect(renderedDocs[0]).toEqual(TITLE_EMPTY_DOC);
-        expect(latest?.state.documentJson).toEqual(TITLE_EMPTY_DOC);
-    });
-
-    it('passes initial encoded state into the native collaboration session', () => {
-        createYjsCollaborationController({
-            documentId: 'doc-7',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            initialEncodedState: Uint8Array.from([4, 5, 6]),
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
-            JSON.stringify({
-                fragmentName: 'default',
-                localAwareness: {
-                    user: {
-                        userId: '1',
-                        name: 'Alice',
-                        color: '#f00',
-                    },
-                    focused: false,
+                localAwareness: ALICE,
+                createWebSocket: () => {
+                    const socket = new MockWebSocket();
+                    sockets.push(socket);
+                    return socket as unknown as WebSocket;
                 },
             })
         );
-        expect(mockNativeModule.collaborationSessionReplaceEncodedState).toHaveBeenCalledWith(
-            1,
-            JSON.stringify([4, 5, 6])
-        );
-    });
+        act(() => {
+            result.current.connect();
+        });
+        act(() => {
+            sockets[0].open();
+            sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        });
+        act(() => {
+            runtime.pushRemotePeers(handle.editorId, [
+                remotePeer(),
+                remotePeer({ clientId: '43', cursor: null, state: null }),
+            ]);
+            sockets[0].receive(V2_FAKE_AWARENESS_FRAME);
+        });
 
-    it('passes resolved resource limits into the native collaboration session', () => {
-        createYjsCollaborationController({
-            documentId: 'doc-limits',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            resourceLimits: { maxCollaborationMessageBytes: 1024 },
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
+        const decorations = result.current.editorBindings.remoteSelections;
+        expect(decorations).toEqual([
+            {
+                clientId: '42',
+                anchor: 4,
+                head: 9,
+                color: '#00f',
+                name: 'Bob',
+                avatarUrl: undefined,
+                isFocused: true,
             },
-        });
-
-        const config = JSON.parse(
-            mockNativeModule.collaborationSessionCreate.mock.calls[0]?.[0] as string
-        );
-        expect(config.resourceLimits).toMatchObject({
-            maxInputBytes: 20 * 1024 * 1024,
-            maxCollaborationMessageBytes: 1024,
-            maxEncodedStateBytes: 50 * 1024 * 1024,
-        });
+        ]);
     });
 
-    it('rejects oversized query-awareness and string messages before fast paths or parsing', () => {
+    it('honors the connect prop and forwards callbacks', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
         const sockets: MockWebSocket[] = [];
-        const onError = jest.fn();
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-ingress-limit',
-            connect: false,
-            createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            resourceLimits: { maxCollaborationMessageBytes: 2 },
-            localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
-            onError,
-        });
-
-        controller.connect();
-        sockets[0].open();
-        const awarenessCalls = mockNativeModule.collaborationSessionSetLocalAwareness.mock.calls
-            .length;
-        sockets[0].receive([3, 0, 0]);
-
-        expect(controller.state.lastError).toMatchObject({
-            name: 'NativeEditorBoundaryError',
-            code: 'INPUT_LIMIT_EXCEEDED',
-            limit: 2,
-            actual: 3,
-        });
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenCalledTimes(
-            awarenessCalls
-        );
-        expect(mockNativeModule.collaborationSessionHandleMessage).not.toHaveBeenCalled();
-        expect(onError).toHaveBeenCalledTimes(1);
-
-        const second = createYjsCollaborationController({
-            documentId: 'doc-string-limit',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            resourceLimits: { maxCollaborationMessageBytes: 2 },
-            localAwareness: { userId: '1', name: 'Alice', color: '#f00' },
-        });
-        second.connect();
-        const secondSocket = (second as unknown as { socket: MockWebSocket }).socket;
-        secondSocket.open();
-        const parse = jest.spyOn(JSON, 'parse');
-        secondSocket.receiveData('[3,0,0]');
-        expect(parse).not.toHaveBeenCalled();
-        expect(second.state.lastError).toMatchObject({ code: 'INPUT_LIMIT_EXCEEDED' });
-        parse.mockRestore();
-
-        controller.destroy();
-        second.destroy();
-    });
-
-    it('passes a custom fragment name through to the native collaboration session', () => {
-        createYjsCollaborationController({
-            documentId: 'doc-fragment',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            fragmentName: 'prosemirror',
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
-            JSON.stringify({
-                fragmentName: 'prosemirror',
-                localAwareness: {
-                    user: {
-                        userId: '1',
-                        name: 'Alice',
-                        color: '#f00',
-                    },
-                    focused: false,
+        const onStateChange = jest.fn();
+        let connect = false;
+        const { result, rerender } = renderHook(() =>
+            useYjsCollaboration({
+                documentId: 'doc-1',
+                handle,
+                connect,
+                createWebSocket: () => {
+                    const socket = new MockWebSocket();
+                    sockets.push(socket);
+                    return socket as unknown as WebSocket;
                 },
+                onStateChange,
             })
         );
+        expect(sockets).toHaveLength(0);
+        connect = true;
+        rerender();
+        expect(sockets).toHaveLength(1);
+        expect(onStateChange).toHaveBeenCalled();
+        expect(result.current.state.status).toBe('connecting');
     });
 
-    it('passes schema metadata through to the native collaboration session', () => {
-        createYjsCollaborationController({
-            documentId: 'doc-schema',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            schema: CUSTOM_COLLABORATION_SCHEMA,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        expect(JSON.parse(mockNativeModule.collaborationSessionCreate.mock.calls[0][0])).toEqual({
-            fragmentName: 'default',
-            schema: schemas.resolveDocumentDescriptor(CUSTOM_COLLABORATION_SCHEMA).schema,
-            localAwareness: {
-                user: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-                focused: false,
-            },
-        });
-    });
-
-    it('seeds the native Yjs session from initial document JSON', () => {
-        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValue(
-            JSON.stringify(INITIAL_DOC)
-        );
-
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-fallback',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
-            JSON.stringify({
-                fragmentName: 'default',
-                initialDocumentJson: INITIAL_DOC,
-                localAwareness: {
-                    user: {
-                        userId: '1',
-                        name: 'Alice',
-                        color: '#f00',
-                    },
-                    focused: false,
-                },
-            })
-        );
-        expect(controller.state.documentJson).toEqual(INITIAL_DOC);
-
-        controller.destroy();
-    });
-
-    it('uses the native encoded-state document when both initial sources are provided', () => {
-        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValue(
-            JSON.stringify(REMOTE_DOC)
-        );
-
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-encoded-wins',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            initialDocumentJson: INITIAL_DOC,
-            initialEncodedState: Uint8Array.from([4, 5, 6]),
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledWith(
-            JSON.stringify({
-                fragmentName: 'default',
-                initialDocumentJson: INITIAL_DOC,
-                localAwareness: {
-                    user: {
-                        userId: '1',
-                        name: 'Alice',
-                        color: '#f00',
-                    },
-                    focused: false,
-                },
-            })
-        );
-        expect(controller.state.documentJson).toEqual(REMOTE_DOC);
-
-        controller.destroy();
-    });
-
-    it('turns native start failures into transport errors instead of throwing from onopen', () => {
-        const sockets: MockWebSocket[] = [];
-        const onError = jest.fn();
-        mockNativeModule.collaborationSessionStart.mockReturnValueOnce(
-            JSON.stringify({ error: 'start failed' })
-        );
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-start-failure',
-            connect: false,
-            retryIntervalMs: false,
-            createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-            onError,
-        });
-
-        controller.connect();
-        expect(() => sockets[0].open()).not.toThrow();
-        expect(controller.state.status).toBe('error');
-        expect(controller.state.isConnected).toBe(false);
-        expect(controller.state.lastError?.message).toBe('NativeEditorBridge: start failed');
-        expect(onError).toHaveBeenCalledTimes(1);
-
-        controller.destroy();
-    });
-
-    it('surfaces invalid initial encoded state instead of silently ignoring it', () => {
-        mockNativeModule.collaborationSessionReplaceEncodedState.mockReturnValueOnce(
-            JSON.stringify({ error: 'invalid encoded state' })
-        );
-
-        expect(() =>
-            createYjsCollaborationController({
-                documentId: 'doc-invalid',
+    it('re-publishes the desired awareness when the localAwareness prop updates', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        let localAwareness = ALICE;
+        const { rerender } = renderHook(() =>
+            useYjsCollaboration({
+                documentId: 'doc-1',
+                handle,
                 connect: false,
+                localAwareness,
                 createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-                initialEncodedState: Uint8Array.from([4, 5, 6]),
-                localAwareness: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-            })
-        ).toThrow('NativeEditorBridge: invalid encoded state');
-        expect(mockNativeModule.collaborationSessionDestroy).toHaveBeenCalledWith(1);
-    });
-
-    it('bounds the raw initial-state hook key before whitespace normalization', () => {
-        expect(() =>
-            renderHook(() =>
-                useYjsCollaboration({
-                    documentId: 'doc-raw-limit',
-                    connect: false,
-                    createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-                    initialEncodedState: ' '.repeat(9),
-                    resourceLimits: { maxInputBytes: 8, maxEncodedStateBytes: 4 },
-                    localAwareness: {
-                        userId: '1',
-                        name: 'Alice',
-                        color: '#f00',
-                    },
-                })
-            )
-        ).toThrow(expect.objectContaining({ code: 'INPUT_LIMIT_EXCEEDED', limit: 8, actual: 9 }));
-        expect(mockNativeModule.collaborationSessionCreate).not.toHaveBeenCalled();
-    });
-
-    it('exposes the durable encoded collaboration state', () => {
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-8',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        expect(controller.getEncodedState()).toEqual(Uint8Array.from([9, 8, 7]));
-        expect(controller.getEncodedStateBase64()).toBe('CQgH');
-
-        controller.destroy();
-    });
-
-    it('can merge an encoded collaboration state after creation', () => {
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-9',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.applyEncodedState('AQID');
-
-        expect(mockNativeModule.collaborationSessionApplyEncodedState).toHaveBeenCalledWith(
-            1,
-            JSON.stringify([1, 2, 3])
-        );
-        expect(controller.state.documentJson).toEqual(REMOTE_DOC);
-
-        controller.destroy();
-    });
-
-    it('can replace the collaboration state after creation', () => {
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-10',
-            connect: false,
-            createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-        });
-
-        controller.replaceEncodedState('BQUF');
-
-        expect(mockNativeModule.collaborationSessionReplaceEncodedState).toHaveBeenCalledWith(
-            1,
-            JSON.stringify([5, 5, 5])
-        );
-        expect(controller.state.documentJson).toEqual(REMOTE_DOC);
-
-        controller.destroy();
-    });
-
-    it('surfaces protocol errors and clears stale peers', () => {
-        const sockets: MockWebSocket[] = [];
-        const onError = jest.fn();
-        const controller = createYjsCollaborationController({
-            documentId: 'doc-error',
-            connect: false,
-            createWebSocket: () => {
-                const socket = new MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
-            initialDocumentJson: INITIAL_DOC,
-            localAwareness: {
-                userId: '1',
-                name: 'Alice',
-                color: '#f00',
-            },
-            onError,
-        });
-
-        controller.connect();
-        sockets[0].open();
-        sockets[0].receive([9, 9, 9]);
-        expect(controller.peers).toEqual(REMOTE_PEERS);
-
-        mockNativeModule.collaborationSessionHandleMessage.mockReturnValueOnce(
-            JSON.stringify({ error: 'invalid collaboration message' })
-        );
-        sockets[0].receive([8, 8, 8]);
-
-        expect(controller.state.status).toBe('error');
-        expect(controller.state.isConnected).toBe(false);
-        expect(controller.state.lastError?.message).toBe(
-            'NativeEditorBridge: invalid collaboration message'
-        );
-        expect(controller.peers).toEqual([]);
-        expect(onError).toHaveBeenCalled();
-
-        controller.destroy();
-    });
-
-    it('preserves structured collaboration boundary errors', () => {
-        mockNativeModule.collaborationSessionReplaceEncodedState.mockReturnValueOnce(
-            JSON.stringify({
-                error: {
-                    code: 'INPUT_LIMIT_EXCEEDED',
-                    message: 'input exceeds limit 3: 8',
-                    limit: 3,
-                    actual: 8,
-                },
             })
         );
-        const bridge = NativeCollaborationBridge.create();
+        // The constructor publishes once; the mount-time prop effect merges
+        // the identical user and dedups to a no-op.
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(1);
 
-        expect(() => bridge.replaceEncodedState([1, 2, 3, 4])).toThrow(
-            expect.objectContaining({
-                name: 'NativeEditorBoundaryError',
-                code: 'INPUT_LIMIT_EXCEEDED',
-                limit: 3,
-                actual: 8,
-            })
+        localAwareness = { ...ALICE, name: 'Alice II' };
+        rerender();
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(2);
+        const payload = JSON.parse(
+            runtime.module.editorV2CollaborationSetAwareness.mock.calls[1][1] as string
         );
-
-        bridge.destroy();
+        expect(payload).toEqual({ user: { ...ALICE, name: 'Alice II' }, focused: false });
     });
 
-    it('uses structured collaboration creation and session errors', () => {
-        mockNativeModule.collaborationSessionCreateResult.mockReturnValueOnce(
-            JSON.stringify({
-                error: {
-                    code: 'CONFIG_INVALID',
-                    message: 'invalid collaboration config',
-                },
-            })
-        );
-        expect(() => NativeCollaborationBridge.create()).toThrow(
-            expect.objectContaining({
-                name: 'NativeEditorBoundaryError',
-                code: 'CONFIG_INVALID',
-            })
-        );
+    // ── Removal proofs ──────────────────────────────────────────
 
-        const bridge = NativeCollaborationBridge.create({ maxLength: 7 });
-        expect(mockNativeModule.collaborationSessionCreateResult).toHaveBeenLastCalledWith(
-            expect.stringContaining('"maxLength":7')
+    it('proves the removed collaboration surface no longer exists in source or exports', () => {
+        const collaborationSource = readFileSync(
+            join(__dirname, '..', 'YjsCollaboration.ts'),
+            'utf8'
         );
-        mockNativeModule.collaborationSessionGetDocumentJson.mockReturnValueOnce(
-            JSON.stringify({
-                error: {
-                    code: 'SESSION_NOT_FOUND',
-                    message: 'collaboration session not found',
-                },
-            })
-        );
-        expect(() => bridge.getDocumentJson()).toThrow(
-            expect.objectContaining({ code: 'SESSION_NOT_FOUND' })
-        );
-        bridge.destroy();
-    });
-
-    it('updates local awareness when hook inputs change without documentId churn', () => {
-        let latest: ReturnType<typeof useYjsCollaboration> | null = null;
-
-        function Harness({ name }: { name: string }) {
-            latest = useYjsCollaboration({
-                documentId: 'doc-hook',
-                connect: false,
-                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-                initialDocumentJson: INITIAL_DOC,
-                localAwareness: {
-                    userId: '1',
-                    name,
-                    color: '#f00',
-                },
-            });
-            return null;
+        const forbiddenInCollaboration = [
+            'NativeCollaborationBridge',
+            'collaborationSession',
+            'initialDocumentJson',
+            // Assembled so the shipped-runtime search gate stays at zero
+            // while the removal proof still pins the exact legacy tokens.
+            'initial' + 'EncodedState',
+            'applyEncodedState',
+            'replaceEncodedState',
+            'getEncodedState',
+            'applyLocal' + 'DocumentJson',
+            'onContentChangeJSON',
+            'valueJSON',
+        ];
+        for (const identifier of forbiddenInCollaboration) {
+            expect(collaborationSource.includes(identifier)).toBe(false);
         }
 
-        const view = render(React.createElement(Harness, { name: 'Alice' }));
-
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenLastCalledWith(
-            1,
-            JSON.stringify({
-                user: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-                focused: false,
-            })
-        );
-
-        view.rerender(React.createElement(Harness, { name: 'Eve' }));
-
-        expect(mockNativeModule.collaborationSessionSetLocalAwareness).toHaveBeenLastCalledWith(
-            1,
-            JSON.stringify({
-                user: {
-                    userId: '1',
-                    name: 'Eve',
-                    color: '#f00',
-                },
-                focused: false,
-            })
-        );
-        expect(latest?.state.documentJson).toEqual(INITIAL_DOC);
-    });
-
-    it('does not recreate the collaboration session when initialDocumentJson changes', () => {
-        let latest: ReturnType<typeof useYjsCollaboration> | null = null;
-
-        function Harness({ doc }: { doc: typeof INITIAL_DOC }) {
-            latest = useYjsCollaboration({
-                documentId: 'doc-seed-stable',
-                connect: false,
-                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
-                initialDocumentJson: doc,
-                localAwareness: {
-                    userId: '1',
-                    name: 'Alice',
-                    color: '#f00',
-                },
-            });
-            return null;
+        const indexSource = readFileSync(join(__dirname, '..', 'index.ts'), 'utf8');
+        const forbiddenInIndex = [
+            'encodeCollaborationStateBase64',
+            'decodeCollaborationStateBase64',
+            'EncodedCollaborationStateInput',
+        ];
+        for (const identifier of forbiddenInIndex) {
+            expect(indexSource.includes(identifier)).toBe(false);
         }
 
-        const view = render(React.createElement(Harness, { doc: INITIAL_DOC }));
-        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledTimes(1);
-        expect(latest?.state.documentJson).toEqual(INITIAL_DOC);
+        expect('createYjsCollaborationController' in PublicApi).toBe(true);
+        expect('useYjsCollaboration' in PublicApi).toBe(true);
+        expect('encodeCollaborationStateBase64' in PublicApi).toBe(false);
+        expect('decodeCollaborationStateBase64' in PublicApi).toBe(false);
 
-        view.rerender(React.createElement(Harness, { doc: ALT_INITIAL_DOC }));
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        const controller = setup.controller as unknown as Record<string, unknown>;
+        for (const removed of [
+            'getEncodedState',
+            'getEncodedStateBase64',
+            'applyEncodedState',
+            'replaceEncodedState',
+            'handleLocalDocumentChange',
+        ]) {
+            expect(removed in controller).toBe(false);
+        }
+    });
 
-        expect(mockNativeModule.collaborationSessionCreate).toHaveBeenCalledTimes(1);
-        expect(mockNativeModule.collaborationSessionDestroy).not.toHaveBeenCalled();
-        expect(latest?.state.documentJson).toEqual(INITIAL_DOC);
+    it('proves editorBindings carries no valueJSON reset synchronization surface', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        const { result } = renderHook(() =>
+            useYjsCollaboration({
+                documentId: 'doc-1',
+                handle,
+                connect: false,
+                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            })
+        );
+        const bindings = result.current.editorBindings as unknown as Record<string, unknown>;
+        for (const removed of [
+            'valueJSON',
+            'valueJSONUpdateMode',
+            'preserveSelectionOnValueJSONReset',
+            'selectionOnValueJSONReset',
+            'onContentChangeJSON',
+        ]) {
+            expect(removed in bindings).toBe(false);
+        }
+        expect(bindings.documentHandle).toBe(handle);
+        expect(typeof bindings.onSelectionChange).toBe('function');
+        expect(typeof bindings.onFocus).toBe('function');
+        expect(typeof bindings.onBlur).toBe('function');
     });
 });

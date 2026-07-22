@@ -87,11 +87,14 @@ class NativeDeviceImeRegressionTest {
 
     @Test
     fun visibleCompositionCorrectionCommitDeleteAndPreflightAreRouted() {
+        // Mid-composition corrections are applied on a deferred main-looper turn
+        // (EditorInputConnection.rememberPendingCompositionCorrectionCommit), so the
+        // insertion is observed after the looper idles rather than synchronously.
+        val correctionInserted = AtomicReference<Inserted?>()
         val correction = runOnMainSyncWithResult {
             val editText = createEditor("", selectionStart = 0, selectionEnd = 0)
-            var inserted: Inserted? = null
             editText.onInsertTextInRustForTesting = { text, scalar ->
-                inserted = Inserted(text, scalar)
+                correctionInserted.set(Inserted(text, scalar))
                 editText.applyUpdateJSON(renderUpdateJson(text), notifyListener = false)
                 editText.setSelection(text.length)
             }
@@ -101,12 +104,12 @@ class NativeDeviceImeRegressionTest {
             assertTrue(inputConnection.commitCorrection(CorrectionInfo(0, "teh", "the")))
 
             ImeResult(
-                inserted = inserted,
                 trace = editText.imeTraceSnapshotForTesting()
             )
         }
+        instrumentation.waitForIdleSync()
 
-        assertEquals(Inserted("the", 0), correction.inserted)
+        assertEquals(Inserted("the", 0), correctionInserted.get())
         assertTraceContains(correction.trace, "setComposingText")
         assertTraceContains(correction.trace, "commitCorrectionComposition")
 

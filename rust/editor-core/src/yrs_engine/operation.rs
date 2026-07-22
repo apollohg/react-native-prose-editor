@@ -207,7 +207,6 @@ pub enum TypedOperation {
 }
 
 /// History class of a same-store whole-document root replacement.
-#[cfg(feature = "ffi-v2-staging")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplacementHistory {
     /// `setContent` / `setContentJson` / replace-mode controlled value:
@@ -222,7 +221,6 @@ pub enum ReplacementHistory {
 /// `Admission` carries the exact import-pipeline error (bounded input, parse,
 /// model/schema validation, canonical-output ceilings); `Transaction` carries
 /// the sealed root-window transaction rejection. Both stages reject atomically.
-#[cfg(feature = "ffi-v2-staging")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RootReplacementError {
     Admission(super::YrsEngineError),
@@ -592,6 +590,18 @@ impl OperationError {
         message: impl Into<String>,
     ) -> Self {
         Self::new("OPERATION_RESOURCE_EXHAUSTED", message, request_id)
+            .with_details(serde_json::json!({ "field": field }))
+    }
+
+    /// Deterministic bounded-work exhaustion (Task 16B): the work budget is a
+    /// derived ceiling, so no meaningful limit/actual pair is reported —
+    /// unlike `operation_limit_exceeded`, which carries both.
+    pub(crate) fn operation_work_budget_exceeded(
+        request_id: u64,
+        field: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::new("OPERATION_LIMIT_EXCEEDED", message, request_id)
             .with_details(serde_json::json!({ "field": field }))
     }
 

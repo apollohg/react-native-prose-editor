@@ -1,4 +1,5 @@
-//! Collaboration runtime host (staging).
+//! Collaboration runtime host (production since the Task 16C cutover
+//! removed the staging gate).
 //!
 //! Task 7 added the bounded pre-commit document outbox plus attachment
 //! plumbing on `EditorSession`; Task 8 added the generation-owned transport
@@ -59,6 +60,23 @@ impl CollaborationRuntime {
     pub(crate) fn remote_dependency_work(&self) -> u64 {
         self.remote_dependency_work
     }
+
+    /// Task 11 teardown-on-restore, run by the session only after the
+    /// engine's candidate installed (infallible by construction):
+    ///
+    /// - pending protocol replies minted against the prior store are
+    ///   dropped (pending *document* updates cannot exist — the session
+    ///   gate rejected the restore otherwise);
+    /// - dependency-quarantine work accounting resets (the engine cleared
+    ///   the quarantine payload inside the restore);
+    /// - awareness peer bookkeeping resets while the desired local state is
+    ///   retained — the engine's store-swap rebind already re-published it
+    ///   under the fresh client identity with a fresh clock.
+    pub(crate) fn reset_for_restore(&mut self) {
+        self.outbox.clear_protocol_replies();
+        self.remote_dependency_work = 0;
+        self.awareness.reset_for_restore();
+    }
 }
 
 #[cfg(test)]
@@ -74,5 +92,28 @@ mod tests {
         let reservation = runtime.outbox_mut().reserve_document_update(1, 4).unwrap();
         runtime.outbox_mut().install(reservation, vec![0; 4]);
         assert_eq!(runtime.outbox().pending_document_update_count(), 1);
+    }
+
+    #[test]
+    fn reset_for_restore_drops_prior_store_residue_and_keeps_document_entries() {
+        let limits = CollaborationLimits::default();
+        let mut runtime = CollaborationRuntime::new(&limits);
+        runtime.remote_dependency_work = 512;
+        let replies = runtime.outbox_mut().reserve_protocol_replies(1, 6).unwrap();
+        runtime
+            .outbox_mut()
+            .install_protocol_replies(replies, 7, vec![vec![1; 6]]);
+        let document = runtime.outbox_mut().reserve_document_update(2, 4).unwrap();
+        runtime.outbox_mut().install(document, vec![2; 4]);
+
+        runtime.reset_for_restore();
+
+        assert_eq!(runtime.remote_dependency_work(), 0);
+        assert_eq!(runtime.outbox().pending_protocol_reply_count(), 0);
+        assert_eq!(runtime.outbox().pending_protocol_reply_bytes(), 0);
+        // The session gate makes pending document updates impossible at
+        // restore time; the reset never touches them defensively either.
+        assert_eq!(runtime.outbox().pending_document_update_count(), 1);
+        assert_eq!(runtime.outbox().pending_document_update_bytes(), 4);
     }
 }

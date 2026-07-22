@@ -14,10 +14,13 @@ import {
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const checker = path.join(repositoryRoot, 'scripts/check-yrs-document-foundation-benchmarks.mjs');
+// Task 16C (user directive 2026-07-20): the legacy runtime and its
+// reference benchmarks were removed; the checker contract keeps only the
+// Yrs cases, with absolute, scaling, and 1.20x baseline-regression gates
+// unchanged. Baselines may still carry the old legacy.* entries; the
+// checker must ignore any case it does not require.
 const requiredCases = [
-    'legacy.json_import.article.1x',
     'yrs.json_import.article.1x',
-    'legacy.json_export.article.1x',
     'yrs.json_export.article.1x',
     'yrs.json_import.article.2x',
     'yrs.json_export.article.2x',
@@ -269,9 +272,7 @@ test('retains prior raw evidence when a later Cargo sample fails', () => {
 
 test('accepts benchmark results at every exact threshold', () => {
     const input = benchmark({
-        'legacy.json_import.article.1x': 0.5,
         'yrs.json_import.article.1x': 2.5,
-        'legacy.json_export.article.1x': 2,
         'yrs.json_export.article.1x': 6,
         'yrs.json_import.article.2x': 6.25,
         'yrs.json_export.article.2x': 15,
@@ -285,25 +286,25 @@ test('accepts benchmark results at every exact threshold', () => {
     const result = runChecker(input, baseline);
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /10 benchmark cases passed/);
+    assert.match(result.stdout, /8 benchmark cases passed/);
 });
 
-test('rejects import ratios above five even when the absolute ceiling passes', () => {
-    const input = benchmark({
-        'legacy.json_import.article.1x': 0.4,
-        'yrs.json_import.article.1x': 2.1,
-    });
+test('ignores legacy.* entries carried in the frozen baseline', () => {
+    const baseline = benchmark();
+    baseline.benchmarkGroup = 'yrs-foundation';
+    baseline.results.push(
+        { name: 'legacy.json_import.article.1x', p50Ms: 0.5 },
+        { name: 'legacy.json_export.article.1x', p50Ms: 0.2 }
+    );
 
-    const result = runChecker(input, input);
+    const result = runChecker(benchmark(), baseline);
 
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /actual ratio=5\.25/);
-    assert.match(result.stderr, /allowed ratio=5/);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /8 benchmark cases passed/);
 });
 
-test('rejects import p50 above 2.5 ms even when the relative ratio passes', () => {
+test('rejects import p50 above the unchanged 2.5 ms absolute ceiling', () => {
     const input = benchmark({
-        'legacy.json_import.article.1x': 1,
         'yrs.json_import.article.1x': 2.500001,
     });
 
@@ -315,20 +316,20 @@ test('rejects import p50 above 2.5 ms even when the relative ratio passes', () =
     assert.match(result.stderr, /allowed p50=2\.5 ms/);
 });
 
-test('ratio failures report the case, p50 values, actual ratio, and allowed ratio', () => {
+test('scaling ratio failures report the case, p50 values, actual ratio, and allowed ratio', () => {
     const input = benchmark({
-        'legacy.json_import.article.1x': 0.4,
-        'yrs.json_import.article.1x': 2.04,
+        'yrs.json_import.article.1x': 1,
+        'yrs.json_import.article.2x': 2.51,
     });
 
     const result = runChecker(input, input);
 
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /yrs\.json_import\.article\.1x/);
-    assert.match(result.stderr, /measured p50=2\.04/);
-    assert.match(result.stderr, /comparison p50=0\.4/);
-    assert.match(result.stderr, /actual ratio=5\.1/);
-    assert.match(result.stderr, /allowed ratio=5/);
+    assert.match(result.stderr, /yrs\.json_import\.article\.2x/);
+    assert.match(result.stderr, /measured p50=2\.51/);
+    assert.match(result.stderr, /comparison p50=1/);
+    assert.match(result.stderr, /actual ratio=2\.51/);
+    assert.match(result.stderr, /allowed ratio=2\.5/);
 });
 
 test('baseline regression failures use the same actionable diagnostics', () => {
@@ -383,7 +384,7 @@ test('rejects unexpected extra benchmark cases so all reported cases are gated',
 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /unexpected benchmark case: yrs\.uncontracted\.extra/);
-    assert.doesNotMatch(result.stdout, /11 benchmark cases passed/);
+    assert.doesNotMatch(result.stdout, /9 benchmark cases passed/);
 });
 
 test('rejects malformed benchmark and baseline JSON cleanly', async (t) => {

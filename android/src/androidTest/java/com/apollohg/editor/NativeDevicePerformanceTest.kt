@@ -19,7 +19,6 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import uniffi.editor_core.*
 
 @RunWith(AndroidJUnit4::class)
 @LargeTest
@@ -121,9 +120,9 @@ class NativeDevicePerformanceTest {
 
     @Test
     fun performance_typingRoundTripLargeDocument() {
-        val editorId = editorCreate("{}").toLong()
+        val (adapter, editorId) = createV2Editor()
         try {
-            NativePerformanceFixtureFactory.loadLargeDocumentIntoEditor(editorId.toULong())
+            NativePerformanceFixtureFactory.loadLargeDocumentIntoEditor(adapter)
             val editText = runOnMainSyncWithResult {
                 EditorEditText(context).apply {
                     layoutParams = ViewGroup.LayoutParams(
@@ -152,16 +151,16 @@ class NativeDevicePerformanceTest {
             reportStats(stats)
             assertTrue("average typing time should be positive", stats.averageMillis > 0.0)
         } finally {
-            editorDestroy(editorId.toULong())
+            EditorV2Registry.destroyPair(editorId)
         }
     }
 
     @Test
     fun performance_paragraphSplitRoundTripLargeDocument() {
-        val editorId = editorCreate("{}").toLong()
+        val (adapter, editorId) = createV2Editor()
         try {
             val largeDocumentJson = NativePerformanceFixtureFactory.largeDocumentJson()
-            NativePerformanceFixtureFactory.loadLargeDocumentIntoEditor(editorId.toULong())
+            NativePerformanceFixtureFactory.loadLargeDocumentIntoEditor(adapter)
             val editText = runOnMainSyncWithResult {
                 EditorEditText(context).apply {
                     layoutParams = ViewGroup.LayoutParams(
@@ -179,8 +178,9 @@ class NativeDevicePerformanceTest {
                 name = "paragraphSplitRoundTripLargeDocument",
                 beforeEach = {
                     runOnMainSyncWithResult {
-                        editorSetJson(editorId.toULong(), largeDocumentJson)
-                        editText.applyUpdateJSON(editorGetCurrentState(editorId.toULong()), notifyListener = false)
+                        adapter.setContentJson(largeDocumentJson)?.let { update ->
+                            editText.applyUpdateJSON(update, notifyListener = false)
+                        }
                         editText.setSelection(splitOffset)
                         layoutView(editText, widthPx = 1080, heightPx = 2400, heightMode = View.MeasureSpec.AT_MOST)
                     }
@@ -197,15 +197,15 @@ class NativeDevicePerformanceTest {
             reportStats(stats)
             assertTrue("average paragraph split time should be positive", stats.averageMillis > 0.0)
         } finally {
-            editorDestroy(editorId.toULong())
+            EditorV2Registry.destroyPair(editorId)
         }
     }
 
     @Test
     fun performance_selectionScrubLargeDocument() {
-        val editorId = editorCreate("{}").toLong()
+        val (adapter, editorId) = createV2Editor()
         try {
-            NativePerformanceFixtureFactory.loadLargeDocumentIntoEditor(editorId.toULong())
+            NativePerformanceFixtureFactory.loadLargeDocumentIntoEditor(adapter)
             val editText = runOnMainSyncWithResult {
                 EditorEditText(context).apply {
                     layoutParams = ViewGroup.LayoutParams(
@@ -239,7 +239,7 @@ class NativeDevicePerformanceTest {
             reportStats(stats)
             assertTrue("average selection scrub time should be positive", stats.averageMillis > 0.0)
         } finally {
-            editorDestroy(editorId.toULong())
+            EditorV2Registry.destroyPair(editorId)
         }
     }
 
@@ -285,6 +285,15 @@ class NativeDevicePerformanceTest {
 
         reportStats(stats)
         assertTrue("average remote selection refresh time should be positive", stats.averageMillis > 0.0)
+    }
+
+    private fun createV2Editor(): Pair<EditorV2Adapter, Long> {
+        val publicId = when (val created = EditorV2Registry.createPair(UniffiEditorV2Backend, "{}")) {
+            is EditorV2CallResult.Ok -> created.value
+            is EditorV2CallResult.Err ->
+                error("v2 editor create failed: ${created.error.code}: ${created.error.message}")
+        }
+        return EditorV2Registry.adapterFor(publicId)!! to publicId
     }
 
     private fun layoutView(

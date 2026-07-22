@@ -1,5 +1,14 @@
 name: NativeEditorTests
 
+# Task 16 production cutover: there is only ONE variant. The legacy runtime
+# is deleted; every configuration compiles the production v2-only UniFFI
+# bindings (ios/Generated_editor_core.swift) and links the v2-only
+# ios/EditorCore.xcframework. The former `Staging` configuration
+# XCFramework) is gone — the v2 adapter path is now unconditional.
+configs:
+  Debug: debug
+  Release: release
+
 options:
   minimumXcodeGenVersion: 2.38.0
   deploymentTarget:
@@ -55,6 +64,10 @@ targets:
           - editor_coreFFI.h
           - editor_coreFFI.modulemap
       - path: ../ios/Tests
+      # Bundled so RenderBridgeTests can read the shared security fixtures on
+      # physical devices, where the repository host path is unavailable.
+      - path: ../scripts/tests/security-contract-fixtures.json
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: NativeEditorTests
@@ -64,13 +77,13 @@ targets:
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/NativeEditorTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/NativeEditorTestHost
         BUNDLE_LOADER: $(TEST_HOST)
         INFOPLIST_KEY_CFBundleDisplayName: NativeEditorTests
-        HEADER_SEARCH_PATHS:
-          - $(inherited)
-          - $(SRCROOT)/../ios/editor_coreFFI
         LD_RUNPATH_SEARCH_PATHS:
           - $(inherited)
           - "@loader_path/Frameworks"
           - "@executable_path/Frameworks"
+        HEADER_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../ios/editor_coreFFI
         OTHER_SWIFT_FLAGS:
           - $(inherited)
           - -Xcc
@@ -78,8 +91,13 @@ targets:
         SWIFT_INCLUDE_PATHS:
           - $(inherited)
           - $(SRCROOT)/../ios/editor_coreFFI
-    dependencies:
-      - framework: ../ios/EditorCore.xcframework
+        "OTHER_LDFLAGS[sdk=iphoneos*]":
+          - $(inherited)
+          - $(SRCROOT)/../ios/EditorCore.xcframework/ios-arm64/libeditor_core.a
+        "OTHER_LDFLAGS[sdk=iphonesimulator*]":
+          - $(inherited)
+          - $(SRCROOT)/../ios/EditorCore.xcframework/ios-arm64_x86_64-simulator/libeditor_core.a
+    dependencies: []
 
 schemes:
   NativeEditorTests:

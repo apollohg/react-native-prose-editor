@@ -3824,10 +3824,12 @@ fn resolve_structural_window(
     limits: &ResourceLimits,
 ) -> OperationResult<(u32, u32)> {
     if replacement.parent_path().len() > limits.max_document_depth {
-        return Err(OperationError::operation_resource_exhausted(
+        return Err(OperationError::operation_limit_exceeded(
             request_id,
+            Some(operation_index),
             "maxDocumentDepth",
-            "structural target path exceeds the document depth limit",
+            u64::try_from(limits.max_document_depth).unwrap_or(u64::MAX),
+            u64::try_from(replacement.parent_path().len()).unwrap_or(u64::MAX),
         ));
     }
     let mut node = document.root();
@@ -3836,10 +3838,12 @@ fn resolve_structural_window(
     for path_index in replacement.parent_path().iter().copied() {
         work = work.saturating_add(1);
         if work > limits.max_document_nodes {
-            return Err(OperationError::operation_resource_exhausted(
+            return Err(OperationError::operation_limit_exceeded(
                 request_id,
+                Some(operation_index),
                 "maxDocumentNodes",
-                "structural target traversal exceeds the document work limit",
+                u64::try_from(limits.max_document_nodes).unwrap_or(u64::MAX),
+                u64::try_from(work).unwrap_or(u64::MAX),
             ));
         }
         let content = node.content().ok_or_else(|| {
@@ -3861,10 +3865,12 @@ fn resolve_structural_window(
         for sibling in content.iter().take(index) {
             work = work.saturating_add(1);
             if work > limits.max_document_nodes {
-                return Err(OperationError::operation_resource_exhausted(
+                return Err(OperationError::operation_limit_exceeded(
                     request_id,
+                    Some(operation_index),
                     "maxDocumentNodes",
-                    "structural target traversal exceeds the document work limit",
+                    u64::try_from(limits.max_document_nodes).unwrap_or(u64::MAX),
+                    u64::try_from(work).unwrap_or(u64::MAX),
                 ));
             }
             content_start = content_start
@@ -3932,10 +3938,12 @@ fn resolve_structural_window(
     for sibling in content.iter().take(from_child) {
         work = work.saturating_add(1);
         if work > limits.max_document_nodes {
-            return Err(OperationError::operation_resource_exhausted(
+            return Err(OperationError::operation_limit_exceeded(
                 request_id,
+                Some(operation_index),
                 "maxDocumentNodes",
-                "structural target traversal exceeds the document work limit",
+                u64::try_from(limits.max_document_nodes).unwrap_or(u64::MAX),
+                u64::try_from(work).unwrap_or(u64::MAX),
             ));
         }
         from = from.checked_add(sibling.node_size()).ok_or_else(|| {
@@ -3951,10 +3959,12 @@ fn resolve_structural_window(
     for sibling in content.iter().skip(from_child).take(to_child - from_child) {
         work = work.saturating_add(1);
         if work > limits.max_document_nodes {
-            return Err(OperationError::operation_resource_exhausted(
+            return Err(OperationError::operation_limit_exceeded(
                 request_id,
+                Some(operation_index),
                 "maxDocumentNodes",
-                "structural target traversal exceeds the document work limit",
+                u64::try_from(limits.max_document_nodes).unwrap_or(u64::MAX),
+                u64::try_from(work).unwrap_or(u64::MAX),
             ));
         }
         to = to.checked_add(sibling.node_size()).ok_or_else(|| {

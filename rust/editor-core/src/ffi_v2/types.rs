@@ -1,5 +1,6 @@
 use crate::session::{ErrorDomain, SessionError};
 
+#[cfg(test)]
 pub(crate) const ERROR_DOMAINS: [&str; 6] = [
     "boundary",
     "document",
@@ -9,6 +10,7 @@ pub(crate) const ERROR_DOMAINS: [&str; 6] = [
     "transport",
 ];
 
+#[cfg(test)]
 pub(crate) const OPERATION_ERROR_CODES: [&str; 10] = [
     "ENGINE_NOT_READY",
     "REVISION_MISMATCH",
@@ -23,7 +25,7 @@ pub(crate) const OPERATION_ERROR_CODES: [&str; 10] = [
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub(crate) struct FfiError {
+pub struct FfiError {
     pub domain: String,
     pub code: String,
     pub message: String,
@@ -83,7 +85,7 @@ fn exactly_one<T>(value: &Option<T>, error: &Option<FfiError>) -> Result<(), &'s
 macro_rules! ffi_result {
     ($name:ident, $value:ty) => {
         #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-        pub(crate) struct $name {
+        pub struct $name {
             pub value: Option<$value>,
             pub error: Option<FfiError>,
         }
@@ -111,8 +113,18 @@ macro_rules! ffi_result {
 ffi_result!(FfiJsonResult, String);
 ffi_result!(FfiBytesResult, Vec<u8>);
 
+/// One exported document snapshot: the five-field manifest as JSON plus the
+/// encoded state as direct bytes (never a JSON number array).
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub(crate) struct FfiUnitResult {
+pub struct FfiSnapshotExport {
+    pub metadata_json: String,
+    pub encoded_state: Vec<u8>,
+}
+
+ffi_result!(FfiSnapshotExportResult, FfiSnapshotExport);
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiUnitResult {
     pub value: Option<bool>,
     pub error: Option<FfiError>,
 }

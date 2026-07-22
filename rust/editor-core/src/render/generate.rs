@@ -5,6 +5,9 @@ use crate::render::{
 };
 use crate::schema::{NodeRole, Schema};
 
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 fn render_marks(node: &Node) -> Vec<RenderMark> {
     node.marks()
         .iter()
@@ -21,6 +24,9 @@ fn render_marks(node: &Node) -> Vec<RenderMark> {
 /// around block-level nodes, TextRun for text, and VoidInline/VoidBlock for
 /// atomic nodes. List nodes are transparent containers that provide
 /// `ListContext` to their list-item children.
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 pub fn generate(doc: &Document, schema: &Schema) -> Vec<RenderElement> {
     let mut elements = Vec::new();
     // Position starts at 0 (inside the doc root's open tag).
@@ -36,6 +42,9 @@ pub fn generate(doc: &Document, schema: &Schema) -> Vec<RenderElement> {
 /// `depth` is the nesting depth for BlockStart (0 = top-level blocks).
 /// `list_info` is set when `parent` is a list node, carrying
 /// (list_node_type, ordered, start, total_items).
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 fn walk_children(
     parent: &Node,
     schema: &Schema,

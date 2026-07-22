@@ -31,11 +31,10 @@ pub(crate) fn classify_position_block(node: &Node, schema: &Schema) -> Option<Po
 
 /// Placeholder character used for void block-level nodes (e.g. horizontalRule)
 /// in the rendered text. U+FFFC OBJECT REPLACEMENT CHARACTER.
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 pub const VOID_BLOCK_PLACEHOLDER: char = '\u{FFFC}';
-
-/// Placeholder character used for inline void nodes (e.g. hardBreak) in the
-/// rendered text.
-pub const HARD_BREAK_PLACEHOLDER: char = '\n';
 
 /// Number of rendered scalars for a block separator (newline between blocks).
 pub const BLOCK_BREAK_SCALARS: u32 = 1;

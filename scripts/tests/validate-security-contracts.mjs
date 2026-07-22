@@ -217,16 +217,10 @@ for (const code of ffiV2.operationCodes) {
     assert.equal(golden[0].domain, ffiV2.operationCodeDomains[code]);
     assert.match(golden[0].requestId, /^(0|[1-9]\d*)$/);
 }
-assert.ok(
-    ffiV2.invalidRequestIds.every((requestId) => !/^(0|[1-9]\d*)$/.test(requestId))
-);
+assert.ok(ffiV2.invalidRequestIds.every((requestId) => !/^(0|[1-9]\d*)$/.test(requestId)));
 assert.deepEqual(
     ffiV2.deterministicMappings.map(({ expectedCode }) => expectedCode),
-    [
-        'OPERATION_LIMIT_EXCEEDED',
-        'DOCUMENT_LIMIT_EXCEEDED',
-        'OPERATION_RESOURCE_EXHAUSTED',
-    ]
+    ['OPERATION_LIMIT_EXCEEDED', 'DOCUMENT_LIMIT_EXCEEDED', 'OPERATION_RESOURCE_EXHAUSTED']
 );
 
 const session = read('rust/editor-core/src/session.rs');
@@ -250,32 +244,38 @@ for (const domain of ffiV2.domains) assert.ok(ffiTypes.includes(`"${domain}"`));
 for (const code of ffiV2.operationCodes) assert.ok(ffiTypes.includes(`"${code}"`));
 assert.match(ffiTypes, /Some\(true\)/, 'unit success must cross UniFFI as Some(true)');
 
-const udl = read('rust/editor-core/src/editor_core.udl');
-assert.match(udl, /string editor_create_result\(string config_json\);/);
-assert.match(
-    udl,
-    /u64 editor_create\(string config_json\);/,
-    'legacy Rust export must remain for one release'
-);
+// Task 16C: the legacy UDL and the legacy editor_*/collaboration_session_*
+// exports were deleted; the production surface is the 26 editor_v2_*
+// UniFFI functions plus editor_core_version.
+const V2_EXPORT_COUNT = 26;
 if (releaseMode) {
     const androidModule = read('android/src/main/java/com/apollohg/editor/NativeEditorModule.kt');
     const iosModule = read('ios/NativeEditorModule.swift');
-    assert.match(androidModule, /Function\("editorCreateResult"\)/);
+    assert.match(androidModule, /Function\("editorV2Create"\)/);
     assert.doesNotMatch(androidModule, /Function\("editorCreate"\)/);
     assert.doesNotMatch(androidModule, /\beditorCreate\(/);
-    assert.match(iosModule, /Function\("editorCreateResult"\)/);
+    assert.doesNotMatch(androidModule, /\bcollaborationSession[A-Z]/);
+    assert.match(iosModule, /Function\("editorV2Create"\)/);
     assert.doesNotMatch(iosModule, /Function\("editorCreate"\)/);
     assert.doesNotMatch(iosModule, /\beditorCreate\(/);
+    assert.doesNotMatch(iosModule, /\bcollaborationSession[A-Z]/);
     assert.doesNotMatch(read('src/NativeEditorBridge.ts'), /\beditorCreate\(/);
-    assert.match(
-        read('rust/bindings/kotlin/uniffi/editor_core/editor_core.kt'),
-        /fun `?editorCreateResult`?\(/
+    const kotlinBindings = read('rust/bindings/kotlin/uniffi/editor_core/editor_core.kt');
+    assert.match(kotlinBindings, /fun `?editorV2Create`?\(/);
+    assert.doesNotMatch(kotlinBindings, /uniffi_editor_core_fn_func_editor_create/);
+    assert.doesNotMatch(kotlinBindings, /uniffi_editor_core_fn_func_collaboration_session/);
+    const swiftBindings = read('ios/Generated_editor_core.swift');
+    assert.match(swiftBindings, /func editorV2Create\(/);
+    assert.doesNotMatch(swiftBindings, /uniffi_editor_core_fn_func_editor_create/);
+    assert.doesNotMatch(swiftBindings, /uniffi_editor_core_fn_func_collaboration_session/);
+    const ffiHeader = read('ios/editor_coreFFI/editor_coreFFI.h');
+    assert.equal(
+        (ffiHeader.match(/uniffi_editor_core_fn_func_editor_v2_/g) ?? []).length,
+        V2_EXPORT_COUNT,
+        'the FFI header must expose exactly 26 editor_v2_* symbols'
     );
-    assert.match(read('ios/Generated_editor_core.swift'), /func editorCreateResult\(/);
-    assert.match(
-        read('ios/editor_coreFFI/editor_coreFFI.h'),
-        /uniffi_editor_core_fn_func_editor_create_result/
-    );
+    assert.match(ffiHeader, /uniffi_editor_core_fn_func_editor_core_version/);
+    assert.doesNotMatch(ffiHeader, /uniffi_editor_core_fn_func_collaboration_session/);
 }
 
 if (behaviorMode) {

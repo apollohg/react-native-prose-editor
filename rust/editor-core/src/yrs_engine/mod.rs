@@ -1,4 +1,3 @@
-#[cfg(feature = "ffi-v2-staging")]
 mod awareness;
 mod canonical;
 mod codec;
@@ -32,15 +31,22 @@ fn raw_storage_work_limit(limits: &crate::boundary::ResourceLimits) -> usize {
         .saturating_mul(RAW_STORAGE_WORK_MULTIPLIER)
 }
 
-#[cfg(feature = "ffi-v2-staging")]
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(unused_imports)]
 pub use awareness::{AwarenessApplied, AwarenessCodec, AwarenessLimits, AwarenessPeer};
 pub(crate) use codec::YrsDocumentCodec;
 pub use commands::{CommandPlan, TypedCommand};
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(unused_imports)]
 pub use editing_limits::{
     EditingLimitOverrides, EditingLimits, HARD_MAX_DERIVED_OUTPUT_BYTES,
     HARD_MAX_OPERATIONS_PER_TRANSACTION, HARD_MAX_UNDO_GROUPS, HARD_MAX_UNDO_RETAINED_UNITS,
 };
-#[cfg(feature = "ffi-v2-staging")]
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(unused_imports)]
 pub use engine::PreparedRemoteUpdate;
 pub use engine::{
     EngineCommit, EngineRenderState, InitializationMode, YrsDocumentEngine, YrsEngineConfig,
@@ -52,13 +58,16 @@ pub use operation::{
     SelectionIntent, StructuralReplacement, TransactionCommit, TypedOperation, TypedTransaction,
     TypedTransactionResult,
 };
-#[cfg(feature = "ffi-v2-staging")]
 pub use operation::{ReplacementHistory, RootReplacementError};
 pub use origin::TransactionOrigin;
-#[cfg(test)]
-pub(crate) use position::doc_pos_to_sticky_index;
 pub(crate) use position::editor_offset_to_doc_pos;
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(unused_imports)]
 pub(crate) use position::{cursor_sticky_index_from_doc_pos, sticky_index_to_doc_pos};
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(unused_imports)]
 pub use position::{
     doc_pos_to_relative_point, relative_point_to_doc_pos, relative_selection_to_selection,
     revisioned_position_to_relative_point, scalar_offset_to_utf16, utf16_offset_to_scalar,

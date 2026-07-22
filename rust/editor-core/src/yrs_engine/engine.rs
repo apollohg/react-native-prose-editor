@@ -99,6 +99,18 @@ std::thread_local! {
     static IMPORT_RECEIPT_SHA256_MATCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static COMMIT_CURRENT_STATE_ENCODINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static COMMIT_SEALED_STATE_REUSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FAIL_QUARANTINED_UPDATE_RESERVATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_OUTBOUND_STAGING_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn set_quarantined_update_reservation_failure_for_test(enabled: bool) {
+    FAIL_QUARANTINED_UPDATE_RESERVATION.set(enabled);
+}
+
+#[cfg(test)]
+fn set_outbound_staging_copy_failure_for_test(enabled: bool) {
+    FAIL_OUTBOUND_STAGING_COPY.set(enabled);
 }
 
 #[cfg(test)]
@@ -637,7 +649,6 @@ pub struct YrsDocumentEngine {
     remote_seal_generation: u64,
     /// The engine-owned awareness codec: the sole `yrs::sync::Awareness`
     /// bound to the authoritative `Doc`, rebound on every store swap.
-    #[cfg(feature = "ffi-v2-staging")]
     awareness: Option<super::awareness::AwarenessCodec>,
     history: super::history::YrsHistory,
     /// An exact private replica used only to prove the next local commit. It is
@@ -878,20 +889,16 @@ struct PreparedHistoryPop {
 ///
 /// A detached sink is a free no-op, so shipped default-feature paths keep
 /// byte-identical behavior and cost by construction. An attached sink
-/// (staging collaboration runtime) reserves bounded outbox count/bytes/queue
+/// (the production collaboration runtime) reserves bounded outbox count/bytes/queue
 /// storage from the compiler's conservative `outbound_update_upper_bound`
 /// and stages a copy of the captured Update-v1 strictly BEFORE the
 /// irreversible Yrs write; after the commit installs, the append is
 /// infallible. Dropping the sink without committing releases the
 /// reservation, keeping rejected operations atomic.
 pub(crate) struct OutboundUpdateSink<'a> {
-    #[cfg(feature = "ffi-v2-staging")]
     target: Option<OutboundSinkTarget<'a>>,
-    #[cfg(not(feature = "ffi-v2-staging"))]
-    _detached: std::marker::PhantomData<&'a mut ()>,
 }
 
-#[cfg(feature = "ffi-v2-staging")]
 struct OutboundSinkTarget<'a> {
     outbox: &'a mut crate::collaboration_runtime::CollaborationOutbox,
     staged: Option<(
@@ -902,15 +909,9 @@ struct OutboundSinkTarget<'a> {
 
 impl<'a> OutboundUpdateSink<'a> {
     pub(crate) fn detached() -> Self {
-        Self {
-            #[cfg(feature = "ffi-v2-staging")]
-            target: None,
-            #[cfg(not(feature = "ffi-v2-staging"))]
-            _detached: std::marker::PhantomData,
-        }
+        Self { target: None }
     }
 
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn attached(
         outbox: &'a mut crate::collaboration_runtime::CollaborationOutbox,
     ) -> Self {
@@ -924,7 +925,6 @@ impl<'a> OutboundUpdateSink<'a> {
 
     /// Sink over an optionally attached collaboration outbox: sessions
     /// without a runtime edit through a detached (no-op) sink.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn from_optional_outbox(
         outbox: Option<&'a mut crate::collaboration_runtime::CollaborationOutbox>,
     ) -> Self {
@@ -937,14 +937,7 @@ impl<'a> OutboundUpdateSink<'a> {
     /// True when a collaboration outbox is attached; callers skip
     /// capture-only encoding work when detached.
     pub(crate) fn is_attached(&self) -> bool {
-        #[cfg(feature = "ffi-v2-staging")]
-        {
-            self.target.is_some()
-        }
-        #[cfg(not(feature = "ffi-v2-staging"))]
-        {
-            false
-        }
+        self.target.is_some()
     }
 
     /// Fallible pre-write step: admit outbox count/bytes/storage from the
@@ -955,7 +948,6 @@ impl<'a> OutboundUpdateSink<'a> {
         upper_bound_bytes: usize,
         update_v1: &[u8],
     ) -> super::OperationResult<()> {
-        #[cfg(feature = "ffi-v2-staging")]
         if let Some(target) = self.target.as_mut() {
             debug_assert!(
                 target.staged.is_none(),
@@ -965,6 +957,14 @@ impl<'a> OutboundUpdateSink<'a> {
                 .outbox
                 .reserve_document_update(request_id, upper_bound_bytes)
                 .map_err(|error| outbox_reservation_operation_error(request_id, error))?;
+            #[cfg(test)]
+            if FAIL_OUTBOUND_STAGING_COPY.with(std::cell::Cell::get) {
+                return Err(super::OperationError::operation_resource_exhausted(
+                    request_id,
+                    "pendingOutboxUpdateBytes",
+                    "injected outbound staging copy allocation failure",
+                ));
+            }
             let mut staged = Vec::new();
             staged.try_reserve_exact(update_v1.len()).map_err(|_| {
                 super::OperationError::operation_resource_exhausted(
@@ -976,17 +976,12 @@ impl<'a> OutboundUpdateSink<'a> {
             staged.extend_from_slice(update_v1);
             target.staged = Some((reservation, staged));
         }
-        #[cfg(not(feature = "ffi-v2-staging"))]
-        {
-            let _ = (request_id, upper_bound_bytes, update_v1);
-        }
         Ok(())
     }
 
     /// Infallible post-commit append of the staged update. No-op when
     /// detached or when the commit reserved nothing.
     pub(crate) fn commit_staged(&mut self) {
-        #[cfg(feature = "ffi-v2-staging")]
         if let Some(target) = self.target.as_mut() {
             if let Some((reservation, update)) = target.staged.take() {
                 target.outbox.install(reservation, update);
@@ -999,7 +994,6 @@ impl<'a> OutboundUpdateSink<'a> {
 /// deterministic ceiling saturation is `OPERATION_LIMIT_EXCEEDED` on the
 /// configured collaboration-limit field; storage-reservation failure is the
 /// allocation-class `OPERATION_RESOURCE_EXHAUSTED`.
-#[cfg(feature = "ffi-v2-staging")]
 fn outbox_reservation_operation_error(
     request_id: u64,
     error: crate::collaboration_runtime::outbox::OutboxReservationError,
@@ -1025,12 +1019,17 @@ fn outbox_reservation_operation_error(
     }
 }
 
+// The methods in this block carrying `#[allow(dead_code)]` are the engine's
+// plain convenience surface and test-support probes: they are exercised by
+// crate tests and the cfg(test) bridge/document-api test support, while
+// production entry points reach the same behavior through the
+// `_with_outbox`/prepared variants used by `ffi_v2`. The constructors and the
+// production seams in this block are genuinely live and carry no allow.
 impl YrsDocumentEngine {
     pub fn new(config: YrsEngineConfig) -> YrsEngineResult<Self> {
         Self::new_with_history_clock(config, Arc::new(SystemClock))
     }
 
-    #[cfg(feature = "ffi-v2-staging")]
     pub fn new_with_snapshot(
         config: YrsEngineConfig,
         snapshot: &DocumentSnapshot,
@@ -1128,7 +1127,6 @@ impl YrsDocumentEngine {
             durable_client_ids: candidate.durable_client_ids,
             quarantined_remote_update: None,
             remote_seal_generation: 0,
-            #[cfg(feature = "ffi-v2-staging")]
             awareness: None,
             history,
             prepared_candidate_cache: None,
@@ -1211,6 +1209,7 @@ impl YrsDocumentEngine {
         )
     }
 
+    #[allow(dead_code)]
     pub fn apply_command(
         &mut self,
         request_id: u64,
@@ -1219,9 +1218,8 @@ impl YrsDocumentEngine {
         self.apply_command_with_sink(request_id, command, &mut OutboundUpdateSink::detached())
     }
 
-    /// Staging surface: [`Self::apply_command`] with an optionally attached
+    /// Production surface: [`Self::apply_command`] with an optionally attached
     /// collaboration outbox for outbound update capture.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn apply_command_with_outbox(
         &mut self,
         request_id: u64,
@@ -1591,6 +1589,7 @@ impl YrsDocumentEngine {
         self.history.can_redo()
     }
 
+    #[allow(dead_code)]
     pub fn undo(
         &mut self,
         request_id: u64,
@@ -1600,6 +1599,7 @@ impl YrsDocumentEngine {
             .map(|(commit, _)| commit))
     }
 
+    #[allow(dead_code)]
     pub fn redo(
         &mut self,
         request_id: u64,
@@ -1614,10 +1614,9 @@ impl YrsDocumentEngine {
             .map(|(commit, _)| commit))
     }
 
-    /// Staging surface: [`Self::undo`] with an optionally attached
+    /// Production surface: [`Self::undo`] with an optionally attached
     /// collaboration outbox. The pop's outbound update is captured on the
     /// prepared candidate and reserved before the infallible install.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn undo_with_outbox(
         &mut self,
         request_id: u64,
@@ -1633,9 +1632,8 @@ impl YrsDocumentEngine {
             .map(|(commit, _)| commit))
     }
 
-    /// Staging surface: [`Self::redo`] with an optionally attached
+    /// Production surface: [`Self::redo`] with an optionally attached
     /// collaboration outbox.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn redo_with_outbox(
         &mut self,
         request_id: u64,
@@ -1651,6 +1649,7 @@ impl YrsDocumentEngine {
             .map(|(commit, _)| commit))
     }
 
+    #[allow(dead_code)]
     pub fn undo_with_result(
         &mut self,
         request_id: u64,
@@ -1660,6 +1659,7 @@ impl YrsDocumentEngine {
             .and_then(|(_, result)| result))
     }
 
+    #[allow(dead_code)]
     pub fn redo_with_result(
         &mut self,
         request_id: u64,
@@ -1678,6 +1678,7 @@ impl YrsDocumentEngine {
     /// This is exactly [`Self::prepare_remote_update_internal`] followed by
     /// [`Self::commit_prepared_remote_update_internal`], so the one-shot and
     /// prepare/commit paths cannot drift.
+    #[allow(dead_code)]
     pub fn apply_remote_update_v1(
         &mut self,
         request_id: u64,
@@ -1791,6 +1792,14 @@ impl YrsDocumentEngine {
             let quarantined = if let Some(merged) = merged_update_bytes {
                 merged
             } else {
+                #[cfg(test)]
+                if FAIL_QUARANTINED_UPDATE_RESERVATION.with(std::cell::Cell::get) {
+                    return Err(super::OperationError::operation_resource_exhausted(
+                        request_id,
+                        "remoteUpdate",
+                        "injected quarantined remote update reservation failure",
+                    ));
+                }
                 let mut admitted = Vec::new();
                 admitted.try_reserve_exact(update.len()).map_err(|error| {
                     super::OperationError::operation_resource_exhausted(
@@ -2211,11 +2220,10 @@ impl YrsDocumentEngine {
         }
     }
 
-    /// Staging surface: admit a remote Update-v1 without installing it, so a
+    /// Production surface: admit a remote Update-v1 without installing it, so a
     /// coupled protocol reply can be reserved between preparation and
     /// installation. See [`Self::apply_remote_update_v1`], which is this
     /// method followed by [`Self::commit_prepared_remote_update`].
-    #[cfg(feature = "ffi-v2-staging")]
     pub fn prepare_remote_update_v1(
         &mut self,
         request_id: u64,
@@ -2224,9 +2232,8 @@ impl YrsDocumentEngine {
         self.prepare_remote_update_internal(request_id, update)
     }
 
-    /// Staging surface: install a prepared remote update. One-shot; the
+    /// Production surface: install a prepared remote update. One-shot; the
     /// prepared value is consumed whether or not installation is admitted.
-    #[cfg(feature = "ffi-v2-staging")]
     pub fn commit_prepared_remote_update(
         &mut self,
         prepared: PreparedRemoteUpdate,
@@ -2234,9 +2241,8 @@ impl YrsDocumentEngine {
         self.commit_prepared_remote_update_internal(prepared)
     }
 
-    /// Staging surface: the authoritative store's state vector, encoded v1.
+    /// Production surface: the authoritative store's state vector, encoded v1.
     /// Read-only: no revision, epoch, state, or history effect.
-    #[cfg(feature = "ffi-v2-staging")]
     pub fn encode_state_vector_v1(&self, request_id: u64) -> super::OperationResult<Vec<u8>> {
         let encoded = self.doc.transact().state_vector().encode_v1();
         // Defensive symmetry with every other encoded artifact: a consistent
@@ -2252,11 +2258,10 @@ impl YrsDocumentEngine {
         Ok(encoded)
     }
 
-    /// Staging surface: the incremental Update-v1 that brings a peer at
+    /// Production surface: the incremental Update-v1 that brings a peer at
     /// `remote_state_vector_v1` up to the authoritative store. Read-only.
     /// Malformed input rejects with a structured error, bounded before any
     /// decode work by the encoded-state byte ceiling.
-    #[cfg(feature = "ffi-v2-staging")]
     pub fn encode_diff_v1(
         &self,
         request_id: u64,
@@ -2288,13 +2293,12 @@ impl YrsDocumentEngine {
         Ok(diff)
     }
 
-    /// Staging surface: the bounded structural classification half of the
+    /// Production surface: the bounded structural classification half of the
     /// remote ingress pipeline, exactly the byte-ceiling admission plus
     /// Update-v1 preflight that [`Self::prepare_remote_update_v1`] runs
     /// first. Read-only; the protocol layer uses it to classify a rejected
     /// payload as malformed encoding (preflight also fails) versus
     /// admitted-but-inadmissible content (preflight passes).
-    #[cfg(feature = "ffi-v2-staging")]
     pub fn preflight_remote_update_v1(
         &self,
         request_id: u64,
@@ -2310,22 +2314,20 @@ impl YrsDocumentEngine {
         Ok(())
     }
 
-    /// Staging surface: byte accounting for the engine-owned dependency
+    /// Production surface: byte accounting for the engine-owned dependency
     /// quarantine (`0` when no update is pending). The engine is the sole
     /// owner of the pending bytes themselves; the collaboration runtime
     /// charges this figure against its configured ceilings without ever
     /// holding a second payload copy.
-    #[cfg(feature = "ffi-v2-staging")]
     pub fn pending_remote_dependency_bytes(&self) -> usize {
         self.quarantined_remote_update
             .as_deref()
             .map_or(0, <[u8]>::len)
     }
 
-    /// Staging surface: the engine-owned awareness codec, lazily bound to the
+    /// Production surface: the engine-owned awareness codec, lazily bound to the
     /// authoritative `Doc`. The codec never exposes the document, a
     /// transaction, or the raw `Awareness` handle.
-    #[cfg(feature = "ffi-v2-staging")]
     pub fn awareness(&mut self) -> &mut super::awareness::AwarenessCodec {
         let doc = &self.doc;
         self.awareness
@@ -2338,7 +2340,6 @@ impl YrsDocumentEngine {
     /// current authoritative store. Invalid or unresolvable points return
     /// `None` — the runtime degrades the peer projection to cursor-less
     /// rather than erroring. Never mutates document state.
-    #[cfg(feature = "ffi-v2-staging")]
     pub fn resolve_awareness_sticky_doc_pos(&self, sticky_json: &serde_json::Value) -> Option<u32> {
         let sticky: yrs::StickyIndex = serde_json::from_value(sticky_json.clone()).ok()?;
         let txn = self.doc.transact();
@@ -2556,7 +2557,6 @@ impl YrsDocumentEngine {
         self.doc = prepared.candidate_doc;
         // Same client identity and logical session: awareness migrates every
         // live state (local and remote) with clocks intact.
-        #[cfg(feature = "ffi-v2-staging")]
         if let Some(awareness) = self.awareness.as_mut() {
             awareness.rebind_preserving_peers(&self.doc);
         }
@@ -2885,10 +2885,12 @@ impl YrsDocumentEngine {
             .map(|document| to_html(document, &self.schema))
     }
 
+    #[allow(dead_code)]
     pub fn encoded_state(&self) -> YrsEngineResult<Vec<u8>> {
         encode_state_bounded(&self.doc, &self.resource_limits)
     }
 
+    #[allow(dead_code)]
     pub fn has_document_state(&self) -> bool {
         !self.doc.transact().state_vector().is_empty()
     }
@@ -2903,9 +2905,9 @@ impl YrsDocumentEngine {
         self.state_revision
     }
 
-    /// Staging audit surface: the Yrs state epoch, so full before/after
+    /// Production audit surface: the Yrs state epoch, so full before/after
     /// session audits can pin epoch stability across atomic rejections.
-    #[cfg(feature = "ffi-v2-staging")]
+    #[allow(dead_code)]
     pub fn yrs_state_epoch(&self) -> u64 {
         self.yrs_state_epoch
     }
@@ -2922,6 +2924,7 @@ impl YrsDocumentEngine {
             .map(|state| &state.relative_selection)
     }
 
+    #[allow(dead_code)]
     pub fn resolved_selection(&self) -> Option<&super::ResolvedSelection> {
         self.debug_assert_derived_revision_keys();
         self.derived_state
@@ -2929,6 +2932,7 @@ impl YrsDocumentEngine {
             .map(|state| &state.resolved_selection)
     }
 
+    #[allow(dead_code)]
     pub fn stored_marks(&self) -> Option<&[crate::model::Mark]> {
         self.debug_assert_derived_revision_keys();
         self.derived_state
@@ -2940,18 +2944,22 @@ impl YrsDocumentEngine {
         self.doc.client_id().get()
     }
 
+    #[allow(dead_code)]
     pub fn fragment_name(&self) -> &str {
         &self.fragment_name
     }
 
+    #[allow(dead_code)]
     pub fn schema_fingerprint(&self) -> &str {
         &self.schema_fingerprint
     }
 
+    #[allow(dead_code)]
     pub fn scope(&self) -> Option<&DocumentScope> {
         self.scope.as_ref()
     }
 
+    #[allow(dead_code)]
     pub fn last_committed_origin(&self) -> Option<TransactionOrigin> {
         self.last_committed_origin
     }
@@ -2960,10 +2968,12 @@ impl YrsDocumentEngine {
         &self.resource_limits
     }
 
+    #[allow(dead_code)]
     pub fn editing_limits(&self) -> &EditingLimits {
         &self.editing_limits
     }
 
+    #[allow(dead_code)]
     pub fn max_length(&self) -> Option<u32> {
         self.max_length
     }
@@ -3673,6 +3683,7 @@ impl YrsDocumentEngine {
         self.apply_compiled_transaction_with_context(compiled, context, with_result, outbound)
     }
 
+    #[allow(dead_code)]
     pub fn apply_typed_transaction(
         &mut self,
         transaction: super::TypedTransaction,
@@ -3685,10 +3696,9 @@ impl YrsDocumentEngine {
         Ok(commit)
     }
 
-    /// Staging surface: one typed transaction with an optionally attached
+    /// Production surface: one typed transaction with an optionally attached
     /// collaboration outbox for outbound update capture. Returns the commit
     /// and, when `with_result` is set, the full typed result envelope.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn apply_typed_transaction_with_outbox(
         &mut self,
         transaction: super::TypedTransaction,
@@ -4280,6 +4290,7 @@ impl YrsDocumentEngine {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn apply_typed_transaction_with_result(
         &mut self,
         transaction: super::TypedTransaction,
@@ -5663,7 +5674,6 @@ impl YrsDocumentEngine {
         self.doc = candidate.doc;
         // Store swap under a fresh client identity: stale remote peers drop
         // and the desired local state re-publishes with a fresh clock.
-        #[cfg(feature = "ffi-v2-staging")]
         if let Some(awareness) = self.awareness.as_mut() {
             awareness.rebind_for_store_swap(&self.doc);
         }
@@ -5936,7 +5946,7 @@ impl YrsDocumentEngine {
     /// the existing Yrs store. No candidate `Doc` swap occurs: the client
     /// identity, GUID, offset kind, and GC setting are untouched and the local
     /// client clock strictly continues.
-    #[cfg(feature = "ffi-v2-staging")]
+    #[allow(dead_code)]
     pub fn prepare_root_replacement_json(
         &mut self,
         request_id: u64,
@@ -5948,7 +5958,6 @@ impl YrsDocumentEngine {
 
     /// [`Self::prepare_root_replacement_json`] with an optionally attached
     /// collaboration outbox for bounded outbound update capture.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn prepare_root_replacement_json_with_outbox(
         &mut self,
         request_id: u64,
@@ -5962,7 +5971,7 @@ impl YrsDocumentEngine {
 
     /// Same-store whole-document replacement from HTML. See
     /// [`Self::prepare_root_replacement_json`].
-    #[cfg(feature = "ffi-v2-staging")]
+    #[allow(dead_code)]
     pub fn prepare_root_replacement_html(
         &mut self,
         request_id: u64,
@@ -5975,7 +5984,6 @@ impl YrsDocumentEngine {
 
     /// [`Self::prepare_root_replacement_html`] with an optionally attached
     /// collaboration outbox for bounded outbound update capture.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn prepare_root_replacement_html_with_outbox(
         &mut self,
         request_id: u64,
@@ -5995,7 +6003,6 @@ impl YrsDocumentEngine {
 
     /// Shared bounded-input/parse/model admission for JSON root replacement,
     /// used by both the commit path and the outbound-bound probe.
-    #[cfg(feature = "ffi-v2-staging")]
     fn admit_root_replacement_json(
         &self,
         input: &str,
@@ -6013,7 +6020,6 @@ impl YrsDocumentEngine {
     /// The sealed whole-root `ReplaceStructure` transaction for an admitted
     /// replacement document, shared by the commit path and the probe so the
     /// probed conservative bound is the bound the commit reserves.
-    #[cfg(feature = "ffi-v2-staging")]
     fn root_replacement_transaction(
         &self,
         request_id: u64,
@@ -6061,7 +6067,6 @@ impl YrsDocumentEngine {
 
     /// Lower an admitted replacement document to one sealed whole-root
     /// `ReplaceStructure` transaction and apply the requested history class.
-    #[cfg(feature = "ffi-v2-staging")]
     fn commit_root_replacement(
         &mut self,
         request_id: u64,
@@ -6084,10 +6089,10 @@ impl YrsDocumentEngine {
         Ok(commit)
     }
 
-    /// Staging probe: the conservative outbound Update-v1 bound the JSON
+    /// Production probe: the conservative outbound Update-v1 bound the JSON
     /// root-replacement commit would reserve, computed from the identical
     /// admission and compilation without committing anything.
-    #[cfg(feature = "ffi-v2-staging")]
+    #[allow(dead_code)]
     pub(crate) fn probe_root_replacement_json_outbound_upper_bound(
         &self,
         request_id: u64,
@@ -6101,9 +6106,9 @@ impl YrsDocumentEngine {
             .map_err(super::RootReplacementError::Transaction)
     }
 
-    /// Staging probe: the conservative outbound bound one typed transaction
+    /// Production probe: the conservative outbound bound one typed transaction
     /// would reserve (compile only, no commit).
-    #[cfg(feature = "ffi-v2-staging")]
+    #[allow(dead_code)]
     pub(crate) fn probe_transaction_outbound_upper_bound(
         &self,
         transaction: super::TypedTransaction,
@@ -6113,10 +6118,10 @@ impl YrsDocumentEngine {
             .outbound_update_upper_bound())
     }
 
-    /// Staging probe: the conservative outbound bound one planned command
+    /// Production probe: the conservative outbound bound one planned command
     /// would reserve; `None` when the command is not applicable or lowers to
     /// a selection-only plan (which reserves nothing).
-    #[cfg(feature = "ffi-v2-staging")]
+    #[allow(dead_code)]
     pub(crate) fn probe_command_outbound_upper_bound(
         &self,
         request_id: u64,
@@ -6130,10 +6135,10 @@ impl YrsDocumentEngine {
         }
     }
 
-    /// Staging probe: the exact outbound Update-v1 length the next history
+    /// Production probe: the exact outbound Update-v1 length the next history
     /// pop would capture and reserve (`None` when nothing can pop). The pop
     /// path's conservative bound is this exact captured length.
-    #[cfg(feature = "ffi-v2-staging")]
+    #[allow(dead_code)]
     pub(crate) fn probe_history_pop_outbound_bytes(
         &self,
         request_id: u64,
@@ -6407,7 +6412,6 @@ impl YrsDocumentEngine {
         self.doc = candidate.doc;
         // Import swaps the store under a fresh client identity (the
         // ResetAndClear-style swap): rebind exactly like a snapshot restore.
-        #[cfg(feature = "ffi-v2-staging")]
         if let Some(awareness) = self.awareness.as_mut() {
             awareness.rebind_for_store_swap(&self.doc);
         }
@@ -24341,7 +24345,6 @@ mod tests {
     /// what the prepare pipeline's ingress admission accepts, rejects
     /// malformed encodings with the same structured errors, and never
     /// touches engine state.
-    #[cfg(feature = "ffi-v2-staging")]
     #[test]
     fn preflight_remote_update_v1_classifies_encoding_without_engine_effects() {
         let mut source = transaction_engine();
@@ -24371,7 +24374,6 @@ mod tests {
     /// Task 9 accounting seam: the engine reports its retained
     /// dependency-quarantine bytes (the exact pending payload length) and
     /// returns to zero once the dependency completes.
-    #[cfg(feature = "ffi-v2-staging")]
     #[test]
     fn pending_remote_dependency_bytes_tracks_the_quarantine_lifecycle() {
         use yrs::{diff_updates_v1, encode_state_vector_from_update_v1};
@@ -24420,6 +24422,51 @@ mod tests {
         assert_eq!(atomic_audit(&engine), before);
     }
 
+    /// Task 16B: the quarantined remote-update reservation is a demonstrated
+    /// fallible allocation seam and keeps OPERATION_RESOURCE_EXHAUSTED.
+    #[test]
+    fn quarantined_remote_update_reservation_failure_keeps_resource_exhausted() {
+        use yrs::{diff_updates_v1, encode_state_vector_from_update_v1};
+
+        let mut source = transaction_engine();
+        let base = source.encoded_state().unwrap();
+        source
+            .apply_command(220, TypedCommand::InsertText { text: "q".into() })
+            .unwrap();
+        let after = source.encoded_state().unwrap();
+        let base_sv = encode_state_vector_from_update_v1(&base).unwrap();
+        let delta = diff_updates_v1(&after, &base_sv).unwrap();
+
+        let mut target = transaction_engine();
+        let before = atomic_audit(&target);
+        super::set_quarantined_update_reservation_failure_for_test(true);
+        let error = target.apply_remote_update_v1(221, &delta).unwrap_err();
+        super::set_quarantined_update_reservation_failure_for_test(false);
+        assert_eq!(error.code, "OPERATION_RESOURCE_EXHAUSTED");
+        assert_eq!(error.details, Some(json!({ "field": "remoteUpdate" })));
+        assert_eq!(atomic_audit(&target), before);
+        // Recovery: the identical update quarantines once allocation recovers.
+        assert!(!target.apply_remote_update_v1(221, &delta).unwrap().changed);
+    }
+
+    /// Task 16B: the outbound staging-copy allocation seam keeps
+    /// OPERATION_RESOURCE_EXHAUSTED.
+    #[test]
+    fn outbound_staging_copy_allocation_failure_keeps_resource_exhausted() {
+        let limits = crate::session::CollaborationLimits::default();
+        let mut outbox = crate::collaboration_runtime::CollaborationOutbox::from_limits(&limits);
+        let mut sink = OutboundUpdateSink::attached(&mut outbox);
+        super::set_outbound_staging_copy_failure_for_test(true);
+        let error = sink.reserve_and_stage(41, 4, &[1, 2, 3]).unwrap_err();
+        super::set_outbound_staging_copy_failure_for_test(false);
+        assert_eq!(error.code, "OPERATION_RESOURCE_EXHAUSTED");
+        assert_eq!(
+            error.details,
+            Some(json!({ "field": "pendingOutboxUpdateBytes" }))
+        );
+        sink.reserve_and_stage(41, 4, &[1, 2, 3]).unwrap();
+    }
+
     /// Task 6 fix round 1: exact/one-over coverage of the shared
     /// `maxEncodedStateBytes` gate used by the remote pipeline and the sealed
     /// state-vector/diff encoders. The state-vector *output* branch is
@@ -24447,7 +24494,6 @@ mod tests {
     /// live authoritative `Doc` handle (documents edits are visible through
     /// it, the client identity matches), and the binding follows every store
     /// swap (undo/redo candidate installation and import).
-    #[cfg(feature = "ffi-v2-staging")]
     #[test]
     fn awareness_codec_owns_an_awareness_bound_to_the_live_doc() {
         use yrs::GetString;

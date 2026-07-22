@@ -11,7 +11,6 @@ import android.util.TypedValue
 import android.view.View
 import androidx.appcompat.content.res.AppCompatResources
 import org.json.JSONArray
-import uniffi.editor_core.editorDocToScalar
 
 data class RemoteSelectionDecoration(
     val clientId: Int,
@@ -124,7 +123,7 @@ class RemoteSelectionOverlayView @JvmOverloads constructor(
     private var cachedGeometry: List<CachedSelectionGeometry> = emptyList()
     internal var editorIdOverrideForTesting: Long? = null
     internal var docToScalarResolver: (Long, Int) -> Int = { editorId, docPos ->
-        editorDocToScalar(editorId.toULong(), docPos.toUInt()).toInt()
+        EditorV2Registry.adapterFor(editorId)?.scalarPositionForDoc(docPos) ?: 0
     }
     private val selectionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL

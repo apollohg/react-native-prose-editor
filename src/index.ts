@@ -98,7 +98,14 @@ export {
     type LocalAwarenessUser,
     type UseYjsCollaborationResult,
     type YjsCollaborationController,
+    type YjsCollaborationEditorBindings,
 } from './YjsCollaboration';
+
+export {
+    useNativeEditorDocument,
+    type UseNativeEditorDocumentOptions,
+    type UseNativeEditorDocumentReturn,
+} from './useNativeEditor';
 
 // Read-only types (no mutation methods)
 export type {
@@ -108,12 +115,15 @@ export type {
     EditorUpdate,
     DocumentJSON,
     CollaborationPeer,
-    EncodedCollaborationStateInput,
 } from './NativeEditorBridge';
 
 export {
-    encodeCollaborationStateBase64,
-    decodeCollaborationStateBase64,
+    NativeEditorDocumentHandle,
+    type NativeEditorV2CreateConfig,
+    type NativeEditorV2Initialization,
+    type NativeEditorV2PeerInfo,
+    type NativeEditorV2RoomSnapshot,
+    type NativeEditorV2SnapshotMetadata,
 } from './NativeEditorBridge';
 
 export { clearHeightCache } from './heightCache';
@@ -136,7 +146,18 @@ export {
 
 export {
     NATIVE_EDITOR_BOUNDARY_ERROR_CODES,
+    NATIVE_EDITOR_V2_NON_RETRYABLE_CODES,
     NativeEditorBoundaryError,
+    NativeEditorV2ErrorBase,
+    NativeEditorV2BoundaryError,
+    NativeEditorV2DocumentError,
+    NativeEditorV2OperationError,
+    NativeEditorV2LifecycleError,
+    NativeEditorV2SnapshotError,
+    NativeEditorV2TransportError,
+    NativeEditorV2NonRetryableError,
     parseNativeBoundaryError,
     type NativeEditorBoundaryErrorCode,
+    type NativeEditorErrorDomain,
+    type NativeEditorV2Error,
 } from './NativeEditorBoundaryError';

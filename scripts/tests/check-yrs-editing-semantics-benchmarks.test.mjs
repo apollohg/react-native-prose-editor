@@ -14,25 +14,35 @@ import {
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const checker = path.join(repositoryRoot, 'scripts/check-yrs-editing-semantics-benchmarks.mjs');
+// Task 16C (user directive 2026-07-20): the legacy runtime and its
+// reference benchmarks were removed; the checker contract keeps only the
+// Yrs cases, with absolute, scaling, and 1.20x baseline-regression gates
+// unchanged. Baselines may still carry the old legacy.* entries; the
+// checker must ignore any case it does not require.
 const requiredCases = [
-    'legacy.edit.insert_char.article.1x',
     'yrs.edit.insert_char.article.1x',
-    'legacy.edit.typing_burst.article.1x',
     'yrs.edit.typing_burst.article.1x',
-    'legacy.state.selection_light.article.1x',
     'yrs.state.selection_light.article.1x',
-    'legacy.command.toggle_mark.article.1x',
     'yrs.command.toggle_mark.article.1x',
-    'legacy.command.wrap_list.article.1x',
     'yrs.command.wrap_list.article.1x',
-    'legacy.history.undo.article.1x',
     'yrs.history.undo.article.1x',
-    'legacy.history.redo.article.1x',
     'yrs.history.redo.article.1x',
     'yrs.edit.insert_char.article.2x',
     'yrs.state.selection_light.article.2x',
     'yrs.command.wrap_list.article.2x',
 ];
+
+const legacyBaselineEntries = Object.fromEntries(
+    [
+        'legacy.edit.insert_char.article.1x',
+        'legacy.edit.typing_burst.article.1x',
+        'legacy.state.selection_light.article.1x',
+        'legacy.command.toggle_mark.article.1x',
+        'legacy.command.wrap_list.article.1x',
+        'legacy.history.undo.article.1x',
+        'legacy.history.redo.article.1x',
+    ].map((name) => [name, 0.25])
+);
 
 function benchmark(overrides = {}) {
     return {
@@ -293,25 +303,18 @@ test('requires every exact case once with finite positive values', async (t) => 
 test('file-input mode checks one already-aggregated payload without requiring raw samples', () => {
     const result = runChecker(benchmark(), benchmark());
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /17 benchmark cases passed/);
+    assert.match(result.stdout, /10 benchmark cases passed/);
     assert.doesNotMatch(result.stdout, /raw-sample/);
 });
 
-test('accepts every relative, absolute, scaling, and baseline exact boundary', () => {
+test('accepts every absolute, scaling, and baseline exact boundary', () => {
     const input = benchmark({
-        'legacy.edit.insert_char.article.1x': 1,
         'yrs.edit.insert_char.article.1x': 2,
-        'legacy.edit.typing_burst.article.1x': 10,
         'yrs.edit.typing_burst.article.1x': 20,
-        'legacy.state.selection_light.article.1x': 0.5,
         'yrs.state.selection_light.article.1x': 1,
-        'legacy.command.toggle_mark.article.1x': 5 / 3,
         'yrs.command.toggle_mark.article.1x': 5,
-        'legacy.command.wrap_list.article.1x': 5 / 3,
         'yrs.command.wrap_list.article.1x': 5,
-        'legacy.history.undo.article.1x': 5 / 3,
         'yrs.history.undo.article.1x': 5,
-        'legacy.history.redo.article.1x': 5 / 3,
         'yrs.history.redo.article.1x': 5,
         'yrs.edit.insert_char.article.2x': 5,
         'yrs.state.selection_light.article.2x': 2.5,
@@ -324,34 +327,21 @@ test('accepts every relative, absolute, scaling, and baseline exact boundary', (
     assert.equal(result.status, 0, result.stderr);
 });
 
-test('rejects each relative ratio family with actionable ratio diagnostics', async (t) => {
-    for (const [name, legacy, yrs, allowed] of [
-        ['insert', 'legacy.edit.insert_char.article.1x', 'yrs.edit.insert_char.article.1x', 2],
-        ['burst', 'legacy.edit.typing_burst.article.1x', 'yrs.edit.typing_burst.article.1x', 2],
-        [
-            'selection',
-            'legacy.state.selection_light.article.1x',
-            'yrs.state.selection_light.article.1x',
-            2,
+test('ignores legacy.* entries carried in the frozen baseline', () => {
+    const baseline = {
+        mode: 'standard',
+        benchmarkGroup: 'yrs-editing',
+        results: [
+            ...benchmark().results,
+            ...Object.entries(legacyBaselineEntries).map(([name, p50Ms]) => ({
+                name,
+                p50Ms,
+            })),
         ],
-        [
-            'toggle',
-            'legacy.command.toggle_mark.article.1x',
-            'yrs.command.toggle_mark.article.1x',
-            3,
-        ],
-        ['wrap', 'legacy.command.wrap_list.article.1x', 'yrs.command.wrap_list.article.1x', 3],
-        ['undo', 'legacy.history.undo.article.1x', 'yrs.history.undo.article.1x', 3],
-        ['redo', 'legacy.history.redo.article.1x', 'yrs.history.redo.article.1x', 3],
-    ]) {
-        await t.test(name, () => {
-            const result = runChecker(benchmark({ [legacy]: 0.1, [yrs]: 0.1 * allowed + 0.001 }));
-            assert.notEqual(result.status, 0);
-            assert.match(result.stderr, /relative ratio failure/);
-            assert.match(result.stderr, new RegExp(yrs.replaceAll('.', '\\.')));
-            assert.match(result.stderr, new RegExp(`allowed ratio=${allowed}`));
-        });
-    }
+    };
+    const result = runChecker(benchmark(), baseline);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /10 benchmark cases passed/);
 });
 
 test('rejects each absolute ceiling family with actionable absolute diagnostics', async (t) => {
@@ -365,12 +355,7 @@ test('rejects each absolute ceiling family with actionable absolute diagnostics'
         ['redo', 'yrs.history.redo.article.1x', 5],
     ]) {
         await t.test(name, () => {
-            const result = runChecker(
-                benchmark({
-                    [caseName]: allowed + 0.001,
-                    [caseName.replace('yrs.', 'legacy.')]: allowed + 0.001,
-                })
-            );
+            const result = runChecker(benchmark({ [caseName]: allowed + 0.001 }));
             assert.notEqual(result.status, 0);
             assert.match(result.stderr, /absolute ceiling failure/);
             assert.match(result.stderr, new RegExp(caseName.replaceAll('.', '\\.')));
@@ -400,7 +385,7 @@ test('rejects all three 2x scaling pairs with actionable scaling diagnostics', a
 });
 
 test('rejects a regression above every-case baseline gate with baseline diagnostics', () => {
-    const input = benchmark({ 'legacy.history.redo.article.1x': 0.601 });
+    const input = benchmark({ 'yrs.history.redo.article.1x': 0.601 });
     const result = runChecker(input, benchmark());
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /baseline regression failure/);

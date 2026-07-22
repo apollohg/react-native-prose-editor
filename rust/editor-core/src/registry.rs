@@ -1,7 +1,9 @@
-//! Thread-safe global registry for multiple editor instances.
+//! Thread-safe global registry for v2 editor sessions.
 //!
-//! Each editor is identified by a unique `EditorId` (u64). The registry uses
-//! `Arc<Mutex<Editor>>` for thread-safe access from native platform threads.
+//! Each session is identified by a unique `SessionId` (u64). The registry
+//! stores `Arc<EditorSessionSlot>` handles whose lifecycle state machine
+//! (alive -> destroying -> destroyed) guarantees that no work runs on a
+//! session once destruction has begun.
 
 #![allow(
     clippy::result_large_err,
@@ -9,113 +11,29 @@
 )]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-#[cfg(feature = "ffi-v2-staging")]
-use std::sync::atomic::AtomicU8;
-
-#[cfg(feature = "ffi-v2-staging")]
 use crate::session::{EditorSession, SessionError};
 
-use crate::boundary::ResourceLimits;
-use crate::editor::Editor;
-use crate::intercept::InterceptorPipeline;
-use crate::schema::Schema;
-
-/// Unique identifier for an editor instance.
-pub type EditorId = u64;
-
-/// Sentinel value indicating no valid editor.
-pub const INVALID_EDITOR_ID: EditorId = 0;
-
-/// Global atomic counter for generating unique editor IDs.
-/// Starts at 1 so that 0 can serve as INVALID_EDITOR_ID.
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
-/// The global registry singleton.
-static REGISTRY: OnceLock<Mutex<HashMap<EditorId, Arc<Mutex<Editor>>>>> = OnceLock::new();
-
-fn global_registry() -> &'static Mutex<HashMap<EditorId, Arc<Mutex<Editor>>>> {
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Thread-safe global registry for editor instances.
-pub struct EditorRegistry;
-
-impl EditorRegistry {
-    /// Create a new editor and return its ID.
-    pub fn create(
-        schema: Schema,
-        interceptors: InterceptorPipeline,
-        allow_base64_images: bool,
-    ) -> EditorId {
-        Self::create_with_limits(
-            schema,
-            interceptors,
-            allow_base64_images,
-            ResourceLimits::default(),
-        )
-    }
-
-    pub fn create_with_limits(
-        schema: Schema,
-        interceptors: InterceptorPipeline,
-        allow_base64_images: bool,
-        resource_limits: ResourceLimits,
-    ) -> EditorId {
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let editor =
-            Editor::new_with_limits(schema, interceptors, allow_base64_images, resource_limits);
-        let arc = Arc::new(Mutex::new(editor));
-
-        let mut map = global_registry().lock().expect("registry lock poisoned");
-        map.insert(id, arc);
-        id
-    }
-
-    /// Get a handle to an editor by ID.
-    pub fn get(id: EditorId) -> Option<Arc<Mutex<Editor>>> {
-        let map = global_registry().lock().expect("registry lock poisoned");
-        map.get(&id).cloned()
-    }
-
-    /// Destroy an editor, removing it from the registry.
-    pub fn destroy(id: EditorId) {
-        let mut map = global_registry().lock().expect("registry lock poisoned");
-        map.remove(&id);
-    }
-
-    /// Number of active editors in the registry.
-    pub fn count() -> usize {
-        let map = global_registry().lock().expect("registry lock poisoned");
-        map.len()
-    }
-}
-
-#[cfg(feature = "ffi-v2-staging")]
 pub(crate) type SessionId = u64;
 
-#[cfg(feature = "ffi-v2-staging")]
 const SESSION_ALIVE: u8 = 0;
-#[cfg(feature = "ffi-v2-staging")]
 const SESSION_DESTROYING: u8 = 1;
-#[cfg(feature = "ffi-v2-staging")]
 const SESSION_DESTROYED: u8 = 2;
 
-#[cfg(feature = "ffi-v2-staging")]
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
-#[cfg(feature = "ffi-v2-staging")]
 static SESSION_REGISTRY: OnceLock<Mutex<HashMap<SessionId, Arc<EditorSessionSlot>>>> =
     OnceLock::new();
 
-#[cfg(feature = "ffi-v2-staging")]
 fn global_session_registry() -> &'static Mutex<HashMap<SessionId, Arc<EditorSessionSlot>>> {
     SESSION_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[cfg(feature = "ffi-v2-staging")]
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 pub(crate) fn session_registry_count() -> usize {
     global_session_registry()
         .lock()
@@ -123,13 +41,11 @@ pub(crate) fn session_registry_count() -> usize {
         .len()
 }
 
-#[cfg(feature = "ffi-v2-staging")]
 pub(crate) struct EditorSessionSlot {
     lifecycle: AtomicU8,
     session: Mutex<EditorSession>,
 }
 
-#[cfg(feature = "ffi-v2-staging")]
 impl EditorSessionSlot {
     fn new(session: EditorSession) -> Self {
         Self {
@@ -164,7 +80,6 @@ impl EditorSessionSlot {
     }
 }
 
-#[cfg(feature = "ffi-v2-staging")]
 fn session_not_alive(lifecycle: u8) -> SessionError {
     let (code, message) = if lifecycle == SESSION_DESTROYING {
         ("ENGINE_DESTROYING", "editor session is being destroyed")
@@ -174,10 +89,11 @@ fn session_not_alive(lifecycle: u8) -> SessionError {
     SessionError::new(crate::session::ErrorDomain::Lifecycle, code, message)
 }
 
-#[cfg(feature = "ffi-v2-staging")]
 pub(crate) fn create_session(
     admit: impl FnOnce() -> Result<EditorSession, SessionError>,
 ) -> Result<SessionId, SessionError> {
+    #[cfg(test)]
+    let _concurrency_guard = crate::test_support::RegistryConcurrencyGuard::acquire();
     let session = admit()?;
     let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
     let slot = Arc::new(EditorSessionSlot::new(session));
@@ -188,7 +104,6 @@ pub(crate) fn create_session(
     Ok(id)
 }
 
-#[cfg(feature = "ffi-v2-staging")]
 pub(crate) fn get_session(id: SessionId) -> Option<Arc<EditorSessionSlot>> {
     global_session_registry()
         .lock()
@@ -197,8 +112,9 @@ pub(crate) fn get_session(id: SessionId) -> Option<Arc<EditorSessionSlot>> {
         .cloned()
 }
 
-#[cfg(feature = "ffi-v2-staging")]
 pub(crate) fn destroy_session(id: SessionId) {
+    #[cfg(test)]
+    let _concurrency_guard = crate::test_support::RegistryConcurrencyGuard::acquire();
     let slot = {
         let mut registry = global_session_registry()
             .lock()
@@ -227,7 +143,7 @@ pub(crate) fn destroy_session(id: SessionId) {
     slot.lifecycle.store(SESSION_DESTROYED, Ordering::Release);
 }
 
-#[cfg(feature = "ffi-v2-staging")]
+#[cfg(test)]
 pub mod session_lifecycle_test_support {
     use std::sync::atomic::Ordering;
     use std::sync::mpsc::{Receiver, Sender};
@@ -337,6 +253,7 @@ pub mod session_lifecycle_test_support {
 
     pub fn create_session(reject_admission: bool) -> Result<u64, LifecycleTestError> {
         super::create_session(|| EditorSession::lifecycle_test_session(reject_admission))
+            .map_err(|_| LifecycleTestError::AdmissionRejected)
             .map_err(|_| LifecycleTestError::AdmissionRejected)
     }
 

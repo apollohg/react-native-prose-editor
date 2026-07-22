@@ -5,10 +5,14 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+// Task 16C (user directive 2026-07-20): the legacy runtime was deleted, so
+// the legacy.* reference cases and the legacy-relative ratio gates (5.0x
+// import, 3.0x export) are removed with it. The absolute import ceiling
+// (2.5 ms), the 2x scaling gates, and the 1.20x baseline-regression gate
+// are UNCHANGED. Frozen baseline files may still carry legacy.* entries;
+// they are ignored here (see indexResults).
 const REQUIRED_CASES = [
-    'legacy.json_import.article.1x',
     'yrs.json_import.article.1x',
-    'legacy.json_export.article.1x',
     'yrs.json_export.article.1x',
     'yrs.json_import.article.2x',
     'yrs.json_export.article.2x',
@@ -19,8 +23,6 @@ const REQUIRED_CASES = [
 ];
 
 const RATIO_GATES = [
-    ['yrs.json_import.article.1x', 'legacy.json_import.article.1x', 5.0],
-    ['yrs.json_export.article.1x', 'legacy.json_export.article.1x', 3.0],
     ['yrs.json_import.article.2x', 'yrs.json_import.article.1x', 2.5],
     ['yrs.json_export.article.2x', 'yrs.json_export.article.1x', 2.5],
     ['yrs.json_import.opaque_large.2x', 'yrs.json_import.opaque_large.1x', 2.5],
@@ -140,7 +142,7 @@ export function runBenchmarkSamples(sampleRunner = runBenchmarkSample, writeEvid
     };
 }
 
-function indexResults(payload, label) {
+function indexResults(payload, label, { allowExtraCases = false } = {}) {
     if (!Array.isArray(payload.results)) {
         throw new Error(`${label} must contain a results array`);
     }
@@ -154,6 +156,9 @@ function indexResults(payload, label) {
             throw new Error(`${label} result at index ${index} must have a non-empty name`);
         }
         if (!REQUIRED_CASES.includes(result.name)) {
+            // Frozen baselines still carry the deleted legacy.* reference
+            // cases; only the required cases are read from a baseline.
+            if (allowExtraCases) continue;
             throw new Error(`${label} has unexpected benchmark case: ${result.name}`);
         }
         if (indexed.has(result.name)) {
@@ -174,7 +179,7 @@ function indexResults(payload, label) {
             throw new Error(`${label} is missing required case: ${name}`);
         }
     }
-    if (indexed.size !== REQUIRED_CASES.length) {
+    if (!allowExtraCases && indexed.size !== REQUIRED_CASES.length) {
         throw new Error(`${label} must contain exactly ${REQUIRED_CASES.length} benchmark cases`);
     }
     return indexed;
@@ -254,7 +259,7 @@ function checkBenchmarks(input, baseline) {
     }
 
     if (baseline) {
-        const baselineResults = indexResults(baseline, 'baseline');
+        const baselineResults = indexResults(baseline, 'baseline', { allowExtraCases: true });
         for (const name of REQUIRED_CASES) {
             assertBaselineRatio(benchmark, baselineResults, name, 1.2);
         }

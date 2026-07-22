@@ -24,7 +24,7 @@ final class NativeEditorViewRegistry {
             if activeEditorIds.contains(editorId) {
                 return false
             }
-            return editorGetCurrentState(id: editorId).contains("\"error\":\"editor not found\"")
+            return EditorV2Registry.adapter(forLegacyId: editorId) == nil
         }
     }
 
@@ -34,7 +34,7 @@ final class NativeEditorViewRegistry {
         return performOnMain {
             guard !destroyingEditorIds.contains(editorId) else { return false }
             if !activeEditorIds.contains(editorId) {
-                guard !editorGetCurrentState(id: editorId).contains("\"error\":\"editor not found\"") else {
+                guard EditorV2Registry.adapter(forLegacyId: editorId) != nil else {
                     return false
                 }
                 activeEditorIds.insert(editorId)
@@ -82,7 +82,7 @@ final class NativeEditorViewRegistry {
                 return Self.commandPreparationJSON(ready: false, blockedReason: "destroying")
             }
             if !self.activeEditorIds.contains(editorId),
-               editorGetCurrentState(id: editorId).contains("\"error\":\"editor not found\"")
+               EditorV2Registry.adapter(forLegacyId: editorId) == nil
             {
                 return Self.commandPreparationJSON(ready: false, blockedReason: "destroyed")
             }
@@ -2222,7 +2222,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             }
         }
         if id != 0 {
-            let stateJSON = editorGetCurrentState(id: id)
+            let stateJSON = EditorV2Shadow.getCurrentState(id: id)
             if let state = NativeToolbarState(updateJSON: stateJSON) {
                 toolbarState = state
                 accessoryToolbar.apply(state: state)
@@ -2473,7 +2473,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         guard richTextView.editorId != 0 else { return }
         imageLoadOwner.withCurrent {
             richTextView.textView.applyUpdateJSON(
-                editorGetCurrentState(id: richTextView.editorId),
+                EditorV2Shadow.getCurrentState(id: richTextView.editorId),
                 notifyDelegate: false
             )
         }
@@ -2724,7 +2724,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             self.pendingViewCommandUpdateJSON = nil
             self.pendingViewCommandUpdateEditorId = nil
             self.pendingViewCommandUpdateRetryScheduled = false
-            let updateJSON = editorGetCurrentState(id: self.richTextView.editorId)
+            let updateJSON = EditorV2Shadow.getCurrentState(id: self.richTextView.editorId)
             _ = self.applyEditorUpdate(updateJSON)
         }
     }
@@ -2927,7 +2927,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     @discardableResult
     private func refreshToolbarStateFromEditorSelection() -> String? {
         guard richTextView.editorId != 0 else { return nil }
-        let stateJSON = editorGetSelectionState(id: richTextView.editorId)
+        let stateJSON = EditorV2Shadow.getSelectionState(id: richTextView.editorId)
         guard let state = NativeToolbarState(updateJSON: stateJSON) else { return nil }
         toolbarState = state
         accessoryToolbar.apply(state: state)
@@ -3305,7 +3305,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             return
         }
 
-        let updateJSON = editorInsertContentJsonAtSelectionScalar(
+        let updateJSON = EditorV2Shadow.insertContentJsonAtSelectionScalar(
             id: richTextView.editorId,
             scalarAnchor: queryState.anchor,
             scalarHead: queryState.head,
@@ -3489,7 +3489,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     private func currentDocumentVersion() -> Int? {
         guard richTextView.editorId != 0 else { return nil }
-        return documentVersion(fromUpdateJSON: editorGetCurrentState(id: richTextView.editorId))
+        return documentVersion(fromUpdateJSON: EditorV2Shadow.getCurrentState(id: richTextView.editorId))
     }
 
     func setMentionQueryStateForTesting(_ state: MentionQueryState?) {

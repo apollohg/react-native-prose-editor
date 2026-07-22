@@ -29,6 +29,10 @@ const POPPED_OBSERVER: &str = "native-editor/history/observer-popped";
 thread_local! {
     static FAIL_BOUNDARY_RESERVATION: Cell<bool> = const { Cell::new(false) };
     static FAIL_REPLAY_UPDATE_ALLOCATION: Cell<bool> = const { Cell::new(false) };
+    static FAIL_ROLL_BASELINE_RESERVATION: Cell<bool> = const { Cell::new(false) };
+    static FAIL_ACCEPTED_ACTION_RESERVATION: Cell<bool> = const { Cell::new(false) };
+    static FAIL_CANDIDATE_EVENTS_RESERVATION: Cell<bool> = const { Cell::new(false) };
+    static FAIL_EVENT_REPLACEMENT_RESERVATION: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -39,6 +43,55 @@ pub(crate) fn set_boundary_reservation_failure_for_test(enabled: bool) {
 #[cfg(test)]
 pub(crate) fn set_replay_update_allocation_failure_for_test(enabled: bool) {
     FAIL_REPLAY_UPDATE_ALLOCATION.with(|fail| fail.set(enabled));
+}
+
+#[cfg(test)]
+fn set_roll_baseline_reservation_failure_for_test(enabled: bool) {
+    FAIL_ROLL_BASELINE_RESERVATION.with(|fail| fail.set(enabled));
+}
+
+#[cfg(test)]
+fn set_accepted_action_reservation_failure_for_test(enabled: bool) {
+    FAIL_ACCEPTED_ACTION_RESERVATION.with(|fail| fail.set(enabled));
+}
+
+#[cfg(test)]
+fn set_candidate_events_reservation_failure_for_test(enabled: bool) {
+    FAIL_CANDIDATE_EVENTS_RESERVATION.with(|fail| fail.set(enabled));
+}
+
+#[cfg(test)]
+fn set_event_replacement_reservation_failure_for_test(enabled: bool) {
+    FAIL_EVENT_REPLACEMENT_RESERVATION.with(|fail| fail.set(enabled));
+}
+
+/// Fallible allocation seam (Task 16B): reserving the replay roll baseline is
+/// a genuine allocation site, so it keeps the allocation-class
+/// `OPERATION_RESOURCE_EXHAUSTED` code.
+fn reserve_replay_roll_baseline(
+    request_id: u64,
+    current_encoded_state: &[u8],
+) -> OperationResult<Vec<u8>> {
+    #[cfg(test)]
+    if FAIL_ROLL_BASELINE_RESERVATION.with(Cell::get) {
+        return Err(OperationError::operation_resource_exhausted(
+            request_id,
+            "historyReplay",
+            "injected replay roll baseline reservation failure",
+        ));
+    }
+    let mut baseline = Vec::new();
+    baseline
+        .try_reserve_exact(current_encoded_state.len())
+        .map_err(|error| {
+            OperationError::operation_resource_exhausted(
+                request_id,
+                "historyReplay",
+                format!("cannot reserve replay roll baseline: {error}"),
+            )
+        })?;
+    baseline.extend_from_slice(current_encoded_state);
+    Ok(baseline)
 }
 
 #[derive(Debug, Clone)]
@@ -487,20 +540,7 @@ impl YrsHistory {
         }
         let rolls = limits.should_roll || reservation_would_roll;
         let owned_baseline = rolls
-            .then(|| {
-                let mut baseline = Vec::new();
-                baseline
-                    .try_reserve_exact(current_encoded_state.len())
-                    .map_err(|error| {
-                        OperationError::operation_resource_exhausted(
-                            request_id,
-                            "historyReplay",
-                            format!("cannot reserve replay roll baseline: {error}"),
-                        )
-                    })?;
-                baseline.extend_from_slice(current_encoded_state);
-                Ok(baseline)
-            })
+            .then(|| reserve_replay_roll_baseline(request_id, current_encoded_state))
             .transpose()?;
         let replay_slot = self.prepare_replay_event_slot(request_id, rolls)?;
         let compatible =
@@ -709,6 +749,14 @@ impl YrsHistory {
         fragment: &XmlFragmentRef,
     ) -> OperationResult<Self> {
         self.retained_units(request_id)?;
+        #[cfg(test)]
+        if FAIL_CANDIDATE_EVENTS_RESERVATION.with(Cell::get) {
+            return Err(OperationError::operation_resource_exhausted(
+                request_id,
+                "historyReplay",
+                "injected candidate history events reservation failure",
+            ));
+        }
         let mut replayed_events = Vec::new();
         replayed_events
             .try_reserve_exact(self.replay_events.len())
@@ -1032,20 +1080,7 @@ impl YrsHistory {
         }
         let rolls = should_roll || reservation_would_roll;
         let owned_baseline = rolls
-            .then(|| {
-                let mut baseline = Vec::new();
-                baseline
-                    .try_reserve_exact(current_encoded_state.len())
-                    .map_err(|error| {
-                        OperationError::operation_resource_exhausted(
-                            request_id,
-                            "historyReplay",
-                            format!("cannot reserve replay roll baseline: {error}"),
-                        )
-                    })?;
-                baseline.extend_from_slice(current_encoded_state);
-                Ok(baseline)
-            })
+            .then(|| reserve_replay_roll_baseline(request_id, current_encoded_state))
             .transpose()?;
         let replay_slot = self.prepare_replay_event_slot(request_id, rolls)?;
         if let Some(baseline) = owned_baseline {
@@ -1291,17 +1326,8 @@ impl YrsHistory {
                 let rolls = self.replay_event_would_roll(event_bytes_bound, work_units);
                 let replay_slot = self.prepare_replay_event_slot(request_id, rolls)?;
                 let disposition = if rolls {
-                    let mut owned_baseline = Vec::new();
-                    owned_baseline
-                        .try_reserve_exact(current_encoded_state.len())
-                        .map_err(|error| {
-                            OperationError::operation_resource_exhausted(
-                                request_id,
-                                "historyReplay",
-                                format!("cannot reserve replay roll baseline: {error}"),
-                            )
-                        })?;
-                    owned_baseline.extend_from_slice(current_encoded_state);
+                    let owned_baseline =
+                        reserve_replay_roll_baseline(request_id, current_encoded_state)?;
                     ExcludedReplayDisposition::Roll { owned_baseline }
                 } else {
                     ExcludedReplayDisposition::Append
@@ -1339,17 +1365,8 @@ impl YrsHistory {
             let rolls = self.replay_event_would_roll(event_bytes_bound, work_units);
             let replay_slot = self.prepare_replay_event_slot(request_id, rolls)?;
             let disposition = if rolls {
-                let mut owned_baseline = Vec::new();
-                owned_baseline
-                    .try_reserve_exact(current_encoded_state.len())
-                    .map_err(|error| {
-                        OperationError::operation_resource_exhausted(
-                            request_id,
-                            "historyReplay",
-                            format!("cannot reserve replay roll baseline: {error}"),
-                        )
-                    })?;
-                owned_baseline.extend_from_slice(current_encoded_state);
+                let owned_baseline =
+                    reserve_replay_roll_baseline(request_id, current_encoded_state)?;
                 ExcludedReplayDisposition::Roll { owned_baseline }
             } else {
                 ExcludedReplayDisposition::Append
@@ -1624,6 +1641,14 @@ impl YrsHistory {
         action: HistoryAction,
         accepted_encoded_state: Vec<u8>,
     ) -> OperationResult<()> {
+        #[cfg(test)]
+        if FAIL_ACCEPTED_ACTION_RESERVATION.with(Cell::get) {
+            return Err(OperationError::operation_resource_exhausted(
+                request_id,
+                "historyReplay",
+                "injected accepted history action reservation failure",
+            ));
+        }
         self.replay_events.try_reserve(1).map_err(|error| {
             OperationError::operation_resource_exhausted(
                 request_id,
@@ -1756,6 +1781,14 @@ impl YrsHistory {
         };
         if self.replay_events.capacity() >= required_len {
             return Ok(PreparedReplayEventSlot::ExistingSpare);
+        }
+        #[cfg(test)]
+        if FAIL_EVENT_REPLACEMENT_RESERVATION.with(Cell::get) {
+            return Err(OperationError::operation_resource_exhausted(
+                request_id,
+                "historyReplay",
+                "injected bounded history event replacement reservation failure",
+            ));
         }
         let mut replacement = Vec::new();
         replacement
@@ -2172,6 +2205,121 @@ mod tests {
         assert_eq!(error.code, "OPERATION_RESOURCE_EXHAUSTED");
         assert_eq!(history.manager.undo_stack().len(), undo_groups);
         assert!(history.manager.can_undo());
+    }
+
+    // Task 16B: the retained fallible allocation/reservation sites keep the
+    // allocation-class OPERATION_RESOURCE_EXHAUSTED code.
+    #[test]
+    fn roll_baseline_reservation_failure_keeps_resource_exhausted() {
+        let (_doc, mut history) = compatible_history_requiring_reservation_roll(100);
+        super::set_roll_baseline_reservation_failure_for_test(true);
+        let error = history
+            .prepare_capture(
+                52,
+                TransactionOrigin::LocalInput,
+                HistoryPolicy::Auto,
+                HistoryClass::Insert,
+                1,
+                Some(history_snapshot(59)),
+                41,
+                &[],
+                0,
+            )
+            .unwrap_err();
+        super::set_roll_baseline_reservation_failure_for_test(false);
+        assert_eq!(error.code, "OPERATION_RESOURCE_EXHAUSTED");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({ "field": "historyReplay" }))
+        );
+        // Recovery: the identical capture succeeds once allocation recovers.
+        history
+            .prepare_capture(
+                52,
+                TransactionOrigin::LocalInput,
+                HistoryPolicy::Auto,
+                HistoryClass::Insert,
+                1,
+                Some(history_snapshot(59)),
+                41,
+                &[],
+                0,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn accepted_action_reservation_failure_keeps_resource_exhausted() {
+        let doc = Doc::new();
+        let fragment = doc.get_or_insert_xml_fragment("history-test");
+        let mut history = YrsHistory::new(
+            &doc,
+            &fragment,
+            EditingLimits::default(),
+            usize::MAX,
+            Arc::new(|| 10_000),
+        );
+        super::set_accepted_action_reservation_failure_for_test(true);
+        let error = history
+            .accept_action(41, super::HistoryAction::Undo, Vec::new())
+            .unwrap_err();
+        super::set_accepted_action_reservation_failure_for_test(false);
+        assert_eq!(error.code, "OPERATION_RESOURCE_EXHAUSTED");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({ "field": "historyReplay" }))
+        );
+        history
+            .accept_action(41, super::HistoryAction::Undo, Vec::new())
+            .unwrap();
+    }
+
+    #[test]
+    fn candidate_events_reservation_failure_keeps_resource_exhausted() {
+        let doc = Doc::new();
+        let fragment = doc.get_or_insert_xml_fragment("history-test");
+        let history = YrsHistory::new(
+            &doc,
+            &fragment,
+            EditingLimits::default(),
+            usize::MAX,
+            Arc::new(|| 10_000),
+        );
+        super::set_candidate_events_reservation_failure_for_test(true);
+        let Err(error) = history.replay_into(41, &doc, &fragment) else {
+            panic!("injected candidate events failure must reject")
+        };
+        super::set_candidate_events_reservation_failure_for_test(false);
+        assert_eq!(error.code, "OPERATION_RESOURCE_EXHAUSTED");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({ "field": "historyReplay" }))
+        );
+        history.replay_into(41, &doc, &fragment).unwrap();
+    }
+
+    #[test]
+    fn event_replacement_reservation_failure_keeps_resource_exhausted() {
+        let doc = Doc::new();
+        let fragment = doc.get_or_insert_xml_fragment("history-test");
+        let history = YrsHistory::new(
+            &doc,
+            &fragment,
+            EditingLimits::default(),
+            usize::MAX,
+            Arc::new(|| 10_000),
+        );
+        super::set_event_replacement_reservation_failure_for_test(true);
+        let Err(error) = history.prepare_replay_event_slot(41, false) else {
+            panic!("injected replacement failure must reject")
+        };
+        super::set_event_replacement_reservation_failure_for_test(false);
+        assert_eq!(error.code, "OPERATION_RESOURCE_EXHAUSTED");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({ "field": "historyReplay" }))
+        );
+        history.prepare_replay_event_slot(41, false).unwrap();
     }
 
     #[test]

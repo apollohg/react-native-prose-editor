@@ -106,6 +106,9 @@ impl Selection {
     ///
     /// `Node` selections are never empty (they select one node).
     /// `All` is empty only if the document has no content.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn is_empty(&self, doc: &Document) -> bool {
         self.anchor(doc) == self.head(doc)
     }

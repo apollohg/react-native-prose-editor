@@ -14,6 +14,8 @@ fn fuzz_engine() -> YrsDocumentEngine {
         schema: tiptap_schema(),
         fragment_name: "prosemirror".to_string(),
         initialization_mode: InitializationMode::LocalEmpty,
+        editing_limits: editor_core::yrs_engine::EditingLimits::default(),
+        max_length: None,
         resource_limits: ResourceLimits {
             max_encoded_state_bytes: MAX_FUZZ_INPUT_BYTES,
             ..ResourceLimits::default()

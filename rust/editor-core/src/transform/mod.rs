@@ -3,6 +3,9 @@ pub mod mapping;
 pub mod steps;
 
 // Re-export apply_step for use by the backend module.
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(unused_imports)]
 pub use apply::apply_step;
 pub(crate) use apply::DocumentStats;
 pub use apply::DocumentValidator;
@@ -35,6 +38,9 @@ pub enum TransformError {
     /// The resulting document violates schema content rules.
     ContentViolation(String),
     /// The step type is declared but not yet implemented.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     NotImplemented(String),
     /// The position does not resolve to a text-containing node.
     InvalidTarget(String),
@@ -58,6 +64,9 @@ impl std::fmt::Display for TransformError {
 
 /// The origin of a transaction, used for filtering and history bookkeeping.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 pub enum Source {
     /// User keyboard/IME input.
     Input,
@@ -170,6 +179,9 @@ pub enum Step {
 /// validated against the schema. If validation fails, the entire transaction
 /// is rejected.
 #[derive(Debug)]
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 pub struct Transaction {
     pub steps: Vec<Step>,
     pub source: Source,
@@ -194,6 +206,9 @@ impl Transaction {
 
     /// Apply all steps sequentially to `doc`, then validate the result against
     /// `schema`. Returns the new document and a composed `StepMap` on success.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn apply(
         &self,
         doc: &Document,

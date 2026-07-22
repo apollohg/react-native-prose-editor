@@ -1,34 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import {
-    Alert,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    View,
-} from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import * as ImagePicker from 'expo-image-picker';
-import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
+    NativeEditorDocumentHandle,
     tiptapSchema,
     useYjsCollaboration,
     withMentionsSchema,
     type DocumentJSON,
     type EditorAddons,
-    type EditorToolbarItem,
     type EditorToolbarTheme,
-    type ImageRequestContext,
-    type LinkRequestContext,
     type MentionQueryChangeEvent,
     type MentionSelectEvent,
-    type NativeRichTextEditorHeightBehavior,
+    type NativeEditorV2RoomSnapshot,
     type NativeRichTextEditorRef,
-    type NativeRichTextEditorToolbarPlacement,
-    type Selection,
 } from '@apollohg/react-native-prose-editor';
 
 import {
@@ -39,12 +25,7 @@ import {
     getExampleThemePreset,
 } from './themePresets';
 
-import {
-    EXAMPLE_DEFAULT_TOOLBAR_ITEMS,
-    EXAMPLE_MENTION_SUGGESTIONS,
-    INITIAL_CONTENT,
-    type ToolbarColorKey,
-} from './constants';
+import { EXAMPLE_MENTION_SUGGESTIONS, INITIAL_CONTENT, type ToolbarColorKey } from './constants';
 
 import { ThemePresetPicker } from './components/ThemePresetPicker';
 import { OutputCard } from './components/OutputCard';
@@ -52,13 +33,9 @@ import { CollapsibleSection } from './components/CollapsibleSection';
 import { ThemeSettingsCard } from './components/ThemeSettingsCard';
 import { CollaborationPanel } from './components/CollaborationPanel';
 import { EditorDemoCard } from './components/EditorDemoCard';
-import { LinkEditorModal } from './components/LinkEditorModal';
 
 const DEFAULT_COLLABORATION_ENDPOINT = 'ws://localhost:1234/collaboration';
 const DEFAULT_COLLABORATION_ROOM_ID = 'example-room';
-const MAX_INSERT_IMAGE_DIMENSION = 1024;
-const MAX_INSERT_IMAGE_BASE64_LENGTH = 350_000;
-const INSERT_IMAGE_COMPRESSION_STEPS = [0.72, 0.58, 0.45] as const;
 const OUTPUT_PANEL_UPDATE_DEBOUNCE_MS = 120;
 
 function buildCollaborationSocketUrl(endpoint: string, documentId: string): string {
@@ -68,41 +45,6 @@ function buildCollaborationSocketUrl(endpoint: string, documentId: string): stri
     }
     const separator = trimmedEndpoint.includes('?') ? '&' : '?';
     return `${trimmedEndpoint}${separator}documentId=${encodeURIComponent(documentId)}`;
-}
-
-async function normalizePickedImageForInsertion(uri: string, width?: number, height?: number) {
-    const resizeAction =
-        width != null && height != null
-            ? width >= height
-                ? width > MAX_INSERT_IMAGE_DIMENSION
-                    ? [{ resize: { width: MAX_INSERT_IMAGE_DIMENSION } }]
-                    : []
-                : height > MAX_INSERT_IMAGE_DIMENSION
-                    ? [{ resize: { height: MAX_INSERT_IMAGE_DIMENSION } }]
-                    : []
-            : [];
-
-    let workingUri = uri;
-    let lastResult:
-        | Awaited<ReturnType<typeof manipulateAsync>>
-        | null = null;
-
-    for (const compress of INSERT_IMAGE_COMPRESSION_STEPS) {
-        const result = await manipulateAsync(workingUri, lastResult == null ? resizeAction : [], {
-            compress,
-            format: SaveFormat.JPEG,
-            base64: true,
-        });
-        lastResult = result;
-
-        if (result.base64 && result.base64.length <= MAX_INSERT_IMAGE_BASE64_LENGTH) {
-            return result;
-        }
-
-        workingUri = result.uri;
-    }
-
-    return lastResult;
 }
 
 export default function App() {
@@ -128,12 +70,6 @@ function AppScreen() {
         html?: string;
         contentJson?: DocumentJSON | null;
     }>({});
-    const [heightBehavior, setHeightBehavior] =
-        useState<NativeRichTextEditorHeightBehavior>('autoGrow');
-    const [toolbarPlacement, setToolbarPlacement] =
-        useState<NativeRichTextEditorToolbarPlacement>('keyboard');
-    const shouldUseKeyboardAvoidingView =
-        Platform.OS === 'ios' && toolbarPlacement !== 'keyboard';
 
     const [mentionsEnabled, setMentionsEnabled] = useState(false);
     const [mentionQueryEvent, setMentionQueryEvent] = useState<MentionQueryChangeEvent | null>(
@@ -150,17 +86,6 @@ function AppScreen() {
     const [collaborationDisplayName, setCollaborationDisplayName] = useState(
         Platform.OS === 'ios' ? 'iOS Demo' : 'Android Demo'
     );
-    const [collaborationSeedDocument, setCollaborationSeedDocument] = useState<
-        DocumentJSON | undefined
-    >(undefined);
-    const [collaborationRevision, setCollaborationRevision] = useState(0);
-
-    const [toolbarItems, setToolbarItems] = useState<EditorToolbarItem[]>(() => [
-        ...EXAMPLE_DEFAULT_TOOLBAR_ITEMS,
-    ]);
-    const [pendingLinkRequest, setPendingLinkRequest] = useState<LinkRequestContext | null>(null);
-    const [linkDraft, setLinkDraft] = useState('');
-    const [isPickingImage, setIsPickingImage] = useState(false);
 
     const activeThemePreset = useMemo(
         () => getExampleThemePreset(selectedThemePresetId),
@@ -233,7 +158,7 @@ function AppScreen() {
         };
     }, [activeThemePreset.mentions, mentionsEnabled]);
 
-    const collaborationSchema = useMemo(
+    const documentSchema = useMemo(
         () => (mentionsEnabled ? withMentionsSchema(tiptapSchema) : tiptapSchema),
         [mentionsEnabled]
     );
@@ -272,29 +197,66 @@ function AppScreen() {
 
     const collaborationColor = useMemo(() => (Platform.OS === 'ios' ? '#0A84FF' : '#34A853'), []);
 
+    const collaborationRoomName = collaborationRoomId.trim() || DEFAULT_COLLABORATION_ROOM_ID;
     const collaborationDocumentId = useMemo(
-        () =>
-            `${collaborationRoomId.trim() || DEFAULT_COLLABORATION_ROOM_ID}|${collaborationEndpoint.trim()}|${collaborationRevision}`,
-        [collaborationEndpoint, collaborationRevision, collaborationRoomId]
+        () => `${collaborationRoomName}|${collaborationEndpoint.trim()}`,
+        [collaborationEndpoint, collaborationRoomName]
     );
     const collaborationSocketUrl = useMemo(
-        () =>
-            buildCollaborationSocketUrl(
-                collaborationEndpoint,
-                collaborationRoomId.trim() || DEFAULT_COLLABORATION_ROOM_ID
-            ),
-        [collaborationEndpoint, collaborationRoomId]
+        () => buildCollaborationSocketUrl(collaborationEndpoint, collaborationRoomName),
+        [collaborationEndpoint, collaborationRoomName]
     );
     const createCollaborationWebSocket = React.useCallback(
         () => new WebSocket(collaborationSocketUrl),
         [collaborationSocketUrl]
     );
+
+    // ── Document session ─────────────────────────────────────────
+    // One NativeEditorDocumentHandle per session: a local handle while
+    // offline, a room handle while collaborating. The editor and the
+    // collaboration controller share the same handle; initialization
+    // (including initial content) lives in the handle's creation config.
+    const localContentRef = useRef<DocumentJSON | null>(null);
+    const roomSnapshotRef = useRef<{
+        roomKey: string;
+        snapshot: NativeEditorV2RoomSnapshot;
+    } | null>(null);
+
+    const documentHandle = useMemo(() => {
+        if (!collaborationEnabled) {
+            const localJson = localContentRef.current;
+            return NativeEditorDocumentHandle.create({
+                schema: documentSchema,
+                initialization: localJson
+                    ? { type: 'localJson', json: localJson }
+                    : { type: 'localHtml', html: INITIAL_CONTENT },
+            });
+        }
+        const stored = roomSnapshotRef.current;
+        return NativeEditorDocumentHandle.create({
+            schema: documentSchema,
+            initialization: {
+                type: 'room',
+                documentId: collaborationDocumentId,
+                lineageId: `example|${collaborationDocumentId}`,
+                // Offline restore: re-enter a known room from its exported
+                // snapshot; otherwise the server seeds the room (the editor
+                // renders nothing until the server document is promoted).
+                snapshot:
+                    stored != null && stored.roomKey === collaborationDocumentId
+                        ? stored.snapshot
+                        : undefined,
+            },
+        });
+    }, [collaborationEnabled, collaborationDocumentId, documentSchema]);
+
+    useEffect(() => () => documentHandle.destroy(), [documentHandle]);
+
     const collaboration = useYjsCollaboration({
-        documentId: collaborationDocumentId,
-        connect: false,
+        documentId: collaborationEnabled ? collaborationDocumentId : 'local',
+        handle: documentHandle,
+        connect: collaborationEnabled,
         createWebSocket: createCollaborationWebSocket,
-        schema: collaborationSchema,
-        initialDocumentJson: collaborationSeedDocument,
         localAwareness: {
             userId: `${Platform.OS}-demo-user`,
             name: collaborationDisplayName,
@@ -308,12 +270,25 @@ function AppScreen() {
 
     const handleCollaborationEnabledChange = (nextValue: boolean) => {
         if (nextValue) {
-            setCollaborationSeedDocument(
-                editorRef.current?.getContentJson() ?? contentJson ?? undefined
-            );
-            setCollaborationRevision((value) => value + 1);
             setCollaborationEnabled(true);
             return;
+        }
+
+        // Export a document-scoped snapshot of the room before leaving it so
+        // the next session for the same room can restore offline.
+        try {
+            const exported = documentHandle.bridge.snapshotExport();
+            roomSnapshotRef.current = {
+                roomKey: collaborationDocumentId,
+                snapshot: {
+                    metadata: JSON.parse(exported.metadataJson) as NativeEditorV2RoomSnapshot[
+                        'metadata'
+                    ],
+                    encodedState: exported.encodedState,
+                },
+            };
+        } catch {
+            roomSnapshotRef.current = null;
         }
 
         collaboration.disconnect();
@@ -363,32 +338,12 @@ function AppScreen() {
 
     const handleContentChangeJSON = React.useCallback(
         (json: DocumentJSON) => {
+            localContentRef.current = json;
             pendingOutputPanelUpdateRef.current.contentJson = json;
             scheduleOutputPanelUpdate();
-            if (collaborationEnabled) {
-                collaboration.editorBindings.onContentChangeJSON(json);
-            }
         },
-        [collaboration.editorBindings, collaborationEnabled, scheduleOutputPanelUpdate]
+        [scheduleOutputPanelUpdate]
     );
-
-    const handleSelectionChange = (selection: Selection) => {
-        if (collaborationEnabled) {
-            collaboration.editorBindings.onSelectionChange(selection);
-        }
-    };
-
-    const handleEditorFocus = () => {
-        if (collaborationEnabled) {
-            collaboration.editorBindings.onFocus();
-        }
-    };
-
-    const handleEditorBlur = () => {
-        if (collaborationEnabled) {
-            collaboration.editorBindings.onBlur();
-        }
-    };
 
     const collaborationStatusText = useMemo(() => {
         const peerLabel =
@@ -396,138 +351,13 @@ function AppScreen() {
         return `${collaboration.state.status} · ${peerLabel}`;
     }, [collaboration.state.status, remotePeers.length]);
 
-    const openLinkRequest = (context: LinkRequestContext) => {
-        setPendingLinkRequest(context);
-        setLinkDraft(context.href ?? 'https://');
-    };
-
-    const closeLinkRequest = () => {
-        setPendingLinkRequest(null);
-        setLinkDraft('');
-    };
-
-    const refocusEditorSoon = React.useCallback(() => {
-        requestAnimationFrame(() => {
-            editorRef.current?.focus();
-        });
-    }, []);
-
-    const openImageRequest = React.useCallback(
-        async (context: ImageRequestContext) => {
-            if (isPickingImage) {
-                return;
-            }
-
-            if (!context.allowBase64) {
-                Alert.alert(
-                    'Base64 images disabled',
-                    'This editor instance does not currently allow base64 image insertion.'
-                );
-                refocusEditorSoon();
-                return;
-            }
-
-            setIsPickingImage(true);
-            try {
-                const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-                if (!permission.granted) {
-                    Alert.alert(
-                        'Permission required',
-                        'Photo library access is required to choose an image from your device.'
-                    );
-                    return;
-                }
-
-                const result = await ImagePicker.launchImageLibraryAsync({
-                    mediaTypes: ['images'],
-                    allowsEditing: false,
-                    base64: true,
-                    quality: 0.8,
-                });
-
-                if (result.canceled) {
-                    refocusEditorSoon();
-                    return;
-                }
-
-                const asset = result.assets?.[0];
-                if (!asset?.uri) {
-                    Alert.alert(
-                        'Image unavailable',
-                        'The selected image could not be loaded for insertion.'
-                    );
-                    refocusEditorSoon();
-                    return;
-                }
-
-                const normalizedImage = await normalizePickedImageForInsertion(
-                    asset.uri,
-                    asset.width,
-                    asset.height
-                );
-
-                if (!normalizedImage?.base64) {
-                    Alert.alert(
-                        'Image unavailable',
-                        'The selected image could not be converted into base64 for insertion.'
-                    );
-                    refocusEditorSoon();
-                    return;
-                }
-
-                context.insertImage(`data:image/jpeg;base64,${normalizedImage.base64}`, {
-                    alt: asset.fileName ?? null,
-                    title: asset.fileName ?? null,
-                    width: normalizedImage.width,
-                    height: normalizedImage.height,
-                });
-                refocusEditorSoon();
-            } catch {
-                Alert.alert(
-                    'Image unavailable',
-                    'The selected image could not be prepared for insertion.'
-                );
-                refocusEditorSoon();
-            } finally {
-                setIsPickingImage(false);
-            }
-        },
-        [isPickingImage, refocusEditorSoon]
-    );
-
-    const applyLinkRequest = () => {
-        if (!pendingLinkRequest) {
-            return;
-        }
-
-        const nextHref = linkDraft.trim();
-        if (nextHref.length === 0) {
-            pendingLinkRequest.unsetLink();
-        } else {
-            pendingLinkRequest.setLink(nextHref);
-        }
-
-        closeLinkRequest();
-        refocusEditorSoon();
-    };
-
-    const removeLink = () => {
-        if (!pendingLinkRequest) {
-            return;
-        }
-
-        pendingLinkRequest.unsetLink();
-        closeLinkRequest();
-        refocusEditorSoon();
-    };
-
     return (
         <View style={[styles.safeArea, { backgroundColor: appChrome.screenBackgroundColor }]}>
             <StatusBar style={activeThemePreset.statusBarStyle} />
 
             <KeyboardAvoidingView
                 style={styles.keyboardAvoider}
-                enabled={shouldUseKeyboardAvoidingView}
+                enabled={Platform.OS === 'ios'}
                 behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                 keyboardVerticalOffset={0}>
                 <ScrollView
@@ -552,8 +382,8 @@ function AppScreen() {
                         </Text>
 
                         <Text style={[styles.subtitle, { color: appChrome.subtitleColor }]}>
-                            Live playground for manual testing of native behavior, focus, keyboard
-                            dismissal, and theme changes.
+                            Live playground for manual testing of document sessions, collaboration
+                            presence, and theme changes.
                         </Text>
                     </View>
 
@@ -577,10 +407,6 @@ function AppScreen() {
                         onSettingsTabChange={setSettingsTab}
                         baseFontSize={baseFontSize}
                         onBaseFontSizeChange={setBaseFontSize}
-                        heightBehavior={heightBehavior}
-                        onHeightBehaviorChange={setHeightBehavior}
-                        toolbarPlacement={toolbarPlacement}
-                        onToolbarPlacementChange={setToolbarPlacement}
                         mentionsEnabled={mentionsEnabled}
                         onMentionsEnabledChange={setMentionsEnabled}
                         blockquoteBorderColor={
@@ -595,8 +421,6 @@ function AppScreen() {
                         }
                         expandedEditorColor={expandedEditorColor}
                         onExpandedEditorColorChange={setExpandedEditorColor}
-                        toolbarItems={toolbarItems}
-                        onToolbarItemsChange={setToolbarItems}
                         toolbarTheme={toolbarTheme}
                         onToolbarThemeChange={setToolbarTheme}
                         expandedColor={expandedToolbarColor}
@@ -628,39 +452,13 @@ function AppScreen() {
 
                     <EditorDemoCard
                         editorRef={editorRef}
-                        initialContent={INITIAL_CONTENT}
-                        valueJSON={
-                            collaborationEnabled
-                                ? collaboration.editorBindings.valueJSON
-                                : undefined
-                        }
-                        valueJSONUpdateMode={
-                            collaborationEnabled
-                                ? collaboration.editorBindings.valueJSONUpdateMode
-                                : undefined
-                        }
-                        preserveSelectionOnValueJSONReset={
-                            collaborationEnabled
-                                ? collaboration.editorBindings.preserveSelectionOnValueJSONReset
-                                : undefined
-                        }
-                        selectionOnValueJSONReset={
-                            collaborationEnabled
-                                ? collaboration.editorBindings.selectionOnValueJSONReset
-                                : undefined
-                        }
+                        documentHandle={collaboration.editorBindings.documentHandle}
+                        documentRevision={collaboration.editorBindings.documentRevision}
+                        onLocalDocumentCommit={collaboration.editorBindings.onLocalDocumentCommit}
                         theme={theme}
                         addons={addons}
-                        toolbarItems={toolbarItems}
-                        onRequestLink={openLinkRequest}
-                        onRequestImage={openImageRequest}
-                        heightBehavior={heightBehavior}
-                        toolbarPlacement={toolbarPlacement}
                         onContentChange={handleContentChange}
                         onContentChangeJSON={handleContentChangeJSON}
-                        onSelectionChange={handleSelectionChange}
-                        onFocus={handleEditorFocus}
-                        onBlur={handleEditorBlur}
                         remoteSelections={
                             collaborationEnabled
                                 ? collaboration.editorBindings.remoteSelections
@@ -683,17 +481,6 @@ function AppScreen() {
                     </Text>
                 </ScrollView>
             </KeyboardAvoidingView>
-
-            <LinkEditorModal
-                visible={pendingLinkRequest != null}
-                isActive={pendingLinkRequest?.isActive ?? false}
-                linkDraft={linkDraft}
-                onLinkDraftChange={setLinkDraft}
-                onClose={closeLinkRequest}
-                onRemove={removeLink}
-                onApply={applyLinkRequest}
-                appChrome={appChrome}
-            />
         </View>
     );
 }

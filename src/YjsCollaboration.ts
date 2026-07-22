@@ -1,29 +1,37 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import {
-    NativeCollaborationBridge,
-    type CollaborationPeer,
-    type CollaborationResult,
-    type DocumentJSON,
-    type EncodedCollaborationStateInput,
-    type Selection,
-    encodeCollaborationStateBase64,
+import type {
+    DocumentJSON,
+    NativeEditorDocumentHandle,
+    NativeEditorV2PeerInfo,
+    NativeEditorV2TransportState,
+    Selection,
 } from './NativeEditorBridge';
 import type { RemoteSelectionDecoration } from './NativeRichTextEditor';
 import {
-    resolveEditorResourceLimits,
-    type EditorResourceLimits,
-    type ResolvedEditorResourceLimits,
-} from './ResourceLimits';
-import { NativeEditorBoundaryError } from './NativeEditorBoundaryError';
-import {
-    normalizeDocumentJson,
-    resolveDocumentDescriptor,
-    type ResolvedDocumentSchema,
-    type SchemaDefinition,
-} from './schemas';
+    NativeEditorV2NonRetryableError,
+    NativeEditorV2TransportError,
+    nativeEditorV2ErrorToException,
+} from './NativeEditorBoundaryError';
 
-export type YjsTransportStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
+/**
+ * Transport status rendered by the collaboration controller. This is a pure
+ * mapping of the Rust transport lifecycle — the controller keeps no
+ * independent state machine:
+ *
+ *   Detached -> idle            Synchronized -> synchronized
+ *   Disconnected -> disconnected  Incompatible -> incompatible
+ *   Connecting -> connecting      Destroying/Destroyed -> destroyed
+ *   Handshaking -> handshaking
+ */
+export type YjsTransportStatus =
+    | 'idle'
+    | 'disconnected'
+    | 'connecting'
+    | 'handshaking'
+    | 'synchronized'
+    | 'incompatible'
+    | 'destroyed';
 
 export interface YjsRetryContext {
     attempt: number;
@@ -57,223 +65,130 @@ export interface YjsCollaborationState {
     documentId: string;
     status: YjsTransportStatus;
     isConnected: boolean;
-    documentJson: DocumentJSON;
-    /** Local selection remapped through the latest collaboration document update. */
-    selectionOnValueJSONReset?: Selection;
+    /** The last document rendered from Rust; null while the room awaits the server document. */
+    documentJson: DocumentJSON | null;
+    /** Decimal-string engine document revision; null while the room awaits the server document. */
+    documentRevision: string | null;
     lastError?: Error;
 }
 
 export interface YjsCollaborationOptions {
+    /** Room document identifier rendered in state (the handle owns the authoritative one). */
     documentId: string;
+    /**
+     * The shared document session. The editor and this controller use the
+     * same handle; the controller never creates or destroys native sessions.
+     */
+    handle: NativeEditorDocumentHandle;
     createWebSocket: () => WebSocket;
     connect?: boolean;
+    /** Backoff timer scheduling only — Rust owns retry eligibility. */
     retryIntervalMs?: YjsRetryInterval | false;
-    fragmentName?: string;
-    schema?: SchemaDefinition;
-    initialDocumentJson?: DocumentJSON;
-    initialEncodedState?: EncodedCollaborationStateInput;
-    maxLength?: number;
-    resourceLimits?: EditorResourceLimits;
-    localAwareness: LocalAwarenessUser;
-    onPeersChange?: (peers: CollaborationPeer[]) => void;
+    localAwareness?: LocalAwarenessUser;
+    onPeersChange?: (peers: NativeEditorV2PeerInfo[]) => void;
     onStateChange?: (state: YjsCollaborationState) => void;
     onError?: (error: Error) => void;
 }
 
 export interface YjsCollaborationController {
     readonly state: YjsCollaborationState;
-    readonly peers: CollaborationPeer[];
+    readonly peers: NativeEditorV2PeerInfo[];
+    readonly documentHandle: NativeEditorDocumentHandle;
     connect(): void;
     disconnect(): void;
     reconnect(): void;
     destroy(): void;
-    getEncodedState(): Uint8Array;
-    getEncodedStateBase64(): string;
-    applyEncodedState(encodedState: EncodedCollaborationStateInput): void;
-    replaceEncodedState(encodedState: EncodedCollaborationStateInput): void;
     updateLocalAwareness(partial: Partial<LocalAwarenessState>): void;
-    handleLocalDocumentChange(doc: DocumentJSON): void;
     handleSelectionChange(selection: Selection): void;
     handleFocusChange(focused: boolean): void;
+    /** Flush engine-queued outbound frames after a local engine commit. */
+    handleLocalCommit(): void;
+}
+
+export interface YjsCollaborationEditorBindings {
+    /** The shared session, to hand to the editor. */
+    documentHandle: NativeEditorDocumentHandle;
+    /** Advances whenever Rust reports a new document revision. */
+    documentRevision: string | null;
+    remoteSelections: RemoteSelectionDecoration[];
+    onSelectionChange: (selection: Selection) => void;
+    onFocus: () => void;
+    onBlur: () => void;
+    /** The editor pings this after each successful local engine mutation. */
+    onLocalDocumentCommit: () => void;
 }
 
 export interface UseYjsCollaborationResult {
     state: YjsCollaborationState;
-    peers: CollaborationPeer[];
+    peers: NativeEditorV2PeerInfo[];
     isConnected: boolean;
     connect(): void;
     disconnect(): void;
     reconnect(): void;
-    getEncodedState(): Uint8Array;
-    getEncodedStateBase64(): string;
-    applyEncodedState(encodedState: EncodedCollaborationStateInput): void;
-    replaceEncodedState(encodedState: EncodedCollaborationStateInput): void;
     updateLocalAwareness(partial: Partial<LocalAwarenessState>): void;
-    editorBindings: {
-        valueJSON: DocumentJSON;
-        valueJSONUpdateMode: 'reset';
-        preserveSelectionOnValueJSONReset: true;
-        selectionOnValueJSONReset?: Selection;
-        remoteSelections: RemoteSelectionDecoration[];
-        onContentChangeJSON: (doc: DocumentJSON) => void;
-        onSelectionChange: (selection: Selection) => void;
-        onFocus: () => void;
-        onBlur: () => void;
-    };
+    editorBindings: YjsCollaborationEditorBindings;
 }
 
 interface MutableCallbacks {
     onStateChange?: (state: YjsCollaborationState) => void;
-    onPeersChange?: (peers: CollaborationPeer[]) => void;
+    onPeersChange?: (peers: NativeEditorV2PeerInfo[]) => void;
     onError?: (error: Error) => void;
 }
 
-const Y_WEBSOCKET_MESSAGE_QUERY_AWARENESS = 3;
-const DEFAULT_YJS_FRAGMENT_NAME = 'default';
-const SELECTION_AWARENESS_DEBOUNCE_MS = 40;
+const WS_NORMAL_CLOSE_CODE = 1000;
+const WS_PROTOCOL_FAILURE_CLOSE_CODE = 1011;
 
-function cloneJsonValue<T>(value: T): T {
-    if (Array.isArray(value)) {
-        return value.map((item) => cloneJsonValue(item)) as T;
+function mapTransportState(transport: NativeEditorV2TransportState): YjsTransportStatus {
+    switch (transport) {
+        case 'Detached':
+            return 'idle';
+        case 'Disconnected':
+            return 'disconnected';
+        case 'Connecting':
+            return 'connecting';
+        case 'Handshaking':
+            return 'handshaking';
+        case 'Synchronized':
+            return 'synchronized';
+        case 'Incompatible':
+            return 'incompatible';
+        case 'Destroying':
+        case 'Destroyed':
+            return 'destroyed';
     }
-    if (value != null && typeof value === 'object') {
-        const clone: Record<string, unknown> = {};
-        for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
-            clone[key] = cloneJsonValue(nestedValue);
-        }
-        return clone as T;
-    }
-    return value;
 }
 
-function initialFallbackDocument(
-    options: YjsCollaborationOptions,
-    descriptor: ResolvedDocumentSchema = resolveDocumentDescriptor(
-        options.schema,
-        options.resourceLimits
-    )
-): DocumentJSON {
-    return options.initialDocumentJson
-        ? normalizeDocumentJson(cloneJsonValue(options.initialDocumentJson), descriptor)
-        : cloneJsonValue(descriptor.emptyDocument);
-}
-
-function shouldUseFallbackForNativeDocument(
-    doc: DocumentJSON,
-    options: YjsCollaborationOptions,
-    descriptor: ResolvedDocumentSchema
-): boolean {
-    if (options.initialDocumentJson != null || options.initialEncodedState != null) {
-        return false;
-    }
-    if (doc.type !== descriptor.documentNodeName) {
-        return false;
-    }
-    return !Array.isArray(doc.content) || doc.content.length === 0;
-}
-
-function awarenessToRecord(awareness: LocalAwarenessState): Record<string, unknown> {
-    return awareness as unknown as Record<string, unknown>;
-}
-
-function localAwarenessEquals(left: LocalAwarenessState, right: LocalAwarenessState): boolean {
-    const leftSelection = left.selection;
-    const rightSelection = right.selection;
-    if (leftSelection == null || rightSelection == null) {
-        if (leftSelection !== rightSelection) {
-            return false;
-        }
-    } else if (
-        leftSelection.anchor !== rightSelection.anchor ||
-        leftSelection.head !== rightSelection.head
-    ) {
-        return false;
-    }
-
-    const leftUser = left.user;
-    const rightUser = right.user;
+function isStaleGenerationError(error: Error): boolean {
     return (
-        left.focused === right.focused &&
-        leftUser.userId === rightUser.userId &&
-        leftUser.name === rightUser.name &&
-        leftUser.color === rightUser.color &&
-        leftUser.avatarUrl === rightUser.avatarUrl &&
-        JSON.stringify(leftUser.extra ?? null) === JSON.stringify(rightUser.extra ?? null)
+        error instanceof NativeEditorV2TransportError && error.code === 'TRANSPORT_STALE_GENERATION'
     );
 }
 
-function limitedUtf8ByteLength(value: string, limit: number): number {
-    let bytes = 0;
-    for (let index = 0; index < value.length; index += 1) {
-        const code = value.charCodeAt(index);
-        if (code <= 0x7f) bytes += 1;
-        else if (code <= 0x7ff) bytes += 2;
-        else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
-            const low = value.charCodeAt(index + 1);
-            if (low >= 0xdc00 && low <= 0xdfff) {
-                bytes += 4;
-                index += 1;
-            } else bytes += 3;
-        } else bytes += 3;
-        if (bytes > limit) return bytes;
-    }
-    return bytes;
+function asError(value: unknown, fallbackMessage: string): Error {
+    return value instanceof Error ? value : new Error(fallbackMessage);
 }
 
-function messageLimitError(limit: number, actual: number): NativeEditorBoundaryError {
-    return new NativeEditorBoundaryError(
-        'INPUT_LIMIT_EXCEEDED',
-        `collaboration message exceeds limit ${limit}: ${actual}`,
-        limit,
-        actual
-    );
-}
-
-function normalizeMessageBytes(data: unknown, limit: number): number[] | null {
+function normalizeFrameBytes(data: unknown): Uint8Array | null {
     if (data instanceof ArrayBuffer) {
-        if (data.byteLength > limit) throw messageLimitError(limit, data.byteLength);
-        return Array.from(new Uint8Array(data));
+        return new Uint8Array(data);
     }
     if (ArrayBuffer.isView(data)) {
-        if (data.byteLength > limit) throw messageLimitError(limit, data.byteLength);
-        return Array.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
-    }
-    if (typeof data === 'string') {
-        const inputBytes = limitedUtf8ByteLength(data, limit);
-        if (inputBytes > limit) throw messageLimitError(limit, inputBytes);
-        try {
-            const parsed = JSON.parse(data) as number[];
-            if (!Array.isArray(parsed)) return null;
-            if (parsed.length > limit) throw messageLimitError(limit, parsed.length);
-            return parsed;
-        } catch {
-            return null;
-        }
+        return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     }
     return null;
 }
 
-function sendBinaryMessages(socket: WebSocket | null, messages: readonly number[][]): void {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    for (const message of messages) {
-        socket.send(Uint8Array.from(message).buffer);
+function toExactArrayBuffer(frame: Uint8Array): ArrayBuffer {
+    if (frame.byteOffset === 0 && frame.byteLength === frame.buffer.byteLength) {
+        return frame.buffer as ArrayBuffer;
     }
+    return frame.slice().buffer as ArrayBuffer;
 }
 
-function readFirstVarUint(bytes: readonly number[]): number | null {
-    let value = 0;
-    let shift = 0;
-
-    for (let index = 0; index < bytes.length && index < 5; index += 1) {
-        const byte = bytes[index];
-        value |= (byte & 0x7f) << shift;
-        if ((byte & 0x80) === 0) {
-            return value;
-        }
-        shift += 7;
-    }
-
-    return null;
+function sendFrame(socket: WebSocket, frame: Uint8Array): void {
+    if (frame.length === 0) return;
+    if (socket.readyState !== WebSocket.OPEN) return;
+    socket.send(toExactArrayBuffer(frame));
 }
 
 function selectionToAwarenessRange(
@@ -286,7 +201,9 @@ function selectionToAwarenessRange(
     };
 }
 
-function selectionFromPeerState(state: Record<string, unknown> | null): Selection | undefined {
+function selectionFromPeerState(
+    state: Record<string, unknown> | null
+): { anchor: number; head: number } | undefined {
     if (!state || typeof state !== 'object') return undefined;
     const selection = state.selection;
     if (!selection || typeof selection !== 'object') return undefined;
@@ -295,41 +212,28 @@ function selectionFromPeerState(state: Record<string, unknown> | null): Selectio
     const head = Number((selection as Record<string, unknown>).head);
     if (!Number.isFinite(anchor) || !Number.isFinite(head)) return undefined;
 
-    return { type: 'text', anchor, head };
+    return { anchor, head };
 }
 
-function localSelectionFromPeers(peers: readonly CollaborationPeer[]): Selection | undefined {
-    const localPeer = peers.find((peer) => peer.isLocal);
-    return localPeer ? selectionFromPeerState(localPeer.state) : undefined;
-}
-
-function peersToRemoteSelections(peers: readonly CollaborationPeer[]): RemoteSelectionDecoration[] {
+function peersToRemoteSelections(
+    peers: readonly NativeEditorV2PeerInfo[]
+): RemoteSelectionDecoration[] {
     return peers.flatMap((peer) => {
-        if (peer.isLocal || !peer.state || typeof peer.state !== 'object') {
-            return [];
-        }
+        if (peer.isLocal) return [];
+        const range = peer.cursor ?? selectionFromPeerState(peer.state);
+        if (!range) return [];
 
-        const state = peer.state as Record<string, unknown>;
-        const selection = state.selection;
-        if (!selection || typeof selection !== 'object') {
-            return [];
-        }
-        const anchor = Number((selection as Record<string, unknown>).anchor);
-        const head = Number((selection as Record<string, unknown>).head);
-        if (!Number.isFinite(anchor) || !Number.isFinite(head)) {
-            return [];
-        }
-
+        const state = peer.state;
         const user =
-            state.user && typeof state.user === 'object'
+            state && typeof state.user === 'object' && state.user !== null
                 ? (state.user as Record<string, unknown>)
                 : null;
 
         return [
             {
                 clientId: peer.clientId,
-                anchor,
-                head,
+                anchor: range.anchor,
+                head: range.head,
                 color:
                     typeof user?.color === 'string' && user.color.length > 0
                         ? user.color
@@ -340,83 +244,63 @@ function peersToRemoteSelections(peers: readonly CollaborationPeer[]): RemoteSel
                     typeof user?.avatarUrl === 'string' && user.avatarUrl.length > 0
                         ? user.avatarUrl
                         : undefined,
-                isFocused: state.focused !== false,
+                isFocused: state?.focused !== false,
             },
         ];
     });
 }
 
-function encodeInitialStateKey(
-    encodedState: EncodedCollaborationStateInput | undefined,
-    limits: ResolvedEditorResourceLimits
-): string {
-    if (encodedState == null) return '';
-    return encodeCollaborationStateBase64(encodedState, limits);
+function mergeAwarenessPartial(
+    base: Record<string, unknown>,
+    partial: Partial<LocalAwarenessState>
+): Record<string, unknown> {
+    const next: Record<string, unknown> = { ...base };
+    if (partial.user != null) {
+        const baseUser =
+            base.user != null && typeof base.user === 'object'
+                ? (base.user as Record<string, unknown>)
+                : {};
+        next.user = { ...baseUser, ...partial.user };
+    }
+    if ('focused' in partial) {
+        if (partial.focused === undefined) delete next.focused;
+        else next.focused = partial.focused;
+    }
+    if ('selection' in partial) {
+        if (partial.selection == null) delete next.selection;
+        else next.selection = partial.selection;
+    }
+    return next;
 }
 
 class YjsCollaborationControllerImpl implements YjsCollaborationController {
-    private readonly bridge: NativeCollaborationBridge;
+    private readonly handle: NativeEditorDocumentHandle;
     private readonly callbacks: MutableCallbacks;
     private readonly createWebSocket: () => WebSocket;
     private readonly retryIntervalMs?: YjsRetryInterval | false;
-    private readonly resourceLimits: ResolvedEditorResourceLimits;
+    private readonly documentId: string;
     private socket: WebSocket | null = null;
+    private generation: string | null = null;
     private destroyed = false;
     private retryAttempt = 0;
     private retryTimer: ReturnType<typeof setTimeout> | null = null;
     private isManuallyDisconnected = false;
-    private pendingAwarenessTimer: ReturnType<typeof setTimeout> | null = null;
-    private localAwarenessState: LocalAwarenessState;
+    private desiredAwareness: Record<string, unknown> | null = null;
     private _state: YjsCollaborationState;
-    private _peers: CollaborationPeer[] = [];
+    private _peers: NativeEditorV2PeerInfo[] = [];
+    private _peersKey = '[]';
 
-    constructor(
-        options: YjsCollaborationOptions,
-        callbacks: MutableCallbacks = {},
-        documentDescriptor: ResolvedDocumentSchema = resolveDocumentDescriptor(
-            options.schema,
-            options.resourceLimits
-        )
-    ) {
+    constructor(options: YjsCollaborationOptions, callbacks: MutableCallbacks = {}) {
+        this.handle = options.handle;
         this.callbacks = callbacks;
         this.createWebSocket = options.createWebSocket;
         this.retryIntervalMs = options.retryIntervalMs;
-        this.resourceLimits = resolveEditorResourceLimits(options.resourceLimits);
-        this.localAwarenessState = {
-            user: options.localAwareness,
-            focused: false,
-        };
-        const normalizedInitialDocumentJson =
-            options.initialDocumentJson == null
-                ? undefined
-                : normalizeDocumentJson(
-                      cloneJsonValue(options.initialDocumentJson),
-                      documentDescriptor
-                  );
-        this.bridge = NativeCollaborationBridge.create({
-            fragmentName: options.fragmentName ?? DEFAULT_YJS_FRAGMENT_NAME,
-            schema: options.schema == null ? undefined : documentDescriptor.schema,
-            initialDocumentJson: normalizedInitialDocumentJson,
-            initialEncodedState: options.initialEncodedState,
-            maxLength: options.maxLength,
-            localAwareness: awarenessToRecord(this.localAwarenessState),
-            resourceLimits: options.resourceLimits,
-        });
-        const nativeDocumentJson = this.bridge.getDocumentJson();
-        this._peers = this.bridge.getPeers();
-        let initialDocumentJson: DocumentJSON;
-        if (shouldUseFallbackForNativeDocument(nativeDocumentJson, options, documentDescriptor)) {
-            initialDocumentJson = cloneJsonValue(documentDescriptor.emptyDocument);
-        } else {
-            initialDocumentJson = nativeDocumentJson;
+        this.documentId = options.documentId;
+        if (options.localAwareness != null) {
+            this.desiredAwareness = { user: { ...options.localAwareness }, focused: false };
+            this.publishDesiredAwareness();
         }
-        this._state = {
-            documentId: options.documentId,
-            status: 'idle',
-            isConnected: false,
-            documentJson: initialDocumentJson,
-            selectionOnValueJSONReset: localSelectionFromPeers(this._peers),
-        };
+        this._state = this.readEngineState();
         if (options.connect !== false) {
             this.connect();
         }
@@ -426,8 +310,12 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         return this._state;
     }
 
-    get peers(): CollaborationPeer[] {
+    get peers(): NativeEditorV2PeerInfo[] {
         return this._peers;
+    }
+
+    get documentHandle(): NativeEditorDocumentHandle {
+        return this.handle;
     }
 
     connect(): void {
@@ -442,102 +330,118 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             return;
         }
 
-        this.setState({
-            status: 'connecting',
-            isConnected: false,
-            lastError: undefined,
-        });
+        let generation: string;
+        try {
+            generation = this.handle.bridge.collaborationBeginConnect();
+        } catch (error) {
+            // Rust owns retry eligibility: a begin_connect refusal stops
+            // scheduling here, and the engine state is rendered as returned.
+            const refusal = asError(error, 'Yjs collaboration connect refused');
+            this.callbacks.onError?.(refusal);
+            this.renderEngineState({ lastError: refusal });
+            return;
+        }
 
         let socket: WebSocket;
         try {
             socket = this.createWebSocket();
         } catch (cause) {
-            const error =
-                cause instanceof Error
-                    ? cause
-                    : new Error('Yjs collaboration transport initialization failed');
-            this.setState({
-                status: 'error',
-                isConnected: false,
-                lastError: error,
-            });
+            const error = asError(cause, 'Yjs collaboration transport initialization failed');
+            // Render from the transport Rust settled into when retiring the
+            // issued generation; discarding it would leave the state stale.
+            const transport = this.retireLiveGeneration(generation, null, null);
             this.callbacks.onError?.(error);
+            if (transport != null) {
+                this.renderTransport(transport, { lastError: error });
+            } else {
+                this.renderEngineState({ lastError: error });
+            }
             this.scheduleRetry(error);
             return;
         }
         this.socket = socket;
+        this.generation = generation;
         const binarySocket = socket as WebSocket & { binaryType?: string };
         try {
             binarySocket.binaryType = 'arraybuffer';
         } catch {
             // React Native WebSocket implementations may ignore this.
         }
+        this.renderEngineState({ lastError: undefined });
 
         socket.onopen = () => {
-            if (this.destroyed || this.socket !== socket) return;
+            if (!this.isCurrentSocket(socket, generation)) return;
             try {
-                const result = this.bridge.start();
-                this.retryAttempt = 0;
-                this.cancelRetry();
-                this.applyResult(result);
-                this.setState({
-                    status: 'connected',
-                    isConnected: true,
-                    lastError: undefined,
-                });
-                sendBinaryMessages(socket, result.messages);
+                const step1 = this.handle.bridge.collaborationSocketOpen(generation);
+                sendFrame(socket, step1);
+                this.renderEngineState({ lastError: undefined });
+                this.drainOutbound(socket, generation);
             } catch (error) {
-                this.handleTransportFailure(
-                    error instanceof Error ? error : new Error('Yjs collaboration protocol error'),
-                    socket
-                );
+                this.handleTransportCallFailure(error, socket, generation);
             }
         };
 
         socket.onmessage = (event) => {
-            if (this.destroyed || this.socket !== socket) return;
+            if (!this.isCurrentSocket(socket, generation)) return;
+            const bytes = normalizeFrameBytes(event.data);
+            if (!bytes) return;
+            let outcome;
             try {
-                const bytes = normalizeMessageBytes(
-                    event.data,
-                    this.resourceLimits.maxCollaborationMessageBytes
-                );
-                if (!bytes) return;
-                if (readFirstVarUint(bytes) === Y_WEBSOCKET_MESSAGE_QUERY_AWARENESS) {
-                    this.commitLocalAwareness();
-                    return;
-                }
-                if (this.pendingAwarenessTimer != null) {
-                    this.commitLocalAwareness();
-                }
-                const result = this.bridge.handleMessage(bytes);
-                this.applyResult(result);
-                sendBinaryMessages(socket, result.messages);
+                outcome = this.handle.bridge.collaborationReceive(generation, bytes);
             } catch (error) {
-                this.handleTransportFailure(
-                    error instanceof Error ? error : new Error('Yjs collaboration protocol error'),
-                    socket
-                );
+                this.handleTransportCallFailure(error, socket, generation);
+                return;
             }
+            if (outcome.close) {
+                const error = nativeEditorV2ErrorToException(outcome.close.error);
+                this.clearLiveSocket(socket);
+                try {
+                    socket.close();
+                } catch {
+                    // Ignore close failures while reporting the classified close.
+                }
+                this.renderTransport(outcome.transportState, { lastError: error });
+                this.refreshPeers();
+                this.callbacks.onError?.(error);
+                if (outcome.close.disposition === 'retryable') {
+                    this.scheduleRetry(error);
+                }
+                return;
+            }
+            if (outcome.transportState === 'Synchronized') {
+                this.retryAttempt = 0;
+            }
+            this.renderTransport(outcome.transportState, { lastError: undefined });
+            if (outcome.remoteCommitApplied || outcome.documentPromoted) {
+                this.refreshDocument();
+            }
+            this.drainOutbound(socket, generation);
+            this.refreshPeers();
         };
 
         socket.onerror = () => {
-            if (this.destroyed || this.socket !== socket) return;
-            this.handleTransportFailure(
-                new Error('Yjs collaboration transport error'),
-                socket,
-                false
-            );
+            if (!this.isCurrentSocket(socket, generation)) return;
+            // Classification happens in onclose through Rust; an error event
+            // only hurries the socket toward its close event.
+            try {
+                socket.close();
+            } catch {
+                // Ignore close failures while awaiting the close event.
+            }
         };
 
-        socket.onclose = () => {
-            if (this.destroyed || this.socket !== socket) return;
-            this.socket = null;
-            this.clearPeers();
-            this.setState({
-                status: this._state.status === 'error' ? 'error' : 'disconnected',
-                isConnected: false,
-            });
-            this.scheduleRetry(this._state.lastError);
+        socket.onclose = (event) => {
+            if (!this.isCurrentSocket(socket, generation)) return;
+            this.clearLiveSocket(socket);
+            const code = typeof event?.code === 'number' ? event.code : null;
+            const reason = typeof event?.reason === 'string' ? event.reason : null;
+            const transport = this.retireLiveGeneration(generation, code, reason);
+            if (transport == null) return;
+            this.renderTransport(transport);
+            this.refreshPeers();
+            if (transport === 'Disconnected') {
+                this.scheduleRetry(this._state.lastError);
+            }
         };
     }
 
@@ -547,30 +451,27 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.retryAttempt = 0;
         this.cancelRetry();
         const socket = this.socket;
+        const generation = this.generation;
         this.socket = null;
-        if (socket?.readyState === WebSocket.OPEN) {
-            const result = this.bridge.clearLocalAwareness();
-            this.applyResult(result);
-            sendBinaryMessages(socket, result.messages);
-            socket.close();
-        }
-        if (
-            socket &&
-            socket.readyState !== WebSocket.CLOSED &&
-            socket.readyState !== WebSocket.CLOSING
-        ) {
+        this.generation = null;
+        if (socket && generation) {
+            const transport = this.retireLiveGeneration(
+                generation,
+                WS_NORMAL_CLOSE_CODE,
+                'client disconnect'
+            );
+            if (transport != null) {
+                this.renderTransport(transport, { lastError: undefined });
+            }
             try {
                 socket.close();
             } catch {
                 // Ignore close failures while disconnecting locally.
             }
+        } else {
+            this.renderEngineState({ lastError: undefined });
         }
-        this.clearPeers();
-        this.setState({
-            status: 'disconnected',
-            isConnected: false,
-            lastError: undefined,
-        });
+        this.refreshPeers();
     }
 
     reconnect(): void {
@@ -578,102 +479,230 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.connect();
     }
 
-    getEncodedState(): Uint8Array {
-        if (this.destroyed) return new Uint8Array();
-        return this.bridge.getEncodedState();
-    }
-
-    getEncodedStateBase64(): string {
-        if (this.destroyed) return '';
-        return this.bridge.getEncodedStateBase64();
-    }
-
-    applyEncodedState(encodedState: EncodedCollaborationStateInput): void {
-        if (this.destroyed) return;
-        const result = this.bridge.applyEncodedState(encodedState);
-        this.applyResult(result);
-        sendBinaryMessages(this.socket, result.messages);
-    }
-
-    replaceEncodedState(encodedState: EncodedCollaborationStateInput): void {
-        if (this.destroyed) return;
-        const result = this.bridge.replaceEncodedState(encodedState);
-        this.applyResult(result);
-        sendBinaryMessages(this.socket, result.messages);
-    }
-
     destroy(): void {
         if (this.destroyed) return;
-        this.cancelRetry();
-        this.cancelPendingAwarenessSync();
-        this.disconnect();
         this.destroyed = true;
-        this.bridge.destroy();
+        this.cancelRetry();
+        const socket = this.socket;
+        const generation = this.generation;
+        this.socket = null;
+        this.generation = null;
+        if (socket && generation) {
+            try {
+                this.handle.bridge.collaborationSocketClose(
+                    generation,
+                    WS_NORMAL_CLOSE_CODE,
+                    'controller destroyed'
+                );
+            } catch {
+                // The shared handle may already be gone; destroy stays terminal.
+            }
+            try {
+                socket.close();
+            } catch {
+                // Ignore close failures during teardown.
+            }
+        }
+        this.setState({ status: 'destroyed', isConnected: false });
     }
 
     updateLocalAwareness(partial: Partial<LocalAwarenessState>): void {
         if (this.destroyed) return;
-        this.localAwarenessState = this.mergeLocalAwareness(partial);
-        this.commitLocalAwareness();
-    }
-
-    handleLocalDocumentChange(doc: DocumentJSON): void {
-        if (this.destroyed) return;
-        const result = this.bridge.applyLocalDocumentJson(doc);
-        this.applyResult(result);
-        sendBinaryMessages(this.socket, result.messages);
-        if (this.pendingAwarenessTimer != null) {
-            this.commitLocalAwareness();
-        }
+        const next = mergeAwarenessPartial(this.desiredAwareness ?? {}, partial);
+        const nextKey = JSON.stringify(next);
+        if (nextKey === JSON.stringify(this.desiredAwareness ?? {})) return;
+        this.desiredAwareness = next;
+        this.publishDesiredAwareness();
     }
 
     handleSelectionChange(selection: Selection): void {
         if (this.destroyed) return;
-        const nextAwareness = this.mergeLocalAwareness({
+        this.updateLocalAwareness({
             focused: true,
             selection: selectionToAwarenessRange(selection),
         });
-        if (localAwarenessEquals(nextAwareness, this.localAwarenessState)) {
-            return;
-        }
-        this.localAwarenessState = nextAwareness;
-        this.scheduleAwarenessSync();
     }
 
     handleFocusChange(focused: boolean): void {
         if (this.destroyed) return;
-        const nextAwareness = this.mergeLocalAwareness({ focused });
-        if (localAwarenessEquals(nextAwareness, this.localAwarenessState)) {
-            if (this.pendingAwarenessTimer != null) {
-                this.commitLocalAwareness();
-            }
+        this.updateLocalAwareness({ focused });
+    }
+
+    handleLocalCommit(): void {
+        if (this.destroyed) return;
+        const socket = this.socket;
+        const generation = this.generation;
+        this.refreshDocument();
+        if (!socket || !generation) return;
+        this.drainOutbound(socket, generation);
+    }
+
+    // ── Internals ───────────────────────────────────────────────
+
+    private isCurrentSocket(socket: WebSocket, generation: string): boolean {
+        return !this.destroyed && this.socket === socket && this.generation === generation;
+    }
+
+    private clearLiveSocket(socket: WebSocket): void {
+        if (this.socket === socket) {
+            this.socket = null;
+            this.generation = null;
+        }
+    }
+
+    /**
+     * Report a socket close for the live generation and return the transport
+     * state Rust settled into; null when Rust rejected the report (a lost
+     * generation race, which never mutates rendered state).
+     */
+    private retireLiveGeneration(
+        generation: string,
+        code: number | null,
+        reason: string | null
+    ): NativeEditorV2TransportState | null {
+        try {
+            return this.handle.bridge.collaborationSocketClose(generation, code, reason);
+        } catch (error) {
+            this.routeGenerationRaceError(error);
+            return null;
+        }
+    }
+
+    private handleTransportCallFailure(
+        value: unknown,
+        socket: WebSocket,
+        generation: string
+    ): void {
+        const error = asError(value, 'Yjs collaboration protocol error');
+        if (isStaleGenerationError(error)) {
+            // A lost generation race: observable only through the autonomous
+            // error listener, never through rendered state.
+            this.callbacks.onError?.(error);
             return;
         }
-        this.localAwarenessState = nextAwareness;
-        this.commitLocalAwareness();
+        this.callbacks.onError?.(error);
+        if (error instanceof NativeEditorV2NonRetryableError) {
+            this.renderEngineState({ lastError: error });
+            return;
+        }
+        this.clearLiveSocket(socket);
+        try {
+            socket.close();
+        } catch {
+            // Ignore close failures while reporting the failure to Rust.
+        }
+        const transport = this.retireLiveGeneration(
+            generation,
+            WS_PROTOCOL_FAILURE_CLOSE_CODE,
+            'protocol failure'
+        );
+        if (transport == null) return;
+        this.renderTransport(transport, { lastError: error });
+        this.refreshPeers();
+        if (transport === 'Disconnected') {
+            this.scheduleRetry(error);
+        }
     }
 
-    private applyResult(result: CollaborationResult): void {
-        const didPeersChange = result.peersChanged && result.peers != null;
-        if (didPeersChange) {
-            this._peers = result.peers!;
+    private routeGenerationRaceError(value: unknown): void {
+        const error = asError(value, 'Yjs collaboration transport error');
+        this.callbacks.onError?.(error);
+        if (!isStaleGenerationError(error) && !(error instanceof NativeEditorV2NonRetryableError)) {
+            this.renderEngineState({ lastError: error });
         }
+    }
 
-        if (result.documentChanged && result.documentJson) {
+    private drainOutbound(socket: WebSocket, generation: string): void {
+        if (!this.isCurrentSocket(socket, generation)) return;
+        if (socket.readyState !== WebSocket.OPEN) return;
+        try {
+            for (;;) {
+                const frame = this.handle.bridge.collaborationTakeOutbound(generation);
+                if (frame.length === 0) return;
+                socket.send(toExactArrayBuffer(frame));
+            }
+        } catch (error) {
+            this.handleTransportCallFailure(error, socket, generation);
+        }
+    }
+
+    private publishDesiredAwareness(): void {
+        try {
+            this.handle.bridge.collaborationSetAwareness(this.desiredAwareness);
+        } catch (error) {
+            this.callbacks.onError?.(asError(error, 'Yjs collaboration awareness failure'));
+            return;
+        }
+        const socket = this.socket;
+        const generation = this.generation;
+        if (socket && generation && socket.readyState === WebSocket.OPEN) {
+            this.drainOutbound(socket, generation);
+        }
+        this.refreshPeers();
+    }
+
+    private readEngineState(): YjsCollaborationState {
+        const engineState = this.handle.bridge.getState();
+        const awaitingRemote = engineState.documentState === 'AwaitRemote';
+        return {
+            documentId: this.documentId,
+            status: mapTransportState(engineState.transportState),
+            isConnected: engineState.transportState === 'Synchronized',
+            documentJson: awaitingRemote ? null : this.handle.bridge.getDocumentJson(),
+            documentRevision: awaitingRemote ? null : engineState.documentRevision,
+        };
+    }
+
+    private renderEngineState(patch?: Partial<YjsCollaborationState>): void {
+        try {
+            const next = this.readEngineState();
+            this.setState({ ...next, ...patch });
+        } catch (error) {
             this.setState({
-                documentJson: result.documentJson,
-                selectionOnValueJSONReset: localSelectionFromPeers(this._peers),
+                lastError: asError(error, 'Yjs collaboration engine state failure'),
+                ...patch,
             });
         }
-        if (didPeersChange) {
-            this.callbacks.onPeersChange?.(this._peers);
+    }
+
+    private renderTransport(
+        transport: NativeEditorV2TransportState,
+        patch?: Partial<YjsCollaborationState>
+    ): void {
+        this.setState({
+            status: mapTransportState(transport),
+            isConnected: transport === 'Synchronized',
+            ...patch,
+        });
+    }
+
+    private refreshDocument(): void {
+        try {
+            const engineState = this.handle.bridge.getState();
+            const awaitingRemote = engineState.documentState === 'AwaitRemote';
+            this.setState({
+                documentJson: awaitingRemote ? null : this.handle.bridge.getDocumentJson(),
+                documentRevision: awaitingRemote ? null : engineState.documentRevision,
+            });
+        } catch (error) {
+            this.setState({
+                lastError: asError(error, 'Yjs collaboration document refresh failure'),
+            });
         }
     }
 
-    private clearPeers(): void {
-        if (this._peers.length === 0) return;
-        this._peers = [];
-        this.callbacks.onPeersChange?.(this._peers);
+    private refreshPeers(): void {
+        let peers: NativeEditorV2PeerInfo[];
+        try {
+            peers = this.handle.bridge.collaborationPeers();
+        } catch {
+            return;
+        }
+        const key = JSON.stringify(peers);
+        if (key === this._peersKey) return;
+        this._peers = peers;
+        this._peersKey = key;
+        this.callbacks.onPeersChange?.(peers);
     }
 
     private setState(patch: Partial<YjsCollaborationState>): void {
@@ -682,62 +711,6 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             ...patch,
         };
         this.callbacks.onStateChange?.(this._state);
-    }
-
-    private mergeLocalAwareness(partial: Partial<LocalAwarenessState>): LocalAwarenessState {
-        return {
-            ...this.localAwarenessState,
-            ...partial,
-            user: {
-                ...this.localAwarenessState.user,
-                ...(partial.user ?? {}),
-            },
-        };
-    }
-
-    private scheduleAwarenessSync(): void {
-        this.cancelPendingAwarenessSync();
-        this.pendingAwarenessTimer = setTimeout(() => {
-            this.pendingAwarenessTimer = null;
-            this.commitLocalAwareness();
-        }, SELECTION_AWARENESS_DEBOUNCE_MS);
-    }
-
-    private cancelPendingAwarenessSync(): void {
-        if (this.pendingAwarenessTimer == null) return;
-        clearTimeout(this.pendingAwarenessTimer);
-        this.pendingAwarenessTimer = null;
-    }
-
-    private commitLocalAwareness(): void {
-        this.cancelPendingAwarenessSync();
-        const result = this.bridge.setLocalAwareness(awarenessToRecord(this.localAwarenessState));
-        this.applyResult(result);
-        sendBinaryMessages(this.socket, result.messages);
-    }
-
-    private handleTransportFailure(
-        error: Error,
-        socket: WebSocket,
-        closeSocket: boolean = true
-    ): void {
-        if (this.destroyed || this.socket !== socket) return;
-        this.socket = null;
-        if (closeSocket && socket.readyState !== WebSocket.CLOSED) {
-            try {
-                socket.close();
-            } catch {
-                // Ignore close failures while reporting the original transport error.
-            }
-        }
-        this.clearPeers();
-        this.setState({
-            status: 'error',
-            isConnected: false,
-            lastError: error,
-        });
-        this.callbacks.onError?.(error);
-        this.scheduleRetry(error);
     }
 
     private scheduleRetry(lastError?: Error): void {
@@ -749,6 +722,8 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.retryTimer = setTimeout(() => {
             this.retryTimer = null;
             if (this.destroyed || this.isManuallyDisconnected) return;
+            // A retry timer can only request begin_connect; it stops when
+            // Rust refuses.
             this.connect();
         }, delayMs);
     }
@@ -762,7 +737,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
                 : typeof this.retryIntervalMs === 'function'
                   ? this.retryIntervalMs({
                         attempt,
-                        documentId: this._state.documentId,
+                        documentId: this.documentId,
                         lastError,
                     })
                   : this.retryIntervalMs;
@@ -814,31 +789,20 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
     createWebSocketRef.current = options.createWebSocket;
 
     const controllerRef = useRef<YjsCollaborationControllerImpl | null>(null);
-    const resolvedResourceLimits = resolveEditorResourceLimits(options.resourceLimits);
-    const initialEncodedStateKey = encodeInitialStateKey(
-        options.initialEncodedState,
-        resolvedResourceLimits
-    );
-    const localAwarenessKey = JSON.stringify(options.localAwareness);
-    const schemaKey = JSON.stringify(options.schema ?? null);
-    const resourceLimitsKey = JSON.stringify(options.resourceLimits ?? null);
-    const documentDescriptor = useMemo(
-        () => resolveDocumentDescriptor(options.schema, options.resourceLimits),
-        // Stable serialized keys intentionally define semantic configuration equality.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        [schemaKey, resourceLimitsKey]
-    );
+    const localAwarenessKey = JSON.stringify(options.localAwareness ?? null);
     const [state, setState] = useState<YjsCollaborationState>({
         documentId: options.documentId,
         status: 'idle',
         isConnected: false,
-        documentJson: initialFallbackDocument(options, documentDescriptor),
+        documentJson: null,
+        documentRevision: null,
     });
-    const [peers, setPeers] = useState<CollaborationPeer[]>([]);
+    const [peers, setPeers] = useState<NativeEditorV2PeerInfo[]>([]);
 
     useEffect(() => {
+        let controller: YjsCollaborationControllerImpl;
         try {
-            const controller = new YjsCollaborationControllerImpl(
+            controller = new YjsCollaborationControllerImpl(
                 {
                     ...options,
                     createWebSocket: () => createWebSocketRef.current(),
@@ -855,28 +819,23 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
                     onError: (error) => {
                         callbacksRef.current.onError?.(error);
                     },
-                },
-                documentDescriptor
+                }
             );
             controllerRef.current = controller;
             setState({ ...controller.state });
             setPeers([...controller.peers]);
         } catch (error) {
-            const nextError =
-                error instanceof Error
-                    ? error
-                    : new Error('Yjs collaboration initialization failed');
-            const nextState: YjsCollaborationState = {
-                documentId: options.documentId,
-                status: 'error',
-                isConnected: false,
-                documentJson: initialFallbackDocument(options, documentDescriptor),
-                lastError: nextError,
-            };
+            const nextError = asError(error, 'Yjs collaboration initialization failed');
             controllerRef.current = null;
-            setState(nextState);
+            setState({
+                documentId: options.documentId,
+                status: 'idle',
+                isConnected: false,
+                documentJson: null,
+                documentRevision: null,
+                lastError: nextError,
+            });
             setPeers([]);
-            callbacksRef.current.onStateChange?.(nextState);
             callbacksRef.current.onError?.(nextError);
         }
 
@@ -885,16 +844,10 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
             controllerRef.current = null;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [
-        options.documentId,
-        options.fragmentName,
-        options.maxLength,
-        schemaKey,
-        resourceLimitsKey,
-        initialEncodedStateKey,
-    ]);
+    }, [options.documentId, options.handle]);
 
     useEffect(() => {
+        if (options.localAwareness == null) return;
         controllerRef.current?.updateLocalAwareness({
             user: options.localAwareness,
         });
@@ -917,25 +870,15 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
         connect: () => controllerRef.current?.connect(),
         disconnect: () => controllerRef.current?.disconnect(),
         reconnect: () => controllerRef.current?.reconnect(),
-        getEncodedState: () => controllerRef.current?.getEncodedState() ?? new Uint8Array(),
-        getEncodedStateBase64: () =>
-            controllerRef.current?.getEncodedStateBase64() ??
-            encodeCollaborationStateBase64(new Uint8Array()),
-        applyEncodedState: (encodedState) => controllerRef.current?.applyEncodedState(encodedState),
-        replaceEncodedState: (encodedState) =>
-            controllerRef.current?.replaceEncodedState(encodedState),
         updateLocalAwareness: (partial) => controllerRef.current?.updateLocalAwareness(partial),
         editorBindings: {
-            valueJSON: state.documentJson,
-            valueJSONUpdateMode: 'reset',
-            preserveSelectionOnValueJSONReset: true,
-            selectionOnValueJSONReset: state.selectionOnValueJSONReset,
+            documentHandle: options.handle,
+            documentRevision: state.documentRevision,
             remoteSelections: peersToRemoteSelections(peers),
-            onContentChangeJSON: (doc) => controllerRef.current?.handleLocalDocumentChange(doc),
-            onSelectionChange: (selection) =>
-                controllerRef.current?.handleSelectionChange(selection),
+            onSelectionChange: (selection) => controllerRef.current?.handleSelectionChange(selection),
             onFocus: () => controllerRef.current?.handleFocusChange(true),
             onBlur: () => controllerRef.current?.handleFocusChange(false),
+            onLocalDocumentCommit: () => controllerRef.current?.handleLocalCommit(),
         },
     };
 }

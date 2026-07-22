@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 #
-# Cross-compile editor-core for Android targets using cargo-ndk.
+# Cross-compile editor-core for Android targets using cargo-ndk. Since the
+# Task 16C cutover the v2 ABI is the only surface: every ABI is verified to
+# export exactly 26 editor_v2_* symbols and zero legacy
+# editor_*/collaboration_* symbols.
 #
 # Targets:
 #   - aarch64-linux-android     -> arm64-v8a   (most modern devices)
@@ -23,14 +26,12 @@ CRATE_DIR="$SCRIPT_DIR/editor-core"
 OUT_DIR="$SCRIPT_DIR/android"
 LIB_NAME="libeditor_core.so"
 MIN_SDK_VERSION=24
-CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
 
-if command -v rustup >/dev/null 2>&1; then
-    CARGO_BIN="$(rustup which cargo)"
-    RUSTC_BIN="$(rustup which rustc)"
-    export RUSTC="$RUSTC_BIN"
-    export PATH="$(dirname "$CARGO_BIN"):$CARGO_HOME_DIR/bin:$PATH"
-fi
+TC="${RUST_TOOLCHAIN_DIR:-$HOME/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin}"
+TARGET_DIR="${CARGO_TARGET_DIR:-$CRATE_DIR/target}"
+CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTC="$TC/rustc"
+export PATH="$TC:$CARGO_HOME_DIR/bin:$PATH"
 
 # Verify cargo-ndk is installed
 if ! command -v cargo-ndk &>/dev/null; then
@@ -57,14 +58,27 @@ for pair in "${TARGET_ABI_PAIRS[@]}"; do
     abi="${pair#* }"
     echo "  -> $target ($abi)"
 
-    cargo ndk \
+    "$TC/cargo" ndk \
         --target "$target" \
         --platform "$MIN_SDK_VERSION" \
-        build --release
+        build --release --target-dir "$TARGET_DIR"
+
+    v2_count="$(nm -gU "$TARGET_DIR/$target/release/$LIB_NAME" 2>/dev/null | grep -c 'uniffi_editor_core_fn_func_editor_v2_' || true)"
+    legacy_lines="$(nm -gU "$TARGET_DIR/$target/release/$LIB_NAME" 2>/dev/null | grep -E 'uniffi_editor_core_(fn|checksum)_func_(editor_|collaboration_)' | grep -v 'editor_v2\|editor_core_version' || true)"
+    echo "  $target: $v2_count editor_v2 symbols"
+    if [ "$v2_count" -ne 26 ]; then
+        echo "ERROR: expected exactly 26 editor_v2 symbols in $target .so" >&2
+        exit 1
+    fi
+    if [ -n "$legacy_lines" ]; then
+        echo "ERROR: legacy symbols present in $target .so:" >&2
+        echo "$legacy_lines" >&2
+        exit 1
+    fi
 
     # Copy .so to jniLibs layout
     mkdir -p "$OUT_DIR/$abi"
-    cp "$CRATE_DIR/target/$target/release/$LIB_NAME" "$OUT_DIR/$abi/$LIB_NAME"
+    cp "$TARGET_DIR/$target/release/$LIB_NAME" "$OUT_DIR/$abi/$LIB_NAME"
     test -s "$OUT_DIR/$abi/$LIB_NAME"
 done
 

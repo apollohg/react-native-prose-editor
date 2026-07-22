@@ -1,4 +1,5 @@
-//! Generation-owned transport state machine (staging).
+//! Generation-owned transport state machine (production since the Task 16C
+//! cutover removed the staging gate).
 //!
 //! Task 8 scope: the machine is the single writer of a session's transport
 //! state. Every transition runs under the session lock (callers reach it
@@ -254,6 +255,44 @@ impl TransportStateMachine {
             TransportState::Handshaking | TransportState::Synchronized => Ok(self.state),
             state => Err(invalid_transition(request_id, "receiveMessage", state)),
         }
+    }
+
+    /// Task 12 read-only outbound-pickup admission gate: draining the next
+    /// outbound frame is generation-scoped wire work with the same
+    /// admission law as [`Self::admit_receive`] (live generation while
+    /// `Handshaking`/`Synchronized`), under its own action label.
+    pub(crate) fn admit_outbound_take(
+        &self,
+        request_id: u64,
+        generation: TransportGeneration,
+    ) -> Result<TransportState, SessionError> {
+        self.require_live_attempt(request_id, "takeOutbound", generation)?;
+        match self.state {
+            TransportState::Handshaking | TransportState::Synchronized => Ok(self.state),
+            state => Err(invalid_transition(request_id, "takeOutbound", state)),
+        }
+    }
+
+    /// Task 11 snapshot-restore settle: `Detached`/`Disconnected` ->
+    /// `Disconnected`. The session restore gate admits only those two
+    /// states, so no attempt can be live here; this is the designed
+    /// "sync-generation state cleared" write — the transport returns to the
+    /// room's disconnected row, where `begin_connect` is accepted again.
+    /// `last_issued` deliberately stays monotonic: resetting it would
+    /// reissue generation values and revive stale callbacks. Infallible —
+    /// restore runs it only after the engine candidate installed.
+    pub(crate) fn settle_for_restore(&mut self) {
+        debug_assert!(
+            matches!(
+                self.state,
+                TransportState::Detached | TransportState::Disconnected
+            ),
+            "the session restore gate admits only Detached/Disconnected transports, \
+             found {:?}",
+            self.state,
+        );
+        self.live_attempt = None;
+        self.state = TransportState::Disconnected;
     }
 
     /// Lifecycle teardown writer used by session destroy: transport state
@@ -553,6 +592,76 @@ mod tests {
             .unwrap();
         let error = machine.admit_receive(REQUEST_ID, generation).unwrap_err();
         assert_eq!(error.code, TRANSPORT_STALE_GENERATION, "{error:?}");
+    }
+
+    #[test]
+    fn admit_outbound_take_mirrors_receive_admission_under_its_own_label() {
+        // Connecting: live generation, wrong state; stale is stale.
+        let (machine, generation) = connected_machine();
+        let error = machine
+            .admit_outbound_take(REQUEST_ID, generation)
+            .unwrap_err();
+        assert_eq!(error.code, TRANSPORT_INVALID_TRANSITION, "{error:?}");
+        assert_eq!(
+            error.details.as_ref().unwrap()["action"],
+            serde_json::json!("takeOutbound"),
+            "{error:?}",
+        );
+        let stale = TransportGeneration::from_value(generation.value() + 100);
+        let error = machine.admit_outbound_take(REQUEST_ID, stale).unwrap_err();
+        assert_eq!(error.code, TRANSPORT_STALE_GENERATION, "{error:?}");
+
+        // Handshaking and Synchronized admit the live generation without
+        // transitioning anything.
+        let (mut machine, generation) = connected_machine();
+        machine.socket_opened(REQUEST_ID, generation).unwrap();
+        assert_eq!(
+            machine.admit_outbound_take(REQUEST_ID, generation).unwrap(),
+            TransportState::Handshaking,
+        );
+        machine.mark_synchronized(REQUEST_ID, generation).unwrap();
+        assert_eq!(
+            machine.admit_outbound_take(REQUEST_ID, generation).unwrap(),
+            TransportState::Synchronized,
+        );
+        assert_eq!(machine.state(), TransportState::Synchronized);
+        let error = machine.admit_outbound_take(REQUEST_ID, stale).unwrap_err();
+        assert_eq!(error.code, TRANSPORT_STALE_GENERATION, "{error:?}");
+
+        // A closed generation is stale for outbound pickup too.
+        machine
+            .socket_closed(REQUEST_ID, generation, SocketCloseDisposition::Retryable)
+            .unwrap();
+        let error = machine
+            .admit_outbound_take(REQUEST_ID, generation)
+            .unwrap_err();
+        assert_eq!(error.code, TRANSPORT_STALE_GENERATION, "{error:?}");
+    }
+
+    #[test]
+    fn settle_for_restore_parks_disconnected_without_reissuing_generations() {
+        // Disconnected with a retired attempt: settle keeps the state, the
+        // retired generation stays stale, and the next issued generation is
+        // strictly monotonic (never reissued).
+        let (mut machine, generation) = connected_machine();
+        machine
+            .socket_closed(REQUEST_ID, generation, SocketCloseDisposition::Retryable)
+            .unwrap();
+        machine.settle_for_restore();
+        assert_eq!(machine.state(), TransportState::Disconnected);
+        let error = machine
+            .socket_closed(REQUEST_ID, generation, SocketCloseDisposition::Retryable)
+            .unwrap_err();
+        assert_eq!(error.code, TRANSPORT_STALE_GENERATION, "{error:?}");
+        let next = machine.begin_connect(REQUEST_ID, ROOM_BOUND).unwrap();
+        assert!(next.value() > generation.value());
+
+        // Detached settles to Disconnected: restore of a detached room is
+        // the designed re-entry into the disconnected row.
+        let mut detached = TransportStateMachine::new(TransportState::Detached);
+        detached.settle_for_restore();
+        assert_eq!(detached.state(), TransportState::Disconnected);
+        assert!(detached.live_attempt.is_none());
     }
 
     #[test]

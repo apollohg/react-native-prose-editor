@@ -400,22 +400,6 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
-    typealias FfiType = UInt8
-    typealias SwiftType = UInt8
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt8 {
-        return try lift(readInt(&buf))
-    }
-
-    public static func write(_ value: UInt8, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -509,156 +493,663 @@ fileprivate struct FfiConverterString: FfiConverter {
         writeBytes(&buf, value.utf8)
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterData: FfiConverterRustBuffer {
+    typealias SwiftType = Data
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        let len: Int32 = try readInt(&buf)
+        return Data(try readBytes(&buf, count: Int(len)))
+    }
+
+    public static func write(_ value: Data, into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        writeBytes(&buf, value)
+    }
+}
+
+
+public struct FfiBytesResult {
+    public var value: Data?
+    public var error: FfiError?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(value: Data?, error: FfiError?) {
+        self.value = value
+        self.error = error
+    }
+}
+
+#if compiler(>=6)
+extension FfiBytesResult: Sendable {}
+#endif
+
+
+extension FfiBytesResult: Equatable, Hashable {
+    public static func ==(lhs: FfiBytesResult, rhs: FfiBytesResult) -> Bool {
+        if lhs.value != rhs.value {
+            return false
+        }
+        if lhs.error != rhs.error {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(value)
+        hasher.combine(error)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiBytesResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiBytesResult {
+        return
+            try FfiBytesResult(
+                value: FfiConverterOptionData.read(from: &buf),
+                error: FfiConverterOptionTypeFfiError.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiBytesResult, into buf: inout [UInt8]) {
+        FfiConverterOptionData.write(value.value, into: &buf)
+        FfiConverterOptionTypeFfiError.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiBytesResult_lift(_ buf: RustBuffer) throws -> FfiBytesResult {
+    return try FfiConverterTypeFfiBytesResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiBytesResult_lower(_ value: FfiBytesResult) -> RustBuffer {
+    return FfiConverterTypeFfiBytesResult.lower(value)
+}
+
+
+public struct FfiError {
+    public var domain: String
+    public var code: String
+    public var message: String
+    public var requestId: String?
+    public var operationIndex: UInt64?
+    public var limit: UInt64?
+    public var actual: UInt64?
+    public var detailsJson: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(domain: String, code: String, message: String, requestId: String?, operationIndex: UInt64?, limit: UInt64?, actual: UInt64?, detailsJson: String?) {
+        self.domain = domain
+        self.code = code
+        self.message = message
+        self.requestId = requestId
+        self.operationIndex = operationIndex
+        self.limit = limit
+        self.actual = actual
+        self.detailsJson = detailsJson
+    }
+}
+
+#if compiler(>=6)
+extension FfiError: Sendable {}
+#endif
+
+
+extension FfiError: Equatable, Hashable {
+    public static func ==(lhs: FfiError, rhs: FfiError) -> Bool {
+        if lhs.domain != rhs.domain {
+            return false
+        }
+        if lhs.code != rhs.code {
+            return false
+        }
+        if lhs.message != rhs.message {
+            return false
+        }
+        if lhs.requestId != rhs.requestId {
+            return false
+        }
+        if lhs.operationIndex != rhs.operationIndex {
+            return false
+        }
+        if lhs.limit != rhs.limit {
+            return false
+        }
+        if lhs.actual != rhs.actual {
+            return false
+        }
+        if lhs.detailsJson != rhs.detailsJson {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(domain)
+        hasher.combine(code)
+        hasher.combine(message)
+        hasher.combine(requestId)
+        hasher.combine(operationIndex)
+        hasher.combine(limit)
+        hasher.combine(actual)
+        hasher.combine(detailsJson)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiError: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiError {
+        return
+            try FfiError(
+                domain: FfiConverterString.read(from: &buf),
+                code: FfiConverterString.read(from: &buf),
+                message: FfiConverterString.read(from: &buf),
+                requestId: FfiConverterOptionString.read(from: &buf),
+                operationIndex: FfiConverterOptionUInt64.read(from: &buf),
+                limit: FfiConverterOptionUInt64.read(from: &buf),
+                actual: FfiConverterOptionUInt64.read(from: &buf),
+                detailsJson: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiError, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.domain, into: &buf)
+        FfiConverterString.write(value.code, into: &buf)
+        FfiConverterString.write(value.message, into: &buf)
+        FfiConverterOptionString.write(value.requestId, into: &buf)
+        FfiConverterOptionUInt64.write(value.operationIndex, into: &buf)
+        FfiConverterOptionUInt64.write(value.limit, into: &buf)
+        FfiConverterOptionUInt64.write(value.actual, into: &buf)
+        FfiConverterOptionString.write(value.detailsJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiError_lift(_ buf: RustBuffer) throws -> FfiError {
+    return try FfiConverterTypeFfiError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiError_lower(_ value: FfiError) -> RustBuffer {
+    return FfiConverterTypeFfiError.lower(value)
+}
+
+
+public struct FfiJsonResult {
+    public var value: String?
+    public var error: FfiError?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(value: String?, error: FfiError?) {
+        self.value = value
+        self.error = error
+    }
+}
+
+#if compiler(>=6)
+extension FfiJsonResult: Sendable {}
+#endif
+
+
+extension FfiJsonResult: Equatable, Hashable {
+    public static func ==(lhs: FfiJsonResult, rhs: FfiJsonResult) -> Bool {
+        if lhs.value != rhs.value {
+            return false
+        }
+        if lhs.error != rhs.error {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(value)
+        hasher.combine(error)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiJsonResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiJsonResult {
+        return
+            try FfiJsonResult(
+                value: FfiConverterOptionString.read(from: &buf),
+                error: FfiConverterOptionTypeFfiError.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiJsonResult, into buf: inout [UInt8]) {
+        FfiConverterOptionString.write(value.value, into: &buf)
+        FfiConverterOptionTypeFfiError.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiJsonResult_lift(_ buf: RustBuffer) throws -> FfiJsonResult {
+    return try FfiConverterTypeFfiJsonResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiJsonResult_lower(_ value: FfiJsonResult) -> RustBuffer {
+    return FfiConverterTypeFfiJsonResult.lower(value)
+}
+
+
 /**
- * Apply a durable Yjs encoded state/update represented as a JSON byte array.
+ * One exported document snapshot: the five-field manifest as JSON plus the
+ * encoded state as direct bytes (never a JSON number array).
  */
-public func collaborationSessionApplyEncodedState(id: UInt64, encodedStateJson: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_apply_encoded_state(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(encodedStateJson),$0
-    )
-})
+public struct FfiSnapshotExport {
+    public var metadataJson: String
+    public var encodedState: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(metadataJson: String, encodedState: Data) {
+        self.metadataJson = metadataJson
+        self.encodedState = encodedState
+    }
 }
-/**
- * Apply a local ProseMirror JSON snapshot to the collaboration session.
- */
-public func collaborationSessionApplyLocalDocumentJson(id: UInt64, json: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_apply_local_document_json(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(json),$0
-    )
-})
+
+#if compiler(>=6)
+extension FfiSnapshotExport: Sendable {}
+#endif
+
+
+extension FfiSnapshotExport: Equatable, Hashable {
+    public static func ==(lhs: FfiSnapshotExport, rhs: FfiSnapshotExport) -> Bool {
+        if lhs.metadataJson != rhs.metadataJson {
+            return false
+        }
+        if lhs.encodedState != rhs.encodedState {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(metadataJson)
+        hasher.combine(encodedState)
+    }
 }
-/**
- * Clear the local awareness payload for a collaboration session.
- */
-public func collaborationSessionClearLocalAwareness(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_clear_local_awareness(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiSnapshotExport: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiSnapshotExport {
+        return
+            try FfiSnapshotExport(
+                metadataJson: FfiConverterString.read(from: &buf),
+                encodedState: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiSnapshotExport, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.metadataJson, into: &buf)
+        FfiConverterData.write(value.encodedState, into: &buf)
+    }
 }
-/**
- * Create a Yjs collaboration session backed by yrs.
- */
-public func collaborationSessionCreate(configJson: String) -> UInt64  {
-    return try!  FfiConverterUInt64.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_create(
-        FfiConverterString.lower(configJson),$0
-    )
-})
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSnapshotExport_lift(_ buf: RustBuffer) throws -> FfiSnapshotExport {
+    return try FfiConverterTypeFfiSnapshotExport.lift(buf)
 }
-public func collaborationSessionCreateResult(configJson: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_create_result(
-        FfiConverterString.lower(configJson),$0
-    )
-})
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSnapshotExport_lower(_ value: FfiSnapshotExport) -> RustBuffer {
+    return FfiConverterTypeFfiSnapshotExport.lower(value)
 }
-/**
- * Destroy a collaboration session and free its resources.
- */
-public func collaborationSessionDestroy(id: UInt64)  {try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_destroy(
-        FfiConverterUInt64.lower(id),$0
-    )
+
+
+public struct FfiSnapshotExportResult {
+    public var value: FfiSnapshotExport?
+    public var error: FfiError?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(value: FfiSnapshotExport?, error: FfiError?) {
+        self.value = value
+        self.error = error
+    }
 }
+
+#if compiler(>=6)
+extension FfiSnapshotExportResult: Sendable {}
+#endif
+
+
+extension FfiSnapshotExportResult: Equatable, Hashable {
+    public static func ==(lhs: FfiSnapshotExportResult, rhs: FfiSnapshotExportResult) -> Bool {
+        if lhs.value != rhs.value {
+            return false
+        }
+        if lhs.error != rhs.error {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(value)
+        hasher.combine(error)
+    }
 }
-/**
- * Return the current shared ProseMirror JSON document for a collaboration session.
- */
-public func collaborationSessionGetDocumentJson(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_get_document_json(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiSnapshotExportResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiSnapshotExportResult {
+        return
+            try FfiSnapshotExportResult(
+                value: FfiConverterOptionTypeFfiSnapshotExport.read(from: &buf),
+                error: FfiConverterOptionTypeFfiError.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiSnapshotExportResult, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeFfiSnapshotExport.write(value.value, into: &buf)
+        FfiConverterOptionTypeFfiError.write(value.error, into: &buf)
+    }
 }
-/**
- * Return the current shared Yjs document state as a JSON byte array.
- */
-public func collaborationSessionGetEncodedState(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_get_encoded_state(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSnapshotExportResult_lift(_ buf: RustBuffer) throws -> FfiSnapshotExportResult {
+    return try FfiConverterTypeFfiSnapshotExportResult.lift(buf)
 }
-/**
- * Return the current awareness peers for a collaboration session.
- */
-public func collaborationSessionGetPeersJson(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_get_peers_json(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiSnapshotExportResult_lower(_ value: FfiSnapshotExportResult) -> RustBuffer {
+    return FfiConverterTypeFfiSnapshotExportResult.lower(value)
 }
-/**
- * Apply an incoming y-sync binary message encoded as a JSON byte array.
- */
-public func collaborationSessionHandleMessage(id: UInt64, messageJson: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_handle_message(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(messageJson),$0
-    )
-})
+
+
+public struct FfiUnitResult {
+    public var value: Bool?
+    public var error: FfiError?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(value: Bool?, error: FfiError?) {
+        self.value = value
+        self.error = error
+    }
 }
-/**
- * Replace the collaboration document with a durable Yjs encoded state/update.
- */
-public func collaborationSessionReplaceEncodedState(id: UInt64, encodedStateJson: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_replace_encoded_state(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(encodedStateJson),$0
-    )
-})
+
+#if compiler(>=6)
+extension FfiUnitResult: Sendable {}
+#endif
+
+
+extension FfiUnitResult: Equatable, Hashable {
+    public static func ==(lhs: FfiUnitResult, rhs: FfiUnitResult) -> Bool {
+        if lhs.value != rhs.value {
+            return false
+        }
+        if lhs.error != rhs.error {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(value)
+        hasher.combine(error)
+    }
 }
-/**
- * Update the local awareness payload for a collaboration session.
- */
-public func collaborationSessionSetLocalAwareness(id: UInt64, awarenessJson: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_set_local_awareness(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(awarenessJson),$0
-    )
-})
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiUnitResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiUnitResult {
+        return
+            try FfiUnitResult(
+                value: FfiConverterOptionBool.read(from: &buf),
+                error: FfiConverterOptionTypeFfiError.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiUnitResult, into buf: inout [UInt8]) {
+        FfiConverterOptionBool.write(value.value, into: &buf)
+        FfiConverterOptionTypeFfiError.write(value.error, into: &buf)
+    }
 }
-/**
- * Start the sync handshake for a collaboration session.
- */
-public func collaborationSessionStart(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_collaboration_session_start(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiUnitResult_lift(_ buf: RustBuffer) throws -> FfiUnitResult {
+    return try FfiConverterTypeFfiUnitResult.lift(buf)
 }
-/**
- * Check if redo is available.
- */
-public func editorCanRedo(id: UInt64) -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_can_redo(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiUnitResult_lower(_ value: FfiUnitResult) -> RustBuffer {
+    return FfiConverterTypeFfiUnitResult.lower(value)
 }
-/**
- * Check if undo is available.
- */
-public func editorCanUndo(id: UInt64) -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_can_undo(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
+    typealias SwiftType = UInt32?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt32.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt32.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = UInt64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
+    typealias SwiftType = Bool?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterBool.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterBool.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
+    typealias SwiftType = Data?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterData.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterData.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeFfiError: FfiConverterRustBuffer {
+    typealias SwiftType = FfiError?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeFfiError.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeFfiError.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeFfiSnapshotExport: FfiConverterRustBuffer {
+    typealias SwiftType = FfiSnapshotExport?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeFfiSnapshotExport.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeFfiSnapshotExport.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
 }
 /**
  * Return the crate version string.
@@ -669,643 +1160,232 @@ public func editorCoreVersion() -> String  {
     )
 })
 }
-/**
- * Create a new editor from a JSON config object.
- *
- * Config fields (all optional):
- * - `"schema"`: custom schema definition (see `Schema::from_json`)
- * - `"maxLength"`: maximum document length in characters
- * - `"readOnly"`: if `true`, rejects non-API mutations
- * - `"inputFilter"`: regex pattern; only matching characters are inserted
- * - `"allowBase64Images"`: if `true`, parses `<img src="data:image/...">` as image nodes
- *
- * An empty object creates a default editor.
- * Falls back to the default Tiptap schema when `"schema"` is absent or invalid.
- */
-public func editorCreate(configJson: String) -> UInt64  {
-    return try!  FfiConverterUInt64.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_create(
-        FfiConverterString.lower(configJson),$0
+public func editorV2ApplyCommand(editorId: String, requestJson: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_apply_command(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(requestJson),$0
     )
 })
 }
-public func editorCreateResult(configJson: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_create_result(
-        FfiConverterString.lower(configJson),$0
+public func editorV2ApplyInput(editorId: String, requestJson: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_apply_input(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(requestJson),$0
     )
 })
 }
-/**
- * Delete a scalar range then split the block (Enter with selection). Returns an update.
- */
-public func editorDeleteAndSplitScalar(id: UInt64, scalarFrom: UInt32, scalarTo: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_delete_and_split_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarFrom),
-        FfiConverterUInt32.lower(scalarTo),$0
+public func editorV2ApplyLocalApi(editorId: String, requestJson: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_apply_local_api(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(requestJson),$0
+    )
+})
+}
+public func editorV2CollaborationBeginConnect(editorId: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_begin_connect(
+        FfiConverterString.lower(editorId),$0
     )
 })
 }
 /**
- * Delete backward relative to an explicit scalar selection. Returns an update JSON string.
+ * Live awareness peer projections; client ids are decimal strings so full
+ * u64 ids survive the JSON round-trip.
  */
-public func editorDeleteBackwardAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_delete_backward_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),$0
+public func editorV2CollaborationPeers(editorId: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_peers(
+        FfiConverterString.lower(editorId),$0
+    )
+})
+}
+public func editorV2CollaborationReceive(editorId: String, generation: UInt64, message: Data) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_receive(
+        FfiConverterString.lower(editorId),
+        FfiConverterUInt64.lower(generation),
+        FfiConverterData.lower(message),$0
     )
 })
 }
 /**
- * Delete a range. Returns an update JSON string.
+ * Publishes the desired local awareness state; the literal JSON `null`
+ * withdraws it (standard tombstone broadcast).
  */
-public func editorDeleteRange(id: UInt64, from: UInt32, to: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_delete_range(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(from),
-        FfiConverterUInt32.lower(to),$0
+public func editorV2CollaborationSetAwareness(editorId: String, awarenessJson: String) -> FfiUnitResult  {
+    return try!  FfiConverterTypeFfiUnitResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(awarenessJson),$0
     )
 })
 }
 /**
- * Delete content between two scalar offsets. Returns an update JSON string.
+ * `reason` carries no classification weight (Rust alone owns retry
+ * eligibility); a policy-violation close code (1008) parks the transport
+ * `Incompatible`, every other reported close is retryable.
  */
-public func editorDeleteScalarRange(id: UInt64, scalarFrom: UInt32, scalarTo: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_delete_scalar_range(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarFrom),
-        FfiConverterUInt32.lower(scalarTo),$0
+public func editorV2CollaborationSocketClose(editorId: String, generation: UInt64, code: UInt32?, reason: String?) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_socket_close(
+        FfiConverterString.lower(editorId),
+        FfiConverterUInt64.lower(generation),
+        FfiConverterOptionUInt32.lower(code),
+        FfiConverterOptionString.lower(reason),$0
     )
 })
 }
 /**
- * Destroy an editor instance, freeing its resources.
+ * On acceptance the socket owes Sync Step 1 immediately; the framed
+ * message rides back as direct bytes.
  */
-public func editorDestroy(id: UInt64)  {try! rustCall() {
-    uniffi_editor_core_fn_func_editor_destroy(
-        FfiConverterUInt64.lower(id),$0
+public func editorV2CollaborationSocketOpen(editorId: String, generation: UInt64) -> FfiBytesResult  {
+    return try!  FfiConverterTypeFfiBytesResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(
+        FfiConverterString.lower(editorId),
+        FfiConverterUInt64.lower(generation),$0
     )
-}
+})
 }
 /**
- * Convert a document position to a rendered-text scalar offset.
+ * ONE outbound frame per call: pending protocol replies first, then
+ * document updates (raw outbox updates wrapped in standard Sync Update
+ * framing at pickup, so every frame is a complete y-protocols message);
+ * an empty queue returns the documented empty value (empty bytes).
  */
-public func editorDocToScalar(id: UInt64, docPos: UInt32) -> UInt32  {
-    return try!  FfiConverterUInt32.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_doc_to_scalar(
-        FfiConverterUInt64.lower(id),
+public func editorV2CollaborationTakeOutbound(editorId: String, generation: UInt64) -> FfiBytesResult  {
+    return try!  FfiConverterTypeFfiBytesResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_take_outbound(
+        FfiConverterString.lower(editorId),
+        FfiConverterUInt64.lower(generation),$0
+    )
+})
+}
+public func editorV2Create(configJson: String, snapshotState: Data?) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_create(
+        FfiConverterString.lower(configJson),
+        FfiConverterOptionData.lower(snapshotState),$0
+    )
+})
+}
+public func editorV2Destroy(editorId: String) -> FfiUnitResult  {
+    return try!  FfiConverterTypeFfiUnitResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_destroy(
+        FfiConverterString.lower(editorId),$0
+    )
+})
+}
+public func editorV2DocToScalar(editorId: String, docPos: UInt32) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_doc_to_scalar(
+        FfiConverterString.lower(editorId),
         FfiConverterUInt32.lower(docPos),$0
     )
 })
 }
-/**
- * Get both HTML and ProseMirror JSON content in one payload.
- */
-public func editorGetContentSnapshot(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_get_content_snapshot(
-        FfiConverterUInt64.lower(id),$0
+public func editorV2GetContentSnapshot(editorId: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_get_content_snapshot(
+        FfiConverterString.lower(editorId),$0
     )
 })
 }
-/**
- * Get the current editor state (render elements, selection, active state,
- * history state) without performing any edits. Used by native views to pull
- * initial state when binding to an already-loaded editor.
- */
-public func editorGetCurrentState(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_get_current_state(
-        FfiConverterUInt64.lower(id),$0
+public func editorV2GetDocumentHtml(editorId: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_get_document_html(
+        FfiConverterString.lower(editorId),$0
     )
 })
 }
-/**
- * Get the editor's content as HTML.
- */
-public func editorGetHtml(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_get_html(
-        FfiConverterUInt64.lower(id),$0
+public func editorV2GetDocumentJson(editorId: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_get_document_json(
+        FfiConverterString.lower(editorId),$0
     )
 })
 }
-/**
- * Get the editor's content as ProseMirror JSON.
- */
-public func editorGetJson(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_get_json(
-        FfiConverterUInt64.lower(id),$0
+public func editorV2GetState(editorId: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_get_state(
+        FfiConverterString.lower(editorId),$0
     )
 })
 }
-/**
- * Get the current selection as JSON.
- */
-public func editorGetSelection(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_get_selection(
-        FfiConverterUInt64.lower(id),$0
+public func editorV2Redo(editorId: String, requestJson: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_redo(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(requestJson),$0
     )
 })
 }
-/**
- * Get the current selection-related editor state without render elements.
- */
-public func editorGetSelectionState(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_get_selection_state(
-        FfiConverterUInt64.lower(id),$0
+public func editorV2RenderUpdate(editorId: String, mirrorScalarAnchor: UInt32?, mirrorScalarHead: UInt32?) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_render_update(
+        FfiConverterString.lower(editorId),
+        FfiConverterOptionUInt32.lower(mirrorScalarAnchor),
+        FfiConverterOptionUInt32.lower(mirrorScalarHead),$0
     )
 })
 }
-/**
- * Indent the current list item into a nested list. Returns an update JSON string.
- */
-public func editorIndentListItem(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_indent_list_item(
-        FfiConverterUInt64.lower(id),$0
+public func editorV2ReplaceDocument(editorId: String, requestJson: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_replace_document(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(requestJson),$0
     )
 })
 }
-/**
- * Indent the list item at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorIndentListItemAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_indent_list_item_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
+public func editorV2ResolveScalarSelection(editorId: String, scalarAnchor: UInt32, scalarHead: UInt32) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_resolve_scalar_selection(
+        FfiConverterString.lower(editorId),
         FfiConverterUInt32.lower(scalarAnchor),
         FfiConverterUInt32.lower(scalarHead),$0
     )
 })
 }
-/**
- * Insert HTML content at the current selection. Returns an update JSON string.
- */
-public func editorInsertContentHtml(id: UInt64, html: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_insert_content_html(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(html),$0
-    )
-})
-}
-/**
- * Insert JSON content at the current selection. Returns an update JSON string.
- */
-public func editorInsertContentJson(id: UInt64, json: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_insert_content_json(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(json),$0
-    )
-})
-}
-/**
- * Insert JSON content at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorInsertContentJsonAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32, json: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_insert_content_json_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),
-        FfiConverterString.lower(json),$0
-    )
-})
-}
-/**
- * Insert a void node at the current selection. Returns an update JSON string.
- */
-public func editorInsertNode(id: UInt64, nodeType: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_insert_node(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(nodeType),$0
-    )
-})
-}
-/**
- * Insert a node at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorInsertNodeAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32, nodeType: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_insert_node_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),
-        FfiConverterString.lower(nodeType),$0
-    )
-})
-}
-/**
- * Insert text at a position. Returns an update JSON string.
- */
-public func editorInsertText(id: UInt64, pos: UInt32, text: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_insert_text(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(pos),
-        FfiConverterString.lower(text),$0
-    )
-})
-}
-/**
- * Insert text at a scalar offset. Returns an update JSON string.
- */
-public func editorInsertTextScalar(id: UInt64, scalarPos: UInt32, text: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_insert_text_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarPos),
-        FfiConverterString.lower(text),$0
-    )
-})
-}
-/**
- * Outdent the current list item to the parent list level. Returns an update JSON string.
- */
-public func editorOutdentListItem(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_outdent_list_item(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
-}
-/**
- * Outdent the list item at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorOutdentListItemAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_outdent_list_item_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),$0
-    )
-})
-}
-/**
- * Redo. Returns an update JSON string, or empty string if nothing to redo.
- */
-public func editorRedo(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_redo(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
-}
-/**
- * Replace entire document content with HTML via a transaction (preserves history).
- */
-public func editorReplaceHtml(id: UInt64, html: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_replace_html(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(html),$0
-    )
-})
-}
-/**
- * Replace entire document content with JSON via a transaction (preserves history).
- */
-public func editorReplaceJson(id: UInt64, json: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_replace_json(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(json),$0
-    )
-})
-}
-/**
- * Replace the current selection with plain text. Returns an update JSON string.
- */
-public func editorReplaceSelectionText(id: UInt64, text: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_replace_selection_text(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(text),$0
-    )
-})
-}
-/**
- * Replace a scalar range with text (atomic delete + insert). Returns an update JSON string.
- */
-public func editorReplaceTextScalar(id: UInt64, scalarFrom: UInt32, scalarTo: UInt32, text: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_replace_text_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarFrom),
-        FfiConverterUInt32.lower(scalarTo),
-        FfiConverterString.lower(text),$0
-    )
-})
-}
-/**
- * Resize an image node at a document position. Returns an update JSON string.
- */
-public func editorResizeImageAtDocPos(id: UInt64, docPos: UInt32, width: UInt32, height: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_resize_image_at_doc_pos(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(docPos),
-        FfiConverterUInt32.lower(width),
-        FfiConverterUInt32.lower(height),$0
-    )
-})
-}
-/**
- * Convert a rendered-text scalar offset to a document position.
- */
-public func editorScalarToDoc(id: UInt64, scalar: UInt32) -> UInt32  {
-    return try!  FfiConverterUInt32.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_scalar_to_doc(
-        FfiConverterUInt64.lower(id),
+public func editorV2ScalarToDoc(editorId: String, scalar: UInt32) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_scalar_to_doc(
+        FfiConverterString.lower(editorId),
         FfiConverterUInt32.lower(scalar),$0
     )
 })
 }
-/**
- * Set the editor's content from an HTML string. Returns render elements as JSON.
- */
-public func editorSetHtml(id: UInt64, html: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_set_html(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(html),$0
+public func editorV2SetSelection(editorId: String, requestJson: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_set_selection(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(requestJson),$0
     )
 })
 }
-/**
- * Set the editor's content from a ProseMirror JSON string.
- */
-public func editorSetJson(id: UInt64, json: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_set_json(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(json),$0
+public func editorV2SnapshotExport(editorId: String) -> FfiSnapshotExportResult  {
+    return try!  FfiConverterTypeFfiSnapshotExportResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_snapshot_export(
+        FfiConverterString.lower(editorId),$0
     )
 })
 }
-/**
- * Set a mark with attrs on the current selection. Returns an update JSON string.
- */
-public func editorSetMark(id: UInt64, markName: String, attrsJson: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_set_mark(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(markName),
-        FfiConverterString.lower(attrsJson),$0
+public func editorV2SnapshotRestore(editorId: String, metadataJson: String, encodedState: Data) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_snapshot_restore(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(metadataJson),
+        FfiConverterData.lower(encodedState),$0
     )
 })
 }
-/**
- * Set a mark with attrs at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorSetMarkAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32, markName: String, attrsJson: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_set_mark_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),
-        FfiConverterString.lower(markName),
-        FfiConverterString.lower(attrsJson),$0
-    )
-})
-}
-/**
- * Set the selection. Anchor and head are document positions.
- */
-public func editorSetSelection(id: UInt64, anchor: UInt32, head: UInt32)  {try! rustCall() {
-    uniffi_editor_core_fn_func_editor_set_selection(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(anchor),
-        FfiConverterUInt32.lower(head),$0
-    )
-}
-}
-/**
- * Set the selection from scalar offsets, converting to document positions internally.
- */
-public func editorSetSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32)  {try! rustCall() {
-    uniffi_editor_core_fn_func_editor_set_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),$0
-    )
-}
-}
-/**
- * Split the block at a position (Enter key). Returns an update JSON string.
- */
-public func editorSplitBlock(id: UInt64, pos: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_split_block(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(pos),$0
-    )
-})
-}
-/**
- * Split a block at a scalar offset. Returns an update JSON string.
- */
-public func editorSplitBlockScalar(id: UInt64, scalarPos: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_split_block_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarPos),$0
-    )
-})
-}
-/**
- * Toggle a blockquote around the current block selection. Returns an update JSON string.
- */
-public func editorToggleBlockquote(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_toggle_blockquote(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
-}
-/**
- * Toggle a blockquote at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorToggleBlockquoteAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_toggle_blockquote_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),$0
-    )
-})
-}
-/**
- * Toggle the selected text block between codeBlock and paragraph. Returns an update JSON string.
- */
-public func editorToggleCodeBlock(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_toggle_code_block(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
-}
-/**
- * Toggle a code block at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorToggleCodeBlockAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_toggle_code_block_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),$0
-    )
-})
-}
-/**
- * Toggle a heading level on the current text-block selection. Returns an update JSON string.
- */
-public func editorToggleHeading(id: UInt64, level: UInt8) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_toggle_heading(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt8.lower(level),$0
-    )
-})
-}
-/**
- * Toggle a heading level at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorToggleHeadingAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32, level: UInt8) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_toggle_heading_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),
-        FfiConverterUInt8.lower(level),$0
-    )
-})
-}
-/**
- * Toggle a mark on the current selection. Returns an update JSON string.
- */
-public func editorToggleMark(id: UInt64, markName: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_toggle_mark(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(markName),$0
-    )
-})
-}
-/**
- * Toggle a mark at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorToggleMarkAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32, markName: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_toggle_mark_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),
-        FfiConverterString.lower(markName),$0
-    )
-})
-}
-/**
- * Toggle the checked state of the task item at an explicit scalar selection.
- */
-public func editorToggleTaskItemCheckedAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_toggle_task_item_checked_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),$0
-    )
-})
-}
-/**
- * Undo. Returns an update JSON string, or empty string if nothing to undo.
- */
-public func editorUndo(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_undo(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
-}
-/**
- * Remove a mark from the current selection. Returns an update JSON string.
- */
-public func editorUnsetMark(id: UInt64, markName: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_unset_mark(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(markName),$0
-    )
-})
-}
-/**
- * Remove a mark at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorUnsetMarkAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32, markName: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_unset_mark_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),
-        FfiConverterString.lower(markName),$0
-    )
-})
-}
-/**
- * Unwrap the current list item back to a paragraph. Returns an update JSON string.
- */
-public func editorUnwrapFromList(id: UInt64) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_unwrap_from_list(
-        FfiConverterUInt64.lower(id),$0
-    )
-})
-}
-/**
- * Unwrap the list item at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorUnwrapFromListAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_unwrap_from_list_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),$0
-    )
-})
-}
-/**
- * Wrap the current selection in a list. Returns an update JSON string.
- */
-public func editorWrapInList(id: UInt64, listType: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_wrap_in_list(
-        FfiConverterUInt64.lower(id),
-        FfiConverterString.lower(listType),$0
-    )
-})
-}
-/**
- * Wrap or convert a list at an explicit scalar selection. Returns an update JSON string.
- */
-public func editorWrapInListAtSelectionScalar(id: UInt64, scalarAnchor: UInt32, scalarHead: UInt32, listType: String) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_wrap_in_list_at_selection_scalar(
-        FfiConverterUInt64.lower(id),
-        FfiConverterUInt32.lower(scalarAnchor),
-        FfiConverterUInt32.lower(scalarHead),
-        FfiConverterString.lower(listType),$0
+public func editorV2Undo(editorId: String, requestJson: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_undo(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(requestJson),$0
     )
 })
 }
@@ -1325,220 +1405,85 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_editor_core_checksum_func_collaboration_session_apply_encoded_state() != 4684) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_apply_local_document_json() != 396) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_clear_local_awareness() != 48044) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_create() != 60237) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_create_result() != 18589) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_destroy() != 56261) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_get_document_json() != 44139) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_get_encoded_state() != 16895) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_get_peers_json() != 46461) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_handle_message() != 25528) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_replace_encoded_state() != 53994) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_set_local_awareness() != 63617) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_collaboration_session_start() != 54751) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_can_redo() != 15854) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_can_undo() != 52062) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_editor_core_checksum_func_editor_core_version() != 41638) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_create() != 19812) {
+    if (uniffi_editor_core_checksum_func_editor_v2_apply_command() != 14484) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_create_result() != 5778) {
+    if (uniffi_editor_core_checksum_func_editor_v2_apply_input() != 29912) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_delete_and_split_scalar() != 13764) {
+    if (uniffi_editor_core_checksum_func_editor_v2_apply_local_api() != 36451) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_delete_backward_at_selection_scalar() != 7697) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_begin_connect() != 53071) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_delete_range() != 6109) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_peers() != 754) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_delete_scalar_range() != 60098) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 17199) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_destroy() != 35774) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness() != 49061) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_doc_to_scalar() != 48291) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 59730) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_get_content_snapshot() != 32837) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open() != 61882) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_get_current_state() != 13946) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_take_outbound() != 65258) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_get_html() != 28868) {
+    if (uniffi_editor_core_checksum_func_editor_v2_create() != 9333) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_get_json() != 8212) {
+    if (uniffi_editor_core_checksum_func_editor_v2_destroy() != 8349) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_get_selection() != 20571) {
+    if (uniffi_editor_core_checksum_func_editor_v2_doc_to_scalar() != 62503) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_get_selection_state() != 16471) {
+    if (uniffi_editor_core_checksum_func_editor_v2_get_content_snapshot() != 21323) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_indent_list_item() != 10818) {
+    if (uniffi_editor_core_checksum_func_editor_v2_get_document_html() != 60959) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_indent_list_item_at_selection_scalar() != 13664) {
+    if (uniffi_editor_core_checksum_func_editor_v2_get_document_json() != 25683) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_insert_content_html() != 62700) {
+    if (uniffi_editor_core_checksum_func_editor_v2_get_state() != 43856) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_insert_content_json() != 56904) {
+    if (uniffi_editor_core_checksum_func_editor_v2_redo() != 48065) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_insert_content_json_at_selection_scalar() != 51362) {
+    if (uniffi_editor_core_checksum_func_editor_v2_render_update() != 13282) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_insert_node() != 22371) {
+    if (uniffi_editor_core_checksum_func_editor_v2_replace_document() != 31032) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_insert_node_at_selection_scalar() != 32254) {
+    if (uniffi_editor_core_checksum_func_editor_v2_resolve_scalar_selection() != 26332) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_insert_text() != 22584) {
+    if (uniffi_editor_core_checksum_func_editor_v2_scalar_to_doc() != 60383) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_insert_text_scalar() != 30263) {
+    if (uniffi_editor_core_checksum_func_editor_v2_set_selection() != 39340) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_outdent_list_item() != 55796) {
+    if (uniffi_editor_core_checksum_func_editor_v2_snapshot_export() != 2193) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_outdent_list_item_at_selection_scalar() != 32672) {
+    if (uniffi_editor_core_checksum_func_editor_v2_snapshot_restore() != 47504) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_redo() != 26508) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_replace_html() != 41778) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_replace_json() != 28738) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_replace_selection_text() != 11138) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_replace_text_scalar() != 45475) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_resize_image_at_doc_pos() != 36353) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_scalar_to_doc() != 40126) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_set_html() != 11045) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_set_json() != 18497) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_set_mark() != 29349) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_set_mark_at_selection_scalar() != 43994) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_set_selection() != 28236) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_set_selection_scalar() != 16443) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_split_block() != 52038) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_split_block_scalar() != 47554) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_toggle_blockquote() != 25804) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_toggle_blockquote_at_selection_scalar() != 58523) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_toggle_code_block() != 48266) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_toggle_code_block_at_selection_scalar() != 58552) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_toggle_heading() != 7099) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_toggle_heading_at_selection_scalar() != 54315) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_toggle_mark() != 30661) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_toggle_mark_at_selection_scalar() != 61751) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_toggle_task_item_checked_at_selection_scalar() != 1217) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_undo() != 28689) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_unset_mark() != 47985) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_unset_mark_at_selection_scalar() != 54992) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_unwrap_from_list() != 41875) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_unwrap_from_list_at_selection_scalar() != 57899) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_wrap_in_list() != 32846) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_wrap_in_list_at_selection_scalar() != 6459) {
+    if (uniffi_editor_core_checksum_func_editor_v2_undo() != 2492) {
         return InitializationResult.apiChecksumMismatch
     }
 

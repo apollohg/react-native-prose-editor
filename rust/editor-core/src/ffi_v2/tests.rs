@@ -366,3 +366,29 @@ fn session_config_reuses_existing_resolved_limit_types() {
     assert_eq!(config.fragment_name, "prosemirror");
     assert_eq!(config.input_filter, None);
 }
+
+#[test]
+fn snapshot_export_result_enforces_exactly_one_value_or_error() {
+    use super::types::{FfiSnapshotExport, FfiSnapshotExportResult};
+
+    let export = FfiSnapshotExport {
+        metadata_json: "{}".into(),
+        encoded_state: vec![1, 2, 3],
+    };
+    let ok = FfiSnapshotExportResult::ok(export.clone());
+    assert_eq!(ok.value, Some(export.clone()));
+    assert_eq!(ok.error, None);
+    assert!(FfiSnapshotExportResult::try_new(None, None).is_err());
+    assert!(FfiSnapshotExportResult::try_new(
+        Some(export),
+        Some(FfiError::new(ErrorDomain::Snapshot, "SNAPSHOT_X", "x")),
+    )
+    .is_err());
+    let err = FfiSnapshotExportResult::err(FfiError::new(
+        ErrorDomain::Snapshot,
+        "SNAPSHOT_RESTORE_CONNECTED",
+        "connected",
+    ));
+    assert_eq!(err.value, None);
+    assert_eq!(err.error.map(|error| error.domain), Some("snapshot".into()));
+}

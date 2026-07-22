@@ -335,12 +335,23 @@ impl MutationCompiler {
                 .and_then(|len| len.checked_sub(move_index))
                 .ok_or_else(|| invalid_action_range(self.request_id, operation_index))?;
             if moved_count == 0 {
-                return Err(OperationError::operation_invalid(
-                    self.request_id,
+                // Return-at-EOL: the boundary is the very end of the block,
+                // so there is no suffix to move — the preview's right
+                // wrapper (a sibling block, or a sibling list item when the
+                // split block lives inside a list item) is entirely new.
+                // Rejoin the mid-text split tail with an empty text cut and
+                // no within-block suffix.
+                return self.finish_split_with_created_right(
                     operation_index,
-                    "at",
-                    "split block boundary has no suffix to move",
-                ));
+                    after,
+                    list_item_path,
+                    &block_path,
+                    block_target.signature.children.len(),
+                    0,
+                    0,
+                    schema,
+                    limits,
+                );
             }
             self.push_action(YrsMutationAction::DeleteXmlChildren {
                 parent: block_target.parent.clone(),
@@ -679,6 +690,32 @@ impl MutationCompiler {
                 .truncate(suffix_storage_start);
         }
 
+        self.finish_split_with_created_right(
+            operation_index,
+            after,
+            list_item_path,
+            &block_path,
+            block_target.signature.children.len(),
+            delete_len_utf16,
+            suffix_storage_count,
+            schema,
+            limits,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_split_with_created_right(
+        &mut self,
+        operation_index: usize,
+        after: &Document,
+        list_item_path: Option<Vec<u32>>,
+        block_path: &[u32],
+        block_children_len: usize,
+        delete_len_utf16: u32,
+        suffix_storage_count: usize,
+        schema: &Schema,
+        limits: &ResourceLimits,
+    ) -> OperationResult<()> {
         let (
             insertion_parent_path,
             insertion_index,
@@ -804,10 +841,7 @@ impl MutationCompiler {
             first_semantic_index: insertion_index,
         });
         self.register_prepared_insert_state(operation_index, prepared_id, after)?;
-        let work = block_target
-            .signature
-            .children
-            .len()
+        let work = block_children_len
             .checked_add(batch.work)
             .and_then(|work| work.checked_add(usize::try_from(delete_len_utf16).ok()?))
             .and_then(|work| work.checked_add(suffix_storage_count))

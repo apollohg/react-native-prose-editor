@@ -29,8 +29,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import uniffi.editor_core.editorCreate
-import uniffi.editor_core.editorDestroy
 
 @RunWith(AndroidJUnit4::class)
 @LargeTest
@@ -43,7 +41,7 @@ class NativeDeviceOutsideTapTest {
             val editorRef = AtomicReference<NativeEditorExpoView>()
             val outsideTargetRef = AtomicReference<View>()
             val outsideTapTrace = Collections.synchronizedList(mutableListOf<String>())
-            val editorId = editorCreate("{}").toLong()
+            val editorId = createV2EditorId()
 
             try {
                 scenario.onActivity { activity ->
@@ -135,7 +133,7 @@ class NativeDeviceOutsideTapTest {
                 scenario.onActivity {
                     editorRef.get()?.uninstallOutsideTapBlurHandlerForTesting()
                 }
-                editorDestroy(editorId.toULong())
+                EditorV2Registry.destroyPair(editorId)
             }
         }
     }
@@ -146,7 +144,7 @@ class NativeDeviceOutsideTapTest {
             val editorRef = AtomicReference<NativeEditorExpoView>()
             val toolbarTargetRef = AtomicReference<View>()
             val outsideTapTrace = Collections.synchronizedList(mutableListOf<String>())
-            val editorId = editorCreate("{}").toLong()
+            val editorId = createV2EditorId()
 
             try {
                 scenario.onActivity { activity ->
@@ -240,7 +238,7 @@ class NativeDeviceOutsideTapTest {
                 scenario.onActivity {
                     editorRef.get()?.uninstallOutsideTapBlurHandlerForTesting()
                 }
-                editorDestroy(editorId.toULong())
+                EditorV2Registry.destroyPair(editorId)
             }
         }
     }
@@ -253,7 +251,7 @@ class NativeDeviceOutsideTapTest {
             val outsideTargetRef = AtomicReference<View>()
             val initialScrollY = AtomicInteger()
             val outsideTapTrace = Collections.synchronizedList(mutableListOf<String>())
-            val editorId = editorCreate("{}").toLong()
+            val editorId = createV2EditorId()
 
             try {
                 scenario.onActivity { activity ->
@@ -406,7 +404,7 @@ class NativeDeviceOutsideTapTest {
                 scenario.onActivity {
                     editorRef.get()?.uninstallOutsideTapBlurHandlerForTesting()
                 }
-                editorDestroy(editorId.toULong())
+                EditorV2Registry.destroyPair(editorId)
             }
         }
     }
@@ -419,7 +417,7 @@ class NativeDeviceOutsideTapTest {
             val outsideTargetRef = AtomicReference<View>()
             val initialScrollY = AtomicInteger()
             val outsideTapTrace = Collections.synchronizedList(mutableListOf<String>())
-            val editorId = editorCreate("{}").toLong()
+            val editorId = createV2EditorId()
 
             try {
                 scenario.onActivity { activity ->
@@ -585,10 +583,17 @@ class NativeDeviceOutsideTapTest {
                 scenario.onActivity {
                     editorRef.get()?.uninstallOutsideTapBlurHandlerForTesting()
                 }
-                editorDestroy(editorId.toULong())
+                EditorV2Registry.destroyPair(editorId)
             }
         }
     }
+
+    private fun createV2EditorId(): Long =
+        when (val created = EditorV2Registry.createPair(UniffiEditorV2Backend, "{}")) {
+            is EditorV2CallResult.Ok -> created.value
+            is EditorV2CallResult.Err ->
+                error("v2 editor create failed: ${created.error.code}: ${created.error.message}")
+        }
 
     private fun tapCenterOnScreen(
         view: View,

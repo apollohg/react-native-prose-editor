@@ -631,12 +631,6 @@ pub(crate) fn simulate_plan(
     })
 }
 
-pub(crate) fn structural_diff(before: &Document, after: &Document) -> Option<StructuralDiff> {
-    structural_diff_nodes(before.root(), after.root(), &mut Vec::new(), None, 0)
-        .ok()
-        .flatten()
-}
-
 pub(crate) fn structural_diff_bounded(
     before: &Document,
     after: &Document,

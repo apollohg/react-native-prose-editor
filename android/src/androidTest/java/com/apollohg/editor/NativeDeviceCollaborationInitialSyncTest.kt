@@ -22,11 +22,6 @@ import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import uniffi.editor_core.editorCreate
-import uniffi.editor_core.editorDestroy
-import uniffi.editor_core.editorGetCurrentState
-import uniffi.editor_core.editorReplaceJson
-import uniffi.editor_core.editorSetJson
 
 @RunWith(AndroidJUnit4::class)
 @LargeTest
@@ -37,7 +32,7 @@ class NativeDeviceCollaborationInitialSyncTest {
     fun propDrivenReplaceUpdateDisplaysRemoteDocumentWithoutTyping() {
         ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
             val editorRef = AtomicReference<NativeEditorExpoView>()
-            val editorId = editorCreate("{}").toLong()
+            val (adapter, editorId) = createV2Editor()
 
             try {
                 scenario.onActivity { activity ->
@@ -50,10 +45,9 @@ class NativeDeviceCollaborationInitialSyncTest {
 
                 val updateJson = AtomicReference<String>()
                 scenario.onActivity {
-                    val update = editorReplaceJson(
-                        editorId.toULong(),
-                        documentJson("Remote replace sync")
-                    )
+                    replaceDocumentV2(adapter, documentJson("Remote replace sync"))
+                    val update = adapter.refreshFromRustState(null)
+                    if (update == null) return@onActivity
                     updateJson.set(update)
                     editorRef.get().setPendingEditorUpdateJson(update)
                     editorRef.get().setPendingEditorUpdateEditorId(editorId)
@@ -74,7 +68,7 @@ class NativeDeviceCollaborationInitialSyncTest {
                         "Remote replace sync"
                 }
             } finally {
-                editorDestroy(editorId.toULong())
+                EditorV2Registry.destroyPair(editorId)
             }
         }
     }
@@ -83,7 +77,7 @@ class NativeDeviceCollaborationInitialSyncTest {
     fun propDrivenResetUpdateDisplaysRemoteDocumentWithoutTyping() {
         ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
             val editorRef = AtomicReference<NativeEditorExpoView>()
-            val editorId = editorCreate("{}").toLong()
+            val (adapter, editorId) = createV2Editor()
 
             try {
                 scenario.onActivity { activity ->
@@ -96,8 +90,8 @@ class NativeDeviceCollaborationInitialSyncTest {
 
                 val updateJson = AtomicReference<String>()
                 scenario.onActivity {
-                    editorSetJson(editorId.toULong(), documentJson("Remote reset sync"))
-                    val update = editorGetCurrentState(editorId.toULong())
+                    val update = adapter.setContentJson(documentJson("Remote reset sync"))
+                    if (update == null) return@onActivity
                     updateJson.set(update)
                     editorRef.get().setPendingEditorResetUpdateJson(update)
                     editorRef.get().setPendingEditorResetUpdateEditorId(editorId)
@@ -118,8 +112,31 @@ class NativeDeviceCollaborationInitialSyncTest {
                         "Remote reset sync"
                 }
             } finally {
-                editorDestroy(editorId.toULong())
+                EditorV2Registry.destroyPair(editorId)
             }
+        }
+    }
+
+    private fun createV2Editor(): Pair<EditorV2Adapter, Long> {
+        val publicId = when (val created = EditorV2Registry.createPair(UniffiEditorV2Backend, "{}")) {
+            is EditorV2CallResult.Ok -> created.value
+            is EditorV2CallResult.Err ->
+                error("v2 editor create failed: ${created.error.code}: ${created.error.message}")
+        }
+        return EditorV2Registry.adapterFor(publicId)!! to publicId
+    }
+
+    private fun replaceDocumentV2(adapter: EditorV2Adapter, documentJson: String) {
+        val requestJson = JSONObject()
+            .put("version", 1)
+            .put("requestId", 1)
+            .put("setJson", JSONObject(documentJson))
+            .put("history", "undoableBoundary")
+            .toString()
+        when (val result = UniffiEditorV2Backend.replaceDocument(adapter.editorId, requestJson)) {
+            is EditorV2CallResult.Ok -> Unit
+            is EditorV2CallResult.Err ->
+                error("v2 replaceDocument failed: ${result.error.code}: ${result.error.message}")
         }
     }
 

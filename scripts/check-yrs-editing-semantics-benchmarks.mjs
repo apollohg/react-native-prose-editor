@@ -5,34 +5,22 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Task 16C (user directive 2026-07-20): the legacy runtime was deleted, so
+// the legacy.* reference cases and the legacy-relative ratio gates (2x/3x)
+// are removed with it. The absolute Yrs ceilings, the 2x scaling gates, and
+// the 1.20x baseline-regression gate are UNCHANGED. Frozen baseline files
+// may still carry legacy.* entries; they are ignored here (see indexResults).
 const REQUIRED_CASES = [
-    'legacy.edit.insert_char.article.1x',
     'yrs.edit.insert_char.article.1x',
-    'legacy.edit.typing_burst.article.1x',
     'yrs.edit.typing_burst.article.1x',
-    'legacy.state.selection_light.article.1x',
     'yrs.state.selection_light.article.1x',
-    'legacy.command.toggle_mark.article.1x',
     'yrs.command.toggle_mark.article.1x',
-    'legacy.command.wrap_list.article.1x',
     'yrs.command.wrap_list.article.1x',
-    'legacy.history.undo.article.1x',
     'yrs.history.undo.article.1x',
-    'legacy.history.redo.article.1x',
     'yrs.history.redo.article.1x',
     'yrs.edit.insert_char.article.2x',
     'yrs.state.selection_light.article.2x',
     'yrs.command.wrap_list.article.2x',
-];
-
-const RELATIVE_GATES = [
-    ['yrs.edit.insert_char.article.1x', 'legacy.edit.insert_char.article.1x', 2],
-    ['yrs.edit.typing_burst.article.1x', 'legacy.edit.typing_burst.article.1x', 2],
-    ['yrs.state.selection_light.article.1x', 'legacy.state.selection_light.article.1x', 2],
-    ['yrs.command.toggle_mark.article.1x', 'legacy.command.toggle_mark.article.1x', 3],
-    ['yrs.command.wrap_list.article.1x', 'legacy.command.wrap_list.article.1x', 3],
-    ['yrs.history.undo.article.1x', 'legacy.history.undo.article.1x', 3],
-    ['yrs.history.redo.article.1x', 'legacy.history.redo.article.1x', 3],
 ];
 
 const ABSOLUTE_GATES = [
@@ -140,7 +128,7 @@ function runBenchmarkSample() {
     return parseJson(result.stdout.trim(), 'input');
 }
 
-function indexResults(payload, label, { rawSample = false } = {}) {
+function indexResults(payload, label, { rawSample = false, allowExtraCases = false } = {}) {
     if (!Array.isArray(payload.results)) {
         throw new Error(`${label} must contain a results array`);
     }
@@ -154,6 +142,9 @@ function indexResults(payload, label, { rawSample = false } = {}) {
             throw new Error(`${label} result at index ${index} must have a non-empty name`);
         }
         if (!REQUIRED_CASES.includes(result.name)) {
+            // Frozen baselines still carry the deleted legacy.* reference
+            // cases; only the required cases are read from a baseline.
+            if (allowExtraCases) continue;
             throw new Error(`${label} has unexpected benchmark case: ${result.name}`);
         }
         if (indexed.has(result.name)) {
@@ -187,7 +178,7 @@ function indexResults(payload, label, { rawSample = false } = {}) {
             throw new Error(`${label} is missing required case: ${name}`);
         }
     }
-    if (indexed.size !== REQUIRED_CASES.length) {
+    if (!allowExtraCases && indexed.size !== REQUIRED_CASES.length) {
         throw new Error(`${label} must contain exactly ${REQUIRED_CASES.length} benchmark cases`);
     }
     if (rawSample) {
@@ -298,9 +289,6 @@ function assertBaselineRatio(benchmark, baseline, caseName) {
 
 function checkBenchmarks(input, baseline) {
     const benchmark = indexResults(input, 'input');
-    for (const [caseName, comparisonName, allowedRatio] of RELATIVE_GATES) {
-        assertRatio(benchmark, caseName, comparisonName, allowedRatio, 'relative ratio');
-    }
     for (const [caseName, allowedMs] of ABSOLUTE_GATES) {
         assertAbsoluteCeiling(benchmark, caseName, allowedMs);
     }
@@ -308,7 +296,7 @@ function checkBenchmarks(input, baseline) {
         assertRatio(benchmark, caseName, comparisonName, allowedRatio, 'scaling');
     }
     if (baseline) {
-        const baselineResults = indexResults(baseline, 'baseline');
+        const baselineResults = indexResults(baseline, 'baseline', { allowExtraCases: true });
         for (const name of REQUIRED_CASES) {
             assertBaselineRatio(benchmark, baselineResults, name);
         }

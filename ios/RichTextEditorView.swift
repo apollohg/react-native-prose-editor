@@ -210,11 +210,11 @@ private final class RemoteSelectionOverlayView: UIView {
         for selection: RemoteSelectionDecoration,
         in textView: EditorTextView
     ) -> (selectionRects: [CGRect], caretRect: CGRect?) {
-        let startScalar = editorDocToScalar(
+        let startScalar = EditorV2Shadow.docToScalar(
             id: editorId,
             docPos: min(selection.anchor, selection.head)
         )
-        let endScalar = editorDocToScalar(
+        let endScalar = EditorV2Shadow.docToScalar(
             id: editorId,
             docPos: max(selection.anchor, selection.head)
         )
@@ -2009,12 +2009,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         editorId = id
 
         if let html = initialHTML, !html.isEmpty {
-            _ = editorSetHtml(id: editorId, html: html)
-            let stateJSON = editorGetCurrentState(id: editorId)
+            _ = EditorV2Shadow.setHtml(id: editorId, html: html)
+            let stateJSON = EditorV2Shadow.getCurrentState(id: editorId)
             applyUpdateJSON(stateJSON, notifyDelegate: false)
         } else {
             // Pull current state from Rust (content may already be loaded via bridge).
-            let stateJSON = editorGetCurrentState(id: editorId)
+            let stateJSON = EditorV2Shadow.getCurrentState(id: editorId)
             applyUpdateJSON(stateJSON, notifyDelegate: false)
         }
         replayDesiredInputTraitsIfNeeded()
@@ -2072,7 +2072,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         if let selectedRange = selectedTextRange, !selectedRange.isEmpty {
             let range = PositionBridge.textRangeToScalarRange(selectedRange, in: self)
             performInterceptedInput {
-                let updateJSON = editorReplaceTextScalar(
+                let updateJSON = EditorV2Shadow.replaceTextScalar(
                     id: editorId,
                     scalarFrom: range.from,
                     scalarTo: range.to,
@@ -2296,12 +2296,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
         performInterceptedInput {
             let updateJSON = outdent
-                ? editorOutdentListItemAtSelectionScalar(
+                ? EditorV2Shadow.outdentListItemAtSelectionScalar(
                     id: editorId,
                     scalarAnchor: selection.anchor,
                     scalarHead: selection.head
                 )
-                : editorIndentListItemAtSelectionScalar(
+                : EditorV2Shadow.indentListItemAtSelectionScalar(
                     id: editorId,
                     scalarAnchor: selection.anchor,
                     scalarHead: selection.head
@@ -2313,7 +2313,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private func isCaretInsideList() -> Bool {
         guard editorId != 0 else { return false }
         guard
-            let data = editorGetCurrentState(id: editorId).data(using: .utf8),
+            let data = EditorV2Shadow.getCurrentState(id: editorId).data(using: .utf8),
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let activeState = object["activeState"] as? [String: Any],
             let nodes = activeState["nodes"] as? [String: Any]
@@ -2358,7 +2358,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
         // Atomically replace the range with the new text via Rust.
         performInterceptedInput {
-            let updateJSON = editorReplaceTextScalar(
+            let updateJSON = EditorV2Shadow.replaceTextScalar(
                 id: editorId,
                 scalarFrom: scalarRange.from,
                 scalarTo: scalarRange.to,
@@ -2603,7 +2603,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard editorId != 0 else { return }
         guard textStorage.string != lastAuthorizedText else { return }
 
-        let stateJSON = editorGetCurrentState(id: editorId)
+        let stateJSON = EditorV2Shadow.getCurrentState(id: editorId)
         applyUpdateJSON(stateJSON)
     }
 
@@ -2806,8 +2806,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard editorId != 0 else {
             return "scalar=\(anchorScalar)-\(headScalar)"
         }
-        let docAnchor = editorScalarToDoc(id: editorId, scalar: anchorScalar)
-        let docHead = editorScalarToDoc(id: editorId, scalar: headScalar)
+        let docAnchor = EditorV2Shadow.scalarToDoc(id: editorId, scalar: anchorScalar)
+        let docHead = EditorV2Shadow.scalarToDoc(id: editorId, scalar: headScalar)
         return "scalar=\(anchorScalar)-\(headScalar) doc=\(docAnchor)-\(docHead)"
     }
 
@@ -2904,13 +2904,13 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
         let anchor = selection.anchor
         let head = selection.head
-        let docAnchor = editorScalarToDoc(id: editorId, scalar: anchor)
-        let docHead = editorScalarToDoc(id: editorId, scalar: head)
+        let docAnchor = EditorV2Shadow.scalarToDoc(id: editorId, scalar: anchor)
+        let docHead = EditorV2Shadow.scalarToDoc(id: editorId, scalar: head)
         Self.selectionLog.debug(
             "[textViewDidChangeSelection] scalar=\(anchor)-\(head) doc=\(docAnchor)-\(docHead) textState=\(self.textSnapshotSummary(), privacy: .public)"
         )
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
         recordAuthorizedSelectionIfPossible()
         refreshTypingAttributesForSelection()
         editorDelegate?.editorTextView(self, selectionDidChange: docAnchor, head: docHead)
@@ -2922,7 +2922,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             guard prepareForExternalEditorUpdate() else { return false }
             self.theme = theme
             let previousOffset = contentOffset
-            let stateJSON = editorGetCurrentState(id: editorId)
+            let stateJSON = EditorV2Shadow.getCurrentState(id: editorId)
             applyUpdateJSON(stateJSON, notifyDelegate: false)
             if heightBehavior == .fixed {
                 preserveScrollOffset(previousOffset)
@@ -3373,7 +3373,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard prepareForToolbarCommand() else { return }
         guard let selection = currentScalarSelection() else { return }
         performInterceptedInput {
-            let updateJSON = editorToggleMarkAtSelectionScalar(
+            let updateJSON = EditorV2Shadow.toggleMarkAtSelectionScalar(
                 id: editorId,
                 scalarAnchor: selection.anchor,
                 scalarHead: selection.head,
@@ -3388,12 +3388,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard let selection = currentScalarSelection() else { return }
         performInterceptedInput {
             let updateJSON = isActive
-                ? editorUnwrapFromListAtSelectionScalar(
+                ? EditorV2Shadow.unwrapFromListAtSelectionScalar(
                     id: editorId,
                     scalarAnchor: selection.anchor,
                     scalarHead: selection.head
                 )
-                : editorWrapInListAtSelectionScalar(
+                : EditorV2Shadow.wrapInListAtSelectionScalar(
                     id: editorId,
                     scalarAnchor: selection.anchor,
                     scalarHead: selection.head,
@@ -3407,7 +3407,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard prepareForToolbarCommand() else { return }
         guard let selection = currentScalarSelection() else { return }
         performInterceptedInput {
-            let updateJSON = editorToggleBlockquoteAtSelectionScalar(
+            let updateJSON = EditorV2Shadow.toggleBlockquoteAtSelectionScalar(
                 id: editorId,
                 scalarAnchor: selection.anchor,
                 scalarHead: selection.head
@@ -3421,7 +3421,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard let selection = currentScalarSelection() else { return }
         guard let level = UInt8(exactly: level), (1...6).contains(level) else { return }
         performInterceptedInput {
-            let updateJSON = editorToggleHeadingAtSelectionScalar(
+            let updateJSON = EditorV2Shadow.toggleHeadingAtSelectionScalar(
                 id: editorId,
                 scalarAnchor: selection.anchor,
                 scalarHead: selection.head,
@@ -3435,7 +3435,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard prepareForToolbarCommand() else { return }
         guard let selection = currentScalarSelection() else { return }
         performInterceptedInput {
-            let updateJSON = editorIndentListItemAtSelectionScalar(
+            let updateJSON = EditorV2Shadow.indentListItemAtSelectionScalar(
                 id: editorId,
                 scalarAnchor: selection.anchor,
                 scalarHead: selection.head
@@ -3448,7 +3448,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         guard prepareForToolbarCommand() else { return }
         guard let selection = currentScalarSelection() else { return }
         performInterceptedInput {
-            let updateJSON = editorOutdentListItemAtSelectionScalar(
+            let updateJSON = EditorV2Shadow.outdentListItemAtSelectionScalar(
                 id: editorId,
                 scalarAnchor: selection.anchor,
                 scalarHead: selection.head
@@ -3467,7 +3467,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     func performToolbarUndo() {
         guard prepareForToolbarCommand() else { return }
         performInterceptedInput {
-            let updateJSON = editorUndo(id: editorId)
+            let updateJSON = EditorV2Shadow.undo(id: editorId)
             applyUpdateJSON(updateJSON)
         }
     }
@@ -3475,7 +3475,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     func performToolbarRedo() {
         guard prepareForToolbarCommand() else { return }
         performInterceptedInput {
-            let updateJSON = editorRedo(id: editorId)
+            let updateJSON = EditorV2Shadow.redo(id: editorId)
             applyUpdateJSON(updateJSON)
         }
     }
@@ -3491,7 +3491,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         Self.inputLog.debug(
             "[rust.insertTextScalar] text=\(self.preview(text), privacy: .public) scalarPos=\(scalarPos) selection=\(self.selectionSummary(), privacy: .public)"
         )
-        let updateJSON = editorInsertTextScalar(id: editorId, scalarPos: scalarPos, text: text)
+        let updateJSON = EditorV2Shadow.insertTextScalar(id: editorId, scalarPos: scalarPos, text: text)
         applyUpdateJSON(updateJSON)
     }
 
@@ -3499,7 +3499,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         Self.inputLog.debug(
             "[rust.replaceTextScalar] text=\(self.preview(text), privacy: .public) scalar=\(from)-\(to) selection=\(self.selectionSummary(), privacy: .public)"
         )
-        let updateJSON = editorReplaceTextScalar(
+        let updateJSON = EditorV2Shadow.replaceTextScalar(
             id: editorId,
             scalarFrom: from,
             scalarTo: to,
@@ -3840,14 +3840,14 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     func prepareForExternalEditorCommand() -> (ready: Bool, updateJSON: String?, blockedReason: String?) {
         let previousEditorId = editorId
         let previousAuthorizedText = lastAuthorizedText
-        let previousStateJSON = previousEditorId != 0 ? editorGetCurrentState(id: previousEditorId) : nil
+        let previousStateJSON = previousEditorId != 0 ? EditorV2Shadow.getCurrentState(id: previousEditorId) : nil
         guard prepareForExternalEditorUpdate() else {
             return (false, nil, "composition")
         }
         guard editorId != 0 else {
             return (true, nil, nil)
         }
-        let currentStateJSON = editorGetCurrentState(id: editorId)
+        let currentStateJSON = EditorV2Shadow.getCurrentState(id: editorId)
         guard lastAuthorizedText != previousAuthorizedText
                 || previousEditorId != editorId
                 || previousStateJSON != currentStateJSON
@@ -4013,11 +4013,11 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             selectedRange = targetRange
             noteSelectionDidChange()
         }
-        editorSetSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
         recordAuthorizedSelectionIfPossible()
         refreshTypingAttributesForSelection()
-        let docAnchor = editorScalarToDoc(id: editorId, scalar: anchor)
-        let docHead = editorScalarToDoc(id: editorId, scalar: head)
+        let docAnchor = EditorV2Shadow.scalarToDoc(id: editorId, scalar: anchor)
+        let docHead = EditorV2Shadow.scalarToDoc(id: editorId, scalar: head)
         editorDelegate?.editorTextView(self, selectionDidChange: docAnchor, head: docHead)
     }
 
@@ -4026,7 +4026,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         Self.inputLog.debug(
             "[rust.insertNode] nodeType=\(nodeType, privacy: .public) selection=\(self.selectionSummary(), privacy: .public)"
         )
-        let updateJSON = editorInsertNodeAtSelectionScalar(
+        let updateJSON = EditorV2Shadow.insertNodeAtSelectionScalar(
             id: editorId,
             scalarAnchor: selection.anchor,
             scalarHead: selection.head,
@@ -4041,7 +4041,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         Self.inputLog.debug(
             "[rust.deleteScalarRange] scalar=\(from)-\(to) selection=\(self.selectionSummary(), privacy: .public)"
         )
-        let updateJSON = editorDeleteScalarRange(id: editorId, scalarFrom: from, scalarTo: to)
+        let updateJSON = EditorV2Shadow.deleteScalarRange(id: editorId, scalarFrom: from, scalarTo: to)
         applyUpdateJSON(updateJSON)
     }
 
@@ -4049,7 +4049,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         Self.inputLog.debug(
             "[rust.deleteBackwardAtSelectionScalar] scalar=\(anchor)-\(head) selection=\(self.selectionSummary(), privacy: .public)"
         )
-        let updateJSON = editorDeleteBackwardAtSelectionScalar(
+        let updateJSON = EditorV2Shadow.deleteBackwardAtSelectionScalar(
             id: editorId,
             scalarAnchor: anchor,
             scalarHead: head
@@ -4061,7 +4061,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         Self.inputLog.debug(
             "[rust.toggleTaskItemCheckedAtSelectionScalar] scalar=\(anchor)-\(head) selection=\(self.selectionSummary(), privacy: .public)"
         )
-        let updateJSON = editorToggleTaskItemCheckedAtSelectionScalar(
+        let updateJSON = EditorV2Shadow.toggleTaskItemCheckedAtSelectionScalar(
             id: editorId,
             scalarAnchor: anchor,
             scalarHead: head
@@ -4075,7 +4075,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         Self.inputLog.debug(
             "[rust.deleteRange] doc=\(from)-\(to) selection=\(self.selectionSummary(), privacy: .public)"
         )
-        let updateJSON = editorDeleteRange(id: editorId, from: from, to: to)
+        let updateJSON = EditorV2Shadow.deleteRange(id: editorId, from: from, to: to)
         applyUpdateJSON(updateJSON)
     }
 
@@ -4174,7 +4174,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     func resizeImageAtDocPos(_ docPos: UInt32, width: UInt32, height: UInt32) {
         guard editorId != 0 else { return }
         performInterceptedInput {
-            let updateJSON = editorResizeImageAtDocPos(
+            let updateJSON = EditorV2Shadow.resizeImageAtDocPos(
                 id: editorId,
                 docPos: docPos,
                 width: width,
@@ -4203,7 +4203,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         // If there's a range selection, atomically delete and split.
         if let selectedRange = selectedTextRange, !selectedRange.isEmpty {
             let range = PositionBridge.textRangeToScalarRange(selectedRange, in: self)
-            let updateJSON = editorDeleteAndSplitScalar(
+            let updateJSON = EditorV2Shadow.deleteAndSplitScalar(
                 id: editorId,
                 scalarFrom: range.from,
                 scalarTo: range.to
@@ -4220,29 +4220,29 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         Self.inputLog.debug(
             "[rust.splitBlockScalar] scalarPos=\(scalarPos) selection=\(self.selectionSummary(), privacy: .public)"
         )
-        let updateJSON = editorSplitBlockScalar(id: editorId, scalarPos: scalarPos)
+        let updateJSON = EditorV2Shadow.splitBlockScalar(id: editorId, scalarPos: scalarPos)
         applyUpdateJSON(updateJSON)
     }
 
     /// Paste HTML content through Rust.
     @discardableResult
     private func pasteHTML(_ html: String, detectContentChange: Bool = false) -> Bool {
-        let previousHTML = detectContentChange ? editorGetHtml(id: editorId) : nil
+        let previousHTML = detectContentChange ? EditorV2Shadow.getHtml(id: editorId) : nil
         syncCurrentUIKitSelectionToRust()
         Self.inputLog.debug(
             "[rust.pasteHTML] html=\(self.preview(html), privacy: .public) selection=\(self.selectionSummary(), privacy: .public)"
         )
-        let updateJSON = editorInsertContentHtml(id: editorId, html: html)
+        let updateJSON = EditorV2Shadow.insertContentHtml(id: editorId, html: html)
         applyUpdateJSON(updateJSON)
         guard let previousHTML else { return true }
-        return editorGetHtml(id: editorId) != previousHTML
+        return EditorV2Shadow.getHtml(id: editorId) != previousHTML
     }
 
     private func syncCurrentUIKitSelectionToRust() {
         guard editorId != 0, let range = selectedTextRange else { return }
         let anchor = PositionBridge.textViewToScalar(range.start, in: self)
         let head = PositionBridge.textViewToScalar(range.end, in: self)
-        editorSetSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
     }
 
     /// Paste plain text through Rust.
@@ -4253,7 +4253,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             Self.inputLog.debug(
                 "[rust.pastePlainText.replace] text=\(self.preview(text), privacy: .public) scalar=\(range.from)-\(range.to) selection=\(self.selectionSummary(), privacy: .public)"
             )
-            let updateJSON = editorReplaceTextScalar(
+            let updateJSON = EditorV2Shadow.replaceTextScalar(
                 id: editorId,
                 scalarFrom: range.from,
                 scalarTo: range.to,
@@ -4325,7 +4325,27 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         _ lhs: [[String: Any]],
         _ rhs: [[String: Any]]
     ) -> Bool {
-        (lhs as NSArray).isEqual(rhs)
+        guard lhs.count == rhs.count else { return false }
+        for (lhsElement, rhsElement) in zip(lhs, rhs) {
+            guard renderElementEquals(lhsElement, rhsElement) else { return false }
+        }
+        return true
+    }
+
+    /// Void/opaque elements carry an absolute `docPos` that shifts with any
+    /// upstream structural edit. It is render metadata (hit-testing/resize
+    /// geometry), not block content, so block identity ignores it — the
+    /// derived patch's replacement blocks carry the fresh values.
+    private func renderElementEquals(_ lhs: [String: Any], _ rhs: [String: Any]) -> Bool {
+        if (lhs as NSDictionary).isEqual(to: rhs) { return true }
+        guard lhs.count == rhs.count,
+              lhs["docPos"] != nil || rhs["docPos"] != nil
+        else { return false }
+        var strippedLhs = lhs
+        var strippedRhs = rhs
+        strippedLhs.removeValue(forKey: "docPos")
+        strippedRhs.removeValue(forKey: "docPos")
+        return (strippedLhs as NSDictionary).isEqual(to: strippedRhs)
     }
 
     private func deriveRenderPatch(
@@ -5405,9 +5425,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             }
             // anchor/head from Rust are document positions; convert to scalar offsets first.
             let anchorScalar = (selection["anchorScalar"] as? NSNumber)?.uint32Value
-                ?? editorDocToScalar(id: editorId, docPos: anchorNum.uint32Value)
+                ?? EditorV2Shadow.docToScalar(id: editorId, docPos: anchorNum.uint32Value)
             let headScalar = (selection["headScalar"] as? NSNumber)?.uint32Value
-                ?? editorDocToScalar(id: editorId, docPos: headNum.uint32Value)
+                ?? EditorV2Shadow.docToScalar(id: editorId, docPos: headNum.uint32Value)
             let startUtf16 = PositionBridge.scalarToUtf16Offset(
                 min(anchorScalar, headScalar),
                 in: self
@@ -5465,7 +5485,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             }
             // pos from Rust is a document position; convert to scalar offset.
             let posScalar = (selection["posScalar"] as? NSNumber)?.uint32Value
-                ?? editorDocToScalar(id: editorId, docPos: posNum.uint32Value)
+                ?? EditorV2Shadow.docToScalar(id: editorId, docPos: posNum.uint32Value)
             let startUtf16 = PositionBridge.scalarToUtf16Offset(posScalar, in: self)
             let targetRange = NSRange(location: startUtf16, length: 1)
             let resolveNanos = DispatchTime.now().uptimeNanoseconds - resolveStartedAt
@@ -5613,7 +5633,7 @@ extension EditorTextView: NSTextStorageDelegate {
             // Reconcile by pulling the current editor state without rebuilding
             // the Rust backend or clearing history. This must run after the
             // current NSTextStorage edit transaction has finished.
-            let stateJSON = editorGetCurrentState(id: self.editorId)
+            let stateJSON = EditorV2Shadow.getCurrentState(id: self.editorId)
             self.applyUpdateJSON(stateJSON)
         }
     }
@@ -5982,8 +6002,8 @@ final class RichTextEditorView: UIView {
     /// - Parameter html: The HTML string to load.
     func setContent(html: String) {
         guard editorId != 0 else { return }
-        _ = editorSetHtml(id: editorId, html: html)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        _ = EditorV2Shadow.setHtml(id: editorId, html: html)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
     }
 
     /// Set initial content from ProseMirror JSON.
@@ -5991,8 +6011,8 @@ final class RichTextEditorView: UIView {
     /// - Parameter json: The JSON string to load.
     func setContent(json: String) {
         guard editorId != 0 else { return }
-        _ = editorSetJson(id: editorId, json: json)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        _ = EditorV2Shadow.setJson(id: editorId, json: json)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
     }
 
     private func measuredEditorHeight() -> CGFloat {

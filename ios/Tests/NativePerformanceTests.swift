@@ -50,12 +50,17 @@ final class NativePerformanceTests: XCTestCase {
 
     func testPerformance_renderBridgeLargeDocument() {
         let renderJSON = NativePerformanceFixtureFactory.largeRenderJSON()
+        // The v2 update carries renderBlocks (the flat renderElements array
+        // was a legacy-update shape); render through the blocks entry.
+        let renderBlocks = (try? JSONSerialization.jsonObject(with: Data(renderJSON.utf8)))
+            .flatMap { $0 as? [String: Any] }
+            .flatMap { $0["renderBlocks"] as? [[[String: Any]]] } ?? []
         let options = measureOptions()
 
         measure(metrics: [XCTClockMetric()], options: options) {
             autoreleasepool {
-                let attributed = RenderBridge.renderElements(
-                    fromJSON: renderJSON,
+                let attributed = RenderBridge.renderBlocks(
+                    fromArray: renderBlocks,
                     baseFont: baseFont,
                     textColor: textColor
                 )
@@ -70,8 +75,8 @@ final class NativePerformanceTests: XCTestCase {
     }
 
     func testPerformance_applyUpdateJSONLargeDocument() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let updateJSON = NativePerformanceFixtureFactory.loadLargeDocument(into: editorId)
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
@@ -104,8 +109,8 @@ final class NativePerformanceTests: XCTestCase {
     }
 
     func testPerformance_typingRoundTripLargeDocument() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         _ = NativePerformanceFixtureFactory.loadLargeDocument(into: editorId)
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
@@ -134,7 +139,7 @@ final class NativePerformanceTests: XCTestCase {
         )
         defer {
             for session in sessions {
-                editorDestroy(id: session.editorId)
+                destroyV2Editor(id: session.editorId)
             }
         }
 
@@ -178,7 +183,7 @@ final class NativePerformanceTests: XCTestCase {
         )
         defer {
             for session in sessions {
-                editorDestroy(id: session.editorId)
+                destroyV2Editor(id: session.editorId)
             }
         }
 
@@ -223,7 +228,7 @@ final class NativePerformanceTests: XCTestCase {
             for session in sessions {
                 session.view.removeFromSuperview()
                 session.window.isHidden = true
-                editorDestroy(id: session.editorId)
+                destroyV2Editor(id: session.editorId)
             }
         }
 
@@ -274,8 +279,8 @@ final class NativePerformanceTests: XCTestCase {
     }
 
     func testPerformance_selectionScrubLargeDocument() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         _ = NativePerformanceFixtureFactory.loadLargeDocument(into: editorId)
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
@@ -301,8 +306,8 @@ final class NativePerformanceTests: XCTestCase {
     }
 
     func testPerformance_remoteSelectionOverlayRefreshMultiPeerLargeDocument() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let updateJSON = NativePerformanceFixtureFactory.loadLargeDocument(into: editorId)
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
@@ -356,14 +361,14 @@ private enum NativePerformanceFixtureFactory {
     }
 
     static func largeRenderJSON() -> String {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
-        return editorSetJson(id: editorId, json: largeDocumentJSONString())
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
+        return EditorV2Shadow.setJson(id: editorId, json: largeDocumentJSONString())
     }
 
     static func loadLargeDocument(into editorId: UInt64) -> String {
-        _ = editorSetJson(id: editorId, json: largeDocumentJSONString())
-        return editorGetCurrentState(id: editorId)
+        _ = EditorV2Shadow.setJson(id: editorId, json: largeDocumentJSONString())
+        return EditorV2Shadow.getCurrentState(id: editorId)
     }
 
     static func remoteSelections(
@@ -371,7 +376,7 @@ private enum NativePerformanceFixtureFactory {
         peerCount: Int = 6,
         selectionWidth: Int = 0
     ) -> [RemoteSelectionDecoration] {
-        let totalScalar = editorDocToScalar(id: editorId, docPos: editorDocumentContentSize(id: editorId))
+        let totalScalar = EditorV2Shadow.docToScalar(id: editorId, docPos: editorDocumentContentSize(id: editorId))
         let upperBound = max(1, Int(totalScalar > 0 ? totalScalar - 1 : 0))
         let samplePoints = evenlySpacedValues(from: 1, through: upperBound, count: peerCount)
 
@@ -379,8 +384,8 @@ private enum NativePerformanceFixtureFactory {
             let headScalar = (selectionWidth > 0 && !index.isMultiple(of: 2))
                 ? min(upperBound, scalar + selectionWidth)
                 : scalar
-            let anchorDoc = editorScalarToDoc(id: editorId, scalar: UInt32(scalar))
-            let headDoc = editorScalarToDoc(id: editorId, scalar: UInt32(headScalar))
+            let anchorDoc = EditorV2Shadow.scalarToDoc(id: editorId, scalar: UInt32(scalar))
+            let headDoc = EditorV2Shadow.scalarToDoc(id: editorId, scalar: UInt32(headScalar))
             return RemoteSelectionDecoration(
                 clientId: index + 1,
                 anchor: anchorDoc,
@@ -398,7 +403,7 @@ private enum NativePerformanceFixtureFactory {
 
     static func paragraphSplitSessions(count: Int, autoGrow: Bool = false) -> [ParagraphSplitSession] {
         (0..<count).map { _ in
-            let editorId = editorCreate(configJson: "{}")
+            let editorId = makeV2Editor(configJson: "{}")
             _ = loadLargeDocument(into: editorId)
 
             let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
@@ -418,7 +423,7 @@ private enum NativePerformanceFixtureFactory {
 
     static func hostedParagraphSplitSessions(count: Int) -> [HostedParagraphSplitSession] {
         (0..<count).map { _ in
-            let editorId = editorCreate(configJson: "{}")
+            let editorId = makeV2Editor(configJson: "{}")
 
             let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 390, height: 0))
             let window = hostEditorView(view, size: CGSize(width: 390, height: 844))
@@ -614,7 +619,7 @@ private enum NativePerformanceFixtureFactory {
     }
 
     private static func editorDocumentContentSize(id: UInt64) -> UInt32 {
-        guard let data = editorGetJson(id: id).data(using: .utf8),
+        guard let data = EditorV2Shadow.getJson(id: id).data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             return 0

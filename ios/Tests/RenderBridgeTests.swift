@@ -5,13 +5,20 @@ import CoreText
 
 final class RenderBridgeTests: XCTestCase {
     private func securityFixtures() throws -> [String: Any] {
+        // Resolution order: explicit env override, the copy bundled with the
+        // test target (required on physical devices, where the repository
+        // path does not exist), then the repository-relative host path used
+        // by simulator runs.
         let configured = ProcessInfo.processInfo.environment["SECURITY_FIXTURE_PATH"]
+        let bundledURL = Bundle(for: RenderBridgeTests.self)
+            .url(forResource: "security-contract-fixtures", withExtension: "json")
         let defaultURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("scripts/tests/security-contract-fixtures.json")
-        let data = try Data(contentsOf: configured.map(URL.init(fileURLWithPath:)) ?? defaultURL)
+        let url = configured.map(URL.init(fileURLWithPath:)) ?? bundledURL ?? defaultURL
+        let data = try Data(contentsOf: url)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
@@ -573,8 +580,8 @@ final class RenderBridgeTests: XCTestCase {
             policy: imagePolicy(maxSourceBytes: 333),
             transport: transport
         )
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
         let textView = EditorTextView(frame: .zero, textContainer: nil)
         textView.imageLoadOwner = owner
         textView.bindEditor(id: editorId)
@@ -589,13 +596,13 @@ final class RenderBridgeTests: XCTestCase {
     func testPolicyChangeForcesUnchangedEditorStateToRebuildImageAttachments() {
         let transport = HoldingImageTransport()
         let owner = RenderImageLoadOwner(policy: imagePolicy(maxDecodeDimension: 2_048), transport: transport)
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
-        _ = editorSetJson(
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setJson(
             id: editorId,
             json: #"{"type":"doc","content":[{"type":"image","attrs":{"src":"https://example.com/policy.png"}}]}"#
         )
-        let state = editorGetCurrentState(id: editorId)
+        let state = EditorV2Shadow.getCurrentState(id: editorId)
         let textView = EditorTextView(frame: .zero, textContainer: nil)
         textView.imageLoadOwner = owner
         textView.applyUpdateJSON(state, notifyDelegate: false)

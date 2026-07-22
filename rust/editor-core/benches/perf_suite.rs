@@ -1,20 +1,121 @@
+// This white-box harness compiles a superset of the engine sources; items
+// the benchmark does not drive are expected to be unused here.
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 use std::env;
 use std::hint::black_box;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use editor_core::boundary::ResourceLimits;
-use editor_core::collaboration::CollaborationSession;
-use editor_core::editor::{Editor, EditorSelectionState, EditorUpdate};
-use editor_core::intercept::InterceptorPipeline;
-use editor_core::render::RenderElement;
-use editor_core::schema::presets::tiptap_schema;
-use editor_core::transform::DocumentValidator;
-use editor_core::yrs_engine::{
+// Task 16C: the Yrs engine and its supporting modules are crate-private
+// since the production cutover (the public surface is the UniFFI v2 ABI plus
+// the version query). This white-box benchmark harness therefore compiles the
+// retained engine sources directly via `#[path]` — the exact same files the
+// shipped crate compiles — instead of importing them through the crate API.
+// No legacy code is included: the legacy runtime (`editor`, `backend`,
+// `history`, `collaboration`) was deleted in Task 16C, and the legacy
+// benchmark cases/fixtures it served were removed with it (user directive
+// 2026-07-20). Expected-output verification below is derived from the same
+// retained render/position/active-state code paths the v2 render accessor
+// uses, keeping every assertion as strong as the legacy-fixture era.
+#[path = "../src/boundary.rs"]
+mod boundary;
+#[path = "../src/collaboration_runtime/mod.rs"]
+mod collaboration_runtime;
+#[path = "command_planner_shim/command_planner.rs"]
+mod command_planner;
+#[path = "../src/document_api.rs"]
+mod document_api;
+#[path = "../src/editor_state.rs"]
+mod editor_state;
+#[path = "../src/model/mod.rs"]
+mod model;
+#[path = "../src/native_transaction_bridge.rs"]
+mod native_transaction_bridge;
+#[path = "../src/position/mod.rs"]
+mod position;
+#[path = "../src/registry.rs"]
+mod registry;
+#[path = "../src/render/mod.rs"]
+mod render;
+#[path = "../src/schema/mod.rs"]
+mod schema;
+#[path = "../src/selection/mod.rs"]
+mod selection;
+#[path = "../src/serialize/mod.rs"]
+mod serialize;
+#[path = "../src/session.rs"]
+mod session;
+#[path = "../src/transform/mod.rs"]
+mod transform;
+#[path = "../src/yrs_engine/mod.rs"]
+mod yrs_engine;
+
+use crate::boundary::ResourceLimits;
+use crate::render::RenderElement;
+use crate::transform::DocumentValidator;
+use crate::yrs_engine::{
     Affinity, EditorOffsetKind, HistoryPolicy, InitializationMode, RenderUpdate, ResolvedSelection,
     RevisionedPosition, SelectionInput, SelectionIntent, TransactionOrigin, TypedCommand,
     TypedTransaction, TypedTransactionResult, YrsDocumentEngine, YrsEngineConfig,
 };
+// `cargo bench` compiles this target with the `test` cfg, so the included
+// sources' inline test modules compile as well; they reference the crate-root
+// schema presets and the session-registry concurrency guard.
+pub use schema::presets::{prosemirror_schema, tiptap_schema};
+
+#[cfg(test)]
+mod test_support {
+    pub(crate) use registry_concurrency::RegistryConcurrencyGuard;
+
+    mod registry_concurrency {
+        use std::cell::Cell;
+        use std::sync::{Mutex, MutexGuard, OnceLock};
+
+        thread_local! {
+            static REGISTRY_GUARD_DEPTH: Cell<usize> = const { Cell::new(0) };
+        }
+
+        static REGISTRY_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+
+        pub(crate) struct RegistryConcurrencyGuard {
+            _guard: Option<MutexGuard<'static, ()>>,
+        }
+
+        impl RegistryConcurrencyGuard {
+            pub(crate) fn acquire() -> Self {
+                let already_held = REGISTRY_GUARD_DEPTH.with(|depth| {
+                    let held = depth.get() > 0;
+                    depth.set(depth.get() + 1);
+                    held
+                });
+                if already_held {
+                    return Self { _guard: None };
+                }
+                let guard = REGISTRY_GUARD
+                    .get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                Self {
+                    _guard: Some(guard),
+                }
+            }
+
+            pub(crate) fn inherit_for_spawned_thread() -> Self {
+                REGISTRY_GUARD_DEPTH.with(|depth| depth.set(depth.get() + 1));
+                Self { _guard: None }
+            }
+        }
+
+        impl Drop for RegistryConcurrencyGuard {
+            fn drop(&mut self) {
+                REGISTRY_GUARD_DEPTH.with(|depth| depth.set(depth.get() - 1));
+            }
+        }
+    }
+}
+
 use serde_json::{json, Value};
 
 #[path = "support/benchmark_filter.rs"]
@@ -23,14 +124,9 @@ mod benchmark_filter;
 const EDITING_TYPING_BURST: usize = 20;
 const EDITING_CURSOR_SCALAR: u32 = 44;
 
-struct BackendExpectedDocuments {
-    legacy: Value,
-    yrs: Value,
-}
-
 struct EditingCaseExpectation {
-    before: BackendExpectedDocuments,
-    after: BackendExpectedDocuments,
+    before: Value,
+    after: Value,
 }
 
 #[derive(Clone, Copy)]
@@ -261,52 +357,8 @@ fn main() {
                 .clone()
         })
     };
-    let edited_article_doc_cell = OnceLock::new();
-    let edited_article_doc =
-        || edited_article_doc_cell.get_or_init(|| build_edited_article_document(article_doc()));
 
     let mut results = Vec::new();
-
-    push_case!(
-        &mut results,
-        &options,
-        verified_bench_case(
-            "legacy.edit.insert_char.article.1x",
-            "yrs-editing",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                (
-                    legacy_editing_fixture(
-                        article_doc(),
-                        EDITING_CURSOR_SCALAR,
-                        EDITING_CURSOR_SCALAR,
-                    ),
-                    editing_insert_expected(),
-                )
-            },
-            |(editor, _)| {
-                black_box(
-                    editor
-                        .insert_text_scalar(EDITING_CURSOR_SCALAR, "!")
-                        .expect("legacy insert-character benchmark should succeed"),
-                )
-            },
-            |(editor, expectation), output| {
-                assert_legacy_editing_output(
-                    editor,
-                    expectation,
-                    output,
-                    3,
-                    EDITING_CURSOR_SCALAR + 1,
-                    EDITING_CURSOR_SCALAR + 1,
-                    true,
-                    false,
-                );
-            },
-        ),
-    );
 
     push_case!(
         &mut results,
@@ -347,54 +399,6 @@ fn main() {
                     3,
                     EDITING_CURSOR_SCALAR + 1,
                     EDITING_CURSOR_SCALAR + 1,
-                    true,
-                    false,
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        verified_bench_case(
-            "legacy.edit.typing_burst.article.1x",
-            "yrs-editing",
-            profile.iterations,
-            profile.warmup_iterations,
-            EDITING_TYPING_BURST,
-            || {
-                (
-                    legacy_editing_fixture(
-                        article_doc(),
-                        EDITING_CURSOR_SCALAR,
-                        EDITING_CURSOR_SCALAR,
-                    ),
-                    editing_burst_expected(),
-                )
-            },
-            |(editor, _)| {
-                let mut final_output = None;
-                for offset in 0..EDITING_TYPING_BURST as u32 {
-                    let output = editor
-                        .insert_text_scalar(EDITING_CURSOR_SCALAR + offset, "x")
-                        .expect("legacy typing-burst benchmark should succeed");
-                    if offset + 1 == EDITING_TYPING_BURST as u32 {
-                        final_output = Some(output);
-                    } else {
-                        black_box(output);
-                    }
-                }
-                black_box(final_output.expect("typing burst must produce a final output"))
-            },
-            |(editor, expectation), output| {
-                assert_legacy_editing_output(
-                    editor,
-                    expectation,
-                    output,
-                    2 + EDITING_TYPING_BURST as u64,
-                    EDITING_CURSOR_SCALAR + EDITING_TYPING_BURST as u32,
-                    EDITING_CURSOR_SCALAR + EDITING_TYPING_BURST as u32,
                     true,
                     false,
                 );
@@ -462,39 +466,6 @@ fn main() {
         &mut results,
         &options,
         verified_bench_case(
-            "legacy.state.selection_light.article.1x",
-            "yrs-editing",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                let editor = editor_with_document(article_doc());
-                let position = editor.doc_to_scalar(editor.document().content_size()) / 2;
-                (editor, position, editing_original_expected())
-            },
-            |(editor, position, _)| {
-                editor.set_selection_scalar(*position, *position);
-                black_box(editor.get_selection_state())
-            },
-            |(editor, position, expectation), output| {
-                assert_legacy_selection_output(
-                    editor,
-                    expectation,
-                    output,
-                    2,
-                    *position,
-                    *position,
-                    false,
-                    false,
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        verified_bench_case(
             "yrs.state.selection_light.article.1x",
             "yrs-editing",
             profile.iterations,
@@ -529,47 +500,6 @@ fn main() {
                     *position,
                     *position,
                     false,
-                    false,
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        verified_bench_case(
-            "legacy.command.toggle_mark.article.1x",
-            "yrs-editing",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                (
-                    legacy_editing_fixture(
-                        article_doc(),
-                        EDITING_CURSOR_SCALAR,
-                        EDITING_CURSOR_SCALAR + 8,
-                    ),
-                    editing_bold_expected(),
-                )
-            },
-            |(editor, _)| {
-                black_box(
-                    editor
-                        .toggle_mark("bold")
-                        .expect("legacy toggle-mark benchmark should succeed"),
-                )
-            },
-            |(editor, expectation), output| {
-                assert_legacy_editing_output(
-                    editor,
-                    expectation,
-                    output,
-                    3,
-                    EDITING_CURSOR_SCALAR,
-                    EDITING_CURSOR_SCALAR + 8,
-                    true,
                     false,
                 );
             },
@@ -620,49 +550,6 @@ fn main() {
                     3,
                     EDITING_CURSOR_SCALAR,
                     EDITING_CURSOR_SCALAR + 8,
-                    true,
-                    false,
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        verified_bench_case(
-            "legacy.command.wrap_list.article.1x",
-            "yrs-editing",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                (
-                    legacy_editing_fixture(
-                        article_doc(),
-                        EDITING_CURSOR_SCALAR,
-                        EDITING_CURSOR_SCALAR,
-                    ),
-                    editing_list_expected(),
-                )
-            },
-            |(editor, _)| {
-                let from = editor.selection().from(editor.document());
-                let to = editor.selection().to(editor.document());
-                black_box(
-                    editor
-                        .wrap_in_list(from, to, "bulletList")
-                        .expect("legacy wrap-list benchmark should succeed"),
-                )
-            },
-            |(editor, expectation), output| {
-                assert_legacy_editing_output(
-                    editor,
-                    expectation,
-                    output,
-                    3,
-                    EDITING_CURSOR_SCALAR + 2,
-                    EDITING_CURSOR_SCALAR + 2,
                     true,
                     false,
                 );
@@ -726,48 +613,6 @@ fn main() {
         &mut results,
         &options,
         verified_bench_case(
-            "legacy.history.undo.article.1x",
-            "yrs-editing",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                let mut editor = legacy_editing_fixture(
-                    article_doc(),
-                    EDITING_CURSOR_SCALAR,
-                    EDITING_CURSOR_SCALAR,
-                );
-                editor
-                    .insert_text_scalar(EDITING_CURSOR_SCALAR, "!")
-                    .expect("legacy undo fixture edit should succeed");
-                (editor, editing_undo_expected())
-            },
-            |(editor, _)| {
-                black_box(
-                    editor
-                        .undo()
-                        .expect("legacy undo benchmark should have history"),
-                )
-            },
-            |(editor, expectation), output| {
-                assert_legacy_editing_output(
-                    editor,
-                    expectation,
-                    output,
-                    4,
-                    EDITING_CURSOR_SCALAR,
-                    EDITING_CURSOR_SCALAR,
-                    false,
-                    true,
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        verified_bench_case(
             "yrs.history.undo.article.1x",
             "yrs-editing",
             profile.iterations,
@@ -807,51 +652,6 @@ fn main() {
                     EDITING_CURSOR_SCALAR,
                     false,
                     true,
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        verified_bench_case(
-            "legacy.history.redo.article.1x",
-            "yrs-editing",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                let mut editor = legacy_editing_fixture(
-                    article_doc(),
-                    EDITING_CURSOR_SCALAR,
-                    EDITING_CURSOR_SCALAR,
-                );
-                editor
-                    .insert_text_scalar(EDITING_CURSOR_SCALAR, "!")
-                    .expect("legacy redo fixture edit should succeed");
-                editor
-                    .undo()
-                    .expect("legacy redo fixture should create redo history");
-                (editor, editing_insert_expected())
-            },
-            |(editor, _)| {
-                black_box(
-                    editor
-                        .redo()
-                        .expect("legacy redo benchmark should have history"),
-                )
-            },
-            |(editor, expectation), output| {
-                assert_legacy_editing_output(
-                    editor,
-                    expectation,
-                    output,
-                    5,
-                    EDITING_CURSOR_SCALAR + 1,
-                    EDITING_CURSOR_SCALAR + 1,
-                    true,
-                    false,
                 );
             },
         ),
@@ -1055,26 +855,6 @@ fn main() {
         &mut results,
         &options,
         bench_case(
-            "legacy.json_import.article.1x",
-            "yrs-foundation",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || (empty_editor(), article_doc().clone()),
-            |(editor, document)| {
-                black_box(
-                    editor
-                        .set_json(document)
-                        .expect("legacy JSON import benchmark should succeed"),
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
             "yrs.json_import.article.1x",
             "yrs-foundation",
             profile.iterations,
@@ -1088,20 +868,6 @@ fn main() {
                         .expect("Yrs JSON import benchmark should succeed"),
                 );
             },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "legacy.json_export.article.1x",
-            "yrs-foundation",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || editor_with_document(article_doc()),
-            |editor| black_box(editor.get_json()),
         ),
     );
 
@@ -1233,447 +999,6 @@ fn main() {
                     engine
                         .import_json(document, TransactionOrigin::DocumentImport)
                         .expect("2x large opaque Yrs import benchmark should succeed"),
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "editor.set_json.article",
-            "editor",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || build_article_document(profile.article_blocks, profile.paragraph_chars),
-            |doc| {
-                let mut editor = empty_editor();
-                black_box(
-                    editor
-                        .set_json(doc)
-                        .expect("set_json benchmark should succeed"),
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "editor.get_current_state.article",
-            "editor",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || editor_with_document(article_doc()),
-            |editor| {
-                black_box(editor.get_current_state());
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "editor.get_selection_state.article",
-            "editor",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || editor_with_document(article_doc()),
-            |editor| {
-                black_box(editor.get_selection_state());
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "editor.get_html.article",
-            "editor",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || editor_with_document(article_doc()),
-            |editor| {
-                black_box(editor.get_html());
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "editor.get_json.article",
-            "editor",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || editor_with_document(article_doc()),
-            |editor| {
-                black_box(editor.get_json());
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "editor.insert_text_scalar.middle_article",
-            "editor",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                let editor = editor_with_document(article_doc());
-                let total_scalar = editor.doc_to_scalar(editor.document().content_size());
-                (editor, total_scalar / 2)
-            },
-            |(editor, cursor_scalar)| {
-                black_box(
-                    editor
-                        .insert_text_scalar(*cursor_scalar, "!")
-                        .expect("insert_text_scalar benchmark should succeed"),
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "editor.insert_text_scalar.typing_burst_article",
-            "editor",
-            profile.iterations,
-            profile.warmup_iterations,
-            profile.typing_burst,
-            || {
-                let editor = editor_with_document(article_doc());
-                let total_scalar = editor.doc_to_scalar(editor.document().content_size());
-                (editor, total_scalar / 2)
-            },
-            |(editor, cursor_scalar)| {
-                let mut next_cursor = *cursor_scalar;
-                for _ in 0..profile.typing_burst {
-                    black_box(
-                        editor
-                            .insert_text_scalar(next_cursor, "!")
-                            .expect("typing burst benchmark should succeed"),
-                    );
-                    next_cursor = next_cursor.saturating_add(1);
-                }
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "editor.toggle_mark_scalar.selection_article",
-            "editor",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                let editor = editor_with_document(article_doc());
-                let total_scalar = editor.doc_to_scalar(editor.document().content_size());
-                let anchor = total_scalar / 3;
-                let head = (anchor + profile.selection_width).min(total_scalar.max(anchor));
-                (editor, anchor, head.max(anchor + 1))
-            },
-            |(editor, anchor, head)| {
-                black_box(
-                    editor
-                        .toggle_mark_at_selection_scalar(*anchor, *head, "bold")
-                        .expect("toggle_mark_at_selection_scalar benchmark should succeed"),
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "editor.replace_json.article_small_edit",
-            "editor",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                (
-                    editor_with_document(article_doc()),
-                    edited_article_doc().clone(),
-                )
-            },
-            |(editor, next_doc)| {
-                black_box(
-                    editor
-                        .replace_json(next_doc)
-                        .expect("replace_json benchmark should succeed"),
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "position.doc_to_scalar.article_sweep",
-            "position",
-            profile.iterations,
-            profile.warmup_iterations,
-            profile.mapping_points,
-            || {
-                let editor = editor_with_document(article_doc());
-                let positions = evenly_spaced_positions(
-                    editor.document().content_size(),
-                    profile.mapping_points,
-                );
-                (editor, positions)
-            },
-            |(editor, positions)| {
-                for position in positions {
-                    black_box(editor.doc_to_scalar(*position));
-                }
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "position.scalar_to_doc.article_sweep",
-            "position",
-            profile.iterations,
-            profile.warmup_iterations,
-            profile.mapping_points,
-            || {
-                let editor = editor_with_document(article_doc());
-                let total_scalar = editor.doc_to_scalar(editor.document().content_size());
-                let positions = evenly_spaced_positions(total_scalar, profile.mapping_points);
-                (editor, positions)
-            },
-            |(editor, positions)| {
-                for position in positions {
-                    black_box(editor.scalar_to_doc(*position));
-                }
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "editor.set_selection_scalar.article_scrub",
-            "selection",
-            profile.iterations,
-            profile.warmup_iterations,
-            profile.selection_scrub_points,
-            || {
-                let editor = editor_with_document(article_doc());
-                let total_scalar = editor.doc_to_scalar(editor.document().content_size());
-                let positions =
-                    selection_scrub_positions(total_scalar, profile.selection_scrub_points);
-                (editor, positions)
-            },
-            |(editor, positions)| {
-                for position in positions {
-                    editor.set_selection_scalar(*position, *position);
-                    black_box(editor.selection());
-                }
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "selection.refresh_toolbar_state_full.article_scrub",
-            "selection",
-            profile.iterations,
-            profile.warmup_iterations,
-            profile.selection_scrub_points,
-            || {
-                let editor = editor_with_document(article_doc());
-                let total_scalar = editor.doc_to_scalar(editor.document().content_size());
-                let positions =
-                    selection_scrub_positions(total_scalar, profile.selection_scrub_points);
-                (editor, positions)
-            },
-            |(editor, positions)| {
-                for position in positions {
-                    editor.set_selection_scalar(*position, *position);
-                    black_box(editor.get_current_state());
-                }
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "selection.refresh_toolbar_state_light.article_scrub",
-            "selection",
-            profile.iterations,
-            profile.warmup_iterations,
-            profile.selection_scrub_points,
-            || {
-                let editor = editor_with_document(article_doc());
-                let total_scalar = editor.doc_to_scalar(editor.document().content_size());
-                let positions =
-                    selection_scrub_positions(total_scalar, profile.selection_scrub_points);
-                (editor, positions)
-            },
-            |(editor, positions)| {
-                for position in positions {
-                    editor.set_selection_scalar(*position, *position);
-                    black_box(editor.get_selection_state());
-                }
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "collaboration.apply_local_document.article_small_edit",
-            "collaboration",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                (
-                    collaboration_session_with_document(article_doc()),
-                    edited_article_doc().clone(),
-                )
-            },
-            |(session, next_doc)| {
-                black_box(
-                    session
-                        .apply_local_document(next_doc.clone())
-                        .expect("benchmark collaboration document should be valid"),
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "collaboration.handle_message.document_update",
-            "collaboration",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                let mut sender = collaboration_session_with_document(article_doc());
-                let receiver = collaboration_session_with_document(article_doc());
-                let message = sender
-                    .apply_local_document(edited_article_doc().clone())
-                    .expect("benchmark collaboration document should be valid")
-                    .messages
-                    .into_iter()
-                    .next()
-                    .expect("document update benchmark should emit a message");
-                (receiver, message)
-            },
-            |(session, message)| {
-                black_box(
-                    session
-                        .handle_message(message.clone())
-                        .expect("document update message benchmark should succeed"),
-                );
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "collaboration.handle_message.awareness_multi_peer_burst",
-            "collaboration",
-            profile.iterations,
-            profile.warmup_iterations,
-            profile.awareness_peer_count,
-            || {
-                (
-                    collaboration_session_with_document(article_doc()),
-                    awareness_messages_for_document(
-                        article_doc(),
-                        profile.awareness_peer_count,
-                        profile.selection_width,
-                    ),
-                )
-            },
-            |(session, messages)| {
-                for message in messages {
-                    black_box(
-                        session
-                            .handle_message(message.clone())
-                            .expect("multi-peer awareness benchmark should succeed"),
-                    );
-                }
-            },
-        ),
-    );
-
-    push_case!(
-        &mut results,
-        &options,
-        bench_case(
-            "collaboration.handle_message.awareness",
-            "collaboration",
-            profile.iterations,
-            profile.warmup_iterations,
-            1,
-            || {
-                let article = build_article_document(12, 96);
-                let mut sender = collaboration_session_with_document(&article);
-                let receiver = collaboration_session_with_document(&article);
-                let message = sender
-                    .set_local_awareness(json!({
-                        "user": {
-                            "name": "Perf Bench",
-                            "color": "#007AFF",
-                            "userId": "bench-user"
-                        },
-                        "selection": {
-                            "anchor": 1,
-                            "head": 1
-                        },
-                        "focused": true
-                    }))
-                    .expect("benchmark awareness should be valid")
-                    .messages
-                    .into_iter()
-                    .next()
-                    .expect("awareness benchmark should emit a message");
-                (receiver, message)
-            },
-            |(session, message)| {
-                black_box(
-                    session
-                        .handle_message(message.clone())
-                        .expect("awareness message benchmark should succeed"),
                 );
             },
         ),
@@ -1908,25 +1233,13 @@ fn print_json_summary(mode: BenchMode, profile: BenchProfile, results: &[BenchRe
     );
 }
 
-fn empty_editor() -> Editor {
-    Editor::new(tiptap_schema(), InterceptorPipeline::new(), false)
-}
-
-fn editor_with_document(doc: &Value) -> Editor {
-    let mut editor = empty_editor();
-    editor
-        .set_json(doc)
-        .expect("benchmark fixture document should parse");
-    editor
-}
-
 fn empty_yrs_engine() -> YrsDocumentEngine {
     YrsDocumentEngine::new(YrsEngineConfig {
         schema: tiptap_schema(),
         fragment_name: "prosemirror".to_string(),
         initialization_mode: InitializationMode::LocalEmpty,
         resource_limits: ResourceLimits::default(),
-        editing_limits: editor_core::yrs_engine::EditingLimits::default(),
+        editing_limits: crate::yrs_engine::EditingLimits::default(),
         max_length: None,
         scope: None,
     })
@@ -1939,12 +1252,6 @@ fn yrs_engine_with_document(document: &str) -> YrsDocumentEngine {
         .import_json(document, TransactionOrigin::DocumentImport)
         .expect("Yrs benchmark fixture document should import");
     engine
-}
-
-fn legacy_editing_fixture(doc: &Value, anchor: u32, head: u32) -> Editor {
-    let mut editor = editor_with_document(doc);
-    editor.set_selection_scalar(anchor, head);
-    editor
 }
 
 fn yrs_editing_fixture(document: &str, anchor: u32, head: u32) -> YrsDocumentEngine {
@@ -2118,87 +1425,93 @@ fn first_article_paragraph_text_mut(doc: &mut Value) -> &mut String {
         .expect("article benchmark first paragraph must start with text")
 }
 
-fn build_backend_expected_documents(doc: &Value) -> BackendExpectedDocuments {
-    let legacy = editor_with_document(doc).get_json();
+fn build_yrs_expected_document(doc: &Value) -> Value {
     let encoded = serde_json::to_string(doc).expect("expected editing document should serialize");
-    let yrs = yrs_engine_with_document(&encoded)
+    yrs_engine_with_document(&encoded)
         .document_json()
-        .expect("expected Yrs editing document should import");
-    BackendExpectedDocuments { legacy, yrs }
+        .expect("expected Yrs editing document should import")
 }
 
 fn build_editing_case_expectation(before: &Value, after: Value) -> EditingCaseExpectation {
     EditingCaseExpectation {
-        before: build_backend_expected_documents(before),
-        after: build_backend_expected_documents(&after),
+        before: build_yrs_expected_document(before),
+        after: build_yrs_expected_document(&after),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn assert_legacy_editing_output(
-    editor: &Editor,
-    expectation: &EditingCaseExpectation,
-    output: &EditorUpdate,
-    document_version: u64,
-    anchor: u32,
-    head: u32,
-    can_undo: bool,
-    can_redo: bool,
-) {
-    let state = editor.get_selection_state();
-    assert_eq!(state.document_version, document_version);
-    assert_eq!(
-        state.selection_scalar,
-        editor_core::selection::Selection::text(anchor, head),
-    );
-    assert_eq!(state.history_state.can_undo, can_undo);
-    assert_eq!(state.history_state.can_redo, can_redo);
-    assert_eq!(&editor.get_json(), &expectation.after.legacy);
-
-    let expected_editor = legacy_editing_fixture(&expectation.after.legacy, anchor, head);
-    let expected = expected_editor.get_current_state();
-    assert_eq!(output.document_version, document_version);
-    assert_eq!(output.selection, expected.selection);
-    assert_eq!(output.selection_scalar, expected.selection_scalar);
-    assert_eq!(output.active_state, expected.active_state);
-    assert_eq!(output.history_state, state.history_state);
-    assert_eq!(output.render_elements, expected.render_elements);
-    assert_eq!(output.render_blocks, expected.render_blocks);
-    let patch = output
-        .render_patch
-        .as_ref()
-        .expect("changed legacy editing output must include a render patch");
-    assert_eq!(
-        apply_render_patch(&expectation.before.legacy, patch),
-        output.render_blocks,
-    );
+/// Task 16C v2-native expected fixture: the pre-cutover harness derived
+/// expected selections, active state, and render blocks from a throwaway
+/// legacy `Editor`. Those derivations are the same retained code paths the
+/// v2 render accessor uses today (serializer -> `PositionMap` ->
+/// `editor_state` -> `render::incremental`), so the expectations are
+/// computed from the expected document directly.
+struct ExpectedEditingFixture {
+    document: crate::model::Document,
+    schema: crate::schema::Schema,
+    position_map: crate::position::PositionMap,
+    selection: crate::selection::Selection,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn assert_legacy_selection_output(
-    editor: &Editor,
-    expectation: &EditingCaseExpectation,
-    output: &EditorSelectionState,
-    document_version: u64,
-    anchor: u32,
-    head: u32,
-    can_undo: bool,
-    can_redo: bool,
-) {
-    let state = editor.get_selection_state();
-    assert_eq!(&editor.get_json(), &expectation.after.legacy);
-    assert_eq!(state.document_version, document_version);
-    assert_eq!(state.selection_scalar, output.selection_scalar);
-    assert_eq!(state.selection, output.selection);
-    assert_eq!(state.active_state, output.active_state);
-    assert_eq!(state.history_state, output.history_state);
-    assert_eq!(output.document_version, document_version);
-    assert_eq!(
-        output.selection_scalar,
-        editor_core::selection::Selection::text(anchor, head),
-    );
-    assert_eq!(output.history_state.can_undo, can_undo);
-    assert_eq!(output.history_state.can_redo, can_redo);
+fn expected_editing_fixture(doc_json: &Value, anchor: u32, head: u32) -> ExpectedEditingFixture {
+    let schema = tiptap_schema();
+    let document = crate::serialize::from_prosemirror_json(
+        doc_json,
+        &schema,
+        crate::serialize::UnknownTypeMode::Preserve,
+    )
+    .expect("expected editing document should ingest");
+    let position_map = crate::position::PositionMap::build(&document, &schema);
+    // The legacy harness's `set_selection_scalar`: lenient scalar->doc,
+    // collapsed selections become cursors, then cursor normalization.
+    let doc_anchor = position_map.scalar_to_doc(anchor, &document);
+    let doc_head = position_map.scalar_to_doc(head, &document);
+    let selection = if doc_anchor == doc_head {
+        crate::selection::Selection::cursor(doc_anchor)
+    } else {
+        crate::selection::Selection::text(doc_anchor, doc_head)
+    }
+    .normalized(&document, &position_map);
+    ExpectedEditingFixture {
+        document,
+        schema,
+        position_map,
+        selection,
+    }
+}
+
+impl ExpectedEditingFixture {
+    fn active_state(&self) -> crate::editor_state::ActiveState {
+        let limits = ResourceLimits::default();
+        let commands = crate::editor_state::command_applicability(
+            &self.document,
+            &self.schema,
+            &self.selection,
+            &limits,
+        );
+        crate::editor_state::active_state(
+            &self.document,
+            &self.schema,
+            &self.selection,
+            None,
+            commands,
+            &limits,
+        )
+    }
+
+    fn render_blocks(&self) -> Vec<Vec<RenderElement>> {
+        crate::render::incremental::render_blocks(&self.document, &self.schema)
+    }
+}
+
+fn render_blocks_for(doc_json: &Value) -> Vec<Vec<RenderElement>> {
+    let schema = tiptap_schema();
+    let document = crate::serialize::from_prosemirror_json(
+        doc_json,
+        &schema,
+        crate::serialize::UnknownTypeMode::Preserve,
+    )
+    .expect("expected render document should ingest");
+    crate::render::incremental::render_blocks(&document, &schema)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2221,19 +1534,23 @@ fn assert_yrs_editing_output(
     let selection = engine
         .resolved_selection()
         .expect("verified Yrs engine should have a resolved selection");
-    let expected_editor = legacy_editing_fixture(&expectation.after.legacy, anchor, head);
+    let expected_fixture = expected_editing_fixture(&expectation.after, anchor, head);
     assert!(
-        expectation.after.legacy.to_string().is_ascii(),
+        expectation.after.to_string().is_ascii(),
         "editing benchmark profile must remain ASCII for scalar/UTF-16 equality",
     );
     let expected_selection = ResolvedSelection::Text {
-        anchor: editor_core::yrs_engine::ResolvedPoint {
-            document: expected_editor.scalar_to_doc(anchor),
+        anchor: crate::yrs_engine::ResolvedPoint {
+            document: expected_fixture
+                .position_map
+                .scalar_to_doc(anchor, &expected_fixture.document),
             scalar: anchor,
             utf16: anchor,
         },
-        head: editor_core::yrs_engine::ResolvedPoint {
-            document: expected_editor.scalar_to_doc(head),
+        head: crate::yrs_engine::ResolvedPoint {
+            document: expected_fixture
+                .position_map
+                .scalar_to_doc(head, &expected_fixture.document),
             scalar: head,
             utf16: head,
         },
@@ -2246,11 +1563,18 @@ fn assert_yrs_editing_output(
         } => {
             assert_eq!(
                 resolved_anchor.document,
-                expected_editor.scalar_to_doc(anchor)
+                expected_fixture
+                    .position_map
+                    .scalar_to_doc(anchor, &expected_fixture.document)
             );
             assert_eq!(resolved_anchor.scalar, anchor);
             assert_eq!(resolved_anchor.utf16, anchor);
-            assert_eq!(resolved_head.document, expected_editor.scalar_to_doc(head));
+            assert_eq!(
+                resolved_head.document,
+                expected_fixture
+                    .position_map
+                    .scalar_to_doc(head, &expected_fixture.document)
+            );
             assert_eq!(resolved_head.scalar, head);
             assert_eq!(resolved_head.utf16, head);
         }
@@ -2261,7 +1585,7 @@ fn assert_yrs_editing_output(
     let actual_document = engine
         .document_json()
         .expect("verified Yrs engine should have canonical JSON");
-    let expected_document = &expectation.after.yrs;
+    let expected_document = &expectation.after;
     assert_eq!(&actual_document, expected_document);
 
     assert_eq!(output.request_id, request_id);
@@ -2270,14 +1594,13 @@ fn assert_yrs_editing_output(
     assert_eq!(output.document_revision, document_revision);
     assert_eq!(output.state_revision, state_revision);
     assert_eq!(output.selection, expected_selection);
-    let expected_state = expected_editor.get_selection_state();
-    assert_eq!(output.active_state, expected_state.active_state);
+    assert_eq!(output.active_state, expected_fixture.active_state());
     assert_eq!(output.history_state.can_undo, can_undo);
     assert_eq!(output.history_state.can_redo, can_redo);
-    if expectation.before.legacy != expectation.after.legacy {
+    if expectation.before != expectation.after {
         assert_eq!(
-            apply_render_update(&expectation.before.legacy, &output.render_update),
-            expected_editor.get_current_state().render_blocks,
+            apply_render_update(&expectation.before, &output.render_update),
+            expected_fixture.render_blocks(),
         );
     } else {
         assert_eq!(output.render_update, RenderUpdate::None);
@@ -2286,11 +1609,9 @@ fn assert_yrs_editing_output(
 
 fn apply_render_patch(
     before_document: &Value,
-    patch: &editor_core::render::incremental::RenderBlocksPatch,
+    patch: &crate::render::incremental::RenderBlocksPatch,
 ) -> Vec<Vec<RenderElement>> {
-    let mut blocks = editor_with_document(before_document)
-        .get_current_state()
-        .render_blocks;
+    let mut blocks = render_blocks_for(before_document);
     blocks.splice(
         patch.start_index..patch.start_index + patch.delete_count,
         patch.blocks.clone(),
@@ -2300,31 +1621,10 @@ fn apply_render_patch(
 
 fn apply_render_update(before_document: &Value, update: &RenderUpdate) -> Vec<Vec<RenderElement>> {
     match update {
-        RenderUpdate::None => {
-            editor_with_document(before_document)
-                .get_current_state()
-                .render_blocks
-        }
+        RenderUpdate::None => render_blocks_for(before_document),
         RenderUpdate::Patch(patch) => apply_render_patch(before_document, patch),
         RenderUpdate::Full(blocks) => blocks.clone(),
     }
-}
-
-fn collaboration_session_with_document(doc: &Value) -> CollaborationSession {
-    collaboration_session_with_document_and_client(doc, None)
-}
-
-fn collaboration_session_with_document_and_client(
-    doc: &Value,
-    client_id: Option<u64>,
-) -> CollaborationSession {
-    let config = json!({
-        "clientId": client_id,
-        "fragmentName": "default",
-        "initialDocumentJson": doc
-    })
-    .to_string();
-    CollaborationSession::new(&config)
 }
 
 fn evenly_spaced_positions(max_value: u32, points: usize) -> Vec<u32> {
@@ -2342,50 +1642,6 @@ fn selection_scrub_positions(total_scalar: u32, points: usize) -> Vec<u32> {
     evenly_spaced_positions(upper_bound, points)
         .into_iter()
         .map(|position| position.max(1))
-        .collect()
-}
-
-fn awareness_messages_for_document(
-    doc: &Value,
-    peer_count: usize,
-    selection_width: u32,
-) -> Vec<Vec<u8>> {
-    let editor = editor_with_document(doc);
-    let content_size = editor.document().content_size().saturating_sub(1).max(1);
-    let positions = evenly_spaced_positions(content_size, peer_count);
-
-    positions
-        .into_iter()
-        .enumerate()
-        .map(|(index, position)| {
-            let client_id = index as u64 + 2;
-            let mut session =
-                collaboration_session_with_document_and_client(doc, Some(client_id));
-            let anchor = position.max(1);
-            let head = if selection_width > 0 && index % 2 == 1 {
-                anchor.saturating_add(selection_width).min(content_size)
-            } else {
-                anchor
-            };
-            session
-                .set_local_awareness(json!({
-                    "user": {
-                        "name": format!("Peer {}", client_id),
-                        "color": format!("#{:06X}", (0x3366FFu32 + (index as u32 * 0x111111)) & 0xFFFFFF),
-                        "userId": format!("bench-peer-{}", client_id)
-                    },
-                    "selection": {
-                        "anchor": anchor,
-                        "head": head
-                    },
-                    "focused": true
-                }))
-                .expect("benchmark awareness should be valid")
-                .messages
-                .into_iter()
-                .next()
-                .expect("awareness benchmark should emit a message")
-        })
         .collect()
 }
 

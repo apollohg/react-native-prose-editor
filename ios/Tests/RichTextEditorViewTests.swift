@@ -2,20 +2,20 @@ import XCTest
 
 final class RichTextEditorViewTests: XCTestCase {
     func testNonTextSelectionApplicationsClearBackwardTextDirection() throws {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         textView.bindEditor(id: editorId, initialHTML: "<p>ab</p>")
 
         func applyBackwardTextSelection(anchor: UInt32, head: UInt32) {
-            editorSetSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
-            textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+            EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
+            textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
             XCTAssertEqual(PositionBridge.cursorScalarOffset(in: textView), head)
         }
 
         func applySelection(_ selection: [String: Any]) throws {
-            var update = parseJSONObject(editorGetCurrentState(id: editorId))
+            var update = parseJSONObject(EditorV2Shadow.getCurrentState(id: editorId))
             update["selection"] = selection
             let data = try JSONSerialization.data(withJSONObject: update)
             let json = try XCTUnwrap(String(data: data, encoding: .utf8))
@@ -25,7 +25,7 @@ final class RichTextEditorViewTests: XCTestCase {
         applyBackwardTextSelection(anchor: 2, head: 1)
         try applySelection([
             "type": "node",
-            "pos": editorScalarToDoc(id: editorId, scalar: 1),
+            "pos": EditorV2Shadow.scalarToDoc(id: editorId, scalar: 1),
             "posScalar": 1,
         ])
         XCTAssertEqual(PositionBridge.cursorScalarOffset(in: textView), 2)
@@ -36,13 +36,13 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testUnbindClearsBackwardTextDirection() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         textView.bindEditor(id: editorId, initialHTML: "<p>ab</p>")
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 2, scalarHead: 1)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 2, scalarHead: 1)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         XCTAssertEqual(PositionBridge.cursorScalarOffset(in: textView), 1)
 
         textView.unbindEditor()
@@ -51,8 +51,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBackwardSelectionRoundTripsLogicalAnchorHeadAndUsesHeadAsCaretEdge() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         let delegate = EditorTextViewDelegateSpy()
@@ -60,18 +60,18 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.bindEditor(id: editorId, initialHTML: "<p>abcdef</p>")
         delegate.selectionChanges.removeAll()
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 5, scalarHead: 1)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 5, scalarHead: 1)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
         XCTAssertEqual(PositionBridge.cursorScalarOffset(in: textView), 1)
         textView.delegate?.textViewDidChangeSelection?(textView)
         flushMainQueue()
 
-        XCTAssertEqual(delegate.selectionChanges.last?.anchor, editorScalarToDoc(id: editorId, scalar: 5))
-        XCTAssertEqual(delegate.selectionChanges.last?.head, editorScalarToDoc(id: editorId, scalar: 1))
+        XCTAssertEqual(delegate.selectionChanges.last?.anchor, EditorV2Shadow.scalarToDoc(id: editorId, scalar: 5))
+        XCTAssertEqual(delegate.selectionChanges.last?.head, EditorV2Shadow.scalarToDoc(id: editorId, scalar: 1))
         let selection = currentSelection(in: editorId)
-        XCTAssertEqual((selection["anchor"] as? NSNumber)?.uint32Value, editorScalarToDoc(id: editorId, scalar: 5))
-        XCTAssertEqual((selection["head"] as? NSNumber)?.uint32Value, editorScalarToDoc(id: editorId, scalar: 1))
+        XCTAssertEqual((selection["anchor"] as? NSNumber)?.uint32Value, EditorV2Shadow.scalarToDoc(id: editorId, scalar: 5))
+        XCTAssertEqual((selection["head"] as? NSNumber)?.uint32Value, EditorV2Shadow.scalarToDoc(id: editorId, scalar: 1))
     }
 
     func testImageAttachmentLoadNotificationOnlyInvalidatesOwningEditor() {
@@ -199,8 +199,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testEmptyDocumentSelectionStaysBeforePlaceholderForAutocapitalization() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId)
@@ -217,8 +217,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testEmptyDocumentFocusRepositionsCaretBeforePlaceholderForAutocapitalization() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -242,8 +242,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testFirstCharacterEmojiInsertedIntoEmptyDocumentRendersVisibleGlyph() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -259,7 +259,7 @@ final class RichTextEditorViewTests: XCTestCase {
         view.layoutIfNeeded()
         view.textView.layoutIfNeeded()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>😀</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>😀</p>")
         XCTAssertEqual(view.textView.textStorage.string, "😀")
 
         let nsString = view.textView.textStorage.string as NSString
@@ -305,8 +305,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testEmptyDocumentSelectionDriftSnapsBackBeforePlaceholderForAutocapitalization() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId)
@@ -325,13 +325,13 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testNativeEditReclaimsKeyboardProviderTextViewDelegateBeforeRustUpdate() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p>")
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 5, scalarHead: 5)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 5, scalarHead: 5)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
         let delegateSpy = KeyboardProviderTextViewDelegateSpy(textViewDelegate: textView.delegate)
         textView.delegate = delegateSpy
@@ -339,7 +339,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         textView.insertText("!")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello!</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello!</p>")
         XCTAssertEqual(
             delegateSpy.selectionChangeCount,
             0,
@@ -380,8 +380,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testParagraphSplitAppliesTopLevelRenderPatch() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         textView.captureApplyUpdateTraceForTesting = true
@@ -390,8 +390,8 @@ final class RichTextEditorViewTests: XCTestCase {
         let betaRange = (textView.text as NSString).range(of: "Beta")
         XCTAssertNotEqual(betaRange.location, NSNotFound)
         let splitOffset = UInt32(betaRange.location + betaRange.length)
-        editorSetSelectionScalar(id: editorId, scalarAnchor: splitOffset, scalarHead: splitOffset)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: splitOffset, scalarHead: splitOffset)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
         textView.insertText("\n")
 
@@ -420,14 +420,14 @@ final class RichTextEditorViewTests: XCTestCase {
             "after splitting at the end of a paragraph, the caret must stay before the following paragraph"
         )
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<p>Alpha</p><p>Beta</p><p></p><p>Gamma</p>"
         )
     }
 
     func testSequentialParagraphSplitsKeepUsingTopLevelRenderPatch() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
         textView.captureApplyUpdateTraceForTesting = true
@@ -436,8 +436,8 @@ final class RichTextEditorViewTests: XCTestCase {
         let betaRange = (textView.text as NSString).range(of: "Beta")
         XCTAssertNotEqual(betaRange.location, NSNotFound)
         let firstSplitOffset = UInt32(betaRange.location + betaRange.length)
-        editorSetSelectionScalar(id: editorId, scalarAnchor: firstSplitOffset, scalarHead: firstSplitOffset)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: firstSplitOffset, scalarHead: firstSplitOffset)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.insertText("\n")
 
         XCTAssertTrue(textView.lastRenderAppliedPatch())
@@ -445,8 +445,8 @@ final class RichTextEditorViewTests: XCTestCase {
         let gammaRange = (textView.text as NSString).range(of: "Gamma")
         XCTAssertNotEqual(gammaRange.location, NSNotFound)
         let secondSplitOffset = UInt32(gammaRange.location + gammaRange.length)
-        editorSetSelectionScalar(id: editorId, scalarAnchor: secondSplitOffset, scalarHead: secondSplitOffset)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: secondSplitOffset, scalarHead: secondSplitOffset)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.insertText("\n")
 
         XCTAssertTrue(
@@ -458,14 +458,14 @@ final class RichTextEditorViewTests: XCTestCase {
             "Alpha\nBeta\n\u{200B}\nGamma\n\u{200B}"
         )
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<p>Alpha</p><p>Beta</p><p></p><p>Gamma</p><p></p>"
         )
     }
 
     func testTypingInsideListItemFallsBackToFullRenderAndPreservesTextOrder() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         textView.captureApplyUpdateTraceForTesting = true
@@ -487,14 +487,14 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         XCTAssertEqual(textView.textStorage.string, "Alpha!\nBeta")
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<ul><li><p>Alpha!</p></li><li><p>Beta</p></li></ul>"
         )
     }
 
     func testReturnInsideListItemFallsBackToFullRenderAndKeepsTypingInNewItem() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 180))
         textView.captureApplyUpdateTraceForTesting = true
@@ -518,14 +518,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         XCTAssertEqual(textView.textStorage.string, "Alpha\nB\nBeta")
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<ul><li><p>Alpha</p></li><li><p>B</p></li><li><p>Beta</p></li></ul>"
         )
     }
 
     func testFullCurrentStateLocalEditUsesSynthesizedTopLevelPatch() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         textView.bindEditor(id: editorId, initialHTML: "<p>Alpha</p><p>Beta</p><p>Gamma</p>")
@@ -540,9 +540,9 @@ final class RichTextEditorViewTests: XCTestCase {
           ]
         }
         """
-        _ = editorSetJson(id: editorId, json: updatedDocument)
+        _ = EditorV2Shadow.setJson(id: editorId, json: updatedDocument)
 
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
         XCTAssertTrue(
             textView.lastRenderAppliedPatch(),
@@ -552,14 +552,14 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testIdenticalFullCurrentStateSkipsNativeTextReapply() throws {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         textView.bindEditor(id: editorId, initialHTML: "<p>Alpha</p><p>Beta</p><p>Gamma</p>")
         textView.captureApplyUpdateTraceForTesting = true
 
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
         let trace = try XCTUnwrap(textView.lastApplyUpdateTrace())
         XCTAssertFalse(textView.lastRenderAppliedPatch())
@@ -570,8 +570,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRustDrivenSelectionApplyDoesNotNotifySelectionDelegate() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         let delegate = EditorTextViewDelegateSpy()
@@ -580,8 +580,8 @@ final class RichTextEditorViewTests: XCTestCase {
         delegate.selectionChanges.removeAll()
         delegate.receivedUpdates.removeAll()
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 8, scalarHead: 8)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 8, scalarHead: 8)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         flushMainQueue()
 
         XCTAssertEqual(delegate.selectionChanges.count, 0)
@@ -660,15 +660,15 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRemoteSelectionOverlayShowsFocusedCaretWithoutBadge() {
-        let editorId = editorCreate(configJson: #"{"allowBase64Images":true}"#)
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: #"{"allowBase64Images":true}"#)
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
         view.editorId = editorId
         view.setContent(html: "<p>Hello world</p>")
         view.layoutIfNeeded()
 
-        let docPos = editorScalarToDoc(id: editorId, scalar: 6)
+        let docPos = EditorV2Shadow.scalarToDoc(id: editorId, scalar: 6)
         view.setRemoteSelections([
             RemoteSelectionDecoration(
                 clientId: 7,
@@ -692,15 +692,15 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRemoteSelectionOverlayShowsFocusedCaretAtEndOfDocument() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
         view.editorId = editorId
         view.setContent(html: "<p>Hello world</p>")
         view.layoutIfNeeded()
 
-        let endDocPos = editorScalarToDoc(id: editorId, scalar: 11)
+        let endDocPos = EditorV2Shadow.scalarToDoc(id: editorId, scalar: 11)
         view.setRemoteSelections([
             RemoteSelectionDecoration(
                 clientId: 9,
@@ -719,8 +719,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRemoteSelectionOverlayUsesCorrectWrappedVisualLine() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 140, height: 220))
         view.editorId = editorId
@@ -736,7 +736,7 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         XCTAssertGreaterThan(expectedCaretRect.minY, 0, "expected the target caret to be on a wrapped visual line")
 
-        let docPos = editorScalarToDoc(id: editorId, scalar: targetScalar)
+        let docPos = EditorV2Shadow.scalarToDoc(id: editorId, scalar: targetScalar)
         view.setRemoteSelections([
             RemoteSelectionDecoration(
                 clientId: 10,
@@ -756,15 +756,15 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRemoteSelectionOverlayHidesCaretAndBadgeForUnfocusedCollapsedSelection() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
         view.editorId = editorId
         view.setContent(html: "<p>Hello world</p>")
         view.layoutIfNeeded()
 
-        let docPos = editorScalarToDoc(id: editorId, scalar: 6)
+        let docPos = EditorV2Shadow.scalarToDoc(id: editorId, scalar: 6)
         view.setRemoteSelections([
             RemoteSelectionDecoration(
                 clientId: 8,
@@ -900,20 +900,20 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testInlineAccessoryPlaceholderRemainsAttachedAfterNativeEdit() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>Hello</p>")
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 5, scalarHead: 5)
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello</p>")
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 5, scalarHead: 5)
 
         let view = NativeEditorExpoView()
         view.setEditorId(editorId)
         view.setToolbarPlacement("inline")
-        view.richTextView.textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        view.richTextView.textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
         view.richTextView.textView.insertText("!")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello!</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello!</p>")
         XCTAssertTrue(view.isUsingAccessoryPlaceholderForTesting())
     }
 
@@ -1835,8 +1835,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testManualSelectionInMiddleOfWordSyncsInteriorCaretPositionToRust() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p>")
@@ -1853,7 +1853,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
 
         let selection = currentSelection(in: editorId)
-        let expectedDoc = editorScalarToDoc(id: editorId, scalar: 2)
+        let expectedDoc = EditorV2Shadow.scalarToDoc(id: editorId, scalar: 2)
 
         XCTAssertEqual(selection["type"] as? String, "text")
         XCTAssertEqual((selection["anchor"] as? NSNumber)?.uint32Value, expectedDoc)
@@ -1861,8 +1861,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testManualSelectionIntoListItemRefreshesSelectionDependentActiveState() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
         textView.bindEditor(
@@ -1891,8 +1891,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testManualSelectionInMiddleOfWordPersistsAfterDeferredSelectionSync() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -1912,8 +1912,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testManualSelectionAfterBlockquoteSyncsInteriorCaretPositionToRust() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         textView.bindEditor(
@@ -1928,7 +1928,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
 
         let selection = currentSelection(in: editorId)
-        let expectedDoc = editorScalarToDoc(id: editorId, scalar: UInt32(secondParagraphOffset + 3))
+        let expectedDoc = EditorV2Shadow.scalarToDoc(id: editorId, scalar: UInt32(secondParagraphOffset + 3))
 
         XCTAssertEqual(selection["type"] as? String, "text")
         XCTAssertEqual((selection["anchor"] as? NSNumber)?.uint32Value, expectedDoc)
@@ -1936,8 +1936,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testUnauthorizedTextMutationReconcilesOnNextRunLoop() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p>")
@@ -1959,8 +1959,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testFocusedNativeTextMutationCommitsToRustInsteadOfReconciling() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -1983,13 +1983,13 @@ final class RichTextEditorViewTests: XCTestCase {
 
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello there</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello there</p>")
         XCTAssertEqual(view.textView.textStorage.string, "Hello there")
     }
 
     func testFocusedNativeAutocompleteInsertionCommitsToRustOnNextRunLoop() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2011,14 +2011,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello there</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello there</p>")
         XCTAssertEqual(view.textView.textStorage.string, "Hello there")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testNativeAutocompleteInsertionMapsStaleCaretBeforeNextTypedCharacter() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2040,7 +2040,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("!")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello there!</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello there!</p>")
         XCTAssertEqual(view.textView.textStorage.string, "Hello there!")
         assertSelectedUtf16Range(in: view.textView, NSRange(location: 12, length: 0))
         assertCollapsedEditorSelection(in: editorId, scalarOffset: 12)
@@ -2048,8 +2048,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testNativeAutocompleteInsertionMapsStaleCaretOnScheduledCommit() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2071,14 +2071,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello there</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello there</p>")
         XCTAssertEqual(view.textView.textStorage.string, "Hello there")
         assertSelectedUtf16Range(in: view.textView, NSRange(location: 11, length: 0))
         assertCollapsedEditorSelection(in: editorId, scalarOffset: 11)
 
         view.textView.insertText("!")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello there!</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello there!</p>")
         XCTAssertEqual(view.textView.textStorage.string, "Hello there!")
         assertSelectedUtf16Range(in: view.textView, NSRange(location: 12, length: 0))
         assertCollapsedEditorSelection(in: editorId, scalarOffset: 12)
@@ -2086,8 +2086,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testNativeReplacementKeepsCollapsedStaleCaretCollapsedInsideReplacementRange() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2109,7 +2109,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("!")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>correct! </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>correct! </p>")
         XCTAssertEqual(view.textView.textStorage.string, "correct! ")
         assertSelectedUtf16Range(in: view.textView, NSRange(location: 8, length: 0))
         assertCollapsedEditorSelection(in: editorId, scalarOffset: 8)
@@ -2117,8 +2117,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testInlinePredictionMutationIsNotCommittedToRust() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2142,7 +2142,7 @@ final class RichTextEditorViewTests: XCTestCase {
         // The prediction text must NOT be committed to Rust — Rust state
         // should still reflect "autocom", not "autocomplete".
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<p>autocom</p>",
             "inline prediction text must not be committed to Rust"
         )
@@ -2153,7 +2153,7 @@ final class RichTextEditorViewTests: XCTestCase {
         view.textView.insertText("p")
 
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<p>autocomp</p>",
             "only the typed character should be committed, not the prediction"
         )
@@ -2162,8 +2162,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testInlinePredictionDoesNotCauseReconciliation() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2189,15 +2189,15 @@ final class RichTextEditorViewTests: XCTestCase {
         // After a run loop cycle, still no reconciliation and Rust unchanged.
         XCTAssertEqual(view.textView.reconciliationCount, 0)
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<p>hello wor</p>",
             "prediction text must not leak into Rust state"
         )
     }
 
     func testFocusedNativeDeletionCorrectionCommitsToRustOnNextRunLoop() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2219,14 +2219,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello world</p>")
         XCTAssertEqual(view.textView.textStorage.string, "Hello world")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testPendingNativeTextMutationFlushesBeforeNextTypedCharacter() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2251,14 +2251,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("n")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the n</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the n</p>")
         XCTAssertEqual(view.textView.textStorage.string, "the n")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testPendingNativeTextMutationInListUsesAdjustedScalarOffsetsBeforeNextTypedCharacter() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2281,14 +2281,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("n")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<ul><li><p>the n</p></li></ul>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<ul><li><p>the n</p></li></ul>")
         XCTAssertEqual(view.textView.textStorage.string, "the n")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testPendingNativeTextMutationInListMapsStaleCaretBeforeNextTypedCharacter() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2311,15 +2311,15 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("n")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<ul><li><p>the n</p></li></ul>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<ul><li><p>the n</p></li></ul>")
         XCTAssertEqual(view.textView.textStorage.string, "the n")
         assertSelectedUtf16Range(in: view.textView, NSRange(location: 5, length: 0))
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testPendingNativeTextMutationInSecondListItemUsesAdjustedScalarOffsets() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 140))
         let window = hostEditorView(view)
@@ -2341,7 +2341,7 @@ final class RichTextEditorViewTests: XCTestCase {
         view.textView.insertText("n")
 
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<ul><li><p>one</p></li><li><p>the n</p></li></ul>"
         )
         XCTAssertEqual(view.textView.textStorage.string, "one\nthe n")
@@ -2349,8 +2349,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingNativeTextMutationInNestedListUsesAdjustedScalarOffsets() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         let window = hostEditorView(view)
@@ -2372,7 +2372,7 @@ final class RichTextEditorViewTests: XCTestCase {
         view.textView.insertText("n")
 
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<ul><li><p>parent</p><ul><li><p>the n</p></li></ul></li></ul>"
         )
         XCTAssertEqual(view.textView.textStorage.string, "parent\nthe n")
@@ -2380,8 +2380,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingNativeTextMutationInTwoDigitOrderedListUsesAdjustedScalarOffsets() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
         let window = hostEditorView(view)
@@ -2403,7 +2403,7 @@ final class RichTextEditorViewTests: XCTestCase {
         view.textView.insertText("n")
 
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<ol start=\"10\"><li><p>one</p></li><li><p>the n</p></li></ol>"
         )
         XCTAssertEqual(view.textView.textStorage.string, "one\nthe n")
@@ -2411,8 +2411,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPasteFlushesPendingNativeAutocorrectBeforePlainTextPaste() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2436,14 +2436,14 @@ final class RichTextEditorViewTests: XCTestCase {
         UIPasteboard.general.string = "now"
         view.textView.paste(nil)
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the now</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the now</p>")
         XCTAssertEqual(view.textView.textStorage.string, "the now")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testNativeMutationUsesUIKitSelectionAlreadyMovedBeforeCapture() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2467,14 +2467,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>ABCdef</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>ABCdef</p>")
         XCTAssertEqual(view.textView.textStorage.string, "ABCdef")
         assertSelectedUtf16Range(in: view.textView, NSRange(location: 3, length: 0))
         assertCollapsedEditorSelection(in: editorId, scalarOffset: 3)
 
         view.textView.insertText("!")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>ABC!def</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>ABC!def</p>")
         XCTAssertEqual(view.textView.textStorage.string, "ABC!def")
         assertSelectedUtf16Range(in: view.textView, NSRange(location: 4, length: 0))
         assertCollapsedEditorSelection(in: editorId, scalarOffset: 4)
@@ -2482,8 +2482,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPasteFlushesPendingNativeAutocorrectBeforeReplacingSelectedText() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2509,14 +2509,14 @@ final class RichTextEditorViewTests: XCTestCase {
         UIPasteboard.general.string = "now"
         view.textView.paste(nil)
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the now</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the now</p>")
         XCTAssertEqual(view.textView.textStorage.string, "the now")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testHTMLPasteFlushesPendingNativeAutocorrectBeforePaste() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2543,14 +2543,14 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         view.textView.paste(nil)
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the </p><p><strong>now</strong></p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the </p><p><strong>now</strong></p>")
         XCTAssertEqual(view.textView.textStorage.string, "the \nnow")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testRTFPasteFlushesPendingNativeAutocorrectBeforePaste() throws {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2584,7 +2584,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.paste(nil)
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(html.contains("the"), "RTF paste should preserve native correction, got: \(html)")
         XCTAssertTrue(html.contains("now"), "RTF paste should insert converted rich text, got: \(html)")
         XCTAssertTrue(view.textView.textStorage.string.contains("the"))
@@ -2593,8 +2593,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testInterceptWindowAutocorrectCommitsBeforeImmediateNextCharacter() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2618,14 +2618,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("n")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the n</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the n</p>")
         XCTAssertEqual(view.textView.textStorage.string, "the n")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testNativeReplaceAutocorrectWithEmojiPrefixCommitsBeforeNextCharacter() throws {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2648,14 +2648,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("n")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>😀 the n</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>😀 the n</p>")
         XCTAssertEqual(view.textView.textStorage.string, "😀 the n")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testNativeEmojiReplacementAutocorrectDoesNotSplitSurrogatePairs() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2678,14 +2678,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("!")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>😁 test!</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>😁 test!</p>")
         XCTAssertEqual(view.textView.textStorage.string, "😁 test!")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testNativeAutocorrectAfterComplexEmojiGraphemesPreservesScalarMapping() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2707,14 +2707,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("n")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>👨‍👩‍👧‍👦 🇦🇺 1️⃣ the n</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>👨‍👩‍👧‍👦 🇦🇺 1️⃣ the n</p>")
         XCTAssertEqual(view.textView.textStorage.string, "👨‍👩‍👧‍👦 🇦🇺 1️⃣ the n")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testLengthChangingAutocorrectAfterComplexEmojiGraphemesMapsStaleCaret() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2740,7 +2740,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("n")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>\(prefix)don't n</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>\(prefix)don't n</p>")
         XCTAssertEqual(view.textView.textStorage.string, "\(prefix)don't n")
         assertSelectedUtf16Range(
             in: view.textView,
@@ -2750,8 +2750,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testLengthChangingAutocorrectInvalidatesCachedPositionMappingBeforeSelectionCapture() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2774,14 +2774,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("n")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>don't n</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>don't n</p>")
         XCTAssertEqual(view.textView.textStorage.string, "don't n")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testLengthChangingAutocorrectMapsStaleCaretBeforeNextTypedCharacter() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2803,7 +2803,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("n")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>don't n</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>don't n</p>")
         XCTAssertEqual(view.textView.textStorage.string, "don't n")
         assertSelectedUtf16Range(in: view.textView, NSRange(location: 7, length: 0))
         assertCollapsedEditorSelection(in: editorId, scalarOffset: 7)
@@ -2811,8 +2811,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testLengthShrinkingAutocorrectMapsStaleCaretBeforeNextTypedCharacter() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2834,7 +2834,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.insertText("!")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello !world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello !world</p>")
         XCTAssertEqual(view.textView.textStorage.string, "Hello !world")
         assertSelectedUtf16Range(in: view.textView, NSRange(location: 7, length: 0))
         assertCollapsedEditorSelection(in: editorId, scalarOffset: 7)
@@ -2842,8 +2842,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSetMarkedTextFlushesPendingStaleNativeAutocorrectBeforeComposition() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2865,19 +2865,19 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.setMarkedText("n", selectedRange: NSRange(location: 1, length: 0))
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the </p>")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
 
         view.textView.unmarkText()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the n</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the n</p>")
         XCTAssertEqual(view.textView.textStorage.string, "the n")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testBlurTimeAutocorrectAfterResignStillCommitsToRust() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2899,14 +2899,14 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the </p>")
         XCTAssertEqual(view.textView.textStorage.string, "the ")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testBlurTimeAutocorrectAfterNextMainQueueTurnStillCommitsToRust() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2929,14 +2929,14 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the </p>")
         XCTAssertEqual(view.textView.textStorage.string, "the ")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testBlurTimeAutocorrectAfterGracePeriodReconcilesInsteadOfCommitting() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2959,14 +2959,14 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>teh </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>teh </p>")
         XCTAssertEqual(view.textView.textStorage.string, "teh ")
         XCTAssertEqual(view.textView.reconciliationCount, 1)
     }
 
     func testBlurTimeAutocorrectAfterContentReplacementReconcilesInsteadOfCommitting() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -2989,14 +2989,14 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Remote</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Remote</p>")
         XCTAssertEqual(view.textView.textStorage.string, "Remote")
         XCTAssertEqual(view.textView.reconciliationCount, 1)
     }
 
     func testBlurTimeAutocorrectGraceWindowIsConsumedAfterCommit() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -3019,7 +3019,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the </p>")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
 
         view.textView.textStorage.replaceCharacters(
@@ -3028,14 +3028,14 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the </p>")
         XCTAssertEqual(view.textView.textStorage.string, "the ")
         XCTAssertEqual(view.textView.reconciliationCount, 1)
     }
 
     func testThemeRefreshDrainsPendingNativeAutocorrectBeforeApplyingRustState() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -3058,15 +3058,15 @@ final class RichTextEditorViewTests: XCTestCase {
             "textColor": "#123456",
         ]))
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the </p>")
         XCTAssertEqual(view.textView.textStorage.string, "the ")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testSetEditableFalseDrainsPendingNativeAutocorrectBeforeReadOnly() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
-        _ = editorSetHtml(id: editorId, html: "<p>teh </p>")
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>teh </p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3088,7 +3088,7 @@ final class RichTextEditorViewTests: XCTestCase {
         view.setEditable(false)
 
         XCTAssertFalse(view.richTextView.textView.isEditable)
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the </p>")
         XCTAssertEqual(view.richTextView.textView.textStorage.string, "the ")
         XCTAssertEqual(view.richTextView.textView.reconciliationCount, 0)
     }
@@ -3106,8 +3106,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testInputTraitChangeFlushesActiveMarkedCompositionBeforeReload() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -3125,14 +3125,14 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.textView.setKeyboardType("email-address")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello brave world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello brave world</p>")
         XCTAssertEqual(view.textView.textStorage.string, "Hello brave world")
         XCTAssertEqual(view.textView.reconciliationCount, 0)
     }
 
     func testBlockedAutoCorrectRetryDoesNotOverrideNewerValue() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -3153,8 +3153,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockedAutoCapitalizeRetryDoesNotOverrideNewerValue() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -3174,8 +3174,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockedKeyboardTypeRetryDoesNotOverrideNewerValue() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -3195,11 +3195,11 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingAutoCorrectRetryIsInvalidatedAndDesiredTraitReplayedOnEditorRebind() {
-        let firstEditorId = editorCreate(configJson: "{}")
-        let secondEditorId = editorCreate(configJson: "{}")
+        let firstEditorId = makeV2Editor(configJson: "{}")
+        let secondEditorId = makeV2Editor(configJson: "{}")
         defer {
-            editorDestroy(id: firstEditorId)
-            editorDestroy(id: secondEditorId)
+            destroyV2Editor(id: firstEditorId)
+            destroyV2Editor(id: secondEditorId)
         }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3221,11 +3221,11 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingAutoCapitalizeRetryIsInvalidatedAndDesiredTraitReplayedOnEditorRebind() {
-        let firstEditorId = editorCreate(configJson: "{}")
-        let secondEditorId = editorCreate(configJson: "{}")
+        let firstEditorId = makeV2Editor(configJson: "{}")
+        let secondEditorId = makeV2Editor(configJson: "{}")
         defer {
-            editorDestroy(id: firstEditorId)
-            editorDestroy(id: secondEditorId)
+            destroyV2Editor(id: firstEditorId)
+            destroyV2Editor(id: secondEditorId)
         }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3246,11 +3246,11 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPendingKeyboardTypeRetryIsInvalidatedAndDesiredTraitReplayedOnEditorRebind() {
-        let firstEditorId = editorCreate(configJson: "{}")
-        let secondEditorId = editorCreate(configJson: "{}")
+        let firstEditorId = makeV2Editor(configJson: "{}")
+        let secondEditorId = makeV2Editor(configJson: "{}")
         defer {
-            editorDestroy(id: firstEditorId)
-            editorDestroy(id: secondEditorId)
+            destroyV2Editor(id: firstEditorId)
+            destroyV2Editor(id: secondEditorId)
         }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
@@ -3295,9 +3295,9 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockedThemeRetryIsClearedWhenDesiredThemeRevertsBeforeRetry() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
-        _ = editorSetHtml(id: editorId, html: "<p>Hello</p>")
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3330,14 +3330,14 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockedThemeRetryAppliesDesiredThemeAfterEditorRebind() {
-        let firstEditorId = editorCreate(configJson: "{}")
-        let secondEditorId = editorCreate(configJson: "{}")
+        let firstEditorId = makeV2Editor(configJson: "{}")
+        let secondEditorId = makeV2Editor(configJson: "{}")
         defer {
-            editorDestroy(id: firstEditorId)
-            editorDestroy(id: secondEditorId)
+            destroyV2Editor(id: firstEditorId)
+            destroyV2Editor(id: secondEditorId)
         }
-        _ = editorSetHtml(id: firstEditorId, html: "<p>First</p>")
-        _ = editorSetHtml(id: secondEditorId, html: "<p>Second</p>")
+        _ = EditorV2Shadow.setHtml(id: firstEditorId, html: "<p>First</p>")
+        _ = EditorV2Shadow.setHtml(id: secondEditorId, html: "<p>Second</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3397,9 +3397,9 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testStaleMentionClearRetryDoesNotHideFreshSuggestionsAfterRefreshSucceeds() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
-        _ = editorSetHtml(id: editorId, html: "<p>Hello @al</p>")
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3433,9 +3433,9 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testAccessoryRetryBatchKeepsNonConflictingToolbarVisibilityActionAfterMentionClear() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
-        _ = editorSetHtml(id: editorId, html: "<p>Hello @al</p>")
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3472,9 +3472,9 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testAccessoryRetryBatchKeepsRemainingActionsWhenFirstRetryRequeues() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
-        _ = editorSetHtml(id: editorId, html: "<p>Hello @al</p>")
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3514,9 +3514,9 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testApplyEditorUpdateRetriesAfterBlockedCompositionOnSameEditor() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
-        _ = editorSetHtml(id: editorId, html: "<p>First</p>")
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>First</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3528,7 +3528,7 @@ final class RichTextEditorViewTests: XCTestCase {
         view.setEditorId(editorId)
         setCollapsedSelection(in: view.richTextView.textView, utf16Offset: 0)
 
-        let updateJSON = editorReplaceHtml(id: editorId, html: "<p>Remote</p>")
+        let updateJSON = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Remote</p>")
         view.richTextView.textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
 
         XCTAssertFalse(view.applyEditorUpdate(updateJSON))
@@ -3541,14 +3541,14 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testApplyEditorUpdateRetryIsDroppedAfterEditorRebind() {
-        let firstEditorId = editorCreate(configJson: "{}")
-        let secondEditorId = editorCreate(configJson: "{}")
+        let firstEditorId = makeV2Editor(configJson: "{}")
+        let secondEditorId = makeV2Editor(configJson: "{}")
         defer {
-            editorDestroy(id: firstEditorId)
-            editorDestroy(id: secondEditorId)
+            destroyV2Editor(id: firstEditorId)
+            destroyV2Editor(id: secondEditorId)
         }
-        _ = editorSetHtml(id: firstEditorId, html: "<p>First</p>")
-        _ = editorSetHtml(id: secondEditorId, html: "<p>Second</p>")
+        _ = EditorV2Shadow.setHtml(id: firstEditorId, html: "<p>First</p>")
+        _ = EditorV2Shadow.setHtml(id: secondEditorId, html: "<p>Second</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3560,7 +3560,7 @@ final class RichTextEditorViewTests: XCTestCase {
         view.setEditorId(firstEditorId)
         setCollapsedSelection(in: view.richTextView.textView, utf16Offset: 0)
 
-        let staleUpdateJSON = editorReplaceHtml(id: firstEditorId, html: "<p>Remote</p>")
+        let staleUpdateJSON = EditorV2Shadow.replaceHtml(id: firstEditorId, html: "<p>Remote</p>")
         view.richTextView.textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
 
         XCTAssertFalse(view.applyEditorUpdate(staleUpdateJSON))
@@ -3571,9 +3571,9 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSameEditorIdUpdateDoesNotDropPendingNativeAutocorrect() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
-        _ = editorSetHtml(id: editorId, html: "<p>teh </p>")
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>teh </p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3595,20 +3595,20 @@ final class RichTextEditorViewTests: XCTestCase {
         view.setEditorId(editorId)
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the </p>")
         XCTAssertEqual(view.richTextView.textView.textStorage.string, "the ")
         XCTAssertEqual(view.richTextView.textView.reconciliationCount, 0)
     }
 
     func testPendingNativeAutocorrectIsDroppedAfterEditorRebind() {
-        let firstEditorId = editorCreate(configJson: "{}")
-        let secondEditorId = editorCreate(configJson: "{}")
+        let firstEditorId = makeV2Editor(configJson: "{}")
+        let secondEditorId = makeV2Editor(configJson: "{}")
         defer {
-            editorDestroy(id: firstEditorId)
-            editorDestroy(id: secondEditorId)
+            destroyV2Editor(id: firstEditorId)
+            destroyV2Editor(id: secondEditorId)
         }
-        _ = editorSetHtml(id: firstEditorId, html: "<p>teh </p>")
-        _ = editorSetHtml(id: secondEditorId, html: "<p>Second</p>")
+        _ = EditorV2Shadow.setHtml(id: firstEditorId, html: "<p>teh </p>")
+        _ = EditorV2Shadow.setHtml(id: secondEditorId, html: "<p>Second</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3630,20 +3630,20 @@ final class RichTextEditorViewTests: XCTestCase {
         view.setEditorId(secondEditorId)
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: firstEditorId), "<p>teh </p>")
-        XCTAssertEqual(editorGetHtml(id: secondEditorId), "<p>Second</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: firstEditorId), "<p>teh </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: secondEditorId), "<p>Second</p>")
         XCTAssertEqual(view.richTextView.textView.textStorage.string, "Second")
     }
 
     func testPrepareForCommandAfterEditorRebindDoesNotDrainPreviousEditorMutation() {
-        let firstEditorId = editorCreate(configJson: "{}")
-        let secondEditorId = editorCreate(configJson: "{}")
+        let firstEditorId = makeV2Editor(configJson: "{}")
+        let secondEditorId = makeV2Editor(configJson: "{}")
         defer {
-            editorDestroy(id: firstEditorId)
-            editorDestroy(id: secondEditorId)
+            destroyV2Editor(id: firstEditorId)
+            destroyV2Editor(id: secondEditorId)
         }
-        _ = editorSetHtml(id: firstEditorId, html: "<p>teh </p>")
-        _ = editorSetHtml(id: secondEditorId, html: "<p>Second</p>")
+        _ = EditorV2Shadow.setHtml(id: firstEditorId, html: "<p>teh </p>")
+        _ = EditorV2Shadow.setHtml(id: secondEditorId, html: "<p>Second</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3670,13 +3670,13 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertTrue(preparationJSON.contains("\"ready\":true"))
         flushMainQueue()
 
-        XCTAssertEqual(editorGetHtml(id: firstEditorId), "<p>teh </p>")
-        XCTAssertEqual(editorGetHtml(id: secondEditorId), "<p>Second</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: firstEditorId), "<p>teh </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: secondEditorId), "<p>Second</p>")
         XCTAssertEqual(view.richTextView.textView.textStorage.string, "Second")
     }
 
     func testDestroyedEditorInvalidatesRegistryAndUnbindsView() {
-        let editorId = editorCreate(configJson: "{}")
+        let editorId = makeV2Editor(configJson: "{}")
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
 
         let view = NativeEditorExpoView()
@@ -3692,7 +3692,7 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(view.richTextView.textView.editorId, editorId)
 
         NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: editorId)
-        editorDestroy(id: editorId)
+        destroyV2Editor(id: editorId)
         let preparation = parseJSONObject(
             NativeEditorViewRegistry.shared.prepareForCommandJSON(editorId: editorId)
         )
@@ -3704,7 +3704,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDestroyedEditorInvalidatesEveryBoundView() {
-        let editorId = editorCreate(configJson: "{}")
+        let editorId = makeV2Editor(configJson: "{}")
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
         let first = NativeEditorExpoView()
         let second = NativeEditorExpoView()
@@ -3712,14 +3712,14 @@ final class RichTextEditorViewTests: XCTestCase {
         second.setEditorId(editorId)
 
         NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: editorId)
-        editorDestroy(id: editorId)
+        destroyV2Editor(id: editorId)
 
         XCTAssertEqual(first.richTextView.editorId, 0)
         XCTAssertEqual(second.richTextView.editorId, 0)
     }
 
     func testUnregisterRemovesOnlyCallingViewFromEditorRegistry() {
-        let editorId = editorCreate(configJson: "{}")
+        let editorId = makeV2Editor(configJson: "{}")
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
         let first = NativeEditorExpoView()
         let second = NativeEditorExpoView()
@@ -3728,7 +3728,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         NativeEditorViewRegistry.shared.unregister(editorId: editorId, view: first)
         NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: editorId)
-        editorDestroy(id: editorId)
+        destroyV2Editor(id: editorId)
 
         XCTAssertEqual(first.richTextView.editorId, editorId)
         XCTAssertEqual(second.richTextView.editorId, 0)
@@ -3736,7 +3736,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDestroyBoundaryBlocksReentrantRegistrationAndCommandsUntilInvalidation() {
-        let editorId = editorCreate(configJson: "{}")
+        let editorId = makeV2Editor(configJson: "{}")
         let registry = NativeEditorViewRegistry.shared
         registry.markEditorCreated(editorId: editorId)
         let first = NativeEditorExpoView()
@@ -3750,7 +3750,7 @@ final class RichTextEditorViewTests: XCTestCase {
                 registry.prepareForCommandJSON(editorId: editorId).contains("\"blockedReason\":\"destroying\"")
             )
             registry.destroy(editorId: editorId) { nestedDestroyRan = true }
-            editorDestroy(id: editorId)
+            destroyV2Editor(id: editorId)
             XCTAssertEqual(first.richTextView.editorId, editorId)
         }
 
@@ -3760,7 +3760,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDestroyBoundaryInvalidatesViewsWhenDestroyOperationDoesNotRemoveEditor() {
-        let editorId = editorCreate(configJson: "{}")
+        let editorId = makeV2Editor(configJson: "{}")
         let registry = NativeEditorViewRegistry.shared
         registry.markEditorCreated(editorId: editorId)
         let view = NativeEditorExpoView()
@@ -3772,15 +3772,15 @@ final class RichTextEditorViewTests: XCTestCase {
         }
 
         XCTAssertEqual(view.richTextView.editorId, 0)
-        XCTAssertFalse(editorGetCurrentState(id: editorId).contains("editor not found"))
-        editorDestroy(id: editorId)
+        XCTAssertFalse(EditorV2Shadow.getCurrentState(id: editorId).contains("editor not found"))
+        destroyV2Editor(id: editorId)
     }
 
     func testDestroyedEditorIdCannotRegisterNewView() {
-        let editorId = editorCreate(configJson: "{}")
+        let editorId = makeV2Editor(configJson: "{}")
         NativeEditorViewRegistry.shared.markEditorCreated(editorId: editorId)
         NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: editorId)
-        editorDestroy(id: editorId)
+        destroyV2Editor(id: editorId)
 
         let view = NativeEditorExpoView()
         view.setEditorId(editorId)
@@ -3795,9 +3795,9 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPrepareForCommandReportsCompositionBlockedReasonWhenMarkedTextPreflightDefers() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
-        _ = editorSetHtml(id: editorId, html: "<p>Hello</p>")
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3822,9 +3822,9 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testPrepareForCommandIncludesUpdateJSONAfterNativeAutocorrectDrain() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
-        _ = editorSetHtml(id: editorId, html: "<p>teh </p>")
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>teh </p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -3852,16 +3852,16 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertNotNil(updateJSON)
         XCTAssertTrue(updateJSON?.contains("the ") == true, "preflight update should include the drained correction")
         XCTAssertFalse(updateJSON?.contains("teh ") == true, "preflight update should not contain stale text")
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the </p>")
     }
 
     func testPrepareForCommandIncludesUpdateJSONAfterSameTextCompositionChangesSelectionState() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 0, scalarHead: 5)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 0, scalarHead: 5)
         setSelection(in: textView, utf16Range: NSRange(location: 0, length: 5))
 
         textView.setMarkedText("Hello", selectedRange: NSRange(location: 5, length: 0))
@@ -3873,13 +3873,13 @@ final class RichTextEditorViewTests: XCTestCase {
             preparation.updateJSON,
             "same-text composition commits should still forward selection/state changes"
         )
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello world</p>")
         XCTAssertEqual(textView.textStorage.string, "Hello world")
     }
 
     func testMarkedTextDoesNotReconcileWhileCompositionIsTransient() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -3890,15 +3890,15 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(textView.textStorage.string, "Hello brave world")
         XCTAssertEqual(textView.reconciliationCount, 0)
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<p>Hello world</p>",
             "marked text should stay visible-only until the IME commits it"
         )
     }
 
     func testUnmarkTextCommitsAtOriginalAuthorizedOffset() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -3907,13 +3907,13 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.setMarkedText("brave ", selectedRange: NSRange(location: 6, length: 0))
         textView.unmarkText()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello brave world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello brave world</p>")
         XCTAssertEqual(textView.textStorage.string, "Hello brave world")
     }
 
     func testUnmarkTextReplacesOriginalAuthorizedSelection() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -3922,13 +3922,13 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.setMarkedText("there", selectedRange: NSRange(location: 5, length: 0))
         textView.unmarkText()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello there</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello there</p>")
         XCTAssertEqual(textView.textStorage.string, "Hello there")
     }
 
     func testSetMarkedTextNilCommitsVisibleComposition() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -3937,14 +3937,14 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.setMarkedText("brave ", selectedRange: NSRange(location: 6, length: 0))
         textView.setMarkedText(nil, selectedRange: NSRange(location: 0, length: 0))
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello brave world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello brave world</p>")
         XCTAssertEqual(textView.textStorage.string, "Hello brave world")
         XCTAssertEqual(textView.authorizedTextForTesting(), "Hello brave world")
     }
 
     func testSetMarkedTextNilCommitsEmptyReplacementOverOriginalSelection() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -3953,14 +3953,14 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
         textView.setMarkedText(nil, selectedRange: NSRange(location: 0, length: 0))
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello </p>")
         XCTAssertEqual(textView.textStorage.string, "Hello ")
         XCTAssertEqual(textView.authorizedTextForTesting(), "Hello ")
     }
 
     func testExternalUpdatePreflightCommitsActiveCompositionOnce() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -3969,18 +3969,18 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.setMarkedText("brave ", selectedRange: NSRange(location: 6, length: 0))
 
         XCTAssertTrue(textView.applyTheme(EditorTheme(dictionary: ["textColor": "#123456"])))
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello brave world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello brave world</p>")
         XCTAssertEqual(textView.textStorage.string, "Hello brave world")
 
         textView.unmarkText()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello brave world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello brave world</p>")
         XCTAssertEqual(textView.textStorage.string, "Hello brave world")
     }
 
     func testToolbarCommandsCommitActiveMarkedCompositionBeforeMutatingEditor() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -3990,7 +3990,7 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.performToolbarToggleMark("bold")
 
         XCTAssertTrue(
-            editorGetHtml(id: editorId).contains("Hello brave world"),
+            EditorV2Shadow.getHtml(id: editorId).contains("Hello brave world"),
             "toolbar mark command should commit the active composition before mutating the editor"
         )
         XCTAssertEqual(textView.textStorage.string, "Hello brave world")
@@ -4000,7 +4000,7 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.setMarkedText("!", selectedRange: NSRange(location: 1, length: 0))
         textView.performToolbarInsertNode("horizontalRule")
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(html.contains("Hello brave world"), "toolbar node insert should preserve the earlier composed text, got: \(html)")
         XCTAssertTrue(html.contains("!"), "toolbar node insert should preserve the newly composed text, got: \(html)")
         XCTAssertTrue(html.contains("<hr>"), "toolbar node insert should still apply after the composition drain, got: \(html)")
@@ -4008,8 +4008,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testExternalUpdatePreflightCommitsEmptySelectedCompositionAsDeletion() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -4018,18 +4018,18 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
 
         XCTAssertTrue(textView.applyTheme(EditorTheme(dictionary: ["textColor": "#123456"])))
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello </p>")
         XCTAssertEqual(textView.textStorage.string, "Hello ")
 
         textView.unmarkText()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello </p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello </p>")
         XCTAssertEqual(textView.textStorage.string, "Hello ")
     }
 
     func testInsertTextDuringMarkedCompositionUsesOriginalReplacementRange() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -4038,13 +4038,13 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.setMarkedText("brav", selectedRange: NSRange(location: 4, length: 0))
         textView.insertText("brave ")
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello brave world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello brave world</p>")
         XCTAssertEqual(textView.textStorage.string, "Hello brave world")
     }
 
     func testUpdatedMarkedTextStillUsesOriginalAuthorizedOffset() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -4053,16 +4053,16 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.setMarkedText("abc ", selectedRange: NSRange(location: 3, length: 0))
         textView.setMarkedText("ab ", selectedRange: NSRange(location: 3, length: 0))
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello world</p>")
 
         textView.unmarkText()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello ab world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello ab world</p>")
     }
 
     func testDeleteBackwardDuringMarkedCompositionDoesNotMutateRust() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello world</p>")
@@ -4071,11 +4071,11 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.setMarkedText("abc ", selectedRange: NSRange(location: 3, length: 0))
         textView.deleteBackward()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello world</p>")
 
         textView.unmarkText()
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>Hello world</p>")
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>Hello world</p>")
     }
 
     func testAdjustedCaretRectUsesBaselineAndFontMetrics() {
@@ -4120,8 +4120,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRichTextEditorViewAutoGrowReportsIntrinsicHeightFromContent() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
         view.heightBehavior = .autoGrow
@@ -4136,8 +4136,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testApplyThemeRerendersExistingContentWhenTextIsUnchanged() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p>")
@@ -4166,8 +4166,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testEditorTextViewMeasuredAutoGrowHeightMatchesSizeThatFits() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
         textView.heightBehavior = .autoGrow
@@ -4188,8 +4188,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRichTextEditorViewAutoGrowHeightAfterParagraphSplitMatchesSizeThatFits() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
         let window = hostEditorView(view)
@@ -4225,8 +4225,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRichTextEditorViewAutoGrowIntrinsicHeightGrowsWhenHostAppliesMeasuredHeight() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
         let window = hostEditorView(view)
@@ -4264,8 +4264,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testRichTextEditorViewAutoGrowIntrinsicHeightShrinksAfterDeletingContent() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
         let window = hostEditorView(view)
@@ -4578,14 +4578,14 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBoundEditorCaretRectAfterBlockquoteMatchesPlainTextViewHorizontalPosition() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
         textView.bindEditor(id: editorId, initialHTML: "<blockquote><p>Hello</p></blockquote><p>World</p>")
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 10, scalarHead: 10)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 10, scalarHead: 10)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.layoutIfNeeded()
 
         let plainTextView = UITextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
@@ -4621,20 +4621,20 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testTypingAtParagraphEndAfterBlockquoteKeepsCaretAtRenderedEnd() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 220, height: 200))
         textView.bindEditor(id: editorId, initialHTML: "<blockquote><p>Hello</p></blockquote><p>World</p>")
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 11, scalarHead: 11)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 11, scalarHead: 11)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.layoutIfNeeded()
 
         textView.insertText("!")
         textView.layoutIfNeeded()
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertEqual(html, "<blockquote><p>Hello</p></blockquote><p>World!</p>")
 
         let caretOffset = textView.offset(
@@ -4669,15 +4669,15 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockquoteStripeRectStaysStableAcrossReturnDrivenLayoutPasses() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 220))
         textView.bindEditor(id: editorId, initialHTML: "<blockquote><p>Hello</p></blockquote>")
         textView.layoutIfNeeded()
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 6, scalarHead: 6)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 6, scalarHead: 6)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.layoutIfNeeded()
 
         textView.insertText("\n")
@@ -4776,15 +4776,15 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockquoteStripeDrawPassStaysStableAfterReturn() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 220))
         textView.bindEditor(id: editorId, initialHTML: "<blockquote><p>Hello</p></blockquote>")
         textView.layoutIfNeeded()
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 6, scalarHead: 6)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 6, scalarHead: 6)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.layoutIfNeeded()
 
         textView.resetBlockquoteStripeDrawPassesForTesting()
@@ -5192,15 +5192,15 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testReturnInsideBlockquoteAfterPlainParagraphKeepsOneStripeGroup() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 260))
         textView.bindEditor(id: editorId, initialHTML: "<p>Intro</p><blockquote><p>Hello</p></blockquote>")
         textView.layoutIfNeeded()
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 11, scalarHead: 11)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 11, scalarHead: 11)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.layoutIfNeeded()
 
         textView.insertText("\n")
@@ -5225,8 +5225,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBlockquoteHardBreakAndFollowingParagraphShareOneStripeGroup() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 260))
         textView.bindEditor(
@@ -5249,8 +5249,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testTrailingHardBreakInBlockquoteKeepsStripeConnectedToFollowingParagraph() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 240, height: 260))
         textView.bindEditor(
@@ -5328,12 +5328,12 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDirectScalarHardBreakTwiceInListItemPreservesExistingText() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<ul><li><p>A</p></li></ul>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<ul><li><p>A</p></li></ul>")
 
-        let firstUpdate = editorInsertNodeAtSelectionScalar(
+        let firstUpdate = EditorV2Shadow.insertNodeAtSelectionScalar(
             id: editorId,
             scalarAnchor: 3,
             scalarHead: 3,
@@ -5341,12 +5341,12 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         XCTAssertFalse(firstUpdate.isEmpty)
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<ul><li><p>A<br></p></li></ul>",
             "first hardBreak should preserve the existing list item text"
         )
 
-        let secondUpdate = editorInsertNodeAtSelectionScalar(
+        let secondUpdate = EditorV2Shadow.insertNodeAtSelectionScalar(
             id: editorId,
             scalarAnchor: 4,
             scalarHead: 4,
@@ -5354,40 +5354,40 @@ final class RichTextEditorViewTests: XCTestCase {
         )
         XCTAssertFalse(secondUpdate.isEmpty)
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<ul><li><p>A<br><br></p></li></ul>",
             "second hardBreak at the next scalar position should preserve the original text"
         )
     }
 
     func testToolbarHardBreakTwiceInListItemPreservesExistingText() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: .zero)
         textView.bindEditor(id: editorId, initialHTML: "<ul><li><p>A</p></li></ul>")
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
         textView.performToolbarInsertNode("hardBreak")
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<ul><li><p>A<br></p></li></ul>",
             "first hardBreak should preserve the existing list item text"
         )
 
         textView.performToolbarInsertNode("hardBreak")
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<ul><li><p>A<br><br></p></li></ul>",
             "second hardBreak should append after the first one rather than replacing the text"
         )
     }
 
     func testToolbarHardBreakMovesCaretToNextVisualLine() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let theme = EditorTheme(dictionary: [
             "paragraph": [
@@ -5399,8 +5399,8 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.applyTheme(theme)
         textView.bindEditor(id: editorId, initialHTML: "<p>A</p>")
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 1, scalarHead: 1)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 1, scalarHead: 1)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.layoutIfNeeded()
 
         guard let beforePosition = textView.selectedTextRange?.start else {
@@ -5428,8 +5428,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testToolbarHardBreakReservesTrailingVisualLineBeforeTyping() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let theme = EditorTheme(dictionary: [
             "paragraph": [
@@ -5441,8 +5441,8 @@ final class RichTextEditorViewTests: XCTestCase {
         textView.applyTheme(theme)
         textView.bindEditor(id: editorId, initialHTML: "<p>A</p>")
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 1, scalarHead: 1)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 1, scalarHead: 1)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.layoutIfNeeded()
 
         textView.performToolbarInsertNode("hardBreak")
@@ -5461,8 +5461,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testCaretBeforeHorizontalRuleUsesPreviousParagraphLine() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 220))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p><hr><p>World</p>")
@@ -5497,8 +5497,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testCaretAfterHorizontalRuleUsesFollowingParagraphLine() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 220))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p><hr><p>World</p>")
@@ -5533,14 +5533,14 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testToolbarHorizontalRulePlacesCaretInTrailingParagraphLine() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 220))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p>")
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
         textView.layoutIfNeeded()
 
         textView.performToolbarInsertNode("horizontalRule")
@@ -5560,7 +5560,7 @@ final class RichTextEditorViewTests: XCTestCase {
         let hrRect = renderedRect(in: textView, utf16Range: hrRange)
 
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<p>Hello</p><hr><p></p>",
             "toolbar hr insert should create a trailing empty paragraph"
         )
@@ -5577,10 +5577,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapInsertsMentionNode() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>Hello @al</p>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello @al</p>")
 
         let view = NativeEditorExpoView()
         view.setEditorId(editorId)
@@ -5604,7 +5604,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.triggerMentionSuggestionTapForTesting(at: 0)
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(
             html.contains("data-native-editor-mention=\"true\""),
             "tapping a mention suggestion should insert a mention node, got: \(html)"
@@ -5620,10 +5620,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapDrainsPendingNativeAutocorrectBeforeInsert() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>teh @al</p>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>teh @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -5666,7 +5666,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.triggerMentionSuggestionTapForTesting(at: 0)
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(html.contains("the"), "mention insert should preserve native correction, got: \(html)")
         XCTAssertFalse(html.contains("teh"), "mention insert should not restore stale text, got: \(html)")
         XCTAssertFalse(html.contains("@al</p>"), "mention insert should replace the query range, got: \(html)")
@@ -5678,10 +5678,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSelectRequestIncludesPreflightUpdateAfterNativeAutocorrectDrain() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>teh @al</p>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>teh @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -5728,10 +5728,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapDrainsPendingNativeAutocorrectInsideListItem() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<ul><li><p>teh @al</p></li></ul>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<ul><li><p>teh @al</p></li></ul>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -5774,7 +5774,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.triggerMentionSuggestionTapForTesting(at: 0)
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(html.contains("<ul><li><p>the "), "mention insert should preserve list correction, got: \(html)")
         XCTAssertFalse(html.contains("teh"), "mention insert should not restore stale list text, got: \(html)")
         XCTAssertFalse(html.contains("@al</p>"), "mention insert should replace the list query range, got: \(html)")
@@ -5786,10 +5786,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapRecomputesRangeAfterLengthChangingAutocorrect() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>a @al</p>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>a @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -5833,7 +5833,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.triggerMentionSuggestionTapForTesting(at: 0)
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(html.contains("an "), "mention insert should preserve length-changing correction, got: \(html)")
         XCTAssertFalse(html.contains("@al</p>"), "mention insert should replace the recomputed query range, got: \(html)")
         XCTAssertTrue(
@@ -5844,10 +5844,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapRetriesAfterBlockedMarkedTextPreflight() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>Hello @al</p>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -5869,12 +5869,12 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.triggerMentionSuggestionTapForTesting(at: 0)
 
-        XCTAssertFalse(editorGetHtml(id: editorId).contains("data-native-editor-mention=\"true\""))
+        XCTAssertFalse(EditorV2Shadow.getHtml(id: editorId).contains("data-native-editor-mention=\"true\""))
 
         flushMainQueue()
         flushMainQueue()
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(
             html.contains("data-native-editor-mention=\"true\""),
             "mention tap should retry after composition preflight clears, got: \(html)"
@@ -5883,10 +5883,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapRetrySurvivesPreflightDrainedAutocorrect() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>teh @al</p>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>teh @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -5907,7 +5907,7 @@ final class RichTextEditorViewTests: XCTestCase {
         view.richTextView.textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
 
         view.triggerMentionSuggestionTapForTesting(at: 0)
-        XCTAssertFalse(editorGetHtml(id: editorId).contains("data-native-editor-mention=\"true\""))
+        XCTAssertFalse(EditorV2Shadow.getHtml(id: editorId).contains("data-native-editor-mention=\"true\""))
 
         view.richTextView.textView.textStorage.replaceCharacters(
             in: NSRange(location: 0, length: 3),
@@ -5919,7 +5919,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         flushMainQueue()
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(html.contains("the "), "retried mention tap should preserve preflight correction, got: \(html)")
         XCTAssertFalse(html.contains("teh"), "retried mention tap should not restore stale text, got: \(html)")
         XCTAssertFalse(html.contains("@al</p>"), "retried mention tap should replace the query, got: \(html)")
@@ -5930,10 +5930,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapRetrySurvivesLengthChangingPreflightDrainedAutocorrect() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>a @al</p>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>a @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -5954,7 +5954,7 @@ final class RichTextEditorViewTests: XCTestCase {
         view.richTextView.textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
 
         view.triggerMentionSuggestionTapForTesting(at: 0)
-        XCTAssertFalse(editorGetHtml(id: editorId).contains("data-native-editor-mention=\"true\""))
+        XCTAssertFalse(EditorV2Shadow.getHtml(id: editorId).contains("data-native-editor-mention=\"true\""))
 
         view.richTextView.textView.textStorage.replaceCharacters(
             in: NSRange(location: 0, length: 1),
@@ -5966,7 +5966,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         flushMainQueue()
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(html.contains("an "), "retried mention tap should preserve length-changing correction, got: \(html)")
         XCTAssertFalse(html.contains("<p>a "), "retried mention tap should not restore stale text, got: \(html)")
         XCTAssertFalse(html.contains("@al</p>"), "retried mention tap should replace the shifted query, got: \(html)")
@@ -5977,10 +5977,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapRetryIsDroppedWhenPreflightShiftTargetsDifferentSameQuery() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>a @al b @al</p>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>a @al b @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -6001,7 +6001,7 @@ final class RichTextEditorViewTests: XCTestCase {
         view.richTextView.textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
 
         view.triggerMentionSuggestionTapForTesting(at: 0)
-        XCTAssertFalse(editorGetHtml(id: editorId).contains("data-native-editor-mention=\"true\""))
+        XCTAssertFalse(EditorV2Shadow.getHtml(id: editorId).contains("data-native-editor-mention=\"true\""))
 
         view.richTextView.textView.textStorage.replaceCharacters(
             in: NSRange(location: 0, length: 1),
@@ -6013,7 +6013,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         flushMainQueue()
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertEqual(html, "<p>an @al b @al</p>")
         XCTAssertFalse(
             html.contains("data-native-editor-mention=\"true\""),
@@ -6022,10 +6022,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapRetryUsesRefreshedSuggestionForSameKey() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>Hello @al</p>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -6065,7 +6065,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         flushMainQueue()
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(
             html.contains("@ally"),
             "retried mention tap should use the refreshed same-key label, got: \(html)"
@@ -6084,10 +6084,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapRetryIsDroppedAfterQueryChanges() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>Hello @al</p>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -6109,7 +6109,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.triggerMentionSuggestionTapForTesting(at: 0)
 
-        let changedUpdateJSON = editorReplaceHtml(id: editorId, html: "<p>Hello @bo</p>")
+        let changedUpdateJSON = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Hello @bo</p>")
         view.richTextView.textView.applyUpdateJSON(changedUpdateJSON, notifyDelegate: false)
         setCollapsedSelection(in: view.richTextView.textView, utf16Offset: view.richTextView.textView.textStorage.length)
         view.setMentionQueryStateForTesting(
@@ -6119,7 +6119,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         flushMainQueue()
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertEqual(html, "<p>Hello @bo</p>")
         XCTAssertFalse(
             html.contains("data-native-editor-mention=\"true\""),
@@ -6128,10 +6128,10 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapRetryIsDroppedAfterSameQueryRangeChanges() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
-        _ = editorSetHtml(id: editorId, html: "<p>Hello @al</p>")
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Hello @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -6153,7 +6153,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.triggerMentionSuggestionTapForTesting(at: 0)
 
-        let changedUpdateJSON = editorReplaceHtml(id: editorId, html: "<p>@al Hello @al</p>")
+        let changedUpdateJSON = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>@al Hello @al</p>")
         view.richTextView.textView.applyUpdateJSON(changedUpdateJSON, notifyDelegate: false)
         setCollapsedSelection(in: view.richTextView.textView, utf16Offset: view.richTextView.textView.textStorage.length)
         view.setMentionQueryStateForTesting(
@@ -6163,7 +6163,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         flushMainQueue()
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertEqual(html, "<p>@al Hello @al</p>")
         XCTAssertFalse(
             html.contains("data-native-editor-mention=\"true\""),
@@ -6172,14 +6172,14 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testMentionSuggestionTapRetryIsDroppedAfterEditorRebind() {
-        let firstEditorId = editorCreate(configJson: mentionEditorConfigJson())
-        let secondEditorId = editorCreate(configJson: mentionEditorConfigJson())
+        let firstEditorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        let secondEditorId = makeV2Editor(configJson: mentionEditorConfigJson())
         defer {
-            editorDestroy(id: firstEditorId)
-            editorDestroy(id: secondEditorId)
+            destroyV2Editor(id: firstEditorId)
+            destroyV2Editor(id: secondEditorId)
         }
-        _ = editorSetHtml(id: firstEditorId, html: "<p>Hello @al</p>")
-        _ = editorSetHtml(id: secondEditorId, html: "<p>Second @al</p>")
+        _ = EditorV2Shadow.setHtml(id: firstEditorId, html: "<p>Hello @al</p>")
+        _ = EditorV2Shadow.setHtml(id: secondEditorId, html: "<p>Second @al</p>")
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -6204,21 +6204,21 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         flushMainQueue()
 
-        XCTAssertFalse(editorGetHtml(id: firstEditorId).contains("data-native-editor-mention=\"true\""))
-        XCTAssertFalse(editorGetHtml(id: secondEditorId).contains("data-native-editor-mention=\"true\""))
+        XCTAssertFalse(EditorV2Shadow.getHtml(id: firstEditorId).contains("data-native-editor-mention=\"true\""))
+        XCTAssertFalse(EditorV2Shadow.getHtml(id: secondEditorId).contains("data-native-editor-mention=\"true\""))
         XCTAssertEqual(view.richTextView.textView.textStorage.string, "Second @al")
     }
 
     func testMentionSuggestionTapStillWorksAfterRebindingToMentionSchemaEditor() {
-        let initialEditorId = editorCreate(configJson: "{}")
-        let mentionEditorId = editorCreate(configJson: mentionEditorConfigJson())
+        let initialEditorId = makeV2Editor(configJson: "{}")
+        let mentionEditorId = makeV2Editor(configJson: mentionEditorConfigJson())
         defer {
-            editorDestroy(id: initialEditorId)
-            editorDestroy(id: mentionEditorId)
+            destroyV2Editor(id: initialEditorId)
+            destroyV2Editor(id: mentionEditorId)
         }
 
-        _ = editorSetHtml(id: initialEditorId, html: "<p>Hello</p>")
-        _ = editorSetHtml(id: mentionEditorId, html: "<p>Hello @al</p>")
+        _ = EditorV2Shadow.setHtml(id: initialEditorId, html: "<p>Hello</p>")
+        _ = EditorV2Shadow.setHtml(id: mentionEditorId, html: "<p>Hello @al</p>")
 
         let view = NativeEditorExpoView()
         view.setEditorId(initialEditorId)
@@ -6243,7 +6243,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.triggerMentionSuggestionTapForTesting(at: 0)
 
-        let html = editorGetHtml(id: mentionEditorId)
+        let html = EditorV2Shadow.getHtml(id: mentionEditorId)
         XCTAssertTrue(
             html.contains("data-native-editor-mention=\"true\""),
             "mention insert should target the rebound mention-schema editor, got: \(html)"
@@ -6251,13 +6251,13 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testCurrentMentionQueryStateWorksInsideListItem() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
         let view = NativeEditorExpoView()
         view.setEditorId(editorId)
-        _ = editorSetHtml(id: editorId, html: "<ul><li><p>Hello @al</p></li></ul>")
-        view.richTextView.textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<ul><li><p>Hello @al</p></li></ul>")
+        view.richTextView.textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
         let text = view.richTextView.textView.text ?? ""
         let utf16Offset = (text as NSString).range(of: "@al").location + 3
@@ -6269,13 +6269,13 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testCurrentMentionQueryStateWorksInLastParagraph() {
-        let editorId = editorCreate(configJson: mentionEditorConfigJson())
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: mentionEditorConfigJson())
+        defer { destroyV2Editor(id: editorId) }
 
         let view = NativeEditorExpoView()
         view.setEditorId(editorId)
-        _ = editorSetHtml(id: editorId, html: "<p>First paragraph</p><p>@al</p>")
-        view.richTextView.textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>First paragraph</p><p>@al</p>")
+        view.richTextView.textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
         let text = view.richTextView.textView.text ?? ""
         let utf16Offset = (text as NSString).range(of: "@al").location + 3
@@ -6287,51 +6287,51 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testBackspaceBelowHorizontalRuleReplacesItWithParagraph() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p>")
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
         textView.performToolbarInsertNode("horizontalRule")
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<p>Hello</p><hr><p></p>",
             "toolbar hr insert should create a trailing empty paragraph"
         )
 
         textView.deleteBackward()
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<p>Hello</p><p></p>",
             "backspacing below an hr should replace it with an empty paragraph"
         )
 
         textView.insertText("B")
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<p>Hello</p><p>B</p>",
             "typing after hr removal should stay in the replacement paragraph"
         )
     }
 
     func testTypingAndBackspacingAroundImageUsesTrailingParagraphCaret() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 200))
         textView.bindEditor(id: editorId, initialHTML: "<p>Hello</p>")
 
-        editorSetSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
-        textView.applyUpdateJSON(editorGetCurrentState(id: editorId), notifyDelegate: false)
+        EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: 3, scalarHead: 3)
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
 
         let imageFragmentJson = """
         {"type":"doc","content":[{"type":"image","attrs":{"src":"https://example.com/cat.png","alt":"Cat"}}]}
         """
-        let updateJSON = editorInsertContentJsonAtSelectionScalar(
+        let updateJSON = EditorV2Shadow.insertContentJsonAtSelectionScalar(
             id: editorId,
             scalarAnchor: 3,
             scalarHead: 3,
@@ -6350,7 +6350,7 @@ final class RichTextEditorViewTests: XCTestCase {
         )
 
         textView.insertText("B")
-        let htmlAfterTyping = editorGetHtml(id: editorId)
+        let htmlAfterTyping = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(htmlAfterTyping.starts(with: "<p>Hello</p><img "))
         XCTAssertTrue(htmlAfterTyping.contains("src=\"https://example.com/cat.png\""))
         XCTAssertTrue(htmlAfterTyping.contains("alt=\"Cat\""))
@@ -6360,7 +6360,7 @@ final class RichTextEditorViewTests: XCTestCase {
         )
 
         textView.deleteBackward()
-        let htmlAfterFirstBackspace = editorGetHtml(id: editorId)
+        let htmlAfterFirstBackspace = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(htmlAfterFirstBackspace.starts(with: "<p>Hello</p><img "))
         XCTAssertTrue(htmlAfterFirstBackspace.contains("src=\"https://example.com/cat.png\""))
         XCTAssertTrue(htmlAfterFirstBackspace.contains("alt=\"Cat\""))
@@ -6371,15 +6371,15 @@ final class RichTextEditorViewTests: XCTestCase {
 
         textView.deleteBackward()
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             "<p>Hello</p><p></p>",
             "second backspace from the empty trailing paragraph should replace the image with a paragraph"
         )
     }
 
     func testSelectingImageShowsResizeOverlayAndPersistsResizedDimensions() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
         let window = hostEditorView(view)
@@ -6412,7 +6412,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         view.layoutIfNeeded()
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(html.contains("width=\"200\""), "expected resized width in HTML, got: \(html)")
         XCTAssertTrue(html.contains("height=\"100\""), "expected resized height in HTML, got: \(html)")
 
@@ -6425,8 +6425,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSelectedImageOverlayAllowsTouchesOutsideResizeHandles() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
         let window = hostEditorView(view)
@@ -6466,8 +6466,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSelectingImageHidesNativeSelectionChromeUntilCaretMovesAway() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
         let window = hostEditorView(view)
@@ -6502,8 +6502,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testUnfocusedImageTapSelectsImageOnFirstTap() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
         let viewController = UIViewController()
@@ -6561,8 +6561,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testFocusedImageTapSelectsImageOnFirstTap() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
         let viewController = UIViewController()
@@ -6618,8 +6618,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDisablingImageResizingRemovesImageSelectionOverlayBehavior() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
         let window = hostEditorView(view)
@@ -6656,8 +6656,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testSelectedImageOverlayHidesWhenEditorLosesFocus() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
         let viewController = UIViewController()
@@ -6698,8 +6698,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testDeferredImageTapSelectionWinsAfterUIKitCaretPlacement() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
         let viewController = UIViewController()
@@ -6758,8 +6758,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testImageTapOverlayInterceptsImagePointsOnly() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
         view.editorId = editorId
@@ -6785,8 +6785,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testOversizedImageResizeClampsToContentWidthAndKeepsAutoGrowHeightBounded() {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 0))
         let window = hostEditorView(view)
@@ -6818,7 +6818,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         view.layoutIfNeeded()
 
-        let html = editorGetHtml(id: editorId)
+        let html = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(
             html.contains("width=\"\(Int(maximumWidth.rounded()))\""),
             "oversized image width should clamp to the editor content width, got: \(html)"
@@ -6835,8 +6835,8 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     func testImageResizePreviewUsesOverlayImageAndDefersDocumentMutationUntilCommit() {
-        let editorId = editorCreate(configJson: #"{"allowBase64Images":true}"#)
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: #"{"allowBase64Images":true}"#)
+        defer { destroyV2Editor(id: editorId) }
 
         let dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg=="
 
@@ -6887,7 +6887,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         view.layoutIfNeeded()
 
-        let initialHtml = editorGetHtml(id: editorId)
+        let initialHtml = EditorV2Shadow.getHtml(id: editorId)
         let initialHeight = view.intrinsicContentSize.height
         let maximumWidth = view.maximumImageWidthForTesting()
 
@@ -6900,7 +6900,7 @@ final class RichTextEditorViewTests: XCTestCase {
             "the live resize preview should render an image overlay instead of blanking while the drag is active"
         )
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             initialHtml,
             "preview resizing should not mutate the document before the gesture commits"
         )
@@ -6916,7 +6916,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         view.layoutIfNeeded()
 
-        let committedHtml = editorGetHtml(id: editorId)
+        let committedHtml = EditorV2Shadow.getHtml(id: editorId)
         XCTAssertTrue(committedHtml.contains("width=\"\(Int(maximumWidth.rounded()))\""))
         XCTAssertNotEqual(committedHtml, initialHtml)
         XCTAssertFalse(view.imageResizePreviewHasImageForTesting())
@@ -7088,7 +7088,7 @@ final class RichTextEditorViewTests: XCTestCase {
         line: UInt = #line
     ) {
         let selection = currentSelection(in: editorId)
-        let expectedDocPos = editorScalarToDoc(id: editorId, scalar: scalarOffset)
+        let expectedDocPos = EditorV2Shadow.scalarToDoc(id: editorId, scalar: scalarOffset)
         XCTAssertEqual(selection["type"] as? String, "text", file: file, line: line)
         XCTAssertEqual((selection["anchor"] as? NSNumber)?.uint32Value, expectedDocPos, file: file, line: line)
         XCTAssertEqual((selection["head"] as? NSNumber)?.uint32Value, expectedDocPos, file: file, line: line)
@@ -7203,8 +7203,8 @@ final class RichTextEditorViewTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
 
         let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         let window = hostEditorView(view)
@@ -7225,7 +7225,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         applyTraitChange(view.textView)
 
-        XCTAssertEqual(editorGetHtml(id: editorId), "<p>the </p>", file: file, line: line)
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>the </p>", file: file, line: line)
         XCTAssertEqual(view.textView.textStorage.string, "the ", file: file, line: line)
         XCTAssertEqual(view.textView.reconciliationCount, 0, file: file, line: line)
     }
@@ -7251,9 +7251,9 @@ final class RichTextEditorViewTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let editorId = editorCreate(configJson: "{}")
-        defer { editorDestroy(id: editorId) }
-        _ = editorSetHtml(id: editorId, html: initialHTML)
+        let editorId = makeV2Editor(configJson: "{}")
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: initialHTML)
 
         let view = NativeEditorExpoView()
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
@@ -7281,7 +7281,7 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
 
         XCTAssertEqual(
-            editorGetHtml(id: editorId),
+            EditorV2Shadow.getHtml(id: editorId),
             initialHTML.replacingOccurrences(of: "teh", with: "the"),
             file: file,
             line: line
@@ -7336,7 +7336,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     private func currentSelection(in editorId: UInt64) -> [String: Any] {
-        let data = editorGetSelection(id: editorId).data(using: .utf8)
+        let data = EditorV2Shadow.getSelection(id: editorId).data(using: .utf8)
         XCTAssertNotNil(data)
         let json = try? JSONSerialization.jsonObject(with: data ?? Data()) as? [String: Any]
         XCTAssertNotNil(json)
@@ -7366,7 +7366,7 @@ final class RichTextEditorViewTests: XCTestCase {
     }
 
     private func activeState(in editorId: UInt64) -> (insertableNodes: [String], allowedMarks: [String]) {
-        let data = editorGetCurrentState(id: editorId).data(using: .utf8)
+        let data = EditorV2Shadow.getCurrentState(id: editorId).data(using: .utf8)
         XCTAssertNotNil(data)
         let json = try? JSONSerialization.jsonObject(with: data ?? Data()) as? [String: Any]
         let activeState = json?["activeState"] as? [String: Any]
@@ -7538,5 +7538,236 @@ private final class EditorTextViewDelegateSpy: NSObject, EditorTextViewDelegate 
 
     func editorTextView(_ textView: EditorTextView, didReceiveUpdate updateJSON: String) {
         receivedUpdates.append(updateJSON)
+    }
+}
+
+// MARK: - v2 view integration tests (formerly the staging-variant suite)
+//
+// The view is bound to a v2 session through the session pairing registry, so
+// every interaction — typing, marked text, autocorrect, selection, toolbar,
+// accessibility-style edits, render patches — flows through the typed v2
+// transactions. This is the only engine path: no legacy runtime exists.
+final class EditorV2StagingViewTests: XCTestCase {
+
+    private var adapters: [EditorV2Adapter] = []
+    private var syntheticIds: [UInt64] = []
+
+    override func tearDown() {
+        for id in syntheticIds {
+            EditorV2Registry.destroyPair(forLegacyId: id)
+        }
+        syntheticIds = []
+        adapters = []
+        super.tearDown()
+    }
+
+    private func hostStagingView(_ view: RichTextEditorView) -> UIWindow {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        let viewController = UIViewController()
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        viewController.view.addSubview(view)
+        view.layoutIfNeeded()
+        return window
+    }
+
+    private func makeBoundView(
+        configJson: String = "{}",
+        html: String = "<p>Hello</p>",
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> (view: RichTextEditorView, adapter: EditorV2Adapter, window: UIWindow) {
+        let adapter: EditorV2Adapter
+        switch EditorV2Adapter.create(legacyConfigJson: configJson) {
+        case .success(let created):
+            adapter = created
+        case .failure(let error):
+            XCTFail("v2 create failed: \(error.code): \(error.message)", file: file, line: line)
+            fatalError("unreachable")
+        }
+        adapters.append(adapter)
+        let syntheticId = EditorV2Registry.registerSyntheticPairing(adapter)
+        syntheticIds.append(syntheticId)
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        let window = hostStagingView(view)
+        view.editorId = syntheticId
+        view.setContent(html: html)
+        return (view, adapter, window)
+    }
+
+    private func flushMain() {
+        let expectation = expectation(description: "flush main")
+        DispatchQueue.main.async { expectation.fulfill() }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    private func setCollapsedCaret(in textView: UITextView, utf16Offset: Int) {
+        textView.selectedRange = NSRange(location: utf16Offset, length: 0)
+    }
+
+    private func v2DocumentText(_ adapter: EditorV2Adapter, file: StaticString = #filePath, line: UInt = #line) -> String {
+        let result = editorV2GetDocumentJson(editorId: adapter.editorId)
+        guard let value = result.value, result.error == nil else {
+            XCTFail("getDocumentJson failed: \(String(describing: result.error))", file: file, line: line)
+            return ""
+        }
+        guard let data = value.data(using: .utf8),
+              let doc = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return "" }
+        var pieces: [String] = []
+        func walk(_ node: [String: Any]) {
+            if let type = node["type"] as? String, type == "text", let text = node["text"] as? String {
+                pieces.append(text)
+            }
+            for child in (node["content"] as? [[String: Any]]) ?? [] { walk(child) }
+        }
+        walk(doc)
+        return pieces.joined()
+    }
+
+    func testStagingBindRendersFromV2Session() {
+        let (view, adapter, window) = makeBoundView()
+        defer { view.removeFromSuperview(); window.isHidden = true }
+
+        XCTAssertEqual(view.textView.textStorage.string, "Hello")
+        XCTAssertEqual(v2DocumentText(adapter), "Hello")
+        XCTAssertGreaterThan(adapter.baseDocumentRevision, 0)
+    }
+
+    func testStagingMarkedTextTransientNeverReachesRustAndCommitsOnce() {
+        let (view, adapter, window) = makeBoundView(html: "<p>ab</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        setCollapsedCaret(in: view.textView, utf16Offset: 2)
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+
+        let revisionBefore = adapter.baseDocumentRevision
+        view.textView.setMarkedText("n", selectedRange: NSRange(location: 1, length: 0))
+
+        // Transient IME state stays native-only: no v2 traffic, no revision
+        // movement, document untouched.
+        XCTAssertEqual(adapter.baseDocumentRevision, revisionBefore)
+        XCTAssertEqual(v2DocumentText(adapter), "ab")
+
+        view.textView.unmarkText()
+
+        // The final composition commit is exactly one typed local-input
+        // transaction: one revision step, one undo removes it.
+        XCTAssertEqual(adapter.baseDocumentRevision, revisionBefore + 1)
+        XCTAssertEqual(v2DocumentText(adapter), "abn")
+        _ = adapter.undo()
+        XCTAssertEqual(v2DocumentText(adapter), "ab")
+        XCTAssertEqual(view.textView.reconciliationCount, 0)
+    }
+
+    func testStagingAutocorrectAcceptCommitsOneTransaction() {
+        let (view, adapter, window) = makeBoundView(html: "<p>teh </p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        setCollapsedCaret(in: view.textView, utf16Offset: 4)
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+
+        let revisionBefore = adapter.baseDocumentRevision
+        view.textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 3),
+            with: "the"
+        )
+        flushMain()
+
+        XCTAssertEqual(v2DocumentText(adapter), "the ")
+        XCTAssertEqual(adapter.baseDocumentRevision, revisionBefore + 1)
+        XCTAssertEqual(view.textView.textStorage.string, "the ")
+    }
+
+    func testStagingTypingAppliesRenderPatchWithoutFullRerender() {
+        let (view, adapter, window) = makeBoundView(html: "<p>Hello world, this is a long paragraph.</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        setCollapsedCaret(in: view.textView, utf16Offset: 5)
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+
+        view.textView.insertText("X")
+
+        XCTAssertEqual(v2DocumentText(adapter), "HelloX world, this is a long paragraph.")
+        XCTAssertEqual(
+            view.textView.lastRenderAppliedPatchForTesting, true,
+            "a single-character commit must render through the patch path, not a full re-render"
+        )
+        XCTAssertEqual(view.textView.textStorage.string, "HelloX world, this is a long paragraph.")
+    }
+
+    func testStagingSelectionSyncDeliversRustStatePositions() {
+        let (view, adapter, window) = makeBoundView(html: "<p>abcdef</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        let delegate = EditorTextViewDelegateSpy()
+        view.textView.editorDelegate = delegate
+        setCollapsedCaret(in: view.textView, utf16Offset: 3)
+        view.textView.delegate?.textViewDidChangeSelection?(view.textView)
+        flushMain()
+
+        // scalar 3 inside "abcdef" maps to doc position 4.
+        XCTAssertEqual(delegate.selectionChanges.last?.anchor, 4)
+        XCTAssertEqual(delegate.selectionChanges.last?.head, 4)
+        _ = adapter
+    }
+
+    func testStagingReadOnlyRejectsAccessibilityStyleEditAtomically() {
+        let (view, adapter, window) = makeBoundView(configJson: "{\"readOnly\":true}", html: "<p>ab</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        setCollapsedCaret(in: view.textView, utf16Offset: 2)
+        flushMain()
+        var errors: [FfiError] = []
+        adapter.onAutonomousError = { errors.append($0) }
+
+        // VoiceOver/dictation edits enter through the same UITextInput entry
+        // points; the engine must reject them atomically even if UIKit lets
+        // the call through.
+        view.textView.insertText("z")
+        view.textView.deleteBackward()
+
+        XCTAssertEqual(v2DocumentText(adapter), "ab")
+        XCTAssertEqual(view.textView.textStorage.string, "ab")
+        XCTAssertEqual(errors.last?.code, "MUTATION_REJECTED")
+    }
+
+    func testStagingDestroyMidCompositionIsStructuredFailureWithoutPartialCommit() {
+        let (view, adapter, window) = makeBoundView(html: "<p>ab</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        setCollapsedCaret(in: view.textView, utf16Offset: 2)
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        var errors: [FfiError] = []
+        adapter.onAutonomousError = { errors.append($0) }
+
+        view.textView.setMarkedText("xyz", selectedRange: NSRange(location: 1, length: 0))
+        let revisionBeforeDestroy = adapter.baseDocumentRevision
+
+        // The editor is destroyed mid-composition.
+        adapter.destroy()
+
+        // Finishing the composition must not crash, must not partially
+        // commit, and must surface the structured lifecycle failure.
+        view.textView.unmarkText()
+        flushMain()
+
+        XCTAssertEqual(errors.last?.domain, "lifecycle")
+        XCTAssertEqual(errors.last?.code, "ENGINE_DESTROYED")
+        XCTAssertEqual(adapter.baseDocumentRevision, revisionBeforeDestroy)
+    }
+
+    func testStagingUndoRedoThroughToolbarPath() {
+        let (view, adapter, window) = makeBoundView(html: "<p>ab</p>")
+        defer { view.removeFromSuperview(); window.isHidden = true }
+        setCollapsedCaret(in: view.textView, utf16Offset: 2)
+        flushMain()
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+
+        view.textView.insertText("c")
+        XCTAssertEqual(v2DocumentText(adapter), "abc")
+
+        view.textView.performToolbarUndo()
+        XCTAssertEqual(v2DocumentText(adapter), "ab")
+        view.textView.performToolbarRedo()
+        XCTAssertEqual(v2DocumentText(adapter), "abc")
     }
 }

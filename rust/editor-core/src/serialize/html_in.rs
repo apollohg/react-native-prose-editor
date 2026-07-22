@@ -21,6 +21,9 @@ pub enum ParseError {
     /// An unknown HTML tag was encountered in strict mode.
     UnknownTag(String),
     /// The parsed content does not satisfy the schema's content rules.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     InvalidContent(String),
     ResourceLimit {
         limit: usize,
@@ -324,6 +327,9 @@ fn is_block_html_element(tag: &str) -> bool {
 ///
 /// In non-strict mode (the default), unknown tags are preserved as opaque nodes
 /// that round-trip faithfully. In strict mode, unknown tags produce an error.
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 pub fn from_html(
     html: &str,
     schema: &Schema,

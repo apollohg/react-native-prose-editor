@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import type { CollaborationPeer } from '@apollohg/react-native-prose-editor';
+import type { NativeEditorV2PeerInfo } from '@apollohg/react-native-prose-editor';
 import type { ExampleThemePreset } from '../themePresets';
 import { sharedStyles } from '../sharedStyles';
 import { CollapsibleSection } from './CollapsibleSection';
@@ -17,7 +17,7 @@ type CollaborationPanelProps = {
     collaborationStatusText: string;
     collaborationLastErrorMessage?: string | null;
     collaborationIsConnected: boolean;
-    remotePeers: readonly CollaborationPeer[];
+    remotePeers: readonly NativeEditorV2PeerInfo[];
     onConnect: () => void;
     onDisconnect: () => void;
     appChrome: ExampleThemePreset['appChrome'];
@@ -247,7 +247,7 @@ function CollaborationPeerRow({
     peer,
     appChrome,
 }: {
-    peer: CollaborationPeer;
+    peer: NativeEditorV2PeerInfo;
     appChrome: ExampleThemePreset['appChrome'];
 }) {
     const state =

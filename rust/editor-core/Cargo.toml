@@ -34,7 +34,6 @@ required-features = ["cli"]
 default = []
 cli = ["uniffi/cli"]
 crdt = [] # Phase 2
-ffi-v2-staging = []
 
 [[bench]]
 name = "perf_suite"

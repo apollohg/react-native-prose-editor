@@ -106,6 +106,9 @@ impl Document {
 
     /// Total token size of the document including the root node's open and
     /// close tags.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn doc_size(&self) -> u32 {
         self.root.node_size()
     }

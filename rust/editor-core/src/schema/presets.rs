@@ -17,12 +17,18 @@ pub fn tiptap_schema() -> Schema {
 /// Node names: doc, paragraph, blockquote, bullet_list, ordered_list, list_item,
 ///             hard_break, horizontal_rule, image, text.
 /// Mark names: bold, italic, underline, strike, link.
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 pub fn prosemirror_schema() -> Schema {
     build_schema(NamingConvention::SnakeCase)
 }
 
 enum NamingConvention {
     CamelCase,
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     SnakeCase,
 }
 

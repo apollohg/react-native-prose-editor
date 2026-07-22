@@ -163,3 +163,117 @@ export function normalizeNativeEditorV2Error(value: unknown): NativeEditorV2Erro
         details,
     };
 }
+
+// ---------------------------------------------------------------------------
+// FFI v2 typed imperative error classes (additive; the legacy parsing path
+// above is unchanged). Recoverable engine errors throw the structured
+// per-domain class; ENGINE_INVARIANT_FAILED and lifecycle-destroyed states
+// throw the distinct non-retryable class.
+// ---------------------------------------------------------------------------
+
+/** Codes that mark a failure as permanently non-retryable for this handle. */
+export const NATIVE_EDITOR_V2_NON_RETRYABLE_CODES = [
+    'ENGINE_INVARIANT_FAILED',
+    'ENGINE_DESTROYING',
+    'ENGINE_DESTROYED',
+] as const;
+
+export function isNativeEditorV2NonRetryableCode(code: string): boolean {
+    return (NATIVE_EDITOR_V2_NON_RETRYABLE_CODES as readonly string[]).includes(code);
+}
+
+/** Base class for every typed error raised from a normalized FFI v2 error record. */
+export class NativeEditorV2ErrorBase extends Error {
+    readonly domain: NativeEditorErrorDomain;
+    readonly code: NativeEditorBoundaryErrorCode;
+    readonly requestId: string | null;
+    readonly operationIndex: number | null;
+    readonly limit: number | null;
+    readonly actual: number | null;
+    readonly details: Record<string, unknown> | null;
+
+    constructor(
+        readonly error: NativeEditorV2Error,
+        name: string
+    ) {
+        super(error.message);
+        this.name = name;
+        this.domain = error.domain;
+        this.code = error.code;
+        this.requestId = error.requestId;
+        this.operationIndex = error.operationIndex;
+        this.limit = error.limit;
+        this.actual = error.actual;
+        this.details = error.details;
+    }
+}
+
+export class NativeEditorV2BoundaryError extends NativeEditorV2ErrorBase {
+    constructor(error: NativeEditorV2Error) {
+        super(error, 'NativeEditorV2BoundaryError');
+    }
+}
+
+export class NativeEditorV2DocumentError extends NativeEditorV2ErrorBase {
+    constructor(error: NativeEditorV2Error) {
+        super(error, 'NativeEditorV2DocumentError');
+    }
+}
+
+export class NativeEditorV2OperationError extends NativeEditorV2ErrorBase {
+    constructor(error: NativeEditorV2Error) {
+        super(error, 'NativeEditorV2OperationError');
+    }
+}
+
+export class NativeEditorV2LifecycleError extends NativeEditorV2ErrorBase {
+    constructor(error: NativeEditorV2Error) {
+        super(error, 'NativeEditorV2LifecycleError');
+    }
+}
+
+export class NativeEditorV2SnapshotError extends NativeEditorV2ErrorBase {
+    constructor(error: NativeEditorV2Error) {
+        super(error, 'NativeEditorV2SnapshotError');
+    }
+}
+
+export class NativeEditorV2TransportError extends NativeEditorV2ErrorBase {
+    constructor(error: NativeEditorV2Error) {
+        super(error, 'NativeEditorV2TransportError');
+    }
+}
+
+/**
+ * Distinct class for failures that can never succeed on retry for this
+ * handle: ENGINE_INVARIANT_FAILED and the lifecycle-destroyed states
+ * (ENGINE_DESTROYING / ENGINE_DESTROYED).
+ */
+export class NativeEditorV2NonRetryableError extends NativeEditorV2ErrorBase {
+    constructor(error: NativeEditorV2Error) {
+        super(error, 'NativeEditorV2NonRetryableError');
+    }
+}
+
+const NATIVE_EDITOR_V2_DOMAIN_ERROR_CLASSES: Record<
+    NativeEditorErrorDomain,
+    new (error: NativeEditorV2Error) => NativeEditorV2ErrorBase
+> = {
+    boundary: NativeEditorV2BoundaryError,
+    document: NativeEditorV2DocumentError,
+    operation: NativeEditorV2OperationError,
+    lifecycle: NativeEditorV2LifecycleError,
+    snapshot: NativeEditorV2SnapshotError,
+    transport: NativeEditorV2TransportError,
+};
+
+/** Map a normalized FFI v2 error record to its typed imperative exception. */
+export function nativeEditorV2ErrorToException(
+    error: NativeEditorV2Error
+): NativeEditorV2ErrorBase {
+    if (isNativeEditorV2NonRetryableCode(error.code)) {
+        return new NativeEditorV2NonRetryableError(error);
+    }
+    const ErrorClass = NATIVE_EDITOR_V2_DOMAIN_ERROR_CLASSES[error.domain];
+    return new ErrorClass(error);
+}

@@ -211,6 +211,9 @@ pub struct ResourceLimits {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 struct ResourceLimitOverrides {
     max_input_bytes: Option<usize>,
     max_document_nodes: Option<usize>,
@@ -236,6 +239,9 @@ impl Default for ResourceLimits {
 }
 
 impl ResourceLimits {
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn try_from_config(value: Option<&serde_json::Value>) -> BoundaryResult<Self> {
         let overrides = match value {
             Some(value) => serde_json::from_value::<ResourceLimitOverrides>(value.clone())
@@ -376,7 +382,13 @@ pub enum InputKind {
     Config,
     DocumentJson,
     Html,
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     CollaborationMessage,
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     EncodedState,
 }
 

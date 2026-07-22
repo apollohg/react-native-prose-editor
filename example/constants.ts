@@ -139,6 +139,7 @@ export const EXAMPLE_DEFAULT_TOOLBAR_ITEMS: readonly EditorToolbarItem[] = [
 export type ToolbarColorKey = Exclude<
     keyof Required<EditorToolbarTheme>,
     | 'appearance'
+    | 'height'
     | 'borderRadius'
     | 'borderWidth'
     | 'marginTop'

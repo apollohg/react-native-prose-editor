@@ -30,13 +30,14 @@ android {
         consumerProguardFiles "consumer-rules.pro"
     }
 
-    // Include prebuilt Rust .so files from the package's rust/android/ directory
+    // Task 16C: the v2 engine is the ONLY runtime. The prebuilt Rust .so
+    // files (26 editor_v2_* symbols + version, zero legacy symbols) and the
+    // regenerated UniFFI Kotlin bindings are wired into every variant.
     sourceSets {
         main {
-            jniLibs.srcDirs = [
+            jniLibs.srcDirs += [
                 "${project.projectDir}/../rust/android"
             ]
-            // Include the generated Kotlin UniFFI bindings
             java.srcDirs += [
                 "${project.projectDir}/../rust/bindings/kotlin"
             ]

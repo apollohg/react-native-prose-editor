@@ -1,11 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import type {
-    EditorToolbarItem,
-    EditorToolbarTheme,
-    NativeRichTextEditorHeightBehavior,
-    NativeRichTextEditorToolbarPlacement,
-} from '@apollohg/react-native-prose-editor';
+import type { EditorToolbarTheme } from '@apollohg/react-native-prose-editor';
 import type { ToolbarColorKey } from '../constants';
 import type { ExampleThemePreset } from '../themePresets';
 import { CollapsibleSection } from './CollapsibleSection';
@@ -17,18 +12,12 @@ type ThemeSettingsCardProps = {
     onSettingsTabChange: (tab: 'editor' | 'toolbar') => void;
     baseFontSize: number;
     onBaseFontSizeChange: (size: number) => void;
-    heightBehavior: NativeRichTextEditorHeightBehavior;
-    onHeightBehaviorChange: (behavior: NativeRichTextEditorHeightBehavior) => void;
-    toolbarPlacement: NativeRichTextEditorToolbarPlacement;
-    onToolbarPlacementChange: (value: NativeRichTextEditorToolbarPlacement) => void;
     mentionsEnabled: boolean;
     onMentionsEnabledChange: (value: boolean) => void;
     blockquoteBorderColor: string;
     onBlockquoteBorderColorChange: (value: string) => void;
     expandedEditorColor: 'blockquoteBorderColor' | null;
     onExpandedEditorColorChange: (key: 'blockquoteBorderColor' | null) => void;
-    toolbarItems: readonly EditorToolbarItem[];
-    onToolbarItemsChange: (items: EditorToolbarItem[]) => void;
     toolbarTheme: Required<EditorToolbarTheme>;
     onToolbarThemeChange: (
         updater: (current: Required<EditorToolbarTheme>) => Required<EditorToolbarTheme>
@@ -47,18 +36,12 @@ export function ThemeSettingsCard({
     onSettingsTabChange,
     baseFontSize,
     onBaseFontSizeChange,
-    heightBehavior,
-    onHeightBehaviorChange,
-    toolbarPlacement,
-    onToolbarPlacementChange,
     mentionsEnabled,
     onMentionsEnabledChange,
     blockquoteBorderColor,
     onBlockquoteBorderColorChange,
     expandedEditorColor,
     onExpandedEditorColorChange,
-    toolbarItems,
-    onToolbarItemsChange,
     toolbarTheme,
     onToolbarThemeChange,
     expandedColor,
@@ -109,10 +92,6 @@ export function ThemeSettingsCard({
                 <EditorSettingsPanel
                     baseFontSize={baseFontSize}
                     onBaseFontSizeChange={onBaseFontSizeChange}
-                    autoGrow={heightBehavior === 'autoGrow'}
-                    onAutoGrowChange={(on) => onHeightBehaviorChange(on ? 'autoGrow' : 'fixed')}
-                    toolbarPlacement={toolbarPlacement}
-                    onToolbarPlacementChange={onToolbarPlacementChange}
                     mentionsEnabled={mentionsEnabled}
                     onMentionsEnabledChange={onMentionsEnabledChange}
                     blockquoteBorderColor={blockquoteBorderColor}
@@ -124,8 +103,6 @@ export function ThemeSettingsCard({
                 />
             ) : (
                 <ToolbarSettingsPanel
-                    toolbarItems={toolbarItems}
-                    onToolbarItemsChange={onToolbarItemsChange}
                     toolbarTheme={toolbarTheme}
                     onToolbarThemeChange={onToolbarThemeChange}
                     expandedColor={expandedColor}

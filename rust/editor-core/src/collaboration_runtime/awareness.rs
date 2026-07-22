@@ -70,6 +70,17 @@ impl AwarenessRuntimeState {
         }
     }
 
+    /// Task 11 restore bookkeeping reset: peer activity deadlines die with
+    /// the prior store's peers (the codec's store-swap rebind dropped the
+    /// states themselves), and the renewal clock restarts — the fresh-clock
+    /// local re-publish inside the restore never reached the outbox, so no
+    /// broadcast has happened for the new store. The desired state itself is
+    /// retained by design.
+    pub(crate) fn reset_for_restore(&mut self) {
+        self.peer_activity.clear();
+        self.last_local_publish_millis = None;
+    }
+
     /// The requested next tick: the earlier of the local renewal deadline
     /// (while synchronized with a desired state) and the earliest remote
     /// expiry deadline. `None` means no clock work is pending.
@@ -496,10 +507,12 @@ mod tests {
 
     #[test]
     fn awareness_limits_mirror_the_session_collaboration_limit_fields() {
-        let mut limits = CollaborationLimits::default();
-        limits.max_awareness_peers = 3;
-        limits.max_awareness_peer_bytes = 64;
-        limits.max_awareness_bytes = 256;
+        let limits = CollaborationLimits {
+            max_awareness_peers: 3,
+            max_awareness_peer_bytes: 64,
+            max_awareness_bytes: 256,
+            ..CollaborationLimits::default()
+        };
         assert_eq!(
             awareness_limits(&limits),
             AwarenessLimits {
@@ -544,6 +557,34 @@ mod tests {
         assert_eq!(
             state.next_deadline_millis(TransportState::Synchronized),
             Some(9_000),
+        );
+    }
+
+    #[test]
+    fn reset_for_restore_clears_peer_bookkeeping_and_restarts_the_renewal_clock() {
+        let mut state = AwarenessRuntimeState::new();
+        state.now_millis = 9_000;
+        state.desired_state = Some(json!({"n": 1}));
+        state.last_local_publish_millis = Some(4_000);
+        state.peer_activity.insert(7, 1_000);
+        state.peer_activity.insert(8, 2_000);
+
+        state.reset_for_restore();
+
+        // The desired state survives; prior-store deadlines are gone.
+        assert_eq!(state.desired_state, Some(json!({"n": 1})));
+        assert!(state.peer_activity.is_empty());
+        assert_eq!(state.last_local_publish_millis, None);
+        // With no broadcast for the new store, a synchronized renewal is due
+        // at the current deterministic time, never on the prior store's
+        // schedule.
+        assert_eq!(
+            state.next_deadline_millis(TransportState::Synchronized),
+            Some(9_000),
+        );
+        assert_eq!(
+            state.next_deadline_millis(TransportState::Disconnected),
+            None
         );
     }
 

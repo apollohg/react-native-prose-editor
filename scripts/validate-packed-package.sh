@@ -39,9 +39,13 @@ require_structured_create_symbols() {
   local binary_path="$1"
   local nm_output="$2"
   local label="$3"
-  grep -Eq '[[:space:]]_?uniffi_editor_core_fn_func_editor_create_result$' <<< "$nm_output" || \
+  # Post-16C the v2 ABI is the only surface: the structured editor-create
+  # entry point is editor_v2_create (26 editor_v2_* symbols + version, zero
+  # legacy editor_*/collaboration_* symbols — enforced by build-ios.sh and
+  # build-android.sh at packaging time).
+  grep -Eq '[[:space:]]_?uniffi_editor_core_fn_func_editor_v2_create$' <<< "$nm_output" || \
     fail "$label is missing the structured editor-create symbol ($binary_path)"
-  grep -Eq '[[:space:]]_?uniffi_editor_core_checksum_func_editor_create_result$' <<< "$nm_output" || \
+  grep -Eq '[[:space:]]_?uniffi_editor_core_checksum_func_editor_v2_create$' <<< "$nm_output" || \
     fail "$label is missing the structured editor-create checksum ($binary_path)"
 }
 
@@ -104,11 +108,35 @@ validate_archive_architectures() {
     (
       cd "$extracted_objects_dir"
       ar -x "$thin_archive"
-      nm -gU ./*.o >/dev/null 2>&1
+      # Readability must be checked per member with a tool whose Mach-O
+      # reader is compatible with the archive producer. Xcode's nm (Apple
+      # LLVM) rejects rustc-emitted objects whose embedded bitcode uses a
+      # newer attribute kind ("Unknown attribute kind"), even though the
+      # objects are valid and link cleanly; otool parses the same members
+      # without consulting the bitcode reader and still fails on corrupt or
+      # non-Mach-O members.
+      for object in ./*.o; do
+        # otool exits 0 even for non-Mach-O input, so assert on the parsed
+        # Mach header in its output rather than on its exit status alone.
+        otool -hv "$object" 2>&1 | grep -q "Mach header" || exit 1
+      done
     ) || fail "$label $architecture archive contains an unreadable Mach-O object member"
     local architecture_nm_output
-    architecture_nm_output="$(nm -gU "$thin_archive" 2>&1)" || \
-      fail "$label $architecture archive symbols cannot be read: $architecture_nm_output"
+    local architecture_nm_status=0
+    architecture_nm_output="$(nm -gU "$thin_archive" 2>&1)" || architecture_nm_status=$?
+    if [[ "$architecture_nm_status" -ne 0 ]]; then
+      # Xcode's nm (Apple LLVM) exits non-zero on objects whose embedded
+      # bitcode uses an attribute kind newer than its reader ("Unknown
+      # attribute kind", produced by the pinned rustc's LLVM), even though
+      # it still prints the complete symbol table for every member.
+      # Tolerate ONLY that producer/reader skew (plus benign "no symbols"
+      # member notes); any other nm error still fails the gate, and the
+      # required-symbol greps below prove the table was read in full.
+      local unexpected_nm_lines
+      unexpected_nm_lines="$(printf '%s\n' "$architecture_nm_output" | grep -E '(nm: error: |: no symbols$)' | grep -v 'Unknown attribute kind' | grep -v ': no symbols$' || true)"
+      [[ -z "$unexpected_nm_lines" ]] || \
+        fail "$label $architecture archive symbols cannot be read: $architecture_nm_output"
+    fi
     require_structured_create_symbols \
       "$thin_archive" \
       "$architecture_nm_output" \
@@ -224,11 +252,11 @@ validate_xcframework "$package_dir/ios/EditorCore.xcframework"
 require_declaration_symbol "NativeEditorBoundaryError"
 require_declaration_symbol "resourceLimits"
 require_declaration_symbol "requestTimeoutMs"
-grep -Fq "uniffi_editor_core_fn_func_editor_create_result" "$package_dir/ios/editor_coreFFI/editor_coreFFI.h" || \
-  fail "packed generated FFI header is missing editor_create_result"
-grep -Fq 'Function("editorCreateResult")' "$package_dir/android/src/main/java/com/apollohg/editor/NativeEditorModule.kt" || \
+grep -Fq "uniffi_editor_core_fn_func_editor_v2_create" "$package_dir/ios/editor_coreFFI/editor_coreFFI.h" || \
+  fail "packed generated FFI header is missing editor_v2_create"
+grep -Fq 'Function("editorV2Create")' "$package_dir/android/src/main/java/com/apollohg/editor/NativeEditorModule.kt" || \
   fail "packed Android Expo module is not using structured editor creation"
-grep -Fq 'Function("editorCreateResult")' "$package_dir/ios/NativeEditorModule.swift" || \
+grep -Fq 'Function("editorV2Create")' "$package_dir/ios/NativeEditorModule.swift" || \
   fail "packed iOS Expo module is not using structured editor creation"
 
 for abi in arm64-v8a armeabi-v7a x86 x86_64; do

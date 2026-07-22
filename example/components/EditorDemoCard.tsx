@@ -4,63 +4,37 @@ import {
     NativeRichTextEditor,
     type DocumentJSON,
     type EditorAddons,
-    type EditorToolbarItem,
-    type ImageRequestContext,
-    type LinkRequestContext,
-    type NativeRichTextEditorHeightBehavior,
+    type NativeEditorDocumentHandle,
     type NativeRichTextEditorRef,
-    type NativeRichTextEditorToolbarPlacement,
-    type Selection,
 } from '@apollohg/react-native-prose-editor';
 import type { ExampleThemePreset } from '../themePresets';
 import { sharedStyles } from '../sharedStyles';
 
 type EditorDemoCardProps = {
     editorRef: React.RefObject<NativeRichTextEditorRef | null>;
-    initialContent: string;
-    valueJSON?: DocumentJSON;
-    valueJSONUpdateMode?: React.ComponentProps<typeof NativeRichTextEditor>['valueJSONUpdateMode'];
-    preserveSelectionOnValueJSONReset?: React.ComponentProps<
-        typeof NativeRichTextEditor
-    >['preserveSelectionOnValueJSONReset'];
-    selectionOnValueJSONReset?: React.ComponentProps<
-        typeof NativeRichTextEditor
-    >['selectionOnValueJSONReset'];
+    /** The shared document session; the same handle feeds the collaboration controller. */
+    documentHandle: NativeEditorDocumentHandle;
+    /** Revision signal from the collaboration controller (remote commits, promotions). */
+    documentRevision?: string | null;
+    /** Pinged after each local engine mutation so collaboration can flush outbound frames. */
+    onLocalDocumentCommit?: () => void;
     theme: React.ComponentProps<typeof NativeRichTextEditor>['theme'];
     addons?: EditorAddons;
-    toolbarItems: readonly EditorToolbarItem[];
-    onRequestLink: (context: LinkRequestContext) => void;
-    onRequestImage: (context: ImageRequestContext) => void;
-    heightBehavior: NativeRichTextEditorHeightBehavior;
-    toolbarPlacement: NativeRichTextEditorToolbarPlacement;
     onContentChange: (html: string) => void;
     onContentChangeJSON: (json: DocumentJSON) => void;
-    onSelectionChange: (selection: Selection) => void;
-    onFocus: () => void;
-    onBlur: () => void;
     remoteSelections?: React.ComponentProps<typeof NativeRichTextEditor>['remoteSelections'];
     appChrome: ExampleThemePreset['appChrome'];
 };
 
 export function EditorDemoCard({
     editorRef,
-    initialContent,
-    valueJSON,
-    valueJSONUpdateMode,
-    preserveSelectionOnValueJSONReset,
-    selectionOnValueJSONReset,
+    documentHandle,
+    documentRevision,
+    onLocalDocumentCommit,
     theme,
     addons,
-    toolbarItems,
-    onRequestLink,
-    onRequestImage,
-    heightBehavior,
-    toolbarPlacement,
     onContentChange,
     onContentChangeJSON,
-    onSelectionChange,
-    onFocus,
-    onBlur,
     remoteSelections,
     appChrome,
 }: EditorDemoCardProps) {
@@ -72,29 +46,16 @@ export function EditorDemoCard({
 
             <NativeRichTextEditor
                 ref={editorRef}
-                initialContent={initialContent}
-                valueJSON={valueJSON}
-                valueJSONUpdateMode={valueJSONUpdateMode}
-                preserveSelectionOnValueJSONReset={preserveSelectionOnValueJSONReset}
-                selectionOnValueJSONReset={selectionOnValueJSONReset}
+                documentHandle={documentHandle}
+                documentRevision={documentRevision}
+                onLocalDocumentCommit={onLocalDocumentCommit}
                 theme={theme}
                 addons={addons}
-                toolbarItems={toolbarItems}
-                onRequestLink={onRequestLink}
-                onRequestImage={onRequestImage}
-                allowBase64Images
-                autoFocus
-                heightBehavior={heightBehavior}
-                toolbarPlacement={toolbarPlacement}
+                placeholder='Start typing...'
                 onContentChange={onContentChange}
                 onContentChangeJSON={onContentChangeJSON}
-                onSelectionChange={onSelectionChange}
-                onFocus={onFocus}
-                onBlur={onBlur}
                 remoteSelections={remoteSelections}
-                autoCorrect={true}
-                autoCapitalize={'sentences'}
-                style={[styles.editor, heightBehavior === 'fixed' && styles.editorFixed]}
+                style={styles.editor}
             />
         </View>
     );
@@ -108,8 +69,6 @@ const styles = StyleSheet.create({
     },
     editor: {
         borderRadius: 16,
-    },
-    editorFixed: {
         minHeight: 200,
         maxHeight: 300,
     },

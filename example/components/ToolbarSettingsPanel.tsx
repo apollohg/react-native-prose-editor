@@ -3,18 +3,14 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Slider from '@react-native-community/slider';
 import type {
     EditorToolbarAppearance,
-    EditorToolbarItem,
     EditorToolbarTheme,
 } from '@apollohg/react-native-prose-editor';
 import type { ExampleThemePreset } from '../themePresets';
 import { TOOLBAR_COLOR_FIELDS, type ToolbarColorKey } from '../constants';
 import { sharedStyles } from '../sharedStyles';
 import { ColorField } from './ColorField';
-import { ToolbarItemsEditor } from './ToolbarItemsEditor';
 
 type ToolbarSettingsPanelProps = {
-    toolbarItems: readonly EditorToolbarItem[];
-    onToolbarItemsChange: (items: EditorToolbarItem[]) => void;
     toolbarTheme: Required<EditorToolbarTheme>;
     onToolbarThemeChange: (
         updater: (current: Required<EditorToolbarTheme>) => Required<EditorToolbarTheme>
@@ -26,8 +22,6 @@ type ToolbarSettingsPanelProps = {
 };
 
 export function ToolbarSettingsPanel({
-    toolbarItems,
-    onToolbarItemsChange,
     toolbarTheme,
     onToolbarThemeChange,
     expandedColor,
@@ -61,12 +55,6 @@ export function ToolbarSettingsPanel({
 
     return (
         <View style={sharedStyles.settingsPanel}>
-            <ToolbarItemsEditor
-                items={toolbarItems}
-                onItemsChange={onToolbarItemsChange}
-                appChrome={appChrome}
-            />
-
             <View style={styles.toolbarCard}>
                 <Text style={[sharedStyles.controlLabel, { color: appChrome.controlLabelColor }]}>
                     Toolbar Theme

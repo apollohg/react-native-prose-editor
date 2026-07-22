@@ -32,7 +32,7 @@ import java.util.concurrent.TimeUnit
 import java.util.WeakHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
-import uniffi.editor_core.*
+import uniffi.editor_core.editorV2GetState
 
 private const val DESTROY_INVALIDATION_AWAIT_TIMEOUT_MS = 250L
 private const val OUTSIDE_TAP_GESTURE_CONFIRM_DELAY_MS = 150L
@@ -318,7 +318,7 @@ internal object NativeEditorViewRegistry {
     }
 
     private fun rustEditorExists(editorId: Long): Boolean = runCatching {
-        !JSONObject(editorGetContentSnapshot(editorId.toULong())).has("error")
+        editorV2GetState(editorId.toString()).let { it.value != null && it.error == null }
     }.getOrDefault(false)
 
     fun commandPreparationJSON(
@@ -3020,13 +3020,14 @@ class NativeEditorExpoView(
                 )
             )
 
-        val updateJson = editorInsertContentJsonAtSelectionScalar(
-            richTextView.editorId.toULong(),
-            queryState.anchor.toUInt(),
-            queryState.head.toUInt(),
-            docJson.toString()
+        val updateJson = richTextView.editorEditText.v2Driver?.insertContentJsonAtSelection(
+            docJson.toString(),
+            queryState.anchor,
+            queryState.head
         )
-        richTextView.editorEditText.applyUpdateJSON(updateJson)
+        if (updateJson != null) {
+            richTextView.editorEditText.applyUpdateJSON(updateJson)
+        }
         emitMentionSelect(mentions.trigger, suggestion, attrs)
         lastMentionEventJson = null
         clearMentionQueryState()
@@ -3040,7 +3041,7 @@ class NativeEditorExpoView(
             noteDocumentVersionFromUpdateJSON(stateJson)
             return stateJson
         }
-        val stateJson = editorGetSelectionState(richTextView.editorId.toULong())
+        val stateJson = richTextView.editorEditText.v2Driver?.currentStateJson() ?: return null
         noteDocumentVersionFromUpdateJSON(stateJson)
         val state = NativeToolbarState.fromUpdateJson(stateJson) ?: return null
         toolbarState = state

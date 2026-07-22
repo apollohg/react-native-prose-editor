@@ -1137,3 +1137,92 @@ fn explicit_zero_max_length_rejects_growth_without_mutating_engine() {
     );
     assert_eq!(audit(&engine), before);
 }
+
+fn structural_replacement(parent_path: Vec<u32>) -> crate::yrs_engine::StructuralReplacement {
+    crate::yrs_engine::StructuralReplacement::new(
+        parent_path,
+        0,
+        0,
+        Fragment::empty(),
+        Selection::cursor(0),
+    )
+}
+
+// Task 16B: deterministic structural-target ceilings are operation limits,
+// not allocation-class resource exhaustion.
+#[test]
+fn structural_target_depth_excess_is_an_operation_limit_not_resource_exhaustion() {
+    let engine = engine(PLAIN);
+    let document = engine.document().unwrap().clone();
+    let limits = ResourceLimits {
+        max_document_depth: 1,
+        ..ResourceLimits::default()
+    };
+    let error = super::resolve_structural_window(
+        7,
+        0,
+        &document,
+        &structural_replacement(vec![0, 0]),
+        &limits,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "OPERATION_LIMIT_EXCEEDED");
+    assert_eq!(error.operation_index, Some(0));
+    assert_eq!(error.limit, Some(1));
+    assert_eq!(error.actual, Some(2));
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({ "field": "maxDocumentDepth" }))
+    );
+}
+
+#[test]
+fn structural_target_traversal_work_excess_is_an_operation_limit_not_resource_exhaustion() {
+    let engine = engine(PLAIN);
+    let document = engine.document().unwrap().clone();
+    let limits = ResourceLimits {
+        max_document_nodes: 1,
+        ..ResourceLimits::default()
+    };
+    let error = super::resolve_structural_window(
+        7,
+        0,
+        &document,
+        &structural_replacement(vec![0, 0]),
+        &limits,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "OPERATION_LIMIT_EXCEEDED");
+    assert_eq!(error.operation_index, Some(0));
+    assert_eq!(error.limit, Some(1));
+    assert_eq!(error.actual, Some(2));
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({ "field": "maxDocumentNodes" }))
+    );
+}
+
+#[test]
+fn deep_structural_replacement_maps_to_operation_limit_at_compile_and_session_boundary() {
+    let engine = engine(PLAIN);
+    let error = engine
+        .compile_typed_transaction(transaction(
+            &engine,
+            vec![TypedOperation::ReplaceStructure(structural_replacement(
+                vec![0; 257],
+            ))],
+        ))
+        .unwrap_err();
+    assert_eq!(error.code, "OPERATION_LIMIT_EXCEEDED");
+    assert_eq!(error.operation_index, Some(0));
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({ "field": "maxDocumentDepth" }))
+    );
+    let session_error = crate::session::SessionError::from_operation(
+        error,
+        crate::session::OperationFailureClass::ExistingStableCode,
+    );
+    assert_eq!(session_error.domain, crate::session::ErrorDomain::Operation);
+    assert_eq!(session_error.code, "OPERATION_LIMIT_EXCEEDED");
+}

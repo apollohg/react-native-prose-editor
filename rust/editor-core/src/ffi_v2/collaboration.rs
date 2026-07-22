@@ -1,0 +1,170 @@
+//! Task 12: UniFFI v2 collaboration entry points (production since the
+//! Task 16C cutover removed the staging gate).
+//!
+//! The generation flow is exactly the Task 8–10 session surface: transport
+//! callbacks carry the raw generation value, `socket_open` returns the owed
+//! framed Sync Step 1 as direct bytes, `receive` reports the structured
+//! outcome (including generation-closing failures as a nested error
+//! object), and `take_outbound` returns ONE frame per call — protocol
+//! replies before document updates — with an empty queue reported as the
+//! documented empty value (empty bytes). Rust owns retry eligibility: a
+//! reported close is retryable unless it carries the WebSocket
+//! policy-violation code (1008), which parks the transport `Incompatible`.
+
+#![allow(
+    clippy::result_large_err,
+    reason = "SessionError is the established unboxed session error envelope"
+)]
+
+use crate::collaboration_runtime::protocol::ReceiveDisposition;
+use crate::collaboration_runtime::state::{SocketCloseDisposition, TransportGeneration};
+
+use super::editor::{json_result, session_error_json, unit_result, with_editor, ABSENT_REQUEST_ID};
+use super::types::{FfiBytesResult, FfiJsonResult, FfiUnitResult};
+
+fn bytes_result(result: Result<Vec<u8>, super::types::FfiError>) -> FfiBytesResult {
+    match result {
+        Ok(value) => FfiBytesResult::ok(value),
+        Err(error) => FfiBytesResult::err(error),
+    }
+}
+
+#[uniffi::export]
+pub fn editor_v2_collaboration_begin_connect(editor_id: String) -> FfiJsonResult {
+    json_result(with_editor(&editor_id, |session| {
+        session
+            .begin_connect(ABSENT_REQUEST_ID)
+            .map(|generation| serde_json::json!({ "generation": generation.value() }).to_string())
+    }))
+}
+
+/// On acceptance the socket owes Sync Step 1 immediately; the framed
+/// message rides back as direct bytes.
+#[uniffi::export]
+pub fn editor_v2_collaboration_socket_open(editor_id: String, generation: u64) -> FfiBytesResult {
+    bytes_result(with_editor(&editor_id, |session| {
+        session.socket_opened(
+            ABSENT_REQUEST_ID,
+            TransportGeneration::from_value(generation),
+        )?;
+        session.sync_step1_message(ABSENT_REQUEST_ID)
+    }))
+}
+
+#[uniffi::export]
+pub fn editor_v2_collaboration_receive(
+    editor_id: String,
+    generation: u64,
+    message: Vec<u8>,
+) -> FfiJsonResult {
+    json_result(with_editor(&editor_id, |session| {
+        let outcome = session.receive_message(
+            ABSENT_REQUEST_ID,
+            TransportGeneration::from_value(generation),
+            &message,
+        )?;
+        let close = match &outcome.disposition {
+            ReceiveDisposition::Continue => serde_json::Value::Null,
+            ReceiveDisposition::CloseGeneration { close, error } => serde_json::json!({
+                "disposition": match close {
+                    SocketCloseDisposition::Retryable => "retryable",
+                    SocketCloseDisposition::Incompatible => "incompatible",
+                },
+                "error": session_error_json(error),
+            }),
+        };
+        Ok(serde_json::json!({
+            "framesDecoded": outcome.frames_decoded,
+            "repliesEnqueued": outcome.replies_enqueued,
+            "replyBytesEnqueued": outcome.reply_bytes_enqueued,
+            "remoteCommitApplied": outcome.remote_commit_applied,
+            "documentPromoted": outcome.document_promoted,
+            "transportState": outcome.transport_state.as_str(),
+            "close": close,
+        })
+        .to_string())
+    }))
+}
+
+/// `reason` carries no classification weight (Rust alone owns retry
+/// eligibility); a policy-violation close code (1008) parks the transport
+/// `Incompatible`, every other reported close is retryable.
+#[uniffi::export]
+pub fn editor_v2_collaboration_socket_close(
+    editor_id: String,
+    generation: u64,
+    code: Option<u32>,
+    reason: Option<String>,
+) -> FfiJsonResult {
+    let _ = reason;
+    let disposition = match code {
+        Some(1008) => SocketCloseDisposition::Incompatible,
+        _ => SocketCloseDisposition::Retryable,
+    };
+    json_result(with_editor(&editor_id, |session| {
+        session
+            .socket_closed(
+                ABSENT_REQUEST_ID,
+                TransportGeneration::from_value(generation),
+                disposition,
+            )
+            .map(|state| serde_json::json!({ "transportState": state.as_str() }).to_string())
+    }))
+}
+
+/// ONE outbound frame per call: pending protocol replies first, then
+/// document updates (raw outbox updates wrapped in standard Sync Update
+/// framing at pickup, so every frame is a complete y-protocols message);
+/// an empty queue returns the documented empty value (empty bytes).
+#[uniffi::export]
+pub fn editor_v2_collaboration_take_outbound(editor_id: String, generation: u64) -> FfiBytesResult {
+    bytes_result(with_editor(&editor_id, |session| {
+        session
+            .take_next_outbound_frame(
+                ABSENT_REQUEST_ID,
+                TransportGeneration::from_value(generation),
+            )
+            .map(Option::unwrap_or_default)
+    }))
+}
+
+/// Publishes the desired local awareness state; the literal JSON `null`
+/// withdraws it (standard tombstone broadcast).
+#[uniffi::export]
+pub fn editor_v2_collaboration_set_awareness(
+    editor_id: String,
+    awareness_json: String,
+) -> FfiUnitResult {
+    unit_result(with_editor(&editor_id, |session| {
+        if awareness_json.trim() == "null" {
+            session.clear_desired_awareness(ABSENT_REQUEST_ID)
+        } else {
+            session.set_desired_awareness(ABSENT_REQUEST_ID, &awareness_json)
+        }
+    }))
+}
+
+/// Live awareness peer projections; client ids are decimal strings so full
+/// u64 ids survive the JSON round-trip.
+#[uniffi::export]
+pub fn editor_v2_collaboration_peers(editor_id: String) -> FfiJsonResult {
+    json_result(with_editor(&editor_id, |session| {
+        let peers = session
+            .awareness_peers()?
+            .into_iter()
+            .map(|peer| {
+                serde_json::json!({
+                    "clientId": peer.client_id.to_string(),
+                    "clock": peer.clock,
+                    "isLocal": peer.is_local,
+                    "state": peer.state,
+                    "cursor": peer.cursor.map(|cursor| serde_json::json!({
+                        "anchor": cursor.anchor,
+                        "head": cursor.head,
+                    })),
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({ "peers": peers }).to_string())
+    }))
+}

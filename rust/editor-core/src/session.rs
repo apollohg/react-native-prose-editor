@@ -223,7 +223,6 @@ impl CollaborationLimits {
     /// Test-only field mutation by wire name, shared by the in-crate limits
     /// matrix and the staging integration-test support (which drives the
     /// Task 9 receive ceilings to their exact/one-over boundaries).
-    #[cfg(any(test, feature = "ffi-v2-staging"))]
     pub(crate) fn set_for_test(&mut self, field: &str, value: usize) {
         match field {
             "maxFramesPerMessage" => self.max_frames_per_message = value,
@@ -509,13 +508,18 @@ pub(crate) struct EditorSession {
 pub(crate) struct SessionPolicy {
     read_only: bool,
     input_filter: Option<String>,
+    /// Lazily compiled `input_filter` pattern (Task 12 tracked Minor: the
+    /// legacy `InputFilter` compiles once at construction while the bridge
+    /// recompiled per keystroke). The lazy cell preserves the exact
+    /// request-time behavior: an invalid pattern surfaces the identical
+    /// `CONFIG_INVALID` from the same call sites, replayed from the cache.
+    input_filter_regex: std::sync::OnceLock<Result<regex::Regex, String>>,
     allow_base64_images: bool,
 }
 
 /// Lifecycle owned by the session until Task 7 adds transaction translation.
 pub(crate) struct NativeBridgeLifecycle {
     active: bool,
-    #[cfg(feature = "ffi-v2-staging")]
     lifecycle_test_calls: usize,
 }
 
@@ -524,16 +528,9 @@ pub(crate) struct NativeBridgeLifecycle {
 pub(crate) struct CollaborationLifecycle {
     active: bool,
     limits: CollaborationLimits,
-    /// Shipped default builds keep the plain field (constructor and
-    /// teardown are its only writers); under staging the state machine is
-    /// the single writer of the transport state.
-    #[cfg(not(feature = "ffi-v2-staging"))]
-    transport_state: TransportState,
-    #[cfg(feature = "ffi-v2-staging")]
+    /// The state machine is the single writer of the transport state.
     transport: crate::collaboration_runtime::state::TransportStateMachine,
-    #[cfg(feature = "ffi-v2-staging")]
     runtime: Option<crate::collaboration_runtime::CollaborationRuntime>,
-    #[cfg(feature = "ffi-v2-staging")]
     lifecycle_test_teardowns: usize,
 }
 
@@ -554,22 +551,16 @@ impl EditorSession {
             policy,
             native_bridge: NativeBridgeLifecycle {
                 active: true,
-                #[cfg(feature = "ffi-v2-staging")]
                 lifecycle_test_calls: 0,
             },
             document_state,
             collaboration: CollaborationLifecycle {
                 active: true,
                 limits: collaboration_limits,
-                #[cfg(not(feature = "ffi-v2-staging"))]
-                transport_state,
-                #[cfg(feature = "ffi-v2-staging")]
                 transport: crate::collaboration_runtime::state::TransportStateMachine::new(
                     transport_state,
                 ),
-                #[cfg(feature = "ffi-v2-staging")]
                 runtime: None,
-                #[cfg(feature = "ffi-v2-staging")]
                 lifecycle_test_teardowns: 0,
             },
         })
@@ -581,14 +572,7 @@ impl EditorSession {
     }
 
     pub(crate) fn transport_state(&self) -> TransportState {
-        #[cfg(feature = "ffi-v2-staging")]
-        {
-            self.collaboration.transport.state()
-        }
-        #[cfg(not(feature = "ffi-v2-staging"))]
-        {
-            self.collaboration.transport_state
-        }
+        self.collaboration.transport.state()
     }
 
     pub(crate) fn render_state(&self) -> EngineRenderState {
@@ -606,7 +590,6 @@ impl EditorSession {
     /// Same-store whole-document replacement from ProseMirror JSON, behind
     /// the session policy gate. An attached collaboration runtime captures
     /// the replacement's outbound update through its bounded outbox.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn replace_document_json(
         &mut self,
         request_id: u64,
@@ -622,7 +605,6 @@ impl EditorSession {
 
     /// Same-store whole-document replacement from HTML, behind the session
     /// policy gate.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn replace_document_html(
         &mut self,
         request_id: u64,
@@ -640,11 +622,120 @@ impl EditorSession {
             .map_err(|error| replacement_session_error(error, request_id))
     }
 
+    /// Session-level snapshot export: read-only and allowed in every
+    /// transport state, including connected ones (design "Snapshot and
+    /// Persistence Flow": "Export is read-only and available while
+    /// connected"). The engine owns manifest construction and its
+    /// scope/readiness refusals; the session stamps the request id.
+    pub(crate) fn export_snapshot(
+        &self,
+        request_id: u64,
+    ) -> Result<DocumentSnapshot, SessionError> {
+        self.engine
+            .export_snapshot()
+            .map_err(|error| snapshot_session_error(error, request_id))
+    }
+
+    /// Session-level snapshot restore behind the lifecycle policy gate
+    /// (design "Whole-Document Replacement Policy" / "Snapshot and
+    /// Persistence Flow"):
+    ///
+    /// 1. Transport gate: restore is `Detached`/`Disconnected`-only.
+    ///    `Connecting`/`Handshaking`/`Synchronized` reject the frozen
+    ///    snapshot-domain `SNAPSHOT_RESTORE_CONNECTED`. `Incompatible`
+    ///    rejects with the same code by decision: it is not a live
+    ///    transport, but it changes only through an explicit
+    ///    detach/reattach (design line 124) and restore must not smuggle
+    ///    a transition out of it; the frozen error contract adds exactly
+    ///    one restore-gate code, which covers every non-quiescent
+    ///    transport. `Destroying`/`Destroyed` are unreachable through
+    ///    `with_alive`.
+    /// 2. Outbox gate: pending local *document* updates reject
+    ///    `SNAPSHOT_OUTBOX_NOT_EMPTY`. Pending protocol/awareness replies
+    ///    never block — they are transport-scoped and cleared on success.
+    /// 3. Engine restore: every manifest field validates before any decode
+    ///    or mutation, the candidate installs atomically under a fresh
+    ///    client identity (existing engine contract).
+    ///
+    /// On success the session clears the prior-store residue:
+    /// `AwaitRemote` promotes to `RoomReady`, the transport settles to
+    /// `Disconnected` (the design's restore rows end there; stale
+    /// generations stay refused and issuance remains monotonic), and the
+    /// runtime drops pending protocol replies, dependency-quarantine work
+    /// accounting, and peer bookkeeping. Desired local awareness is
+    /// retained — the engine's store-swap rebind re-published it under the
+    /// fresh identity — and cursor projections recompute against the
+    /// restored store on every read. Every failure above leaves session,
+    /// engine, outbox, and runtime untouched.
+    pub(crate) fn restore_snapshot(
+        &mut self,
+        request_id: u64,
+        snapshot: &DocumentSnapshot,
+    ) -> Result<crate::yrs_engine::EngineCommit, SessionError> {
+        self.admit_snapshot_restore(request_id)?;
+        let commit = self
+            .engine
+            .restore_snapshot(snapshot)
+            .map_err(|error| snapshot_session_error(error, request_id))?;
+        if self.document_state == DocumentState::AwaitRemote {
+            self.document_state = DocumentState::RoomReady;
+        }
+        self.collaboration.transport.settle_for_restore();
+        if let Some(runtime) = self.collaboration.runtime.as_mut() {
+            runtime.reset_for_restore();
+        }
+        Ok(commit)
+    }
+
+    /// Document-state x transport-state policy matrix for snapshot restore,
+    /// checked before any engine work. Any document state may restore
+    /// (`AwaitRemote` promotes on success; `LocalReady` has no scope and
+    /// fails inside the engine), so the gate is transport-first, then the
+    /// document-outbox check via
+    /// [`crate::collaboration_runtime::CollaborationOutbox::has_pending_document_updates`]
+    /// without peeking at queue internals.
+    fn admit_snapshot_restore(&self, request_id: u64) -> Result<(), SessionError> {
+        match self.transport_state() {
+            TransportState::Detached | TransportState::Disconnected => {}
+            TransportState::Connecting
+            | TransportState::Handshaking
+            | TransportState::Synchronized
+            | TransportState::Incompatible => {
+                let mut error = SessionError::new(
+                    ErrorDomain::Snapshot,
+                    "SNAPSHOT_RESTORE_CONNECTED",
+                    format!(
+                        "snapshot restore is rejected while the collaboration \
+                         transport is {}",
+                        self.transport_state().as_str()
+                    ),
+                );
+                error.request_id = Some(request_id);
+                return Err(error);
+            }
+            TransportState::Destroying | TransportState::Destroyed => unreachable!(
+                "with_alive rejects destroying/destroyed sessions before policy evaluation"
+            ),
+        }
+        if let Some(outbox) = self.collaboration_outbox() {
+            if outbox.has_pending_document_updates() {
+                let mut error = SessionError::new(
+                    ErrorDomain::Snapshot,
+                    "SNAPSHOT_OUTBOX_NOT_EMPTY",
+                    "snapshot restore is rejected while unsent local document \
+                     updates are pending in the collaboration outbox",
+                );
+                error.request_id = Some(request_id);
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     /// Attach the collaboration runtime (Task 7: the bounded document
     /// outbox) sized from the session's validated collaboration limits.
     /// Idempotent: an already attached runtime and its pending outbox
     /// entries are preserved.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn attach_collaboration_runtime(&mut self) {
         if self.collaboration.runtime.is_none() {
             self.collaboration.runtime = Some(
@@ -655,7 +746,6 @@ impl EditorSession {
 
     /// The attached runtime's outbox, if any. Detached/local-only sessions
     /// return `None`: no outbox exists for them by construction.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn collaboration_outbox(
         &self,
     ) -> Option<&crate::collaboration_runtime::CollaborationOutbox> {
@@ -667,7 +757,6 @@ impl EditorSession {
 
     /// Split borrow used by every durable local mutation path: the engine
     /// plus the optionally attached outbox for pre-write reservation.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn engine_and_outbox(
         &mut self,
     ) -> (
@@ -685,7 +774,6 @@ impl EditorSession {
     ///   rejects the frozen lifecycle `WHOLE_DOCUMENT_REPLACEMENT_CONNECTED`.
     /// - `LocalReady`/`RoomReady` + `Detached`/`Disconnected`/`Incompatible`
     ///   is allowed. `Destroying`/`Destroyed` are unreachable via `with_alive`.
-    #[cfg(feature = "ffi-v2-staging")]
     fn admit_whole_document_replacement(&self, request_id: u64) -> Result<(), SessionError> {
         if self.document_state == DocumentState::AwaitRemote {
             let mut error = engine_not_ready();
@@ -720,7 +808,6 @@ impl EditorSession {
     /// Whether this session is bound to a collaboration room. Local-only
     /// sessions (`LocalReady`) have no scope to connect to, so every
     /// connection-shaped transport action on them is refused.
-    #[cfg(feature = "ffi-v2-staging")]
     fn room_bound(&self) -> bool {
         self.document_state != DocumentState::LocalReady
     }
@@ -728,7 +815,6 @@ impl EditorSession {
     /// `Disconnected` -> `Connecting`; returns the generation JavaScript
     /// must carry through its socket callbacks. Runs under the session lock
     /// like every transition (callers only reach sessions via `with_alive`).
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn begin_connect(
         &mut self,
         request_id: u64,
@@ -741,7 +827,6 @@ impl EditorSession {
 
     /// Current `Connecting` -> `Handshaking`; the caller owes a Sync Step 1
     /// send (framed in Task 9).
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn socket_opened(
         &mut self,
         request_id: u64,
@@ -756,7 +841,6 @@ impl EditorSession {
     /// generations are observable no-ops. An accepted close clears the
     /// transport-scoped awareness peers (Task 10); desired local awareness
     /// survives by construction.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn socket_closed(
         &mut self,
         request_id: u64,
@@ -773,7 +857,6 @@ impl EditorSession {
 
     /// Local intent: close the live attempt -> `Disconnected`. Clears the
     /// transport-scoped awareness peers like every generation close.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn disconnect(&mut self, request_id: u64) -> Result<(), SessionError> {
         self.collaboration.transport.disconnect(request_id)?;
         self.clear_transport_scoped_peers();
@@ -783,7 +866,6 @@ impl EditorSession {
     /// Tear down transport state only (-> `Detached`); the runtime, its
     /// pending outbox entries, and the document are untouched by design.
     /// Remote awareness peers are transport-scoped and clear here too.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn detach(&mut self, request_id: u64) -> Result<(), SessionError> {
         self.collaboration.transport.detach(request_id)?;
         self.clear_transport_scoped_peers();
@@ -793,7 +875,6 @@ impl EditorSession {
     /// Explicit reattach half of the `Incompatible` escape hatch:
     /// `Detached` -> `Disconnected` on a room-bound session. Peer clearing
     /// is repeated defensively — reattach begins a fresh transport scope.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn reattach(&mut self, request_id: u64) -> Result<(), SessionError> {
         let room_bound = self.room_bound();
         self.collaboration
@@ -807,7 +888,6 @@ impl EditorSession {
     /// transition: remote awareness peers are transport-scoped, desired
     /// local awareness is retained. Sessions without an attached runtime
     /// own no peers by construction.
-    #[cfg(feature = "ffi-v2-staging")]
     fn clear_transport_scoped_peers(&mut self) {
         if let Some(runtime) = self.collaboration.runtime.as_mut() {
             runtime.clear_transport_peers(&mut self.engine);
@@ -817,7 +897,6 @@ impl EditorSession {
     /// Crate-private Task 9 seam: an accepted current-generation Sync
     /// Step 2 turns `Handshaking` into `Synchronized`. Transport-only —
     /// document-state promotion is Task 9's Step 2 handling.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn mark_synchronized(
         &mut self,
         request_id: u64,
@@ -834,7 +913,6 @@ impl EditorSession {
     /// generation discipline); the session only performs the field-disjoint
     /// split borrow. Sessions without an attached runtime own no protocol
     /// surface and refuse like every other runtime-shaped operation.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn receive_message(
         &mut self,
         request_id: u64,
@@ -863,15 +941,45 @@ impl EditorSession {
 
     /// The standard framed Sync Step 1 message the caller owes after
     /// `socket_opened` (read-only; framing lives in the protocol module).
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn sync_step1_message(&self, request_id: u64) -> Result<Vec<u8>, SessionError> {
         crate::collaboration_runtime::protocol::sync_step1_message(&self.engine, request_id)
+    }
+
+    /// Task 12: the next outbound wire frame for the live generation. The
+    /// generation gate is identical to `receive_message` (the live
+    /// generation in `Handshaking`/`Synchronized`); pending protocol
+    /// replies drain before document updates so peer-triggered answers move
+    /// first, and `None` means the queues are empty. Every returned frame
+    /// is a complete y-protocols message: replies are pre-framed at
+    /// enqueue, and raw outbox document updates are wrapped in standard
+    /// Sync Update framing at pickup. Sessions without an attached runtime
+    /// refuse like every other runtime-shaped operation.
+    pub(crate) fn take_next_outbound_frame(
+        &mut self,
+        request_id: u64,
+        generation: crate::collaboration_runtime::state::TransportGeneration,
+    ) -> Result<Option<Vec<u8>>, SessionError> {
+        let CollaborationLifecycle {
+            transport, runtime, ..
+        } = &mut self.collaboration;
+        let runtime = runtime.as_mut().ok_or_else(no_attached_runtime)?;
+        transport.admit_outbound_take(request_id, generation)?;
+        let outbox = runtime.outbox_mut();
+        Ok(outbox
+            .take_next_protocol_reply()
+            .map(|reply| reply.message)
+            .or_else(|| {
+                outbox.take_next().map(|update| {
+                    crate::collaboration_runtime::protocol::frame_sync_update_message(
+                        &update.update_v1,
+                    )
+                })
+            }))
     }
 
     /// Task 10: publish the desired local awareness state (runtime-owned,
     /// codec-validated). Requires an attached runtime like every other
     /// runtime-shaped operation.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn set_desired_awareness(
         &mut self,
         request_id: u64,
@@ -882,14 +990,12 @@ impl EditorSession {
     }
 
     /// Task 10: withdraw the desired local awareness state.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn clear_desired_awareness(&mut self, request_id: u64) -> Result<(), SessionError> {
         let (runtime, context) = self.awareness_runtime_and_context()?;
         runtime.clear_desired_awareness(request_id, context)
     }
 
     /// Task 10: the retained desired local awareness state, if any.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn desired_awareness(&self) -> Result<Option<serde_json::Value>, SessionError> {
         let runtime = self
             .collaboration
@@ -901,7 +1007,6 @@ impl EditorSession {
 
     /// Task 10: public awareness peer projections with cursors resolved
     /// against the current document (recomputed on every read).
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn awareness_peers(
         &mut self,
     ) -> Result<Vec<crate::collaboration_runtime::awareness::AwarenessPeerProjection>, SessionError>
@@ -916,7 +1021,6 @@ impl EditorSession {
 
     /// Task 10: deterministic awareness clock work; `now_millis` is the only
     /// time source (JavaScript schedules the returned deadline).
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn awareness_tick(
         &mut self,
         request_id: u64,
@@ -929,7 +1033,6 @@ impl EditorSession {
     /// Field-disjoint split borrow for awareness operations, mirroring the
     /// Task 9 receive split: the runtime plus the engine/limits/transport
     /// context it composes.
-    #[cfg(feature = "ffi-v2-staging")]
     fn awareness_runtime_and_context(
         &mut self,
     ) -> Result<
@@ -958,7 +1061,6 @@ impl EditorSession {
 
     /// Engine-owned retained dependency bytes plus the runtime's charged
     /// work units (`0` work without an attached runtime by construction).
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn remote_dependency_accounting(&self) -> (usize, u64) {
         let work = self.collaboration.runtime.as_ref().map_or(
             0,
@@ -970,7 +1072,6 @@ impl EditorSession {
     /// Test-only collaboration-limit override by wire field name, mirroring
     /// the outbox `set_ceilings_for_test` idiom for exact/one-over receive
     /// ceiling coverage.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn set_collaboration_limit_for_test(&mut self, field: &str, value: usize) {
         self.collaboration.limits.set_for_test(field, value);
     }
@@ -982,12 +1083,10 @@ impl EditorSession {
     /// — `LocalReady` sessions are permanently `Detached`, yet the Task 5
     /// replacement gate deliberately covers them for every transport state.
     /// Room-bound tests must use the real transitions instead.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn set_transport_state_for_test(&mut self, state: TransportState) {
         self.collaboration.transport.set_state_for_test(state);
     }
 
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn lifecycle_test_session(reject_admission: bool) -> Result<Self, SessionError> {
         use crate::schema::presets::tiptap_schema;
         use crate::yrs_engine::{InitializationMode, YrsEngineConfig};
@@ -1014,6 +1113,7 @@ impl EditorSession {
             SessionPolicy {
                 read_only: false,
                 input_filter: None,
+                input_filter_regex: std::sync::OnceLock::new(),
                 allow_base64_images: false,
             },
             DocumentState::LocalReady,
@@ -1021,18 +1121,15 @@ impl EditorSession {
         )
     }
 
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn record_lifecycle_test_call(&mut self) -> usize {
         self.native_bridge.lifecycle_test_calls += 1;
         self.native_bridge.lifecycle_test_calls
     }
 
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn lifecycle_test_call_count(&self) -> usize {
         self.native_bridge.lifecycle_test_calls
     }
 
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn lifecycle_test_teardown_count(&self) -> usize {
         self.collaboration.lifecycle_test_teardowns
     }
@@ -1043,28 +1140,35 @@ impl SessionPolicy {
         Self {
             read_only: config.read_only,
             input_filter: config.input_filter.clone(),
+            input_filter_regex: std::sync::OnceLock::new(),
             allow_base64_images: config.allow_base64_images,
         }
     }
 
     /// Read-only policy: input and command mutations are rejected while
     /// local-API requests pass, mirroring the legacy `Source::Api` gate.
-    #[cfg(feature = "ffi-v2-staging")]
     pub(crate) fn read_only(&self) -> bool {
         self.read_only
     }
 
-    /// Per-character input filter pattern applied to local-input text.
-    #[cfg(feature = "ffi-v2-staging")]
-    pub(crate) fn input_filter(&self) -> Option<&str> {
-        self.input_filter.as_deref()
+    /// The input filter pattern compiled at most once per policy (Task 12
+    /// tracked Minor): the first request compiles and caches the `Regex`;
+    /// an invalid pattern caches the compile error message and replays it
+    /// verbatim on every request. Semantics are exactly the per-character
+    /// `is_match` filter the legacy `InputFilter` applies.
+    pub(crate) fn input_filter_regex(&self) -> Option<Result<&regex::Regex, String>> {
+        self.input_filter.as_deref().map(|pattern| {
+            self.input_filter_regex
+                .get_or_init(|| regex::Regex::new(pattern).map_err(|error| error.to_string()))
+                .as_ref()
+                .map_err(Clone::clone)
+        })
     }
 }
 
 /// Field-disjoint split of the session into its engine and the optionally
 /// attached collaboration outbox, so pre-write reservation can run while the
 /// engine is mutably borrowed.
-#[cfg(feature = "ffi-v2-staging")]
 fn split_engine_and_outbox<'session>(
     engine: &'session mut YrsDocumentEngine,
     collaboration: &'session mut CollaborationLifecycle,
@@ -1089,11 +1193,6 @@ impl CollaborationLifecycle {
     fn teardown(&mut self) {
         if self.active {
             self.active = false;
-            #[cfg(not(feature = "ffi-v2-staging"))]
-            {
-                self.transport_state = TransportState::Destroyed;
-            }
-            #[cfg(feature = "ffi-v2-staging")]
             {
                 self.transport.teardown_destroyed();
                 self.runtime = None;
@@ -1103,7 +1202,6 @@ impl CollaborationLifecycle {
     }
 }
 
-#[cfg(feature = "ffi-v2-staging")]
 pub(crate) fn replacement_session_error(
     error: crate::yrs_engine::RootReplacementError,
     request_id: u64,
@@ -1129,6 +1227,15 @@ pub(crate) fn replacement_session_error(
     error
 }
 
+/// Snapshot export/restore errors stay in the snapshot domain with the
+/// engine's exact codes; the session stamps the request id the engine
+/// cannot know.
+fn snapshot_session_error(error: YrsEngineError, request_id: u64) -> SessionError {
+    let mut error = SessionError::snapshot(error);
+    error.request_id.get_or_insert(request_id);
+    error
+}
+
 fn engine_not_ready() -> SessionError {
     SessionError::new(
         ErrorDomain::Operation,
@@ -1139,11 +1246,49 @@ fn engine_not_ready() -> SessionError {
 
 /// Runtime-shaped operations on sessions without an attached collaboration
 /// runtime refuse with the established configuration error.
-#[cfg(feature = "ffi-v2-staging")]
 pub(crate) fn no_attached_runtime() -> SessionError {
     SessionError::new(
         ErrorDomain::Boundary,
         "CONFIG_INVALID",
         "session has no attached collaboration runtime",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy_with_filter(pattern: &str) -> SessionPolicy {
+        SessionPolicy::from_config(&EditorSessionConfig {
+            input_filter: Some(pattern.to_string()),
+            ..EditorSessionConfig::local_for_test()
+        })
+    }
+
+    #[test]
+    fn input_filter_regex_compiles_once_and_replays_compile_errors() {
+        // Compile-once: repeated borrows return the SAME cached Regex
+        // allocation, preserving exact per-character `is_match` semantics.
+        let policy = policy_with_filter("^[0-9]$");
+        let first = policy.input_filter_regex().unwrap().unwrap();
+        assert!(first.is_match("7"));
+        assert!(!first.is_match("a"));
+        let second = policy.input_filter_regex().unwrap().unwrap();
+        assert!(
+            std::ptr::eq(first, second),
+            "the pattern must compile once and be served from the cache",
+        );
+
+        // An invalid pattern caches the compile error and replays the
+        // identical message (request-time CONFIG_INVALID semantics kept).
+        let policy = policy_with_filter("[unclosed");
+        let first = policy.input_filter_regex().unwrap().unwrap_err();
+        let second = policy.input_filter_regex().unwrap().unwrap_err();
+        assert_eq!(first, second, "identical replay of the compile error");
+
+        // No pattern: nothing compiles, nothing is cached.
+        let policy = SessionPolicy::from_config(&EditorSessionConfig::local_for_test());
+        assert!(policy.input_filter_regex().is_none());
+        assert!(policy.input_filter_regex.get().is_none());
+    }
 }

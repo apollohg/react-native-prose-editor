@@ -39,11 +39,10 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import androidx.appcompat.widget.AppCompatEditText
 import kotlin.math.roundToInt
-import uniffi.editor_core.*  // UniFFI-generated bindings
 
 /**
  * Custom [AppCompatEditText] subclass that intercepts all text input and routes it
- * through the Rust editor-core engine via UniFFI bindings.
+ * through the Rust editor-core engine via the [EditorV2Driver] interface.
  *
  * Instead of letting Android's EditText internal text storage handle insertions
  * and deletions, this class captures the user's intent (typing, deleting,
@@ -62,8 +61,8 @@ import uniffi.editor_core.*  // UniFFI-generated bindings
  *
  * ## Thread Safety
  *
- * All EditText methods are called on the main thread. The UniFFI calls
- * (`editor_insert_text`, `editor_delete_range`, etc.) are synchronous and
+ * All EditText methods are called on the main thread. The [EditorV2Driver]
+ * calls (`insertText`, `deleteScalarRange`, etc.) are synchronous and
  * fast enough for main-thread use.
  */
 class EditorEditText @JvmOverloads constructor(
@@ -230,7 +229,7 @@ class EditorEditText @JvmOverloads constructor(
         fun onEditorUpdate(updateJSON: String)
     }
 
-    /** The Rust editor instance ID (from editor_create / editor_create_with_max_length). */
+    /** The editor session public ID (used to look up the [EditorV2Driver] adapter). */
     var editorId: Long = 0
 
     /**
@@ -359,6 +358,14 @@ class EditorEditText @JvmOverloads constructor(
     internal var onInsertContentJsonAtSelectionScalarForTesting: ((Int, Int, String) -> Unit)? = null
     internal var blockExternalEditorUpdatePreparationForTesting = false
     internal var blockExternalEditorCommandPreparationForTesting = false
+
+    /**
+     * The v2 driver for this editor session: when an adapter is attached,
+     * every engine mutation below routes through it (typed v2
+     * transactions/results). It is the ONLY engine path — a null driver
+     * means the view has no engine traffic.
+     */
+    internal var v2Driver: EditorV2Driver? = null
 
     fun lastRenderAppliedPatch(): Boolean = lastRenderAppliedPatchForTesting
     fun lastApplyUpdateTrace(): ApplyUpdateTrace? = lastApplyUpdateTraceForTesting
@@ -899,7 +906,7 @@ class EditorEditText @JvmOverloads constructor(
     /**
      * Bind this EditText to a Rust editor instance and optionally apply initial content.
      *
-     * @param id The editor ID from `editor_create()`.
+     * @param id The editor session public ID.
      * @param initialHTML Optional HTML to set as initial content.
      */
     fun bindEditor(id: Long, initialHTML: String? = null, notifyListener: Boolean = true) {
@@ -912,15 +919,15 @@ class EditorEditText @JvmOverloads constructor(
             discardTransientNativeInputForEditorRebind()
         }
         editorId = id
-
-        if (!initialHTML.isNullOrEmpty()) {
-            editorSetHtml(editorId.toULong(), initialHTML)
-            val stateJSON = editorGetCurrentState(editorId.toULong())
-            applyUpdateJSON(stateJSON, notifyListener = false)
-        } else {
-            // Pull current state from Rust (content may already be loaded via bridge).
-            val stateJSON = editorGetCurrentState(editorId.toULong())
-            applyUpdateJSON(stateJSON, notifyListener = notifyListener)
+        v2Driver = EditorV2Registry.adapterFor(id)
+        val driver = v2Driver
+        if (driver != null) {
+            if (!initialHTML.isNullOrEmpty()) {
+                driver.setContentHtml(initialHTML)?.let { applyUpdateJSON(it, notifyListener = false) }
+            } else {
+                driver.currentStateJson()?.let { applyUpdateJSON(it, notifyListener = notifyListener) }
+            }
+            return
         }
     }
 
@@ -932,6 +939,7 @@ class EditorEditText @JvmOverloads constructor(
             discardTransientNativeInputForEditorRebind()
         }
         editorId = 0
+        v2Driver = null
     }
 
     internal fun handleEditorDestroyedFromRegistry(destroyedEditorId: Long) {
@@ -959,7 +967,7 @@ class EditorEditText @JvmOverloads constructor(
         if (hasLiveEditor()) {
             val previousScrollX = scrollX
             val previousScrollY = scrollY
-            val stateJSON = editorGetCurrentState(editorId.toULong())
+            val stateJSON = v2Driver?.currentStateJson() ?: return
             applyUpdateJSON(stateJSON, notifyListener = false)
             if (heightBehavior == EditorHeightBehavior.FIXED) {
                 preserveScrollPosition(previousScrollX, previousScrollY)
@@ -1720,7 +1728,7 @@ class EditorEditText @JvmOverloads constructor(
             "restoreAuthorizedText",
             "authorizedLength=${lastAuthorizedText.length}"
         )
-        val stateJSON = editorGetCurrentState(editorId.toULong())
+        val stateJSON = v2Driver?.currentStateJson() ?: return
         applyUpdateJSON(stateJSON)
     }
 
@@ -1766,9 +1774,10 @@ class EditorEditText @JvmOverloads constructor(
         if (!hasLiveEditor() || lastAuthorizedText == previousAuthorizedText) {
             return CommandPreparation(ready = true, updateJSON = null)
         }
+        val commandStateJSON = v2Driver?.currentStateJson()
         return CommandPreparation(
             ready = true,
-            updateJSON = editorGetCurrentState(editorId.toULong())
+            updateJSON = commandStateJSON
         )
     }
 
@@ -2272,13 +2281,9 @@ class EditorEditText @JvmOverloads constructor(
         if (discardTransientInputForDestroyedEditorIfNeeded()) return
 
         val selection = currentScalarSelection() ?: return
-        val updateJSON = editorInsertNodeAtSelectionScalar(
-            editorId.toULong(),
-            selection.first.toUInt(),
-            selection.second.toUInt(),
-            "hardBreak"
-        )
-        applyUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.insertNode("hardBreak", selection.first, selection.second)?.let { applyUpdateJSON(it) }
+        }
     }
 
     /**
@@ -2291,20 +2296,14 @@ class EditorEditText @JvmOverloads constructor(
         if (!isSelectionInsideList()) return false
         val selection = currentScalarSelection() ?: return false
 
-        val updateJSON = if (shiftPressed) {
-            editorOutdentListItemAtSelectionScalar(
-                editorId.toULong(),
-                selection.first.toUInt(),
-                selection.second.toUInt()
-            )
-        } else {
-            editorIndentListItemAtSelectionScalar(
-                editorId.toULong(),
-                selection.first.toUInt(),
-                selection.second.toUInt()
-            )
+        v2Driver?.let { driver ->
+            val update = if (shiftPressed) {
+                driver.outdentListItem(selection.first, selection.second)
+            } else {
+                driver.indentListItem(selection.first, selection.second)
+            }
+            update?.let { applyUpdateJSON(it) }
         }
-        applyUpdateJSON(updateJSON)
         return true
     }
 
@@ -2516,101 +2515,77 @@ class EditorEditText @JvmOverloads constructor(
     fun performToolbarToggleMark(markName: String) {
         if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
         val selection = currentScalarSelection() ?: return
-        val updateJSON = editorToggleMarkAtSelectionScalar(
-            editorId.toULong(),
-            selection.first.toUInt(),
-            selection.second.toUInt(),
-            markName
-        )
-        applyUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.toggleMark(markName, selection.first, selection.second)?.let { applyUpdateJSON(it) }
+        }
     }
 
     fun performToolbarToggleList(listType: String, isActive: Boolean) {
         if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
         val selection = currentScalarSelection() ?: return
-        val updateJSON = if (isActive) {
-            editorUnwrapFromListAtSelectionScalar(
-                editorId.toULong(),
-                selection.first.toUInt(),
-                selection.second.toUInt()
-            )
-        } else {
-            editorWrapInListAtSelectionScalar(
-                editorId.toULong(),
-                selection.first.toUInt(),
-                selection.second.toUInt(),
-                listType
-            )
+        v2Driver?.let { driver ->
+            val update = if (isActive) {
+                driver.unwrapFromList(selection.first, selection.second)
+            } else {
+                driver.wrapInList(listType, selection.first, selection.second)
+            }
+            update?.let { applyUpdateJSON(it) }
         }
-        applyUpdateJSON(updateJSON)
     }
 
     fun performToolbarToggleBlockquote() {
         if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
         val selection = currentScalarSelection() ?: return
-        val updateJSON = editorToggleBlockquoteAtSelectionScalar(
-            editorId.toULong(),
-            selection.first.toUInt(),
-            selection.second.toUInt()
-        )
-        applyUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.toggleBlockquote(selection.first, selection.second)?.let { applyUpdateJSON(it) }
+        }
     }
 
     fun performToolbarToggleHeading(level: Int) {
         if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
         if (level !in 1..6) return
         val selection = currentScalarSelection() ?: return
-        val updateJSON = editorToggleHeadingAtSelectionScalar(
-            editorId.toULong(),
-            selection.first.toUInt(),
-            selection.second.toUInt(),
-            level.toUByte()
-        )
-        applyUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.toggleHeading(level, selection.first, selection.second)?.let { applyUpdateJSON(it) }
+        }
     }
 
     fun performToolbarIndentListItem() {
         if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
         val selection = currentScalarSelection() ?: return
-        val updateJSON = editorIndentListItemAtSelectionScalar(
-            editorId.toULong(),
-            selection.first.toUInt(),
-            selection.second.toUInt()
-        )
-        applyUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.indentListItem(selection.first, selection.second)?.let { applyUpdateJSON(it) }
+        }
     }
 
     fun performToolbarOutdentListItem() {
         if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
         val selection = currentScalarSelection() ?: return
-        val updateJSON = editorOutdentListItemAtSelectionScalar(
-            editorId.toULong(),
-            selection.first.toUInt(),
-            selection.second.toUInt()
-        )
-        applyUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.outdentListItem(selection.first, selection.second)?.let { applyUpdateJSON(it) }
+        }
     }
 
     fun performToolbarInsertNode(nodeType: String) {
         if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
         val selection = currentScalarSelection() ?: return
-        val updateJSON = editorInsertNodeAtSelectionScalar(
-            editorId.toULong(),
-            selection.first.toUInt(),
-            selection.second.toUInt(),
-            nodeType
-        )
-        applyUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.insertNode(nodeType, selection.first, selection.second)?.let { applyUpdateJSON(it) }
+        }
     }
 
     fun performToolbarUndo() {
         if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
-        applyUpdateJSON(editorUndo(editorId.toULong()))
+        v2Driver?.let { driver ->
+            driver.undo()?.let { applyUpdateJSON(it) }
+        }
     }
 
     fun performToolbarRedo() {
         if (!isEditable || isApplyingRustState || !hasLiveEditor()) return
-        applyUpdateJSON(editorRedo(editorId.toULong()))
+        v2Driver?.let { driver ->
+            driver.redo()?.let { applyUpdateJSON(it) }
+        }
     }
 
     // ── Input Handling: Paste ────────────────────────────────────────────
@@ -2771,26 +2746,14 @@ class EditorEditText @JvmOverloads constructor(
         if (currentText != lastAuthorizedText) return
         val (scalarAnchor, scalarHead) = rawScalarSelection(currentText) ?: return
 
-        val selectionHook = onSetSelectionScalarInRustForTesting
-        val docAnchor: Int
-        val docHead: Int
-        if (selectionHook != null) {
-            selectionHook(scalarAnchor, scalarHead)
-            docAnchor = scalarAnchor
-            docHead = scalarHead
-        } else {
-            // Sync selection to Rust (converts scalar→doc internally).
-            editorSetSelectionScalar(
-                editorId.toULong(),
-                scalarAnchor.toUInt(),
-                scalarHead.toUInt()
-            )
-
-            // Emit doc positions (not scalar offsets) to match the Selection contract.
-            docAnchor = editorScalarToDoc(editorId.toULong(), scalarAnchor.toUInt()).toInt()
-            docHead = editorScalarToDoc(editorId.toULong(), scalarHead.toUInt()).toInt()
+        v2Driver?.let { driver ->
+            val mapping = driver.syncSelection(scalarAnchor, scalarHead)
+            if (mapping != null) {
+                editorListener?.onSelectionChanged(mapping[0], mapping[1])
+            }
+            return
         }
-        editorListener?.onSelectionChanged(docAnchor, docHead)
+        onSetSelectionScalarInRustForTesting?.invoke(scalarAnchor, scalarHead)
     }
 
     // ── Rust Integration ────────────────────────────────────────────────
@@ -3009,13 +2972,9 @@ class EditorEditText @JvmOverloads constructor(
             callback(text, atScalarPos)
             return
         }
-        val startedAt = System.nanoTime()
-        val updateJSON = editorInsertTextScalar(editorId.toULong(), atScalarPos.toUInt(), text)
-        recordImeTraceForTesting(
-            "rustInsertText",
-            "at=$atScalarPos textLength=${text.length} rustUs=${nanosToMicros(System.nanoTime() - startedAt)} jsonLength=${updateJSON.length}"
-        )
-        applyRustUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.insertText(text, atScalarPos)?.let { applyRustUpdateJSON(it) }
+        }
     }
 
     private fun replaceTextRangeInRust(scalarFrom: Int, scalarTo: Int, text: String) {
@@ -3024,18 +2983,9 @@ class EditorEditText @JvmOverloads constructor(
             callback(scalarFrom, scalarTo, text)
             return
         }
-        val startedAt = System.nanoTime()
-        val updateJSON = editorReplaceTextScalar(
-            editorId.toULong(),
-            scalarFrom.toUInt(),
-            scalarTo.toUInt(),
-            text
-        )
-        recordImeTraceForTesting(
-            "rustReplaceText",
-            "range=$scalarFrom..$scalarTo textLength=${text.length} rustUs=${nanosToMicros(System.nanoTime() - startedAt)} jsonLength=${updateJSON.length}"
-        )
-        applyRustUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.replaceTextRange(scalarFrom, scalarTo, text)?.let { applyRustUpdateJSON(it) }
+        }
     }
 
     private fun insertPlainTextRangeInRust(
@@ -3063,18 +3013,9 @@ class EditorEditText @JvmOverloads constructor(
                 applyRequestedCursorScalar(requestedCursorScalar)
                 return
             }
-            val startedAt = System.nanoTime()
-            val updateJSON = editorInsertContentJsonAtSelectionScalar(
-                editorId.toULong(),
-                scalarFrom.toUInt(),
-                scalarTo.toUInt(),
-                docJson
-            )
-            recordImeTraceForTesting(
-                "rustInsertContentJson",
-                "range=$scalarFrom..$scalarTo textLength=${text.length} rustUs=${nanosToMicros(System.nanoTime() - startedAt)} jsonLength=${updateJSON.length}"
-            )
-            applyRustUpdateJSON(updateJSON)
+            v2Driver?.let { driver ->
+                driver.insertContentJsonAtSelection(docJson, scalarFrom, scalarTo)?.let { applyRustUpdateJSON(it) }
+            }
             applyRequestedCursorScalar(requestedCursorScalar)
             return
         }
@@ -3112,13 +3053,14 @@ class EditorEditText @JvmOverloads constructor(
         if (!hasLiveEditor()) return
         val currentText = text?.toString().orEmpty()
         val safeScalar = requested.coerceAtLeast(0)
-        onSetSelectionScalarInRustForTesting?.let { callback ->
-            callback(safeScalar, safeScalar)
-        } ?: editorSetSelectionScalar(
-            editorId.toULong(),
-            safeScalar.toUInt(),
-            safeScalar.toUInt()
-        )
+        val cursorDriver = v2Driver
+        if (cursorDriver != null) {
+            cursorDriver.syncSelectionQuiet(safeScalar, safeScalar)
+        } else {
+            onSetSelectionScalarInRustForTesting?.let { callback ->
+                callback(safeScalar, safeScalar)
+            }
+        }
         val localScalar = safeScalar.coerceIn(0, currentText.codePointCount(0, currentText.length))
         val safeUtf16 = PositionBridge.scalarToUtf16(localScalar, currentText)
             .coerceIn(0, currentText.length)
@@ -3398,13 +3340,9 @@ class EditorEditText @JvmOverloads constructor(
             callback(scalarFrom, scalarTo)
             return
         }
-        val startedAt = System.nanoTime()
-        val updateJSON = editorDeleteScalarRange(editorId.toULong(), scalarFrom.toUInt(), scalarTo.toUInt())
-        recordImeTraceForTesting(
-            "rustDeleteRange",
-            "range=$scalarFrom..$scalarTo rustUs=${nanosToMicros(System.nanoTime() - startedAt)} jsonLength=${updateJSON.length}"
-        )
-        applyRustUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.deleteScalarRange(scalarFrom, scalarTo)?.let { applyRustUpdateJSON(it) }
+        }
     }
 
     private fun deleteBackwardAtSelectionScalarInRust(scalarAnchor: Int, scalarHead: Int) {
@@ -3413,17 +3351,9 @@ class EditorEditText @JvmOverloads constructor(
             callback(scalarAnchor, scalarHead)
             return
         }
-        val startedAt = System.nanoTime()
-        val updateJSON = editorDeleteBackwardAtSelectionScalar(
-            editorId.toULong(),
-            scalarAnchor.toUInt(),
-            scalarHead.toUInt()
-        )
-        recordImeTraceForTesting(
-            "rustDeleteBackward",
-            "selection=$scalarAnchor..$scalarHead rustUs=${nanosToMicros(System.nanoTime() - startedAt)} jsonLength=${updateJSON.length}"
-        )
-        applyRustUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.deleteBackwardAtSelection(scalarAnchor, scalarHead)?.let { applyRustUpdateJSON(it) }
+        }
     }
 
     private fun toggleTaskItemCheckedAtSelectionScalarInRust(scalarAnchor: Int, scalarHead: Int) {
@@ -3432,17 +3362,9 @@ class EditorEditText @JvmOverloads constructor(
             callback(scalarAnchor, scalarHead)
             return
         }
-        val startedAt = System.nanoTime()
-        val updateJSON = editorToggleTaskItemCheckedAtSelectionScalar(
-            editorId.toULong(),
-            scalarAnchor.toUInt(),
-            scalarHead.toUInt()
-        )
-        recordImeTraceForTesting(
-            "rustToggleTaskItemChecked",
-            "selection=$scalarAnchor..$scalarHead rustUs=${nanosToMicros(System.nanoTime() - startedAt)} jsonLength=${updateJSON.length}"
-        )
-        applyRustUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.toggleTaskItemCheckedAtSelection(scalarAnchor, scalarHead)?.let { applyRustUpdateJSON(it) }
+        }
     }
 
     /**
@@ -3450,14 +3372,9 @@ class EditorEditText @JvmOverloads constructor(
      */
     private fun splitBlockInRust(atScalarPos: Int) {
         if (!hasLiveEditor()) return
-        val startedAt = System.nanoTime()
-        val updateJSON = editorSplitBlockScalar(editorId.toULong(), atScalarPos.toUInt())
-        recordImeTraceForTesting(
-            "rustSplitBlock",
-            "at=$atScalarPos rustUs=${nanosToMicros(System.nanoTime() - startedAt)} jsonLength=${updateJSON.length}"
-        )
-        applyRustUpdateJSON(updateJSON)
-        scheduleLineBoundaryInputRefreshForEditor("splitBlock")
+        v2Driver?.let { driver ->
+            driver.splitBlockAt(atScalarPos)?.let { applyRustUpdateJSON(it) }
+        }
     }
 
     private fun deleteAndSplitInRust(scalarFrom: Int, scalarTo: Int) {
@@ -3466,18 +3383,9 @@ class EditorEditText @JvmOverloads constructor(
             callback(scalarFrom, scalarTo)
             return
         }
-        val startedAt = System.nanoTime()
-        val updateJSON = editorDeleteAndSplitScalar(
-            editorId.toULong(),
-            scalarFrom.toUInt(),
-            scalarTo.toUInt()
-        )
-        recordImeTraceForTesting(
-            "rustDeleteAndSplit",
-            "range=$scalarFrom..$scalarTo rustUs=${nanosToMicros(System.nanoTime() - startedAt)} jsonLength=${updateJSON.length}"
-        )
-        applyRustUpdateJSON(updateJSON)
-        scheduleLineBoundaryInputRefreshForEditor("deleteAndSplit")
+        v2Driver?.let { driver ->
+            driver.deleteAndSplit(scalarFrom, scalarTo)?.let { applyRustUpdateJSON(it) }
+        }
     }
 
     internal fun currentScalarSelection(): Pair<Int, Int>? {
@@ -3709,11 +3617,7 @@ class EditorEditText @JvmOverloads constructor(
         val textLayout = layout ?: return null
         val currentText = text?.toString() ?: return null
         val scalarPos = PositionBridge.utf16ToScalar(spanStart, currentText)
-        val docPos = if (hasLiveEditor()) {
-            editorScalarToDoc(editorId.toULong(), scalarPos.toUInt()).toInt()
-        } else {
-            0
-        }
+        val docPos = v2Driver?.docPositionForScalar(scalarPos) ?: scalarPos
         val line = textLayout.getLineForOffset(spanStart.coerceAtMost(maxOf(spannable.length - 1, 0)))
         val rect = resolvedImageRect(textLayout, imageSpan, spanStart, spanEnd)
         return SelectedImageGeometry(
@@ -3727,20 +3631,17 @@ class EditorEditText @JvmOverloads constructor(
         val density = resources.displayMetrics.density
         val widthDp = maxOf(48, (widthPx / density).roundToInt())
         val heightDp = maxOf(48, (heightPx / density).roundToInt())
-        val updateJSON = editorResizeImageAtDocPos(
-            editorId.toULong(),
-            docPos.toUInt(),
-            widthDp.toUInt(),
-            heightDp.toUInt()
-        )
-        applyUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            driver.resizeImageAtDocPos(docPos, widthDp, heightDp)?.let { applyUpdateJSON(it) }
+        }
     }
 
     private fun isSelectionInsideList(): Boolean {
         if (!hasLiveEditor()) return false
 
         return try {
-            val state = org.json.JSONObject(editorGetCurrentState(editorId.toULong()))
+            val stateJson = v2Driver?.currentStateJson() ?: return false
+            val state = org.json.JSONObject(stateJson)
             val nodes = state.optJSONObject("activeState")?.optJSONObject("nodes")
             nodes?.optBoolean("bulletList", false) == true ||
                 nodes?.optBoolean("orderedList", false) == true
@@ -3759,8 +3660,15 @@ class EditorEditText @JvmOverloads constructor(
             callback(html)
             return
         }
-        val updateJSON = editorInsertContentHtml(editorId.toULong(), html)
-        applyUpdateJSON(updateJSON)
+        v2Driver?.let { driver ->
+            val selection = currentScalarSelection()
+            val update = if (selection != null) {
+                driver.insertContentHtmlAtSelection(html, selection.first, selection.second)
+            } else {
+                null
+            }
+            update?.let { applyUpdateJSON(it) }
+        }
     }
 
     /**
@@ -4065,7 +3973,7 @@ class EditorEditText @JvmOverloads constructor(
      * Parses the update JSON, converts render elements to [android.text.SpannableStringBuilder]
      * via [RenderBridge], and replaces the EditText's content.
      *
-     * @param updateJSON The JSON string from editor_insert_text, etc.
+     * @param updateJSON The JSON string from an [EditorV2Driver] transaction result.
      */
     fun applyUpdateJSON(
         updateJSON: String,
@@ -4754,7 +4662,8 @@ class EditorEditText @JvmOverloads constructor(
      * ```
      *
      * anchor/head from Rust are **document positions** (include structural tokens).
-     * We convert doc→scalar via [editorDocToScalar] before converting to UTF-16.
+     * We convert doc→scalar via the v2 driver ([EditorV2Driver.scalarPositionForDoc])
+     * before converting to UTF-16.
      */
     private fun applySelectionFromJSON(selection: org.json.JSONObject) {
         val type = selection.optString("type", "") ?: return
@@ -4768,8 +4677,9 @@ class EditorEditText @JvmOverloads constructor(
                     val docAnchor = selection.optInt("anchor", 0)
                     val docHead = selection.optInt("head", 0)
                     // Convert doc positions to scalar offsets.
-                    val scalarAnchor = editorDocToScalar(editorId.toULong(), docAnchor.toUInt()).toInt()
-                    val scalarHead = editorDocToScalar(editorId.toULong(), docHead.toUInt()).toInt()
+                    val selectionDriver = v2Driver ?: return
+                    val scalarAnchor = selectionDriver.scalarPositionForDoc(docAnchor) ?: docAnchor
+                    val scalarHead = selectionDriver.scalarPositionForDoc(docHead) ?: docHead
                     val anchorUtf16 = PositionBridge.scalarToUtf16(scalarAnchor, currentText)
                     val headUtf16 = PositionBridge.scalarToUtf16(scalarHead, currentText)
                     val len = text?.length ?: 0
@@ -4781,7 +4691,8 @@ class EditorEditText @JvmOverloads constructor(
                 "node" -> {
                     val docPos = selection.optInt("pos", 0)
                     // Convert doc position to scalar offset.
-                    val scalarPos = editorDocToScalar(editorId.toULong(), docPos.toUInt()).toInt()
+                    val nodeSelectionDriver = v2Driver ?: return
+                    val scalarPos = nodeSelectionDriver.scalarPositionForDoc(docPos) ?: docPos
                     val startUtf16 = PositionBridge.scalarToUtf16(scalarPos, currentText)
                     val len = text?.length ?: 0
                     val clamped = startUtf16.coerceIn(0, len)
@@ -4844,7 +4755,7 @@ class EditorEditText @JvmOverloads constructor(
             )
 
             // Re-fetch Rust's current state and re-apply ("Rust wins").
-            val stateJSON = editorGetCurrentState(editorId.toULong())
+            val stateJSON = v2Driver?.currentStateJson() ?: return
             applyUpdateJSON(stateJSON)
         }
     }

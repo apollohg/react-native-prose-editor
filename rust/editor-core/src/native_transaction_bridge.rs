@@ -1,5 +1,4 @@
-//! `NativeTransactionBridge` — the only production local mutation entrance
-//! (staging).
+//! `NativeTransactionBridge` — the only production local mutation entrance.
 //!
 //! The bridge borrows one live [`EditorSession`] and owns no document state.
 //! It accepts versioned, bounded, data-only request envelopes with DISTINCT
@@ -97,7 +96,7 @@ struct LocalApiRequestEnvelope {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-enum HistoryModeEnvelope {
+pub(crate) enum HistoryModeEnvelope {
     UndoableBoundary,
     ResetAndClear,
 }
@@ -334,7 +333,7 @@ impl<'session> NativeTransactionBridge<'session> {
         self.admit_writable(request_id)?;
         self.admit_base_revision(request_id, envelope.base_document_revision)?;
         let filtered = apply_input_filter(
-            self.session.policy.input_filter(),
+            self.session.policy.input_filter_regex(),
             &envelope.text,
             request_id,
         )?;
@@ -441,6 +440,47 @@ impl<'session> NativeTransactionBridge<'session> {
         Ok(())
     }
 
+    /// Undo: one history walk through the engine with the optionally
+    /// attached outbox. Read-only policy covers history mutations (Task 12
+    /// tracked Minor: the legacy locked `ReadOnly` rejects
+    /// `Source::History`); the rejection is structured and atomic — no
+    /// engine work happens after the policy check fails.
+    pub(crate) fn undo(&mut self, request_id: u64) -> Result<bool, SessionError> {
+        self.admit_history_writable(request_id)?;
+        let (engine, outbox) = self.session.engine_and_outbox();
+        engine
+            .undo_with_outbox(request_id, outbox)
+            .map(|commit| commit.is_some())
+            .map_err(operation_error)
+    }
+
+    /// Redo: the mirror history walk under the same read-only coverage.
+    pub(crate) fn redo(&mut self, request_id: u64) -> Result<bool, SessionError> {
+        self.admit_history_writable(request_id)?;
+        let (engine, outbox) = self.session.engine_and_outbox();
+        engine
+            .redo_with_outbox(request_id, outbox)
+            .map(|commit| commit.is_some())
+            .map_err(operation_error)
+    }
+
+    /// Read-only policy for the history entry points (Task 12 tracked
+    /// Minor): the legacy locked `ReadOnly` rejects `Source::History`
+    /// transactions, so undo/redo refuse with the frozen policy code before
+    /// any engine work.
+    fn admit_history_writable(&self, request_id: u64) -> Result<(), SessionError> {
+        if self.session.policy.read_only() {
+            let mut error = SessionError::new(
+                ErrorDomain::Boundary,
+                "MUTATION_REJECTED",
+                "document is read-only; history mutations are not allowed",
+            );
+            error.request_id = Some(request_id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Stale native requests reject deterministically; native code refreshes
     /// from engine state instead of retrying against guessed positions.
     fn admit_base_revision(&self, request_id: u64, base: u64) -> Result<(), SessionError> {
@@ -521,17 +561,23 @@ fn typed_outcome(
 
 /// Per-character input filter with exact legacy `InputFilter` semantics:
 /// each committed character is kept only if it matches the pattern; a fully
-/// filtered commit drops the insertion entirely.
+/// filtered commit drops the insertion entirely. The pattern arrives
+/// pre-compiled from the session policy's once-per-policy cache (Task 12
+/// tracked Minor); a cached compile failure replays the identical
+/// `CONFIG_INVALID` on every request.
 fn apply_input_filter(
-    pattern: Option<&str>,
+    compiled: Option<Result<&regex::Regex, String>>,
     text: &str,
     request_id: u64,
 ) -> Result<Option<String>, SessionError> {
-    let Some(pattern) = pattern else {
+    let Some(compiled) = compiled else {
         return Ok(Some(text.to_string()));
     };
-    let regex = regex::Regex::new(pattern).map_err(|error| {
-        config_invalid(request_id, format!("invalid input filter pattern: {error}"))
+    let regex = compiled.map_err(|message| {
+        config_invalid(
+            request_id,
+            format!("invalid input filter pattern: {message}"),
+        )
     })?;
     let filtered: String = text
         .chars()
@@ -573,10 +619,11 @@ fn lower_input(
     })
 }
 
-/// Staging test support for the native bridge, the collaboration outbox
+/// Test support for the native bridge, the collaboration outbox
 /// attachment, and the reservation-before-write saturation matrices. Mirrors
 /// the `session_initialization_test_support` idiom: registry-backed session
 /// ids, structured `TestError` envelopes, and full session audits.
+#[cfg(test)]
 pub mod native_bridge_test_support {
     use super::*;
     use crate::boundary::ResourceLimits;
@@ -762,7 +809,7 @@ pub mod native_bridge_test_support {
             let parsed: InputRequestEnvelope = parse_envelope(session, envelope)?;
             admit_version(parsed.version, parsed.request_id)?;
             let filtered = apply_input_filter(
-                session.policy.input_filter(),
+                session.policy.input_filter_regex(),
                 &parsed.text,
                 parsed.request_id,
             )?;

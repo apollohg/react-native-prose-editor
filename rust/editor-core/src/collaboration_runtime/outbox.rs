@@ -25,6 +25,9 @@ thread_local! {
 
 /// Simulate an allocation failure inside the next outbox reservations.
 /// Mirrors the history-module failpoint idiom for atomicity coverage.
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 pub fn set_reservation_allocation_failure_for_test(enabled: bool) {
     FAIL_RESERVATION_ALLOCATION.with(|cell| cell.set(enabled));
 }
@@ -101,11 +104,17 @@ pub struct ProtocolReplyReservation {
 
 impl ProtocolReplyReservation {
     /// Number of replies this reservation admits.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn reply_count(&self) -> usize {
         self.reply_count
     }
 
     /// Aggregate byte bound this reservation admits.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn upper_bound_bytes(&self) -> usize {
         self.upper_bound_bytes
     }
@@ -293,10 +302,27 @@ impl CollaborationOutbox {
         Some(entry)
     }
 
+    /// Task 11 teardown-on-restore: drop every pending framed protocol
+    /// reply. Protocol entries are transport-scoped and minted against the
+    /// prior store — a restored session resynchronizes from Sync Step 1, so
+    /// they can never become deliverable. Pending *document* updates are
+    /// untouched: restore rejects while any exist, so none can be here by
+    /// the time this runs. Infallible by construction.
+    pub fn clear_protocol_replies(&mut self) {
+        self.pending_protocol.clear();
+        self.pending_protocol_bytes = 0;
+    }
+
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn pending_protocol_reply_count(&self) -> usize {
         self.pending_protocol.len()
     }
 
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn pending_protocol_reply_bytes(&self) -> usize {
         self.pending_protocol_bytes
     }
@@ -305,10 +331,16 @@ impl CollaborationOutbox {
         !self.pending.is_empty()
     }
 
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn pending_document_update_count(&self) -> usize {
         self.pending.len()
     }
 
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn pending_document_update_bytes(&self) -> usize {
         self.pending_bytes
     }
@@ -325,12 +357,18 @@ impl CollaborationOutbox {
 
     /// The most recent successfully admitted document-update bound; test
     /// observability for the actual-length-within-bound property.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn last_reserved_upper_bound_for_test(&self) -> Option<usize> {
         self.last_reserved_upper_bound
     }
 
     /// Test-only ceiling override for saturation matrices, mirroring the
     /// session `set_transport_state_for_test` idiom.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn set_ceilings_for_test(&mut self, max_pending_messages: usize, max_pending_bytes: usize) {
         self.max_pending_messages = max_pending_messages;
         self.max_pending_bytes = max_pending_bytes;
@@ -379,9 +417,11 @@ mod tests {
 
     #[test]
     fn from_limits_uses_the_configured_outbox_ceilings() {
-        let mut limits = CollaborationLimits::default();
-        limits.max_pending_outbox_messages = 3;
-        limits.max_pending_outbox_bytes = 32;
+        let limits = CollaborationLimits {
+            max_pending_outbox_messages: 3,
+            max_pending_outbox_bytes: 32,
+            ..CollaborationLimits::default()
+        };
         let mut outbox = CollaborationOutbox::from_limits(&limits);
         for request in 0..3 {
             let reservation = outbox.reserve_document_update(request, 10).unwrap();
@@ -484,6 +524,31 @@ mod tests {
             },
         );
         outbox.reserve_document_update(5, 6).unwrap();
+    }
+
+    #[test]
+    fn clear_protocol_replies_drops_only_transport_scoped_entries() {
+        let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
+        let document = outbox.reserve_document_update(1, 8).unwrap();
+        outbox.install(document, vec![1; 8]);
+        let replies = outbox.reserve_protocol_replies(2, 12).unwrap();
+        outbox.install_protocol_replies(replies, 2, vec![vec![2; 7], vec![3; 5]]);
+        assert_eq!(outbox.pending_protocol_reply_count(), 2);
+        assert_eq!(outbox.pending_protocol_reply_bytes(), 12);
+
+        outbox.clear_protocol_replies();
+
+        assert_eq!(outbox.pending_protocol_reply_count(), 0);
+        assert_eq!(outbox.pending_protocol_reply_bytes(), 0);
+        assert!(outbox.take_next_protocol_reply().is_none());
+        // Document entries and their accounting are never touched.
+        assert_eq!(outbox.pending_document_update_count(), 1);
+        assert_eq!(outbox.pending_document_update_bytes(), 8);
+        assert!(outbox.has_pending_document_updates());
+        assert_eq!(outbox.take_next().unwrap().update_v1, vec![1; 8]);
+        // Clearing an already empty queue is a no-op.
+        outbox.clear_protocol_replies();
+        assert_eq!(outbox.pending_protocol_reply_count(), 0);
     }
 
     #[test]

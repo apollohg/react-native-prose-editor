@@ -104,4 +104,4 @@ fi
 echo "Running Android connected tests on device: $device_id"
 
 cd "$project_dir"
-./gradlew "$task" "${gradle_args[@]}" "${extra_args[@]}"
+./gradlew "$task" ${gradle_args[@]+"${gradle_args[@]}"} ${extra_args[@]+"${extra_args[@]}"}

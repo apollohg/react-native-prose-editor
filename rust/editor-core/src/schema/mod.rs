@@ -524,11 +524,17 @@ impl Schema {
         &self.doc_node_name
     }
 
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn text_node_type(&self) -> &str {
         &self.text_node_name
     }
 
     /// Return all node specs belonging to the given group.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn nodes_in_group(&self, group: &str) -> Vec<&NodeSpec> {
         self.groups
             .get(group)
@@ -715,6 +721,9 @@ impl Schema {
 
     /// Return node type names that can be inserted at the given parent, assuming
     /// `existing_child_types` is the actual prefix before the insertion point.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn insertable_nodes_at(
         &self,
         parent_spec: &NodeSpec,
@@ -873,6 +882,9 @@ impl Schema {
     ///   "marks": [{ "name": "bold" }, ...]
     /// }
     /// ```
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
         Self::from_json_with_limits(value, &ResourceLimits::default())
             .map_err(|error| error.message)

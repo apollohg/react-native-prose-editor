@@ -561,3 +561,40 @@ final class PositionBridge {
         return previousVoidType == "hardBreak"
     }
 }
+
+// MARK: - v2 position envelopes
+//
+// The v2 native transaction bridge addresses positions as scalar/utf16
+// offsets with an optional affinity. These helpers build the data-only
+// envelope shapes (`native_transaction_bridge.rs`: PositionEnvelope,
+// RangeEnvelope, SelectionEnvelope) from the native view's scalar currency.
+enum EditorV2PositionBridge {
+    static func positionEnvelope(scalar: UInt32, affinity: String? = nil) -> [String: Any] {
+        var envelope: [String: Any] = ["offset": Int(scalar), "kind": "scalar"]
+        if let affinity {
+            envelope["affinity"] = affinity
+        }
+        return envelope
+    }
+
+    static func rangeEnvelope(from: UInt32, to: UInt32) -> [String: Any] {
+        [
+            "from": positionEnvelope(scalar: from),
+            "to": positionEnvelope(scalar: to),
+        ]
+    }
+
+    static func textSelectionEnvelope(anchor: UInt32, head: UInt32, affinity: String? = nil) -> [String: Any] {
+        [
+            "type": "text",
+            "anchor": positionEnvelope(scalar: anchor, affinity: affinity),
+            "head": positionEnvelope(scalar: head, affinity: affinity),
+        ]
+    }
+
+    /// Unicode-scalar length of one committed string (the position currency
+    /// used by every v2 envelope — NOT grapheme clusters, NOT UTF-16 units).
+    static func scalarLength(of text: String) -> UInt32 {
+        UInt32(text.unicodeScalars.count)
+    }
+}

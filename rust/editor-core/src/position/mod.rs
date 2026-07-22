@@ -276,6 +276,9 @@ impl PositionMap {
     // -----------------------------------------------------------------------
 
     /// Resolve a doc position to a `ResolvedPos` using the underlying document.
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn resolve(&self, doc_pos: u32, doc: &Document) -> Result<ResolvedPos, String> {
         doc.resolve(doc_pos)
     }
@@ -400,6 +403,9 @@ impl PositionMap {
     }
 
     /// Access the internal blocks slice (for testing / debugging).
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn blocks(&self) -> &[BlockMapping] {
         &self.blocks
     }

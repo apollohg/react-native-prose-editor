@@ -5,7 +5,6 @@ import java.util.Locale
 import kotlin.math.sqrt
 import org.json.JSONArray
 import org.json.JSONObject
-import uniffi.editor_core.*
 
 internal data class TimingStats(
     val name: String,
@@ -143,10 +142,12 @@ internal object NativePerformanceFixtureFactory {
             .toString()
     }
 
-    fun loadLargeDocumentIntoEditor(editorId: ULong): String {
-        editorSetJson(editorId, largeDocumentJson())
-        return editorGetCurrentState(editorId)
-    }
+    /**
+     * Load the large fixture document into a v2 session through its adapter;
+     * returns the resulting update JSON (null when the apply fails).
+     */
+    fun loadLargeDocumentIntoEditor(adapter: EditorV2Adapter): String? =
+        adapter.setContentJson(largeDocumentJson())
 
     fun remoteSelections(
         totalScalar: Int,

@@ -1,7 +1,6 @@
 import React from 'react';
 import { StyleSheet, Switch, Text, View } from 'react-native';
 import Slider from '@react-native-community/slider';
-import type { NativeRichTextEditorToolbarPlacement } from '@apollohg/react-native-prose-editor';
 import type { ExampleThemePreset } from '../themePresets';
 import { EXAMPLE_MENTION_SUGGESTIONS } from '../constants';
 import { sharedStyles } from '../sharedStyles';
@@ -10,10 +9,6 @@ import { ColorField } from './ColorField';
 type EditorSettingsPanelProps = {
     baseFontSize: number;
     onBaseFontSizeChange: (size: number) => void;
-    autoGrow: boolean;
-    onAutoGrowChange: (value: boolean) => void;
-    toolbarPlacement: NativeRichTextEditorToolbarPlacement;
-    onToolbarPlacementChange: (value: NativeRichTextEditorToolbarPlacement) => void;
     mentionsEnabled: boolean;
     onMentionsEnabledChange: (value: boolean) => void;
     blockquoteBorderColor: string;
@@ -27,10 +22,6 @@ type EditorSettingsPanelProps = {
 export function EditorSettingsPanel({
     baseFontSize,
     onBaseFontSizeChange,
-    autoGrow,
-    onAutoGrowChange,
-    toolbarPlacement,
-    onToolbarPlacementChange,
     mentionsEnabled,
     onMentionsEnabledChange,
     blockquoteBorderColor,
@@ -40,8 +31,6 @@ export function EditorSettingsPanel({
     sliderTheme,
     appChrome,
 }: EditorSettingsPanelProps) {
-    const inlineToolbar = toolbarPlacement === 'inline';
-
     return (
         <View style={sharedStyles.settingsPanel}>
             <View>
@@ -64,40 +53,6 @@ export function EditorSettingsPanel({
                     thumbTintColor={sliderTheme.thumbTintColor}
                     value={baseFontSize}
                     onValueChange={onBaseFontSizeChange}
-                />
-            </View>
-
-            <View style={styles.switchRow}>
-                <Text style={[sharedStyles.controlLabel, { color: appChrome.controlLabelColor }]}>
-                    Auto Grow
-                </Text>
-                <Switch
-                    value={autoGrow}
-                    onValueChange={onAutoGrowChange}
-                    trackColor={{
-                        false: appChrome.tabBorderColor,
-                        true: appChrome.tabActiveBorderColor,
-                    }}
-                    thumbColor={autoGrow ? appChrome.tabActiveTextColor : appChrome.tabTextColor}
-                />
-            </View>
-
-            <View style={styles.switchRow}>
-                <Text style={[sharedStyles.controlLabel, { color: appChrome.controlLabelColor }]}>
-                    Inline Toolbar
-                </Text>
-                <Switch
-                    value={inlineToolbar}
-                    onValueChange={(value) =>
-                        onToolbarPlacementChange(value ? 'inline' : 'keyboard')
-                    }
-                    trackColor={{
-                        false: appChrome.tabBorderColor,
-                        true: appChrome.tabActiveBorderColor,
-                    }}
-                    thumbColor={
-                        inlineToolbar ? appChrome.tabActiveTextColor : appChrome.tabTextColor
-                    }
                 />
             </View>
 

@@ -48,20 +48,16 @@ fn filtered_out_case_does_not_initialize_its_case_fixture() {
 #[test]
 fn yrs_editing_semantics_cases_are_declared_exactly_once() {
     let source = include_str!("../benches/perf_suite.rs");
+    // Task 16C (user directive 2026-07-20): the legacy runtime and its
+    // reference benchmark cases/fixtures were deleted; only the Yrs cases
+    // remain, verified after timing against v2-native expected derivations.
     let expected = [
-        "legacy.edit.insert_char.article.1x",
         "yrs.edit.insert_char.article.1x",
-        "legacy.edit.typing_burst.article.1x",
         "yrs.edit.typing_burst.article.1x",
-        "legacy.state.selection_light.article.1x",
         "yrs.state.selection_light.article.1x",
-        "legacy.command.toggle_mark.article.1x",
         "yrs.command.toggle_mark.article.1x",
-        "legacy.command.wrap_list.article.1x",
         "yrs.command.wrap_list.article.1x",
-        "legacy.history.undo.article.1x",
         "yrs.history.undo.article.1x",
-        "legacy.history.redo.article.1x",
         "yrs.history.redo.article.1x",
         "yrs.edit.insert_char.article.2x",
         "yrs.state.selection_light.article.2x",
@@ -87,8 +83,8 @@ fn yrs_editing_semantics_cases_are_declared_exactly_once() {
         expected.len(),
         "every yrs-editing case must use untimed semantic verification",
     );
-    assert_eq!(source.matches("assert_legacy_editing_output(").count(), 7);
-    assert_eq!(source.matches("assert_legacy_selection_output(").count(), 2);
+    assert_eq!(source.matches("assert_legacy_editing_output(").count(), 0);
+    assert_eq!(source.matches("assert_legacy_selection_output(").count(), 0);
     assert_eq!(source.matches("assert_yrs_editing_output(").count(), 11);
     let verified_runner = source
         .split_once("fn verified_bench_case")
@@ -128,8 +124,8 @@ fn yrs_editing_semantics_verifiers_require_exact_expected_documents() {
         "the selected bold range must have an independent pure expected document",
     );
     assert!(
-        source.contains("fn build_backend_expected_documents("),
-        "pure semantic fixtures must be canonicalized separately by each backend outside timing",
+        source.contains("fn build_yrs_expected_document("),
+        "pure semantic fixtures must be canonicalized by the Yrs engine outside timing",
     );
     assert!(
         source.contains("assert_eq!(&actual_document, expected_document)"),
@@ -143,8 +139,8 @@ fn yrs_editing_semantics_verifiers_require_exact_expected_documents() {
         .split_once("fn build_pure_insert_document")
         .expect("pure insert fixture helper must exist")
         .1
-        .split_once("fn build_backend_expected_documents")
-        .expect("pure helpers must precede backend canonicalization")
+        .split_once("fn build_yrs_expected_document")
+        .expect("pure helpers must precede Yrs canonicalization")
         .0;
     assert!(
         !pure_helpers.contains("insert_text_scalar")
@@ -183,7 +179,7 @@ fn yrs_editing_semantics_verifies_returned_outputs_after_timing() {
         .expect("state and returned output must be verified after timing")
         + elapsed;
     assert!(elapsed < verification);
-    assert!(source.contains("fn assert_legacy_editing_output("));
+    assert!(!source.contains("fn assert_legacy_editing_output("));
     assert!(source.contains("fn assert_yrs_editing_output("));
     assert!(source.contains("resolved_anchor.document"));
     assert!(source.contains("resolved_anchor.scalar"));

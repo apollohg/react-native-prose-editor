@@ -14,6 +14,9 @@ pub struct EditingLimits {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+// Not reachable from production call paths after the Task 16C legacy runtime
+// removal; exercised by crate tests.
+#[allow(dead_code)]
 pub struct EditingLimitOverrides {
     pub max_operations_per_transaction: Option<usize>,
     pub max_undo_groups: Option<usize>,
@@ -33,6 +36,9 @@ impl Default for EditingLimits {
 }
 
 impl EditingLimits {
+    // Not reachable from production call paths after the Task 16C legacy runtime
+    // removal; exercised by crate tests.
+    #[allow(dead_code)]
     pub fn resolve(overrides: EditingLimitOverrides) -> YrsEngineResult<Self> {
         let defaults = Self::default();
         let limits = Self {

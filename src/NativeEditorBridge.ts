@@ -1,198 +1,18 @@
 import { requireNativeModule } from 'expo-modules-core';
-import { Platform } from 'react-native';
 import type { EditorMentionTheme } from './EditorTheme';
+import type { SchemaDefinition } from './schemas';
 import {
-    resolveEditorResourceLimits,
-    type EditorResourceLimits,
-    type ResolvedEditorResourceLimits,
-} from './ResourceLimits';
-import {
-    normalizeDocumentJson,
-    resolveDocumentDescriptor,
-    type ResolvedDocumentSchema,
-    type SchemaDefinition,
-} from './schemas';
-import { NativeEditorBoundaryError, parseNativeBoundaryError } from './NativeEditorBoundaryError';
+    NativeEditorV2BoundaryError,
+    NativeEditorV2ErrorBase,
+    NativeEditorV2NonRetryableError,
+    nativeEditorV2ErrorToException,
+    normalizeNativeEditorV2Error,
+    type NativeEditorV2Error,
+} from './NativeEditorBoundaryError';
 
-const ERR_DESTROYED = 'NativeEditorBridge: editor has been destroyed';
-const ERR_NATIVE_RESPONSE = 'NativeEditorBridge: invalid JSON response from native module';
-const ERR_INVALID_ENCODED_STATE = 'NativeEditorBridge: invalid encoded collaboration state';
-const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-const MAX_NATIVE_LENGTH = 0xffff_ffff;
-
-function utf8ByteLengthUpTo(value: string, limit: number): number {
-    let bytes = 0;
-    for (let index = 0; index < value.length; index += 1) {
-        const code = value.charCodeAt(index);
-        if (code <= 0x7f) bytes += 1;
-        else if (code <= 0x7ff) bytes += 2;
-        else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
-            const low = value.charCodeAt(index + 1);
-            if (low >= 0xdc00 && low <= 0xdfff) {
-                bytes += 4;
-                index += 1;
-            } else bytes += 3;
-        } else bytes += 3;
-        if (bytes > limit) return bytes;
-    }
-    return bytes;
-}
-
-function assertInputStringWithinLimit(value: string, limit: number): void {
-    const actual = utf8ByteLengthUpTo(value, limit);
-    if (actual > limit) {
-        throw new NativeEditorBoundaryError(
-            'INPUT_LIMIT_EXCEEDED',
-            `input exceeds limit ${limit}: ${actual}`,
-            limit,
-            actual
-        );
-    }
-}
-
-function assertCountWithinLimit(actual: number, limit: number): void {
-    if (actual > limit) {
-        throw new NativeEditorBoundaryError(
-            'INPUT_LIMIT_EXCEEDED',
-            `input exceeds limit ${limit}: ${actual}`,
-            limit,
-            actual
-        );
-    }
-}
-
-export interface NativeEditorModule {
-    editorCreateResult(configJson: string): string;
-    editorDestroy(editorId: number): void;
-    editorPrepareForCommand?(editorId: number): string;
-    collaborationSessionCreate(configJson: string): number;
-    collaborationSessionCreateResult?(configJson: string): string;
-    collaborationSessionDestroy(sessionId: number): void;
-    collaborationSessionGetDocumentJson(sessionId: number): string;
-    collaborationSessionGetEncodedState(sessionId: number): string;
-    collaborationSessionGetPeersJson(sessionId: number): string;
-    collaborationSessionStart(sessionId: number): string;
-    collaborationSessionApplyLocalDocumentJson(sessionId: number, json: string): string;
-    collaborationSessionApplyEncodedState(sessionId: number, encodedStateJson: string): string;
-    collaborationSessionReplaceEncodedState(sessionId: number, encodedStateJson: string): string;
-    collaborationSessionHandleMessage(sessionId: number, messageJson: string): string;
-    collaborationSessionSetLocalAwareness(sessionId: number, awarenessJson: string): string;
-    collaborationSessionClearLocalAwareness(sessionId: number): string;
-    editorSetHtml(editorId: number, html: string): string;
-    editorGetHtml(editorId: number): string;
-    editorSetJson(editorId: number, json: string): string;
-    editorGetJson(editorId: number): string;
-    editorGetContentSnapshot(editorId: number): string;
-    editorReplaceHtml(editorId: number, html: string): string;
-    editorReplaceJson(editorId: number, json: string): string;
-    editorInsertText(editorId: number, pos: number, text: string): string;
-    editorReplaceSelectionText(editorId: number, text: string): string;
-    editorDeleteRange(editorId: number, from: number, to: number): string;
-    editorSplitBlock(editorId: number, pos: number): string;
-    editorInsertContentHtml(editorId: number, html: string): string;
-    editorInsertContentJson(editorId: number, json: string): string;
-    editorInsertContentJsonAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number,
-        json: string
-    ): string;
-    editorToggleMark(editorId: number, markName: string): string;
-    editorSetMark(editorId: number, markName: string, attrsJson: string): string;
-    editorUnsetMark(editorId: number, markName: string): string;
-    editorToggleBlockquote(editorId: number): string;
-    editorToggleCodeBlock(editorId: number): string;
-    editorToggleHeading(editorId: number, level: number): string;
-    editorSetSelection(editorId: number, anchor: number, head: number): void;
-    editorGetSelection(editorId: number): string;
-    editorGetSelectionState(editorId: number): string;
-    editorGetCurrentState(editorId: number): string;
-    // Scalar-position APIs (used by native views internally)
-    editorInsertTextScalar(editorId: number, scalarPos: number, text: string): string;
-    editorDeleteScalarRange(editorId: number, scalarFrom: number, scalarTo: number): string;
-    editorReplaceTextScalar(
-        editorId: number,
-        scalarFrom: number,
-        scalarTo: number,
-        text: string
-    ): string;
-    editorSplitBlockScalar(editorId: number, scalarPos: number): string;
-    editorDeleteAndSplitScalar(editorId: number, scalarFrom: number, scalarTo: number): string;
-    editorSetSelectionScalar(editorId: number, scalarAnchor: number, scalarHead: number): void;
-    editorToggleMarkAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number,
-        markName: string
-    ): string;
-    editorSetMarkAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number,
-        markName: string,
-        attrsJson: string
-    ): string;
-    editorUnsetMarkAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number,
-        markName: string
-    ): string;
-    editorToggleBlockquoteAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number
-    ): string;
-    editorToggleCodeBlockAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number
-    ): string;
-    editorToggleHeadingAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number,
-        level: number
-    ): string;
-    editorWrapInListAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number,
-        listType: string
-    ): string;
-    editorUnwrapFromListAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number
-    ): string;
-    editorIndentListItemAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number
-    ): string;
-    editorOutdentListItemAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number
-    ): string;
-    editorInsertNodeAtSelectionScalar(
-        editorId: number,
-        scalarAnchor: number,
-        scalarHead: number,
-        nodeType: string
-    ): string;
-    editorDocToScalar(editorId: number, docPos: number): number;
-    editorScalarToDoc(editorId: number, scalar: number): number;
-    editorWrapInList(editorId: number, listType: string): string;
-    editorUnwrapFromList(editorId: number): string;
-    editorIndentListItem(editorId: number): string;
-    editorOutdentListItem(editorId: number): string;
-    editorInsertNode(editorId: number, nodeType: string): string;
-    editorUndo(editorId: number): string;
-    editorRedo(editorId: number): string;
-    editorCanUndo(editorId: number): boolean;
-    editorCanRedo(editorId: number): boolean;
-}
+// ─── Shared types ───────────────────────────────────────────────
+// Neutral document/render state types shared by the v2 document
+// handle, the React components, and the schema/addon helpers.
 
 export interface Selection {
     type: 'text' | 'node' | 'all';
@@ -269,16 +89,6 @@ export interface EditorUpdate {
     documentVersion?: number;
 }
 
-export interface ParseUpdateOptions {
-    rejectSameDocumentVersion?: boolean;
-    rejectVersionlessAfterDocumentVersion?: boolean;
-}
-
-interface RunPreparedCommandOptions {
-    cancelIfPreflightUpdated?: boolean;
-    refreshSelectionAfterPreflight?: boolean;
-}
-
 export interface ContentSnapshot {
     html: string;
     json: DocumentJSON;
@@ -294,20 +104,6 @@ export interface CollaborationPeer {
     state: Record<string, unknown> | null;
 }
 
-export interface CollaborationResult {
-    messages: number[][];
-    documentChanged: boolean;
-    documentJson?: DocumentJSON;
-    peersChanged: boolean;
-    peers?: CollaborationPeer[];
-}
-
-interface CommandPreparation {
-    ready: boolean;
-    updateJSON?: string;
-    blockedReason?: CommandBlockedReason;
-}
-
 export type CommandBlockedReason =
     | 'composition'
     | 'detached'
@@ -320,478 +116,11 @@ export interface CommandBlockedInfo {
     reason: CommandBlockedReason | null;
 }
 
-export type EncodedCollaborationStateInput = Uint8Array | readonly number[] | string;
+let _nativeModule: NativeEditorV2Module | null = null;
 
-export function normalizeActiveState(raw: unknown): ActiveState {
-    const obj = (raw as Record<string, unknown>) ?? {};
-    return {
-        marks: (obj.marks ?? {}) as Record<string, boolean>,
-        markAttrs: (obj.markAttrs ?? {}) as Record<string, Record<string, unknown>>,
-        nodes: (obj.nodes ?? {}) as Record<string, boolean>,
-        commands: (obj.commands ?? {}) as Record<string, boolean>,
-        allowedMarks: (obj.allowedMarks ?? []) as string[],
-        insertableNodes: (obj.insertableNodes ?? []) as string[],
-    };
-}
-
-function nativeResponseError(value: unknown): Error | null {
-    const boundaryError = parseNativeBoundaryError(value);
-    if (boundaryError) return boundaryError;
-    if (value != null && typeof value === 'object' && !Array.isArray(value)) {
-        const legacyError = (value as Record<string, unknown>).error;
-        if (typeof legacyError === 'string') {
-            return new Error(`NativeEditorBridge: ${legacyError}`);
-        }
-    }
-    return null;
-}
-
-function rethrowParsedNativeError(error: unknown): never {
-    if (
-        error instanceof NativeEditorBoundaryError ||
-        (error instanceof Error && error.message.startsWith('NativeEditorBridge:'))
-    ) {
-        throw error;
-    }
-    throw new Error(ERR_NATIVE_RESPONSE);
-}
-
-function parseRenderElements(json: string): RenderElement[] {
-    if (!json || json === '[]') return [];
-    try {
-        const parsed: unknown = JSON.parse(json);
-        if (
-            parsed != null &&
-            typeof parsed === 'object' &&
-            !Array.isArray(parsed) &&
-            'error' in parsed
-        ) {
-            throw nativeResponseError(parsed) ?? new Error(ERR_NATIVE_RESPONSE);
-        }
-        if (!Array.isArray(parsed)) {
-            throw new Error(ERR_NATIVE_RESPONSE);
-        }
-        return parsed as RenderElement[];
-    } catch (e) {
-        rethrowParsedNativeError(e);
-    }
-}
-
-export function parseEditorUpdateJson(
-    json: string,
-    previousRenderBlocks?: RenderElement[][]
-): EditorUpdate | null {
-    if (!json || json === '') return null;
-    try {
-        const parsed = JSON.parse(json) as Record<string, unknown>;
-        if ('error' in parsed) {
-            throw nativeResponseError(parsed) ?? new Error(ERR_NATIVE_RESPONSE);
-        }
-        const renderBlocks = Array.isArray(parsed.renderBlocks)
-            ? (parsed.renderBlocks as RenderElement[][])
-            : applyRenderBlocksPatch(
-                  previousRenderBlocks,
-                  parsed.renderPatch != null && typeof parsed.renderPatch === 'object'
-                      ? (parsed.renderPatch as RenderBlocksPatch)
-                      : undefined
-              );
-        const renderPatch =
-            parsed.renderPatch != null && typeof parsed.renderPatch === 'object'
-                ? (parsed.renderPatch as RenderBlocksPatch)
-                : undefined;
-        return {
-            renderElements: Array.isArray(parsed.renderElements)
-                ? (parsed.renderElements as RenderElement[])
-                : flattenRenderBlocks(renderBlocks),
-            renderBlocks,
-            renderPatch,
-            selection: (parsed.selection ?? { type: 'text', anchor: 0, head: 0 }) as Selection,
-            activeState: normalizeActiveState(parsed.activeState),
-            historyState: (parsed.historyState ?? {
-                canUndo: false,
-                canRedo: false,
-            }) as HistoryState,
-            documentVersion:
-                typeof parsed.documentVersion === 'number' ? parsed.documentVersion : undefined,
-        };
-    } catch (e) {
-        rethrowParsedNativeError(e);
-    }
-}
-
-function flattenRenderBlocks(renderBlocks?: RenderElement[][]): RenderElement[] {
-    if (!renderBlocks || renderBlocks.length === 0) {
-        return [];
-    }
-    return renderBlocks.flat();
-}
-
-function applyRenderBlocksPatch(
-    previousRenderBlocks?: RenderElement[][],
-    renderPatch?: RenderBlocksPatch
-): RenderElement[][] | undefined {
-    if (!previousRenderBlocks || !renderPatch) {
-        return undefined;
-    }
-
-    const { startIndex, deleteCount, renderBlocks } = renderPatch;
-    if (
-        !Number.isInteger(startIndex) ||
-        !Number.isInteger(deleteCount) ||
-        startIndex < 0 ||
-        deleteCount < 0 ||
-        startIndex > previousRenderBlocks.length ||
-        startIndex + deleteCount > previousRenderBlocks.length
-    ) {
-        return undefined;
-    }
-
-    return [
-        ...previousRenderBlocks.slice(0, startIndex),
-        ...renderBlocks,
-        ...previousRenderBlocks.slice(startIndex + deleteCount),
-    ];
-}
-
-function parseContentSnapshotJson(json: string): ContentSnapshot {
-    try {
-        const parsed = JSON.parse(json) as Record<string, unknown>;
-        if ('error' in parsed) {
-            throw nativeResponseError(parsed) ?? new Error(ERR_NATIVE_RESPONSE);
-        }
-        return {
-            html: typeof parsed.html === 'string' ? parsed.html : '',
-            json:
-                parsed.json != null && typeof parsed.json === 'object'
-                    ? (parsed.json as DocumentJSON)
-                    : {},
-        };
-    } catch (e) {
-        rethrowParsedNativeError(e);
-    }
-}
-
-function parseDocumentJSON(json: string): DocumentJSON {
-    if (!json || json === '{}') return {};
-    try {
-        const parsed = JSON.parse(json) as DocumentJSON;
-        if (
-            parsed != null &&
-            typeof parsed === 'object' &&
-            'error' in (parsed as Record<string, unknown>)
-        ) {
-            throw nativeResponseError(parsed) ?? new Error(ERR_NATIVE_RESPONSE);
-        }
-        return parsed;
-    } catch (e) {
-        rethrowParsedNativeError(e);
-    }
-}
-
-function parseCollaborationPeersJson(json: string): CollaborationPeer[] {
-    if (!json || json === '[]') return [];
-    try {
-        const parsed = JSON.parse(json) as unknown;
-        const error = nativeResponseError(parsed);
-        if (error) throw error;
-        return Array.isArray(parsed) ? parsed : [];
-    } catch (error) {
-        rethrowParsedNativeError(error);
-    }
-}
-
-function parseByteArrayJson(json: string, limit?: number): Uint8Array {
-    if (!json || json === '[]') return new Uint8Array();
-    try {
-        const parsed = JSON.parse(json) as unknown;
-        const error = nativeResponseError(parsed);
-        if (error) throw error;
-        if (!Array.isArray(parsed)) {
-            throw new Error(ERR_NATIVE_RESPONSE);
-        }
-        if (limit != null) assertCountWithinLimit(parsed.length, limit);
-        return Uint8Array.from(parsed as number[]);
-    } catch (e) {
-        rethrowParsedNativeError(e);
-    }
-}
-
-function bytesToBase64(bytes: ArrayLike<number>): string {
-    let output = '';
-    for (let index = 0; index < bytes.length; index += 3) {
-        const byte1 = bytes[index] ?? 0;
-        const byte2 = bytes[index + 1] ?? 0;
-        const byte3 = bytes[index + 2] ?? 0;
-        const chunk = (byte1 << 16) | (byte2 << 8) | byte3;
-
-        output += BASE64_ALPHABET[(chunk >> 18) & 0x3f];
-        output += BASE64_ALPHABET[(chunk >> 12) & 0x3f];
-        output += index + 1 < bytes.length ? BASE64_ALPHABET[(chunk >> 6) & 0x3f] : '=';
-        output += index + 2 < bytes.length ? BASE64_ALPHABET[chunk & 0x3f] : '=';
-    }
-    return output;
-}
-
-const BASE64_COMPATIBILITY_WHITESPACE_LIMIT = 4096;
-
-function isBase64CompatibilityWhitespace(char: string): boolean {
-    return char === ' ' || char === '\t' || char === '\r' || char === '\n' || char === '\f';
-}
-
-function decodeBase64WithinLimits(
-    base64: string,
-    limits: ResolvedEditorResourceLimits
-): Uint8Array {
-    const encodedCeiling = Math.ceil(limits.maxEncodedStateBytes / 3) * 4;
-    const derivedRawLimit = Math.min(
-        Number.MAX_SAFE_INTEGER,
-        encodedCeiling + BASE64_COMPATIBILITY_WHITESPACE_LIMIT
-    );
-    const rawLimit = Math.min(limits.maxInputBytes, derivedRawLimit);
-    if (base64.length > rawLimit) {
-        throw new NativeEditorBoundaryError(
-            'INPUT_LIMIT_EXCEEDED',
-            `input exceeds limit ${rawLimit}: ${base64.length}`,
-            rawLimit,
-            base64.length
-        );
-    }
-
-    let output = new Uint8Array(Math.min(limits.maxEncodedStateBytes, 1024));
-    const quartet = [0, 0, 0, 0];
-    let quartetLength = 0;
-    let outputLength = 0;
-    let whitespace = 0;
-    let sawPadding = false;
-
-    const writeQuartet = (byteCount: number): void => {
-        const nextLength = outputLength + byteCount;
-        if (nextLength > limits.maxEncodedStateBytes) {
-            throw new NativeEditorBoundaryError(
-                'INPUT_LIMIT_EXCEEDED',
-                `input exceeds limit ${limits.maxEncodedStateBytes}: ${nextLength}`,
-                limits.maxEncodedStateBytes,
-                nextLength
-            );
-        }
-        if (nextLength > output.length) {
-            const nextCapacity = Math.min(
-                limits.maxEncodedStateBytes,
-                Math.max(nextLength, Math.max(1, output.length) * 2)
-            );
-            const grown = new Uint8Array(nextCapacity);
-            grown.set(output);
-            output = grown;
-        }
-        const combined =
-            (quartet[0] << 18) |
-            (quartet[1] << 12) |
-            ((quartet[2] < 0 ? 0 : quartet[2]) << 6) |
-            (quartet[3] < 0 ? 0 : quartet[3]);
-        output[outputLength] = (combined >> 16) & 0xff;
-        if (byteCount > 1) output[outputLength + 1] = (combined >> 8) & 0xff;
-        if (byteCount > 2) output[outputLength + 2] = combined & 0xff;
-        outputLength = nextLength;
-    };
-
-    for (let index = 0; index < base64.length; index += 1) {
-        const char = base64[index];
-        if (isBase64CompatibilityWhitespace(char)) {
-            whitespace += 1;
-            if (whitespace > BASE64_COMPATIBILITY_WHITESPACE_LIMIT) {
-                throw new NativeEditorBoundaryError(
-                    'INPUT_LIMIT_EXCEEDED',
-                    `input whitespace exceeds limit ${BASE64_COMPATIBILITY_WHITESPACE_LIMIT}: ${whitespace}`,
-                    BASE64_COMPATIBILITY_WHITESPACE_LIMIT,
-                    whitespace
-                );
-            }
-            continue;
-        }
-        if (sawPadding) throw new Error(ERR_INVALID_ENCODED_STATE);
-
-        if (char === '=') {
-            if (quartetLength < 2) throw new Error(ERR_INVALID_ENCODED_STATE);
-            quartet[quartetLength] = -1;
-        } else {
-            const value = BASE64_ALPHABET.indexOf(char);
-            if (value < 0) throw new Error(ERR_INVALID_ENCODED_STATE);
-            quartet[quartetLength] = value;
-        }
-        quartetLength += 1;
-
-        if (quartetLength === 4) {
-            if (quartet[2] < 0) {
-                if (quartet[3] >= 0) throw new Error(ERR_INVALID_ENCODED_STATE);
-                writeQuartet(1);
-                sawPadding = true;
-            } else if (quartet[3] < 0) {
-                writeQuartet(2);
-                sawPadding = true;
-            } else {
-                writeQuartet(3);
-            }
-            quartetLength = 0;
-        }
-    }
-
-    if (quartetLength === 1 || (quartetLength > 0 && quartet[quartetLength - 1] < 0)) {
-        throw new Error(ERR_INVALID_ENCODED_STATE);
-    }
-    if (quartetLength === 2) writeQuartet(1);
-    if (quartetLength === 3) writeQuartet(2);
-    return outputLength === output.length ? output : output.slice(0, outputLength);
-}
-
-export function normalizeEncodedCollaborationStateInput(
-    encodedState: EncodedCollaborationStateInput,
-    resourceLimits?: EditorResourceLimits
-): Uint8Array {
-    const limits = resolveEditorResourceLimits(resourceLimits);
-    if (typeof encodedState === 'string') {
-        return decodeBase64WithinLimits(encodedState, limits);
-    }
-    assertCountWithinLimit(encodedState.length, limits.maxEncodedStateBytes);
-    return encodedState instanceof Uint8Array ? encodedState : Uint8Array.from(encodedState);
-}
-
-export function encodeCollaborationStateBase64(
-    encodedState: EncodedCollaborationStateInput,
-    resourceLimits?: EditorResourceLimits
-): string {
-    return bytesToBase64(normalizeEncodedCollaborationStateInput(encodedState, resourceLimits));
-}
-
-export function decodeCollaborationStateBase64(
-    base64: string,
-    resourceLimits?: EditorResourceLimits
-): Uint8Array {
-    return normalizeEncodedCollaborationStateInput(base64, resourceLimits);
-}
-
-function normalizeDocumentJsonString(
-    jsonString: string,
-    descriptor: ResolvedDocumentSchema
-): string {
-    try {
-        const parsed = JSON.parse(jsonString) as DocumentJSON;
-        const normalized = normalizeDocumentJson(parsed, descriptor);
-        return normalized === parsed ? jsonString : JSON.stringify(normalized);
-    } catch {
-        return jsonString;
-    }
-}
-
-function parseCommandPreparationJson(json: string): CommandPreparation {
-    if (!json) return { ready: true };
-    let parsed: Record<string, unknown>;
-    try {
-        parsed = JSON.parse(json) as Record<string, unknown>;
-    } catch {
-        throw new Error(ERR_NATIVE_RESPONSE);
-    }
-    const responseError = nativeResponseError(parsed);
-    if (responseError) throw responseError;
-    const rawBlockedReason = parsed.blockedReason;
-    const blockedReason =
-        rawBlockedReason === 'composition' ||
-        rawBlockedReason === 'detached' ||
-        rawBlockedReason === 'pendingUpdate' ||
-        rawBlockedReason === 'destroyed'
-            ? rawBlockedReason
-            : rawBlockedReason === 'unknown'
-              ? 'unknown'
-              : undefined;
-    return {
-        ready: parsed.ready !== false,
-        updateJSON: typeof parsed.updateJSON === 'string' ? parsed.updateJSON : undefined,
-        blockedReason,
-    };
-}
-
-export function parseCollaborationResultJson(json: string): CollaborationResult {
-    if (!json || json === '') {
-        return {
-            messages: [],
-            documentChanged: false,
-            peersChanged: false,
-        };
-    }
-    try {
-        const parsed = JSON.parse(json) as Record<string, unknown>;
-        if ('error' in parsed) {
-            const boundaryError = parseNativeBoundaryError(parsed);
-            if (boundaryError) throw boundaryError;
-            throw new Error(`NativeEditorBridge: ${parsed.error}`);
-        }
-        return {
-            messages: Array.isArray(parsed.messages) ? (parsed.messages as number[][]) : [],
-            documentChanged: parsed.documentChanged === true,
-            documentJson:
-                parsed.documentJson && typeof parsed.documentJson === 'object'
-                    ? (parsed.documentJson as DocumentJSON)
-                    : undefined,
-            peersChanged: parsed.peersChanged === true,
-            peers: Array.isArray(parsed.peers) ? (parsed.peers as CollaborationPeer[]) : undefined,
-        };
-    } catch (e) {
-        if (
-            e instanceof NativeEditorBoundaryError ||
-            (e instanceof Error && e.message.startsWith('NativeEditorBridge:'))
-        ) {
-            throw e;
-        }
-        throw new Error(ERR_NATIVE_RESPONSE);
-    }
-}
-
-function parseCollaborationSessionId(json: string): number {
-    try {
-        const parsed = JSON.parse(json) as Record<string, unknown>;
-        const boundaryError = parseNativeBoundaryError(parsed);
-        if (boundaryError) throw boundaryError;
-        const sessionId = parsed.sessionId;
-        if (!Number.isSafeInteger(sessionId) || (sessionId as number) <= 0) {
-            throw new Error(ERR_NATIVE_RESPONSE);
-        }
-        return sessionId as number;
-    } catch (error) {
-        if (error instanceof NativeEditorBoundaryError) throw error;
-        throw new Error(ERR_NATIVE_RESPONSE);
-    }
-}
-
-function parseEditorId(json: string): number {
-    try {
-        const parsed = JSON.parse(json) as Record<string, unknown>;
-        const boundaryError = parseNativeBoundaryError(parsed);
-        if (boundaryError) throw boundaryError;
-        const editorId = parsed.editorId;
-        if (!Number.isSafeInteger(editorId) || (editorId as number) <= 0) {
-            throw new Error(ERR_NATIVE_RESPONSE);
-        }
-        return editorId as number;
-    } catch (error) {
-        if (error instanceof NativeEditorBoundaryError) throw error;
-        throw new Error(ERR_NATIVE_RESPONSE);
-    }
-}
-
-function throwIfNativeBoundaryError(json: string): void {
-    try {
-        const parsed = JSON.parse(json) as unknown;
-        const boundaryError = parseNativeBoundaryError(parsed);
-        if (boundaryError) throw boundaryError;
-    } catch (error) {
-        if (error instanceof NativeEditorBoundaryError) throw error;
-    }
-}
-
-let _nativeModule: NativeEditorModule | null = null;
-
-function getNativeModule(): NativeEditorModule {
+function getNativeModule(): NativeEditorV2Module {
     if (!_nativeModule) {
-        _nativeModule = requireNativeModule<NativeEditorModule>('NativeEditor');
+        _nativeModule = requireNativeModule<NativeEditorV2Module>('NativeEditor');
     }
     return _nativeModule;
 }
@@ -801,1027 +130,1071 @@ export function _resetNativeModuleCache(): void {
     _nativeModule = null;
 }
 
-export class NativeEditorBridge {
-    private _editorId: number;
-    private _documentDescriptor: ResolvedDocumentSchema;
-    private _destroyed = false;
-    private _lastSelection: Selection = { type: 'text', anchor: 0, head: 0 };
-    private _documentVersion = 0;
-    private _cachedHtml: { version: number; value: string } | null = null;
-    private _cachedJsonString: { version: number; value: string } | null = null;
-    private _renderBlocksCache: RenderElement[][] | null = null;
-    private _lastCommandBlocked = false;
-    private _lastCommandBlockedReason: CommandBlockedReason | null = null;
-    private _lastCommandPreflightUpdate: EditorUpdate | null = null;
-    private _lastAcceptedUpdateJson: string | null = null;
-    private _hasSeenDocumentVersion = false;
-    private readonly _resourceLimits: ResolvedEditorResourceLimits;
+// ─── FFI v2 surface ─────────────────────────────────────────────
+// Production v2 document handle and typed result normalization.
+// This is the only construction path: the native module exposes the
+// editor_v2_* UniFFI ABI, and everything below consumes the frozen v2
+// result records ({ value, error } with exactly one side set),
+// normalizes them at the JavaScript boundary (decimal-string
+// revisions/identifiers, direct binary values, unsafe-integer rejection), and
+// raises typed imperative errors per domain with a distinct non-retryable
+// class for ENGINE_INVARIANT_FAILED and lifecycle-destroyed states.
 
-    private constructor(
-        editorId: number,
-        descriptor: ResolvedDocumentSchema,
-        resourceLimits: ResolvedEditorResourceLimits
-    ) {
-        this._editorId = editorId;
-        this._documentDescriptor = descriptor;
-        this._resourceLimits = resourceLimits;
-    }
+const ERR_V2_NATIVE_RESPONSE = 'NativeEditorBridge: invalid v2 result record from native module';
+const ERR_V2_DESTROYED = 'NativeEditorBridge: v2 editor handle has been destroyed';
+const V2_ENVELOPE_VERSION = 1;
+const CANONICAL_V2_DECIMAL_ID = /^(0|[1-9]\d*)$/;
 
-    /** Create a new editor instance backed by the Rust engine. */
-    static create(config?: {
-        maxLength?: number;
-        schemaJson?: string;
-        allowBase64Images?: boolean;
-        resourceLimits?: EditorResourceLimits;
-        /** Pre-resolved by the React wrapper so every call site shares one descriptor. */
-        documentDescriptor?: ResolvedDocumentSchema;
-    }): NativeEditorBridge {
-        const configObj: Record<string, unknown> = {};
-        const resolvedResourceLimits = resolveEditorResourceLimits(config?.resourceLimits);
-        let parsedSchema: SchemaDefinition | undefined;
-        if (config?.maxLength != null) {
-            if (
-                !Number.isInteger(config.maxLength) ||
-                config.maxLength < 0 ||
-                config.maxLength > MAX_NATIVE_LENGTH
-            ) {
-                throw new Error('NativeEditorBridge: invalid maxLength');
-            }
-            configObj.maxLength = config.maxLength;
-        }
-        if (config?.allowBase64Images != null) {
-            configObj.allowBase64Images = config.allowBase64Images;
-        }
-        if (config?.schemaJson != null) {
-            assertInputStringWithinLimit(config.schemaJson, resolvedResourceLimits.maxInputBytes);
-            try {
-                parsedSchema = JSON.parse(config.schemaJson) as SchemaDefinition;
-            } catch {
-                // Fall back to the default schema when the provided JSON is invalid.
-            }
-        }
-        if (config?.resourceLimits != null) {
-            configObj.resourceLimits = resolveEditorResourceLimits(config.resourceLimits);
-        }
-        const descriptor =
-            parsedSchema == null && config?.documentDescriptor != null
-                ? config.documentDescriptor
-                : resolveDocumentDescriptor(parsedSchema, config?.resourceLimits);
-        if (parsedSchema != null) configObj.schema = descriptor.schema;
-        const nativeModule = getNativeModule();
-        const configJson = JSON.stringify(configObj);
-        const id = parseEditorId(nativeModule.editorCreateResult(configJson));
-        if (!Number.isSafeInteger(id) || id <= 0) {
-            throw new Error('NativeEditorBridge: native editor creation failed');
-        }
-        return new NativeEditorBridge(id, descriptor, resolvedResourceLimits);
-    }
+/**
+ * The v2 surface of the NativeEditor native module — the complete
+ * production ABI. Every call resolves the method lazily and fails clearly
+ * when the v2 surface is absent. Decimal-string identifiers keep full u64
+ * fidelity across the JavaScript boundary, and binaries travel as direct
+ * Uint8Array values (never JSON number arrays).
+ */
+export interface NativeEditorV2Module {
+    editorV2Create(configJson: string, snapshotState: Uint8Array | null): unknown;
+    editorV2Destroy(editorId: string): unknown;
+    editorV2GetState(editorId: string): unknown;
+    editorV2GetDocumentJson(editorId: string): unknown;
+    editorV2GetDocumentHtml(editorId: string): unknown;
+    editorV2GetContentSnapshot(editorId: string): unknown;
+    editorV2ReplaceDocument(editorId: string, requestJson: string): unknown;
+    editorV2ApplyInput(editorId: string, requestJson: string): unknown;
+    editorV2ApplyCommand(editorId: string, requestJson: string): unknown;
+    editorV2ApplyLocalApi(editorId: string, requestJson: string): unknown;
+    editorV2SetSelection(editorId: string, requestJson: string): unknown;
+    editorV2Undo(editorId: string, requestJson: string): unknown;
+    editorV2Redo(editorId: string, requestJson: string): unknown;
+    editorV2RenderUpdate(
+        editorId: string,
+        mirrorScalarAnchor: number | null,
+        mirrorScalarHead: number | null
+    ): unknown;
+    editorV2CollaborationBeginConnect(editorId: string): unknown;
+    editorV2CollaborationSocketOpen(editorId: string, generation: string): unknown;
+    editorV2CollaborationReceive(editorId: string, generation: string, message: Uint8Array): unknown;
+    editorV2CollaborationSocketClose(
+        editorId: string,
+        generation: string,
+        code: number | null,
+        reason: string | null
+    ): unknown;
+    editorV2CollaborationTakeOutbound(editorId: string, generation: string): unknown;
+    editorV2CollaborationSetAwareness(editorId: string, awarenessJson: string): unknown;
+    editorV2CollaborationPeers(editorId: string): unknown;
+    editorV2SnapshotExport(editorId: string): unknown;
+    editorV2SnapshotRestore(editorId: string, metadataJson: string, encodedState: Uint8Array): unknown;
+}
 
-    /** The underlying native editor ID. */
-    get editorId(): number {
-        return this._editorId;
-    }
-
-    /** Whether this bridge has been destroyed. */
-    get isDestroyed(): boolean {
-        return this._destroyed;
-    }
-
-    consumeLastCommandBlocked(): boolean {
-        const blocked = this._lastCommandBlocked;
-        this._lastCommandBlocked = false;
-        this._lastCommandBlockedReason = null;
-        return blocked;
-    }
-
-    consumeLastCommandBlockedReason(): CommandBlockedReason | null {
-        const reason = this._lastCommandBlockedReason;
-        this._lastCommandBlocked = false;
-        this._lastCommandBlockedReason = null;
-        return reason;
-    }
-
-    consumeLastCommandBlockedInfo(): CommandBlockedInfo {
-        const info = {
-            blocked: this._lastCommandBlocked,
-            reason: this._lastCommandBlockedReason,
-        };
-        this._lastCommandBlocked = false;
-        this._lastCommandBlockedReason = null;
-        return info;
-    }
-
-    consumeLastCommandPreflightUpdate(): EditorUpdate | null {
-        const update = this._lastCommandPreflightUpdate;
-        this._lastCommandPreflightUpdate = null;
-        return update;
-    }
-
-    prepareForNativeCommand(): boolean {
-        this.assertNotDestroyed();
-        return this.prepareForCommand();
-    }
-
-    /** Destroy the editor instance and free native resources. */
-    destroy(): void {
-        if (this._destroyed) return;
-        this._destroyed = true;
-        this._renderBlocksCache = null;
-        this._lastCommandBlocked = false;
-        this._lastCommandBlockedReason = null;
-        this._lastCommandPreflightUpdate = null;
-        getNativeModule().editorDestroy(this._editorId);
-    }
-
-    /** Set content from HTML. Returns render elements for display. */
-    setHtml(html: string): RenderElement[] {
-        this.assertNotDestroyed();
-        this.invalidateContentCaches();
-        this._renderBlocksCache = null;
-        const json = getNativeModule().editorSetHtml(this._editorId, html);
-        return parseRenderElements(json);
-    }
-
-    /** Get content as HTML. */
-    getHtml(): string {
-        this.assertNotDestroyed();
-        if (this._cachedHtml?.version === this._documentVersion) {
-            return this._cachedHtml.value;
-        }
-        const html = getNativeModule().editorGetHtml(this._editorId);
-        this._cachedHtml = { version: this._documentVersion, value: html };
-        return html;
-    }
-
-    /** Get cached HTML without making a native roundtrip. */
-    getCachedHtml(): string | null {
-        this.assertNotDestroyed();
-        return this._cachedHtml?.value ?? null;
-    }
-
-    /** Set content from ProseMirror JSON. Returns render elements. */
-    setJson(doc: DocumentJSON): RenderElement[] {
-        return this.setJsonString(
-            JSON.stringify(normalizeDocumentJson(doc, this._documentDescriptor))
+function invokeNativeEditorV2<K extends keyof NativeEditorV2Module>(
+    name: K,
+    ...args: Parameters<NativeEditorV2Module[K]>
+): unknown {
+    const nativeModule = getNativeModule() as unknown as Record<string, unknown>;
+    const method = nativeModule[name as string];
+    if (typeof method !== 'function') {
+        throw new Error(
+            `NativeEditorBridge: native module does not expose the v2 entry ${String(name)}`
         );
     }
+    return (method as (...fnArgs: unknown[]) => unknown).apply(nativeModule, args);
+}
 
-    /** Set content from a serialized ProseMirror JSON string. Returns render elements. */
-    setJsonString(jsonString: string): RenderElement[] {
-        this.assertNotDestroyed();
-        assertInputStringWithinLimit(jsonString, this._resourceLimits.maxInputBytes);
-        this.invalidateContentCaches();
-        this._renderBlocksCache = null;
-        const normalizedJsonString = normalizeDocumentJsonString(
-            jsonString,
-            this._documentDescriptor
-        );
-        const json = getNativeModule().editorSetJson(this._editorId, normalizedJsonString);
-        return parseRenderElements(json);
+// ─── Result record normalization ────────────────────────────────
+
+/** The discriminated envelope every v2 result record normalizes into. */
+export type NativeEditorV2Result<T> =
+    | { ok: true; value: T }
+    | { ok: false; error: NativeEditorV2Error };
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+    return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Validate a raw v2 result record: exactly one of value/error, every error
+ * field type, every domain/code string, and the caller-supplied value
+ * normalizer. Returns null for any contract violation; the imperative layer
+ * turns that into the non-retryable FFI_RESULT_INVALID error.
+ */
+export function normalizeNativeEditorV2Result<T>(
+    raw: unknown,
+    normalizeValue: (value: unknown) => T | null
+): NativeEditorV2Result<T> | null {
+    if (!isPlainRecord(raw)) return null;
+    const hasValue = raw.value !== null && raw.value !== undefined;
+    const hasError = raw.error !== null && raw.error !== undefined;
+    if (hasValue === hasError) return null;
+    if (hasError) {
+        const error = normalizeNativeEditorV2Error({ error: raw.error });
+        return error == null ? null : { ok: false, error };
     }
+    const value = normalizeValue(raw.value);
+    return value == null ? null : { ok: true, value };
+}
 
-    /** Get content as raw ProseMirror JSON string. */
-    getJsonString(): string {
-        this.assertNotDestroyed();
-        if (this._cachedJsonString?.version === this._documentVersion) {
-            return this._cachedJsonString.value;
-        }
-        const json = getNativeModule().editorGetJson(this._editorId);
-        this._cachedJsonString = { version: this._documentVersion, value: json };
-        return json;
-    }
-
-    /** Get cached raw ProseMirror JSON without making a native roundtrip. */
-    getCachedJsonString(): string | null {
-        this.assertNotDestroyed();
-        return this._cachedJsonString?.value ?? null;
-    }
-
-    /** Get cached ProseMirror JSON without making a native roundtrip. */
-    getCachedJson(): DocumentJSON | null {
-        const json = this.getCachedJsonString();
-        return json == null ? null : parseDocumentJSON(json);
-    }
-
-    /** Get content as ProseMirror JSON. */
-    getJson(): DocumentJSON {
-        return parseDocumentJSON(this.getJsonString());
-    }
-
-    /** Get both HTML and JSON content in one native roundtrip. */
-    getContentSnapshot(): ContentSnapshot {
-        this.assertNotDestroyed();
-        if (
-            this._cachedHtml?.version === this._documentVersion &&
-            this._cachedJsonString?.version === this._documentVersion
-        ) {
-            return {
-                html: this._cachedHtml.value,
-                json: parseDocumentJSON(this._cachedJsonString.value),
-            };
-        }
-        const snapshot = parseContentSnapshotJson(
-            getNativeModule().editorGetContentSnapshot(this._editorId)
-        );
-        this._cachedHtml = { version: this._documentVersion, value: snapshot.html };
-        this._cachedJsonString = {
-            version: this._documentVersion,
-            value: JSON.stringify(snapshot.json),
-        };
-        return snapshot;
-    }
-
-    /** Insert text at a document position. Returns the full update. */
-    insertText(pos: number, text: string): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(() =>
-            getNativeModule().editorInsertText(this._editorId, pos, text)
-        );
-    }
-
-    /** Delete a range [from, to). Returns the full update. */
-    deleteRange(from: number, to: number): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(() =>
-            getNativeModule().editorDeleteRange(this._editorId, from, to)
-        );
-    }
-
-    /** Replace the current selection with text atomically. */
-    replaceSelectionText(text: string): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(() =>
-            getNativeModule().editorReplaceSelectionText(this._editorId, text)
-        );
-    }
-
-    /** Toggle a mark (bold, italic, etc.) on the current selection. */
-    toggleMark(markType: string): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () => {
-                const scalarSelection = this.currentScalarSelection();
-                return scalarSelection
-                    ? getNativeModule().editorToggleMarkAtSelectionScalar(
-                          this._editorId,
-                          scalarSelection.anchor,
-                          scalarSelection.head,
-                          markType
-                      )
-                    : getNativeModule().editorToggleMark(this._editorId, markType);
-            },
-            { refreshSelectionAfterPreflight: true }
-        );
-    }
-
-    /** Set a mark with attrs on the current selection. */
-    setMark(markType: string, attrs: Record<string, unknown>): EditorUpdate | null {
-        this.assertNotDestroyed();
-        const attrsJson = JSON.stringify(attrs);
-        return this.runPreparedCommand(
-            () => {
-                const scalarSelection = this.currentScalarSelection();
-                return scalarSelection
-                    ? getNativeModule().editorSetMarkAtSelectionScalar(
-                          this._editorId,
-                          scalarSelection.anchor,
-                          scalarSelection.head,
-                          markType,
-                          attrsJson
-                      )
-                    : getNativeModule().editorSetMark(this._editorId, markType, attrsJson);
-            },
-            { refreshSelectionAfterPreflight: true }
-        );
-    }
-
-    /** Set a mark with attrs at an explicit scalar selection. */
-    setMarkAtSelectionScalar(
-        scalarAnchor: number,
-        scalarHead: number,
-        markType: string,
-        attrs: Record<string, unknown>
-    ): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () =>
-                getNativeModule().editorSetMarkAtSelectionScalar(
-                    this._editorId,
-                    scalarAnchor,
-                    scalarHead,
-                    markType,
-                    JSON.stringify(attrs)
-                ),
-            { cancelIfPreflightUpdated: true }
-        );
-    }
-
-    /** Remove a mark from the current selection. */
-    unsetMark(markType: string): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () => {
-                const scalarSelection = this.currentScalarSelection();
-                return scalarSelection
-                    ? getNativeModule().editorUnsetMarkAtSelectionScalar(
-                          this._editorId,
-                          scalarSelection.anchor,
-                          scalarSelection.head,
-                          markType
-                      )
-                    : getNativeModule().editorUnsetMark(this._editorId, markType);
-            },
-            { refreshSelectionAfterPreflight: true }
-        );
-    }
-
-    /** Remove a mark at an explicit scalar selection. */
-    unsetMarkAtSelectionScalar(
-        scalarAnchor: number,
-        scalarHead: number,
-        markType: string
-    ): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () =>
-                getNativeModule().editorUnsetMarkAtSelectionScalar(
-                    this._editorId,
-                    scalarAnchor,
-                    scalarHead,
-                    markType
-                ),
-            { cancelIfPreflightUpdated: true }
-        );
-    }
-
-    /** Toggle blockquote wrapping for the current block selection. */
-    toggleBlockquote(): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () => {
-                const scalarSelection = this.currentScalarSelection();
-                return scalarSelection
-                    ? getNativeModule().editorToggleBlockquoteAtSelectionScalar(
-                          this._editorId,
-                          scalarSelection.anchor,
-                          scalarSelection.head
-                      )
-                    : getNativeModule().editorToggleBlockquote(this._editorId);
-            },
-            { refreshSelectionAfterPreflight: true }
-        );
-    }
-
-    /** Toggle the selected text block between code block and paragraph. */
-    toggleCodeBlock(): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () => {
-                const scalarSelection = this.currentScalarSelection();
-                return scalarSelection
-                    ? getNativeModule().editorToggleCodeBlockAtSelectionScalar(
-                          this._editorId,
-                          scalarSelection.anchor,
-                          scalarSelection.head
-                      )
-                    : getNativeModule().editorToggleCodeBlock(this._editorId);
-            },
-            { refreshSelectionAfterPreflight: true }
-        );
-    }
-
-    /** Toggle a heading level on the current block selection. */
-    toggleHeading(level: number): EditorUpdate | null {
-        this.assertNotDestroyed();
-        if (!Number.isInteger(level) || level < 1 || level > 6) {
-            throw new Error('NativeEditorBridge: invalid heading level');
-        }
-        return this.runPreparedCommand(
-            () => {
-                const scalarSelection = this.currentScalarSelection();
-                return scalarSelection
-                    ? getNativeModule().editorToggleHeadingAtSelectionScalar(
-                          this._editorId,
-                          scalarSelection.anchor,
-                          scalarSelection.head,
-                          level
-                      )
-                    : getNativeModule().editorToggleHeading(this._editorId, level);
-            },
-            { refreshSelectionAfterPreflight: true }
-        );
-    }
-
-    /** Set the document selection by anchor and head positions. */
-    setSelection(anchor: number, head: number): void {
-        this.assertNotDestroyed();
-        getNativeModule().editorSetSelection(this._editorId, anchor, head);
-        this._lastSelection = { type: 'text', anchor, head };
-    }
-
-    /** Convert a document position to a scalar position used by native text views. */
-    docToScalar(docPos: number): number {
-        this.assertNotDestroyed();
-        return getNativeModule().editorDocToScalar(this._editorId, docPos);
-    }
-
-    /** Convert a native scalar position back to a document position. */
-    scalarToDoc(scalar: number): number {
-        this.assertNotDestroyed();
-        return getNativeModule().editorScalarToDoc(this._editorId, scalar);
-    }
-
-    /** Get the current selection from the Rust engine (synchronous native call).
-     *  Always returns the live selection, not a stale cache. */
-    getSelection(): Selection {
-        if (this._destroyed) return { type: 'text', anchor: 0, head: 0 };
-        try {
-            const json = getNativeModule().editorGetSelection(this._editorId);
-            const sel = JSON.parse(json) as Selection;
-            this._lastSelection = sel;
-            return sel;
-        } catch {
-            return this._lastSelection;
-        }
-    }
-
-    /** Update the cached selection from native events (scalar offsets).
-     *  Called by the React component when native selection change events arrive. */
-    updateSelectionFromNative(anchor: number, head: number): void {
-        if (this._destroyed) return;
-        this._lastSelection = { type: 'text', anchor, head };
-    }
-
-    /** Get the current full state from Rust (render elements, selection, etc.). */
-    getCurrentState(): EditorUpdate | null {
-        this.assertNotDestroyed();
-        const json = getNativeModule().editorGetCurrentState(this._editorId);
-        return this.parseAndNoteUpdate(json);
-    }
-
-    /** Get the current selection-related state without render elements. */
-    getSelectionState(): EditorUpdate | null {
-        this.assertNotDestroyed();
-        const json = getNativeModule().editorGetSelectionState(this._editorId);
-        return this.parseAndNoteUpdate(json);
-    }
-
-    /** Split the block at a position (Enter key). */
-    splitBlock(pos: number): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(() =>
-            getNativeModule().editorSplitBlock(this._editorId, pos)
-        );
-    }
-
-    /** Insert HTML content at the current selection. */
-    insertContentHtml(html: string): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(() =>
-            getNativeModule().editorInsertContentHtml(this._editorId, html)
-        );
-    }
-
-    /** Insert JSON content at the current selection. */
-    insertContentJson(doc: DocumentJSON): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(() =>
-            getNativeModule().editorInsertContentJson(this._editorId, JSON.stringify(doc))
-        );
-    }
-
-    /** Insert JSON content at an explicit scalar selection. */
-    insertContentJsonAtSelectionScalar(
-        scalarAnchor: number,
-        scalarHead: number,
-        doc: DocumentJSON
-    ): EditorUpdate | null {
-        return this.insertContentJsonAtSelectionScalarLazy(scalarAnchor, scalarHead, () => doc);
-    }
-
-    /** Insert lazily-built JSON content at an explicit scalar selection. */
-    insertContentJsonAtSelectionScalarLazy(
-        scalarAnchor: number,
-        scalarHead: number,
-        resolveDoc: () => DocumentJSON
-    ): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () =>
-                getNativeModule().editorInsertContentJsonAtSelectionScalar(
-                    this._editorId,
-                    scalarAnchor,
-                    scalarHead,
-                    JSON.stringify(resolveDoc())
-                ),
-            { cancelIfPreflightUpdated: true }
-        );
-    }
-
-    /** Replace entire document with HTML via transaction (preserves undo history). */
-    replaceHtml(html: string): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(() =>
-            getNativeModule().editorReplaceHtml(this._editorId, html)
-        );
-    }
-
-    /** Replace entire document with JSON via transaction (preserves undo history). */
-    replaceJson(doc: DocumentJSON): EditorUpdate | null {
-        return this.replaceJsonString(
-            JSON.stringify(normalizeDocumentJson(doc, this._documentDescriptor))
-        );
-    }
-
-    /** Replace entire document with a serialized JSON transaction. */
-    replaceJsonString(jsonString: string): EditorUpdate | null {
-        this.assertNotDestroyed();
-        assertInputStringWithinLimit(jsonString, this._resourceLimits.maxInputBytes);
-        const normalizedJsonString = normalizeDocumentJsonString(
-            jsonString,
-            this._documentDescriptor
-        );
-        return this.runPreparedCommand(() =>
-            getNativeModule().editorReplaceJson(this._editorId, normalizedJsonString)
-        );
-    }
-
-    /** Undo the last operation. Returns update or null if nothing to undo. */
-    undo(): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(() => getNativeModule().editorUndo(this._editorId));
-    }
-
-    /** Redo the last undone operation. Returns update or null if nothing to redo. */
-    redo(): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(() => getNativeModule().editorRedo(this._editorId));
-    }
-
-    /** Check if undo is available. */
-    canUndo(): boolean {
-        this.assertNotDestroyed();
-        return getNativeModule().editorCanUndo(this._editorId);
-    }
-
-    /** Check if redo is available. */
-    canRedo(): boolean {
-        this.assertNotDestroyed();
-        return getNativeModule().editorCanRedo(this._editorId);
-    }
-
-    /** Toggle a list type on the current selection. Wraps if not in list, unwraps if already in that list type. */
-    toggleList(listType: string): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () => {
-                const isActive = this.getCurrentState()?.activeState?.nodes?.[listType] === true;
-                const scalarSelection = this.currentScalarSelection();
-
-                return isActive
-                    ? scalarSelection
-                        ? getNativeModule().editorUnwrapFromListAtSelectionScalar(
-                              this._editorId,
-                              scalarSelection.anchor,
-                              scalarSelection.head
-                          )
-                        : getNativeModule().editorUnwrapFromList(this._editorId)
-                    : scalarSelection
-                      ? getNativeModule().editorWrapInListAtSelectionScalar(
-                            this._editorId,
-                            scalarSelection.anchor,
-                            scalarSelection.head,
-                            listType
-                        )
-                      : getNativeModule().editorWrapInList(this._editorId, listType);
-            },
-            { refreshSelectionAfterPreflight: true }
-        );
-    }
-
-    /** Unwrap the current list item back to a paragraph. */
-    unwrapFromList(): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () => {
-                const scalarSelection = this.currentScalarSelection();
-                return scalarSelection
-                    ? getNativeModule().editorUnwrapFromListAtSelectionScalar(
-                          this._editorId,
-                          scalarSelection.anchor,
-                          scalarSelection.head
-                      )
-                    : getNativeModule().editorUnwrapFromList(this._editorId);
-            },
-            { refreshSelectionAfterPreflight: true }
-        );
-    }
-
-    /** Indent the current list item into a nested list. */
-    indentListItem(): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () => {
-                const scalarSelection = this.currentScalarSelection();
-                return scalarSelection
-                    ? getNativeModule().editorIndentListItemAtSelectionScalar(
-                          this._editorId,
-                          scalarSelection.anchor,
-                          scalarSelection.head
-                      )
-                    : getNativeModule().editorIndentListItem(this._editorId);
-            },
-            { refreshSelectionAfterPreflight: true }
-        );
-    }
-
-    /** Outdent the current list item to the parent list level. */
-    outdentListItem(): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () => {
-                const scalarSelection = this.currentScalarSelection();
-                return scalarSelection
-                    ? getNativeModule().editorOutdentListItemAtSelectionScalar(
-                          this._editorId,
-                          scalarSelection.anchor,
-                          scalarSelection.head
-                      )
-                    : getNativeModule().editorOutdentListItem(this._editorId);
-            },
-            { refreshSelectionAfterPreflight: true }
-        );
-    }
-
-    /** Insert a void node (e.g. 'horizontalRule') at the current selection. */
-    insertNode(nodeType: string): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.runPreparedCommand(
-            () => {
-                const scalarSelection = this.currentScalarSelection();
-                return scalarSelection
-                    ? getNativeModule().editorInsertNodeAtSelectionScalar(
-                          this._editorId,
-                          scalarSelection.anchor,
-                          scalarSelection.head,
-                          nodeType
-                      )
-                    : getNativeModule().editorInsertNode(this._editorId, nodeType);
-            },
-            { refreshSelectionAfterPreflight: true }
-        );
-    }
-
-    parseUpdateJson(json: string, options?: ParseUpdateOptions): EditorUpdate | null {
-        this.assertNotDestroyed();
-        return this.parseAndNoteUpdate(json, options);
-    }
-
-    private noteUpdate(update: EditorUpdate | null): void {
-        if (!update) {
-            return;
-        }
-        this._lastSelection = update.selection;
-        if (update.renderBlocks) {
-            this._renderBlocksCache = update.renderBlocks;
-        }
-        if (typeof update.documentVersion !== 'number') {
-            this.invalidateContentCaches();
-            return;
-        }
-        this._hasSeenDocumentVersion = true;
-        if (update.documentVersion !== this._documentVersion) {
-            this._documentVersion = update.documentVersion;
-            this.invalidateContentCaches();
-        }
-    }
-
-    private shouldRejectUpdate(
-        update: EditorUpdate | null,
-        json: string,
-        options?: ParseUpdateOptions
-    ): boolean {
-        if (!update) {
-            return false;
-        }
-        if (typeof update.documentVersion !== 'number') {
-            return (
-                options?.rejectVersionlessAfterDocumentVersion === true &&
-                Platform.OS === 'android' &&
-                this._hasSeenDocumentVersion
-            );
-        }
-        if (Platform.OS === 'android') {
-            this._hasSeenDocumentVersion = true;
-        }
-        if (update.documentVersion < this._documentVersion) {
-            return true;
-        }
-        if (options?.rejectSameDocumentVersion === true) {
-            return (
-                update.documentVersion === this._documentVersion &&
-                json === this._lastAcceptedUpdateJson
-            );
-        }
-        return false;
-    }
-
-    private parseAndNoteUpdate(json: string, options?: ParseUpdateOptions): EditorUpdate | null {
-        let update = parseEditorUpdateJson(json, this._renderBlocksCache ?? undefined);
-        if (this.shouldRejectUpdate(update, json, options)) {
-            return null;
-        }
-        if (update?.renderPatch && !update.renderBlocks) {
-            json = getNativeModule().editorGetCurrentState(this._editorId);
-            update = parseEditorUpdateJson(json, this._renderBlocksCache ?? undefined);
-            if (this.shouldRejectUpdate(update, json, options)) {
-                return null;
-            }
-        }
-        this.noteUpdate(update);
-        if (update) {
-            this._lastAcceptedUpdateJson = json;
-        }
-        return update;
-    }
-
-    private prepareForCommand(): boolean {
-        this._lastCommandBlocked = false;
-        this._lastCommandBlockedReason = null;
-        this._lastCommandPreflightUpdate = null;
-        const nativeModule = getNativeModule();
-        const prepareForCommand = nativeModule.editorPrepareForCommand;
-        if (typeof prepareForCommand !== 'function') {
-            return true;
-        }
-
-        const preparation = parseCommandPreparationJson(prepareForCommand(this._editorId));
-        if (preparation.updateJSON) {
-            this._lastCommandPreflightUpdate = this.parseAndNoteUpdate(preparation.updateJSON, {
-                rejectVersionlessAfterDocumentVersion: true,
-            });
-        }
-        if (!preparation.ready) {
-            this._lastCommandBlocked = true;
-            this._lastCommandBlockedReason = preparation.blockedReason ?? 'unknown';
-            return false;
-        }
-        return true;
-    }
-
-    private runPreparedCommand(
-        mutate: () => string,
-        options?: RunPreparedCommandOptions
-    ): EditorUpdate | null {
-        if (!this.prepareForCommand()) {
-            return null;
-        }
-        if (
-            options?.cancelIfPreflightUpdated === true &&
-            this._lastCommandPreflightUpdate != null
-        ) {
-            return null;
-        }
-        if (options?.refreshSelectionAfterPreflight === true && Platform.OS === 'android') {
-            this.getSelection();
-        }
-        const update = this.parseAndNoteUpdate(mutate());
-        if (update) {
-            this._lastCommandPreflightUpdate = null;
-        }
-        return update;
-    }
-
-    private invalidateContentCaches(): void {
-        this._cachedHtml = null;
-        this._cachedJsonString = null;
-    }
-
-    private assertNotDestroyed(): void {
-        if (this._destroyed) {
-            throw new Error(ERR_DESTROYED);
-        }
-    }
-
-    private currentScalarSelection(): { anchor: number; head: number } | null {
-        const selection = this._lastSelection;
-        const nativeModule = getNativeModule();
-
-        if (selection.type === 'text') {
-            const anchor = selection.anchor ?? 0;
-            const head = selection.head ?? anchor;
-            return {
-                anchor: nativeModule.editorDocToScalar(this._editorId, anchor),
-                head: nativeModule.editorDocToScalar(this._editorId, head),
-            };
-        }
-
-        if (selection.type === 'node' && typeof selection.pos === 'number') {
-            const scalar = nativeModule.editorDocToScalar(this._editorId, selection.pos);
-            return { anchor: scalar, head: scalar };
-        }
-
+/** Parse a JSON-string result value; anything else is a contract violation. */
+export function parseNativeEditorV2JsonValue(value: unknown): unknown | null {
+    if (typeof value !== 'string' || value === '') return null;
+    try {
+        return JSON.parse(value) as unknown;
+    } catch {
         return null;
     }
 }
 
-export class NativeCollaborationBridge {
-    private _sessionId: number;
-    private _destroyed = false;
-    private readonly _resourceLimits: ResolvedEditorResourceLimits;
-
-    private constructor(sessionId: number, resourceLimits: ResolvedEditorResourceLimits) {
-        this._sessionId = sessionId;
-        this._resourceLimits = resourceLimits;
+/**
+ * Validate a direct binary result value. JSON number arrays are rejected on
+ * purpose: the frozen v2 contract moves bytes as bytes.
+ */
+export function normalizeNativeEditorV2Bytes(value: unknown): Uint8Array | null {
+    if (value instanceof Uint8Array) return value;
+    if (ArrayBuffer.isView(value)) {
+        return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     }
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    return null;
+}
 
-    static create(config?: {
-        clientId?: number;
-        fragmentName?: string;
-        schema?: SchemaDefinition;
-        maxLength?: number;
-        initialDocumentJson?: DocumentJSON;
-        initialEncodedState?: EncodedCollaborationStateInput;
-        localAwareness?: Record<string, unknown>;
-        resourceLimits?: EditorResourceLimits;
-    }): NativeCollaborationBridge {
+/** FfiUnitResult successes are exactly `true`; anything else is invalid. */
+export function normalizeNativeEditorV2Unit(value: unknown): true | null {
+    return value === true ? true : null;
+}
+
+/**
+ * Normalize a request/revision identifier to its canonical decimal string.
+ * Decimal strings of any size pass verbatim (never Number()'d); numbers must
+ * be non-negative safe integers. Everything else is rejected.
+ */
+export function normalizeNativeEditorV2DecimalId(value: unknown): string | null {
+    if (typeof value === 'string') {
+        return CANONICAL_V2_DECIMAL_ID.test(value) ? value : null;
+    }
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+        return String(value);
+    }
+    return null;
+}
+
+function normalizeRevisionField(record: Record<string, unknown>, field: string): string | null {
+    return normalizeNativeEditorV2DecimalId(record[field]);
+}
+
+function unsignedSafeInteger(value: unknown): number | null {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function optionalBoolean(value: unknown): boolean | null {
+    return typeof value === 'boolean' ? value : null;
+}
+
+// ─── Typed value shapes ─────────────────────────────────────────
+
+const V2_DOCUMENT_STATES = ['LocalReady', 'AwaitRemote', 'RoomReady'] as const;
+export type NativeEditorV2DocumentState = (typeof V2_DOCUMENT_STATES)[number];
+
+const V2_TRANSPORT_STATES = [
+    'Detached',
+    'Disconnected',
+    'Connecting',
+    'Handshaking',
+    'Synchronized',
+    'Incompatible',
+    'Destroying',
+    'Destroyed',
+] as const;
+export type NativeEditorV2TransportState = (typeof V2_TRANSPORT_STATES)[number];
+
+const V2_RENDER_STATES = ['Loading', 'Ready'] as const;
+export type NativeEditorV2RenderState = (typeof V2_RENDER_STATES)[number];
+
+function whitelisted<T extends string>(value: unknown, allowed: readonly T[]): T | null {
+    return typeof value === 'string' && (allowed as readonly string[]).includes(value)
+        ? (value as T)
+        : null;
+}
+
+export interface NativeEditorV2EditorState {
+    documentState: NativeEditorV2DocumentState;
+    transportState: NativeEditorV2TransportState;
+    renderState: NativeEditorV2RenderState;
+    documentRevision: string;
+    stateRevision: string;
+    canUndo: boolean;
+    canRedo: boolean;
+}
+
+export function normalizeNativeEditorV2StateValue(value: unknown): NativeEditorV2EditorState | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (!isPlainRecord(parsed)) return null;
+    const documentState = whitelisted(parsed.documentState, V2_DOCUMENT_STATES);
+    const transportState = whitelisted(parsed.transportState, V2_TRANSPORT_STATES);
+    const renderState = whitelisted(parsed.renderState, V2_RENDER_STATES);
+    const documentRevision = normalizeRevisionField(parsed, 'documentRevision');
+    const stateRevision = normalizeRevisionField(parsed, 'stateRevision');
+    const canUndo = optionalBoolean(parsed.canUndo);
+    const canRedo = optionalBoolean(parsed.canRedo);
+    if (
+        documentState == null ||
+        transportState == null ||
+        renderState == null ||
+        documentRevision == null ||
+        stateRevision == null ||
+        canUndo == null ||
+        canRedo == null
+    ) {
+        return null;
+    }
+    return {
+        documentState,
+        transportState,
+        renderState,
+        documentRevision,
+        stateRevision,
+        canUndo,
+        canRedo,
+    };
+}
+
+export type NativeEditorV2MutationOutcome =
+    | {
+          type: 'transaction';
+          changed: boolean;
+          documentRevision: string;
+          stateRevision: string;
+          canUndo: boolean;
+          canRedo: boolean;
+      }
+    | { type: 'notApplicable' }
+    | { type: 'replacement'; changed: boolean; documentRevision: string };
+
+export function normalizeNativeEditorV2MutationOutcomeValue(
+    value: unknown
+): NativeEditorV2MutationOutcome | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (!isPlainRecord(parsed)) return null;
+    if (parsed.type === 'notApplicable') {
+        return { type: 'notApplicable' };
+    }
+    if (parsed.type === 'replacement') {
+        const changed = optionalBoolean(parsed.changed);
+        const documentRevision = normalizeRevisionField(parsed, 'documentRevision');
+        if (changed == null || documentRevision == null) return null;
+        return { type: 'replacement', changed, documentRevision };
+    }
+    if (parsed.type === 'transaction') {
+        const changed = optionalBoolean(parsed.changed);
+        const documentRevision = normalizeRevisionField(parsed, 'documentRevision');
+        const stateRevision = normalizeRevisionField(parsed, 'stateRevision');
+        const canUndo = optionalBoolean(parsed.canUndo);
+        const canRedo = optionalBoolean(parsed.canRedo);
         if (
-            config?.maxLength != null &&
-            (!Number.isInteger(config.maxLength) ||
-                config.maxLength < 0 ||
-                config.maxLength > MAX_NATIVE_LENGTH)
+            changed == null ||
+            documentRevision == null ||
+            stateRevision == null ||
+            canUndo == null ||
+            canRedo == null
         ) {
-            throw new Error('NativeEditorBridge: invalid maxLength');
+            return null;
         }
-        const { initialEncodedState, resourceLimits, schema, ...normalizedConfig } = config ?? {};
-        const resolvedResourceLimits = resolveEditorResourceLimits(resourceLimits);
-        const normalizedInitialEncodedState =
-            initialEncodedState == null
-                ? undefined
-                : normalizeEncodedCollaborationStateInput(
-                      initialEncodedState,
-                      resolvedResourceLimits
-                  );
-        if (normalizedConfig.initialDocumentJson != null) {
-            assertInputStringWithinLimit(
-                JSON.stringify(normalizedConfig.initialDocumentJson),
-                resolvedResourceLimits.maxInputBytes
-            );
-        }
-        const resolvedConfig = {
-            ...normalizedConfig,
-            ...(schema == null
-                ? {}
-                : { schema: resolveDocumentDescriptor(schema, resolvedResourceLimits).schema }),
-            ...(resourceLimits == null
-                ? {}
-                : { resourceLimits: resolveEditorResourceLimits(resourceLimits) }),
+        return {
+            type: 'transaction',
+            changed,
+            documentRevision,
+            stateRevision,
+            canUndo,
+            canRedo,
         };
-        const nativeModule = getNativeModule();
-        const configJson = JSON.stringify(resolvedConfig);
-        const id = nativeModule.collaborationSessionCreateResult
-            ? parseCollaborationSessionId(nativeModule.collaborationSessionCreateResult(configJson))
-            : nativeModule.collaborationSessionCreate(configJson);
-        if (!Number.isSafeInteger(id) || id <= 0) {
-            throw new Error('NativeEditorBridge: native collaboration creation failed');
+    }
+    return null;
+}
+
+export interface NativeEditorV2CommitInfo {
+    changed: boolean;
+    documentRevision: string;
+}
+
+export function normalizeNativeEditorV2CommitValue(value: unknown): NativeEditorV2CommitInfo | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (!isPlainRecord(parsed)) return null;
+    const changed = optionalBoolean(parsed.changed);
+    const documentRevision = normalizeRevisionField(parsed, 'documentRevision');
+    if (changed == null || documentRevision == null) return null;
+    return { changed, documentRevision };
+}
+
+export function normalizeNativeEditorV2ChangedValue(value: unknown): boolean | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (!isPlainRecord(parsed)) return null;
+    return optionalBoolean(parsed.changed);
+}
+
+export function normalizeNativeEditorV2HtmlValue(value: unknown): string | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (!isPlainRecord(parsed) || typeof parsed.html !== 'string') return null;
+    return parsed.html;
+}
+
+/**
+ * Validate a render-update result value: the payload is itself a JSON
+ * document (render blocks, active/history state, document version) and is
+ * returned verbatim for the bound native view to apply.
+ */
+export function normalizeNativeEditorV2RenderUpdateValue(value: unknown): string | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    return isPlainRecord(parsed) ? (value as string) : null;
+}
+
+export function normalizeNativeEditorV2DocumentJsonValue(value: unknown): DocumentJSON | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    return isPlainRecord(parsed) ? (parsed as DocumentJSON) : null;
+}
+
+export function normalizeNativeEditorV2ContentSnapshotValue(
+    value: unknown
+): ContentSnapshot | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (!isPlainRecord(parsed) || typeof parsed.html !== 'string' || !isPlainRecord(parsed.json)) {
+        return null;
+    }
+    return { html: parsed.html, json: parsed.json as DocumentJSON };
+}
+
+export interface NativeEditorV2SnapshotExport {
+    metadataJson: string;
+    encodedState: Uint8Array;
+}
+
+/** The snapshot export record arrives as direct fields (JSON + bytes), not a JSON string. */
+export function normalizeNativeEditorV2SnapshotExportValue(
+    value: unknown
+): NativeEditorV2SnapshotExport | null {
+    if (!isPlainRecord(value) || typeof value.metadataJson !== 'string') return null;
+    const encodedState = normalizeNativeEditorV2Bytes(value.encodedState);
+    if (encodedState == null) return null;
+    return { metadataJson: value.metadataJson, encodedState };
+}
+
+export function normalizeNativeEditorV2CreateValue(value: unknown): { editorId: string } | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (!isPlainRecord(parsed)) return null;
+    const editorId = normalizeNativeEditorV2DecimalId(parsed.editorId);
+    return editorId == null ? null : { editorId };
+}
+
+export function normalizeNativeEditorV2GenerationValue(value: unknown): string | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (!isPlainRecord(parsed)) return null;
+    return normalizeNativeEditorV2DecimalId(parsed.generation);
+}
+
+export function normalizeNativeEditorV2TransportStateValue(
+    value: unknown
+): NativeEditorV2TransportState | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (!isPlainRecord(parsed)) return null;
+    return whitelisted(parsed.transportState, V2_TRANSPORT_STATES);
+}
+
+export interface NativeEditorV2PeerInfo {
+    clientId: string;
+    clock: number;
+    isLocal: boolean;
+    state: Record<string, unknown> | null;
+    cursor: { anchor: number; head: number } | null;
+}
+
+export function normalizeNativeEditorV2PeersValue(value: unknown): NativeEditorV2PeerInfo[] | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (!isPlainRecord(parsed) || !Array.isArray(parsed.peers)) return null;
+    const peers: NativeEditorV2PeerInfo[] = [];
+    for (const rawPeer of parsed.peers) {
+        if (!isPlainRecord(rawPeer)) return null;
+        const clientId = normalizeNativeEditorV2DecimalId(rawPeer.clientId);
+        const clock = unsignedSafeInteger(rawPeer.clock);
+        const isLocal = optionalBoolean(rawPeer.isLocal);
+        if (clientId == null || clock == null || isLocal == null) return null;
+        if (rawPeer.state !== null && !isPlainRecord(rawPeer.state)) return null;
+        let cursor: NativeEditorV2PeerInfo['cursor'] = null;
+        if (rawPeer.cursor !== null && rawPeer.cursor !== undefined) {
+            if (!isPlainRecord(rawPeer.cursor)) return null;
+            const anchor = unsignedSafeInteger(rawPeer.cursor.anchor);
+            const head = unsignedSafeInteger(rawPeer.cursor.head);
+            if (anchor == null || head == null) return null;
+            cursor = { anchor, head };
         }
-        const bridge = new NativeCollaborationBridge(id, resolvedResourceLimits);
-        if (normalizedInitialEncodedState != null) {
-            try {
-                bridge.replaceEncodedState(normalizedInitialEncodedState);
-            } catch (error) {
-                bridge.destroy();
-                throw error;
+        peers.push({
+            clientId,
+            clock,
+            isLocal,
+            state: (rawPeer.state as Record<string, unknown> | null) ?? null,
+            cursor,
+        });
+    }
+    return peers;
+}
+
+export interface NativeEditorV2ReceiveClose {
+    disposition: 'retryable' | 'incompatible';
+    error: NativeEditorV2Error;
+}
+
+export interface NativeEditorV2ReceiveOutcome {
+    framesDecoded: number;
+    repliesEnqueued: number;
+    replyBytesEnqueued: number;
+    remoteCommitApplied: boolean;
+    documentPromoted: boolean;
+    transportState: NativeEditorV2TransportState;
+    close: NativeEditorV2ReceiveClose | null;
+}
+
+export function normalizeNativeEditorV2ReceiveValue(
+    value: unknown
+): NativeEditorV2ReceiveOutcome | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (!isPlainRecord(parsed)) return null;
+    const framesDecoded = unsignedSafeInteger(parsed.framesDecoded);
+    const repliesEnqueued = unsignedSafeInteger(parsed.repliesEnqueued);
+    const replyBytesEnqueued = unsignedSafeInteger(parsed.replyBytesEnqueued);
+    const remoteCommitApplied = optionalBoolean(parsed.remoteCommitApplied);
+    const documentPromoted = optionalBoolean(parsed.documentPromoted);
+    const transportState = whitelisted(parsed.transportState, V2_TRANSPORT_STATES);
+    if (
+        framesDecoded == null ||
+        repliesEnqueued == null ||
+        replyBytesEnqueued == null ||
+        remoteCommitApplied == null ||
+        documentPromoted == null ||
+        transportState == null
+    ) {
+        return null;
+    }
+    let close: NativeEditorV2ReceiveClose | null = null;
+    if (parsed.close !== null && parsed.close !== undefined) {
+        if (!isPlainRecord(parsed.close)) return null;
+        const disposition = whitelisted(parsed.close.disposition, ['retryable', 'incompatible']);
+        const error = normalizeNativeEditorV2Error({ error: parsed.close.error });
+        if (disposition == null || error == null) return null;
+        close = { disposition, error };
+    }
+    return {
+        framesDecoded,
+        repliesEnqueued,
+        replyBytesEnqueued,
+        remoteCommitApplied,
+        documentPromoted,
+        transportState,
+        close,
+    };
+}
+
+// ─── Imperative throws ──────────────────────────────────────────
+
+function invalidV2ResultError(): NativeEditorV2NonRetryableError {
+    return new NativeEditorV2NonRetryableError({
+        domain: 'boundary',
+        code: 'FFI_RESULT_INVALID',
+        message: ERR_V2_NATIVE_RESPONSE,
+        requestId: null,
+        operationIndex: null,
+        limit: null,
+        actual: null,
+        details: null,
+    });
+}
+
+function destroyedHandleError(): NativeEditorV2NonRetryableError {
+    return new NativeEditorV2NonRetryableError({
+        domain: 'lifecycle',
+        code: 'ENGINE_DESTROYED',
+        message: ERR_V2_DESTROYED,
+        requestId: null,
+        operationIndex: null,
+        limit: null,
+        actual: null,
+        details: null,
+    });
+}
+
+function invalidV2RequestError(message: string): NativeEditorV2BoundaryError {
+    return new NativeEditorV2BoundaryError({
+        domain: 'boundary',
+        code: 'CONFIG_INVALID',
+        message,
+        requestId: null,
+        operationIndex: null,
+        limit: null,
+        actual: null,
+        details: null,
+    });
+}
+
+/**
+ * Unwrap a raw v2 result record on the imperative path: typed per-domain
+ * throws for recoverable engine errors, the distinct non-retryable class for
+ * ENGINE_INVARIANT_FAILED / lifecycle-destroyed states and for malformed
+ * records (a bridge contract violation can never succeed on retry).
+ */
+export function unwrapNativeEditorV2Result<T>(
+    raw: unknown,
+    normalizeValue: (value: unknown) => T | null
+): T {
+    const result = normalizeNativeEditorV2Result(raw, normalizeValue);
+    if (result == null) throw invalidV2ResultError();
+    if (!result.ok) throw nativeEditorV2ErrorToException(result.error);
+    return result.value;
+}
+
+function requireV2DecimalId(value: string | number, field: string): string {
+    const normalized = normalizeNativeEditorV2DecimalId(value);
+    if (normalized == null) {
+        throw invalidV2RequestError(`NativeEditorBridge: invalid ${field} for v2 request`);
+    }
+    return normalized;
+}
+
+function requireV2Bytes(value: unknown, field: string): Uint8Array {
+    const normalized = normalizeNativeEditorV2Bytes(value);
+    if (normalized == null) {
+        throw invalidV2RequestError(`NativeEditorBridge: invalid ${field} for v2 request`);
+    }
+    return normalized;
+}
+
+// ─── Document handle ────────────────────────────────────────────
+
+export type NativeEditorV2HistoryMode = 'undoableBoundary' | 'resetAndClear';
+
+export interface NativeEditorV2SnapshotMetadata {
+    formatVersion: number;
+    documentId: string;
+    lineageId: string;
+    fragmentName: string;
+    schemaFingerprint: string;
+}
+
+export interface NativeEditorV2RoomSnapshot {
+    metadata: NativeEditorV2SnapshotMetadata;
+    encodedState: Uint8Array;
+}
+
+export type NativeEditorV2Initialization =
+    | { type: 'localEmpty' }
+    | { type: 'localJson'; json: DocumentJSON }
+    | { type: 'localHtml'; html: string }
+    | {
+          type: 'room';
+          documentId: string;
+          lineageId: string;
+          snapshot?: NativeEditorV2RoomSnapshot;
+      };
+
+export interface NativeEditorV2CreateConfig {
+    schema?: SchemaDefinition;
+    fragmentName?: string;
+    initialization: NativeEditorV2Initialization;
+    maxLength?: number;
+    readOnly?: boolean;
+    inputFilter?: string;
+    allowBase64Images?: boolean;
+}
+
+export interface NativeEditorV2InputRequest {
+    baseDocumentRevision: string | number;
+    text: string;
+}
+
+export interface NativeEditorV2CommandRequest {
+    baseDocumentRevision: string | number;
+    command: Record<string, unknown>;
+}
+
+export interface NativeEditorV2LocalApiRequest {
+    baseDocumentRevision: string | number;
+    setJson?: DocumentJSON;
+    setHtml?: string;
+    history: NativeEditorV2HistoryMode;
+}
+
+export interface NativeEditorV2SelectionRequest {
+    baseDocumentRevision: string | number;
+    selection: Record<string, unknown>;
+}
+
+export interface NativeEditorV2ReplaceDocumentRequest {
+    setJson?: DocumentJSON;
+    setHtml?: string;
+    history: NativeEditorV2HistoryMode;
+}
+
+function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
+    configJson: string;
+    snapshotState: Uint8Array | null;
+} {
+    if (!isPlainRecord(config) || !isPlainRecord(config.initialization)) {
+        throw invalidV2RequestError('NativeEditorBridge: invalid v2 create config');
+    }
+    const envelope: Record<string, unknown> = {};
+    if (config.schema !== undefined) envelope.schema = config.schema;
+    if (config.fragmentName !== undefined) envelope.fragmentName = config.fragmentName;
+    let snapshotState: Uint8Array | null = null;
+    const initialization = config.initialization;
+    switch (initialization.type) {
+        case 'localEmpty':
+            envelope.initialization = { type: 'localEmpty' };
+            break;
+        case 'localJson':
+            envelope.initialization = { type: 'localJson', json: initialization.json };
+            break;
+        case 'localHtml':
+            envelope.initialization = { type: 'localHtml', html: initialization.html };
+            break;
+        case 'room': {
+            const room: Record<string, unknown> = {
+                type: 'room',
+                documentId: initialization.documentId,
+                lineageId: initialization.lineageId,
+            };
+            if (initialization.snapshot != null) {
+                room.snapshot = initialization.snapshot.metadata;
+                snapshotState = requireV2Bytes(
+                    initialization.snapshot.encodedState,
+                    'snapshot encodedState'
+                );
             }
+            envelope.initialization = room;
+            break;
         }
-        return bridge;
+        default:
+            throw invalidV2RequestError('NativeEditorBridge: unknown v2 initialization type');
+    }
+    if (config.maxLength !== undefined) envelope.maxLength = config.maxLength;
+    if (config.readOnly !== undefined) envelope.readOnly = config.readOnly;
+    if (config.inputFilter !== undefined) envelope.inputFilter = config.inputFilter;
+    if (config.allowBase64Images !== undefined) envelope.allowBase64Images = config.allowBase64Images;
+    return { configJson: JSON.stringify(envelope), snapshotState };
+}
+
+/**
+ * Typed imperative v2 bridge bound to one decimal-string editor id. Every
+ * entry normalizes the frozen result record, keeps revisions as decimal
+ * strings, and throws typed errors; results that arrive for a destroyed
+ * handle (including re-entrant destroy races) are classified non-retryable.
+ */
+export class NativeEditorV2Bridge {
+    private readonly _editorId: string;
+    private _destroyed = false;
+    private _nextRequestId = 0;
+    private readonly _errorListeners = new Set<(error: NativeEditorV2ErrorBase) => void>();
+
+    /** @internal Created by NativeEditorDocumentHandle.create. */
+    constructor(editorId: string) {
+        this._editorId = editorId;
     }
 
-    get sessionId(): number {
-        return this._sessionId;
+    get editorId(): string {
+        return this._editorId;
     }
 
     get isDestroyed(): boolean {
         return this._destroyed;
     }
 
+    private assertAlive(): void {
+        if (this._destroyed) throw destroyedHandleError();
+    }
+
+    private callV2<T>(invoke: () => unknown, normalizeValue: (value: unknown) => T | null): T {
+        this.assertAlive();
+        const raw = invoke();
+        // A re-entrant destroy racing the native call makes any result
+        // arriving now a result for a destroyed handle: non-retryable.
+        if (this._destroyed) throw destroyedHandleError();
+        return unwrapNativeEditorV2Result(raw, normalizeValue);
+    }
+
+    private nextRequestId(): number {
+        this._nextRequestId += 1;
+        return this._nextRequestId;
+    }
+
+    /**
+     * Serialize a request envelope. The base revision is spliced in as raw
+     * canonical decimal digits so full u64 revisions survive without
+     * Number()'ing them.
+     */
+    private buildEnvelopeJson(
+        payload: Record<string, unknown>,
+        baseDocumentRevision?: string | number
+    ): string {
+        const parts: string[] = [
+            `"version":${V2_ENVELOPE_VERSION}`,
+            `"requestId":${this.nextRequestId()}`,
+        ];
+        if (baseDocumentRevision !== undefined) {
+            const digits = requireV2DecimalId(baseDocumentRevision, 'baseDocumentRevision');
+            parts.push(`"baseDocumentRevision":${digits}`);
+        }
+        const payloadJson = JSON.stringify(payload);
+        const inner = payloadJson.slice(1, payloadJson.length - 1);
+        if (inner.length > 0) parts.push(inner);
+        return `{${parts.join(',')}}`;
+    }
+
+    /** Destroy the session. Repeated destroy is safe. */
     destroy(): void {
         if (this._destroyed) return;
+        // Terminal semantics (deliberate trade-off): the handle is marked
+        // destroyed and the error listeners are cleared BEFORE the native
+        // call, so a recoverable native destroy failure propagates but
+        // subsequent destroy() calls will not retry the native call; the
+        // session may leak natively in that edge. Callers should treat
+        // destroy errors as terminal.
         this._destroyed = true;
-        getNativeModule().collaborationSessionDestroy(this._sessionId);
+        this._errorListeners.clear();
+        try {
+            unwrapNativeEditorV2Result(
+                invokeNativeEditorV2('editorV2Destroy', this._editorId),
+                normalizeNativeEditorV2Unit
+            );
+        } catch (error) {
+            // An already-destroyed native session still satisfies the
+            // caller's goal; every other failure is reported.
+            if (
+                error instanceof NativeEditorV2NonRetryableError &&
+                (error.code === 'ENGINE_DESTROYED' || error.code === 'ENGINE_DESTROYING')
+            ) {
+                return;
+            }
+            throw error;
+        }
+    }
+
+    /** Subscribe to autonomous native failures; returns the unsubscribe. */
+    addErrorListener(listener: (error: NativeEditorV2ErrorBase) => void): () => void {
+        this._errorListeners.add(listener);
+        return () => {
+            this._errorListeners.delete(listener);
+        };
+    }
+
+    /**
+     * @internal Route one autonomous native failure (input/accessibility) to
+     * the error listeners exactly once. Accepts a bare error record or the
+     * frozen envelope form; malformed payloads surface as a non-retryable
+     * contract violation so the view stays usable.
+     */
+    _emitAutonomousError(raw: unknown): void {
+        if (this._destroyed) return;
+        const candidate = isPlainRecord(raw) && 'error' in raw ? raw : { error: raw };
+        const normalized = normalizeNativeEditorV2Error(candidate);
+        const exception =
+            normalized == null ? invalidV2ResultError() : nativeEditorV2ErrorToException(normalized);
+        for (const listener of this._errorListeners) {
+            listener(exception);
+        }
+    }
+
+    // ── State getters ───────────────────────────────────────────
+
+    getState(): NativeEditorV2EditorState {
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2GetState', this._editorId),
+            normalizeNativeEditorV2StateValue
+        );
     }
 
     getDocumentJson(): DocumentJSON {
-        this.assertNotDestroyed();
-        const json = getNativeModule().collaborationSessionGetDocumentJson(this._sessionId);
-        throwIfNativeBoundaryError(json);
-        return parseDocumentJSON(json);
-    }
-
-    getEncodedState(): Uint8Array {
-        this.assertNotDestroyed();
-        const json = getNativeModule().collaborationSessionGetEncodedState(this._sessionId);
-        throwIfNativeBoundaryError(json);
-        return parseByteArrayJson(json, this._resourceLimits.maxEncodedStateBytes);
-    }
-
-    getEncodedStateBase64(): string {
-        return encodeCollaborationStateBase64(this.getEncodedState());
-    }
-
-    getPeers(): CollaborationPeer[] {
-        this.assertNotDestroyed();
-        const json = getNativeModule().collaborationSessionGetPeersJson(this._sessionId);
-        throwIfNativeBoundaryError(json);
-        return parseCollaborationPeersJson(json);
-    }
-
-    start(): CollaborationResult {
-        this.assertNotDestroyed();
-        return this.parseBoundedResult(
-            getNativeModule().collaborationSessionStart(this._sessionId)
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2GetDocumentJson', this._editorId),
+            normalizeNativeEditorV2DocumentJsonValue
         );
     }
 
-    applyLocalDocumentJson(doc: DocumentJSON): CollaborationResult {
-        this.assertNotDestroyed();
-        const json = JSON.stringify(doc);
-        assertInputStringWithinLimit(json, this._resourceLimits.maxInputBytes);
-        return this.parseBoundedResult(
-            getNativeModule().collaborationSessionApplyLocalDocumentJson(this._sessionId, json)
+    getDocumentHtml(): string {
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2GetDocumentHtml', this._editorId),
+            normalizeNativeEditorV2HtmlValue
         );
     }
 
-    applyEncodedState(encodedState: EncodedCollaborationStateInput): CollaborationResult {
-        this.assertNotDestroyed();
-        const normalized = normalizeEncodedCollaborationStateInput(
-            encodedState,
-            this._resourceLimits
-        );
-        return this.parseBoundedResult(
-            getNativeModule().collaborationSessionApplyEncodedState(
-                this._sessionId,
-                JSON.stringify(Array.from(normalized))
-            )
+    getContentSnapshot(): ContentSnapshot {
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2GetContentSnapshot', this._editorId),
+            normalizeNativeEditorV2ContentSnapshotValue
         );
     }
 
-    replaceEncodedState(encodedState: EncodedCollaborationStateInput): CollaborationResult {
-        this.assertNotDestroyed();
-        const normalized = normalizeEncodedCollaborationStateInput(
-            encodedState,
-            this._resourceLimits
-        );
-        return this.parseBoundedResult(
-            getNativeModule().collaborationSessionReplaceEncodedState(
-                this._sessionId,
-                JSON.stringify(Array.from(normalized))
-            )
-        );
-    }
-
-    handleMessage(bytes: readonly number[]): CollaborationResult {
-        this.assertNotDestroyed();
-        assertCountWithinLimit(bytes.length, this._resourceLimits.maxCollaborationMessageBytes);
-        return this.parseBoundedResult(
-            getNativeModule().collaborationSessionHandleMessage(
-                this._sessionId,
-                JSON.stringify(Array.from(bytes))
-            )
-        );
-    }
-
-    setLocalAwareness(state: Record<string, unknown>): CollaborationResult {
-        this.assertNotDestroyed();
-        return this.parseBoundedResult(
-            getNativeModule().collaborationSessionSetLocalAwareness(
-                this._sessionId,
-                JSON.stringify(state)
-            )
-        );
-    }
-
-    clearLocalAwareness(): CollaborationResult {
-        this.assertNotDestroyed();
-        return this.parseBoundedResult(
-            getNativeModule().collaborationSessionClearLocalAwareness(this._sessionId)
-        );
-    }
-
-    private assertNotDestroyed(): void {
-        if (this._destroyed) {
-            throw new Error(ERR_DESTROYED);
-        }
-    }
-
-    private parseBoundedResult(json: string): CollaborationResult {
-        const result = parseCollaborationResultJson(json);
-        for (const message of result.messages) {
-            assertCountWithinLimit(
-                message.length,
-                this._resourceLimits.maxCollaborationMessageBytes
+    /**
+     * Fetch the engine's current render update (render blocks, active state,
+     * history state, document version) as raw update JSON — the payload a
+     * bound native view applies after a JS-driven engine change. A scalar
+     * mirror selection resolves the engine selection into the update (doc
+     * and scalar positions); without one the update carries no selection.
+     */
+    renderUpdate(mirrorScalarSelection?: { anchor: number; head: number }): string {
+        this.assertAlive();
+        const mirrorAnchor = mirrorScalarSelection?.anchor ?? null;
+        const mirrorHead = mirrorScalarSelection?.head ?? null;
+        if ((mirrorAnchor == null) !== (mirrorHead == null)) {
+            throw invalidV2RequestError(
+                'NativeEditorBridge: render update mirror requires both scalar anchor and head'
             );
         }
-        return result;
+        return this.callV2(
+            () =>
+                invokeNativeEditorV2(
+                    'editorV2RenderUpdate',
+                    this._editorId,
+                    mirrorAnchor,
+                    mirrorHead
+                ),
+            normalizeNativeEditorV2RenderUpdateValue
+        );
+    }
+
+    // ── Mutation entries ────────────────────────────────────────
+
+    replaceDocument(request: NativeEditorV2ReplaceDocumentRequest): NativeEditorV2CommitInfo {
+        this.assertAlive();
+        const payload: Record<string, unknown> = {};
+        if (request.setJson !== undefined) payload.setJson = request.setJson;
+        if (request.setHtml !== undefined) payload.setHtml = request.setHtml;
+        payload.history = request.history;
+        const requestJson = this.buildEnvelopeJson(payload);
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2ReplaceDocument', this._editorId, requestJson),
+            normalizeNativeEditorV2CommitValue
+        );
+    }
+
+    applyInput(request: NativeEditorV2InputRequest): NativeEditorV2MutationOutcome {
+        this.assertAlive();
+        const requestJson = this.buildEnvelopeJson(
+            { text: request.text },
+            request.baseDocumentRevision
+        );
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2ApplyInput', this._editorId, requestJson),
+            normalizeNativeEditorV2MutationOutcomeValue
+        );
+    }
+
+    applyCommand(request: NativeEditorV2CommandRequest): NativeEditorV2MutationOutcome {
+        this.assertAlive();
+        const requestJson = this.buildEnvelopeJson(
+            { command: request.command },
+            request.baseDocumentRevision
+        );
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2ApplyCommand', this._editorId, requestJson),
+            normalizeNativeEditorV2MutationOutcomeValue
+        );
+    }
+
+    applyLocalApi(request: NativeEditorV2LocalApiRequest): NativeEditorV2MutationOutcome {
+        this.assertAlive();
+        const payload: Record<string, unknown> = {};
+        if (request.setJson !== undefined) payload.setJson = request.setJson;
+        if (request.setHtml !== undefined) payload.setHtml = request.setHtml;
+        payload.history = request.history;
+        const requestJson = this.buildEnvelopeJson(payload, request.baseDocumentRevision);
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2ApplyLocalApi', this._editorId, requestJson),
+            normalizeNativeEditorV2MutationOutcomeValue
+        );
+    }
+
+    setSelection(request: NativeEditorV2SelectionRequest): NativeEditorV2MutationOutcome {
+        this.assertAlive();
+        const requestJson = this.buildEnvelopeJson(
+            { selection: request.selection },
+            request.baseDocumentRevision
+        );
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2SetSelection', this._editorId, requestJson),
+            normalizeNativeEditorV2MutationOutcomeValue
+        );
+    }
+
+    undo(): boolean {
+        this.assertAlive();
+        const requestJson = this.buildEnvelopeJson({});
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2Undo', this._editorId, requestJson),
+            normalizeNativeEditorV2ChangedValue
+        );
+    }
+
+    redo(): boolean {
+        this.assertAlive();
+        const requestJson = this.buildEnvelopeJson({});
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2Redo', this._editorId, requestJson),
+            normalizeNativeEditorV2ChangedValue
+        );
+    }
+
+    // ── Snapshots ───────────────────────────────────────────────
+
+    snapshotExport(): NativeEditorV2SnapshotExport {
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2SnapshotExport', this._editorId),
+            normalizeNativeEditorV2SnapshotExportValue
+        );
+    }
+
+    snapshotRestore(
+        metadata: NativeEditorV2SnapshotMetadata,
+        encodedState: Uint8Array
+    ): NativeEditorV2CommitInfo {
+        this.assertAlive();
+        const bytes = requireV2Bytes(encodedState, 'snapshot encodedState');
+        return this.callV2(
+            () =>
+                invokeNativeEditorV2(
+                    'editorV2SnapshotRestore',
+                    this._editorId,
+                    JSON.stringify(metadata),
+                    bytes
+                ),
+            normalizeNativeEditorV2CommitValue
+        );
+    }
+
+    // ── Collaboration runtime ───────────────────────────────────
+
+    collaborationBeginConnect(): string {
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2CollaborationBeginConnect', this._editorId),
+            normalizeNativeEditorV2GenerationValue
+        );
+    }
+
+    collaborationSocketOpen(generation: string): Uint8Array {
+        this.assertAlive();
+        const acceptedGeneration = requireV2DecimalId(generation, 'generation');
+        return this.callV2(
+            () =>
+                invokeNativeEditorV2(
+                    'editorV2CollaborationSocketOpen',
+                    this._editorId,
+                    acceptedGeneration
+                ),
+            normalizeNativeEditorV2Bytes
+        );
+    }
+
+    collaborationReceive(generation: string, message: Uint8Array): NativeEditorV2ReceiveOutcome {
+        this.assertAlive();
+        const acceptedGeneration = requireV2DecimalId(generation, 'generation');
+        const bytes = requireV2Bytes(message, 'message');
+        return this.callV2(
+            () =>
+                invokeNativeEditorV2(
+                    'editorV2CollaborationReceive',
+                    this._editorId,
+                    acceptedGeneration,
+                    bytes
+                ),
+            normalizeNativeEditorV2ReceiveValue
+        );
+    }
+
+    collaborationSocketClose(
+        generation: string,
+        code?: number | null,
+        reason?: string | null
+    ): NativeEditorV2TransportState {
+        this.assertAlive();
+        const acceptedGeneration = requireV2DecimalId(generation, 'generation');
+        const acceptedCode = code ?? null;
+        if (
+            acceptedCode !== null &&
+            (!Number.isInteger(acceptedCode) || acceptedCode < 0 || acceptedCode > 0xffff_ffff)
+        ) {
+            throw invalidV2RequestError('NativeEditorBridge: invalid close code for v2 request');
+        }
+        return this.callV2(
+            () =>
+                invokeNativeEditorV2(
+                    'editorV2CollaborationSocketClose',
+                    this._editorId,
+                    acceptedGeneration,
+                    acceptedCode,
+                    reason ?? null
+                ),
+            normalizeNativeEditorV2TransportStateValue
+        );
+    }
+
+    collaborationTakeOutbound(generation: string): Uint8Array {
+        this.assertAlive();
+        const acceptedGeneration = requireV2DecimalId(generation, 'generation');
+        return this.callV2(
+            () =>
+                invokeNativeEditorV2(
+                    'editorV2CollaborationTakeOutbound',
+                    this._editorId,
+                    acceptedGeneration
+                ),
+            normalizeNativeEditorV2Bytes
+        );
+    }
+
+    collaborationSetAwareness(state: Record<string, unknown> | null): void {
+        this.assertAlive();
+        const awarenessJson = state == null ? 'null' : JSON.stringify(state);
+        this.callV2(
+            () =>
+                invokeNativeEditorV2(
+                    'editorV2CollaborationSetAwareness',
+                    this._editorId,
+                    awarenessJson
+                ),
+            normalizeNativeEditorV2Unit
+        );
+    }
+
+    collaborationPeers(): NativeEditorV2PeerInfo[] {
+        return this.callV2(
+            () => invokeNativeEditorV2('editorV2CollaborationPeers', this._editorId),
+            normalizeNativeEditorV2PeersValue
+        );
+    }
+}
+
+/**
+ * The v2 document handle: a decimal-string editor id plus its typed bridge.
+ * Created only through the v2 create entry; destroy and autonomous error
+ * subscription mirror the bridge.
+ */
+export class NativeEditorDocumentHandle {
+    private constructor(
+        public readonly editorId: string,
+        public readonly bridge: NativeEditorV2Bridge
+    ) {}
+
+    static create(config: NativeEditorV2CreateConfig): NativeEditorDocumentHandle {
+        const { configJson, snapshotState } = buildV2CreateRequest(config);
+        const value = unwrapNativeEditorV2Result(
+            invokeNativeEditorV2('editorV2Create', configJson, snapshotState),
+            normalizeNativeEditorV2CreateValue
+        );
+        return new NativeEditorDocumentHandle(value.editorId, new NativeEditorV2Bridge(value.editorId));
+    }
+
+    get isDestroyed(): boolean {
+        return this.bridge.isDestroyed;
+    }
+
+    destroy(): void {
+        this.bridge.destroy();
+    }
+
+    addErrorListener(listener: (error: NativeEditorV2ErrorBase) => void): () => void {
+        return this.bridge.addErrorListener(listener);
     }
 }
