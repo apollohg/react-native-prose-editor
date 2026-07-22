@@ -108,6 +108,23 @@ fn config_invalid(message: impl Into<String>) -> SessionError {
     SessionError::from(BoundaryError::new("CONFIG_INVALID", message))
 }
 
+fn render_preparation_error(error: crate::render::incremental::CachedRenderError) -> SessionError {
+    let error = match error {
+        crate::render::incremental::CachedRenderError::ResourceLimitExceeded => {
+            YrsEngineError::new("DOCUMENT_LIMIT_EXCEEDED", "render exceeds resource limits")
+        }
+        crate::render::incremental::CachedRenderError::AllocationFailed
+        | crate::render::incremental::CachedRenderError::PositionOverflow
+        | crate::render::incremental::CachedRenderError::CacheInvariantViolation => {
+            YrsEngineError::new(
+                "ENGINE_INVARIANT_FAILED",
+                format!("render preparation failed: {error:?}"),
+            )
+        }
+    };
+    SessionError::from(error)
+}
+
 /// The probe's selection mapping: lenient scalar->doc, collapsed selections
 /// become cursors, then cursor normalization (legacy `setSelectionScalar`).
 fn map_scalar_selection(
@@ -194,7 +211,8 @@ pub fn editor_v2_render_update(
             commands,
             engine.resource_limits(),
         );
-        let render_blocks = crate::render::incremental::render_blocks(document, &schema);
+        let render_blocks = crate::render::incremental::try_render_blocks(document, &schema)
+            .map_err(render_preparation_error)?;
         let scalar_length = position_map.doc_to_scalar(u32::MAX, document);
 
         let mut update = serde_json::Map::new();

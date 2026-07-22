@@ -4913,7 +4913,9 @@ impl DerivedStateCache {
                 yrs_state_epoch,
             )
         });
-        let position_map = PositionMap::build(&document, schema);
+        // Render-block construction admits every renderer arithmetic domain,
+        // including ordered-list indices. It must happen before PositionMap,
+        // whose marker-length walk assumes that admission has succeeded.
         let render_blocks = Arc::new(if let Some(validation) = admitted_validation {
             crate::render::incremental::CachedRenderBlocks::build_validated(
                 &document,
@@ -4935,6 +4937,7 @@ impl DerivedStateCache {
         if !render_blocks.matches_identity(&document, schema_fingerprint) {
             return None;
         }
+        let position_map = PositionMap::build(&document, schema);
         let rendered_text = if admitted_validation.is_some() {
             render_blocks.rendered_text(schema)
         } else {

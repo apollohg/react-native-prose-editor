@@ -1153,7 +1153,7 @@ fn render_cached_block(
         .try_reserve(3)
         .map_err(|_| CachedRenderError::AllocationFailed)?;
     let mut rendered_end = start_pos;
-    generate_block(node, schema, &mut elements, &mut rendered_end, 0, None, 0);
+    generate_block(node, schema, &mut elements, &mut rendered_end, 0, None, 0)?;
     if rendered_end != expected_end {
         return Err(CachedRenderError::CacheInvariantViolation);
     }
@@ -1340,7 +1340,11 @@ fn cached_patch_reconstructs(
 /// subsequences are regenerated.
 ///
 /// Returns a vec of `(block_index, elements)` pairs, sorted by block index.
-pub fn incremental(doc: &Document, schema: &Schema, affected_indices: &[usize]) -> Vec<BlockPatch> {
+pub(crate) fn try_incremental(
+    doc: &Document,
+    schema: &Schema,
+    affected_indices: &[usize],
+) -> Result<Vec<BlockPatch>, CachedRenderError> {
     let affected: BTreeSet<usize> = affected_indices.iter().copied().collect();
     let root = doc.root();
     let mut results = Vec::new();
@@ -1354,27 +1358,43 @@ pub fn incremental(doc: &Document, schema: &Schema, affected_indices: &[usize]) 
         if affected.contains(&i) {
             let mut elements = Vec::new();
             let mut block_pos = pos;
-            generate_block(child, schema, &mut elements, &mut block_pos, 0, None, i);
+            generate_block(child, schema, &mut elements, &mut block_pos, 0, None, i)?;
             results.push((i, elements));
         }
 
         // Advance position past this child regardless
-        pos += child.node_size();
+        pos = pos
+            .checked_add(child.node_size())
+            .ok_or(CachedRenderError::PositionOverflow)?;
     }
 
-    results
+    Ok(results)
+}
+
+// Retained for direct render parity tests; production v2 rendering uses the
+// fallible entry point above so render-preparation errors stay structured.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn incremental(doc: &Document, schema: &Schema, affected_indices: &[usize]) -> Vec<BlockPatch> {
+    try_incremental(doc, schema, affected_indices)
+        .expect("incremental render requires a document with admitted arithmetic")
+}
+
+pub(crate) fn try_render_blocks(
+    doc: &Document,
+    schema: &Schema,
+) -> Result<Vec<Vec<RenderElement>>, CachedRenderError> {
+    let root = doc.root();
+    if root.child_count() == 0 {
+        return Ok(Vec::new());
+    }
+    let indices = (0..root.child_count()).collect::<Vec<_>>();
+    try_incremental(doc, schema, &indices)
+        .map(|patches| patches.into_iter().map(|(_, elements)| elements).collect())
 }
 
 pub fn render_blocks(doc: &Document, schema: &Schema) -> Vec<Vec<RenderElement>> {
-    let root = doc.root();
-    if root.child_count() == 0 {
-        return Vec::new();
-    }
-    let indices = (0..root.child_count()).collect::<Vec<_>>();
-    incremental(doc, schema, &indices)
-        .into_iter()
-        .map(|(_, elements)| elements)
-        .collect()
+    try_render_blocks(doc, schema)
+        .expect("render blocks requires a document with admitted arithmetic")
 }
 
 pub fn flatten_render_blocks(blocks: &[Vec<RenderElement>]) -> Vec<RenderElement> {
@@ -1520,10 +1540,10 @@ fn generate_block(
     depth: u16,
     list_info: Option<(String, bool, u32, u32)>,
     child_index: usize,
-) {
+) -> Result<(), CachedRenderError> {
     stacker::maybe_grow(64 * 1024, 1024 * 1024, || {
         generate_block_inner(node, schema, elements, pos, depth, list_info, child_index)
-    });
+    })
 }
 
 fn generate_block_inner(
@@ -1534,7 +1554,7 @@ fn generate_block_inner(
     depth: u16,
     list_info: Option<(String, bool, u32, u32)>,
     child_index: usize,
-) {
+) -> Result<(), CachedRenderError> {
     let spec = schema.node(node.node_type());
     let role = spec.map(|s| &s.role);
 
@@ -1559,8 +1579,12 @@ fn generate_block_inner(
                 .attrs()
                 .get("start")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(1) as u32;
-            let total = node.child_count() as u32;
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| CachedRenderError::PositionOverflow)?
+                .unwrap_or(1);
+            let total = u32::try_from(node.child_count())
+                .map_err(|_| CachedRenderError::PositionOverflow)?;
 
             *pos += 1; // list open tag
             for j in 0..node.child_count() {
@@ -1573,28 +1597,40 @@ fn generate_block_inner(
                     depth,
                     Some((node.node_type().to_string(), ordered, start_attr, total)),
                     j,
-                );
+                )?;
             }
             *pos += 1; // list close tag
         }
         Some(NodeRole::ListItem) => {
-            let list_context = list_info.map(|(list_node_type, ordered, start, total)| {
+            let list_context = if let Some((list_node_type, ordered, start, total)) = list_info {
+                let item_offset =
+                    u32::try_from(child_index).map_err(|_| CachedRenderError::PositionOverflow)?;
+                let index = if ordered {
+                    start
+                        .checked_add(item_offset)
+                        .ok_or(CachedRenderError::PositionOverflow)?
+                } else {
+                    item_offset
+                        .checked_add(1)
+                        .ok_or(CachedRenderError::PositionOverflow)?
+                };
                 let (kind, checked) = task_list_marker_metadata(&list_node_type, node);
-                ListContext {
+                Some(ListContext {
                     ordered,
-                    index: if ordered {
-                        start + child_index as u32
-                    } else {
-                        child_index as u32 + 1
-                    },
+                    index,
                     total,
                     start,
                     is_first: child_index == 0,
-                    is_last: child_index == (total as usize - 1),
+                    is_last: item_offset
+                        == total
+                            .checked_sub(1)
+                            .ok_or(CachedRenderError::PositionOverflow)?,
                     kind,
                     checked,
-                }
-            });
+                })
+            } else {
+                None
+            };
             elements.push(RenderElement::BlockStart {
                 node_type: node.node_type().to_string(),
                 depth,
@@ -1603,7 +1639,7 @@ fn generate_block_inner(
             *pos += 1;
             for j in 0..node.child_count() {
                 let child = node.child(j).expect("child index in bounds");
-                generate_block(child, schema, elements, pos, depth + 1, None, j);
+                generate_block(child, schema, elements, pos, depth + 1, None, j)?;
             }
             *pos += 1;
             elements.push(RenderElement::BlockEnd);
@@ -1623,7 +1659,7 @@ fn generate_block_inner(
             } else {
                 for j in 0..node.child_count() {
                     let child = node.child(j).expect("child index in bounds");
-                    generate_block(child, schema, elements, pos, depth + 1, None, j);
+                    generate_block(child, schema, elements, pos, depth + 1, None, j)?;
                 }
             }
             *pos += 1;
@@ -1646,7 +1682,7 @@ fn generate_block_inner(
             *pos += 1;
             for j in 0..node.child_count() {
                 let child = node.child(j).expect("child index in bounds");
-                generate_block(child, schema, elements, pos, depth + 1, None, j);
+                generate_block(child, schema, elements, pos, depth + 1, None, j)?;
             }
             *pos += 1;
             elements.push(RenderElement::BlockEnd);
@@ -1667,7 +1703,7 @@ fn generate_block_inner(
             *pos += 1;
             for j in 0..node.child_count() {
                 let child = node.child(j).expect("child index in bounds");
-                generate_block(child, schema, elements, pos, depth, None, j);
+                generate_block(child, schema, elements, pos, depth, None, j)?;
             }
             *pos += 1;
         }
@@ -1699,6 +1735,7 @@ fn generate_block_inner(
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1711,7 +1748,7 @@ mod tests {
     use crate::boundary::ResourceLimits;
     use crate::model::{Document, Fragment, Mark, Node};
     use crate::render::incremental::{
-        render_blocks, CachedRenderBlocks, CachedRenderTransitionUpdate,
+        render_blocks, try_render_blocks, CachedRenderBlocks, CachedRenderTransitionUpdate,
     };
     use crate::render::RenderElement;
     use crate::{prosemirror_schema, tiptap_schema};
@@ -2527,6 +2564,37 @@ mod tests {
 
         assert!(matches!(
             CachedRenderBlocks::build(&document, &schema, &limits),
+            Err(super::CachedRenderError::PositionOverflow)
+        ));
+    }
+
+    #[test]
+    fn incremental_ordered_list_indices_are_exact_or_structured_overflow() {
+        let schema = tiptap_schema();
+        let exact = doc(vec![ordered_list(
+            u32::MAX,
+            vec![list_item(vec![paragraph(vec![text("last")])])],
+        )]);
+
+        let exact_blocks = try_render_blocks(&exact, &schema).expect("u32::MAX must render");
+        let RenderElement::BlockStart {
+            list_context: Some(context),
+            ..
+        } = &exact_blocks[0][0]
+        else {
+            panic!("ordered-list item must carry a list context");
+        };
+        assert_eq!(context.index, u32::MAX);
+
+        let overflow = doc(vec![ordered_list(
+            u32::MAX,
+            vec![
+                list_item(vec![paragraph(vec![text("last")])]),
+                list_item(vec![paragraph(vec![text("overflow")])]),
+            ],
+        )]);
+        assert!(matches!(
+            try_render_blocks(&overflow, &schema),
             Err(super::CachedRenderError::PositionOverflow)
         ));
     }

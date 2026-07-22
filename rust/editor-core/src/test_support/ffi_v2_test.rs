@@ -1760,9 +1760,10 @@ fn local_json_config(document: &str) -> Value {
 const FIXTURE_MULTI_BLOCK: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"ab"}]},{"type":"paragraph","content":[{"type":"text","text":"cd"}]}]}"#;
 const ORDERED_LIST_START_MAX: &str = r#"{"type":"doc","content":[{"type":"orderedList","attrs":{"start":4294967295},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"last"}]}]}]}]}"#;
 const ORDERED_LIST_START_ABOVE_U32: &str = r#"{"type":"doc","content":[{"type":"orderedList","attrs":{"start":4294967296},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"overflow"}]}]}]}]}"#;
+const ORDERED_LIST_INDEX_ABOVE_U32: &str = r#"{"type":"doc","content":[{"type":"orderedList","attrs":{"start":4294967295},"content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"last"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"overflow"}]}]}]}]}"#;
 
 #[test]
-fn render_update_ordered_list_start_is_exact_or_rejected() {
+fn render_update_ordered_list_u32_boundary_is_exact_or_rejected() {
     let id = create_handle(local_json_config(ORDERED_LIST_START_MAX));
     let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
     assert_eq!(
@@ -1772,11 +1773,13 @@ fn render_update_ordered_list_start_is_exact_or_rejected() {
     );
     destroy_handle(&id);
 
-    let error = err_json(&v2::editor_v2_create(
-        local_json_config(ORDERED_LIST_START_ABOVE_U32).to_string(),
-        None,
-    ));
-    assert_error(&error, "boundary", "CODEC_INVARIANT_FAILED", None);
+    for document in [ORDERED_LIST_START_ABOVE_U32, ORDERED_LIST_INDEX_ABOVE_U32] {
+        let error = err_json(&v2::editor_v2_create(
+            local_json_config(document).to_string(),
+            None,
+        ));
+        assert_error(&error, "boundary", "CODEC_INVARIANT_FAILED", None);
+    }
 }
 
 #[test]
