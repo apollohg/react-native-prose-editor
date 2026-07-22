@@ -23,7 +23,47 @@ pub fn to_prosemirror_json(doc: &Document, schema: &Schema) -> Value {
     node_to_json(doc.root(), schema)
 }
 
-pub(crate) fn node_to_json(node: &Node, schema: &Schema) -> Value {
+pub(crate) fn node_to_json(root: &Node, schema: &Schema) -> Value {
+    enum Frame<'a> {
+        Visit(&'a Node),
+        Build(&'a Node, usize),
+    }
+
+    let mut frames = vec![Frame::Visit(root)];
+    let mut built = Vec::new();
+    while let Some(frame) = frames.pop() {
+        match frame {
+            Frame::Visit(node) => {
+                let children = node
+                    .content()
+                    .map(|content| content.children())
+                    .unwrap_or(&[]);
+                if children.is_empty() || node.node_type() == "__opaque_json" {
+                    built.push(node_to_json_shallow(node, schema));
+                    continue;
+                }
+                frames.push(Frame::Build(node, children.len()));
+                frames.extend(children.iter().rev().map(Frame::Visit));
+            }
+            Frame::Build(node, child_count) => {
+                let first_child = built
+                    .len()
+                    .checked_sub(child_count)
+                    .expect("JSON projection child stack is balanced");
+                let children = built.split_off(first_child);
+                let mut value = node_to_json_shallow(node, schema);
+                value
+                    .as_object_mut()
+                    .expect("semantic nodes project to objects")
+                    .insert("content".to_string(), Value::Array(children));
+                built.push(value);
+            }
+        }
+    }
+    built.pop().expect("one projected root")
+}
+
+fn node_to_json_shallow(node: &Node, schema: &Schema) -> Value {
     if node.node_type() == "__opaque_json" {
         return node
             .attrs()
@@ -57,15 +97,6 @@ pub(crate) fn node_to_json(node: &Node, schema: &Schema) -> Value {
         let attrs_json = build_attrs_json(node, schema);
         if !attrs_json.is_empty() {
             obj.insert("attrs".to_string(), Value::Object(attrs_json));
-        }
-
-        // Include content if non-empty
-        if let Some(content) = node.content() {
-            if content.child_count() > 0 {
-                let children: Vec<Value> =
-                    content.iter().map(|c| node_to_json(c, schema)).collect();
-                obj.insert("content".to_string(), Value::Array(children));
-            }
         }
     } else {
         // Void node — include non-default attrs, no content

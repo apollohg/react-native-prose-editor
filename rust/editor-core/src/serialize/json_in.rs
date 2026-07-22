@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
@@ -96,28 +97,35 @@ pub fn from_prosemirror_json_with_limits(
     mode: UnknownTypeMode,
     limits: &ResourceLimits,
 ) -> Result<Document, JsonParseError> {
-    let normalized = normalize_json_aliases(json);
-    let mut budget = ParseBudget::new(limits.max_document_nodes);
-    let root = parse_node(normalized.as_ref(), schema, mode, "block", &mut budget)?;
+    let mut budget = ParseBudget::new(limits.max_document_nodes, limits.max_document_depth);
+    let root = parse_node(json, schema, mode, "block", &mut budget)?;
     Ok(Document::new(root))
 }
 
 struct ParseBudget {
     nodes: usize,
     max_nodes: usize,
+    max_depth: usize,
     placement: WorkBudget,
 }
 
 impl ParseBudget {
-    fn new(max_nodes: usize) -> Self {
+    fn new(max_nodes: usize, max_depth: usize) -> Self {
         Self {
             nodes: 0,
             max_nodes,
+            max_depth,
             placement: WorkBudget::new(max_nodes.saturating_mul(64)),
         }
     }
 
-    fn admit_node(&mut self) -> Result<(), JsonParseError> {
+    fn admit_node(&mut self, depth: usize) -> Result<(), JsonParseError> {
+        if depth > self.max_depth {
+            return Err(JsonParseError::ResourceLimit {
+                limit: self.max_depth,
+                actual: depth,
+            });
+        }
         self.nodes = self.nodes.saturating_add(1);
         if self.nodes > self.max_nodes {
             return Err(JsonParseError::ResourceLimit {
@@ -140,54 +148,129 @@ fn parse_node(
     placement: &'static str,
     budget: &mut ParseBudget,
 ) -> Result<Node, JsonParseError> {
-    budget.admit_node()?;
-    let obj = json
-        .as_object()
-        .ok_or_else(|| JsonParseError::InvalidStructure("node must be a JSON object".into()))?;
-
-    let type_name = obj.get("type").and_then(|v| v.as_str()).ok_or_else(|| {
-        JsonParseError::InvalidStructure("node must have a string \"type\" field".into())
-    })?;
-
-    // Text node: special case
-    if type_name == "text" {
-        return parse_text_node(obj, schema, mode);
+    enum Frame<'json, 'schema> {
+        Visit {
+            json: &'json Value,
+            depth: usize,
+            placement: &'static str,
+        },
+        BuildElement {
+            type_name: String,
+            attrs: HashMap<String, Value>,
+            parent: &'schema crate::schema::NodeSpec,
+            child_count: usize,
+        },
     }
 
-    // Look up the type in the schema
-    let spec = schema.node(type_name);
+    let mut frames = vec![Frame::Visit {
+        json,
+        depth: 1,
+        placement,
+    }];
+    let mut built = Vec::new();
+    while let Some(frame) = frames.pop() {
+        match frame {
+            Frame::Visit {
+                json,
+                depth,
+                placement,
+            } => {
+                budget.admit_node(depth)?;
+                let obj = json.as_object().ok_or_else(|| {
+                    JsonParseError::InvalidStructure("node must be a JSON object".into())
+                })?;
+                let raw_type = obj.get("type").and_then(Value::as_str).ok_or_else(|| {
+                    JsonParseError::InvalidStructure(
+                        "node must have a string \"type\" field".into(),
+                    )
+                })?;
+                let heading_level = (raw_type == "heading")
+                    .then(|| {
+                        obj.get("attrs")
+                            .and_then(Value::as_object)
+                            .and_then(|attrs| parse_heading_level_value(attrs.get("level")))
+                    })
+                    .flatten();
+                let type_name = heading_level
+                    .map(|level| format!("h{level}"))
+                    .unwrap_or_else(|| raw_type.to_string());
 
-    if spec.is_none() {
-        match mode {
-            UnknownTypeMode::Error => {
-                return Err(JsonParseError::UnknownType(type_name.to_string()));
+                if type_name == "text" {
+                    built.push(parse_text_node(obj, schema, mode)?);
+                    continue;
+                }
+
+                let Some(spec) = schema.node(&type_name) else {
+                    match mode {
+                        UnknownTypeMode::Error => {
+                            return Err(JsonParseError::UnknownType(type_name));
+                        }
+                        UnknownTypeMode::Preserve => {
+                            built.push(build_opaque_json_node(&type_name, json, placement));
+                        }
+                        UnknownTypeMode::Skip => {
+                            built.push(Node::void("__skip".to_string(), HashMap::new()));
+                        }
+                    }
+                    continue;
+                };
+
+                let mut attrs = parse_attrs(obj, spec);
+                if heading_level.is_some() {
+                    attrs.remove("level");
+                }
+                if spec.is_void {
+                    built.push(Node::void(type_name, attrs));
+                    continue;
+                }
+
+                let children: &[Value] = match obj.get("content") {
+                    Some(value) => value.as_array().map(Vec::as_slice).ok_or_else(|| {
+                        JsonParseError::InvalidStructure("\"content\" must be an array".into())
+                    })?,
+                    None => &[],
+                };
+                frames.push(Frame::BuildElement {
+                    type_name,
+                    attrs,
+                    parent: spec,
+                    child_count: children.len(),
+                });
+                let child_depth = depth.saturating_add(1);
+                for child in children.iter().rev() {
+                    frames.push(Frame::Visit {
+                        json: child,
+                        depth: child_depth,
+                        placement: "unknown",
+                    });
+                }
             }
-            UnknownTypeMode::Preserve => {
-                return Ok(build_opaque_json_node(type_name, json, placement));
-            }
-            UnknownTypeMode::Skip => {
-                // Signal to the caller that this node should be dropped.
-                // We use a sentinel — a void node with a special type.
-                return Ok(Node::void("__skip".to_string(), HashMap::new()));
+            Frame::BuildElement {
+                type_name,
+                attrs,
+                parent,
+                child_count,
+            } => {
+                let first_child = built.len().checked_sub(child_count).ok_or_else(|| {
+                    JsonParseError::InvalidStructure("document parser child stack underflow".into())
+                })?;
+                let children = built
+                    .split_off(first_child)
+                    .into_iter()
+                    .filter(|child| child.node_type() != "__skip")
+                    .collect();
+                let children =
+                    resolve_opaque_placements(children, parent, schema, &budget.placement)?;
+                built.push(Node::element(type_name, attrs, Fragment::from(children)));
             }
         }
     }
-
-    let spec = spec.unwrap();
-    let attrs = parse_attrs(obj, spec);
-
-    if spec.is_void {
-        // Void node — no content
-        return Ok(Node::void(type_name.to_string(), attrs));
+    if built.len() != 1 {
+        return Err(JsonParseError::InvalidStructure(
+            "document parser did not produce one root".into(),
+        ));
     }
-
-    // Element node — parse children
-    let children = parse_content(obj, schema, mode, spec, budget)?;
-    Ok(Node::element(
-        type_name.to_string(),
-        attrs,
-        Fragment::from(children),
-    ))
+    Ok(built.pop().expect("one parsed root"))
 }
 
 /// Parse a text node from a JSON object.
@@ -290,35 +373,6 @@ fn parse_attrs(
     }
 
     attrs
-}
-
-/// Parse the "content" array of a node.
-fn parse_content(
-    obj: &serde_json::Map<String, Value>,
-    schema: &Schema,
-    mode: UnknownTypeMode,
-    parent: &crate::schema::NodeSpec,
-    budget: &mut ParseBudget,
-) -> Result<Vec<Node>, JsonParseError> {
-    let content_val = match obj.get("content") {
-        Some(v) => v,
-        None => return Ok(Vec::new()),
-    };
-
-    let content_arr = content_val
-        .as_array()
-        .ok_or_else(|| JsonParseError::InvalidStructure("\"content\" must be an array".into()))?;
-
-    let mut children = Vec::with_capacity(content_arr.len());
-    for child_json in content_arr {
-        let child = parse_node(child_json, schema, mode, "unknown", budget)?;
-        // Skip sentinel nodes (from UnknownTypeMode::Skip)
-        if child.node_type() != "__skip" {
-            children.push(child);
-        }
-    }
-
-    resolve_opaque_placements(children, parent, schema, &budget.placement)
 }
 
 #[derive(Clone, Copy)]
@@ -484,6 +538,7 @@ fn reserved_html_opaque_attrs(node: &Node) -> Option<HashMap<String, Value>> {
     )
 }
 
+#[cfg(test)]
 fn normalize_json_aliases(value: &Value) -> Cow<'_, Value> {
     match value {
         Value::Array(values) => normalize_json_array_aliases(value, values),
@@ -492,6 +547,7 @@ fn normalize_json_aliases(value: &Value) -> Cow<'_, Value> {
     }
 }
 
+#[cfg(test)]
 fn normalize_json_array_aliases<'a>(value: &'a Value, values: &'a [Value]) -> Cow<'a, Value> {
     let mut normalized = None;
     for (index, child) in values.iter().enumerate() {
@@ -513,6 +569,7 @@ fn normalize_json_array_aliases<'a>(value: &'a Value, values: &'a [Value]) -> Co
         .unwrap_or(Cow::Borrowed(value))
 }
 
+#[cfg(test)]
 fn normalize_json_object_aliases<'a>(
     value: &'a Value,
     object: &'a Map<String, Value>,

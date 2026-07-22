@@ -24,8 +24,9 @@
 use serde_json::{value::RawValue, Value};
 
 use crate::boundary::{
-    deserialize_non_null_option, BoundaryError, BoundedInput, InputKind, ResourceLimitOverrides,
-    ResourceLimits, HARD_MAX_INPUT_BYTES,
+    deserialize_non_null_option, parse_json_value_stack_safe, BoundaryError, BoundedInput,
+    InputKind, ResourceLimitOverrides, ResourceLimits, HARD_MAX_DOCUMENT_DEPTH,
+    HARD_MAX_INPUT_BYTES,
 };
 use crate::document_api::DocumentApiFacade;
 use crate::native_transaction_bridge::{
@@ -81,10 +82,16 @@ const fn create_wire_max_bytes() -> usize {
 
 const CREATE_WIRE_MAX_BYTES: usize = create_wire_max_bytes();
 
-/// A document node can add both an object and its content array, so twice the
-/// hard document-depth ceiling plus fixed wrapper slack admits every valid
-/// document shape. The scanner rejects deeper syntax before recursing again.
-const CREATE_SCAN_MAX_DEPTH: usize = 2_064;
+/// A document node can add both an object and its content array, and metadata
+/// at the deepest node can independently consume the document-depth ceiling.
+/// Fixed slack covers the create/initialization/mark wrappers.
+const CREATE_SCAN_MAX_DEPTH: usize = match HARD_MAX_DOCUMENT_DEPTH.checked_mul(3) {
+    Some(depth) => match depth.checked_add(16) {
+        Some(depth) => depth,
+        None => panic!("create scanner depth ceiling overflow"),
+    },
+    None => panic!("create scanner depth ceiling overflow"),
+};
 
 #[derive(Clone, Copy)]
 struct JsonSpan {
@@ -245,87 +252,119 @@ impl<'a> CreateJsonScanner<'a> {
     }
 
     fn scan_value(&mut self, depth: usize) -> Result<JsonSpan, SessionError> {
-        if depth > CREATE_SCAN_MAX_DEPTH {
-            return Err(create_scan_invalid(
-                "create JSON nesting exceeds scanner limit",
-            ));
+        enum Action {
+            Value(usize),
+            ObjectAfterValue(usize),
+            ArrayAfterValue(usize),
         }
-        self.skip_whitespace()?;
+
         let start = self.index;
-        match self.peek() {
-            Some(b'"') => {
-                self.scan_string(None)?;
+        let mut actions = vec![Action::Value(depth)];
+        while let Some(action) = actions.pop() {
+            match action {
+                Action::Value(depth) => {
+                    if depth > CREATE_SCAN_MAX_DEPTH {
+                        return Err(create_scan_invalid(
+                            "create JSON nesting exceeds scanner limit",
+                        ));
+                    }
+                    self.skip_whitespace()?;
+                    match self.peek() {
+                        Some(b'"') => {
+                            self.scan_string(None)?;
+                        }
+                        Some(b'{') => {
+                            self.bump()?;
+                            self.skip_whitespace()?;
+                            if self.peek() == Some(b'}') {
+                                self.bump()?;
+                                continue;
+                            }
+                            if self.peek() != Some(b'"') {
+                                return Err(create_scan_invalid(
+                                    "object key must be a string in create JSON",
+                                ));
+                            }
+                            self.scan_string(None)?;
+                            self.skip_whitespace()?;
+                            self.consume(b':')?;
+                            let child_depth = depth
+                                .checked_add(1)
+                                .ok_or_else(|| create_scan_invalid("create JSON depth overflow"))?;
+                            actions.push(Action::ObjectAfterValue(depth));
+                            actions.push(Action::Value(child_depth));
+                        }
+                        Some(b'[') => {
+                            self.bump()?;
+                            self.skip_whitespace()?;
+                            if self.peek() == Some(b']') {
+                                self.bump()?;
+                                continue;
+                            }
+                            let child_depth = depth
+                                .checked_add(1)
+                                .ok_or_else(|| create_scan_invalid("create JSON depth overflow"))?;
+                            actions.push(Action::ArrayAfterValue(depth));
+                            actions.push(Action::Value(child_depth));
+                        }
+                        Some(b't') => self.scan_literal(b"true")?,
+                        Some(b'f') => self.scan_literal(b"false")?,
+                        Some(b'n') => self.scan_literal(b"null")?,
+                        Some(b'-' | b'0'..=b'9') => self.scan_number()?,
+                        _ => return Err(create_scan_invalid("invalid value in create JSON")),
+                    }
+                }
+                Action::ObjectAfterValue(depth) => {
+                    self.skip_whitespace()?;
+                    match self.bump()? {
+                        b'}' => {}
+                        b',' => {
+                            self.skip_whitespace()?;
+                            if self.peek() != Some(b'"') {
+                                return Err(create_scan_invalid(
+                                    "object key must be a string in create JSON",
+                                ));
+                            }
+                            self.scan_string(None)?;
+                            self.skip_whitespace()?;
+                            self.consume(b':')?;
+                            let child_depth = depth
+                                .checked_add(1)
+                                .ok_or_else(|| create_scan_invalid("create JSON depth overflow"))?;
+                            actions.push(Action::ObjectAfterValue(depth));
+                            actions.push(Action::Value(child_depth));
+                        }
+                        _ => {
+                            return Err(create_scan_invalid(
+                                "invalid object delimiter in create JSON",
+                            ))
+                        }
+                    }
+                }
+                Action::ArrayAfterValue(depth) => {
+                    self.skip_whitespace()?;
+                    match self.bump()? {
+                        b']' => {}
+                        b',' => {
+                            let child_depth = depth
+                                .checked_add(1)
+                                .ok_or_else(|| create_scan_invalid("create JSON depth overflow"))?;
+                            actions.push(Action::ArrayAfterValue(depth));
+                            actions.push(Action::Value(child_depth));
+                        }
+                        _ => {
+                            return Err(create_scan_invalid(
+                                "invalid array delimiter in create JSON",
+                            ))
+                        }
+                    }
+                }
             }
-            Some(b'{') => self.scan_object(depth)?,
-            Some(b'[') => self.scan_array(depth)?,
-            Some(b't') => self.scan_literal(b"true")?,
-            Some(b'f') => self.scan_literal(b"false")?,
-            Some(b'n') => self.scan_literal(b"null")?,
-            Some(b'-' | b'0'..=b'9') => self.scan_number()?,
-            _ => return Err(create_scan_invalid("invalid value in create JSON")),
         }
         Ok(JsonSpan {
             start,
             end: self.index,
         })
-    }
-
-    fn scan_object(&mut self, depth: usize) -> Result<(), SessionError> {
-        self.consume(b'{')?;
-        self.skip_whitespace()?;
-        if self.peek() == Some(b'}') {
-            self.bump()?;
-            return Ok(());
-        }
-        loop {
-            if self.peek() != Some(b'"') {
-                return Err(create_scan_invalid(
-                    "object key must be a string in create JSON",
-                ));
-            }
-            self.scan_string(None)?;
-            self.skip_whitespace()?;
-            self.consume(b':')?;
-            let next_depth = depth
-                .checked_add(1)
-                .ok_or_else(|| create_scan_invalid("create JSON depth overflow"))?;
-            self.scan_value(next_depth)?;
-            self.skip_whitespace()?;
-            match self.bump()? {
-                b'}' => return Ok(()),
-                b',' => self.skip_whitespace()?,
-                _ => {
-                    return Err(create_scan_invalid(
-                        "invalid object delimiter in create JSON",
-                    ))
-                }
-            }
-        }
-    }
-
-    fn scan_array(&mut self, depth: usize) -> Result<(), SessionError> {
-        self.consume(b'[')?;
-        self.skip_whitespace()?;
-        if self.peek() == Some(b']') {
-            self.bump()?;
-            return Ok(());
-        }
-        loop {
-            let next_depth = depth
-                .checked_add(1)
-                .ok_or_else(|| create_scan_invalid("create JSON depth overflow"))?;
-            self.scan_value(next_depth)?;
-            self.skip_whitespace()?;
-            match self.bump()? {
-                b']' => return Ok(()),
-                b',' => self.skip_whitespace()?,
-                _ => {
-                    return Err(create_scan_invalid(
-                        "invalid array delimiter in create JSON",
-                    ))
-                }
-            }
-        }
     }
 
     fn scan_literal(&mut self, literal: &[u8]) -> Result<(), SessionError> {
@@ -884,9 +923,17 @@ fn resolve_configured_create_schema(
         return super::render::resolve_create_schema(&None);
     };
     let input = BoundedInput::new(schema_json, InputKind::Config, &config.resource_limits)?;
-    let schema: Value = serde_json::from_str(input.as_str())
-        .map_err(|error| BoundaryError::parse("SCHEMA_INVALID", error))?;
-    crate::schema::Schema::from_json_with_limits(&schema, &config.resource_limits)
+    let container_limit = crate::schema::MAX_SCHEMA_METADATA_DEPTH
+        .checked_add(16)
+        .ok_or_else(|| BoundaryError::new("SCHEMA_INVALID", "schema depth limit overflow"))?;
+    let schema = parse_json_value_stack_safe(
+        input.as_str(),
+        container_limit,
+        crate::schema::MAX_SCHEMA_METADATA_DEPTH,
+        "SCHEMA_INVALID",
+        "SCHEMA_INVALID",
+    )?;
+    crate::schema::Schema::from_json_with_limits(schema.as_value(), &config.resource_limits)
         .map_err(SessionError::from)
 }
 

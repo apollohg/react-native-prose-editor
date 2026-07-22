@@ -227,6 +227,58 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
 
     // ── Lifecycle / status mapping ──────────────────────────────
 
+    it('rejects recovered constructors and structural handle forgeries while accepting real handles', () => {
+        const real = createRoomHandle();
+        const recoveredConstructor = real.constructor as new (
+            editorId: string,
+            bridge: NativeEditorDocumentHandle['bridge']
+        ) => NativeEditorDocumentHandle;
+
+        const outcome = (operation: () => void): string => {
+            try {
+                operation();
+                return 'accepted';
+            } catch (error) {
+                return String((error as { code?: unknown }).code);
+            }
+        };
+        const recovered = outcome(() => {
+            new recoveredConstructor(real.editorId, real.bridge);
+        });
+        const forged = {
+            editorId: real.editorId,
+            bridge: real.bridge,
+            isDestroyed: false,
+            destroy: jest.fn(),
+            addErrorListener: jest.fn(() => jest.fn()),
+        } as unknown as NativeEditorDocumentHandle;
+        const structural = outcome(() => {
+            const controller = createYjsCollaborationController({
+                documentId: 'doc-forged',
+                handle: forged,
+                connect: false,
+                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            });
+            controller.destroy();
+        });
+        const authentic = outcome(() => {
+            const controller = createYjsCollaborationController({
+                documentId: 'doc-1',
+                handle: real,
+                connect: false,
+                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            });
+            controller.destroy();
+        });
+        real.destroy();
+
+        expect({ recovered, structural, authentic }).toEqual({
+            recovered: 'CONFIG_INVALID',
+            structural: 'CONFIG_INVALID',
+            authentic: 'accepted',
+        });
+    });
+
     it('reports connecting, then handshaking (never connected), and synchronizes only on an accepted server Step 2', () => {
         const setup = setupController();
 

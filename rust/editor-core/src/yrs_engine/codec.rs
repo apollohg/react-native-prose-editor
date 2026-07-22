@@ -18,6 +18,9 @@ use super::mutation::{
 };
 use super::{raw_storage_work_limit, YrsEngineError, YrsEngineResult};
 
+const RECURSION_RED_ZONE_BYTES: usize = 64 * 1024;
+const RECURSION_STACK_SEGMENT_BYTES: usize = 1024 * 1024;
+
 #[cfg(test)]
 std::thread_local! {
     static JSON_PROJECTION_MATERIALIZATION_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -217,6 +220,19 @@ pub(crate) fn prepare_xml_nodes(
 }
 
 pub(crate) fn insert_prepared_node<P: XmlFragment>(
+    parent: &P,
+    txn: &mut TransactionMut<'_>,
+    index: u32,
+    node: PreparedXmlNode,
+) {
+    stacker::maybe_grow(
+        RECURSION_RED_ZONE_BYTES,
+        RECURSION_STACK_SEGMENT_BYTES,
+        || insert_prepared_node_inner(parent, txn, index, node),
+    );
+}
+
+fn insert_prepared_node_inner<P: XmlFragment>(
     parent: &P,
     txn: &mut TransactionMut<'_>,
     index: u32,
@@ -726,6 +742,22 @@ fn match_xml_out_json<T: ReadTxn>(
     cursor: &mut JsonMatchCursor<'_>,
     matched: &mut bool,
     context: &mut JsonProjectionContext<'_, '_>,
+    lookup: Option<&mut ImportLookupMaterializationCollector>,
+) -> YrsEngineResult<()> {
+    stacker::maybe_grow(
+        RECURSION_RED_ZONE_BYTES,
+        RECURSION_STACK_SEGMENT_BYTES,
+        || match_xml_out_json_inner(node, txn, depth, cursor, matched, context, lookup),
+    )
+}
+
+fn match_xml_out_json_inner<T: ReadTxn>(
+    node: XmlOut,
+    txn: &T,
+    depth: usize,
+    cursor: &mut JsonMatchCursor<'_>,
+    matched: &mut bool,
+    context: &mut JsonProjectionContext<'_, '_>,
     mut lookup: Option<&mut ImportLookupMaterializationCollector>,
 ) -> YrsEngineResult<()> {
     if lookup.as_deref().is_some_and(|lookup| lookup.has_failed()) {
@@ -937,6 +969,22 @@ fn match_xml_text_json<T: ReadTxn>(
 }
 
 fn append_xml_out_json<T: ReadTxn>(
+    node: XmlOut,
+    txn: &T,
+    schema: &Schema,
+    depth: usize,
+    budget: &mut ConversionBudget<'_>,
+    output: &mut Vec<Value>,
+    lookup: Option<&mut ImportLookupMaterializationCollector>,
+) -> YrsEngineResult<()> {
+    stacker::maybe_grow(
+        RECURSION_RED_ZONE_BYTES,
+        RECURSION_STACK_SEGMENT_BYTES,
+        || append_xml_out_json_inner(node, txn, schema, depth, budget, output, lookup),
+    )
+}
+
+fn append_xml_out_json_inner<T: ReadTxn>(
     node: XmlOut,
     txn: &T,
     schema: &Schema,
@@ -1171,6 +1219,21 @@ fn apply_children<P: XmlFragment>(
     depth: usize,
     budget: &mut ConversionBudget<'_>,
 ) -> YrsEngineResult<()> {
+    stacker::maybe_grow(
+        RECURSION_RED_ZONE_BYTES,
+        RECURSION_STACK_SEGMENT_BYTES,
+        || apply_children_inner(parent, txn, old_children, new_children, depth, budget),
+    )
+}
+
+fn apply_children_inner<P: XmlFragment>(
+    parent: &P,
+    txn: &mut TransactionMut<'_>,
+    old_children: &[Value],
+    new_children: &[Value],
+    depth: usize,
+    budget: &mut ConversionBudget<'_>,
+) -> YrsEngineResult<()> {
     let mut prefix = 0usize;
     while prefix < old_children.len()
         && prefix < new_children.len()
@@ -1381,6 +1444,18 @@ fn insert_json_node<P: XmlFragment>(
 }
 
 fn prepare_json_node(
+    node: &Value,
+    depth: usize,
+    budget: &mut ConversionBudget<'_>,
+) -> YrsEngineResult<PreparedXmlNode> {
+    stacker::maybe_grow(
+        RECURSION_RED_ZONE_BYTES,
+        RECURSION_STACK_SEGMENT_BYTES,
+        || prepare_json_node_inner(node, depth, budget),
+    )
+}
+
+fn prepare_json_node_inner(
     node: &Value,
     depth: usize,
     budget: &mut ConversionBudget<'_>,

@@ -13,7 +13,10 @@ use yrs::{
     Transaction, Uuid, WriteTxn,
 };
 
-use crate::boundary::{BoundedInput, InputKind, ResourceLimits};
+use crate::boundary::{
+    document_json_container_depth_limit, parse_json_value_stack_safe, BoundedInput, InputKind,
+    ResourceLimits,
+};
 use crate::model::Document;
 use crate::position::update::UpdateMode;
 use crate::position::PositionMap;
@@ -603,18 +606,25 @@ impl ValidatedImportDocument {
     }
 }
 
-fn contains_reserved_public_json_forge(node: &crate::model::Node) -> bool {
-    if node.node_type() == "__opaque_json"
-        && node
-            .attrs()
-            .get("original_type")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|node_type| matches!(node_type, "__opaque" | "__opaque_json" | "__skip"))
-    {
-        return true;
+fn contains_reserved_public_json_forge(root: &crate::model::Node) -> bool {
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if node.node_type() == "__opaque_json"
+            && node
+                .attrs()
+                .get("original_type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|node_type| {
+                    matches!(node_type, "__opaque" | "__opaque_json" | "__skip")
+                })
+        {
+            return true;
+        }
+        if let Some(content) = node.content() {
+            pending.extend(content.iter());
+        }
     }
-    node.content()
-        .is_some_and(|content| content.iter().any(contains_reserved_public_json_forge))
+    false
 }
 
 pub struct YrsDocumentEngine {
@@ -5899,10 +5909,9 @@ impl YrsDocumentEngine {
         origin: TransactionOrigin,
     ) -> YrsEngineResult<EngineCommit> {
         let input = BoundedInput::new(input, InputKind::DocumentJson, &self.resource_limits)?;
-        let value = serde_json::from_str(input.as_str())
-            .map_err(|error| YrsEngineError::parse("DOCUMENT_INVALID", error))?;
+        let value = self.parse_document_json(input.as_str())?;
         if let Some(state) = &self.derived_state {
-            if state.canonical_artifact.value() == &value {
+            if state.canonical_artifact.value() == value.as_value() {
                 self.quarantined_remote_update = None;
                 self.reset_history_binding();
                 return Ok(EngineCommit {
@@ -5911,9 +5920,26 @@ impl YrsDocumentEngine {
                 });
             }
         }
-        let source = self.admit_validated_json_document(&value, input.as_str().len())?;
+        let source = self.admit_validated_json_document(value.as_value(), input.as_str().len())?;
         let candidate = self.build_candidate_from_document(source, origin)?;
         self.commit_candidate(candidate, origin)
+    }
+
+    fn parse_document_json(
+        &self,
+        input: &str,
+    ) -> YrsEngineResult<crate::boundary::StackSafeJsonValue> {
+        let container_limit =
+            document_json_container_depth_limit(self.resource_limits.max_document_depth)
+                .map_err(YrsEngineError::from)?;
+        parse_json_value_stack_safe(
+            input,
+            container_limit,
+            self.resource_limits.max_document_depth,
+            "DOCUMENT_LIMIT_EXCEEDED",
+            "DOCUMENT_INVALID",
+        )
+        .map_err(YrsEngineError::from)
     }
 
     pub fn import_html(
@@ -6048,10 +6074,10 @@ impl YrsDocumentEngine {
         use super::RootReplacementError;
         let input = BoundedInput::new(input, InputKind::DocumentJson, &self.resource_limits)
             .map_err(|error| RootReplacementError::Admission(error.into()))?;
-        let value = serde_json::from_str(input.as_str()).map_err(|error| {
-            RootReplacementError::Admission(YrsEngineError::parse("DOCUMENT_INVALID", error))
-        })?;
-        self.admit_validated_json_document(&value, input.as_str().len())
+        let value = self
+            .parse_document_json(input.as_str())
+            .map_err(RootReplacementError::Admission)?;
+        self.admit_validated_json_document(value.as_value(), input.as_str().len())
             .map_err(RootReplacementError::Admission)
     }
 

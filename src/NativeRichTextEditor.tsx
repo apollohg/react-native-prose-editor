@@ -19,6 +19,7 @@ import {
 import { requireNativeViewManager } from 'expo-modules-core';
 
 import {
+    _assertNativeEditorDocumentHandle,
     type ActiveState,
     type DocumentJSON,
     type HistoryState,
@@ -638,6 +639,8 @@ export const NativeRichTextEditor = forwardRef<
     },
     ref
 ) {
+    _assertNativeEditorDocumentHandle(documentHandle);
+
     const resourceLimitsKey = useMemo(
         () =>
             resourceLimits == null

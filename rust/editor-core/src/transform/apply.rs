@@ -2445,31 +2445,30 @@ pub(crate) fn validate_canonical_marks_with_evidence<'schema>(
     document: &Document,
     schema: &'schema Schema,
 ) -> BoundaryResult<CanonicalMarksEvidence<'schema>> {
-    fn visit(node: &Node, schema: &Schema) -> BoundaryResult<bool> {
-        #[cfg(test)]
-        crate::yrs_engine::observability::record_canonical_mark_node_visited();
-        if node.is_text() {
-            validate_canonical_mark_set(node.marks(), schema)?;
-        }
+    fn visit(root: &Node, schema: &Schema) -> BoundaryResult<bool> {
+        let mut pending = vec![root];
         let mut is_canonical = true;
-        if let Some(content) = node.content() {
-            let mut previous = None;
-            for child in content.iter() {
-                if child.text_str().is_some_and(str::is_empty)
-                    || previous.is_some_and(|previous: &Node| {
-                        previous.is_text()
-                            && child.is_text()
-                            && super::steps::marks_eq(previous.marks(), child.marks())
-                    })
-                {
-                    is_canonical = false;
+        while let Some(node) = pending.pop() {
+            #[cfg(test)]
+            crate::yrs_engine::observability::record_canonical_mark_node_visited();
+            if node.is_text() {
+                validate_canonical_mark_set(node.marks(), schema)?;
+            }
+            if let Some(content) = node.content() {
+                let mut previous = None;
+                for child in content.iter() {
+                    if child.text_str().is_some_and(str::is_empty)
+                        || previous.is_some_and(|previous: &Node| {
+                            previous.is_text()
+                                && child.is_text()
+                                && super::steps::marks_eq(previous.marks(), child.marks())
+                        })
+                    {
+                        is_canonical = false;
+                    }
+                    previous = Some(child);
                 }
-                // A normalization trigger is evidence, not validation control
-                // flow. Preserve the established DFS error and visit order.
-                if !visit(child, schema)? {
-                    is_canonical = false;
-                }
-                previous = Some(child);
+                pending.extend(content.iter().rev());
             }
         }
         Ok(is_canonical)
@@ -2503,104 +2502,99 @@ fn validate_node(
     budget: &WorkBudget,
     work_limit: usize,
 ) -> BoundaryResult<()> {
-    consume_document_work(budget, work_limit, 1)?;
-    state.stats.node_count = state.stats.node_count.saturating_add(1);
-    state.stats.max_depth = state.stats.max_depth.max(depth);
-    if state.stats.node_count > limits.max_document_nodes {
-        return Err(BoundaryError::limit(
-            "DOCUMENT_LIMIT_EXCEEDED",
-            limits.max_document_nodes,
-            state.stats.node_count,
-        ));
-    }
-    if depth > limits.max_document_depth {
-        return Err(BoundaryError::limit(
-            "DOCUMENT_LIMIT_EXCEEDED",
-            limits.max_document_depth,
-            depth,
-        ));
-    }
-
-    if node.is_text() {
-        if schema.node(node.node_type()).is_none() {
-            return Err(BoundaryError::new(
-                "DOCUMENT_INVALID",
-                "text node is not in the schema",
+    let mut pending = vec![(node, depth)];
+    while let Some((node, depth)) = pending.pop() {
+        consume_document_work(budget, work_limit, 1)?;
+        state.stats.node_count = state.stats.node_count.saturating_add(1);
+        state.stats.max_depth = state.stats.max_depth.max(depth);
+        if state.stats.node_count > limits.max_document_nodes {
+            return Err(BoundaryError::limit(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                limits.max_document_nodes,
+                state.stats.node_count,
             ));
         }
-        validate_marks(node, schema, budget, work_limit)?;
-        return Ok(());
-    }
-
-    if node.node_type() == "__opaque" || node.node_type() == "__opaque_json" {
-        return validate_opaque(node, schema, budget, work_limit, &mut state.metadata_meter);
-    }
-
-    let spec = schema.node(node.node_type()).ok_or_else(|| {
-        BoundaryError::new(
-            "DOCUMENT_INVALID",
-            format!("unknown node '{}'", node.node_type()),
-        )
-    })?;
-    validate_attrs(
-        node.attrs(),
-        &spec.attrs,
-        spec.allow_undeclared_attrs,
-        node.node_type(),
-        budget,
-        work_limit,
-    )?;
-
-    if node.is_void() {
-        return Ok(());
-    }
-
-    let content = node.content().ok_or_else(|| {
-        BoundaryError::new("DOCUMENT_INVALID", "non-void schema node has no content")
-    })?;
-    let children = content.children();
-    let matches = spec
-        .content
-        .matches_with_budget(
-            children,
-            |child, symbol| child_matches_group(child, symbol, schema),
-            budget,
-        )
-        .map_err(|()| {
-            let mut error = BoundaryError::limit(
+        if depth > limits.max_document_depth {
+            return Err(BoundaryError::limit(
                 "DOCUMENT_LIMIT_EXCEEDED",
-                work_limit,
-                work_limit.saturating_add(1),
-            );
-            error.details = Some(serde_json::json!({ "phase": "documentWork" }));
-            error
-        })?;
-    if !matches {
-        let child_types = children
-            .iter()
-            .map(|child| child.node_type())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(BoundaryError::new(
-            "DOCUMENT_INVALID",
-            format!(
-                "node '{}' content [{}] does not match its content expression",
-                node.node_type(),
-                child_types
-            ),
-        ));
-    }
+                limits.max_document_depth,
+                depth,
+            ));
+        }
 
-    for child in content.iter() {
-        validate_node(
-            child,
-            schema,
-            limits,
-            depth.saturating_add(1),
-            state,
+        if node.is_text() {
+            if schema.node(node.node_type()).is_none() {
+                return Err(BoundaryError::new(
+                    "DOCUMENT_INVALID",
+                    "text node is not in the schema",
+                ));
+            }
+            validate_marks(node, schema, budget, work_limit)?;
+            continue;
+        }
+
+        if node.node_type() == "__opaque" || node.node_type() == "__opaque_json" {
+            validate_opaque(node, schema, budget, work_limit, &mut state.metadata_meter)?;
+            continue;
+        }
+
+        let spec = schema.node(node.node_type()).ok_or_else(|| {
+            BoundaryError::new(
+                "DOCUMENT_INVALID",
+                format!("unknown node '{}'", node.node_type()),
+            )
+        })?;
+        validate_attrs(
+            node.attrs(),
+            &spec.attrs,
+            spec.allow_undeclared_attrs,
+            node.node_type(),
             budget,
             work_limit,
         )?;
+
+        if node.is_void() {
+            continue;
+        }
+
+        let content = node.content().ok_or_else(|| {
+            BoundaryError::new("DOCUMENT_INVALID", "non-void schema node has no content")
+        })?;
+        let children = content.children();
+        let matches = spec
+            .content
+            .matches_with_budget(
+                children,
+                |child, symbol| child_matches_group(child, symbol, schema),
+                budget,
+            )
+            .map_err(|()| {
+                let mut error = BoundaryError::limit(
+                    "DOCUMENT_LIMIT_EXCEEDED",
+                    work_limit,
+                    work_limit.saturating_add(1),
+                );
+                error.details = Some(serde_json::json!({ "phase": "documentWork" }));
+                error
+            })?;
+        if !matches {
+            let child_types = children
+                .iter()
+                .map(|child| child.node_type())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(BoundaryError::new(
+                "DOCUMENT_INVALID",
+                format!(
+                    "node '{}' content [{}] does not match its content expression",
+                    node.node_type(),
+                    child_types
+                ),
+            ));
+        }
+
+        let child_depth = depth.saturating_add(1);
+        pending.extend(content.iter().rev().map(|child| (child, child_depth)));
     }
     Ok(())
 }

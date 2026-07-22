@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
+    _assertNativeEditorDocumentHandle,
     type DocumentJSON,
     type HistoryState,
     type NativeEditorDocumentHandle,
@@ -103,6 +104,8 @@ export function useNativeEditorDocument(
         revisionSignal,
         onLocalDocumentCommit,
     } = options;
+
+    _assertNativeEditorDocumentHandle(handle);
 
     const onContentChangeRef = useRef(options.onContentChange);
     onContentChangeRef.current = options.onContentChange;

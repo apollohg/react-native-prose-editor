@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 
-import type {
-    DocumentJSON,
-    NativeEditorDocumentHandle,
-    NativeEditorV2PeerInfo,
-    NativeEditorV2TransportState,
-    Selection,
+import {
+    _assertNativeEditorDocumentHandle,
+    type DocumentJSON,
+    type NativeEditorDocumentHandle,
+    type NativeEditorV2PeerInfo,
+    type NativeEditorV2TransportState,
+    type Selection,
 } from './NativeEditorBridge';
+/*
+ * Keep handle authenticity tied to the same module instance that constructs
+ * handles. A process-global registry would itself become discoverable and
+ * forgeable; every consumer below imports this module-local assertion.
+ */
 import type { RemoteSelectionDecoration } from './NativeRichTextEditor';
 import {
     NativeEditorV2NonRetryableError,
@@ -767,6 +773,7 @@ function defaultRetryIntervalMs(attempt: number): number {
 export function createYjsCollaborationController(
     options: YjsCollaborationOptions
 ): YjsCollaborationController {
+    _assertNativeEditorDocumentHandle(options.handle);
     return new YjsCollaborationControllerImpl(options, {
         onStateChange: options.onStateChange,
         onPeersChange: options.onPeersChange,
@@ -775,6 +782,7 @@ export function createYjsCollaborationController(
 }
 
 export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCollaborationResult {
+    _assertNativeEditorDocumentHandle(options.handle);
     const callbacksRef = useRef<MutableCallbacks>({
         onPeersChange: options.onPeersChange,
         onStateChange: options.onStateChange,

@@ -4,7 +4,7 @@
 )]
 
 #[cfg(test)]
-use crate::boundary::{BoundaryError, BoundedInput, InputKind};
+use crate::boundary::{parse_json_value_stack_safe, BoundaryError, BoundedInput, InputKind};
 use crate::registry::{self, SessionId};
 #[cfg(test)]
 use crate::schema::presets::tiptap_schema;
@@ -179,9 +179,18 @@ fn resolve_schema(config: &EditorSessionConfig) -> Result<Schema, SessionError> 
         return Ok(tiptap_schema());
     };
     let input = BoundedInput::new(schema_json, InputKind::Config, &config.resource_limits)?;
-    let value = serde_json::from_str(input.as_str())
-        .map_err(|error| BoundaryError::parse("SCHEMA_INVALID", error))?;
-    Schema::from_json_with_limits(&value, &config.resource_limits).map_err(SessionError::from)
+    let container_limit = crate::schema::MAX_SCHEMA_METADATA_DEPTH
+        .checked_add(16)
+        .ok_or_else(|| BoundaryError::new("SCHEMA_INVALID", "schema depth limit overflow"))?;
+    let value = parse_json_value_stack_safe(
+        input.as_str(),
+        container_limit,
+        crate::schema::MAX_SCHEMA_METADATA_DEPTH,
+        "SCHEMA_INVALID",
+        "SCHEMA_INVALID",
+    )?;
+    Schema::from_json_with_limits(value.as_value(), &config.resource_limits)
+        .map_err(SessionError::from)
 }
 
 // Not reachable from production call paths after the Task 16C legacy runtime

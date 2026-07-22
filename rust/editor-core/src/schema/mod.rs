@@ -144,7 +144,7 @@ pub struct AttrSpec {
 const DEFAULT_DOCUMENT_MAX_DEPTH: usize = 128;
 const DEFAULT_DOCUMENT_MAX_NODES: usize = 10_000;
 const DEFAULT_DOCUMENT_MAX_WORK: usize = 10_000;
-const MAX_SCHEMA_METADATA_DEPTH: usize = 128;
+pub(crate) const MAX_SCHEMA_METADATA_DEPTH: usize = 128;
 
 struct DefaultConstructionBudget {
     work: Cell<usize>,

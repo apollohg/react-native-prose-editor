@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub(crate) const HARD_MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const HARD_MAX_DOCUMENT_DEPTH: usize = 1_024;
 
 pub(crate) fn deserialize_non_null_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -11,6 +12,115 @@ where
 }
 
 pub type BoundaryResult<T> = Result<T, BoundaryError>;
+
+/// A deeply nested JSON value whose destructor drains child containers
+/// iteratively. `serde_json::Value` otherwise drops through the container
+/// tree recursively, which can overflow after an admitted deep parse.
+pub(crate) struct StackSafeJsonValue(serde_json::Value);
+
+impl StackSafeJsonValue {
+    pub(crate) fn as_value(&self) -> &serde_json::Value {
+        &self.0
+    }
+}
+
+impl Drop for StackSafeJsonValue {
+    fn drop(&mut self) {
+        let mut pending = vec![std::mem::take(&mut self.0)];
+        while let Some(mut value) = pending.pop() {
+            match &mut value {
+                serde_json::Value::Array(values) => pending.append(values),
+                serde_json::Value::Object(values) => {
+                    pending.extend(std::mem::take(values).into_values());
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// ProseMirror nodes add at most one object and one `content` array per
+/// semantic level. Attributes or mark attributes can independently consume
+/// the configured metadata depth at the deepest node. Fixed slack covers the
+/// root/mark wrappers while keeping the pre-deserialization bound derived
+/// from the already-resolved semantic contract.
+pub(crate) fn document_json_container_depth_limit(
+    max_document_depth: usize,
+) -> BoundaryResult<usize> {
+    max_document_depth
+        .checked_mul(3)
+        .and_then(|depth| depth.checked_add(16))
+        .ok_or_else(|| {
+            BoundaryError::new(
+                "DOCUMENT_LIMIT_EXCEEDED",
+                "document JSON container-depth limit overflow",
+            )
+        })
+}
+
+/// Parse a bounded JSON value without serde's fixed 128-container ceiling.
+/// A lexical, iterative preflight proves a finite container bound first;
+/// serde-stacker then keeps serde's own recursive implementation off the
+/// caller's finite native stack.
+pub(crate) fn parse_json_value_stack_safe(
+    input: &str,
+    max_container_depth: usize,
+    reported_limit: usize,
+    limit_code: &'static str,
+    parse_code: &'static str,
+) -> BoundaryResult<StackSafeJsonValue> {
+    admit_json_container_depth(input, max_container_depth)
+        .map_err(|actual| BoundaryError::limit(limit_code, reported_limit, actual))?;
+
+    let mut deserializer = serde_json::Deserializer::from_str(input);
+    deserializer.disable_recursion_limit();
+    let value = serde_json::Value::deserialize(serde_stacker::Deserializer::new(&mut deserializer))
+        .map_err(|error| BoundaryError::parse(parse_code, error))?;
+    deserializer
+        .end()
+        .map_err(|error| BoundaryError::parse(parse_code, error))?;
+    Ok(StackSafeJsonValue(value))
+}
+
+fn admit_json_container_depth(input: &str, limit: usize) -> Result<(), usize> {
+    let mut containers = Vec::with_capacity(limit.min(64));
+    let mut in_string = false;
+    let mut escaped = false;
+    for byte in input.bytes() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => {
+                containers.push(b'}');
+                if containers.len() > limit {
+                    return Err(containers.len());
+                }
+            }
+            b'[' => {
+                containers.push(b']');
+                if containers.len() > limit {
+                    return Err(containers.len());
+                }
+            }
+            b'}' | b']' => {
+                if containers.pop() != Some(byte) {
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JsonMeterDimension {
@@ -299,7 +409,11 @@ impl ResourceLimits {
         for (name, actual, ceiling) in [
             ("maxInputBytes", self.max_input_bytes, HARD_MAX_INPUT_BYTES),
             ("maxDocumentNodes", self.max_document_nodes, 1_000_000),
-            ("maxDocumentDepth", self.max_document_depth, 1_024),
+            (
+                "maxDocumentDepth",
+                self.max_document_depth,
+                HARD_MAX_DOCUMENT_DEPTH,
+            ),
             ("maxSchemaNodes", self.max_schema_nodes, 10_000),
             (
                 "maxSchemaExpressionBytes",

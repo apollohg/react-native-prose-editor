@@ -1511,6 +1511,20 @@ fn generate_block(
     list_info: Option<(String, bool, u32, u32)>,
     child_index: usize,
 ) {
+    stacker::maybe_grow(64 * 1024, 1024 * 1024, || {
+        generate_block_inner(node, schema, elements, pos, depth, list_info, child_index)
+    });
+}
+
+fn generate_block_inner(
+    node: &crate::model::Node,
+    schema: &Schema,
+    elements: &mut Vec<RenderElement>,
+    pos: &mut u32,
+    depth: u16,
+    list_info: Option<(String, bool, u32, u32)>,
+    child_index: usize,
+) {
     let spec = schema.node(node.node_type());
     let role = spec.map(|s| &s.role);
 

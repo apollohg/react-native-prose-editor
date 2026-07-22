@@ -356,6 +356,77 @@ fn create_pre_serde_rejects_oversized_escaped_metadata() {
 }
 
 #[test]
+fn create_local_json_depth_reaches_the_configured_semantic_limit() {
+    const LIMIT: usize = 1_024;
+
+    fn nested_blockquote_document(depth: usize) -> String {
+        assert!(depth >= 2);
+        let wrappers = depth - 2;
+        let mut document = String::from(r#"{"type":"doc","content":["#);
+        for _ in 0..wrappers {
+            document.push_str(r#"{"type":"blockquote","content":["#);
+        }
+        document.push_str(r#"{"type":"paragraph"}"#);
+        for _ in 0..wrappers {
+            document.push_str("]}");
+        }
+        document.push_str("]}");
+        document
+    }
+
+    fn config(document: &str) -> String {
+        let mut config = String::from(r#"{"initialization":{"type":"localJson","json":"#);
+        config.push_str(document);
+        config.push_str(r#"},"limits":{"resource":{"maxDocumentDepth":"#);
+        config.push_str(&LIMIT.to_string());
+        config.push_str("}}}");
+        config
+    }
+
+    let exact_result =
+        super::editor::editor_v2_create(config(&nested_blockquote_document(LIMIT)), None);
+    let exact_error = exact_result.error.as_ref().map(|error| {
+        (
+            error.domain.as_str(),
+            error.code.as_str(),
+            error.limit,
+            error.actual,
+        )
+    });
+    if exact_error.is_none() {
+        let value: serde_json::Value =
+            serde_json::from_str(exact_result.value.as_deref().expect("create value")).unwrap();
+        let editor_id = value["editorId"].as_str().unwrap().to_owned();
+        assert_eq!(
+            super::editor::editor_v2_destroy(editor_id).value,
+            Some(true)
+        );
+    }
+
+    let one_over = create_error_from_json(config(&nested_blockquote_document(LIMIT + 1)));
+    assert_eq!(
+        (
+            exact_error,
+            (
+                one_over.domain.as_str(),
+                one_over.code.as_str(),
+                one_over.limit,
+                one_over.actual,
+            ),
+        ),
+        (
+            None,
+            (
+                "document",
+                "DOCUMENT_LIMIT_EXCEEDED",
+                Some(LIMIT as u64),
+                Some((LIMIT + 1) as u64),
+            ),
+        )
+    );
+}
+
+#[test]
 fn create_uses_configured_max_input_bytes_above_the_default_for_html() {
     let html = " ".repeat(ResourceLimits::default().max_input_bytes + 1);
     let config_json = format!(

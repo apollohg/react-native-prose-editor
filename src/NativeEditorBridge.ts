@@ -1672,8 +1672,15 @@ export class NativeEditorV2Bridge {
     }
 }
 
-/** The public type returned only by createNativeEditorDocumentHandle. */
+const NATIVE_EDITOR_DOCUMENT_HANDLE_BRAND: unique symbol = Symbol(
+    'NativeEditorDocumentHandle.brand'
+);
+const NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN = Object.freeze({});
+const AUTHENTIC_NATIVE_EDITOR_DOCUMENT_HANDLES = new WeakSet<object>();
+
+/** The nominal public type returned only by createNativeEditorDocumentHandle. */
 export interface NativeEditorDocumentHandle {
+    readonly [NATIVE_EDITOR_DOCUMENT_HANDLE_BRAND]: true;
     readonly editorId: string;
     readonly bridge: NativeEditorV2Bridge;
     readonly isDestroyed: boolean;
@@ -1682,10 +1689,20 @@ export interface NativeEditorDocumentHandle {
 }
 
 class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandle {
+    readonly [NATIVE_EDITOR_DOCUMENT_HANDLE_BRAND] = true as const;
+
     constructor(
+        token: typeof NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN,
         public readonly editorId: string,
         public readonly bridge: NativeEditorV2Bridge
-    ) {}
+    ) {
+        if (token !== NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN) {
+            throw invalidV2RequestError(
+                'NativeEditorBridge: NativeEditorDocumentHandle cannot be constructed directly'
+            );
+        }
+        AUTHENTIC_NATIVE_EDITOR_DOCUMENT_HANDLES.add(this);
+    }
 
     get isDestroyed(): boolean {
         return this.bridge.isDestroyed;
@@ -1700,6 +1717,21 @@ class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandle {
     }
 }
 
+/** @internal Source-module boundary assertion; intentionally absent from the package index. */
+export function _assertNativeEditorDocumentHandle(
+    value: unknown
+): asserts value is NativeEditorDocumentHandle {
+    if (
+        (typeof value !== 'object' && typeof value !== 'function') ||
+        value === null ||
+        !AUTHENTIC_NATIVE_EDITOR_DOCUMENT_HANDLES.has(value)
+    ) {
+        throw invalidV2RequestError(
+            'NativeEditorBridge: expected an authentic NativeEditorDocumentHandle'
+        );
+    }
+}
+
 export function createNativeEditorDocumentHandle(
     config: NativeEditorV2CreateConfig
 ): NativeEditorDocumentHandle {
@@ -1709,6 +1741,7 @@ export function createNativeEditorDocumentHandle(
         normalizeNativeEditorV2CreateValue
     );
     return new NativeEditorDocumentHandleImpl(
+        NATIVE_EDITOR_DOCUMENT_HANDLE_TOKEN,
         value.editorId,
         new NativeEditorV2Bridge(value.editorId)
     );
