@@ -24,36 +24,39 @@ pub(crate) fn hash_table_retained_bytes<K, V>(capacity: usize) -> Option<usize> 
 }
 
 pub(crate) fn json_value_retained_bytes(value: &serde_json::Value) -> Option<usize> {
-    match value {
-        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
-            Some(0)
-        }
-        serde_json::Value::String(value) => Some(value.capacity()),
-        serde_json::Value::Array(values) => {
-            let slots = values
-                .capacity()
-                .checked_mul(std::mem::size_of::<serde_json::Value>())?;
-            values.iter().try_fold(slots, |total, value| {
-                total.checked_add(json_value_retained_bytes(value)?)
-            })
-        }
-        serde_json::Value::Object(values) => {
-            // With serde_json's default BTreeMap backing, even a one-entry map
-            // allocates a node with capacity for 11 key/value pairs and 12
-            // child edges. Charging one full node per populated entry safely
-            // overbounds every possible tree shape, including sparse nodes.
-            let btree_node = std::mem::size_of::<(String, serde_json::Value)>()
-                .checked_mul(11)?
-                .checked_add(std::mem::size_of::<usize>().checked_mul(12)?)?
-                .checked_add(std::mem::size_of::<[usize; 3]>())?;
-            let table = values.len().checked_mul(btree_node)?;
-            values.iter().try_fold(table, |total, (key, value)| {
-                total
-                    .checked_add(key.capacity())?
-                    .checked_add(json_value_retained_bytes(value)?)
-            })
+    let mut total = 0usize;
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            }
+            serde_json::Value::String(value) => total = total.checked_add(value.capacity())?,
+            serde_json::Value::Array(values) => {
+                total = total.checked_add(
+                    values
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<serde_json::Value>())?,
+                )?;
+                pending.extend(values);
+            }
+            serde_json::Value::Object(values) => {
+                // With serde_json's default BTreeMap backing, even a one-entry map
+                // allocates a node with capacity for 11 key/value pairs and 12
+                // child edges. Charging one full node per populated entry safely
+                // overbounds every possible tree shape, including sparse nodes.
+                let btree_node = std::mem::size_of::<(String, serde_json::Value)>()
+                    .checked_mul(11)?
+                    .checked_add(std::mem::size_of::<usize>().checked_mul(12)?)?
+                    .checked_add(std::mem::size_of::<[usize; 3]>())?;
+                total = total.checked_add(values.len().checked_mul(btree_node)?)?;
+                for (key, value) in values {
+                    total = total.checked_add(key.capacity())?;
+                    pending.push(value);
+                }
+            }
         }
     }
+    Some(total)
 }
 
 /// A document is a wrapper around a root node (typically "doc") that provides

@@ -39,7 +39,7 @@ enum NodeKind {
 /// - **Text**: inline content with optional marks, measured in Unicode scalars
 /// - **Void**: atomic nodes like hard breaks, always 1 token
 /// - **Element**: container nodes with a content fragment
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 struct NodeData {
     node_type: String,
     attrs: HashMap<String, serde_json::Value>,
@@ -53,17 +53,78 @@ impl Clone for NodeData {
         DEEP_NODE_PAYLOAD_CLONES.set(DEEP_NODE_PAYLOAD_CLONES.get().saturating_add(1));
         Self {
             node_type: self.node_type.clone(),
-            attrs: self.attrs.clone(),
+            attrs: crate::boundary::clone_json_object_stack_safe(&self.attrs),
             marks: self.marks.clone(),
             kind: self.kind.clone(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl NodeData {
+    fn take_recursive_payloads(&mut self, pending_nodes: &mut Vec<Node>) {
+        for value in self.attrs.values_mut() {
+            crate::boundary::drop_json_value_stack_safe(std::mem::take(value));
+        }
+        self.marks.clear();
+        if let NodeKind::Element { content } = &mut self.kind {
+            pending_nodes.extend(content.take_children_for_drop());
+        }
+    }
+}
+
+impl Drop for NodeData {
+    fn drop(&mut self) {
+        let mut pending_nodes = Vec::new();
+        self.take_recursive_payloads(&mut pending_nodes);
+        while let Some(mut node) = pending_nodes.pop() {
+            if let Some(data) = Arc::get_mut(&mut node.data) {
+                data.take_recursive_payloads(&mut pending_nodes);
+            }
+            // Unique payloads were emptied above before their Arc destructor
+            // runs. Shared payloads are drained by whichever owner is last.
+            drop(node);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Node {
     data: Arc<NodeData>,
 }
+
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        if self.shares_storage_with(other) {
+            return true;
+        }
+        let mut pending = vec![(self, other)];
+        while let Some((left, right)) = pending.pop() {
+            if left.shares_storage_with(right) {
+                continue;
+            }
+            if left.node_type() != right.node_type()
+                || !crate::boundary::json_objects_equal_stack_safe(left.attrs(), right.attrs())
+                || left.marks() != right.marks()
+            {
+                return false;
+            }
+            match (&left.data.kind, &right.data.kind) {
+                (NodeKind::Text { text: left }, NodeKind::Text { text: right })
+                    if left == right => {}
+                (NodeKind::Void, NodeKind::Void) => {}
+                (NodeKind::Element { content: left }, NodeKind::Element { content: right })
+                    if left.child_count() == right.child_count() =>
+                {
+                    pending.extend(left.iter().zip(right.iter()));
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+impl Eq for Node {}
 
 impl Node {
     /// Create a text node with the given content and marks.
@@ -160,19 +221,20 @@ impl Node {
         }
     }
 
-    /// Recursively collect all text content from this node and its descendants.
+    /// Collect all text content from this node and its descendants.
     pub fn text_content(&self) -> String {
-        match &self.data.kind {
-            NodeKind::Text { text } => text.clone(),
-            NodeKind::Void => String::new(),
-            NodeKind::Element { content } => {
-                let mut buf = String::new();
-                for child in content.iter() {
-                    buf.push_str(&child.text_content());
+        let mut output = String::new();
+        let mut pending = vec![self];
+        while let Some(node) = pending.pop() {
+            match &node.data.kind {
+                NodeKind::Text { text } => output.push_str(text),
+                NodeKind::Void => {}
+                NodeKind::Element { content } => {
+                    pending.extend(content.iter().rev());
                 }
-                buf
             }
         }
+        output
     }
 
     /// Number of direct children. Text and void nodes have 0 children.
@@ -212,36 +274,46 @@ impl Node {
     }
 
     pub(crate) fn history_snapshot_retained_bytes(&self) -> Option<usize> {
-        let attrs_table = crate::model::hash_table_retained_bytes::<String, serde_json::Value>(
-            self.data.attrs.capacity(),
-        )?;
-        let attrs = self
-            .data
-            .attrs
-            .iter()
-            .try_fold(attrs_table, |total, (key, value)| {
-                total
+        let mut total = 0usize;
+        let mut pending = vec![self];
+        while let Some(node) = pending.pop() {
+            total = total
+                .checked_add(crate::model::arc_allocation_retained_bytes(
+                    std::mem::size_of::<NodeData>(),
+                )?)?
+                .checked_add(node.data.node_type.capacity())?;
+            total = total.checked_add(crate::model::hash_table_retained_bytes::<
+                String,
+                serde_json::Value,
+            >(node.data.attrs.capacity())?)?;
+            for (key, value) in &node.data.attrs {
+                total = total
                     .checked_add(key.capacity())?
-                    .checked_add(crate::model::json_value_retained_bytes(value)?)
-            })?;
-        let mark_slots = self
-            .data
-            .marks
-            .capacity()
-            .checked_mul(std::mem::size_of::<Mark>())?;
-        let marks = self.data.marks.iter().try_fold(mark_slots, |total, mark| {
-            total.checked_add(mark.history_snapshot_clone_retained_bytes()?)
-        })?;
-        let kind = match &self.data.kind {
-            NodeKind::Text { text } => text.capacity(),
-            NodeKind::Void => 0,
-            NodeKind::Element { content } => content.history_snapshot_retained_bytes()?,
-        };
-        crate::model::arc_allocation_retained_bytes(std::mem::size_of::<NodeData>())?
-            .checked_add(self.data.node_type.capacity())?
-            .checked_add(attrs)?
-            .checked_add(marks)?
-            .checked_add(kind)
+                    .checked_add(crate::model::json_value_retained_bytes(value)?)?;
+            }
+            total = total.checked_add(
+                node.data
+                    .marks
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Mark>())?,
+            )?;
+            for mark in &node.data.marks {
+                total = total.checked_add(mark.history_snapshot_clone_retained_bytes()?)?;
+            }
+            match &node.data.kind {
+                NodeKind::Text { text } => total = total.checked_add(text.capacity())?,
+                NodeKind::Void => {}
+                NodeKind::Element { content } => {
+                    total = total.checked_add(
+                        content
+                            .children_capacity()
+                            .checked_mul(std::mem::size_of::<Node>())?,
+                    )?;
+                    pending.extend(content.iter());
+                }
+            }
+        }
+        Some(total)
     }
 }
 

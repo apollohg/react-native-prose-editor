@@ -299,7 +299,17 @@ fn serialize_render_elements(elements: &[crate::render::RenderElement]) -> serde
                     "docPos": doc_pos,
                 });
                 if !attrs.is_empty() {
-                    obj["attrs"] = serde_json::Value::Object(attrs.clone().into_iter().collect());
+                    obj["attrs"] = serde_json::Value::Object(
+                        attrs
+                            .iter()
+                            .map(|(key, value)| {
+                                (
+                                    key.clone(),
+                                    crate::boundary::clone_json_value_stack_safe(value),
+                                )
+                            })
+                            .collect(),
+                    );
                 }
                 obj
             }
@@ -314,7 +324,17 @@ fn serialize_render_elements(elements: &[crate::render::RenderElement]) -> serde
                     "docPos": doc_pos,
                 });
                 if !attrs.is_empty() {
-                    obj["attrs"] = serde_json::Value::Object(attrs.clone().into_iter().collect());
+                    obj["attrs"] = serde_json::Value::Object(
+                        attrs
+                            .iter()
+                            .map(|(key, value)| {
+                                (
+                                    key.clone(),
+                                    crate::boundary::clone_json_value_stack_safe(value),
+                                )
+                            })
+                            .collect(),
+                    );
                 }
                 obj
             }
@@ -331,8 +351,17 @@ fn serialize_render_elements(elements: &[crate::render::RenderElement]) -> serde
                     "docPos": doc_pos,
                 });
                 if let Some(mention_theme) = mention_theme {
-                    obj["mentionTheme"] =
-                        serde_json::Value::Object(mention_theme.clone().into_iter().collect());
+                    obj["mentionTheme"] = serde_json::Value::Object(
+                        mention_theme
+                            .iter()
+                            .map(|(key, value)| {
+                                (
+                                    key.clone(),
+                                    crate::boundary::clone_json_value_stack_safe(value),
+                                )
+                            })
+                            .collect(),
+                    );
                 }
                 obj
             }

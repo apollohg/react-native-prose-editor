@@ -18,15 +18,39 @@ pub struct ListContext {
 }
 
 /// A renderable inline mark for native text builders.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct RenderMark {
     pub mark_type: String,
     pub attrs: std::collections::HashMap<String, serde_json::Value>,
 }
 
+impl Clone for RenderMark {
+    fn clone(&self) -> Self {
+        Self {
+            mark_type: self.mark_type.clone(),
+            attrs: crate::boundary::clone_json_object_stack_safe(&self.attrs),
+        }
+    }
+}
+
+impl PartialEq for RenderMark {
+    fn eq(&self, other: &Self) -> bool {
+        self.mark_type == other.mark_type
+            && crate::boundary::json_objects_equal_stack_safe(&self.attrs, &other.attrs)
+    }
+}
+
+impl Eq for RenderMark {}
+
+impl Drop for RenderMark {
+    fn drop(&mut self) {
+        crate::boundary::drop_json_object_values_stack_safe(&mut self.attrs);
+    }
+}
+
 /// A flat render element that native platform views consume to build
 /// attributed strings (NSAttributedString / SpannableStringBuilder).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum RenderElement {
     /// A run of text with applied mark names.
     TextRun {
@@ -68,6 +92,89 @@ pub enum RenderElement {
     BlockEnd,
 }
 
+impl Clone for RenderElement {
+    fn clone(&self) -> Self {
+        match self {
+            Self::TextRun { text, marks } => Self::TextRun {
+                text: text.clone(),
+                marks: marks.clone(),
+            },
+            Self::VoidInline {
+                node_type,
+                doc_pos,
+                attrs,
+            } => Self::VoidInline {
+                node_type: node_type.clone(),
+                doc_pos: *doc_pos,
+                attrs: crate::boundary::clone_json_object_stack_safe(attrs),
+            },
+            Self::VoidBlock {
+                node_type,
+                doc_pos,
+                attrs,
+            } => Self::VoidBlock {
+                node_type: node_type.clone(),
+                doc_pos: *doc_pos,
+                attrs: crate::boundary::clone_json_object_stack_safe(attrs),
+            },
+            Self::OpaqueInlineAtom {
+                node_type,
+                label,
+                doc_pos,
+                mention_theme,
+            } => Self::OpaqueInlineAtom {
+                node_type: node_type.clone(),
+                label: label.clone(),
+                doc_pos: *doc_pos,
+                mention_theme: mention_theme
+                    .as_ref()
+                    .map(crate::boundary::clone_json_object_stack_safe),
+            },
+            Self::OpaqueBlockAtom {
+                node_type,
+                label,
+                doc_pos,
+            } => Self::OpaqueBlockAtom {
+                node_type: node_type.clone(),
+                label: label.clone(),
+                doc_pos: *doc_pos,
+            },
+            Self::BlockStart {
+                node_type,
+                depth,
+                list_context,
+            } => Self::BlockStart {
+                node_type: node_type.clone(),
+                depth: *depth,
+                list_context: list_context.clone(),
+            },
+            Self::BlockEnd => Self::BlockEnd,
+        }
+    }
+}
+
+impl RenderElement {
+    pub(crate) fn drain_json_payloads(&mut self) {
+        match self {
+            Self::TextRun { marks, .. } => marks.clear(),
+            Self::VoidInline { attrs, .. } | Self::VoidBlock { attrs, .. } => {
+                crate::boundary::drop_json_object_values_stack_safe(attrs);
+            }
+            Self::OpaqueInlineAtom {
+                mention_theme: Some(theme),
+                ..
+            } => crate::boundary::drop_json_object_values_stack_safe(theme),
+            Self::OpaqueInlineAtom {
+                mention_theme: None,
+                ..
+            }
+            | Self::OpaqueBlockAtom { .. }
+            | Self::BlockStart { .. }
+            | Self::BlockEnd => {}
+        }
+    }
+}
+
 /// Reconstruct the exact flat visible string consumed by scalar editor
 /// offsets and the position map.
 pub(crate) fn rendered_text(document: &Document, schema: &Schema) -> String {
@@ -86,7 +193,7 @@ pub(crate) fn rendered_text(document: &Document, schema: &Schema) -> String {
         *started_block = true;
     };
 
-    for element in elements {
+    for element in &elements {
         match element {
             RenderElement::BlockStart {
                 node_type,
@@ -109,7 +216,7 @@ pub(crate) fn rendered_text(document: &Document, schema: &Schema) -> String {
                     pending_prefix.clear();
                 }
             }
-            RenderElement::TextRun { text: value, .. } => text.push_str(&value),
+            RenderElement::TextRun { text: value, .. } => text.push_str(value),
             RenderElement::VoidInline { .. } => text.push('\n'),
             RenderElement::VoidBlock { .. } => {
                 begin_block(&mut text, &mut started_block);
@@ -117,12 +224,12 @@ pub(crate) fn rendered_text(document: &Document, schema: &Schema) -> String {
             }
             RenderElement::OpaqueInlineAtom {
                 node_type, label, ..
-            } => text.push_str(&opaque_atom_visible_string(&node_type, &label)),
+            } => text.push_str(&opaque_atom_visible_string(node_type, label)),
             RenderElement::OpaqueBlockAtom {
                 node_type, label, ..
             } => {
                 begin_block(&mut text, &mut started_block);
-                text.push_str(&opaque_atom_visible_string(&node_type, &label));
+                text.push_str(&opaque_atom_visible_string(node_type, label));
             }
             RenderElement::BlockEnd => {}
         }
@@ -256,7 +363,12 @@ pub fn inline_atom_mention_theme(
         .map(|theme| {
             theme
                 .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        crate::boundary::clone_json_value_stack_safe(value),
+                    )
+                })
                 .collect()
         })
 }

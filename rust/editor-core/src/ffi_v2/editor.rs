@@ -631,9 +631,11 @@ pub(crate) fn with_editor<T>(
 ) -> Result<T, FfiError> {
     let id = parse_editor_id(handle)?;
     let slot = registry::get_session(id).ok_or_else(unknown_editor_error)?;
-    slot.with_alive(operation)
-        .and_then(|value| value)
-        .map_err(ffi_error)
+    crate::boundary::with_document_stack(|| {
+        slot.with_alive(operation)
+            .and_then(|value| value)
+            .map_err(ffi_error)
+    })
 }
 
 pub(crate) fn json_result(result: Result<String, FfiError>) -> FfiJsonResult {
@@ -686,9 +688,9 @@ pub(crate) fn session_error_json(error: &SessionError) -> Value {
 // Request envelopes
 // ---------------------------------------------------------------------------
 
-fn parse_request_envelope<T: serde::de::DeserializeOwned>(
+fn parse_request_envelope<'a, T: serde::Deserialize<'a>>(
     session: &EditorSession,
-    json: &str,
+    json: &'a str,
 ) -> Result<T, SessionError> {
     let input = BoundedInput::new(json, InputKind::Config, session.engine.resource_limits())?;
     serde_json::from_str(input.as_str())
@@ -717,10 +719,11 @@ fn config_invalid(request_id: u64, message: impl Into<String>) -> SessionError {
 /// with the Task 7 bridge local-API envelope).
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ReplaceDocumentEnvelope {
+struct ReplaceDocumentEnvelope<'a> {
     version: u64,
     request_id: u64,
-    set_json: Option<Value>,
+    #[serde(default, borrow, deserialize_with = "deserialize_non_null_raw_value")]
+    set_json: Option<&'a RawValue>,
     set_html: Option<String>,
     history: HistoryModeEnvelope,
 }
@@ -858,7 +861,9 @@ where
 
 #[uniffi::export]
 pub fn editor_v2_create(config_json: String, snapshot_state: Option<Vec<u8>>) -> FfiJsonResult {
-    json_result(create_impl(&config_json, snapshot_state))
+    json_result(crate::boundary::with_document_stack(|| {
+        create_impl(&config_json, snapshot_state)
+    }))
 }
 
 fn create_impl(config_json: &str, snapshot_state: Option<Vec<u8>>) -> Result<String, FfiError> {
@@ -1136,9 +1141,7 @@ pub fn editor_v2_get_state(editor_id: String) -> FfiJsonResult {
 
 #[uniffi::export]
 pub fn editor_v2_get_document_json(editor_id: String) -> FfiJsonResult {
-    json_result(with_editor(&editor_id, |session| {
-        session.get_json().map(|document| document.to_string())
-    }))
+    json_result(with_editor(&editor_id, |session| session.get_json_string()))
 }
 
 #[uniffi::export]
@@ -1153,11 +1156,17 @@ pub fn editor_v2_get_document_html(editor_id: String) -> FfiJsonResult {
 #[uniffi::export]
 pub fn editor_v2_get_content_snapshot(editor_id: String) -> FfiJsonResult {
     json_result(with_editor(&editor_id, |session| {
-        Ok(serde_json::json!({
-            "html": session.get_html()?,
-            "json": session.get_json()?,
-        })
-        .to_string())
+        let html = session.get_html()?;
+        let json = session.get_json_string()?;
+        let html = serde_json::to_string(&html).expect("HTML strings always serialize");
+        let mut output =
+            String::with_capacity(html.len().saturating_add(json.len()).saturating_add(18));
+        output.push_str("{\"html\":");
+        output.push_str(&html);
+        output.push_str(",\"json\":");
+        output.push_str(&json);
+        output.push('}');
+        Ok(output)
     }))
 }
 
@@ -1168,14 +1177,12 @@ pub fn editor_v2_get_content_snapshot(editor_id: String) -> FfiJsonResult {
 #[uniffi::export]
 pub fn editor_v2_replace_document(editor_id: String, request_json: String) -> FfiJsonResult {
     json_result(with_editor(&editor_id, |session| {
-        let envelope: ReplaceDocumentEnvelope = parse_request_envelope(session, &request_json)?;
+        let envelope: ReplaceDocumentEnvelope<'_> = parse_request_envelope(session, &request_json)?;
         admit_version(envelope.version, envelope.request_id)?;
         let request_id = envelope.request_id;
         let history = ReplacementHistory::from(envelope.history);
         let commit = match (envelope.set_json, envelope.set_html) {
-            (Some(json), None) => {
-                session.replace_document_json(request_id, &json.to_string(), history)?
-            }
+            (Some(json), None) => session.replace_document_json(request_id, json.get(), history)?,
             (None, Some(html)) => session.replace_document_html(request_id, &html, history)?,
             _ => {
                 return Err(config_invalid(

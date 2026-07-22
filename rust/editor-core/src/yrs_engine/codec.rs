@@ -1539,6 +1539,18 @@ fn prepare_json_value(
     budget: &mut ConversionBudget<'_>,
     depth: usize,
 ) -> YrsEngineResult<Any> {
+    stacker::maybe_grow(
+        RECURSION_RED_ZONE_BYTES,
+        RECURSION_STACK_SEGMENT_BYTES,
+        || prepare_json_value_inner(value, budget, depth),
+    )
+}
+
+fn prepare_json_value_inner(
+    value: &Value,
+    budget: &mut ConversionBudget<'_>,
+    depth: usize,
+) -> YrsEngineResult<Any> {
     budget.admit_any(depth, 1)?;
     match value {
         Value::Null => Ok(Any::Null),
@@ -1698,6 +1710,14 @@ fn nodes_are_compatible(old_node: &Value, new_node: &Value) -> bool {
 }
 
 fn json_to_any(value: &Value) -> Any {
+    stacker::maybe_grow(
+        RECURSION_RED_ZONE_BYTES,
+        RECURSION_STACK_SEGMENT_BYTES,
+        || json_to_any_inner(value),
+    )
+}
+
+fn json_to_any_inner(value: &Value) -> Any {
     match value {
         Value::Null => Any::Null,
         Value::Bool(value) => Any::Bool(*value),
@@ -1730,6 +1750,18 @@ fn any_to_json_bounded(value: &Any, limits: &ResourceLimits) -> YrsEngineResult<
 }
 
 fn any_to_json(
+    value: &Any,
+    budget: &mut ConversionBudget<'_>,
+    depth: usize,
+) -> YrsEngineResult<Value> {
+    stacker::maybe_grow(
+        RECURSION_RED_ZONE_BYTES,
+        RECURSION_STACK_SEGMENT_BYTES,
+        || any_to_json_inner(value, budget, depth),
+    )
+}
+
+fn any_to_json_inner(
     value: &Any,
     budget: &mut ConversionBudget<'_>,
     depth: usize,

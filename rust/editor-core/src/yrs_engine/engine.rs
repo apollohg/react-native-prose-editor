@@ -2923,9 +2923,20 @@ impl YrsDocumentEngine {
 
     pub fn document_json(&self) -> Option<serde_json::Value> {
         self.debug_assert_derived_revision_keys();
-        self.derived_state
-            .as_ref()
-            .map(|state| state.canonical_artifact.value().clone())
+        self.derived_state.as_ref().map(|state| {
+            crate::boundary::clone_json_value_stack_safe(state.canonical_artifact.value())
+        })
+    }
+
+    pub(crate) fn document_json_string(&self) -> Option<String> {
+        self.debug_assert_derived_revision_keys();
+        self.derived_state.as_ref().map(|state| {
+            String::from_utf8(crate::boundary::serialize_json_value_stack_safe(
+                state.canonical_artifact.value(),
+                state.canonical_artifact.serialized_len(),
+            ))
+            .expect("serialized JSON is UTF-8")
+        })
     }
 
     pub fn document_html(&self) -> Option<String> {
@@ -5625,6 +5636,10 @@ impl YrsDocumentEngine {
     }
 
     pub fn export_snapshot(&self) -> YrsEngineResult<DocumentSnapshot> {
+        crate::boundary::with_document_stack(|| self.export_snapshot_inner())
+    }
+
+    fn export_snapshot_inner(&self) -> YrsEngineResult<DocumentSnapshot> {
         let scope = self.scope.as_ref().ok_or_else(|| {
             snapshot_error(
                 "SNAPSHOT_SCOPE_MISMATCH",
@@ -5671,6 +5686,13 @@ impl YrsDocumentEngine {
     }
 
     pub fn restore_snapshot(
+        &mut self,
+        snapshot: &DocumentSnapshot,
+    ) -> YrsEngineResult<EngineCommit> {
+        crate::boundary::with_document_stack(|| self.restore_snapshot_inner(snapshot))
+    }
+
+    fn restore_snapshot_inner(
         &mut self,
         snapshot: &DocumentSnapshot,
     ) -> YrsEngineResult<EngineCommit> {
@@ -5908,10 +5930,21 @@ impl YrsDocumentEngine {
         input: &str,
         origin: TransactionOrigin,
     ) -> YrsEngineResult<EngineCommit> {
+        crate::boundary::with_document_stack(|| self.import_json_inner(input, origin))
+    }
+
+    fn import_json_inner(
+        &mut self,
+        input: &str,
+        origin: TransactionOrigin,
+    ) -> YrsEngineResult<EngineCommit> {
         let input = BoundedInput::new(input, InputKind::DocumentJson, &self.resource_limits)?;
         let value = self.parse_document_json(input.as_str())?;
         if let Some(state) = &self.derived_state {
-            if state.canonical_artifact.value() == value.as_value() {
+            if crate::boundary::json_values_equal_stack_safe(
+                state.canonical_artifact.value(),
+                value.as_value(),
+            ) {
                 self.quarantined_remote_update = None;
                 self.reset_history_binding();
                 return Ok(EngineCommit {
@@ -5943,6 +5976,15 @@ impl YrsDocumentEngine {
     }
 
     pub fn import_html(
+        &mut self,
+        input: &str,
+        options: &FromHtmlOptions,
+        origin: TransactionOrigin,
+    ) -> YrsEngineResult<EngineCommit> {
+        crate::boundary::with_document_stack(|| self.import_html_inner(input, options, origin))
+    }
+
+    fn import_html_inner(
         &mut self,
         input: &str,
         options: &FromHtmlOptions,

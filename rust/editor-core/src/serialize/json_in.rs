@@ -341,12 +341,22 @@ fn parse_mark_attrs(
     let mut attrs = spec
         .attrs
         .iter()
-        .filter_map(|(name, attr)| attr.default.clone().map(|value| (name.clone(), value)))
+        .filter_map(|(name, attr)| {
+            attr.default.as_ref().map(|value| {
+                (
+                    name.clone(),
+                    crate::boundary::clone_json_value_stack_safe(value),
+                )
+            })
+        })
         .collect::<HashMap<_, _>>();
     if let Some(Value::Object(attrs_obj)) = mark_obj.get("attrs") {
         for (name, value) in attrs_obj {
             if spec.allow_undeclared_attrs || spec.attrs.contains_key(name) {
-                attrs.insert(name.clone(), value.clone());
+                attrs.insert(
+                    name.clone(),
+                    crate::boundary::clone_json_value_stack_safe(value),
+                );
             }
         }
     }
@@ -367,7 +377,10 @@ fn parse_attrs(
     if let Some(Value::Object(json_attrs)) = obj.get("attrs") {
         for (key, value) in json_attrs {
             if spec.allow_undeclared_attrs || spec.attrs.contains_key(key) {
-                attrs.insert(key.clone(), value.clone());
+                attrs.insert(
+                    key.clone(),
+                    crate::boundary::clone_json_value_stack_safe(value),
+                );
             }
         }
     }
@@ -426,7 +439,7 @@ fn resolve_opaque_placements(
         let original_json = children[index]
             .attrs()
             .get("original_json")
-            .cloned()
+            .map(crate::boundary::clone_json_value_stack_safe)
             .unwrap_or(Value::Null);
         children[index] = build_opaque_json_node(&original_type, &original_json, placement);
     }
@@ -459,7 +472,10 @@ fn build_opaque_json_node(type_name: &str, original_json: &Value, placement: &st
         "original_type".to_string(),
         Value::String(type_name.to_string()),
     );
-    attrs.insert("original_json".to_string(), original_json.clone());
+    attrs.insert(
+        "original_json".to_string(),
+        crate::boundary::clone_json_value_stack_safe(original_json),
+    );
     attrs.insert(
         "opaque_placement".to_string(),
         Value::String(placement.to_string()),
@@ -496,29 +512,49 @@ pub(crate) fn normalized_wire_json_node_type(tag: &str, attrs: &Map<String, Valu
 }
 
 fn rehydrate_reserved_html_opaque_node(node: &Node) -> Node {
-    if let Some(attrs) = reserved_html_opaque_attrs(node) {
-        return Node::void("__opaque".to_string(), attrs);
+    enum Frame<'a> {
+        Visit(&'a Node),
+        Build(&'a Node, usize),
     }
-    if node.is_text() {
-        return Node::text(
-            node.text_str().unwrap_or_default().to_string(),
-            node.marks().to_vec(),
-        );
+
+    let mut frames = vec![Frame::Visit(node)];
+    let mut built = Vec::new();
+    while let Some(frame) = frames.pop() {
+        match frame {
+            Frame::Visit(node) => {
+                if let Some(attrs) = reserved_html_opaque_attrs(node) {
+                    built.push(Node::void("__opaque".to_string(), attrs));
+                } else if node.is_text() {
+                    built.push(Node::text(
+                        node.text_str().unwrap_or_default().to_string(),
+                        node.marks().to_vec(),
+                    ));
+                } else if node.is_void() {
+                    built.push(Node::void(
+                        node.node_type().to_string(),
+                        crate::boundary::clone_json_object_stack_safe(node.attrs()),
+                    ));
+                } else {
+                    let children = node.content().map(Fragment::children).unwrap_or_default();
+                    frames.push(Frame::Build(node, children.len()));
+                    frames.extend(children.iter().rev().map(Frame::Visit));
+                }
+            }
+            Frame::Build(node, child_count) => {
+                let first = built
+                    .len()
+                    .checked_sub(child_count)
+                    .expect("opaque rehydration frame stack is balanced");
+                let children = built.split_off(first);
+                built.push(Node::element(
+                    node.node_type().to_string(),
+                    crate::boundary::clone_json_object_stack_safe(node.attrs()),
+                    Fragment::from(children),
+                ));
+            }
+        }
     }
-    if node.is_void() {
-        return Node::void(node.node_type().to_string(), node.attrs().clone());
-    }
-    let children = node
-        .content()
-        .into_iter()
-        .flat_map(Fragment::iter)
-        .map(rehydrate_reserved_html_opaque_node)
-        .collect();
-    Node::element(
-        node.node_type().to_string(),
-        node.attrs().clone(),
-        Fragment::from(children),
-    )
+    built.pop().expect("opaque rehydration produces one root")
 }
 
 fn reserved_html_opaque_attrs(node: &Node) -> Option<HashMap<String, Value>> {
@@ -533,7 +569,12 @@ fn reserved_html_opaque_attrs(node: &Node) -> Option<HashMap<String, Value>> {
     Some(
         attrs
             .iter()
-            .map(|(name, value)| (name.clone(), value.clone()))
+            .map(|(name, value)| {
+                (
+                    name.clone(),
+                    crate::boundary::clone_json_value_stack_safe(value),
+                )
+            })
             .collect(),
     )
 }

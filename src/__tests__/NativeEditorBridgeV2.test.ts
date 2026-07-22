@@ -862,6 +862,31 @@ describe('NativeEditorBridge v2', () => {
             expect(snapshotState).toBeNull();
         });
 
+        it('creates an exact semantic-depth-1024 local JSON document without stack recursion', () => {
+            const maxDepth = HARD_EDITOR_RESOURCE_LIMITS.maxDocumentDepth;
+            let deepest: Record<string, unknown> = { type: 'paragraph' };
+            let expectedDocumentJson = '{"type":"paragraph"}';
+            for (let depth = 2; depth < maxDepth; depth += 1) {
+                deepest = { type: 'blockquote', content: [deepest] };
+                expectedDocumentJson = `{"type":"blockquote","content":[${expectedDocumentJson}]}`;
+            }
+            const document = { type: 'doc', content: [deepest] };
+
+            expect(() =>
+                createNativeEditorDocumentHandle({
+                    initialization: { type: 'localJson', json: document },
+                })
+            ).not.toThrow();
+
+            expect(mockNativeModule.editorV2Create).toHaveBeenCalledTimes(1);
+            const [configJson, snapshotState] = mockNativeModule.editorV2Create.mock.calls[0];
+            expect(configJson).toBe(
+                `{"initialization":{"type":"localJson","json":{"type":"doc","content":[${expectedDocumentJson}]}}}`
+            );
+            expect(configJson.match(/"type":"blockquote"/g)).toHaveLength(maxDepth - 2);
+            expect(snapshotState).toBeNull();
+        });
+
         it('rejects unknown and removed create fields before native invocation', () => {
             const invalidConfigs: unknown[] = [
                 { initialization: { type: 'localEmpty' }, unknown: true },

@@ -58,7 +58,7 @@ impl EditorSessionSlot {
         &self,
         operation: impl FnOnce(&mut EditorSession) -> T,
     ) -> Result<T, SessionError> {
-        self.with_alive_after_check(|| {}, operation)
+        crate::boundary::with_document_stack(|| self.with_alive_after_check(|| {}, operation))
     }
 
     fn with_alive_after_check<T>(
@@ -92,6 +92,12 @@ fn session_not_alive(lifecycle: u8) -> SessionError {
 pub(crate) fn create_session(
     admit: impl FnOnce() -> Result<EditorSession, SessionError>,
 ) -> Result<SessionId, SessionError> {
+    crate::boundary::with_document_stack(|| create_session_inner(admit))
+}
+
+fn create_session_inner(
+    admit: impl FnOnce() -> Result<EditorSession, SessionError>,
+) -> Result<SessionId, SessionError> {
     #[cfg(test)]
     let _concurrency_guard = crate::test_support::RegistryConcurrencyGuard::acquire();
     let session = admit()?;
@@ -113,6 +119,10 @@ pub(crate) fn get_session(id: SessionId) -> Option<Arc<EditorSessionSlot>> {
 }
 
 pub(crate) fn destroy_session(id: SessionId) {
+    crate::boundary::with_document_stack(|| destroy_session_inner(id));
+}
+
+fn destroy_session_inner(id: SessionId) {
     #[cfg(test)]
     let _concurrency_guard = crate::test_support::RegistryConcurrencyGuard::acquire();
     let slot = {

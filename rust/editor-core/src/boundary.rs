@@ -3,6 +3,19 @@ use serde::{Deserialize, Serialize};
 pub(crate) const HARD_MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const HARD_MAX_DOCUMENT_DEPTH: usize = 1_024;
 
+const DOCUMENT_STACK_RED_ZONE_BYTES: usize = 256 * 1024;
+const DOCUMENT_STACK_SEGMENT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Run a bounded document lifecycle operation on a segmented stack whenever
+/// the caller cannot supply enough native stack for admitted depth 1024.
+pub(crate) fn with_document_stack<T>(operation: impl FnOnce() -> T) -> T {
+    stacker::maybe_grow(
+        DOCUMENT_STACK_RED_ZONE_BYTES,
+        DOCUMENT_STACK_SEGMENT_BYTES,
+        operation,
+    )
+}
+
 pub(crate) fn deserialize_non_null_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -19,10 +32,40 @@ pub type BoundaryResult<T> = Result<T, BoundaryError>;
 pub(crate) struct StackSafeJsonValue(serde_json::Value);
 
 impl StackSafeJsonValue {
+    pub(crate) fn new(value: serde_json::Value) -> Self {
+        Self(value)
+    }
+
     pub(crate) fn as_value(&self) -> &serde_json::Value {
         &self.0
     }
 }
+
+impl std::fmt::Debug for StackSafeJsonValue {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("StackSafeJsonValue(..)")
+    }
+}
+
+impl Clone for StackSafeJsonValue {
+    fn clone(&self) -> Self {
+        Self(clone_json_value_stack_safe(&self.0))
+    }
+}
+
+impl PartialEq for StackSafeJsonValue {
+    fn eq(&self, other: &Self) -> bool {
+        json_values_equal_stack_safe(&self.0, &other.0)
+    }
+}
+
+impl PartialEq<serde_json::Value> for StackSafeJsonValue {
+    fn eq(&self, other: &serde_json::Value) -> bool {
+        json_values_equal_stack_safe(&self.0, other)
+    }
+}
+
+impl Eq for StackSafeJsonValue {}
 
 impl Drop for StackSafeJsonValue {
     fn drop(&mut self) {
@@ -37,6 +80,181 @@ impl Drop for StackSafeJsonValue {
             }
         }
     }
+}
+
+pub(crate) fn drop_json_value_stack_safe(value: serde_json::Value) {
+    drop(StackSafeJsonValue::new(value));
+}
+
+pub(crate) fn clone_json_value_stack_safe(value: &serde_json::Value) -> serde_json::Value {
+    enum Frame<'a> {
+        Visit(&'a serde_json::Value),
+        BuildArray(usize),
+        BuildObject(Vec<String>),
+    }
+
+    let mut frames = vec![Frame::Visit(value)];
+    let mut built = Vec::new();
+    while let Some(frame) = frames.pop() {
+        match frame {
+            Frame::Visit(value) => match value {
+                serde_json::Value::Null => built.push(serde_json::Value::Null),
+                serde_json::Value::Bool(value) => built.push(serde_json::Value::Bool(*value)),
+                serde_json::Value::Number(value) => {
+                    built.push(serde_json::Value::Number(value.clone()));
+                }
+                serde_json::Value::String(value) => {
+                    built.push(serde_json::Value::String(value.clone()));
+                }
+                serde_json::Value::Array(values) => {
+                    frames.push(Frame::BuildArray(values.len()));
+                    frames.extend(values.iter().rev().map(Frame::Visit));
+                }
+                serde_json::Value::Object(values) => {
+                    frames.push(Frame::BuildObject(values.keys().cloned().collect()));
+                    frames.extend(values.values().rev().map(Frame::Visit));
+                }
+            },
+            Frame::BuildArray(len) => {
+                let first = built
+                    .len()
+                    .checked_sub(len)
+                    .expect("JSON clone frame stack is balanced");
+                let values = built.split_off(first);
+                built.push(serde_json::Value::Array(values));
+            }
+            Frame::BuildObject(keys) => {
+                let first = built
+                    .len()
+                    .checked_sub(keys.len())
+                    .expect("JSON clone frame stack is balanced");
+                let values = built.split_off(first);
+                built.push(serde_json::Value::Object(
+                    keys.into_iter().zip(values).collect(),
+                ));
+            }
+        }
+    }
+    built.pop().expect("JSON clone produces one root")
+}
+
+pub(crate) fn clone_json_object_stack_safe(
+    values: &std::collections::HashMap<String, serde_json::Value>,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    values
+        .iter()
+        .map(|(key, value)| (key.clone(), clone_json_value_stack_safe(value)))
+        .collect()
+}
+
+pub(crate) fn drop_json_object_values_stack_safe(
+    values: &mut std::collections::HashMap<String, serde_json::Value>,
+) {
+    for value in values.values_mut() {
+        drop_json_value_stack_safe(std::mem::take(value));
+    }
+}
+
+pub(crate) fn json_values_equal_stack_safe(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> bool {
+    let mut pending = vec![(left, right)];
+    while let Some((left, right)) = pending.pop() {
+        match (left, right) {
+            (serde_json::Value::Null, serde_json::Value::Null) => {}
+            (serde_json::Value::Bool(left), serde_json::Value::Bool(right)) if left == right => {}
+            (serde_json::Value::Number(left), serde_json::Value::Number(right))
+                if left == right => {}
+            (serde_json::Value::String(left), serde_json::Value::String(right))
+                if left == right => {}
+            (serde_json::Value::Array(left), serde_json::Value::Array(right))
+                if left.len() == right.len() =>
+            {
+                pending.extend(left.iter().zip(right));
+            }
+            (serde_json::Value::Object(left), serde_json::Value::Object(right))
+                if left.len() == right.len() =>
+            {
+                for ((left_key, left_value), (right_key, right_value)) in
+                    left.iter().zip(right.iter())
+                {
+                    if left_key != right_key {
+                        return false;
+                    }
+                    pending.push((left_value, right_value));
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+pub(crate) fn json_objects_equal_stack_safe(
+    left: &std::collections::HashMap<String, serde_json::Value>,
+    right: &std::collections::HashMap<String, serde_json::Value>,
+) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(key, left_value)| {
+            right
+                .get(key)
+                .is_some_and(|right_value| json_values_equal_stack_safe(left_value, right_value))
+        })
+}
+
+pub(crate) fn serialize_json_value_stack_safe(
+    value: &serde_json::Value,
+    initial_capacity: usize,
+) -> Vec<u8> {
+    enum Frame<'a> {
+        Value(&'a serde_json::Value),
+        String(&'a str),
+        Raw(&'static [u8]),
+    }
+
+    let mut output = Vec::with_capacity(initial_capacity);
+    let mut frames = vec![Frame::Value(value)];
+    while let Some(frame) = frames.pop() {
+        match frame {
+            Frame::Raw(bytes) => output.extend_from_slice(bytes),
+            Frame::String(value) => serde_json::to_writer(&mut output, value)
+                .expect("JSON strings always serialize to an in-memory buffer"),
+            Frame::Value(value) => match value {
+                serde_json::Value::Null => output.extend_from_slice(b"null"),
+                serde_json::Value::Bool(true) => output.extend_from_slice(b"true"),
+                serde_json::Value::Bool(false) => output.extend_from_slice(b"false"),
+                serde_json::Value::Number(value) => {
+                    output.extend_from_slice(value.to_string().as_bytes());
+                }
+                serde_json::Value::String(value) => serde_json::to_writer(&mut output, value)
+                    .expect("JSON strings always serialize to an in-memory buffer"),
+                serde_json::Value::Array(values) => {
+                    output.push(b'[');
+                    frames.push(Frame::Raw(b"]"));
+                    for (index, value) in values.iter().enumerate().rev() {
+                        if index + 1 < values.len() {
+                            frames.push(Frame::Raw(b","));
+                        }
+                        frames.push(Frame::Value(value));
+                    }
+                }
+                serde_json::Value::Object(values) => {
+                    output.push(b'{');
+                    frames.push(Frame::Raw(b"}"));
+                    for (index, (key, value)) in values.iter().enumerate().rev() {
+                        if index + 1 < values.len() {
+                            frames.push(Frame::Raw(b","));
+                        }
+                        frames.push(Frame::Value(value));
+                        frames.push(Frame::Raw(b":"));
+                        frames.push(Frame::String(key));
+                    }
+                }
+            },
+        }
+    }
+    output
 }
 
 /// ProseMirror nodes add at most one object and one `content` array per
@@ -75,11 +293,12 @@ pub(crate) fn parse_json_value_stack_safe(
     let mut deserializer = serde_json::Deserializer::from_str(input);
     deserializer.disable_recursion_limit();
     let value = serde_json::Value::deserialize(serde_stacker::Deserializer::new(&mut deserializer))
+        .map(StackSafeJsonValue::new)
         .map_err(|error| BoundaryError::parse(parse_code, error))?;
     deserializer
         .end()
         .map_err(|error| BoundaryError::parse(parse_code, error))?;
-    Ok(StackSafeJsonValue(value))
+    Ok(value)
 }
 
 fn admit_json_container_depth(input: &str, limit: usize) -> Result<(), usize> {
@@ -549,6 +768,34 @@ mod json_meter_tests {
     use serde_json::json;
 
     use super::{JsonMeterDimension, JsonValueMeter};
+
+    #[test]
+    fn deep_json_trailing_input_unwinds_on_a_constrained_stack() {
+        let outcome = std::thread::Builder::new()
+            .name("deep-json-trailing-input".into())
+            .stack_size(192 * 1024)
+            .spawn(|| {
+                let depth = 1_024;
+                let mut input = "[".repeat(depth);
+                input.push('0');
+                input.push_str(&"]".repeat(depth));
+                input.push_str(" trailing");
+                super::parse_json_value_stack_safe(
+                    &input,
+                    depth,
+                    depth,
+                    "DOCUMENT_LIMIT_EXCEEDED",
+                    "DOCUMENT_INVALID",
+                )
+                .map(|_| ())
+                .map_err(|error| error.code)
+            })
+            .expect("constrained-stack thread should spawn")
+            .join()
+            .expect("deep trailing-input parse must not overflow");
+
+        assert_eq!(outcome, Err("DOCUMENT_INVALID"));
+    }
 
     #[test]
     fn json_value_meter_matches_compact_json_and_enforces_exact_bytes() {

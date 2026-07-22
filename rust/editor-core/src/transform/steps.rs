@@ -76,7 +76,7 @@ pub(crate) fn merge_adjacent_text_nodes(nodes: Vec<Node>) -> Vec<Node> {
 pub(crate) fn rebuild_element(parent: &Node, new_children: Vec<Node>) -> Node {
     Node::element(
         parent.node_type().to_string(),
-        parent.attrs().clone(),
+        crate::boundary::clone_json_object_stack_safe(parent.attrs()),
         Fragment::from(new_children),
     )
 }

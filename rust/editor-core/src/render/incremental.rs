@@ -339,6 +339,16 @@ struct CachedRenderBlock {
     position_element_indices: Arc<Vec<usize>>,
 }
 
+impl Drop for CachedRenderBlock {
+    fn drop(&mut self) {
+        if let Some(elements) = Arc::get_mut(&mut self.elements) {
+            for element in elements {
+                element.drain_json_payloads();
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) struct CachedRenderBlocks {

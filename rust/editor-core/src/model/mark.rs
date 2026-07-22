@@ -3,10 +3,27 @@ use std::collections::HashMap;
 /// A mark represents inline formatting (bold, italic, link, etc.) applied to
 /// a text node. Marks don't occupy positions in the document's token stream —
 /// they're metadata attached to text nodes.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Mark {
     mark_type: String,
     attrs: HashMap<String, serde_json::Value>,
+}
+
+impl Clone for Mark {
+    fn clone(&self) -> Self {
+        Self {
+            mark_type: self.mark_type.clone(),
+            attrs: crate::boundary::clone_json_object_stack_safe(&self.attrs),
+        }
+    }
+}
+
+impl Drop for Mark {
+    fn drop(&mut self) {
+        for value in self.attrs.values_mut() {
+            crate::boundary::drop_json_value_stack_safe(std::mem::take(value));
+        }
+    }
 }
 
 impl Mark {
@@ -42,7 +59,8 @@ impl Mark {
 
 impl PartialEq for Mark {
     fn eq(&self, other: &Self) -> bool {
-        self.mark_type == other.mark_type && self.attrs == other.attrs
+        self.mark_type == other.mark_type
+            && crate::boundary::json_objects_equal_stack_safe(&self.attrs, &other.attrs)
     }
 }
 

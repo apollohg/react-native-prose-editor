@@ -427,6 +427,140 @@ fn create_local_json_depth_reaches_the_configured_semantic_limit() {
 }
 
 #[test]
+fn max_depth_document_lifecycle_is_stack_safe_on_a_constrained_thread() {
+    const LIMIT: usize = 1_024;
+
+    let result = std::thread::Builder::new()
+        .name("max-depth-document-lifecycle".into())
+        .stack_size(192 * 1024)
+        .spawn(|| {
+            use crate::schema::{presets::tiptap_schema, schema_fingerprint};
+            use crate::yrs_engine::{
+                DocumentScope, InitializationMode, TransactionOrigin, YrsDocumentEngine,
+                YrsEngineConfig,
+            };
+
+            fn nested_blockquote_document(depth: usize) -> String {
+                let wrappers = depth - 2;
+                let mut document = String::from(r#"{"type":"doc","content":["#);
+                for _ in 0..wrappers {
+                    document.push_str(r#"{"type":"blockquote","content":["#);
+                }
+                document.push_str(r#"{"type":"paragraph"}"#);
+                for _ in 0..wrappers {
+                    document.push_str("]}");
+                }
+                document.push_str("]}");
+                document
+            }
+
+            fn editor_id(result: FfiJsonResult) -> String {
+                let value = result.value.expect("create should succeed");
+                serde_json::from_str::<serde_json::Value>(&value).unwrap()["editorId"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            }
+
+            let document = nested_blockquote_document(LIMIT);
+            let mut create = String::from(r#"{"initialization":{"type":"localJson","json":"#);
+            create.push_str(&document);
+            create.push_str(r#"},"limits":{"resource":{"maxDocumentDepth":"#);
+            create.push_str(&LIMIT.to_string());
+            create.push_str("}}}");
+            let local = editor_id(super::editor::editor_v2_create(create, None));
+
+            assert!(super::editor::editor_v2_get_document_json(local.clone())
+                .value
+                .is_some());
+            assert!(super::editor::editor_v2_get_document_html(local.clone())
+                .value
+                .is_some());
+            assert!(super::editor::editor_v2_get_content_snapshot(local.clone())
+                .value
+                .is_some());
+            assert!(
+                super::render::editor_v2_render_update(local.clone(), None, None)
+                    .value
+                    .is_some()
+            );
+
+            let replacement = format!(
+                r#"{{"version":1,"requestId":1,"setJson":{document},"history":"resetAndClear"}}"#
+            );
+            assert!(
+                super::editor::editor_v2_replace_document(local.clone(), replacement)
+                    .value
+                    .is_some()
+            );
+
+            let mut limits = ResourceLimits::default();
+            limits.max_document_depth = LIMIT;
+            let schema = tiptap_schema();
+            let mut source = YrsDocumentEngine::new(YrsEngineConfig {
+                schema: schema.clone(),
+                fragment_name: "content".into(),
+                initialization_mode: InitializationMode::LocalEmpty,
+                resource_limits: limits,
+                editing_limits: EditingLimits::default(),
+                max_length: None,
+                scope: Some(DocumentScope {
+                    document_id: "depth-doc".into(),
+                    lineage_id: "depth-lineage".into(),
+                }),
+            })
+            .unwrap();
+            source
+                .import_json(&document, TransactionOrigin::DocumentImport)
+                .unwrap();
+            let snapshot = source.export_snapshot().unwrap();
+            drop(source);
+
+            let room_config = json!({
+                "fragmentName": "content",
+                "initialization": {
+                    "type": "room",
+                    "documentId": "depth-doc",
+                    "lineageId": "depth-lineage",
+                    "snapshot": {
+                        "formatVersion": snapshot.format_version,
+                        "documentId": &snapshot.document_id,
+                        "lineageId": &snapshot.lineage_id,
+                        "fragmentName": &snapshot.fragment_name,
+                        "schemaFingerprint": schema_fingerprint(&schema),
+                    }
+                },
+                "limits": { "resource": { "maxDocumentDepth": LIMIT } }
+            });
+            let room_create = super::editor::editor_v2_create(
+                room_config.to_string(),
+                Some(snapshot.encoded_state.clone()),
+            );
+            let room = editor_id(room_create);
+            let exported = super::snapshot::editor_v2_snapshot_export(room.clone())
+                .value
+                .expect("room snapshot export should succeed");
+            assert!(super::snapshot::editor_v2_snapshot_restore(
+                room.clone(),
+                exported.metadata_json,
+                exported.encoded_state,
+            )
+            .value
+            .is_some());
+
+            assert_eq!(super::editor::editor_v2_destroy(room).value, Some(true));
+            assert_eq!(super::editor::editor_v2_destroy(local).value, Some(true));
+        })
+        .expect("constrained-stack lifecycle thread should spawn")
+        .join();
+
+    assert!(
+        result.is_ok(),
+        "max-depth lifecycle must not panic or overflow"
+    );
+}
+
+#[test]
 fn create_uses_configured_max_input_bytes_above_the_default_for_html() {
     let html = " ".repeat(ResourceLimits::default().max_input_bytes + 1);
     let config_json = format!(

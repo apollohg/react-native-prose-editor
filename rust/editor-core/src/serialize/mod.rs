@@ -25,6 +25,13 @@ fn default_node_attrs(
 ) -> std::collections::HashMap<String, serde_json::Value> {
     spec.attrs
         .iter()
-        .filter_map(|(name, attr)| attr.default.clone().map(|value| (name.clone(), value)))
+        .filter_map(|(name, attr)| {
+            attr.default.as_ref().map(|value| {
+                (
+                    name.clone(),
+                    crate::boundary::clone_json_value_stack_safe(value),
+                )
+            })
+        })
         .collect()
 }

@@ -115,51 +115,72 @@ pub(crate) fn canonicalize_yrs_document(document: &Document, schema: &Schema) ->
             .then_with(|| left.mark_type().cmp(right.mark_type()))
     }
 
-    fn is_canonical_node(node: &Node, schema: &Schema) -> bool {
-        #[cfg(test)]
-        crate::yrs_engine::observability::record_canonical_identity_predicate_node_visited();
-        if node
-            .marks()
-            .windows(2)
-            .any(|marks| compare_marks(&marks[0], &marks[1], schema).is_gt())
-        {
-            return false;
-        }
-        let Some(content) = node.content() else {
-            return true;
-        };
-        let mut previous = None;
-        for child in content.iter() {
-            if child.text_str().is_some_and(str::is_empty)
-                || previous.is_some_and(|previous: &Node| {
-                    previous.is_text()
-                        && child.is_text()
-                        && super::steps::marks_eq(previous.marks(), child.marks())
-                })
-                || !is_canonical_node(child, schema)
+    fn is_canonical_node(root: &Node, schema: &Schema) -> bool {
+        let mut pending = vec![root];
+        while let Some(node) = pending.pop() {
+            #[cfg(test)]
+            crate::yrs_engine::observability::record_canonical_identity_predicate_node_visited();
+            if node
+                .marks()
+                .windows(2)
+                .any(|marks| compare_marks(&marks[0], &marks[1], schema).is_gt())
             {
                 return false;
             }
-            previous = Some(child);
+            let Some(content) = node.content() else {
+                continue;
+            };
+            let mut previous = None;
+            for child in content.iter() {
+                if child.text_str().is_some_and(str::is_empty)
+                    || previous.is_some_and(|previous: &Node| {
+                        previous.is_text()
+                            && child.is_text()
+                            && super::steps::marks_eq(previous.marks(), child.marks())
+                    })
+                {
+                    return false;
+                }
+                previous = Some(child);
+            }
+            pending.extend(content.iter());
         }
         true
     }
 
-    fn canonicalize_node(node: &Node, schema: &Schema) -> Node {
-        if let Some(text) = node.text_str() {
-            let mut marks = node.marks().to_vec();
-            marks.sort_by(|left, right| compare_marks(left, right, schema));
-            return Node::text(text.to_string(), marks);
+    fn canonicalize_node(root: &Node, schema: &Schema) -> Node {
+        enum Frame<'a> {
+            Visit(&'a Node),
+            Build(&'a Node, usize),
         }
-        let Some(content) = node.content() else {
-            return node.clone();
-        };
-        let children = content
-            .iter()
-            .map(|child| canonicalize_node(child, schema))
-            .collect::<Vec<_>>();
-        let children = merge_adjacent_text_nodes(children);
-        rebuild_element(node, children)
+
+        let mut frames = vec![Frame::Visit(root)];
+        let mut built = Vec::new();
+        while let Some(frame) = frames.pop() {
+            match frame {
+                Frame::Visit(node) => {
+                    if let Some(text) = node.text_str() {
+                        let mut marks = node.marks().to_vec();
+                        marks.sort_by(|left, right| compare_marks(left, right, schema));
+                        built.push(Node::text(text.to_string(), marks));
+                    } else if let Some(content) = node.content() {
+                        frames.push(Frame::Build(node, content.child_count()));
+                        frames.extend(content.iter().rev().map(Frame::Visit));
+                    } else {
+                        built.push(node.clone());
+                    }
+                }
+                Frame::Build(node, child_count) => {
+                    let first = built
+                        .len()
+                        .checked_sub(child_count)
+                        .expect("canonicalization frame stack is balanced");
+                    let children = merge_adjacent_text_nodes(built.split_off(first));
+                    built.push(rebuild_element(node, children));
+                }
+            }
+        }
+        built.pop().expect("canonicalization produces one root")
     }
 
     if is_canonical_node(document.root(), schema) {

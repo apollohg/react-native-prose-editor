@@ -2498,24 +2498,25 @@ impl std::io::Write for Sha256Writer {
 }
 
 fn canonical_marks_sha256(marks: &[Mark]) -> Option<[u8; 32]> {
-    #[derive(serde::Serialize)]
-    struct SerializableMark<'a> {
-        #[serde(rename = "type")]
-        mark_type: &'a str,
-        attrs: &'a std::collections::HashMap<String, serde_json::Value>,
-    }
-
     let mut writer = Sha256Writer(sha2::Sha256::new());
     std::io::Write::write_all(&mut writer, &u64::try_from(marks.len()).ok()?.to_le_bytes()).ok()?;
     for mark in marks {
-        serde_json::to_writer(
-            &mut writer,
-            &SerializableMark {
-                mark_type: mark.mark_type(),
-                attrs: mark.attrs(),
-            },
-        )
-        .ok()?;
+        std::io::Write::write_all(&mut writer, b"{\"type\":").ok()?;
+        serde_json::to_writer(&mut writer, mark.mark_type()).ok()?;
+        std::io::Write::write_all(&mut writer, b",\"attrs\":{").ok()?;
+        for (index, (key, value)) in mark.attrs().iter().enumerate() {
+            if index != 0 {
+                std::io::Write::write_all(&mut writer, b",").ok()?;
+            }
+            serde_json::to_writer(&mut writer, key).ok()?;
+            std::io::Write::write_all(&mut writer, b":").ok()?;
+            std::io::Write::write_all(
+                &mut writer,
+                &crate::boundary::serialize_json_value_stack_safe(value, 0),
+            )
+            .ok()?;
+        }
+        std::io::Write::write_all(&mut writer, b"}}").ok()?;
     }
     Some(writer.0.finalize().into())
 }
@@ -3036,39 +3037,41 @@ impl ActiveStateRetainedMeter<'_> {
     }
 
     fn json_heap(&mut self, value: &serde_json::Value, depth: usize) -> Option<()> {
-        if depth > self.limits.max_document_depth {
-            return None;
-        }
-        self.add_items(1)?;
-        match value {
-            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
-                Some(())
+        let mut pending = vec![(value, depth)];
+        while let Some((value, depth)) = pending.pop() {
+            if depth > self.limits.max_document_depth {
+                return None;
             }
-            serde_json::Value::String(value) => self.add_bytes(value.capacity()),
-            serde_json::Value::Array(values) => {
-                self.add_bytes(
-                    values
-                        .capacity()
-                        .checked_mul(std::mem::size_of::<serde_json::Value>())?,
-                )?;
-                for value in values {
-                    self.json_heap(value, depth.checked_add(1)?)?;
+            self.add_items(1)?;
+            match value {
+                serde_json::Value::Null
+                | serde_json::Value::Bool(_)
+                | serde_json::Value::Number(_) => {}
+                serde_json::Value::String(value) => self.add_bytes(value.capacity())?,
+                serde_json::Value::Array(values) => {
+                    self.add_bytes(
+                        values
+                            .capacity()
+                            .checked_mul(std::mem::size_of::<serde_json::Value>())?,
+                    )?;
+                    let child_depth = depth.checked_add(1)?;
+                    pending.extend(values.iter().map(|value| (value, child_depth)));
                 }
-                Some(())
-            }
-            serde_json::Value::Object(values) => {
-                self.add_bytes(
-                    values
-                        .len()
-                        .checked_mul(std::mem::size_of::<(String, serde_json::Value)>())?,
-                )?;
-                for (key, value) in values {
-                    self.string_heap(key)?;
-                    self.json_heap(value, depth.checked_add(1)?)?;
+                serde_json::Value::Object(values) => {
+                    self.add_bytes(
+                        values
+                            .len()
+                            .checked_mul(std::mem::size_of::<(String, serde_json::Value)>())?,
+                    )?;
+                    let child_depth = depth.checked_add(1)?;
+                    for (key, value) in values {
+                        self.string_heap(key)?;
+                        pending.push((value, child_depth));
+                    }
                 }
-                Some(())
             }
         }
+        Some(())
     }
 }
 
@@ -4304,10 +4307,12 @@ impl HistoryDocumentSnapshot {
         if FORCE_HISTORY_DOCUMENT_SNAPSHOT_FALLBACK.get() {
             return false;
         }
-        self.canonical_artifact.value() == candidate_json
-            && self
-                .canonical_artifact
-                .matches_exact_source_document(&self.document)
+        crate::boundary::json_values_equal_stack_safe(
+            self.canonical_artifact.value(),
+            candidate_json,
+        ) && self
+            .canonical_artifact
+            .matches_exact_source_document(&self.document)
             && self.canonical_artifact.schema_fingerprint() == schema_fingerprint
             && self.canonical_artifact.format_version()
                 == super::canonical::CANONICAL_ARTIFACT_FORMAT_VERSION
@@ -4425,29 +4430,30 @@ pub(crate) fn prepare_history_candidate_read_for_test<T: ReadTxn>(
     let json = YrsDocumentCodec::new(schema, resource_limits)
         .read_json(fragment, txn)
         .map_err(|error| history_candidate_read_error(request_id, error))?;
-    let admission = if canonical_artifact.value() == &json
-        && canonical_artifact.matches_exact_source_document(source_document)
-        && canonical_artifact.schema_fingerprint() == schema_fingerprint
-        && canonical_artifact.format_version()
-            == super::canonical::CANONICAL_ARTIFACT_FORMAT_VERSION
-        && crate::schema::schema_fingerprint(schema) == schema_fingerprint
-    {
-        Some(AdmittedHistoryCandidateRead {
-            request_id,
-            source_document: source_document.clone(),
-            canonical_artifact: canonical_artifact.clone(),
-            resource_limits: resource_limits.clone(),
-            editing_limits: editing_limits.clone(),
-            max_length,
-            store_token: txn.store() as *const _ as usize,
-            fragment_id: AsRef::<Branch>::as_ref(fragment).id(),
-            schema_fingerprint: Arc::from(schema_fingerprint),
-            yrs_state_epoch,
-            document_revision,
-        })
-    } else {
-        None
-    };
+    let admission =
+        if crate::boundary::json_values_equal_stack_safe(canonical_artifact.value(), &json)
+            && canonical_artifact.matches_exact_source_document(source_document)
+            && canonical_artifact.schema_fingerprint() == schema_fingerprint
+            && canonical_artifact.format_version()
+                == super::canonical::CANONICAL_ARTIFACT_FORMAT_VERSION
+            && crate::schema::schema_fingerprint(schema) == schema_fingerprint
+        {
+            Some(AdmittedHistoryCandidateRead {
+                request_id,
+                source_document: source_document.clone(),
+                canonical_artifact: canonical_artifact.clone(),
+                resource_limits: resource_limits.clone(),
+                editing_limits: editing_limits.clone(),
+                max_length,
+                store_token: txn.store() as *const _ as usize,
+                fragment_id: AsRef::<Branch>::as_ref(fragment).id(),
+                schema_fingerprint: Arc::from(schema_fingerprint),
+                yrs_state_epoch,
+                document_revision,
+            })
+        } else {
+            None
+        };
     Ok(PreparedHistoryCandidateRead { json, admission })
 }
 

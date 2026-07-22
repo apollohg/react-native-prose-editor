@@ -5,84 +5,70 @@ use crate::schema::{NodeRole, Schema};
 ///
 /// The root "doc" node is not emitted — only its children are serialized.
 pub fn to_html(doc: &Document, schema: &Schema) -> String {
+    enum Frame<'a> {
+        Node(&'a Node),
+        Close(&'a str),
+    }
+
     let mut buf = String::new();
-    let root = doc.root();
-    if let Some(content) = root.content() {
-        for child in content.iter() {
-            serialize_node(child, schema, &mut buf);
+    let mut frames = Vec::new();
+    if let Some(content) = doc.root().content() {
+        frames.extend(content.iter().rev().map(Frame::Node));
+    }
+    while let Some(frame) = frames.pop() {
+        match frame {
+            Frame::Close(tag) => {
+                buf.push_str("</");
+                buf.push_str(tag);
+                buf.push('>');
+            }
+            Frame::Node(node) if node.is_text() => {
+                let text = node.text_str().unwrap_or("");
+                for mark in node.marks() {
+                    serialize_mark_open(mark, schema, &mut buf);
+                }
+                escape_html(text, &mut buf);
+                for mark in node.marks().iter().rev() {
+                    let tag = mark_tag(mark, schema);
+                    buf.push_str("</");
+                    buf.push_str(tag.as_str());
+                    buf.push('>');
+                }
+            }
+            Frame::Node(node) => {
+                let spec = schema.node(node.node_type());
+                let html_tag = spec.and_then(|spec| spec.html_tag.as_deref());
+                if node.is_void() {
+                    if node.node_type() == "mention" {
+                        serialize_mention_node(node, &mut buf);
+                    } else if node.node_type() == "__opaque" {
+                        serialize_opaque_node(node, &mut buf);
+                    } else if let Some(tag) = html_tag {
+                        buf.push('<');
+                        buf.push_str(tag);
+                        if let Some(spec) = spec {
+                            serialize_node_attrs(node, spec, &mut buf);
+                        }
+                        buf.push('>');
+                    }
+                    continue;
+                }
+                if let Some(tag) = html_tag {
+                    buf.push('<');
+                    buf.push_str(tag);
+                    if let Some(spec) = spec {
+                        serialize_node_attrs(node, spec, &mut buf);
+                    }
+                    buf.push('>');
+                    frames.push(Frame::Close(tag));
+                }
+                if let Some(content) = node.content() {
+                    frames.extend(content.iter().rev().map(Frame::Node));
+                }
+            }
         }
     }
     buf
-}
-
-fn serialize_node(node: &Node, schema: &Schema, buf: &mut String) {
-    if node.is_text() {
-        let text = node.text_str().unwrap_or("");
-        // Open mark tags
-        for mark in node.marks() {
-            serialize_mark_open(mark, schema, buf);
-        }
-        escape_html(text, buf);
-        // Close mark tags in reverse order
-        for mark in node.marks().iter().rev() {
-            let tag = mark_tag(mark, schema);
-            buf.push_str("</");
-            buf.push_str(tag.as_str());
-            buf.push('>');
-        }
-        return;
-    }
-
-    let spec = schema.node(node.node_type());
-
-    // Determine the HTML tag from the schema spec
-    let html_tag = spec.and_then(|s| s.html_tag.as_deref());
-
-    if node.is_void() {
-        if node.node_type() == "mention" {
-            serialize_mention_node(node, buf);
-            return;
-        }
-        // Opaque nodes (unknown tags preserved from parsing)
-        if node.node_type() == "__opaque" {
-            serialize_opaque_node(node, buf);
-            return;
-        }
-        if let Some(tag) = html_tag {
-            buf.push('<');
-            buf.push_str(tag);
-            if let Some(spec) = spec {
-                serialize_node_attrs(node, spec, buf);
-            }
-            buf.push('>');
-        }
-        return;
-    }
-
-    // Element node
-    if let Some(tag) = html_tag {
-        buf.push('<');
-        buf.push_str(tag);
-
-        if let Some(spec) = spec {
-            serialize_node_attrs(node, spec, buf);
-        }
-
-        buf.push('>');
-    }
-
-    // Serialize children
-    if let Some(content) = node.content() {
-        for child in content.iter() {
-            serialize_node(child, schema, buf);
-        }
-    }
-
-    if let Some(tag) = html_tag {
-        buf.push_str("</");
-        buf.push_str(tag);
-        buf.push('>');
-    }
 }
 
 fn serialize_node_attrs(node: &Node, spec: &crate::schema::NodeSpec, buf: &mut String) {
@@ -141,7 +127,7 @@ fn serialize_mark_open(mark: &crate::model::Mark, schema: &Schema, buf: &mut Str
                 let rendered = value
                     .as_str()
                     .map(str::to_string)
-                    .unwrap_or_else(|| value.to_string());
+                    .unwrap_or_else(|| json_value_string(value));
                 buf.push(' ');
                 buf.push_str(name);
                 buf.push_str("=\"");
@@ -161,14 +147,33 @@ fn serialize_mention_node(node: &Node, buf: &mut String) {
         .filter(|value| !value.is_empty())
         .unwrap_or("@mention");
     let visible_label = crate::render::mention_label_with_trigger(label, attrs);
-    let sorted_attrs = attrs.iter().collect::<std::collections::BTreeMap<_, _>>();
-    let attrs_json = serde_json::to_string(&sorted_attrs).unwrap_or_else(|_| "{}".to_string());
+    let attrs_json = json_object_string(attrs);
 
     buf.push_str("<span data-native-editor-mention=\"true\" data-native-editor-mention-attrs=\"");
     escape_html(&attrs_json, buf);
     buf.push_str("\">");
     escape_html(&visible_label, buf);
     buf.push_str("</span>");
+}
+
+fn json_value_string(value: &serde_json::Value) -> String {
+    String::from_utf8(crate::boundary::serialize_json_value_stack_safe(value, 0))
+        .expect("serialized JSON is UTF-8")
+}
+
+fn json_object_string(attrs: &std::collections::HashMap<String, serde_json::Value>) -> String {
+    let value = crate::boundary::StackSafeJsonValue::new(serde_json::Value::Object(
+        attrs
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    crate::boundary::clone_json_value_stack_safe(value),
+                )
+            })
+            .collect(),
+    ));
+    json_value_string(value.as_value())
 }
 
 /// Serialize an opaque node (unknown tag preserved from parsing) back to HTML.

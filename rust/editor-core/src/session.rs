@@ -676,6 +676,12 @@ impl EditorSession {
         self.engine.document_json().ok_or_else(engine_not_ready)
     }
 
+    pub(crate) fn get_json_string(&self) -> Result<String, SessionError> {
+        self.engine
+            .document_json_string()
+            .ok_or_else(engine_not_ready)
+    }
+
     pub(crate) fn get_html(&self) -> Result<String, SessionError> {
         self.engine.document_html().ok_or_else(engine_not_ready)
     }

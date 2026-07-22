@@ -68,7 +68,7 @@ fn node_to_json_shallow(node: &Node, schema: &Schema) -> Value {
         return node
             .attrs()
             .get("original_json")
-            .cloned()
+            .map(crate::boundary::clone_json_value_stack_safe)
             .unwrap_or(Value::Null);
     }
     let mut obj = Map::new();
@@ -85,7 +85,20 @@ fn node_to_json_shallow(node: &Node, schema: &Schema) -> Value {
                     let mut mark_obj = Map::new();
                     mark_obj.insert("type".to_string(), json!(m.mark_type()));
                     if !m.attrs().is_empty() {
-                        mark_obj.insert("attrs".to_string(), json!(m.attrs()));
+                        mark_obj.insert(
+                            "attrs".to_string(),
+                            Value::Object(
+                                m.attrs()
+                                    .iter()
+                                    .map(|(key, value)| {
+                                        (
+                                            key.clone(),
+                                            crate::boundary::clone_json_value_stack_safe(value),
+                                        )
+                                    })
+                                    .collect(),
+                            ),
+                        );
                     }
                     Value::Object(mark_obj)
                 })
@@ -120,11 +133,14 @@ fn build_attrs_json(node: &Node, schema: &Schema) -> Map<String, Value> {
         let is_default = spec
             .and_then(|s| s.attrs.get(key))
             .and_then(|a| a.default.as_ref())
-            .map(|d| d == value)
+            .map(|default| crate::boundary::json_values_equal_stack_safe(default, value))
             .unwrap_or(false);
 
         if !is_default {
-            attrs_map.insert(key.clone(), value.clone());
+            attrs_map.insert(
+                key.clone(),
+                crate::boundary::clone_json_value_stack_safe(value),
+            );
         }
     }
 

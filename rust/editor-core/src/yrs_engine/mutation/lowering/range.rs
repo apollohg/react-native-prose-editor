@@ -1317,6 +1317,28 @@ fn collect_text_targets<'a, T: ReadTxn>(
     context: &TextTargetContext<'_, T>,
     children: impl Iterator<Item = (u32, XmlOut)> + 'a,
     parent: TextTargetParent<'_>,
+    position: u32,
+    traversal_work: &mut usize,
+    materialized_texts: &mut HashMap<BranchID, MaterializedText>,
+    output: &mut Vec<LocatedTarget>,
+) -> OperationResult<u32> {
+    crate::boundary::with_document_stack(|| {
+        collect_text_targets_inner(
+            context,
+            children,
+            parent,
+            position,
+            traversal_work,
+            materialized_texts,
+            output,
+        )
+    })
+}
+
+fn collect_text_targets_inner<'a, T: ReadTxn>(
+    context: &TextTargetContext<'_, T>,
+    children: impl Iterator<Item = (u32, XmlOut)> + 'a,
+    parent: TextTargetParent<'_>,
     mut position: u32,
     traversal_work: &mut usize,
     materialized_texts: &mut HashMap<BranchID, MaterializedText>,

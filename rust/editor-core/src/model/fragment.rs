@@ -51,13 +51,11 @@ impl Fragment {
         &self.children
     }
 
-    pub(crate) fn history_snapshot_retained_bytes(&self) -> Option<usize> {
-        let slots = self
-            .children
-            .capacity()
-            .checked_mul(std::mem::size_of::<Node>())?;
-        self.children.iter().try_fold(slots, |total, child| {
-            total.checked_add(child.history_snapshot_retained_bytes()?)
-        })
+    pub(crate) fn take_children_for_drop(&mut self) -> Vec<Node> {
+        std::mem::take(&mut self.children)
+    }
+
+    pub(crate) fn children_capacity(&self) -> usize {
+        self.children.capacity()
     }
 }
