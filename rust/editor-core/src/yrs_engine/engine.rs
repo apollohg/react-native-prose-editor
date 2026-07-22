@@ -734,27 +734,49 @@ impl PreparedCandidateCache {
     }
 }
 
-/// A one-shot remote Update-v1 admission, sealed to the exact store identity,
-/// document revision, state revision, epoch, and quarantine generation that
-/// admitted it. Everything fallible (decode preflight, dependency/quarantine
-/// classification, candidate admission, ceilings, derived-state preparation)
-/// already happened during preparation; committing performs only the proven
-/// live installation. Deliberately non-`Clone` and consumed by value.
-pub struct PreparedRemoteUpdate {
+struct PreparedRemoteSeal {
     request_id: u64,
     sealed_doc: Doc,
     admitted_revision: u64,
     admitted_state_revision: u64,
     admitted_epoch: u64,
     sealed_generation: u64,
-    outcome: PreparedRemoteOutcome,
 }
 
-enum PreparedRemoteOutcome {
-    /// Dependency-pending (quarantined) or no-op: preparation already
-    /// absorbed the update and there is nothing to install.
+enum PreparedDocumentOutcome {
     Unchanged,
     Changed(Box<PreparedRemoteInstall>),
+}
+
+enum PreparedDependencyState {
+    Clear,
+    Retain(Vec<u8>),
+}
+
+/// A one-shot remote Update-v1 admission, sealed to the exact store identity,
+/// document revision, state revision, epoch, and quarantine generation that
+/// admitted it. Everything fallible (decode preflight, dependency
+/// classification, candidate admission, ceilings, and derived-state
+/// preparation) already happened during preparation; committing atomically
+/// installs the document and dependency candidates. Deliberately non-`Clone`
+/// and consumed by value.
+pub struct PreparedRemoteUpdate {
+    seal: PreparedRemoteSeal,
+    document: PreparedDocumentOutcome,
+    dependencies: PreparedDependencyState,
+}
+
+impl PreparedRemoteUpdate {
+    pub fn retained_dependency_bytes(&self) -> usize {
+        match &self.dependencies {
+            PreparedDependencyState::Clear => 0,
+            PreparedDependencyState::Retain(bytes) => bytes.len(),
+        }
+    }
+
+    pub fn has_pending_dependencies(&self) -> bool {
+        matches!(self.dependencies, PreparedDependencyState::Retain(_))
+    }
 }
 
 /// The proven installation payload for a changed remote update. Every field
@@ -1689,10 +1711,9 @@ impl YrsDocumentEngine {
     }
 
     /// Everything fallible in the remote-update pipeline, up to (and
-    /// excluding) the live installation. Takes `&mut self` because
-    /// dependency/quarantine classification durably retains or discards
-    /// quarantined bytes exactly as the historical one-shot path did — a
-    /// shared-reference prepare could not preserve those semantics.
+    /// excluding) the live installation. Preparation is observationally pure:
+    /// dependency classification produces an owned candidate while the live
+    /// quarantine remains untouched until commit.
     fn prepare_remote_update_internal(
         &mut self,
         request_id: u64,
@@ -1811,21 +1832,21 @@ impl YrsDocumentEngine {
                 admitted.extend_from_slice(update);
                 admitted
             };
-            self.quarantined_remote_update = Some(quarantined);
-            self.remote_seal_generation = self.remote_seal_generation.wrapping_add(1);
-            return Ok(self.seal_remote_outcome(request_id, PreparedRemoteOutcome::Unchanged));
+            return Ok(self.seal_remote_outcome(
+                request_id,
+                PreparedDocumentOutcome::Unchanged,
+                PreparedDependencyState::Retain(quarantined),
+            ));
         }
-        // Temporarily remove the completed dependency set while its document
-        // content is validated. Invalid/over-limit content is poison and stays
-        // discarded; once content admission succeeds, retain these bytes until
-        // every fallible operational reservation has completed.
-        let completed_quarantine = self.quarantined_remote_update.take();
         let candidate_encoded =
             encode_candidate_state_bounded(&candidate_doc, &self.resource_limits)
                 .map_err(|error| history_operation_error(request_id, error))?;
         if candidate_encoded == current_encoded {
-            self.quarantined_remote_update = None;
-            return Ok(self.seal_remote_outcome(request_id, PreparedRemoteOutcome::Unchanged));
+            return Ok(self.seal_remote_outcome(
+                request_id,
+                PreparedDocumentOutcome::Unchanged,
+                PreparedDependencyState::Clear,
+            ));
         }
 
         let codec = YrsDocumentCodec::new(&self.schema, &self.resource_limits);
@@ -1886,7 +1907,6 @@ impl YrsDocumentEngine {
                 u64::try_from(canonical_artifact.serialized_len()).unwrap_or(u64::MAX),
             ));
         }
-        self.quarantined_remote_update = completed_quarantine;
         let next_revision =
             checked_operation_increment(request_id, self.revision, "documentRevision")?;
         let next_state_revision =
@@ -2116,7 +2136,7 @@ impl YrsDocumentEngine {
         super::observability::record_staged_seed_preparation();
         Ok(self.seal_remote_outcome(
             request_id,
-            PreparedRemoteOutcome::Changed(Box::new(PreparedRemoteInstall {
+            PreparedDocumentOutcome::Changed(Box::new(PreparedRemoteInstall {
                 live_update,
                 accepted_update,
                 history_admission,
@@ -2127,25 +2147,29 @@ impl YrsDocumentEngine {
                 next_state_revision,
                 next_epoch,
             })),
+            PreparedDependencyState::Clear,
         ))
     }
 
-    /// Seals a prepared remote outcome to the engine state that admitted it.
-    /// Called after every quarantine transition of the current preparation,
-    /// so a one-shot prepare+commit sequence always matches its own seal.
+    /// Seals prepared document and dependency candidates to the engine state
+    /// that admitted them without mutating that state.
     fn seal_remote_outcome(
         &self,
         request_id: u64,
-        outcome: PreparedRemoteOutcome,
+        document: PreparedDocumentOutcome,
+        dependencies: PreparedDependencyState,
     ) -> PreparedRemoteUpdate {
         PreparedRemoteUpdate {
-            request_id,
-            sealed_doc: self.doc.clone(),
-            admitted_revision: self.revision,
-            admitted_state_revision: self.state_revision,
-            admitted_epoch: self.yrs_state_epoch,
-            sealed_generation: self.remote_seal_generation,
-            outcome,
+            seal: PreparedRemoteSeal {
+                request_id,
+                sealed_doc: self.doc.clone(),
+                admitted_revision: self.revision,
+                admitted_state_revision: self.state_revision,
+                admitted_epoch: self.yrs_state_epoch,
+                sealed_generation: self.remote_seal_generation,
+            },
+            document,
+            dependencies,
         }
     }
 
@@ -2159,14 +2183,18 @@ impl YrsDocumentEngine {
         prepared: PreparedRemoteUpdate,
     ) -> super::OperationResult<EngineCommit> {
         let PreparedRemoteUpdate {
+            seal,
+            document,
+            dependencies,
+        } = prepared;
+        let PreparedRemoteSeal {
             request_id,
             sealed_doc,
             admitted_revision,
             admitted_state_revision,
             admitted_epoch,
             sealed_generation,
-            outcome,
-        } = prepared;
+        } = seal;
         if !Doc::ptr_eq(&sealed_doc, &self.doc)
             || (self.revision, self.state_revision, self.yrs_state_epoch)
                 != (admitted_revision, admitted_state_revision, admitted_epoch)
@@ -2178,12 +2206,22 @@ impl YrsDocumentEngine {
                 "prepared remote update is sealed to a superseded engine state",
             ));
         }
-        match outcome {
-            PreparedRemoteOutcome::Unchanged => Ok(EngineCommit {
-                changed: false,
-                revision: self.revision,
-            }),
-            PreparedRemoteOutcome::Changed(install) => {
+        let dependency_candidate = match dependencies {
+            PreparedDependencyState::Clear => None,
+            PreparedDependencyState::Retain(bytes) => Some(bytes),
+        };
+        match document {
+            PreparedDocumentOutcome::Unchanged => {
+                if self.quarantined_remote_update != dependency_candidate {
+                    self.quarantined_remote_update = dependency_candidate;
+                    self.remote_seal_generation = self.remote_seal_generation.wrapping_add(1);
+                }
+                Ok(EngineCommit {
+                    changed: false,
+                    revision: self.revision,
+                })
+            }
+            PreparedDocumentOutcome::Changed(install) => {
                 let PreparedRemoteInstall {
                     live_update,
                     accepted_update,
@@ -2204,7 +2242,7 @@ impl YrsDocumentEngine {
                 next_state.mutation_lookup_seed = prepared_live_seed;
                 self.history
                     .finish_prepared_excluded(history_admission, accepted_update);
-                self.quarantined_remote_update = None;
+                self.quarantined_remote_update = dependency_candidate;
                 self.derived_state = Some(next_state);
                 self.durable_client_ids = durable_client_ids;
                 self.revision = next_revision;

@@ -1171,6 +1171,40 @@ fn dependent_room_update_chain() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 }
 
 #[test]
+fn prepared_remote_update_drop_is_observationally_pure() {
+    let (_, delta_b, _) = dependent_room_update_chain();
+    let (id, snapshot) = create_ready_room();
+    synchronize_ready_room(id, &snapshot);
+
+    let before_audit = session_audit(id).unwrap();
+    let before_dependencies = remote_dependency_accounting(id).unwrap();
+    let before_encoded = bridge::session_audit(id).unwrap().encoded_state;
+
+    let slot = crate::registry::get_session(id).expect("session must remain registered");
+    slot.with_alive(|session| {
+        let prepared = session
+            .engine
+            .prepare_remote_update_v1(360, &delta_b)
+            .unwrap();
+        assert_eq!(prepared.retained_dependency_bytes(), delta_b.len());
+        assert!(prepared.has_pending_dependencies());
+        drop(prepared);
+    })
+    .unwrap();
+
+    assert_eq!(session_audit(id).unwrap(), before_audit);
+    assert_eq!(
+        remote_dependency_accounting(id).unwrap(),
+        before_dependencies
+    );
+    assert_eq!(
+        bridge::session_audit(id).unwrap().encoded_state,
+        before_encoded
+    );
+    destroy_session(id);
+}
+
+#[test]
 fn dependency_byte_ceiling_refuses_before_any_quarantine_mutation() {
     let (prefix, delta_b, delta_c) = dependent_room_update_chain();
     let retained = delta_b.len();
@@ -1190,6 +1224,28 @@ fn dependency_byte_ceiling_refuses_before_any_quarantine_mutation() {
     set_collaboration_limit_for_test(id, "maxPendingDependencyUpdateBytes", retained).unwrap();
     let before = session_audit(id).unwrap();
     let before_engine = bridge::session_audit(id).unwrap();
+    let expected_retained = Update::merge_updates(vec![
+        Update::decode_v1(&delta_b).unwrap(),
+        Update::decode_v1(&delta_c).unwrap(),
+    ])
+    .encode_v1()
+    .len();
+    let slot = crate::registry::get_session(id).expect("session must remain registered");
+    slot.with_alive(|session| {
+        let before_bytes = session.engine.pending_remote_dependency_bytes();
+        let prepared = session
+            .engine
+            .prepare_remote_update_v1(362, &delta_c)
+            .unwrap();
+        assert_eq!(prepared.retained_dependency_bytes(), expected_retained);
+        assert!(prepared.has_pending_dependencies());
+        drop(prepared);
+        assert_eq!(
+            session.engine.pending_remote_dependency_bytes(),
+            before_bytes
+        );
+    })
+    .unwrap();
 
     let outcome = receive_message(id, 362, generation, &update_frame(delta_c.clone())).unwrap();
     let close = outcome
@@ -1247,6 +1303,22 @@ fn dependency_byte_ceiling_refuses_before_any_quarantine_mutation() {
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
     receive_message(id, 365, generation, &update_frame(delta_b.clone())).unwrap();
+    let slot = crate::registry::get_session(id).expect("session must remain registered");
+    slot.with_alive(|session| {
+        let before_bytes = session.engine.pending_remote_dependency_bytes();
+        let prepared = session
+            .engine
+            .prepare_remote_update_v1(366, &prefix)
+            .unwrap();
+        assert_eq!(prepared.retained_dependency_bytes(), 0);
+        assert!(!prepared.has_pending_dependencies());
+        drop(prepared);
+        assert_eq!(
+            session.engine.pending_remote_dependency_bytes(),
+            before_bytes
+        );
+    })
+    .unwrap();
     let outcome = receive_message(id, 366, generation, &update_frame(prefix)).unwrap();
     assert!(outcome.close.is_none(), "{outcome:?}");
     assert_eq!(remote_dependency_accounting(id).unwrap(), (0, 0));
