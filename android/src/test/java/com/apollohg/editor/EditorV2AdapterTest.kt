@@ -530,4 +530,25 @@ class EditorV2AdapterTest {
         assertEquals(2uL, session.revision)
         assertEquals(2uL, adapter.baseDocumentRevision)
     }
+
+    @Test
+    fun `request id exhaustion emits max once then rejects locally`() {
+        val adapter = makeAdapter()
+        val errors = mutableListOf<EditorV2Error>()
+        adapter.onAutonomousError = { errors.add(it) }
+        adapter.setNextRequestIdForTesting(ULong.MAX_VALUE - 1u)
+
+        val backendCallsBefore = adapter.backendEnvelopeCallCountForTesting
+        assertNotNull(adapter.setContentHtml("<p>max</p>"))
+        assertEquals(ULong.MAX_VALUE, adapter.lastRequestIdForTesting)
+        assertEquals(backendCallsBefore + 1, adapter.backendEnvelopeCallCountForTesting)
+
+        assertNull(adapter.setContentHtml("<p>must not reach backend</p>"))
+        assertEquals(ULong.MAX_VALUE, adapter.lastRequestIdForTesting)
+        assertEquals(backendCallsBefore + 1, adapter.backendEnvelopeCallCountForTesting)
+        assertEquals("boundary", errors.last().domain)
+        assertEquals("CONFIG_INVALID", errors.last().code)
+        assertEquals(ULong.MAX_VALUE.toString(), errors.last().requestId)
+        assertEquals("max", documentText(adapter))
+    }
 }

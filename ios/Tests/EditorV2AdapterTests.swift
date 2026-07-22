@@ -42,6 +42,26 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertNil(EditorV2Adapter.attach(editorId: "999999", roomBound: false))
     }
 
+    func testRequestIdExhaustionEmitsMaxOnceThenRejectsLocally() {
+        let adapter = makeAdapter()
+        let spy = ErrorSpy()
+        adapter.onAutonomousError = spy.record
+        adapter.setNextRequestIdForTesting(UInt64.max - 1)
+
+        let backendCallsBefore = adapter.backendEnvelopeCallCountForTesting
+        XCTAssertNotNil(adapter.setContentHtml("<p>max</p>"))
+        XCTAssertEqual(adapter.lastRequestIdForTesting, UInt64.max)
+        XCTAssertEqual(adapter.backendEnvelopeCallCountForTesting, backendCallsBefore + 1)
+
+        XCTAssertNil(adapter.setContentHtml("<p>must not reach backend</p>"))
+        XCTAssertEqual(adapter.lastRequestIdForTesting, UInt64.max)
+        XCTAssertEqual(adapter.backendEnvelopeCallCountForTesting, backendCallsBefore + 1)
+        XCTAssertEqual(spy.last?.domain, "boundary")
+        XCTAssertEqual(spy.last?.code, "CONFIG_INVALID")
+        XCTAssertEqual(spy.last?.requestId, String(UInt64.max))
+        XCTAssertEqual(documentText(adapter), "max")
+    }
+
     func testAdapterEmitsCanonicalDecimalDocumentVersion() {
         let adapter = makeAdapter()
         let update = parseObject(adapter.currentStateJSON())

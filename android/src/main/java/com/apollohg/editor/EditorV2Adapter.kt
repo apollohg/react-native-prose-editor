@@ -33,6 +33,10 @@ internal class EditorV2Adapter private constructor(
     var baseDocumentRevision: ULong = 0uL
         private set
     private var nextRequestId: ULong = 0uL
+    internal var lastRequestIdForTesting: ULong? = null
+        private set
+    internal var backendEnvelopeCallCountForTesting = 0
+        private set
     private var lastSyncedScalarSelection: IntArray? = null
     private var cachedScalarLength: Int? = null
     private var destroyed = false
@@ -83,8 +87,24 @@ internal class EditorV2Adapter private constructor(
 
     // ── Envelopes ──
 
-    private fun buildEnvelope(payload: JSONObject, includeBaseRevision: Boolean = true): String {
+    private fun requestIdExhaustedError(): EditorV2Error =
+        EditorV2Error(
+            domain = "boundary",
+            code = "CONFIG_INVALID",
+            message = "v2 request id counter exhausted",
+            requestId = nextRequestId.toString(),
+            limit = ULong.MAX_VALUE.toString(),
+        )
+
+    private fun buildEnvelope(
+        payload: JSONObject,
+        includeBaseRevision: Boolean = true,
+    ): EditorV2CallResult<String> {
+        if (nextRequestId == ULong.MAX_VALUE) {
+            return EditorV2CallResult.Err(requestIdExhaustedError())
+        }
         nextRequestId += 1u
+        lastRequestIdForTesting = nextRequestId
         val parts = mutableListOf(
             "\"version\":1",
             "\"requestId\":${JSONObject.quote(nextRequestId.toString())}",
@@ -96,7 +116,24 @@ internal class EditorV2Adapter private constructor(
         if (payloadJson.length > 2) {
             parts.add(payloadJson.substring(1, payloadJson.length - 1))
         }
-        return parts.joinToString(separator = ",", prefix = "{", postfix = "}")
+        return EditorV2CallResult.Ok(parts.joinToString(separator = ",", prefix = "{", postfix = "}"))
+    }
+
+    private fun callWithEnvelope(
+        payload: JSONObject,
+        includeBaseRevision: Boolean = true,
+        call: (String) -> EditorV2CallResult<String>,
+    ): EditorV2CallResult<String> =
+        when (val envelope = buildEnvelope(payload, includeBaseRevision)) {
+            is EditorV2CallResult.Err -> envelope
+            is EditorV2CallResult.Ok -> {
+                backendEnvelopeCallCountForTesting += 1
+                call(envelope.value)
+            }
+        }
+
+    internal fun setNextRequestIdForTesting(requestId: ULong) {
+        nextRequestId = requestId
     }
 
     private fun positionEnvelope(scalar: Int, affinity: String? = null): JSONObject {
@@ -293,18 +330,18 @@ internal class EditorV2Adapter private constructor(
         // at text-boundary positions; a range uses Before. The fallback
         // changes only the stickiness of the SAME position.
         val collapsed = clampedAnchor == clampedHead
-        var result = backend.setSelection(
-            editorId,
-            buildEnvelope(selectionEnvelope(clampedAnchor, clampedHead, if (collapsed) "after" else "before")),
-        )
+        var result = callWithEnvelope(
+            selectionEnvelope(clampedAnchor, clampedHead, if (collapsed) "after" else "before"),
+        ) { requestJson ->
+            backend.setSelection(editorId, requestJson)
+        }
         if (collapsed &&
             result is EditorV2CallResult.Err &&
             result.error.code == "POSITION_INVALID"
         ) {
-            result = backend.setSelection(
-                editorId,
-                buildEnvelope(selectionEnvelope(clampedAnchor, clampedHead, "before")),
-            )
+            result = callWithEnvelope(selectionEnvelope(clampedAnchor, clampedHead, "before")) { requestJson ->
+                backend.setSelection(editorId, requestJson)
+            }
         }
         return when (result) {
             is EditorV2CallResult.Ok -> {
@@ -487,7 +524,7 @@ internal class EditorV2Adapter private constructor(
             emit(destroyedError())
             return null
         }
-        return when (val result = call(buildEnvelope(JSONObject(), includeBaseRevision = false))) {
+        return when (val result = callWithEnvelope(JSONObject(), includeBaseRevision = false, call = call)) {
             is EditorV2CallResult.Err -> {
                 emit(result.error)
                 null
@@ -541,10 +578,9 @@ internal class EditorV2Adapter private constructor(
             preSelection = intArrayOf(atScalarPos, atScalarPos),
             postSelectionMirror = intArrayOf(postCaret, postCaret),
         ) {
-            backend.applyInput(
-                editorId,
-                buildEnvelope(JSONObject().put("text", text)),
-            )
+            callWithEnvelope(JSONObject().put("text", text)) { requestJson ->
+                backend.applyInput(editorId, requestJson)
+            }
         }
     }
 
@@ -560,15 +596,14 @@ internal class EditorV2Adapter private constructor(
             preSelection = intArrayOf(scalarFrom, scalarTo),
             postSelectionMirror = intArrayOf(postCaret, postCaret),
         ) {
-            backend.applyCommand(
-                editorId,
-                buildEnvelope(
-                    JSONObject().put(
-                        "command",
-                        JSONObject().put("type", "replaceSelectionText").put("text", text),
-                    ),
+            callWithEnvelope(
+                JSONObject().put(
+                    "command",
+                    JSONObject().put("type", "replaceSelectionText").put("text", text),
                 ),
-            )
+            ) { requestJson ->
+                backend.applyCommand(editorId, requestJson)
+            }
         }
     }
 
@@ -577,22 +612,21 @@ internal class EditorV2Adapter private constructor(
         val clampedTo = clampScalar(scalarTo)
         if (clampedFrom >= clampedTo) return currentStateJson()
         return performMutation(postSelectionMirror = intArrayOf(clampedFrom, clampedFrom)) {
-            backend.applyCommand(
-                editorId,
-                buildEnvelope(
-                    JSONObject().put(
-                        "command",
-                        JSONObject()
-                            .put("type", "deleteRange")
-                            .put(
-                                "range",
-                                JSONObject()
-                                    .put("from", positionEnvelope(clampedFrom))
-                                    .put("to", positionEnvelope(clampedTo)),
-                            ),
-                    ),
+            callWithEnvelope(
+                JSONObject().put(
+                    "command",
+                    JSONObject()
+                        .put("type", "deleteRange")
+                        .put(
+                            "range",
+                            JSONObject()
+                                .put("from", positionEnvelope(clampedFrom))
+                                .put("to", positionEnvelope(clampedTo)),
+                        ),
                 ),
-            )
+            ) { requestJson ->
+                backend.applyCommand(editorId, requestJson)
+            }
         }
     }
 
@@ -602,10 +636,9 @@ internal class EditorV2Adapter private constructor(
             preSelection = intArrayOf(anchor, head),
             postSelectionMirror = intArrayOf(postCaret, postCaret),
         ) {
-            backend.applyCommand(
-                editorId,
-                buildEnvelope(JSONObject().put("command", JSONObject().put("type", "deleteBackward"))),
-            )
+            callWithEnvelope(JSONObject().put("command", JSONObject().put("type", "deleteBackward"))) { requestJson ->
+                backend.applyCommand(editorId, requestJson)
+            }
         }
     }
 
@@ -614,10 +647,9 @@ internal class EditorV2Adapter private constructor(
             preSelection = intArrayOf(scalarPos, scalarPos),
             postSelectionMirror = intArrayOf(scalarPos, scalarPos),
         ) {
-            backend.applyCommand(
-                editorId,
-                buildEnvelope(JSONObject().put("command", JSONObject().put("type", "splitBlock"))),
-            )
+            callWithEnvelope(JSONObject().put("command", JSONObject().put("type", "splitBlock"))) { requestJson ->
+                backend.applyCommand(editorId, requestJson)
+            }
         }
 
     override fun deleteAndSplit(scalarFrom: Int, scalarTo: Int): String? =
@@ -625,10 +657,9 @@ internal class EditorV2Adapter private constructor(
             preSelection = intArrayOf(scalarFrom, scalarTo),
             postSelectionMirror = intArrayOf(scalarFrom, scalarFrom),
         ) {
-            backend.applyCommand(
-                editorId,
-                buildEnvelope(JSONObject().put("command", JSONObject().put("type", "deleteAndSplit"))),
-            )
+            callWithEnvelope(JSONObject().put("command", JSONObject().put("type", "deleteAndSplit"))) { requestJson ->
+                backend.applyCommand(editorId, requestJson)
+            }
         }
 
     override fun insertNode(nodeType: String, anchor: Int, head: Int): String? =
@@ -702,25 +733,26 @@ internal class EditorV2Adapter private constructor(
             preSelection = intArrayOf(anchor, head),
             postSelectionMirror = intArrayOf(anchor, head),
         ) {
-            backend.applyCommand(editorId, buildEnvelope(JSONObject().put("command", command)))
+            callWithEnvelope(JSONObject().put("command", command)) { requestJson ->
+                backend.applyCommand(editorId, requestJson)
+            }
         }
 
     override fun resizeImageAtDocPos(docPos: Int, width: Int, height: Int): String? {
         val scalar = scalarPositionForDoc(docPos) ?: return null
         return performMutation {
-            backend.applyCommand(
-                editorId,
-                buildEnvelope(
-                    JSONObject().put(
-                        "command",
-                        JSONObject()
-                            .put("type", "resizeImage")
-                            .put("at", positionEnvelope(scalar))
-                            .put("width", width)
-                            .put("height", height),
-                    ),
+            callWithEnvelope(
+                JSONObject().put(
+                    "command",
+                    JSONObject()
+                        .put("type", "resizeImage")
+                        .put("at", positionEnvelope(scalar))
+                        .put("width", width)
+                        .put("height", height),
                 ),
-            )
+            ) { requestJson ->
+                backend.applyCommand(editorId, requestJson)
+            }
         }
     }
 
@@ -734,12 +766,9 @@ internal class EditorV2Adapter private constructor(
 
     override fun setContentHtml(html: String): String? =
         performMutation(postSelectionMirror = intArrayOf(0, 0), includeSelectionInUpdate = true) {
-            backend.applyLocalApi(
-                editorId,
-                buildEnvelope(
-                    JSONObject().put("setHtml", html).put("history", "resetAndClear"),
-                ),
-            )
+            callWithEnvelope(JSONObject().put("setHtml", html).put("history", "resetAndClear")) { requestJson ->
+                backend.applyLocalApi(editorId, requestJson)
+            }
         }
 
     override fun setContentJson(json: String): String? {
@@ -750,12 +779,9 @@ internal class EditorV2Adapter private constructor(
             return null
         }
         return performMutation(postSelectionMirror = intArrayOf(0, 0), includeSelectionInUpdate = true) {
-            backend.applyLocalApi(
-                editorId,
-                buildEnvelope(
-                    JSONObject().put("setJson", document).put("history", "resetAndClear"),
-                ),
-            )
+            callWithEnvelope(JSONObject().put("setJson", document).put("history", "resetAndClear")) { requestJson ->
+                backend.applyLocalApi(editorId, requestJson)
+            }
         }
     }
 }

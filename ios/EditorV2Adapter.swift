@@ -26,6 +26,11 @@ enum EditorV2ValueResult {
     case failure(FfiError)
 }
 
+private enum EditorV2EnvelopeResult {
+    case success(String)
+    case failure(FfiError)
+}
+
 /// The v2 session adapter backing one bound editor view. See the file
 /// header for the architecture and the render derivation notes.
 final class EditorV2Adapter {
@@ -48,6 +53,8 @@ final class EditorV2Adapter {
     /// The document revision the next mutation will be based on.
     private(set) var baseDocumentRevision: UInt64 = 0
     private var nextRequestId: UInt64 = 0
+    private(set) var lastRequestIdForTesting: UInt64?
+    private(set) var backendEnvelopeCallCountForTesting = 0
     private var lastSyncedScalarSelection: (anchor: UInt32, head: UInt32)?
     private var cachedScalarLength: UInt32?
     /// Diagnostics: structured notes for adapter-path failures
@@ -146,10 +153,30 @@ final class EditorV2Adapter {
         onAutonomousError?(error)
     }
 
+    private func requestIdExhaustedError() -> FfiError {
+        FfiError(
+            domain: "boundary",
+            code: "CONFIG_INVALID",
+            message: "v2 request id counter exhausted",
+            requestId: String(nextRequestId),
+            operationIndex: nil,
+            limit: String(UInt64.max),
+            actual: nil,
+            detailsJson: nil
+        )
+    }
+
     /// Serialize one request envelope with canonical decimal-string u64
     /// fields, so Foundation never bridges them through NSNumber.
-    private func buildEnvelope(_ payload: [String: Any], includeBaseRevision: Bool = true) -> String {
-        nextRequestId &+= 1
+    private func buildEnvelope(
+        _ payload: [String: Any],
+        includeBaseRevision: Bool = true
+    ) -> EditorV2EnvelopeResult {
+        guard nextRequestId < UInt64.max else {
+            return .failure(requestIdExhaustedError())
+        }
+        nextRequestId += 1
+        lastRequestIdForTesting = nextRequestId
         var parts = ["\"version\":1", "\"requestId\":\"\(nextRequestId)\""]
         if includeBaseRevision {
             parts.append("\"baseDocumentRevision\":\"\(baseDocumentRevision)\"")
@@ -160,7 +187,25 @@ final class EditorV2Adapter {
         {
             parts.append(String(payloadJson.dropFirst().dropLast()))
         }
-        return "{\(parts.joined(separator: ","))}"
+        return .success("{\(parts.joined(separator: ","))}")
+    }
+
+    private func callWithEnvelope(
+        _ payload: [String: Any],
+        includeBaseRevision: Bool = true,
+        _ call: (String) -> FfiJsonResult
+    ) -> FfiJsonResult {
+        switch buildEnvelope(payload, includeBaseRevision: includeBaseRevision) {
+        case .success(let requestJson):
+            backendEnvelopeCallCountForTesting += 1
+            return call(requestJson)
+        case .failure(let error):
+            return FfiJsonResult(value: nil, error: error)
+        }
+    }
+
+    func setNextRequestIdForTesting(_ requestId: UInt64) {
+        nextRequestId = requestId
     }
 
     private func selectionEnvelope(anchor: UInt32, head: UInt32, affinity: String) -> [String: Any] {
@@ -421,23 +466,21 @@ final class EditorV2Adapter {
         // stickiness of the SAME position — it is not a guessed-position
         // retry.
         let collapsed = clampedAnchor == clampedHead
-        var result = editorV2SetSelection(
-            editorId: editorId,
-            requestJson: buildEnvelope(
+        var result = callWithEnvelope(
                 selectionEnvelope(
                     anchor: clampedAnchor,
                     head: clampedHead,
                     affinity: collapsed ? "after" : "before"
                 )
-            )
-        )
+        ) { requestJson in
+            editorV2SetSelection(editorId: self.editorId, requestJson: requestJson)
+        }
         if collapsed, let error = result.error, error.code == "POSITION_INVALID" {
-            result = editorV2SetSelection(
-                editorId: editorId,
-                requestJson: buildEnvelope(
+            result = callWithEnvelope(
                     selectionEnvelope(anchor: clampedAnchor, head: clampedHead, affinity: "before")
-                )
-            )
+            ) { requestJson in
+                editorV2SetSelection(editorId: self.editorId, requestJson: requestJson)
+            }
         }
         switch Self.normalizeJsonResult(result) {
         case .success(let value):
@@ -739,7 +782,7 @@ final class EditorV2Adapter {
             )
             return nil
         }
-        let result = call(buildEnvelope([:], includeBaseRevision: false))
+        let result = callWithEnvelope([:], includeBaseRevision: false, call)
         switch Self.normalizeJsonResult(result) {
         case .failure(let error):
             emit(error)
@@ -800,10 +843,9 @@ final class EditorV2Adapter {
             preSelection: (scalarPos, scalarPos),
             postSelectionMirror: (postCaret, postCaret)
         ) {
-            editorV2ApplyInput(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["text": text])
-            )
+            self.callWithEnvelope(["text": text]) { requestJson in
+                editorV2ApplyInput(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -820,21 +862,18 @@ final class EditorV2Adapter {
             preSelection: (from, to),
             postSelectionMirror: (postCaret, postCaret)
         ) {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope([
-                    "command": ["type": "replaceSelectionText", "text": text]
-                ])
-            )
+            self.callWithEnvelope([
+                "command": ["type": "replaceSelectionText", "text": text]
+            ]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
     func deleteScalarRange(from: UInt32, to: UInt32) -> String? {
         guard from < to else { return currentStateJSON() }
         return performMutation(postSelectionMirror: (from, from)) {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope([
+            self.callWithEnvelope([
                     "command": [
                         "type": "deleteRange",
                         "range": [
@@ -842,8 +881,9 @@ final class EditorV2Adapter {
                             "to": EditorV2PositionBridge.positionEnvelope(scalar: to),
                         ],
                     ] as [String: Any],
-                ])
-            )
+            ]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -860,10 +900,9 @@ final class EditorV2Adapter {
             preSelection: (anchor, head),
             postSelectionMirror: (postCaret, postCaret)
         ) {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["command": ["type": "deleteBackward"]])
-            )
+            self.callWithEnvelope(["command": ["type": "deleteBackward"]]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -874,10 +913,9 @@ final class EditorV2Adapter {
             preSelection: (scalarPos, scalarPos),
             postSelectionMirror: (scalarPos &+ 1, scalarPos &+ 1)
         ) {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["command": ["type": "splitBlock"]])
-            )
+            self.callWithEnvelope(["command": ["type": "splitBlock"]]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -886,10 +924,9 @@ final class EditorV2Adapter {
             preSelection: (from, to),
             postSelectionMirror: (from, from)
         ) {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["command": ["type": "deleteAndSplit"]])
-            )
+            self.callWithEnvelope(["command": ["type": "deleteAndSplit"]]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -901,20 +938,18 @@ final class EditorV2Adapter {
                 preSelection: (anchor, head),
                 postSelectionMirror: (caret, caret)
             ) {
-                editorV2ApplyCommand(
-                    editorId: self.editorId,
-                    requestJson: self.buildEnvelope(["command": ["type": "insertNode", "nodeType": nodeType]])
-                )
+                self.callWithEnvelope(["command": ["type": "insertNode", "nodeType": nodeType]]) { requestJson in
+                    editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+                }
             }
         }
         // Block-level void (horizontalRule, image): the planner inserts the
         // block after the current block and moves the caret into the
         // trailing paragraph; the exact scalar is derived post-hoc.
         guard let update = performMutation(preSelection: (anchor, head), {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["command": ["type": "insertNode", "nodeType": nodeType]])
-            )
+            self.callWithEnvelope(["command": ["type": "insertNode", "nodeType": nodeType]]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }) else {
             return nil
         }
@@ -923,10 +958,9 @@ final class EditorV2Adapter {
 
     func insertContentHtml(_ html: String, anchor: UInt32, head: UInt32) -> String? {
         performMutation(preSelection: (anchor, head)) {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["command": ["type": "insertContentHtml", "html": html]])
-            )
+            self.callWithEnvelope(["command": ["type": "insertContentHtml", "html": html]]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -934,10 +968,9 @@ final class EditorV2Adapter {
     /// insert applies at the engine selection.
     func insertContentHtmlAtEngineSelection(_ html: String) -> String? {
         performMutation {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["command": ["type": "insertContentHtml", "html": html]])
-            )
+            self.callWithEnvelope(["command": ["type": "insertContentHtml", "html": html]]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -950,10 +983,9 @@ final class EditorV2Adapter {
             return nil
         }
         return performMutation {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["command": ["type": "insertContentJson", "json": fragment]])
-            )
+            self.callWithEnvelope(["command": ["type": "insertContentJson", "json": fragment]]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -965,10 +997,9 @@ final class EditorV2Adapter {
             return nil
         }
         guard let update = performMutation(preSelection: (anchor, head), {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["command": ["type": "insertContentJson", "json": fragment]])
-            )
+            self.callWithEnvelope(["command": ["type": "insertContentJson", "json": fragment]]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }) else {
             return nil
         }
@@ -1037,27 +1068,25 @@ final class EditorV2Adapter {
 
     private func commandAtSelection(_ command: [String: Any], anchor: UInt32, head: UInt32) -> String? {
         performMutation(preSelection: (anchor, head), postSelectionMirror: (anchor, head)) {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["command": command])
-            )
+            self.callWithEnvelope(["command": command]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
     func resizeImage(atDocPos docPos: UInt32, width: UInt32, height: UInt32) -> String? {
         guard let scalar = scalarPosition(forDoc: docPos) else { return nil }
         return performMutation {
-            editorV2ApplyCommand(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope([
+            self.callWithEnvelope([
                     "command": [
                         "type": "resizeImage",
                         "at": EditorV2PositionBridge.positionEnvelope(scalar: scalar),
                         "width": Int(width),
                         "height": Int(height),
                     ] as [String: Any],
-                ])
-            )
+            ]) { requestJson in
+                editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -1077,10 +1106,9 @@ final class EditorV2Adapter {
 
     func setContentHtml(_ html: String) -> String? {
         performMutation(postSelectionMirror: (0, 0), includeSelectionInUpdate: true) {
-            editorV2ApplyLocalApi(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["setHtml": html, "history": "resetAndClear"])
-            )
+            self.callWithEnvelope(["setHtml": html, "history": "resetAndClear"]) { requestJson in
+                editorV2ApplyLocalApi(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -1092,10 +1120,9 @@ final class EditorV2Adapter {
             return nil
         }
         return performMutation(postSelectionMirror: (0, 0), includeSelectionInUpdate: true) {
-            editorV2ApplyLocalApi(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["setJson": document, "history": "resetAndClear"])
-            )
+            self.callWithEnvelope(["setJson": document, "history": "resetAndClear"]) { requestJson in
+                editorV2ApplyLocalApi(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -1103,10 +1130,9 @@ final class EditorV2Adapter {
     /// one undoable local-API boundary, selection preserved where possible).
     func replaceContentHtml(_ html: String) -> String? {
         performMutation(postSelectionMirror: (0, 0), includeSelectionInUpdate: true) {
-            editorV2ApplyLocalApi(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["setHtml": html, "history": "undoableBoundary"])
-            )
+            self.callWithEnvelope(["setHtml": html, "history": "undoableBoundary"]) { requestJson in
+                editorV2ApplyLocalApi(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 
@@ -1120,10 +1146,9 @@ final class EditorV2Adapter {
             return nil
         }
         return performMutation(postSelectionMirror: (0, 0), includeSelectionInUpdate: true) {
-            editorV2ApplyLocalApi(
-                editorId: self.editorId,
-                requestJson: self.buildEnvelope(["setJson": document, "history": "undoableBoundary"])
-            )
+            self.callWithEnvelope(["setJson": document, "history": "undoableBoundary"]) { requestJson in
+                editorV2ApplyLocalApi(editorId: self.editorId, requestJson: requestJson)
+            }
         }
     }
 }

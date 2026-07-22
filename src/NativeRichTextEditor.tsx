@@ -30,6 +30,7 @@ import {
     type Selection,
 } from './NativeEditorBridge';
 import { NativeEditorV2OperationError } from './NativeEditorBoundaryError';
+import { allocateEditorUpdateRevision } from './EditorUpdateRevision';
 import { useNativeEditorDocument } from './useNativeEditor';
 import {
     DEFAULT_EDITOR_TOOLBAR_ITEMS,
@@ -735,8 +736,13 @@ export const NativeRichTextEditor = forwardRef<
         if (typeof documentVersion === 'string') {
             lastPushedEngineRevisionRef.current = documentVersion;
         }
-        pushRevisionRef.current += 1;
-        setPushedUpdate({ json: updateJson, revision: pushRevisionRef.current });
+        const allocation = allocateEditorUpdateRevision(pushRevisionRef.current);
+        if ('error' in allocation) {
+            bridge._emitAutonomousError(allocation.error);
+            return;
+        }
+        pushRevisionRef.current = allocation.revision;
+        setPushedUpdate({ json: updateJson, revision: allocation.revision });
     }, [applyUpdateState, bridge, documentHandle]);
 
     // After a JS-driven engine change (controlled apply, remote commit,
