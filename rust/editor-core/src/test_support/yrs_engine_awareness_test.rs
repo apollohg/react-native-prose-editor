@@ -607,14 +607,19 @@ fn snapshot_restore_rebinds_awareness_to_the_new_store() {
         .apply_remote_update_v1(&raw_update_bytes(&raw), &limits)
         .unwrap();
     assert_eq!(engine.awareness().peer_snapshot().len(), 2);
+    engine
+        .awareness()
+        .set_live_local_clock_for_test(u32::MAX - 1);
+    engine.awareness().clear_transport_states().unwrap();
 
     assert!(engine.restore_snapshot(&snapshot).unwrap().changed);
 
     let new_client = engine.client_id();
     assert_ne!(new_client, old_client);
     assert_eq!(engine.awareness().client_id(), new_client);
-    // Stale remote peers are dropped; the local desired state survives,
-    // re-encoded under the new client identity with a fresh clock.
+    // Stale remote peers are dropped; even an exhausted old-identity
+    // tombstone is recovered only by the fresh client identity, where the
+    // desired state is re-encoded at clock one.
     assert_eq!(engine.awareness().local_state(), Some(&desired));
     let peers = engine.awareness().peer_snapshot();
     assert_eq!(peers.len(), 1);
@@ -644,6 +649,10 @@ fn import_store_swap_rebinds_awareness_and_drops_stale_peers() {
         .awareness()
         .apply_remote_update_v1(&raw_update_bytes(&raw), &limits)
         .unwrap();
+    engine
+        .awareness()
+        .set_live_local_clock_for_test(u32::MAX - 1);
+    engine.awareness().clear_transport_states().unwrap();
 
     engine
         .import_json(
@@ -772,6 +781,86 @@ fn undo_redo_store_swap_preserves_awareness_peers_and_local_state() {
         .peer_snapshot()
         .iter()
         .any(|peer| peer.client_id == late_raw.client_id().get()));
+}
+
+#[test]
+fn undo_redo_after_transport_cleanup_preserves_local_tombstone_ordering() {
+    let mut engine = engine(InitializationMode::LocalEmpty);
+    let limits = session_default_limits();
+    let client = engine.client_id();
+    engine
+        .apply_command(
+            33,
+            TypedCommand::InsertText {
+                text: "undoable cleanup".into(),
+            },
+        )
+        .unwrap();
+    let desired = json!({"name": "returns after undo"});
+    engine
+        .awareness()
+        .set_local_state(&desired, &limits)
+        .unwrap();
+    engine.awareness().clear_transport_states().unwrap();
+    let tombstone_clock =
+        decode_entries(&engine.awareness().encode_local_update_v1().unwrap())[&client].0;
+    assert_eq!(tombstone_clock, 2);
+
+    engine.undo(34).unwrap().expect("undo applies");
+    let after_undo = decode_entries(&engine.awareness().encode_local_update_v1().unwrap());
+    assert_eq!(after_undo[&client], (tombstone_clock, "null".into()));
+
+    engine
+        .awareness()
+        .set_local_state(&desired, &limits)
+        .unwrap();
+    assert_eq!(
+        decode_entries(&engine.awareness().encode_local_update_v1().unwrap())[&client].0,
+        tombstone_clock + 1,
+    );
+
+    engine.redo(35).unwrap().expect("redo applies");
+    assert_eq!(
+        decode_entries(&engine.awareness().encode_local_update_v1().unwrap())[&client].0,
+        tombstone_clock + 1,
+    );
+}
+
+#[test]
+fn undo_after_exhausting_transport_cleanup_requires_a_fresh_identity() {
+    let mut engine = engine(InitializationMode::LocalEmpty);
+    let limits = session_default_limits();
+    let client = engine.client_id();
+    engine
+        .apply_command(
+            36,
+            TypedCommand::InsertText {
+                text: "undoable exhausted cleanup".into(),
+            },
+        )
+        .unwrap();
+    engine
+        .awareness()
+        .set_local_state(&json!({"name": "at the edge"}), &limits)
+        .unwrap();
+    engine
+        .awareness()
+        .set_live_local_clock_for_test(u32::MAX - 1);
+    engine.awareness().clear_transport_states().unwrap();
+
+    engine.undo(37).unwrap().expect("undo applies");
+
+    let after_undo = decode_entries(&engine.awareness().encode_local_update_v1().unwrap());
+    assert_eq!(after_undo[&client], (u32::MAX, "null".into()));
+    let error = engine
+        .awareness()
+        .set_local_state(&json!({"name": "cannot return"}), &limits)
+        .unwrap_err();
+    assert_eq!(error.code, "AWARENESS_CLOCK_EXHAUSTED", "{error:?}");
+    assert_eq!(
+        error.details.as_ref().unwrap()["requiresFreshEditorIdentity"],
+        true,
+    );
 }
 
 #[test]

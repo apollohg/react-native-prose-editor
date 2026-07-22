@@ -764,6 +764,61 @@ fn desired_awareness_survives_disconnect_and_republishes_with_a_newer_clock() {
 }
 
 #[test]
+fn reconnect_after_cleanup_and_undo_preserves_clock_or_requires_fresh_identity() {
+    let limits = CollaborationLimits::default();
+
+    for (initial_clock, expected_clock) in [(1, Some(3)), (u32::MAX - 1, None)] {
+        let mut engine = source_engine();
+        engine
+            .apply_command(
+                424,
+                crate::yrs_engine::TypedCommand::InsertText {
+                    text: "undoable reconnect".into(),
+                },
+            )
+            .unwrap();
+        let mut runtime = CollaborationRuntime::new(&limits);
+        runtime
+            .set_desired_awareness(
+                425,
+                r#"{"name":"reconnecting after undo"}"#,
+                crate::collaboration_runtime::awareness::AwarenessContext {
+                    engine: &mut engine,
+                    transport_state: RuntimeTransportState::Synchronized,
+                    limits: &limits,
+                },
+            )
+            .unwrap();
+        engine
+            .awareness()
+            .set_live_local_clock_for_test(initial_clock);
+        runtime.clear_transport_peers(&mut engine);
+        engine.undo(426).unwrap().expect("undo applies");
+
+        match expected_clock {
+            Some(expected_clock) => {
+                let frame = runtime
+                    .prepare_handshake_republish(&mut engine, &limits)
+                    .unwrap()
+                    .expect("desired awareness re-publishes");
+                let update = decode_awareness_reply(&frame);
+                let entry = &update.clients[&ClientID::new(engine.client_id())];
+                assert_eq!(entry.clock, expected_clock);
+                assert_ne!(entry.clock, 1, "same identity must not restart its clock");
+            }
+            None => {
+                let error = runtime
+                    .prepare_handshake_republish(&mut engine, &limits)
+                    .unwrap_err();
+                assert_eq!(error.code, "AWARENESS_CLOCK_EXHAUSTED", "{error:?}");
+                assert_eq!(error.details.as_ref().unwrap()["retryable"], false);
+                assert_eq!(runtime.outbox().pending_protocol_reply_count(), 1);
+            }
+        }
+    }
+}
+
+#[test]
 fn desired_awareness_republishes_past_two_reconnect_tombstones_with_inductive_clocks() {
     let (id, snapshot) = create_ready_room();
     let mut generation = synchronize_ready_room(id, &snapshot);

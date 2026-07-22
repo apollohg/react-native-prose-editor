@@ -850,6 +850,12 @@ fn operation_cause(error: &OperationError) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boundary::ResourceLimits;
+    use crate::collaboration_runtime::awareness::AwarenessContext;
+    use crate::session::{CollaborationLimits, TransportState};
+    use crate::yrs_engine::{
+        EditingLimits, InitializationMode, YrsDocumentEngine, YrsEngineConfig,
+    };
     use yrs::sync::awareness::AwarenessUpdate;
     use yrs::sync::{Message, SyncMessage};
     use yrs::updates::encoder::Encode;
@@ -865,6 +871,19 @@ mod tests {
         AwarenessUpdate {
             clients: std::collections::HashMap::new(),
         }
+    }
+
+    fn engine() -> YrsDocumentEngine {
+        YrsDocumentEngine::new(YrsEngineConfig {
+            schema: crate::schema::presets::tiptap_schema(),
+            fragment_name: "prosemirror".into(),
+            initialization_mode: InitializationMode::LocalEmpty,
+            resource_limits: ResourceLimits::default(),
+            editing_limits: EditingLimits::default(),
+            max_length: None,
+            scope: None,
+        })
+        .unwrap()
     }
 
     #[test]
@@ -1005,14 +1024,27 @@ mod tests {
         assert_eq!(details["cause"]["limit"], 2);
         assert_eq!(details["cause"]["actual"], 3);
 
-        let failure = classify_awareness_error(
-            REQUEST_ID,
-            YrsEngineError::new(
-                "AWARENESS_CLOCK_EXHAUSTED",
-                "local awareness clock exhausted; a fresh editor identity is required",
+        let limits = CollaborationLimits::default();
+        let mut engine = engine();
+        let mut runtime = CollaborationRuntime::new(&limits);
+        runtime
+            .set_desired_awareness(
+                REQUEST_ID,
+                r#"{"name":"before"}"#,
+                AwarenessContext {
+                    engine: &mut engine,
+                    transport_state: TransportState::Disconnected,
+                    limits: &limits,
+                },
             )
-            .with_details(json!({ "requiresFreshEditorIdentity": true })),
-        );
+            .unwrap();
+        engine
+            .awareness()
+            .set_live_local_clock_for_test(u32::MAX - 1);
+        let production_error = runtime
+            .prepare_handshake_republish(&mut engine, &limits)
+            .unwrap_err();
+        let failure = classify_awareness_error(REQUEST_ID, production_error);
         assert_eq!(failure.close, Incompatible);
         assert_eq!(failure.error.code, "AWARENESS_CLOCK_EXHAUSTED");
         assert_eq!(failure.error.domain, ErrorDomain::Transport);
@@ -1021,6 +1053,10 @@ mod tests {
             failure.error.details.as_ref().unwrap()["cause"]["details"]
                 ["requiresFreshEditorIdentity"],
             true,
+        );
+        assert_eq!(
+            failure.error.details.as_ref().unwrap()["cause"]["details"]["retryable"],
+            false,
         );
     }
 

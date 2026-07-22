@@ -157,23 +157,63 @@ impl FfiUnitResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::yrs_engine::YrsEngineError;
+    use crate::boundary::ResourceLimits;
+    use crate::collaboration_runtime::awareness::AwarenessContext;
+    use crate::collaboration_runtime::CollaborationRuntime;
+    use crate::session::{CollaborationLimits, TransportState};
+    use crate::yrs_engine::{
+        EditingLimits, InitializationMode, YrsDocumentEngine, YrsEngineConfig,
+    };
+
+    fn engine() -> YrsDocumentEngine {
+        YrsDocumentEngine::new(YrsEngineConfig {
+            schema: crate::schema::presets::tiptap_schema(),
+            fragment_name: "prosemirror".into(),
+            initialization_mode: InitializationMode::LocalEmpty,
+            resource_limits: ResourceLimits::default(),
+            editing_limits: EditingLimits::default(),
+            max_length: None,
+            scope: None,
+        })
+        .unwrap()
+    }
 
     #[test]
     fn awareness_clock_exhaustion_code_and_identity_recovery_details_are_frozen() {
-        let error = FfiError::from(SessionError::transport(
-            YrsEngineError::new(
-                AWARENESS_CLOCK_EXHAUSTED,
-                "local awareness clock exhausted; a fresh editor identity is required",
+        let limits = CollaborationLimits::default();
+        let mut engine = engine();
+        let mut runtime = CollaborationRuntime::new(&limits);
+        runtime
+            .set_desired_awareness(
+                91,
+                r#"{"name":"before"}"#,
+                AwarenessContext {
+                    engine: &mut engine,
+                    transport_state: TransportState::Disconnected,
+                    limits: &limits,
+                },
             )
-            .with_details(serde_json::json!({
-                "requiresFreshEditorIdentity": true,
-                "retryable": false,
-            })),
-        ));
+            .unwrap();
+        engine
+            .awareness()
+            .set_live_local_clock_for_test(u32::MAX - 1);
+        let session_error = runtime
+            .set_desired_awareness(
+                92,
+                r#"{"name":"after"}"#,
+                AwarenessContext {
+                    engine: &mut engine,
+                    transport_state: TransportState::Synchronized,
+                    limits: &limits,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(session_error.code, AWARENESS_CLOCK_EXHAUSTED);
+        let error = FfiError::from(session_error);
 
         assert_eq!(error.domain, "transport");
         assert_eq!(error.code, "AWARENESS_CLOCK_EXHAUSTED");
+        assert_eq!(error.request_id.as_deref(), Some("92"));
         assert!(error.message.contains("fresh editor identity is required"));
         let details: serde_json::Value =
             serde_json::from_str(error.details_json.as_deref().unwrap()).unwrap();

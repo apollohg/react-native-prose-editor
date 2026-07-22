@@ -358,8 +358,7 @@ impl CollaborationRuntime {
 
     /// Prebuilds the handshake-completion re-publish frame: the desired
     /// state (if any) is re-set through the codec for a fresh clock and the
-    /// framed local update is returned for Step-1-idiom reservation. This is
-    /// the designed mitigation for the Task 6 tombstone-migration gap — the
+    /// framed local update is returned for Step-1-idiom reservation. The
     /// fresh clock strictly exceeds any removal tombstone a peer holds.
     pub(crate) fn prepare_handshake_republish(
         &mut self,
@@ -749,6 +748,11 @@ mod tests {
         assert_eq!(
             error.details.as_ref().unwrap()["requiresFreshEditorIdentity"],
             true,
+            "{error:?}",
+        );
+        assert_eq!(
+            error.details.as_ref().unwrap()["retryable"],
+            false,
             "{error:?}",
         );
     }

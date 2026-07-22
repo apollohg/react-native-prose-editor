@@ -135,27 +135,39 @@ impl AwarenessCodec {
         self.awareness.client_id().get()
     }
 
-    fn local_clock(&self) -> u32 {
-        self.awareness
-            .meta(self.awareness.client_id())
+    fn local_clock_for(awareness: &Awareness) -> u32 {
+        awareness
+            .meta(awareness.client_id())
             .map_or(0, |(clock, _)| clock)
+    }
+
+    fn local_clock(&self) -> u32 {
+        Self::local_clock_for(&self.awareness)
     }
 
     /// A live publication consumes one clock and must leave one representable
     /// successor for explicit withdrawal or transport cleanup. Remote records
     /// cannot change this invariant because local-client echoes are stripped
     /// before Yrs application.
-    fn admit_local_publication(&self) -> YrsEngineResult<()> {
-        let published = next_local_clock(self.local_clock()).map_err(awareness_clock_error)?;
+    fn publish_local_state_raw_checked(
+        awareness: &mut Awareness,
+        raw: String,
+    ) -> YrsEngineResult<()> {
+        let published =
+            next_local_clock(Self::local_clock_for(awareness)).map_err(awareness_clock_error)?;
         next_local_clock(published)
             .map(|_| ())
-            .map_err(awareness_clock_error)
+            .map_err(awareness_clock_error)?;
+        awareness.set_local_state_raw(raw);
+        Ok(())
     }
 
-    fn admit_local_tombstone(&self) -> YrsEngineResult<()> {
-        next_local_clock(self.local_clock())
-            .map(|_| ())
-            .map_err(awareness_clock_error)
+    fn clean_local_state_checked(awareness: &mut Awareness) -> YrsEngineResult<()> {
+        if awareness.local_state_raw().is_some() {
+            next_local_clock(Self::local_clock_for(awareness)).map_err(awareness_clock_error)?;
+            awareness.clean_local_state();
+        }
+        Ok(())
     }
 
     /// The desired local presence state, if one is currently published.
@@ -198,8 +210,7 @@ impl AwarenessCodec {
                 aggregate,
             ));
         }
-        self.admit_local_publication()?;
-        self.awareness.set_local_state_raw(raw.clone());
+        Self::publish_local_state_raw_checked(&mut self.awareness, raw.clone())?;
         self.desired_local_state = Some(DesiredLocalState {
             value: state.clone(),
             raw,
@@ -210,10 +221,7 @@ impl AwarenessCodec {
     /// Withdraws the local presence state, broadcasting a removal tombstone
     /// through the next [`Self::encode_local_update_v1`].
     pub fn clear_local_state(&mut self) -> YrsEngineResult<()> {
-        if self.awareness.local_state_raw().is_some() {
-            self.admit_local_tombstone()?;
-            self.awareness.clean_local_state();
-        }
+        Self::clean_local_state_checked(&mut self.awareness)?;
         self.desired_local_state = None;
         Ok(())
     }
@@ -486,7 +494,13 @@ impl AwarenessCodec {
     pub(crate) fn rebind_for_store_swap(&mut self, doc: &Doc) {
         let mut next = Awareness::new(doc.clone());
         if let Some(desired) = self.desired_local_state.as_ref() {
-            next.set_local_state_raw(desired.raw.clone());
+            // A fresh Awareness starts at clock zero, but publication still
+            // goes through the same checked rule as set, renewal, and
+            // reconnect. The failure arm is unreachable for a fresh client
+            // identity and remains non-panicking if Yrs semantics change.
+            if Self::publish_local_state_raw_checked(&mut next, desired.raw.clone()).is_err() {
+                return;
+            }
         }
         self.awareness = next;
     }
@@ -518,13 +532,9 @@ impl AwarenessCodec {
     /// standard y-protocols disconnect semantics) while the desired local
     /// state is retained for the reconnect re-publish. That re-publish bumps
     /// the clock once more, so a peer that tombstoned us at `clock + 1`
-    /// observes the reappearance at `clock + 2` — the designed mitigation
-    /// for the undo/redo tombstone-migration gap.
+    /// observes the reappearance at `clock + 2`.
     pub(crate) fn clear_transport_states(&mut self) -> YrsEngineResult<()> {
         let local_client = self.awareness.client_id();
-        if self.awareness.local_state_raw().is_some() {
-            self.admit_local_tombstone()?;
-        }
         let migrated = self
             .awareness
             .meta(local_client)
@@ -533,40 +543,39 @@ impl AwarenessCodec {
             .and_then(Result::ok);
         let mut next = Awareness::new(self.awareness.doc().clone());
         if let Some(update) = migrated {
-            // Unreachable-in-practice failure arm, mirroring
-            // `rebind_preserving_peers`: `apply_update` has no failing path
-            // in yrs 0.27.2; if that ever changes the local clock restarts
-            // and the reconnect re-publish still heals within one renewal.
-            let _ = next.apply_update(update);
+            next.apply_update(update).map_err(|error| {
+                awareness_apply_error(format!(
+                    "local awareness tombstone cannot be retained during transport cleanup: {error}"
+                ))
+            })?;
         }
-        if next.local_state_raw().is_some() {
-            next.clean_local_state();
-        }
+        Self::clean_local_state_checked(&mut next)?;
         self.awareness = next;
         Ok(())
     }
 
     /// Rebinds the codec across an internal same-identity store swap
     /// (undo/redo candidate installation): the logical session continues, so
-    /// every live state — local and remote — migrates with its clock intact.
+    /// every live state plus the locally owned tombstone migrates with its
+    /// clock intact. Historical remote tombstones remain transport-scoped.
     pub(crate) fn rebind_preserving_peers(&mut self, doc: &Doc) {
-        let migrated = self.awareness.update();
+        let local_client = self.awareness.client_id();
+        let known_clients: Vec<_> = self
+            .awareness
+            .iter()
+            .filter(|(client, state)| *client == local_client || state.data.is_some())
+            .map(|(client, _)| client)
+            .collect();
+        let migrated = self.awareness.update_with_clients(known_clients);
         let mut next = Awareness::new(doc.clone());
-        // Unreachable-in-practice in yrs 0.27.2: `Awareness::update()` can
-        // only fail with `Error::ClientNotFound`, and it enumerates its own
-        // live clients; `apply_update` has no failing path at all. The
-        // degraded arm is kept deliberately as a non-panicking guard against
-        // a future yrs semantic change: if migration ever fails, remote peers
-        // are dropped (they re-announce over the awareness protocol) and the
-        // desired local state is re-published with a fresh clock.
-        let migration_applied = match migrated {
-            Ok(update) => next.apply_update(update).is_ok(),
-            Err(_) => false,
+        // `known_clients` comes from the same Awareness and `apply_update`
+        // has no failing path in yrs 0.27.2. If either contract changes, keep
+        // the prior binding instead of resetting local clock ownership.
+        let Ok(update) = migrated else {
+            return;
         };
-        if !migration_applied {
-            if let Some(desired) = self.desired_local_state.as_ref() {
-                next.set_local_state_raw(desired.raw.clone());
-            }
+        if next.apply_update(update).is_err() {
+            return;
         }
         self.awareness = next;
     }
@@ -575,6 +584,7 @@ impl AwarenessCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yrs::Options;
 
     fn limits() -> AwarenessLimits {
         AwarenessLimits {
@@ -749,6 +759,13 @@ mod tests {
         codec
     }
 
+    fn same_identity_doc(codec: &AwarenessCodec) -> Doc {
+        Doc::with_options(Options {
+            client_id: ClientID::new(codec.client_id()),
+            ..Options::default()
+        })
+    }
+
     fn assert_clock_exhausted(error: &YrsEngineError) {
         assert_eq!(error.code, "AWARENESS_CLOCK_EXHAUSTED", "{error:?}");
         assert!(
@@ -812,5 +829,57 @@ mod tests {
         assert_clock_exhausted(&error);
         assert_eq!(local_clock(&exhausted), u32::MAX);
         assert_eq!(exhausted.peer_snapshot(), before);
+    }
+
+    #[test]
+    fn same_identity_rebind_preserves_transport_tombstone_ordering() {
+        let mut codec = codec();
+        let state = json!({"name": "returns"});
+        codec.set_local_state(&state, &limits()).unwrap();
+        codec.clear_transport_states().unwrap();
+        let tombstone_clock = local_clock(&codec);
+        assert_eq!(tombstone_clock, 2);
+
+        codec.rebind_preserving_peers(&same_identity_doc(&codec));
+
+        assert_eq!(local_clock(&codec), tombstone_clock);
+        assert!(codec.awareness.local_state_raw().is_none());
+        codec.set_local_state(&state, &limits()).unwrap();
+        assert_eq!(local_clock(&codec), tombstone_clock + 1);
+    }
+
+    #[test]
+    fn same_identity_rebind_preserves_exhausted_transport_tombstone() {
+        let mut codec = live_codec_at(u32::MAX - 1);
+        codec.clear_transport_states().unwrap();
+        assert_eq!(local_clock(&codec), u32::MAX);
+
+        codec.rebind_preserving_peers(&same_identity_doc(&codec));
+
+        assert_eq!(local_clock(&codec), u32::MAX);
+        let before = codec.peer_snapshot();
+        let error = codec
+            .set_local_state(&json!({"name": "cannot return"}), &limits())
+            .unwrap_err();
+        assert_clock_exhausted(&error);
+        assert_eq!(local_clock(&codec), u32::MAX);
+        assert_eq!(codec.peer_snapshot(), before);
+    }
+
+    #[test]
+    fn fresh_identity_rebind_recovers_from_an_exhausted_tombstone_at_clock_one() {
+        let mut codec = live_codec_at(u32::MAX - 1);
+        codec.clear_transport_states().unwrap();
+        let old_client = codec.client_id();
+        let fresh_doc = Doc::with_options(Options {
+            client_id: ClientID::new(old_client ^ 1),
+            ..Options::default()
+        });
+
+        codec.rebind_for_store_swap(&fresh_doc);
+
+        assert_eq!(codec.client_id(), fresh_doc.client_id().get());
+        assert_eq!(local_clock(&codec), 1);
+        assert_eq!(codec.local_state(), Some(&json!({"name": "before"})));
     }
 }
