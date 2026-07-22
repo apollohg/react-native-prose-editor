@@ -39,6 +39,7 @@ use yrs::sync::protocol::{
 };
 use yrs::updates::encoder::{Encoder, EncoderV1};
 
+use crate::ffi_v2::types::AWARENESS_CLOCK_EXHAUSTED;
 use crate::session::{
     CollaborationLimits, DocumentState, ErrorDomain, OperationFailureClass, SessionError,
     TransportState,
@@ -672,6 +673,10 @@ fn classify_admission_error(
 /// retryably like every other apply failure.
 fn classify_awareness_code(code: &str) -> (SocketCloseDisposition, &'static str) {
     match code {
+        AWARENESS_CLOCK_EXHAUSTED => (
+            SocketCloseDisposition::Incompatible,
+            AWARENESS_CLOCK_EXHAUSTED,
+        ),
         "INPUT_LIMIT_EXCEEDED" => (
             SocketCloseDisposition::Incompatible,
             TRANSPORT_AWARENESS_LIMIT_EXCEEDED,
@@ -972,6 +977,11 @@ mod tests {
                 Retryable,
                 TRANSPORT_REMOTE_APPLY_FAILED,
             ),
+            (
+                "AWARENESS_CLOCK_EXHAUSTED",
+                Incompatible,
+                "AWARENESS_CLOCK_EXHAUSTED",
+            ),
         ];
         for (engine_code, close, transport_code) in cases {
             assert_eq!(
@@ -994,6 +1004,24 @@ mod tests {
         assert_eq!(details["cause"]["details"]["field"], "maxAwarenessPeers");
         assert_eq!(details["cause"]["limit"], 2);
         assert_eq!(details["cause"]["actual"], 3);
+
+        let failure = classify_awareness_error(
+            REQUEST_ID,
+            YrsEngineError::new(
+                "AWARENESS_CLOCK_EXHAUSTED",
+                "local awareness clock exhausted; a fresh editor identity is required",
+            )
+            .with_details(json!({ "requiresFreshEditorIdentity": true })),
+        );
+        assert_eq!(failure.close, Incompatible);
+        assert_eq!(failure.error.code, "AWARENESS_CLOCK_EXHAUSTED");
+        assert_eq!(failure.error.domain, ErrorDomain::Transport);
+        assert_eq!(failure.error.request_id, Some(REQUEST_ID));
+        assert_eq!(
+            failure.error.details.as_ref().unwrap()["cause"]["details"]
+                ["requiresFreshEditorIdentity"],
+            true,
+        );
     }
 
     #[test]

@@ -22,7 +22,9 @@ use crate::collaboration_runtime::protocol::{
     TRANSPORT_AWARENESS_LIMIT_EXCEEDED, TRANSPORT_FRAME_LIMIT_EXCEEDED, TRANSPORT_PROTOCOL_INVALID,
     TRANSPORT_REPLY_LIMIT_EXCEEDED,
 };
+use crate::collaboration_runtime::CollaborationRuntime;
 use crate::native_bridge_test_support as bridge;
+use crate::session::{CollaborationLimits, TransportState as RuntimeTransportState};
 use crate::session_initialization_test_support::{
     awareness_peers, awareness_tick, begin_connect, clear_desired_awareness, create_room_from_json,
     desired_awareness, destroy_session, document_state, receive_message, session_audit,
@@ -961,15 +963,15 @@ fn tombstoned_peers_stay_excluded_until_a_strictly_newer_clock_reappears() {
 }
 
 #[test]
-fn remote_removal_of_the_local_state_is_defended_with_a_bumped_clock() {
+fn remote_removal_echo_of_the_local_state_does_not_take_clock_ownership() {
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
     let desired = json!({ "name": "undeletable" });
     set_desired_awareness(id, 461, &desired.to_string()).unwrap();
     let local = local_peer(id).unwrap();
 
-    // A remote tombstone targeting our own client must not remove the local
-    // state; the clock bumps instead (standard yrs defense).
+    // A remote tombstone targeting our own client is an accepted echo, but
+    // it cannot remove the state or advance the locally owned clock.
     receive_message(
         id,
         462,
@@ -979,14 +981,97 @@ fn remote_removal_of_the_local_state_is_defended_with_a_bumped_clock() {
     .unwrap();
     let defended = local_peer(id).expect("the local state survives a remote removal");
     assert_eq!(defended.state, desired);
-    assert!(
-        defended.clock > local.clock,
-        "the defended clock {} must exceed the attacked clock {}",
-        defended.clock,
-        local.clock,
-    );
+    assert_eq!(defended.clock, local.clock);
     assert_eq!(desired_awareness(id).unwrap(), Some(desired));
     destroy_session(id);
+}
+
+#[test]
+fn remote_cannot_advance_the_local_client_clock() {
+    let limits = CollaborationLimits::default();
+    let mut engine = source_engine();
+    let mut runtime = CollaborationRuntime::new(&limits);
+    runtime
+        .set_desired_awareness(
+            463,
+            r#"{"name":"locally owned"}"#,
+            crate::collaboration_runtime::awareness::AwarenessContext {
+                engine: &mut engine,
+                transport_state: RuntimeTransportState::Synchronized,
+                limits: &limits,
+            },
+        )
+        .unwrap();
+    let local = runtime
+        .peers(&mut engine)
+        .into_iter()
+        .find(|peer| peer.is_local)
+        .unwrap();
+    runtime
+        .apply_awareness_frame(
+            &mut engine,
+            &limits,
+            &decode_awareness_reply(&awareness_message(&[(6_702, 7, r#"{"name":"peer"}"#)]))
+                .encode_v1(),
+        )
+        .unwrap();
+    let before_peers = runtime.peers(&mut engine);
+    let before_reply_count = runtime.outbox().pending_protocol_reply_count();
+    let before_reply_bytes = runtime.outbox().pending_protocol_reply_bytes();
+
+    for clock in [local.clock, local.clock.saturating_sub(1)] {
+        runtime
+            .apply_awareness_frame(
+                &mut engine,
+                &limits,
+                &decode_awareness_reply(&awareness_message(&[(
+                    local.client_id,
+                    clock,
+                    r#"{"name":"remote echo"}"#,
+                )]))
+                .encode_v1(),
+            )
+            .unwrap();
+        assert_eq!(runtime.peers(&mut engine), before_peers);
+        assert_eq!(
+            runtime.outbox().pending_protocol_reply_count(),
+            before_reply_count,
+        );
+        assert_eq!(
+            runtime.outbox().pending_protocol_reply_bytes(),
+            before_reply_bytes,
+        );
+    }
+
+    for clock in [local.clock + 1, u32::MAX] {
+        let error = runtime
+            .apply_awareness_frame(
+                &mut engine,
+                &limits,
+                &decode_awareness_reply(&awareness_message(&[(
+                    local.client_id,
+                    clock,
+                    r#"{"name":"remote takeover"}"#,
+                )]))
+                .encode_v1(),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED", "{error:?}");
+        assert_eq!(
+            error.details.as_ref().unwrap()["field"],
+            "awarenessClock",
+            "{error:?}",
+        );
+        assert_eq!(runtime.peers(&mut engine), before_peers);
+        assert_eq!(
+            runtime.outbox().pending_protocol_reply_count(),
+            before_reply_count,
+        );
+        assert_eq!(
+            runtime.outbox().pending_protocol_reply_bytes(),
+            before_reply_bytes,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

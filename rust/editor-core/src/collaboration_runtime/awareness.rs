@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
+use crate::ffi_v2::types::AWARENESS_CLOCK_EXHAUSTED;
 use crate::session::{CollaborationLimits, ErrorDomain, SessionError, TransportState};
 use crate::yrs_engine::{AwarenessLimits, YrsDocumentEngine, YrsEngineError};
 
@@ -173,7 +174,11 @@ fn peer_cursor_projection(
 }
 
 fn engine_error_with_request(error: YrsEngineError, request_id: u64) -> SessionError {
-    let mut error = SessionError::from(error);
+    let mut error = if error.code == AWARENESS_CLOCK_EXHAUSTED {
+        SessionError::transport(error)
+    } else {
+        SessionError::from(error)
+    };
     error.request_id = Some(request_id);
     error
 }
@@ -268,7 +273,10 @@ impl CollaborationRuntime {
         if self.awareness.desired_state.is_none() {
             return Ok(());
         }
-        engine.awareness().clear_local_state();
+        engine
+            .awareness()
+            .clear_local_state()
+            .map_err(|error| engine_error_with_request(error, request_id))?;
         self.awareness.desired_state = None;
         self.awareness.last_local_publish_millis = None;
         if transport_state == TransportState::Synchronized {
@@ -314,8 +322,13 @@ impl CollaborationRuntime {
     /// entry is tombstoned by the codec with its clock preserved for the
     /// reconnect re-publish, and the desired state is retained.
     pub(crate) fn clear_transport_peers(&mut self, engine: &mut YrsDocumentEngine) {
-        engine.awareness().clear_transport_states();
-        self.awareness.peer_activity.clear();
+        // Live local publications always retain one checked tombstone clock,
+        // and local-client remote echoes never mutate it. Exhaustion is thus
+        // unreachable in production cleanup; the guarded failure arm keeps
+        // injected/corrupt state atomic and non-panicking.
+        if engine.awareness().clear_transport_states().is_ok() {
+            self.awareness.peer_activity.clear();
+        }
     }
 
     /// Applies one inbound awareness update payload through the codec and
@@ -723,5 +736,91 @@ mod tests {
             Some(10_000 + AWARENESS_EXPIRY_MILLIS),
         );
         assert_eq!(runtime.peers(&mut engine).len(), 1);
+    }
+
+    fn assert_clock_exhausted(error: &SessionError) {
+        assert_eq!(error.domain, ErrorDomain::Transport, "{error:?}");
+        assert_eq!(error.code, "AWARENESS_CLOCK_EXHAUSTED", "{error:?}");
+        assert_eq!(error.request_id, Some(REQUEST_ID), "{error:?}");
+        assert!(
+            error.message.contains("fresh editor identity is required"),
+            "{error:?}",
+        );
+        assert_eq!(
+            error.details.as_ref().unwrap()["requiresFreshEditorIdentity"],
+            true,
+            "{error:?}",
+        );
+    }
+
+    fn runtime_with_clock(clock: u32) -> (CollaborationRuntime, YrsDocumentEngine) {
+        let mut runtime = runtime();
+        let mut engine = engine();
+        let limits = CollaborationLimits::default();
+        runtime
+            .set_desired_awareness(
+                REQUEST_ID,
+                r#"{"name":"before"}"#,
+                context(&mut engine, TransportState::Disconnected, &limits),
+            )
+            .unwrap();
+        engine.awareness().set_live_local_clock_for_test(clock);
+        (runtime, engine)
+    }
+
+    #[test]
+    fn set_and_renew_report_clock_exhaustion_without_mutating_state_or_outbox() {
+        let limits = CollaborationLimits::default();
+        for clock in [u32::MAX - 1, u32::MAX] {
+            let (mut runtime, mut engine) = runtime_with_clock(clock);
+            let before_peers = runtime.peers(&mut engine);
+            let before_replies = runtime.outbox().pending_protocol_reply_count();
+
+            let error = runtime
+                .set_desired_awareness(
+                    REQUEST_ID,
+                    r#"{"name":"after"}"#,
+                    context(&mut engine, TransportState::Synchronized, &limits),
+                )
+                .unwrap_err();
+            assert_clock_exhausted(&error);
+            assert_eq!(runtime.peers(&mut engine), before_peers);
+            assert_eq!(
+                runtime.outbox().pending_protocol_reply_count(),
+                before_replies,
+            );
+
+            runtime.awareness.last_local_publish_millis = Some(0);
+            let error = runtime
+                .tick(
+                    REQUEST_ID,
+                    AWARENESS_RENEWAL_INTERVAL_MILLIS,
+                    context(&mut engine, TransportState::Synchronized, &limits),
+                )
+                .unwrap_err();
+            assert_clock_exhausted(&error);
+            assert_eq!(runtime.peers(&mut engine), before_peers);
+            assert_eq!(
+                runtime.outbox().pending_protocol_reply_count(),
+                before_replies,
+            );
+        }
+    }
+
+    #[test]
+    fn reconnect_publication_reports_clock_exhaustion_without_enqueuing() {
+        let limits = CollaborationLimits::default();
+        for clock in [u32::MAX - 1, u32::MAX] {
+            let (mut runtime, mut engine) = runtime_with_clock(clock);
+            let before_peers = runtime.peers(&mut engine);
+
+            let error = runtime
+                .prepare_handshake_republish(&mut engine, &limits)
+                .unwrap_err();
+
+            assert_eq!(error.code, "AWARENESS_CLOCK_EXHAUSTED", "{error:?}");
+            assert_eq!(runtime.peers(&mut engine), before_peers);
+            assert_eq!(runtime.outbox().pending_protocol_reply_count(), 0);
+        }
     }
 }

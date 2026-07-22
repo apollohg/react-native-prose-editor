@@ -1,5 +1,9 @@
 use crate::session::{ErrorDomain, SessionError};
 
+/// Frozen non-retryable transport code exposed across the FFI boundary when
+/// the current editor identity cannot advance its awareness clock safely.
+pub const AWARENESS_CLOCK_EXHAUSTED: &str = "AWARENESS_CLOCK_EXHAUSTED";
+
 #[cfg(test)]
 pub(crate) const ERROR_DOMAINS: [&str; 6] = [
     "boundary",
@@ -147,5 +151,33 @@ impl FfiUnitResult {
 
     pub(crate) fn err(error: FfiError) -> Self {
         Self::try_new(None, Some(error)).expect("error-only result is valid")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::yrs_engine::YrsEngineError;
+
+    #[test]
+    fn awareness_clock_exhaustion_code_and_identity_recovery_details_are_frozen() {
+        let error = FfiError::from(SessionError::transport(
+            YrsEngineError::new(
+                AWARENESS_CLOCK_EXHAUSTED,
+                "local awareness clock exhausted; a fresh editor identity is required",
+            )
+            .with_details(serde_json::json!({
+                "requiresFreshEditorIdentity": true,
+                "retryable": false,
+            })),
+        ));
+
+        assert_eq!(error.domain, "transport");
+        assert_eq!(error.code, "AWARENESS_CLOCK_EXHAUSTED");
+        assert!(error.message.contains("fresh editor identity is required"));
+        let details: serde_json::Value =
+            serde_json::from_str(error.details_json.as_deref().unwrap()).unwrap();
+        assert_eq!(details["requiresFreshEditorIdentity"], true);
+        assert_eq!(details["retryable"], false);
     }
 }

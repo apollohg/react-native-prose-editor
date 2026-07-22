@@ -225,7 +225,7 @@ fn removal_tombstones_round_trip_in_both_directions() {
     .unwrap();
     assert!(raw.state::<Value>(cid(engine_client)).is_some());
 
-    engine.awareness().clear_local_state();
+    engine.awareness().clear_local_state().unwrap();
     assert_eq!(engine.awareness().local_state(), None);
     let tombstone = engine.awareness().encode_local_update_v1().unwrap();
     let entries = decode_entries(&tombstone);
@@ -297,7 +297,7 @@ fn awareness_traffic_never_mutates_durable_engine_state() {
     engine.awareness().peer_snapshot();
     assert_eq!(audit(&engine), baseline);
 
-    engine.awareness().clear_local_state();
+    engine.awareness().clear_local_state().unwrap();
     assert_eq!(audit(&engine), baseline);
 }
 
@@ -1086,7 +1086,7 @@ fn expiry_at_the_clock_ceiling_never_panics_or_wraps() {
 }
 
 #[test]
-fn local_clock_bumped_to_the_ceiling_fails_structured_on_the_next_publish() {
+fn remote_cannot_bump_the_local_clock_toward_the_ceiling() {
     let mut engine = engine(InitializationMode::LocalEmpty);
     let limits = session_default_limits();
     let local_client = engine.client_id();
@@ -1095,18 +1095,23 @@ fn local_clock_bumped_to_the_ceiling_fails_structured_on_the_next_publish() {
         .awareness()
         .set_local_state(&json!({"name": "local"}), &limits)
         .unwrap();
-    // A remote tombstone for our own client never removes the local state;
-    // the local clock is bumped instead (yrs semantics) — here exactly to
-    // u32::MAX, the last representable clock.
-    engine
+    let before = decode_entries(&engine.awareness().encode_local_update_v1().unwrap());
+
+    // A greater remote record for our client is rejected before Yrs can
+    // transfer clock ownership, even when it is a removal tombstone.
+    let error = engine
         .awareness()
         .apply_remote_update_v1(
             &peer_update_bytes(local_client, u32::MAX - 1, "null"),
             &limits,
         )
-        .unwrap();
-    let entries = decode_entries(&engine.awareness().encode_local_update_v1().unwrap());
-    assert_eq!(entries[&local_client].0, u32::MAX);
+        .unwrap_err();
+    assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
+    assert_eq!(error.details.as_ref().unwrap()["field"], "awarenessClock");
+
+    // Atomic: the locally owned clock/state are untouched.
+    let after = decode_entries(&engine.awareness().encode_local_update_v1().unwrap());
+    assert_eq!(after, before);
     assert!(
         engine
             .awareness()
@@ -1116,25 +1121,8 @@ fn local_clock_bumped_to_the_ceiling_fails_structured_on_the_next_publish() {
         "the local state survives the remote removal attempt",
     );
 
-    // The next local publish cannot advance the clock: it must refuse with a
-    // structured error, never wrap to 0 (release) or panic across UniFFI
-    // (overflow-checked builds).
-    let error = engine
-        .awareness()
-        .set_local_state(&json!({"name": "again"}), &limits)
-        .unwrap_err();
-    assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
-    assert_eq!(error.details.as_ref().unwrap()["field"], "awarenessClock");
-    // Atomic: the state and clock are untouched.
-    let entries = decode_entries(&engine.awareness().encode_local_update_v1().unwrap());
-    assert_eq!(entries[&local_client].0, u32::MAX);
-    assert_eq!(
-        serde_json::from_str::<Value>(&entries[&local_client].1).unwrap(),
-        json!({"name": "local"}),
-    );
-
-    // Withdrawing presence at the ceiling never panics either.
-    engine.awareness().clear_local_state();
+    // The checked local clear still owns and advances the next clock.
+    engine.awareness().clear_local_state().unwrap();
     assert_eq!(engine.awareness().local_state(), None);
 }
 

@@ -17,23 +17,32 @@ use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{ClientID, Doc};
 
+use crate::ffi_v2::types::AWARENESS_CLOCK_EXHAUSTED;
+
 use super::{YrsEngineError, YrsEngineResult};
 
 /// The y-protocols awareness tombstone payload marking a removed state.
 const AWARENESS_TOMBSTONE_JSON: &str = "null";
 
-/// The highest clock a remote awareness entry may carry. yrs advances
-/// stored clocks with `+= 1` (a remote removal of the local state bumps the
-/// local clock; `remove_state` bumps the removed client's clock), so
-/// admitting `u32::MAX` would let a remote peer drive those paths into an
-/// overflow — a wrap to 0 in release builds, a UniFFI-crossing panic in
-/// overflow-checked builds.
+/// The highest clock a non-local awareness entry may carry. yrs advances a
+/// removed remote client's stored clock with `+= 1`, so admitting `u32::MAX`
+/// would let expiry overflow. Local-client records follow the stricter
+/// ownership rule below and never reach Yrs application.
 const MAX_ADMITTED_AWARENESS_CLOCK: u32 = u32::MAX - 1;
 
 /// `details.field` of the clock-ceiling refusal. The ceiling is a
 /// protocol-safety constant, not a configurable `CollaborationLimits`
 /// field, hence the distinct naming.
 const AWARENESS_CLOCK_FIELD: &str = "awarenessClock";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AwarenessError {
+    ClockExhausted,
+}
+
+fn next_local_clock(clock: u32) -> Result<u32, AwarenessError> {
+    clock.checked_add(1).ok_or(AwarenessError::ClockExhausted)
+}
 
 /// Awareness ceilings, mirroring the `max_awareness_*` fields of the
 /// session-level `CollaborationLimits`.
@@ -98,6 +107,19 @@ fn awareness_apply_error(message: impl Into<String>) -> YrsEngineError {
     YrsEngineError::new("COLLABORATION_APPLY_FAILED", message)
 }
 
+fn awareness_clock_error(error: AwarenessError) -> YrsEngineError {
+    match error {
+        AwarenessError::ClockExhausted => YrsEngineError::new(
+            AWARENESS_CLOCK_EXHAUSTED,
+            "local awareness clock exhausted; a fresh editor identity is required",
+        )
+        .with_details(json!({
+            "requiresFreshEditorIdentity": true,
+            "retryable": false,
+        })),
+    }
+}
+
 impl AwarenessCodec {
     /// Binds the codec to the engine's authoritative document handle. The
     /// engine constructs exactly one codec and rebinds it on store swaps, so
@@ -113,6 +135,29 @@ impl AwarenessCodec {
         self.awareness.client_id().get()
     }
 
+    fn local_clock(&self) -> u32 {
+        self.awareness
+            .meta(self.awareness.client_id())
+            .map_or(0, |(clock, _)| clock)
+    }
+
+    /// A live publication consumes one clock and must leave one representable
+    /// successor for explicit withdrawal or transport cleanup. Remote records
+    /// cannot change this invariant because local-client echoes are stripped
+    /// before Yrs application.
+    fn admit_local_publication(&self) -> YrsEngineResult<()> {
+        let published = next_local_clock(self.local_clock()).map_err(awareness_clock_error)?;
+        next_local_clock(published)
+            .map(|_| ())
+            .map_err(awareness_clock_error)
+    }
+
+    fn admit_local_tombstone(&self) -> YrsEngineResult<()> {
+        next_local_clock(self.local_clock())
+            .map(|_| ())
+            .map_err(awareness_clock_error)
+    }
+
     /// The desired local presence state, if one is currently published.
     // Not reachable from production call paths after the Task 16C legacy runtime
     // removal; exercised by crate tests.
@@ -122,8 +167,9 @@ impl AwarenessCodec {
     }
 
     /// Publishes the local presence state, bounded by the per-peer and
-    /// aggregate awareness byte ceilings. Rejections are atomic: the previous
-    /// state and its clock are untouched.
+    /// aggregate awareness byte ceilings. One representable successor is
+    /// reserved for withdrawal/transport cleanup. Rejections are atomic: the
+    /// previous state and its clock are untouched.
     pub fn set_local_state(
         &mut self,
         state: &Value,
@@ -138,22 +184,6 @@ impl AwarenessCodec {
             ));
         }
         let local_client = self.awareness.client_id();
-        if self
-            .awareness
-            .meta(local_client)
-            .is_some_and(|(clock, _)| clock == u32::MAX)
-        {
-            // The next publish would overflow yrs's `clock += 1`. The clock
-            // can only reach u32::MAX through a remote clock-squatting
-            // tombstone for the local client; refuse structurally instead of
-            // wrapping to 0 (release) or panicking across UniFFI
-            // (overflow-checked builds).
-            return Err(awareness_limit_error(
-                AWARENESS_CLOCK_FIELD,
-                MAX_ADMITTED_AWARENESS_CLOCK as usize,
-                u32::MAX as usize,
-            ));
-        }
         let remote_alive_bytes: usize = self
             .awareness
             .iter()
@@ -168,6 +198,7 @@ impl AwarenessCodec {
                 aggregate,
             ));
         }
+        self.admit_local_publication()?;
         self.awareness.set_local_state_raw(raw.clone());
         self.desired_local_state = Some(DesiredLocalState {
             value: state.clone(),
@@ -178,20 +209,13 @@ impl AwarenessCodec {
 
     /// Withdraws the local presence state, broadcasting a removal tombstone
     /// through the next [`Self::encode_local_update_v1`].
-    pub fn clear_local_state(&mut self) {
-        // At the u32::MAX clock ceiling (reachable only through a remote
-        // clock-squatting tombstone for the local client) the removal
-        // tombstone cannot advance the clock; dropping the desired state
-        // still withdraws presence logically and the next transport-scoped
-        // reset retires the pinned entry.
-        let at_ceiling = self
-            .awareness
-            .meta(self.awareness.client_id())
-            .is_some_and(|(clock, _)| clock == u32::MAX);
-        if !at_ceiling {
+    pub fn clear_local_state(&mut self) -> YrsEngineResult<()> {
+        if self.awareness.local_state_raw().is_some() {
+            self.admit_local_tombstone()?;
             self.awareness.clean_local_state();
         }
         self.desired_local_state = None;
+        Ok(())
     }
 
     /// Encodes the local client's awareness entry (state or removal
@@ -226,14 +250,14 @@ impl AwarenessCodec {
 
     /// Applies a remote awareness update. The raw payload is bounded before
     /// any decode work; every entry is then validated (JSON payload, per-peer
-    /// bytes, clock ceiling) and admitted before anything is applied, so
-    /// rejections are atomic — a `u32::MAX` clock is refused even inside an
-    /// otherwise-droppable tombstone. Removal tombstones for never-seen
-    /// clients are dropped as protocol no-ops after admission, so they never
+    /// bytes, clock ownership/ceiling) and admitted before anything is
+    /// applied, so rejections are atomic. A non-local `u32::MAX` clock is
+    /// refused even inside an otherwise-droppable tombstone; current/older
+    /// local-client echoes are accepted then stripped. Removal tombstones for
+    /// never-seen clients are also dropped as protocol no-ops, so they never
     /// mint stored entries. The returned [`AwarenessApplied`] reports which
     /// clients the update actually touched, so the runtime can stamp
-    /// deterministic activity deadlines without duplicating the codec's
-    /// clock state.
+    /// deterministic activity deadlines without duplicating clock state.
     pub fn apply_remote_update_v1(
         &mut self,
         update_v1: &[u8],
@@ -250,7 +274,7 @@ impl AwarenessCodec {
             awareness_decode_error(format!("awareness update cannot decode: {error}"))
         })?;
         self.admit_update(&update, limits)?;
-        let update = self.without_unknown_tombstones(update);
+        let update = self.without_local_client_and_unknown_tombstones(update);
         let summary = self
             .awareness
             .apply_update_summary(update)
@@ -302,18 +326,22 @@ impl AwarenessCodec {
         peers
     }
 
-    /// Drops removal tombstones for clients this node has never seen. A
-    /// removal of an unknown client is a protocol no-op — there is nothing
-    /// to remove, matching the y-protocols reference behavior — and yrs
-    /// would otherwise permanently store the tombstone entry, bypassing the
-    /// live-state ceilings (unbounded remote memory growth) and squatting
-    /// the victim's clock space. Tombstones for KNOWN clients are kept:
-    /// they carry the clock ordering a later re-announce must beat.
-    fn without_unknown_tombstones(&self, update: AwarenessUpdate) -> AwarenessUpdate {
+    /// Strips admitted current/older local-client echoes so remote input can
+    /// never own local clock/state, and drops removal tombstones for clients
+    /// this node has never seen. Unknown removal is a protocol no-op — there
+    /// is nothing to remove, matching y-protocols — and yrs would otherwise
+    /// permanently store it outside the live-state ceilings. Tombstones for
+    /// known remote clients are kept so later re-announces must beat them.
+    fn without_local_client_and_unknown_tombstones(
+        &self,
+        update: AwarenessUpdate,
+    ) -> AwarenessUpdate {
+        let local_client = self.awareness.client_id();
         let mut clients = HashMap::with_capacity(update.clients.len());
         for (client_id, entry) in update.clients {
-            if entry.json.as_ref() == AWARENESS_TOMBSTONE_JSON
-                && self.awareness.meta(client_id).is_none()
+            if client_id == local_client
+                || entry.json.as_ref() == AWARENESS_TOMBSTONE_JSON
+                    && self.awareness.meta(client_id).is_none()
             {
                 continue;
             }
@@ -338,10 +366,19 @@ impl AwarenessCodec {
             .map(|(client, state)| (client, (state.clock, state.data.map(|data| data.len()))))
             .collect();
         for (client_id, entry) in &update.clients {
-            if entry.clock > MAX_ADMITTED_AWARENESS_CLOCK {
+            if *client_id == local_client {
+                let local_clock = self.local_clock();
+                if entry.clock > local_clock {
+                    return Err(awareness_limit_error(
+                        AWARENESS_CLOCK_FIELD,
+                        local_clock as usize,
+                        entry.clock as usize,
+                    ));
+                }
+            } else if entry.clock > MAX_ADMITTED_AWARENESS_CLOCK {
                 // yrs advances admitted clocks with `+= 1` (remote removal of
-                // the local state; expiry through `remove_state`), so
-                // u32::MAX is inadmissible regardless of payload.
+                // a remote state through expiry), so u32::MAX is inadmissible
+                // regardless of payload.
                 return Err(awareness_limit_error(
                     AWARENESS_CLOCK_FIELD,
                     MAX_ADMITTED_AWARENESS_CLOCK as usize,
@@ -363,6 +400,13 @@ impl AwarenessCodec {
                     )));
                 }
             }
+            if *client_id == local_client {
+                // Current/older local-client records are valid protocol
+                // echoes, but only this codec may advance or replace the
+                // locally owned clock/state. They are therefore admitted as
+                // observational no-ops and removed before Yrs application.
+                continue;
+            }
             let incoming = (entry.clock, incoming_alive.then_some(entry.json.len()));
             match projected.get_mut(client_id) {
                 Some(current) => {
@@ -370,16 +414,7 @@ impl AwarenessCodec {
                     let is_removed =
                         current_clock == entry.clock && !incoming_alive && current_data.is_some();
                     if current_clock < entry.clock || is_removed {
-                        if !incoming_alive && *client_id == local_client && current_data.is_some() {
-                            // A remote peer never removes the local state; the
-                            // local clock is bumped instead (yrs semantics).
-                            // The admission clock ceiling keeps this bump —
-                            // and yrs's own `clock += 1` — overflow-free, so
-                            // the mirror never diverges from yrs here.
-                            *current = (entry.clock.saturating_add(1), current_data);
-                        } else {
-                            *current = incoming;
-                        }
+                        *current = incoming;
                     }
                 }
                 None => {
@@ -423,6 +458,27 @@ impl AwarenessCodec {
         self.awareness.iter().count()
     }
 
+    /// Test-only clock injection at the engine-owned awareness seam. This
+    /// deliberately bypasses production ingress so exhaustion boundaries can
+    /// be exercised without exposing clock mutation outside crate tests.
+    #[cfg(test)]
+    pub(crate) fn set_live_local_clock_for_test(&mut self, clock: u32) {
+        use yrs::sync::awareness::AwarenessUpdateEntry;
+
+        let local_client = self.awareness.client_id();
+        let json = self
+            .awareness
+            .local_state_raw()
+            .expect("clock injection requires a live local state");
+        let update = AwarenessUpdate {
+            clients: HashMap::from([(local_client, AwarenessUpdateEntry { clock, json })]),
+        };
+        self.awareness
+            .apply_update(update)
+            .expect("test clock injection must apply");
+        assert_eq!(self.awareness.meta(local_client).unwrap().0, clock);
+    }
+
     /// Rebinds the codec after the engine replaced its store with a different
     /// document (snapshot restore, import). Stale remote peers are dropped,
     /// the desired local state is re-published under the new client identity
@@ -464,8 +520,11 @@ impl AwarenessCodec {
     /// the clock once more, so a peer that tombstoned us at `clock + 1`
     /// observes the reappearance at `clock + 2` — the designed mitigation
     /// for the undo/redo tombstone-migration gap.
-    pub(crate) fn clear_transport_states(&mut self) {
+    pub(crate) fn clear_transport_states(&mut self) -> YrsEngineResult<()> {
         let local_client = self.awareness.client_id();
+        if self.awareness.local_state_raw().is_some() {
+            self.admit_local_tombstone()?;
+        }
         let migrated = self
             .awareness
             .meta(local_client)
@@ -484,6 +543,7 @@ impl AwarenessCodec {
             next.clean_local_state();
         }
         self.awareness = next;
+        Ok(())
     }
 
     /// Rebinds the codec across an internal same-identity store swap
@@ -603,7 +663,7 @@ mod tests {
             .apply_remote_update_v1(&remote_update(9_020, 7, r#"{"peer":true}"#), &limits())
             .unwrap();
 
-        codec.clear_transport_states();
+        codec.clear_transport_states().unwrap();
         assert!(
             codec.peer_snapshot().is_empty(),
             "remote entries and the offline local entry leave the snapshot",
@@ -639,7 +699,7 @@ mod tests {
 
         // Idempotent when nothing local was ever published.
         let mut fresh = super::AwarenessCodec::bind(&Doc::new());
-        fresh.clear_transport_states();
+        fresh.clear_transport_states().unwrap();
         assert!(fresh.peer_snapshot().is_empty());
         assert_eq!(fresh.local_state(), None);
     }
@@ -671,5 +731,86 @@ mod tests {
         // wrap in release).
         codec.remove_remote_state(9_030);
         assert_eq!(stored_clock(&codec), Some((u32::MAX, false)));
+    }
+
+    fn local_clock(codec: &AwarenessCodec) -> u32 {
+        codec
+            .awareness
+            .meta(codec.awareness.client_id())
+            .map_or(0, |(clock, _)| clock)
+    }
+
+    fn live_codec_at(clock: u32) -> AwarenessCodec {
+        let mut codec = codec();
+        codec
+            .set_local_state(&json!({"name": "before"}), &limits())
+            .unwrap();
+        codec.set_live_local_clock_for_test(clock);
+        codec
+    }
+
+    fn assert_clock_exhausted(error: &YrsEngineError) {
+        assert_eq!(error.code, "AWARENESS_CLOCK_EXHAUSTED", "{error:?}");
+        assert!(
+            error.message.contains("fresh editor identity is required"),
+            "{error:?}",
+        );
+        assert_eq!(
+            error.details.as_ref().unwrap()["requiresFreshEditorIdentity"],
+            true,
+            "{error:?}",
+        );
+    }
+
+    #[test]
+    fn local_publish_reserves_the_final_clock_for_a_tombstone() {
+        for clock in [u32::MAX - 1, u32::MAX] {
+            let mut codec = live_codec_at(clock);
+            let before = codec.peer_snapshot();
+
+            let error = codec
+                .set_local_state(&json!({"name": "after"}), &limits())
+                .unwrap_err();
+
+            assert_clock_exhausted(&error);
+            assert_eq!(local_clock(&codec), clock);
+            assert_eq!(codec.peer_snapshot(), before);
+        }
+    }
+
+    #[test]
+    fn local_clear_uses_the_final_clock_once_then_reports_exhaustion() {
+        let mut final_clock = live_codec_at(u32::MAX - 1);
+        final_clock.clear_local_state().unwrap();
+        assert_eq!(local_clock(&final_clock), u32::MAX);
+        assert!(final_clock.peer_snapshot().is_empty());
+
+        let mut exhausted = live_codec_at(u32::MAX);
+        let before = exhausted.peer_snapshot();
+        let error = exhausted.clear_local_state().unwrap_err();
+        assert_clock_exhausted(&error);
+        assert_eq!(local_clock(&exhausted), u32::MAX);
+        assert_eq!(exhausted.peer_snapshot(), before);
+    }
+
+    #[test]
+    fn transport_cleanup_uses_the_final_clock_and_is_atomic_when_exhausted() {
+        let mut final_clock = live_codec_at(u32::MAX - 1);
+        final_clock
+            .apply_remote_update_v1(&remote_update(9_040, 3, r#"{"peer":true}"#), &limits())
+            .unwrap();
+        final_clock.clear_transport_states().unwrap();
+        assert_eq!(local_clock(&final_clock), u32::MAX);
+        assert!(final_clock.peer_snapshot().is_empty());
+
+        let mut exhausted = live_codec_at(u32::MAX);
+        exhausted
+            .apply_remote_update_v1(&remote_update(9_041, 3, r#"{"peer":true}"#), &limits())
+            .unwrap();
+        let before = exhausted.peer_snapshot();
+        let error = exhausted.clear_transport_states().unwrap_err();
+        assert_clock_exhausted(&error);
+        assert_eq!(local_clock(&exhausted), u32::MAX);
+        assert_eq!(exhausted.peer_snapshot(), before);
     }
 }
