@@ -10,28 +10,19 @@
 //! directly from the live v2 session, reusing the exact legacy derivation
 //! and serialization code paths so the wire output is probe-identical:
 //!
-//! - `editor_v2_render_update` — the full current-state update the adapters
-//!   synthesize per refresh: `renderBlocks` (full blocks; `renderPatch` is
-//!   null — the native bridges keep deriving incremental patches), toolbar
-//!   `activeState`, the v2 engine's own `historyState`/`documentVersion`,
-//!   the document's scalar extent (`scalarLength`, the lenient
-//!   `u32::MAX` doc->scalar mapping), and — only when a scalar mirror
-//!   selection is supplied — the resolved `selection` (doc anchor/head plus
-//!   their scalar round-trip).
+//! - `editor_v2_render_update` — one atomic current-state snapshot containing
+//!   `renderBlocks` (full blocks; `renderPatch` is null), authoritative or
+//!   explicitly mirrored `selection`, toolbar `activeState`, history,
+//!   document/state revisions, and the checked scalar extent.
 //! - `editor_v2_resolve_scalar_selection` — the engine-authoritative
 //!   scalar->doc selection resolution the delegate callbacks consume.
 //! - `editor_v2_doc_to_scalar` / `editor_v2_scalar_to_doc` — the lenient
 //!   position mapping helpers (clamping at the document extent, exactly the
 //!   legacy `PositionMap` semantics the probe exposed).
 //!
-//! Probe-parity semantics (pinned by the fixture-matrix parity tests): the
-//! active state and the no-mirror behavior evaluate the same fresh-probe
-//! selection (`cursor(1)`, no stored marks), because that is what the
-//! probe's `setJson` produced; a mirror maps through the same lenient
-//! scalar->doc mapping plus cursor normalization the probe's
-//! `setSelectionScalar` applied. History and version are the v2 engine's own
-//! facts (the adapters used to override the probe's fabricated values with
-//! exactly these).
+//! Without a mirror the snapshot uses the engine's authoritative selection
+//! and stored marks. A mirror maps through the lenient scalar->doc mapping
+//! plus cursor normalization and replaces selection only for that snapshot.
 //!
 //! The wire shape is JSON inside the frozen `FfiJsonResult` envelope (never
 //! a new exception channel): the native views already consume the legacy
@@ -51,6 +42,7 @@
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::boundary::{BoundaryError, ResourceLimits};
@@ -60,6 +52,7 @@ use crate::schema::{presets::tiptap_schema, Schema};
 use crate::selection::Selection;
 use crate::session::SessionError;
 use crate::yrs_engine::YrsEngineError;
+use crate::yrs_engine::ResolvedSelection;
 
 use super::editor::{json_result, with_editor};
 use super::types::{decimal_u64, parse_canonical_u64, FfiJsonResult};
@@ -70,6 +63,61 @@ use super::types::{decimal_u64, parse_canonical_u64, FfiJsonResult};
 /// creation path). Entries are removed on `editor_v2_destroy`.
 static SESSION_SCHEMAS: LazyLock<Mutex<HashMap<u64, Schema>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+struct RenderSnapshotTestHook {
+    entered: std::sync::mpsc::SyncSender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+static RENDER_SNAPSHOT_TEST_HOOK: LazyLock<Mutex<Option<RenderSnapshotTestHook>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+pub(crate) fn install_render_snapshot_test_hook(
+    entered: std::sync::mpsc::SyncSender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+) {
+    *RENDER_SNAPSHOT_TEST_HOOK
+        .lock()
+        .expect("render snapshot test hook poisoned") = Some(RenderSnapshotTestHook {
+        entered,
+        resume,
+    });
+}
+
+#[cfg(test)]
+fn pause_render_snapshot_for_test() {
+    let hook = RENDER_SNAPSHOT_TEST_HOOK
+        .lock()
+        .expect("render snapshot test hook poisoned")
+        .take();
+    if let Some(hook) = hook {
+        hook.entered
+            .send(())
+            .expect("render snapshot test observer dropped");
+        hook.resume
+            .recv()
+            .expect("render snapshot test resume sender dropped");
+    }
+}
+
+#[cfg(not(test))]
+fn pause_render_snapshot_for_test() {}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AtomicRenderSnapshot {
+    render_blocks: Value,
+    render_patch: Value,
+    selection: Value,
+    active_state: Value,
+    history_state: Value,
+    document_version: String,
+    state_revision: String,
+    scalar_length: u32,
+}
 
 /// Resolve the schema for a v2 create envelope exactly the way the session
 /// construction does (default preset when the envelope carries no schema).
@@ -157,6 +205,34 @@ fn selection_json(document: &Document, position_map: &PositionMap, selection: &S
     selection_to_json(selection, Some(&scalar))
 }
 
+fn resolved_selection_to_legacy(selection: &ResolvedSelection) -> Selection {
+    match selection {
+        ResolvedSelection::Text { anchor, head } => {
+            Selection::text(anchor.document, head.document)
+        }
+        ResolvedSelection::Node { at } => Selection::node(at.document),
+        ResolvedSelection::All => Selection::all(),
+    }
+}
+
+fn resolved_selection_json(selection: &ResolvedSelection) -> Value {
+    match selection {
+        ResolvedSelection::Text { anchor, head } => serde_json::json!({
+            "type": "text",
+            "anchor": anchor.document,
+            "head": head.document,
+            "anchorScalar": anchor.scalar,
+            "headScalar": head.scalar,
+        }),
+        ResolvedSelection::Node { at } => serde_json::json!({
+            "type": "node",
+            "pos": at.document,
+            "posScalar": at.scalar,
+        }),
+        ResolvedSelection::All => serde_json::json!({ "type": "all" }),
+    }
+}
+
 fn registered_schema(editor_id: &str) -> Result<Schema, SessionError> {
     let id = parse_canonical_u64(editor_id)
         .ok_or_else(|| config_invalid(format!("malformed editor handle: {editor_id:?}")))?;
@@ -191,63 +267,62 @@ pub fn editor_v2_render_update(
         let position_map = engine.position_map().ok_or_else(engine_not_ready)?;
         let schema = registered_schema(&editor_id)?;
 
-        let selection =
-            mirror.map(|(anchor, head)| map_scalar_selection(document, position_map, anchor, head));
-        // Probe parity: the fresh probe's selection after setJson was a raw
-        // cursor(1) with no stored marks; the active state must evaluate the
-        // same selection the probe evaluated.
-        let active_selection = selection.clone().unwrap_or_else(|| Selection::cursor(1));
+        let render_blocks = crate::render::incremental::try_render_blocks(document, &schema)
+            .map_err(render_preparation_error)?;
+        pause_render_snapshot_for_test();
+
+        let (selection, selection_value, stored_marks) = match mirror {
+            Some((anchor, head)) => {
+                let selection = map_scalar_selection(document, position_map, anchor, head);
+                let value = selection_json(document, position_map, &selection);
+                (selection, value, None)
+            }
+            None => {
+                let resolved = engine.resolved_selection().ok_or_else(engine_not_ready)?;
+                (
+                    resolved_selection_to_legacy(resolved),
+                    resolved_selection_json(resolved),
+                    engine.stored_marks(),
+                )
+            }
+        };
         let commands = crate::editor_state::command_applicability(
             document,
             &schema,
-            &active_selection,
+            &selection,
             engine.resource_limits(),
         );
         let active_state = crate::editor_state::active_state(
             document,
             &schema,
-            &active_selection,
-            None,
+            &selection,
+            stored_marks,
             commands,
             engine.resource_limits(),
         );
-        let render_blocks = crate::render::incremental::try_render_blocks(document, &schema)
-            .map_err(render_preparation_error)?;
         let scalar_length = position_map.doc_to_scalar(u32::MAX, document);
 
-        let mut update = serde_json::Map::new();
-        update.insert(
-            "renderBlocks".to_string(),
-            serialize_render_blocks(&render_blocks),
-        );
-        // Full blocks every time; the native bridges keep deriving the
-        // incremental patches (Task 15 patch-before-view-update semantics).
-        update.insert("renderPatch".to_string(), Value::Null);
-        if let Some(selection) = &selection {
-            update.insert(
-                "selection".to_string(),
-                selection_json(document, position_map, selection),
-            );
-        }
-        update.insert(
-            "activeState".to_string(),
-            serialize_active_state(&active_state),
-        );
-        // History and version are the v2 engine's own facts — the values the
-        // adapters used to override onto the probe's payload.
-        update.insert(
-            "historyState".to_string(),
-            serde_json::json!({
+        let snapshot = AtomicRenderSnapshot {
+            render_blocks: serialize_render_blocks(&render_blocks),
+            // Full blocks every time; native consumers may derive a patch.
+            render_patch: Value::Null,
+            selection: selection_value,
+            active_state: serialize_active_state(&active_state),
+            history_state: serde_json::json!({
                 "canUndo": engine.can_undo(),
                 "canRedo": engine.can_redo(),
             }),
-        );
-        update.insert(
-            "documentVersion".to_string(),
-            decimal_u64(engine.revision()),
-        );
-        update.insert("scalarLength".to_string(), Value::from(scalar_length));
-        Ok(Value::Object(update).to_string())
+            document_version: decimal_u64(engine.revision())
+                .as_str()
+                .expect("decimal u64 serializer returns a string")
+                .to_owned(),
+            state_revision: decimal_u64(engine.state_revision())
+                .as_str()
+                .expect("decimal u64 serializer returns a string")
+                .to_owned(),
+            scalar_length,
+        };
+        Ok(serde_json::to_string(&snapshot).expect("atomic render snapshot serializes"))
     }))
 }
 

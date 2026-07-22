@@ -113,6 +113,8 @@ export type {
     ActiveState,
     HistoryState,
     EditorUpdate,
+    RenderBlocksPatch,
+    NativeEditorV2AtomicRenderSnapshot,
     DocumentJSON,
     CollaborationPeer,
 } from './NativeEditorBridge';

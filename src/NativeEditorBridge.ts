@@ -32,6 +32,9 @@ export interface Selection {
     anchor?: number;
     head?: number;
     pos?: number;
+    anchorScalar?: number;
+    headScalar?: number;
+    posScalar?: number;
 }
 
 export interface ListContext {
@@ -72,7 +75,7 @@ export interface RenderElement {
     listContext?: ListContext;
 }
 
-interface RenderBlocksPatch {
+export interface RenderBlocksPatch {
     startIndex: number;
     deleteCount: number;
     renderBlocks: RenderElement[][];
@@ -90,6 +93,17 @@ export interface ActiveState {
 export interface HistoryState {
     canUndo: boolean;
     canRedo: boolean;
+}
+
+export interface NativeEditorV2AtomicRenderSnapshot {
+    readonly renderBlocks: RenderElement[][];
+    readonly renderPatch: RenderBlocksPatch | null;
+    readonly selection: Selection;
+    readonly activeState: ActiveState;
+    readonly historyState: HistoryState;
+    readonly documentVersion: string;
+    readonly stateRevision: string;
+    readonly scalarLength: number;
 }
 
 export interface EditorUpdate {
@@ -453,17 +467,190 @@ export function normalizeNativeEditorV2HtmlValue(value: unknown): string | null 
     return parsed.html;
 }
 
-/**
- * Validate a render-update result value: the payload is itself a JSON
- * document (render blocks, active/history state, document version) and is
- * returned verbatim for the bound native view to apply.
- */
-export function normalizeNativeEditorV2RenderUpdateValue(value: unknown): string | null {
+const RENDER_ELEMENT_TYPES = new Set<RenderElement['type']>([
+    'textRun',
+    'blockStart',
+    'blockEnd',
+    'voidInline',
+    'voidBlock',
+    'opaqueInlineAtom',
+    'opaqueBlockAtom',
+]);
+
+function hasExactOwnKeys(record: Record<string, unknown>, expected: readonly string[]): boolean {
+    const actual = Object.keys(record).sort();
+    const sortedExpected = [...expected].sort();
+    return (
+        actual.length === sortedExpected.length &&
+        actual.every((key, index) => key === sortedExpected[index])
+    );
+}
+
+function booleanRecord(value: unknown): value is Record<string, boolean> {
+    return isPlainRecord(value) && Object.values(value).every((entry) => typeof entry === 'boolean');
+}
+
+function stringArray(value: unknown): value is string[] {
+    return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function validRenderMark(value: unknown): boolean {
+    return typeof value === 'string' || (isPlainRecord(value) && typeof value.type === 'string');
+}
+
+function validListContext(value: unknown): value is ListContext {
+    if (!isPlainRecord(value)) return false;
+    return (
+        typeof value.ordered === 'boolean' &&
+        nativeEditorV2U32(value.index) != null &&
+        nativeEditorV2U32(value.total) != null &&
+        nativeEditorV2U32(value.start) != null &&
+        typeof value.isFirst === 'boolean' &&
+        typeof value.isLast === 'boolean' &&
+        (value.kind == null || typeof value.kind === 'string') &&
+        (value.checked == null || typeof value.checked === 'boolean')
+    );
+}
+
+function validRenderElement(value: unknown): value is RenderElement {
+    if (!isPlainRecord(value) || !RENDER_ELEMENT_TYPES.has(value.type as RenderElement['type'])) {
+        return false;
+    }
+    if (value.text !== undefined && typeof value.text !== 'string') return false;
+    if (value.nodeType !== undefined && typeof value.nodeType !== 'string') return false;
+    if (value.label !== undefined && typeof value.label !== 'string') return false;
+    if (value.depth !== undefined && nativeEditorV2U32(value.depth) == null) return false;
+    if (value.docPos !== undefined && nativeEditorV2U32(value.docPos) == null) return false;
+    if (value.marks !== undefined && (!Array.isArray(value.marks) || !value.marks.every(validRenderMark))) {
+        return false;
+    }
+    if (value.attrs !== undefined && !isPlainRecord(value.attrs)) return false;
+    if (value.listContext !== undefined && !validListContext(value.listContext)) return false;
+    return true;
+}
+
+function normalizeRenderBlocks(value: unknown): RenderElement[][] | null {
+    if (!Array.isArray(value)) return null;
+    return value.every(
+        (block) => Array.isArray(block) && block.every((element) => validRenderElement(element))
+    )
+        ? (value as RenderElement[][])
+        : null;
+}
+
+function normalizeRenderPatch(value: unknown): RenderBlocksPatch | null | undefined {
+    if (value === null) return null;
+    if (!isPlainRecord(value)) return undefined;
+    const renderBlocks = normalizeRenderBlocks(value.renderBlocks);
+    const startIndex = nativeEditorV2U32(value.startIndex);
+    const deleteCount = nativeEditorV2U32(value.deleteCount);
+    if (renderBlocks == null || startIndex == null || deleteCount == null) return undefined;
+    return { startIndex, deleteCount, renderBlocks };
+}
+
+function normalizeRenderSelection(value: unknown): Selection | null {
+    if (!isPlainRecord(value)) return null;
+    if (value.type === 'all') return { type: 'all' };
+    if (value.type === 'text') {
+        const anchor = nativeEditorV2U32(value.anchor);
+        const head = nativeEditorV2U32(value.head);
+        const anchorScalar = nativeEditorV2U32(value.anchorScalar);
+        const headScalar = nativeEditorV2U32(value.headScalar);
+        if (anchor == null || head == null || anchorScalar == null || headScalar == null) return null;
+        return { type: 'text', anchor, head, anchorScalar, headScalar };
+    }
+    if (value.type === 'node') {
+        const pos = nativeEditorV2U32(value.pos);
+        const posScalar = nativeEditorV2U32(value.posScalar);
+        if (pos == null || posScalar == null) return null;
+        return { type: 'node', pos, posScalar };
+    }
+    return null;
+}
+
+function normalizeRenderActiveState(value: unknown): ActiveState | null {
+    if (!isPlainRecord(value)) return null;
+    if (
+        !booleanRecord(value.marks) ||
+        !isPlainRecord(value.markAttrs) ||
+        !Object.values(value.markAttrs).every(isPlainRecord) ||
+        !booleanRecord(value.nodes) ||
+        !booleanRecord(value.commands) ||
+        !stringArray(value.allowedMarks) ||
+        !stringArray(value.insertableNodes)
+    ) {
+        return null;
+    }
+    return value as unknown as ActiveState;
+}
+
+function normalizeRenderHistoryState(value: unknown): HistoryState | null {
+    if (!isPlainRecord(value)) return null;
+    const canUndo = optionalBoolean(value.canUndo);
+    const canRedo = optionalBoolean(value.canRedo);
+    return canUndo == null || canRedo == null ? null : { canUndo, canRedo };
+}
+
+function deepFreezeV2Value<T>(value: T): T {
+    if (value != null && typeof value === 'object' && !Object.isFrozen(value)) {
+        for (const child of Object.values(value as Record<string, unknown>)) {
+            deepFreezeV2Value(child);
+        }
+        Object.freeze(value);
+    }
+    return value;
+}
+
+/** Validate and freeze the one complete render/state snapshot. */
+export function normalizeNativeEditorV2RenderUpdateValue(
+    value: unknown
+): NativeEditorV2AtomicRenderSnapshot | null {
     const parsed = parseNativeEditorV2JsonValue(value);
     if (!isPlainRecord(parsed)) return null;
-    if (normalizeRevisionField(parsed, 'documentVersion') == null) return null;
-    if (nativeEditorV2U32(parsed.scalarLength) == null) return null;
-    return value as string;
+    if (
+        !hasExactOwnKeys(parsed, [
+            'renderBlocks',
+            'renderPatch',
+            'selection',
+            'activeState',
+            'historyState',
+            'documentVersion',
+            'stateRevision',
+            'scalarLength',
+        ])
+    ) {
+        return null;
+    }
+    const renderBlocks = normalizeRenderBlocks(parsed.renderBlocks);
+    const renderPatch = normalizeRenderPatch(parsed.renderPatch);
+    const selection = normalizeRenderSelection(parsed.selection);
+    const activeState = normalizeRenderActiveState(parsed.activeState);
+    const historyState = normalizeRenderHistoryState(parsed.historyState);
+    const documentVersion = normalizeRevisionField(parsed, 'documentVersion');
+    const stateRevision = normalizeRevisionField(parsed, 'stateRevision');
+    const scalarLength = nativeEditorV2U32(parsed.scalarLength);
+    if (
+        renderBlocks == null ||
+        renderPatch === undefined ||
+        selection == null ||
+        activeState == null ||
+        historyState == null ||
+        documentVersion == null ||
+        stateRevision == null ||
+        scalarLength == null
+    ) {
+        return null;
+    }
+    return deepFreezeV2Value({
+        renderBlocks,
+        renderPatch,
+        selection,
+        activeState,
+        historyState,
+        documentVersion,
+        stateRevision,
+        scalarLength,
+    });
 }
 
 export function normalizeNativeEditorV2DocumentJsonValue(value: unknown): DocumentJSON | null {
@@ -1912,7 +2099,9 @@ export class NativeEditorV2Bridge {
      * mirror selection resolves the engine selection into the update (doc
      * and scalar positions); without one the update carries no selection.
      */
-    renderUpdate(mirrorScalarSelection?: { anchor: number; head: number }): string {
+    renderUpdate(
+        mirrorScalarSelection?: { anchor: number; head: number }
+    ): NativeEditorV2AtomicRenderSnapshot {
         this.assertAlive();
         const mirrorAnchor = mirrorScalarSelection?.anchor ?? null;
         const mirrorHead = mirrorScalarSelection?.head ?? null;

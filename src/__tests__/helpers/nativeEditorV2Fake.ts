@@ -255,6 +255,7 @@ interface FakeSession {
     activeMarks: Record<string, boolean>;
     activeMarkAttrs: Record<string, Record<string, unknown>>;
     activeNodes: Record<string, boolean>;
+    selection: { anchor: number; head: number };
     liveGeneration: number | null;
     lastIssuedGeneration: number;
     protocolQueue: Uint8Array[];
@@ -578,6 +579,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 activeMarks: {},
                 activeMarkAttrs: {},
                 activeNodes: {},
+                selection: { anchor: 1, head: 1 },
                 liveGeneration: null,
                 lastIssuedGeneration: 0,
                 protocolQueue: [],
@@ -894,6 +896,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                             canRedo: session.redoStack.length > 0,
                         },
                         documentVersion: String(session.documentRevision),
+                        stateRevision: String(session.stateRevision),
                         scalarLength,
                     };
                     if (mirrorAnchor != null && mirrorHead != null) {
@@ -905,6 +908,14 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                             head,
                             anchorScalar: anchor,
                             headScalar: head,
+                        };
+                    } else {
+                        update.selection = {
+                            type: 'text',
+                            anchor: session.selection.anchor,
+                            head: session.selection.head,
+                            anchorScalar: session.selection.anchor,
+                            headScalar: session.selection.head,
                         };
                     }
                     return okRecord(JSON.stringify(update));
@@ -943,6 +954,13 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 if (envelopeError) return envelopeError;
                 if (request.baseDocumentRevision !== String(session.documentRevision)) {
                     return revisionMismatchError(session, request.baseDocumentRevision);
+                }
+                const selection = request.selection as Record<string, unknown> | undefined;
+                const anchor = exactV2U32(selection?.anchor);
+                const head = exactV2U32(selection?.head);
+                if (anchor != null && head != null) {
+                    session.selection = { anchor, head };
+                    session.stateRevision += 1;
                 }
                 return okRecord(JSON.stringify({ type: 'notApplicable' }));
             })

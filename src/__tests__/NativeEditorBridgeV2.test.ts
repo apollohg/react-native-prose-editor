@@ -38,6 +38,33 @@ const MOCK_V2_TRANSACTION = {
     canRedo: false,
 };
 
+const HUGE_U64_DECIMAL = '18446744073709551615';
+const ONE_OVER_U64_DECIMAL = '18446744073709551616';
+
+const MOCK_ATOMIC_RENDER_SNAPSHOT = {
+    renderBlocks: [
+        [
+            { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
+            { type: 'textRun', text: 'hello world', marks: [] },
+            { type: 'blockEnd', nodeType: 'paragraph' },
+        ],
+    ],
+    renderPatch: null,
+    selection: { type: 'text', anchor: 1, head: 1, anchorScalar: 0, headScalar: 0 },
+    activeState: {
+        marks: {},
+        markAttrs: {},
+        nodes: { paragraph: true },
+        commands: { insertText: true },
+        allowedMarks: ['bold'],
+        insertableNodes: ['paragraph'],
+    },
+    historyState: { canUndo: true, canRedo: false },
+    documentVersion: HUGE_U64_DECIMAL,
+    stateRevision: '3',
+    scalarLength: 11,
+};
+
 const MOCK_SNAPSHOT_METADATA = {
     formatVersion: 1,
     documentId: 'doc-1',
@@ -48,9 +75,6 @@ const MOCK_SNAPSHOT_METADATA = {
 
 const MOCK_SNAPSHOT_BYTES = new Uint8Array([0, 1, 2, 127, 128, 255, 7]);
 const MOCK_PROTOCOL_FRAME = new Uint8Array([0, 3, 9, 200, 17]);
-
-const HUGE_U64_DECIMAL = '18446744073709551615';
-const ONE_OVER_U64_DECIMAL = '18446744073709551616';
 
 function mockV2Error(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
@@ -96,6 +120,9 @@ function resetMockNativeModule() {
                 json: JSON.parse(MOCK_DOCUMENT_JSON),
             })
         )
+    );
+    mockNativeModule.editorV2RenderUpdate = jest.fn(() =>
+        okRecord(JSON.stringify(MOCK_ATOMIC_RENDER_SNAPSHOT))
     );
     mockNativeModule.editorV2ReplaceDocument = jest.fn(() =>
         okRecord(JSON.stringify({ changed: true, documentRevision: '6' }))
@@ -813,6 +840,75 @@ describe('NativeEditorBridge v2', () => {
                 ),
                 'FFI_RESULT_INVALID'
             );
+        });
+    });
+
+    describe('atomic render snapshots', () => {
+        it('returns one deeply frozen typed snapshot with exact revisions and state', () => {
+            const handle = createHandle();
+            const snapshot = handle.bridge.renderUpdate();
+
+            expect(snapshot).toEqual(MOCK_ATOMIC_RENDER_SNAPSHOT);
+            expect(snapshot.documentVersion).toBe(HUGE_U64_DECIMAL);
+            expect(snapshot.stateRevision).toBe('3');
+            expect(snapshot.scalarLength).toBe(11);
+            expect(Object.isFrozen(snapshot)).toBe(true);
+            expect(Object.isFrozen(snapshot.renderBlocks)).toBe(true);
+            expect(Object.isFrozen(snapshot.renderBlocks[0])).toBe(true);
+            expect(Object.isFrozen(snapshot.selection)).toBe(true);
+            expect(Object.isFrozen(snapshot.activeState.marks)).toBe(true);
+        });
+
+        it('passes an exact optional mirror while retaining the atomic result shape', () => {
+            const handle = createHandle();
+            handle.bridge.renderUpdate({ anchor: 2, head: 5 });
+            expect(mockNativeModule.editorV2RenderUpdate).toHaveBeenLastCalledWith(
+                handle.editorId,
+                2,
+                5
+            );
+        });
+
+        const missingStateRevision = { ...MOCK_ATOMIC_RENDER_SNAPSHOT } as Record<
+            string,
+            unknown
+        >;
+        delete missingStateRevision.stateRevision;
+        const missingSelection = { ...MOCK_ATOMIC_RENDER_SNAPSHOT } as Record<string, unknown>;
+        delete missingSelection.selection;
+        it.each<[string, Record<string, unknown>]>([
+            ['missing stateRevision', missingStateRevision],
+            ['numeric documentVersion', { ...MOCK_ATOMIC_RENDER_SNAPSHOT, documentVersion: 4 }],
+            [
+                'out-of-range scalarLength',
+                { ...MOCK_ATOMIC_RENDER_SNAPSHOT, scalarLength: 0x1_0000_0000 },
+            ],
+            ['missing selection', missingSelection],
+            [
+                'malformed historyState',
+                {
+                    ...MOCK_ATOMIC_RENDER_SNAPSHOT,
+                    historyState: { canUndo: 1, canRedo: false },
+                },
+            ],
+            [
+                'malformed renderBlocks',
+                { ...MOCK_ATOMIC_RENDER_SNAPSHOT, renderBlocks: [[{ type: 'surprise' }]] },
+            ],
+            [
+                'unexpected nested render element field',
+                {
+                    ...MOCK_ATOMIC_RENDER_SNAPSHOT,
+                    renderBlocks: [[{ type: 'blockStart', nodeType: 'paragraph', depth: 0, extra: true }]],
+                },
+            ],
+            ['unknown top-level field', { ...MOCK_ATOMIC_RENDER_SNAPSHOT, unexpected: true }],
+        ])('rejects %s', (_name, malformed) => {
+            const handle = createHandle();
+            mockNativeModule.editorV2RenderUpdate.mockReturnValueOnce(
+                okRecord(JSON.stringify(malformed))
+            );
+            expectNonRetryable(catchThrown(() => handle.bridge.renderUpdate()), 'FFI_RESULT_INVALID');
         });
     });
 

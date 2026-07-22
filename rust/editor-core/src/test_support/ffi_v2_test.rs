@@ -1824,7 +1824,7 @@ fn render_update_ordered_list_u32_boundary_is_exact_or_rejected() {
 }
 
 #[test]
-fn staging_render_update_carries_v2_history_revision_and_frozen_shape() {
+fn render_update_is_one_complete_atomic_snapshot() {
     let id = create_handle(local_json_config(FIXTURE_MULTI_BLOCK));
     let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
     let keys: std::collections::BTreeSet<&str> = update
@@ -1838,9 +1838,11 @@ fn staging_render_update_carries_v2_history_revision_and_frozen_shape() {
         [
             "renderBlocks",
             "renderPatch",
+            "selection",
             "activeState",
             "historyState",
             "documentVersion",
+            "stateRevision",
             "scalarLength",
         ]
         .into_iter()
@@ -1858,6 +1860,7 @@ fn staging_render_update_carries_v2_history_revision_and_frozen_shape() {
             None,
         ));
         assert_eq!(update["documentVersion"], state["documentRevision"]);
+        assert_eq!(update["stateRevision"], state["stateRevision"]);
         assert_eq!(
             update["historyState"],
             json!({
@@ -1877,23 +1880,72 @@ fn staging_render_update_carries_v2_history_revision_and_frozen_shape() {
     destroy_handle(&id);
 }
 
-// Task 16C scope-5 decision pin (documented in
-// .superpowers/sdd/production-cutover-task-16c-report.md): the accessor
-// KEEPS probe-parity active-state semantics — a no-mirror render update
-// evaluates a fresh `cursor(1)` with no stored marks, never the engine's
-// tracked selection or stored marks; only an explicit scalar mirror moves
-// the evaluated selection. The engine-tracked selection was rejected
-// because the native views own the live selection and only bridge it on
-// explicit set-selection calls, so engine-tracked active state would go
-// stale between bridges.
+#[test]
+fn render_update_cannot_mix_fields_with_a_concurrent_mutation() {
+    use std::sync::mpsc::{sync_channel, RecvTimeoutError};
+    use std::time::Duration;
+
+    let id = create_handle(local_json_config(FIXTURE_MULTI_BLOCK));
+    let base_revision = revision_of(&id);
+    let (entered_tx, entered_rx) = sync_channel(0);
+    let (resume_tx, resume_rx) = sync_channel(0);
+    v2_render::install_render_snapshot_test_hook(entered_tx, resume_rx);
+
+    let render_id = id.clone();
+    let render_thread = std::thread::spawn(move || {
+        v2_render::editor_v2_render_update(render_id, None, None)
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("render snapshot reached the forced pause");
+
+    let mutation_id = id.clone();
+    let (mutation_tx, mutation_rx) = sync_channel(1);
+    let mutation_thread = std::thread::spawn(move || {
+        let result = v2::editor_v2_apply_input(
+            mutation_id,
+            input_envelope(71, base_revision, "Z"),
+        );
+        mutation_tx.send(result).unwrap();
+    });
+    assert!(matches!(
+        mutation_rx.recv_timeout(Duration::from_millis(50)),
+        Err(RecvTimeoutError::Timeout)
+    ));
+
+    resume_tx.send(()).unwrap();
+    let snapshot = ok_json(&render_thread.join().expect("render thread succeeds"));
+    let mutation = mutation_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("mutation completes after the snapshot releases the editor");
+    ok_json(&mutation);
+    mutation_thread.join().expect("mutation thread succeeds");
+
+    assert_eq!(snapshot["documentVersion"], json!("0"));
+    assert_eq!(snapshot["stateRevision"], json!("0"));
+    assert_eq!(snapshot["historyState"], json!({ "canUndo": false, "canRedo": false }));
+    assert_eq!(snapshot["selection"]["type"], json!("text"));
+    assert_eq!(snapshot["selection"]["anchor"], json!(1));
+    assert_eq!(snapshot["selection"]["head"], json!(1));
+    assert!(snapshot["scalarLength"].as_u64().is_some());
+    assert!(
+        !snapshot["renderBlocks"].to_string().contains('Z'),
+        "render content must come from the same pre-mutation state"
+    );
+    assert_eq!(revision_of(&id), 1);
+    destroy_handle(&id);
+}
+
+// Task 7 hard cutover: without a mirror, the snapshot carries and evaluates
+// the authoritative engine selection. A supplied mirror explicitly replaces
+// that selection for the snapshot.
 const ACTIVE_STATE_DOC: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"plain "},{"type":"text","text":"bold","marks":[{"type":"bold"}]}]}]}"#;
 
 #[test]
-fn render_update_active_state_no_mirror_evaluates_fresh_cursor_not_tracked_selection() {
+fn render_update_active_state_uses_authoritative_or_explicit_mirror_selection() {
     let id = create_handle(local_json_config(ACTIVE_STATE_DOC));
 
-    // No mirror: fresh cursor(1) at the document start, outside the bold
-    // word — bold is not active even though it exists in the document.
+    // The authoritative initial cursor is at the document start.
     let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
     assert_eq!(update["activeState"]["marks"]["bold"], json!(false));
 
@@ -1905,22 +1957,23 @@ fn render_update_active_state_no_mirror_evaluates_fresh_cursor_not_tracked_selec
     ));
     assert_eq!(update["activeState"]["marks"]["bold"], json!(true));
 
-    // The engine now tracks a selection inside the bold word (bridged
-    // set-selection); the no-mirror active state must still evaluate the
-    // fresh cursor(1), not the tracked selection.
+    // The engine now tracks a selection inside the bold word. Without a
+    // mirror, both selection and active state must use that exact state.
     let revision = revision_of(&id);
     ok_json(&v2::editor_v2_set_selection(
         id.clone(),
         selection_envelope(61, revision, 8, 8),
     ));
     let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
-    assert_eq!(update["activeState"]["marks"]["bold"], json!(false));
+    assert_eq!(update["selection"]["anchor"], json!(8));
+    assert_eq!(update["selection"]["head"], json!(8));
+    assert_eq!(update["activeState"]["marks"]["bold"], json!(true));
 
     destroy_handle(&id);
 }
 
 #[test]
-fn render_update_active_state_no_mirror_ignores_engine_stored_marks() {
+fn render_update_active_state_no_mirror_uses_engine_stored_marks() {
     let id = create_handle(local_json_config(ACTIVE_STATE_DOC));
 
     // Collapse the engine selection into the plain region and toggle bold:
@@ -1940,10 +1993,10 @@ fn render_update_active_state_no_mirror_ignores_engine_stored_marks() {
         ),
     ));
 
-    // Probe parity: the no-mirror update evaluates a fresh cursor(1) with
-    // no stored marks, so the engine's stored bold mark is invisible here.
+    // The atomic snapshot evaluates the authoritative selection and its
+    // stored marks together.
     let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
-    assert_eq!(update["activeState"]["marks"]["bold"], json!(false));
+    assert_eq!(update["activeState"]["marks"]["bold"], json!(true));
 
     destroy_handle(&id);
 }

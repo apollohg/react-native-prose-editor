@@ -735,7 +735,7 @@ export const NativeRichTextEditor = forwardRef<
             bridge._emitAutonomousError(allocation.error);
             return;
         }
-        const updateJson = bridge.renderUpdate();
+        const updateJson = JSON.stringify(bridge.renderUpdate());
         const parsed = applyUpdateState(updateJson);
         const documentVersion = parsed?.documentVersion;
         if (typeof documentVersion === 'string') {
