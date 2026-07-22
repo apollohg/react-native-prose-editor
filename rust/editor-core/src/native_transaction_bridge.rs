@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 
 use crate::boundary::{BoundaryError, BoundedInput, InputKind};
-use crate::ffi_v2::types::deserialize_canonical_u64;
+use crate::ffi_v2::types::{deserialize_canonical_u64, recover_request_id};
 use crate::session::{EditorSession, ErrorDomain, OperationFailureClass, SessionError};
 use crate::yrs_engine::{
     Affinity, CommandPlan, EditorOffsetKind, HistoryPolicy, OperationError, ReplacementHistory,
@@ -515,8 +515,11 @@ fn parse_envelope<T: serde::de::DeserializeOwned>(
         InputKind::Config,
         session.engine.resource_limits(),
     )?;
-    serde_json::from_str(input.as_str())
-        .map_err(|error| SessionError::from(BoundaryError::parse("CONFIG_INVALID", error)))
+    serde_json::from_str(input.as_str()).map_err(|error| {
+        let mut error = SessionError::from(BoundaryError::parse("CONFIG_INVALID", error));
+        error.request_id = recover_request_id(input.as_str());
+        error
+    })
 }
 
 fn admit_version(version: u32, request_id: u64) -> Result<(), SessionError> {

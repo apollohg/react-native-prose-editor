@@ -27,6 +27,21 @@ where
         .ok_or_else(|| serde::de::Error::custom("expected a canonical decimal u64 string"))
 }
 
+#[derive(serde::Deserialize)]
+struct RequestIdAdmission {
+    #[serde(rename = "requestId", deserialize_with = "deserialize_canonical_u64")]
+    request_id: u64,
+}
+
+/// Recover an already-admitted canonical request ID from a malformed,
+/// pre-bounded envelope. The complete envelope still receives its normal
+/// exact parse; this probe preserves correlation for a later parse failure.
+pub(crate) fn recover_request_id(json: &str) -> Option<u64> {
+    serde_json::from_str::<RequestIdAdmission>(json)
+        .ok()
+        .map(|envelope| envelope.request_id)
+}
+
 /// Frozen non-retryable transport code exposed across the FFI boundary when
 /// the current editor identity cannot advance its awareness clock safely.
 pub const AWARENESS_CLOCK_EXHAUSTED: &str = "AWARENESS_CLOCK_EXHAUSTED";

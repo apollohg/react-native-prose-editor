@@ -43,8 +43,8 @@ use crate::yrs_engine::{
 
 use super::snapshot::SnapshotMetadataEnvelope;
 use super::types::{
-    decimal_u64, deserialize_canonical_u64, parse_canonical_u64, FfiError, FfiJsonResult,
-    FfiUnitResult,
+    decimal_u64, deserialize_canonical_u64, parse_canonical_u64, recover_request_id, FfiError,
+    FfiJsonResult, FfiUnitResult,
 };
 
 /// Session operations require a concrete `u64` even when their FFI entry has
@@ -713,25 +713,10 @@ fn parse_request_envelope<'a, T: serde::Deserialize<'a>>(
     let input = BoundedInput::new(json, InputKind::Config, session.engine.resource_limits())?;
     serde_json::from_str(input.as_str()).map_err(|error| {
         config_invalid(
-            admit_request_id(input.as_str()),
+            recover_request_id(input.as_str()),
             BoundaryError::parse("CONFIG_INVALID", error).message,
         )
     })
-}
-
-#[derive(serde::Deserialize)]
-struct RequestIdAdmission {
-    #[serde(rename = "requestId", deserialize_with = "deserialize_canonical_u64")]
-    request_id: u64,
-}
-
-/// Extract an already-valid canonical request id from a malformed request
-/// envelope. The complete envelope still receives its normal exact parse;
-/// this probe only preserves correlation for a later validation failure.
-fn admit_request_id(json: &str) -> Option<u64> {
-    serde_json::from_str::<RequestIdAdmission>(json)
-        .ok()
-        .map(|envelope| envelope.request_id)
 }
 
 fn admit_version(version: u32, request_id: u64) -> Result<(), SessionError> {
