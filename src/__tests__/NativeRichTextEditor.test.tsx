@@ -1073,16 +1073,14 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const ref = createRef<NativeRichTextEditorRef>();
         const onActiveStateChange = jest.fn();
         const errors: unknown[] = [];
+        const originalAllocateEditorUpdateRevision =
+            EditorUpdateRevision.allocateEditorUpdateRevision;
         const allocateEditorUpdateRevision = jest
             .spyOn(EditorUpdateRevision, 'allocateEditorUpdateRevision')
             .mockImplementation((currentRevision) =>
                 currentRevision === 0
                     ? { revision: 0xffff_ffff }
-                    : jest
-                          .requireActual<typeof import('../EditorUpdateRevision')>(
-                              '../EditorUpdateRevision'
-                          )
-                          .allocateEditorUpdateRevision(currentRevision)
+                    : originalAllocateEditorUpdateRevision(currentRevision)
             );
         const renderUpdate = jest.spyOn(handle.bridge, 'renderUpdate');
         handle.addErrorListener((error) => errors.push(error));

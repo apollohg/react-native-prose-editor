@@ -24,7 +24,7 @@
 // awareness frame carrying a Rust-side monotonically increasing clock.
 
 import type { DocumentJSON, NativeEditorV2PeerInfo } from '../NativeEditorBridge';
-import { normalizeNativeEditorV2U64 } from '../NativeEditorV2Decimal';
+import { normalizeNativeEditorV2U64 } from '../../NativeEditorV2Decimal';
 
 export const V2_FAKE_STEP1_FRAME = new Uint8Array([0, 0, 1]);
 export const V2_FAKE_STEP2_FRAME = new Uint8Array([0, 0, 2]);
