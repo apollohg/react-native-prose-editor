@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use crate::editor_state::{ActiveState, HistoryState};
+use crate::ffi_v2::types::decimal_u64;
 use crate::model::{Fragment, Mark, Node};
 use crate::render::incremental::RenderBlocksPatch;
 use crate::render::RenderElement;
@@ -488,8 +489,8 @@ impl OperationError {
             request_id,
         )
         .with_details(serde_json::json!({
-            "expectedRevision": expected_revision,
-            "actualRevision": actual_revision,
+            "expectedRevision": decimal_u64(expected_revision),
+            "actualRevision": decimal_u64(actual_revision),
         }))
     }
 

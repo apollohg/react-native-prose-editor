@@ -99,12 +99,11 @@ function nullableCanonicalDecimal(value: unknown): string | null | undefined {
     return value;
 }
 
-function parseDetails(nativeError: Record<string, unknown>): Record<string, unknown> | null | undefined {
+function parseDetails(
+    nativeError: Record<string, unknown>
+): Record<string, unknown> | null | undefined {
     if (nativeError.details != null) {
-        if (
-            typeof nativeError.details !== 'object' ||
-            Array.isArray(nativeError.details)
-        ) {
+        if (typeof nativeError.details !== 'object' || Array.isArray(nativeError.details)) {
             return undefined;
         }
         return nativeError.details as Record<string, unknown>;
@@ -118,6 +117,34 @@ function parseDetails(nativeError: Record<string, unknown>): Record<string, unkn
             : undefined;
     } catch {
         return undefined;
+    }
+}
+
+function isCanonicalDecimalDetail(value: unknown): value is string {
+    return typeof value === 'string' && CANONICAL_DECIMAL_ID.test(value);
+}
+
+/**
+ * Error details are otherwise forward-compatible, but known v2 structures
+ * carry u64 values and must not let JSON.parse silently admit rounded numbers.
+ */
+function hasValidKnownDetails(code: string, details: Record<string, unknown> | null): boolean {
+    switch (code) {
+        case 'REVISION_MISMATCH':
+            return (
+                details != null &&
+                isCanonicalDecimalDetail(details.expectedRevision) &&
+                isCanonicalDecimalDetail(details.actualRevision)
+            );
+        case 'TRANSPORT_STALE_GENERATION':
+            return (
+                details != null &&
+                isCanonicalDecimalDetail(details.presentedGeneration) &&
+                (details.liveGeneration === null ||
+                    isCanonicalDecimalDetail(details.liveGeneration))
+            );
+        default:
+            return true;
     }
 }
 
@@ -148,7 +175,13 @@ export function normalizeNativeEditorV2Error(value: unknown): NativeEditorV2Erro
     const limit = nullableCanonicalDecimal(nativeError.limit);
     const actual = nullableCanonicalDecimal(nativeError.actual);
     const details = parseDetails(nativeError);
-    if (operationIndex === undefined || limit === undefined || actual === undefined || details === undefined) {
+    if (
+        operationIndex === undefined ||
+        limit === undefined ||
+        actual === undefined ||
+        details === undefined ||
+        !hasValidKnownDetails(code, details)
+    ) {
         return null;
     }
 

@@ -125,6 +125,31 @@ func v2ExactUInt32(_ raw: NSNumber?) -> UInt32? {
     else {
         return nil
     }
+    if let decimal = raw as? NSDecimalNumber {
+        let maximum = NSDecimalNumber(value: UInt32.max)
+        guard decimal != NSDecimalNumber.notANumber,
+              decimal.compare(NSDecimalNumber.zero) != .orderedAscending,
+              decimal.compare(maximum) != .orderedDescending
+        else {
+            return nil
+        }
+        let rounded = decimal.rounding(
+            accordingToBehavior: NSDecimalNumberHandler(
+                roundingMode: .down,
+                scale: 0,
+                raiseOnExactness: false,
+                raiseOnOverflow: false,
+                raiseOnUnderflow: false,
+                raiseOnDivideByZero: false
+            )
+        )
+        guard decimal.compare(rounded) == .orderedSame,
+              let exact = UInt32(decimal.stringValue)
+        else {
+            return nil
+        }
+        return exact
+    }
     let value = raw.doubleValue
     guard value.isFinite,
           value >= 0,

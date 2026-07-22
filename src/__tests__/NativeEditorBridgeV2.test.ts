@@ -195,6 +195,7 @@ import {
     NativeEditorV2OperationError,
     NativeEditorV2SnapshotError,
     NativeEditorV2TransportError,
+    normalizeNativeEditorV2Error,
     type NativeEditorV2Error,
 } from '../NativeEditorBoundaryError';
 import { HARD_EDITOR_RESOURCE_LIMITS } from '../ResourceLimits';
@@ -526,6 +527,82 @@ describe('NativeEditorBridge v2', () => {
             expect(withDetailsJson && !withDetailsJson.ok && withDetailsJson.error.details).toEqual(
                 { field: 'content' }
             );
+        });
+
+        it('accepts canonical nested u64 error details from detailsJson', () => {
+            const revisionMismatch = normalizeNativeEditorV2Error(
+                errRecord(
+                    mockV2Error({
+                        code: 'REVISION_MISMATCH',
+                        detailsJson:
+                            '{"expectedRevision":"9007199254740993","actualRevision":"18446744073709551615"}',
+                    })
+                )
+            );
+            expect(revisionMismatch?.details).toEqual({
+                expectedRevision: '9007199254740993',
+                actualRevision: HUGE_U64_DECIMAL,
+            });
+
+            const staleGeneration = normalizeNativeEditorV2Error(
+                errRecord(
+                    mockV2Error({
+                        domain: 'transport',
+                        code: 'TRANSPORT_STALE_GENERATION',
+                        detailsJson:
+                            '{"presentedGeneration":"9007199254740993","liveGeneration":null}',
+                    })
+                )
+            );
+            expect(staleGeneration?.details).toEqual({
+                presentedGeneration: '9007199254740993',
+                liveGeneration: null,
+            });
+        });
+
+        it.each([
+            [
+                'revision mismatch numeric detailsJson value',
+                mockV2Error({
+                    code: 'REVISION_MISMATCH',
+                    detailsJson:
+                        '{"expectedRevision":9007199254740993,"actualRevision":"18446744073709551615"}',
+                }),
+            ],
+            [
+                'revision mismatch non-canonical decimal',
+                mockV2Error({
+                    code: 'REVISION_MISMATCH',
+                    detailsJson:
+                        '{"expectedRevision":"01","actualRevision":"18446744073709551615"}',
+                }),
+            ],
+            [
+                'revision mismatch missing actual revision',
+                mockV2Error({
+                    code: 'REVISION_MISMATCH',
+                    detailsJson: '{"expectedRevision":"9007199254740993"}',
+                }),
+            ],
+            [
+                'stale generation numeric detailsJson value',
+                mockV2Error({
+                    domain: 'transport',
+                    code: 'TRANSPORT_STALE_GENERATION',
+                    detailsJson:
+                        '{"presentedGeneration":"9007199254740993","liveGeneration":18446744073709551615}',
+                }),
+            ],
+            [
+                'stale generation malformed presented value',
+                mockV2Error({
+                    domain: 'transport',
+                    code: 'TRANSPORT_STALE_GENERATION',
+                    detailsJson: '{"presentedGeneration":"1e3","liveGeneration":null}',
+                }),
+            ],
+        ])('rejects malformed known nested u64 details: %s', (_label, error) => {
+            expect(normalizeNativeEditorV2Error(errRecord(error))).toBeNull();
         });
 
         it('rejects non-object details payloads', () => {

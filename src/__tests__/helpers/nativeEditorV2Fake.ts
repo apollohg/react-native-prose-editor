@@ -78,16 +78,28 @@ function errRecord(error: FakeErrorRecord): Record<string, unknown> {
     return { value: null, error };
 }
 
-function transportError(code: string, message: string): Record<string, unknown> {
-    return errRecord(errorRecord('transport', code, message));
+function transportError(
+    code: string,
+    message: string,
+    details: Record<string, unknown> | null = null
+): Record<string, unknown> {
+    const error = errorRecord('transport', code, message);
+    error.details = details;
+    return errRecord(error);
 }
 
 function lifecycleError(code: string, message: string): Record<string, unknown> {
     return errRecord(errorRecord('lifecycle', code, message));
 }
 
-function operationError(code: string, message: string): Record<string, unknown> {
-    return errRecord(errorRecord('operation', code, message));
+function operationError(
+    code: string,
+    message: string,
+    details: Record<string, unknown> | null = null
+): Record<string, unknown> {
+    const error = errorRecord('operation', code, message);
+    error.details = details;
+    return errRecord(error);
 }
 
 function snapshotError(code: string, message: string): Record<string, unknown> {
@@ -331,17 +343,36 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         generation: string,
         action: string
     ): Record<string, unknown> | null {
-        if (
-            session.liveGeneration == null ||
-            canonicalV2U64(generation) == null ||
-            generation !== String(session.liveGeneration)
-        ) {
+        const presentedGeneration = canonicalV2U64(generation);
+        if (presentedGeneration == null) {
+            return boundaryError('CONFIG_INVALID', 'generation must be canonical decimal u64 text');
+        }
+        if (session.liveGeneration == null || generation !== String(session.liveGeneration)) {
             return transportError(
                 'TRANSPORT_STALE_GENERATION',
-                `${action} rejected: stale transport generation`
+                `${action} rejected: stale transport generation`,
+                {
+                    presentedGeneration,
+                    liveGeneration:
+                        session.liveGeneration == null ? null : String(session.liveGeneration),
+                }
             );
         }
         return null;
+    }
+
+    function revisionMismatchError(
+        session: FakeSession,
+        expectedRevision: string
+    ): Record<string, unknown> {
+        return operationError(
+            'REVISION_MISMATCH',
+            'base document revision does not match the engine revision',
+            {
+                expectedRevision,
+                actualRevision: String(session.documentRevision),
+            }
+        );
     }
 
     function retireGeneration(session: FakeSession, next: FakeTransportState): void {
@@ -659,10 +690,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     );
                 }
                 if (request.baseDocumentRevision !== String(session.documentRevision)) {
-                    return operationError(
-                        'REVISION_MISMATCH',
-                        'base document revision does not match the engine revision'
-                    );
+                    return revisionMismatchError(session, request.baseDocumentRevision);
                 }
                 session.undoStack.push(cloneDoc(session.doc));
                 session.redoStack = [];
@@ -696,10 +724,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     );
                 }
                 if (request.baseDocumentRevision !== String(session.documentRevision)) {
-                    return operationError(
-                        'REVISION_MISMATCH',
-                        'base document revision does not match the engine revision'
-                    );
+                    return revisionMismatchError(session, request.baseDocumentRevision);
                 }
                 const command = (request.command ?? {}) as Record<string, unknown>;
                 const type = String(command.type ?? '');
@@ -900,10 +925,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 const envelopeError = requestEnvelopeError(request);
                 if (envelopeError) return envelopeError;
                 if (request.baseDocumentRevision !== String(session.documentRevision)) {
-                    return operationError(
-                        'REVISION_MISMATCH',
-                        'base document revision does not match the engine revision'
-                    );
+                    return revisionMismatchError(session, request.baseDocumentRevision);
                 }
                 const rejected = admitReplacement(session);
                 if (rejected) return rejected;
@@ -927,10 +949,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 const envelopeError = requestEnvelopeError(request);
                 if (envelopeError) return envelopeError;
                 if (request.baseDocumentRevision !== String(session.documentRevision)) {
-                    return operationError(
-                        'REVISION_MISMATCH',
-                        'base document revision does not match the engine revision'
-                    );
+                    return revisionMismatchError(session, request.baseDocumentRevision);
                 }
                 return okRecord(JSON.stringify({ type: 'notApplicable' }));
             })

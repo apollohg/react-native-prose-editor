@@ -362,8 +362,8 @@ fn operation_errors_serialize_camel_case_structured_details() {
             "message": "document revision mismatch: expected 7, actual 8",
             "requestId": 41,
             "details": {
-                "expectedRevision": 7,
-                "actualRevision": 8,
+                "expectedRevision": "7",
+                "actualRevision": "8",
             }
         })
     );

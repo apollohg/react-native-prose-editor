@@ -22,6 +22,7 @@
     reason = "SessionError is the established unboxed session error envelope"
 )]
 
+use crate::ffi_v2::types::decimal_u64;
 use crate::session::{ErrorDomain, SessionError, TransportState};
 
 /// Refusal code for callbacks whose generation is not the live attempt
@@ -377,9 +378,9 @@ impl SessionError {
         live: Option<TransportGeneration>,
     ) -> Self {
         let details = self.details.get_or_insert_with(|| serde_json::json!({}));
-        details["presentedGeneration"] = serde_json::json!(presented.value());
+        details["presentedGeneration"] = decimal_u64(presented.value());
         details["liveGeneration"] = match live {
-            Some(generation) => serde_json::json!(generation.value()),
+            Some(generation) => decimal_u64(generation.value()),
             None => serde_json::Value::Null,
         };
         self
@@ -470,6 +471,37 @@ mod tests {
         let error = machine.socket_opened(REQUEST_ID, generation).unwrap_err();
         assert_eq!(error.code, TRANSPORT_INVALID_TRANSITION, "{error:?}");
         assert_eq!(machine.state(), TransportState::Handshaking);
+    }
+
+    #[test]
+    fn nested_u64_error_details_are_canonical_decimal_strings() {
+        let mut machine = TransportStateMachine::new(TransportState::Connecting);
+        machine.live_attempt = Some(TransportGeneration::from_value(u64::MAX));
+
+        let error = machine
+            .socket_opened(
+                REQUEST_ID,
+                TransportGeneration::from_value(9_007_199_254_740_993),
+            )
+            .unwrap_err();
+        let ffi_error = crate::ffi_v2::types::FfiError::from(error);
+        let details: serde_json::Value = serde_json::from_str(
+            ffi_error
+                .details_json
+                .as_deref()
+                .expect("stale generation must preserve details"),
+        )
+        .expect("details JSON must be valid");
+
+        assert_eq!(
+            details,
+            serde_json::json!({
+                "action": "socketOpened",
+                "transportState": "Connecting",
+                "presentedGeneration": "9007199254740993",
+                "liveGeneration": "18446744073709551615",
+            }),
+        );
     }
 
     #[test]
@@ -689,7 +721,13 @@ mod tests {
         let details = error.details.expect("stale refusal must carry details");
         assert_eq!(details["action"], "socketOpened");
         assert_eq!(details["transportState"], "Connecting");
-        assert_eq!(details["presentedGeneration"], 9_999);
-        assert_eq!(details["liveGeneration"], generation.value());
+        assert_eq!(
+            details["presentedGeneration"],
+            serde_json::Value::String("9999".into())
+        );
+        assert_eq!(
+            details["liveGeneration"],
+            serde_json::Value::String(generation.value().to_string())
+        );
     }
 }

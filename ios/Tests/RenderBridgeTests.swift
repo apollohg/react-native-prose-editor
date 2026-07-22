@@ -45,6 +45,9 @@ final class RenderBridgeTests: XCTestCase {
     func testV2UInt32AcceptsOnlyExactFiniteIntegralNSNumberValues() {
         XCTAssertEqual(v2ExactUInt32(NSNumber(value: UInt32.max)), UInt32.max)
         XCTAssertEqual(v2ExactUInt32(NSNumber(value: 0)), 0)
+        XCTAssertEqual(v2ExactUInt32(NSDecimalNumber(string: "1")), 1)
+        XCTAssertEqual(v2ExactUInt32(NSDecimalNumber(string: "4294967295")), UInt32.max)
+        XCTAssertNil(v2ExactUInt32(NSDecimalNumber(string: "1.0000000000000000001")))
 
         for invalid: NSNumber in [
             NSNumber(value: -1),

@@ -21,8 +21,8 @@ use crate::ffi_v2::snapshot as v2_snapshot;
 use crate::ffi_v2::types::{FfiError, FfiJsonResult};
 use crate::tiptap_schema;
 use crate::yrs_engine::{
-    DocumentScope, DocumentSnapshot, EditingLimits, InitializationMode, TransactionOrigin,
-    YrsDocumentEngine, YrsEngineConfig,
+    DocumentScope, DocumentSnapshot, EditingLimits, InitializationMode, OperationError,
+    TransactionOrigin, YrsDocumentEngine, YrsEngineConfig,
 };
 use serde_json::{json, Value};
 use yrs::sync::awareness::Awareness;
@@ -76,6 +76,30 @@ fn err_bytes(result: &crate::ffi_v2::types::FfiBytesResult) -> FfiError {
         result.value
     );
     result.error.clone().expect("error result carries an error")
+}
+
+#[test]
+fn nested_u64_error_details_are_canonical_decimal_strings() {
+    let session_error = crate::session::SessionError::from_operation(
+        OperationError::revision_mismatch(1, 9_007_199_254_740_993, u64::MAX),
+        crate::session::OperationFailureClass::ExistingStableCode,
+    );
+    let error = FfiError::from(session_error);
+    let details: Value = serde_json::from_str(
+        error
+            .details_json
+            .as_deref()
+            .expect("revision mismatch must preserve details"),
+    )
+    .expect("details JSON must be valid");
+
+    assert_eq!(
+        details,
+        json!({
+            "expectedRevision": "9007199254740993",
+            "actualRevision": "18446744073709551615",
+        }),
+    );
 }
 
 fn assert_error(error: &FfiError, domain: &str, code: &str, request_id: Option<&str>) {
@@ -751,7 +775,10 @@ fn apply_input_command_selection_and_local_api_outcome_matrix() {
     let details: Value = serde_json::from_str(error.details_json.as_deref().unwrap()).unwrap();
     assert_eq!(
         details,
-        json!({ "expectedRevision": base, "actualRevision": base + 1 }),
+        json!({
+            "expectedRevision": base.to_string(),
+            "actualRevision": (base + 1).to_string(),
+        }),
         "{error:?}",
     );
 
