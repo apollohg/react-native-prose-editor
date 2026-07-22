@@ -46,7 +46,7 @@ const MOCK_ATOMIC_RENDER_SNAPSHOT = {
         [
             { type: 'blockStart', nodeType: 'paragraph', depth: 0 },
             { type: 'textRun', text: 'hello world', marks: [] },
-            { type: 'blockEnd', nodeType: 'paragraph' },
+            { type: 'blockEnd' },
         ],
     ],
     renderPatch: null,

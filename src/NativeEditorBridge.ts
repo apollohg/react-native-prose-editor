@@ -486,6 +486,11 @@ function hasExactOwnKeys(record: Record<string, unknown>, expected: readonly str
     );
 }
 
+function hasOnlyOwnKeys(record: Record<string, unknown>, allowed: readonly string[]): boolean {
+    const allowedKeys = new Set(allowed);
+    return Object.keys(record).every((key) => allowedKeys.has(key));
+}
+
 function booleanRecord(value: unknown): value is Record<string, boolean> {
     return isPlainRecord(value) && Object.values(value).every((entry) => typeof entry === 'boolean');
 }
@@ -501,6 +506,16 @@ function validRenderMark(value: unknown): boolean {
 function validListContext(value: unknown): value is ListContext {
     if (!isPlainRecord(value)) return false;
     return (
+        hasOnlyOwnKeys(value, [
+            'ordered',
+            'index',
+            'total',
+            'start',
+            'isFirst',
+            'isLast',
+            'kind',
+            'checked',
+        ]) &&
         typeof value.ordered === 'boolean' &&
         nativeEditorV2U32(value.index) != null &&
         nativeEditorV2U32(value.total) != null &&
@@ -516,17 +531,54 @@ function validRenderElement(value: unknown): value is RenderElement {
     if (!isPlainRecord(value) || !RENDER_ELEMENT_TYPES.has(value.type as RenderElement['type'])) {
         return false;
     }
-    if (value.text !== undefined && typeof value.text !== 'string') return false;
-    if (value.nodeType !== undefined && typeof value.nodeType !== 'string') return false;
-    if (value.label !== undefined && typeof value.label !== 'string') return false;
-    if (value.depth !== undefined && nativeEditorV2U32(value.depth) == null) return false;
-    if (value.docPos !== undefined && nativeEditorV2U32(value.docPos) == null) return false;
-    if (value.marks !== undefined && (!Array.isArray(value.marks) || !value.marks.every(validRenderMark))) {
-        return false;
+    switch (value.type) {
+        case 'textRun':
+            return (
+                hasExactOwnKeys(value, ['type', 'text', 'marks']) &&
+                typeof value.text === 'string' &&
+                Array.isArray(value.marks) &&
+                value.marks.every(validRenderMark)
+            );
+        case 'blockStart':
+            return (
+                hasOnlyOwnKeys(value, ['type', 'nodeType', 'depth', 'listContext']) &&
+                typeof value.nodeType === 'string' &&
+                nativeEditorV2U32(value.depth) != null &&
+                (value.listContext === undefined || validListContext(value.listContext))
+            );
+        case 'blockEnd':
+            return hasExactOwnKeys(value, ['type']);
+        case 'voidInline':
+        case 'voidBlock':
+            return (
+                hasOnlyOwnKeys(value, ['type', 'nodeType', 'docPos', 'attrs']) &&
+                typeof value.nodeType === 'string' &&
+                nativeEditorV2U32(value.docPos) != null &&
+                (value.attrs === undefined || isPlainRecord(value.attrs))
+            );
+        case 'opaqueInlineAtom':
+            return (
+                hasOnlyOwnKeys(value, [
+                    'type',
+                    'nodeType',
+                    'label',
+                    'docPos',
+                    'mentionTheme',
+                ]) &&
+                typeof value.nodeType === 'string' &&
+                typeof value.label === 'string' &&
+                nativeEditorV2U32(value.docPos) != null &&
+                (value.mentionTheme === undefined || isPlainRecord(value.mentionTheme))
+            );
+        case 'opaqueBlockAtom':
+            return (
+                hasExactOwnKeys(value, ['type', 'nodeType', 'label', 'docPos']) &&
+                typeof value.nodeType === 'string' &&
+                typeof value.label === 'string' &&
+                nativeEditorV2U32(value.docPos) != null
+            );
     }
-    if (value.attrs !== undefined && !isPlainRecord(value.attrs)) return false;
-    if (value.listContext !== undefined && !validListContext(value.listContext)) return false;
-    return true;
+    return false;
 }
 
 function normalizeRenderBlocks(value: unknown): RenderElement[][] | null {
@@ -540,7 +592,9 @@ function normalizeRenderBlocks(value: unknown): RenderElement[][] | null {
 
 function normalizeRenderPatch(value: unknown): RenderBlocksPatch | null | undefined {
     if (value === null) return null;
-    if (!isPlainRecord(value)) return undefined;
+    if (!isPlainRecord(value) || !hasExactOwnKeys(value, ['startIndex', 'deleteCount', 'renderBlocks'])) {
+        return undefined;
+    }
     const renderBlocks = normalizeRenderBlocks(value.renderBlocks);
     const startIndex = nativeEditorV2U32(value.startIndex);
     const deleteCount = nativeEditorV2U32(value.deleteCount);
@@ -550,8 +604,11 @@ function normalizeRenderPatch(value: unknown): RenderBlocksPatch | null | undefi
 
 function normalizeRenderSelection(value: unknown): Selection | null {
     if (!isPlainRecord(value)) return null;
-    if (value.type === 'all') return { type: 'all' };
+    if (value.type === 'all') return hasExactOwnKeys(value, ['type']) ? { type: 'all' } : null;
     if (value.type === 'text') {
+        if (!hasExactOwnKeys(value, ['type', 'anchor', 'head', 'anchorScalar', 'headScalar'])) {
+            return null;
+        }
         const anchor = nativeEditorV2U32(value.anchor);
         const head = nativeEditorV2U32(value.head);
         const anchorScalar = nativeEditorV2U32(value.anchorScalar);
@@ -560,6 +617,7 @@ function normalizeRenderSelection(value: unknown): Selection | null {
         return { type: 'text', anchor, head, anchorScalar, headScalar };
     }
     if (value.type === 'node') {
+        if (!hasExactOwnKeys(value, ['type', 'pos', 'posScalar'])) return null;
         const pos = nativeEditorV2U32(value.pos);
         const posScalar = nativeEditorV2U32(value.posScalar);
         if (pos == null || posScalar == null) return null;
@@ -571,6 +629,14 @@ function normalizeRenderSelection(value: unknown): Selection | null {
 function normalizeRenderActiveState(value: unknown): ActiveState | null {
     if (!isPlainRecord(value)) return null;
     if (
+        !hasExactOwnKeys(value, [
+            'marks',
+            'markAttrs',
+            'nodes',
+            'commands',
+            'allowedMarks',
+            'insertableNodes',
+        ]) ||
         !booleanRecord(value.marks) ||
         !isPlainRecord(value.markAttrs) ||
         !Object.values(value.markAttrs).every(isPlainRecord) ||
@@ -585,7 +651,7 @@ function normalizeRenderActiveState(value: unknown): ActiveState | null {
 }
 
 function normalizeRenderHistoryState(value: unknown): HistoryState | null {
-    if (!isPlainRecord(value)) return null;
+    if (!isPlainRecord(value) || !hasExactOwnKeys(value, ['canUndo', 'canRedo'])) return null;
     const canUndo = optionalBoolean(value.canUndo);
     const canRedo = optionalBoolean(value.canRedo);
     return canUndo == null || canRedo == null ? null : { canUndo, canRedo };
