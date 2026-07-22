@@ -50,7 +50,7 @@ import { render, act } from '@testing-library/react-native';
 import { NativeRichTextEditor, type NativeRichTextEditorRef } from '../NativeRichTextEditor';
 import {
     createNativeEditorDocumentHandle,
-    NativeEditorDocumentHandle,
+    type NativeEditorDocumentHandle,
     _resetNativeModuleCache,
     type DocumentJSON,
 } from '../NativeEditorBridge';

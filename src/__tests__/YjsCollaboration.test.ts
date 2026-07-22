@@ -51,7 +51,7 @@ import {
 } from '../YjsCollaboration';
 import {
     createNativeEditorDocumentHandle,
-    NativeEditorDocumentHandle,
+    type NativeEditorDocumentHandle,
     _resetNativeModuleCache,
     type DocumentJSON,
     type NativeEditorV2PeerInfo,

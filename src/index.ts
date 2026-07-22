@@ -119,7 +119,7 @@ export type {
 
 export {
     createNativeEditorDocumentHandle,
-    NativeEditorDocumentHandle,
+    type NativeEditorDocumentHandle,
     type NativeEditorV2CreateConfig,
     type NativeEditorV2Initialization,
     type NativeEditorV2PeerInfo,

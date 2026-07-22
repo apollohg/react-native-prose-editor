@@ -300,23 +300,59 @@ fn create_resolves_limits_before_materializing_initialization_payload() {
 }
 
 #[test]
-fn create_rejects_oversized_metadata_before_materializing_policy_strings() {
-    super::editor::reset_create_metadata_materialization_count_for_test();
-    let input_filter = "x".repeat(120 * 1024 * 1024);
-    let error = create_error_from_json(
-        json!({
-            "initialization": { "type": "localEmpty" },
-            "policy": { "inputFilter": input_filter }
-        })
-        .to_string(),
+fn create_pre_serde_retained_envelope_admission_is_exact() {
+    const LIMIT: usize = 64 * 1024;
+    let prefix = r#"{"initialization":{"type":"localEmpty"},"policy":{"inputFilter":""#;
+    let suffix = r#""}}"#;
+    let exact = format!(
+        "{prefix}{}{suffix}",
+        "x".repeat(LIMIT - prefix.len() - suffix.len())
+    );
+    assert_eq!(exact.len(), LIMIT);
+
+    let result = super::editor::editor_v2_create(exact, None);
+    let error = result.error.as_ref();
+    assert!(error.is_none(), "exact retained envelope failed: {error:?}");
+    let value: serde_json::Value =
+        serde_json::from_str(result.value.as_deref().expect("create value")).unwrap();
+    let editor_id = value["editorId"].as_str().unwrap().to_owned();
+    assert_eq!(
+        super::editor::editor_v2_destroy(editor_id).value,
+        Some(true)
     );
 
-    assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
-    assert_eq!(error.limit, Some(64 * 1024));
-    assert_eq!(
-        super::editor::take_create_metadata_materialization_count_for_test(),
-        0
+    let one_over = format!(
+        "{prefix}{}{suffix}",
+        "x".repeat(LIMIT + 1 - prefix.len() - suffix.len())
     );
+    let error = create_error_from_json(one_over);
+    assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED");
+    assert_eq!(error.limit, Some(LIMIT as u64));
+    assert_eq!(error.actual, Some((LIMIT + 1) as u64));
+}
+
+#[test]
+fn create_pre_serde_rejects_oversized_escaped_metadata() {
+    const LIMIT: usize = 64 * 1024;
+    let escaped = r#"\u0061"#.repeat((LIMIT / 6) + 8);
+    let configs = [
+        format!(r#"{{"initialization":{{"type":"localEmpty"}},"{escaped}":0}}"#),
+        format!(r#"{{"initialization":{{"type":"localEmpty","{escaped}":0}}}}"#),
+        format!(r#"{{"initialization":{{"type":"{escaped}"}}}}"#),
+    ];
+
+    for config in configs {
+        assert!(config.len() > LIMIT);
+        let error = create_error_from_json(config.clone());
+        assert_eq!(
+            error.code,
+            "INPUT_LIMIT_EXCEEDED",
+            "config length: {}",
+            config.len()
+        );
+        assert_eq!(error.limit, Some(LIMIT as u64));
+        assert_eq!(error.actual, Some(config.len() as u64));
+    }
 }
 
 #[test]

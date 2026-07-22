@@ -1,6 +1,7 @@
 import { requireNativeModule } from 'expo-modules-core';
 import type { EditorMentionTheme } from './EditorTheme';
 import {
+    HARD_EDITOR_RESOURCE_LIMITS,
     validateEditorCreateLimits,
     type EditorCollaborationLimits,
     type EditorEditingLimits,
@@ -799,15 +800,20 @@ const V2_CREATE_SNAPSHOT_METADATA_KEYS = new Set([
     'schemaFingerprint',
 ]);
 const V2_CREATE_MAX_U32 = 0xffff_ffff;
-const V2_CREATE_BOUNDARY_ERRORS = new WeakSet<object>();
+const V2_CREATE_JSON_MAX_BYTES = HARD_EDITOR_RESOURCE_LIMITS.maxInputBytes;
+const V2_CREATE_JSON_MAX_DEPTH = HARD_EDITOR_RESOURCE_LIMITS.maxDocumentDepth * 2 + 16;
+const V2_CREATE_JSON_MAX_WORK = HARD_EDITOR_RESOURCE_LIMITS.maxInputBytes;
+const V2_CREATE_STRING_CHAR_CODE_AT = String.prototype.charCodeAt;
 
-function trustedV2CreateBoundaryError(error: NativeEditorV2BoundaryError): NativeEditorV2BoundaryError {
-    V2_CREATE_BOUNDARY_ERRORS.add(error);
-    return error;
+class NativeEditorV2CreateConfigError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'NativeEditorV2CreateConfigError';
+    }
 }
 
-function invalidV2CreateRequestError(message: string): NativeEditorV2BoundaryError {
-    return trustedV2CreateBoundaryError(invalidV2RequestError(message));
+function invalidV2CreateRequestError(message: string): NativeEditorV2CreateConfigError {
+    return new NativeEditorV2CreateConfigError(message);
 }
 
 function validateV2CreateLimits(limits: NativeEditorV2CreateConfig['limits']): void {
@@ -815,18 +821,16 @@ function validateV2CreateLimits(limits: NativeEditorV2CreateConfig['limits']): v
         validateEditorCreateLimits(limits);
     } catch (error) {
         if (!(error instanceof NativeEditorBoundaryError)) throw error;
-        throw trustedV2CreateBoundaryError(
-            new NativeEditorV2BoundaryError({
-                domain: 'boundary',
-                code: error.code,
-                message: error.message,
-                requestId: null,
-                operationIndex: null,
-                limit: error.limit ?? null,
-                actual: error.actual ?? null,
-                details: error.details ?? null,
-            })
-        );
+        throw new NativeEditorV2BoundaryError({
+            domain: 'boundary',
+            code: error.code,
+            message: error.message,
+            requestId: null,
+            operationIndex: null,
+            limit: error.limit ?? null,
+            actual: error.actual ?? null,
+            details: error.details ?? null,
+        });
     }
 }
 
@@ -890,64 +894,130 @@ function invalidV2JsonValue(label: string): never {
     throw invalidV2CreateRequestError(`NativeEditorBridge: invalid ${label} for v2 create`);
 }
 
+interface V2JsonNormalizationTraversal {
+    readonly seen: WeakSet<object>;
+    work: number;
+}
+
+interface V2JsonNormalizationBudget {
+    bytes: number;
+}
+
+function chargeV2JsonWork(state: V2JsonNormalizationTraversal, label: string): void {
+    if (state.work >= V2_CREATE_JSON_MAX_WORK) invalidV2JsonValue(label);
+    state.work += 1;
+}
+
+function chargeV2JsonBytes(budget: V2JsonNormalizationBudget, amount: number, label: string): void {
+    if (
+        !Number.isSafeInteger(amount) ||
+        amount < 0 ||
+        amount > V2_CREATE_JSON_MAX_BYTES - budget.bytes
+    ) {
+        invalidV2JsonValue(label);
+    }
+    budget.bytes += amount;
+}
+
+function chargeV2JsonStringBytes(
+    value: string,
+    budget: V2JsonNormalizationBudget,
+    label: string
+): void {
+    chargeV2JsonBytes(budget, 2, label);
+    for (let index = 0; index < value.length; index += 1) {
+        const code = V2_CREATE_STRING_CHAR_CODE_AT.call(value, index);
+        if (code === 0x22 || code === 0x5c || code === 0x08 || code === 0x09) {
+            chargeV2JsonBytes(budget, 2, label);
+        } else if (code === 0x0a || code === 0x0c || code === 0x0d) {
+            chargeV2JsonBytes(budget, 2, label);
+        } else if (code <= 0x1f) {
+            chargeV2JsonBytes(budget, 6, label);
+        } else if (code <= 0x7f) {
+            chargeV2JsonBytes(budget, 1, label);
+        } else if (code <= 0x7ff) {
+            chargeV2JsonBytes(budget, 2, label);
+        } else if (code >= 0xd800 && code <= 0xdbff) {
+            const next =
+                index + 1 < value.length
+                    ? V2_CREATE_STRING_CHAR_CODE_AT.call(value, index + 1)
+                    : -1;
+            if (next >= 0xdc00 && next <= 0xdfff) {
+                chargeV2JsonBytes(budget, 4, label);
+                index += 1;
+            } else {
+                chargeV2JsonBytes(budget, 6, label);
+            }
+        } else if (code >= 0xdc00 && code <= 0xdfff) {
+            chargeV2JsonBytes(budget, 6, label);
+        } else {
+            chargeV2JsonBytes(budget, 3, label);
+        }
+    }
+}
+
 function normalizeV2JsonValue(
     value: unknown,
     label: string,
-    ancestors: WeakSet<object> = new WeakSet<object>()
+    traversal: V2JsonNormalizationTraversal,
+    budget: V2JsonNormalizationBudget = { bytes: 0 },
+    depth = 0
 ): unknown {
-    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+    if (depth > V2_CREATE_JSON_MAX_DEPTH) invalidV2JsonValue(label);
+    chargeV2JsonWork(traversal, label);
+    if (value === null) {
+        chargeV2JsonBytes(budget, 4, label);
+        return value;
+    }
+    if (typeof value === 'string') {
+        chargeV2JsonStringBytes(value, budget, label);
+        return value;
+    }
+    if (typeof value === 'boolean') {
+        chargeV2JsonBytes(budget, value ? 4 : 5, label);
+        return value;
+    }
     if (typeof value === 'number') {
         if (!Number.isFinite(value)) invalidV2JsonValue(label);
+        const serialized = JSON.stringify(value);
+        if (serialized === undefined) invalidV2JsonValue(label);
+        chargeV2JsonBytes(budget, serialized.length, label);
         return value;
     }
     if (typeof value !== 'object') invalidV2JsonValue(label);
 
-    if (ancestors.has(value)) invalidV2JsonValue(label);
-    ancestors.add(value);
-    try {
-        if (Array.isArray(value)) {
-            const prototype = Object.getPrototypeOf(value);
-            if (prototype !== Array.prototype && prototype !== null) invalidV2JsonValue(label);
-            const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+    if (traversal.seen.has(value)) invalidV2JsonValue(label);
+    traversal.seen.add(value);
+    chargeV2JsonBytes(budget, 2, label);
+    const nextDepth = depth + 1;
+    if (Array.isArray(value)) {
+        const prototype = Object.getPrototypeOf(value);
+        if (prototype !== Array.prototype && prototype !== null) invalidV2JsonValue(label);
+        const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+        if (
+            lengthDescriptor === undefined ||
+            !('value' in lengthDescriptor) ||
+            typeof lengthDescriptor.value !== 'number'
+        ) {
+            invalidV2JsonValue(label);
+        }
+        const length = lengthDescriptor.value;
+        const normalized: unknown[] = [];
+        let elementCount = 0;
+        for (const key of Reflect.ownKeys(value)) {
+            if (key === 'length') continue;
+            if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/.test(key)) {
+                invalidV2JsonValue(label);
+            }
+            const index = Number(key);
             if (
-                lengthDescriptor === undefined ||
-                !('value' in lengthDescriptor) ||
-                typeof lengthDescriptor.value !== 'number'
+                !Number.isSafeInteger(index) ||
+                index !== elementCount ||
+                index < 0 ||
+                index >= length
             ) {
                 invalidV2JsonValue(label);
             }
-            const length = lengthDescriptor.value;
-            const normalized = new Array<unknown>(length);
-            let elementCount = 0;
-            for (const key of Reflect.ownKeys(value)) {
-                if (key === 'length') continue;
-                if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/.test(key)) {
-                    invalidV2JsonValue(label);
-                }
-                const index = Number(key);
-                if (!Number.isSafeInteger(index) || index < 0 || index >= length) {
-                    invalidV2JsonValue(label);
-                }
-                const descriptor = Object.getOwnPropertyDescriptor(value, key);
-                if (
-                    descriptor === undefined ||
-                    !('value' in descriptor) ||
-                    descriptor.enumerable !== true
-                ) {
-                    invalidV2JsonValue(label);
-                }
-                normalized[index] = normalizeV2JsonValue(descriptor.value, label, ancestors);
-                elementCount += 1;
-            }
-            if (elementCount !== length) invalidV2JsonValue(label);
-            Object.setPrototypeOf(normalized, null);
-            return normalized;
-        }
-
-        if (!isV2CreateRecord(value)) invalidV2JsonValue(label);
-        const normalized = emptyV2CreateRecord();
-        for (const key of Reflect.ownKeys(value)) {
-            if (typeof key !== 'string') invalidV2JsonValue(label);
             const descriptor = Object.getOwnPropertyDescriptor(value, key);
             if (
                 descriptor === undefined ||
@@ -956,12 +1026,43 @@ function normalizeV2JsonValue(
             ) {
                 invalidV2JsonValue(label);
             }
-            normalized[key] = normalizeV2JsonValue(descriptor.value, label, ancestors);
+            if (elementCount > 0) chargeV2JsonBytes(budget, 1, label);
+            normalized.push(
+                normalizeV2JsonValue(descriptor.value, label, traversal, budget, nextDepth)
+            );
+            elementCount += 1;
         }
+        if (elementCount !== length) invalidV2JsonValue(label);
+        Object.setPrototypeOf(normalized, null);
         return normalized;
-    } finally {
-        ancestors.delete(value);
     }
+
+    if (!isV2CreateRecord(value)) invalidV2JsonValue(label);
+    const normalized = emptyV2CreateRecord();
+    let fieldCount = 0;
+    for (const key of Reflect.ownKeys(value)) {
+        if (typeof key !== 'string') invalidV2JsonValue(label);
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (
+            descriptor === undefined ||
+            !('value' in descriptor) ||
+            descriptor.enumerable !== true
+        ) {
+            invalidV2JsonValue(label);
+        }
+        if (fieldCount > 0) chargeV2JsonBytes(budget, 1, label);
+        chargeV2JsonStringBytes(key, budget, label);
+        chargeV2JsonBytes(budget, 1, label);
+        normalized[key] = normalizeV2JsonValue(
+            descriptor.value,
+            label,
+            traversal,
+            budget,
+            nextDepth
+        );
+        fieldCount += 1;
+    }
+    return normalized;
 }
 
 function normalizeV2CreatePolicy(value: Record<string, unknown>): Record<string, unknown> {
@@ -1013,7 +1114,8 @@ function normalizeV2SnapshotMetadata(value: unknown): Record<string, unknown> {
 }
 
 function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
-    configJson: string;
+    envelope: Record<string, unknown>;
+    limits: NativeEditorV2CreateConfig['limits'];
     snapshotState: Uint8Array | null;
 } {
     if (!isV2CreateRecord(config)) {
@@ -1024,6 +1126,10 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
     if (!isV2CreateRecord(initializationValue)) {
         throw invalidV2CreateRequestError('NativeEditorBridge: invalid v2 create config');
     }
+    const jsonTraversal: V2JsonNormalizationTraversal = {
+        seen: new WeakSet<object>(),
+        work: 0,
+    };
 
     const policyValue = ownV2CreateValue(config, 'policy');
     const policy =
@@ -1051,8 +1157,6 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
             }
         }
     }
-    validateV2CreateLimits(limits as NativeEditorV2CreateConfig['limits']);
-
     const envelope = emptyV2CreateRecord();
     const schema = ownV2CreateValue(config, 'schema');
     if (schema === null) {
@@ -1062,7 +1166,7 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
         if (!isV2CreateRecord(schema)) {
             throw invalidV2CreateRequestError('NativeEditorBridge: invalid schema for v2 create');
         }
-        envelope.schema = normalizeV2JsonValue(schema, 'schema');
+        envelope.schema = normalizeV2JsonValue(schema, 'schema', jsonTraversal);
     }
     const fragmentName = ownV2CreateValue(config, 'fragmentName');
     if (fragmentName !== undefined && typeof fragmentName !== 'string') {
@@ -1097,7 +1201,7 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
             }
             const localJson = emptyV2CreateRecord();
             localJson.type = 'localJson';
-            localJson.json = normalizeV2JsonValue(json, 'localJson initialization');
+            localJson.json = normalizeV2JsonValue(json, 'localJson initialization', jsonTraversal);
             envelope.initialization = localJson;
             break;
         }
@@ -1145,23 +1249,36 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
     }
     if (policy !== undefined) envelope.policy = policy;
     if (limits !== undefined) envelope.limits = limits;
-    const configJson = JSON.stringify(envelope);
-    if (configJson === undefined) {
-        throw invalidV2CreateRequestError('NativeEditorBridge: v2 create config is not serializable');
-    }
-    return { configJson, snapshotState };
+    return {
+        envelope,
+        limits: limits as NativeEditorV2CreateConfig['limits'],
+        snapshotState,
+    };
 }
 
 function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
     configJson: string;
     snapshotState: Uint8Array | null;
 } {
+    let normalized: ReturnType<typeof buildV2CreateRequestUnchecked>;
     try {
-        return buildV2CreateRequestUnchecked(config);
+        normalized = buildV2CreateRequestUnchecked(config);
     } catch (error) {
-        if (typeof error === 'object' && error !== null && V2_CREATE_BOUNDARY_ERRORS.has(error)) {
-            throw error;
+        const message =
+            error instanceof NativeEditorV2CreateConfigError
+                ? error.message
+                : 'NativeEditorBridge: invalid v2 create config';
+        throw invalidV2RequestError(message);
+    }
+
+    validateV2CreateLimits(normalized.limits);
+    try {
+        const configJson = JSON.stringify(normalized.envelope);
+        if (configJson === undefined) {
+            throw new Error('v2 create config is not serializable');
         }
+        return { configJson, snapshotState: normalized.snapshotState };
+    } catch {
         throw invalidV2RequestError('NativeEditorBridge: invalid v2 create config');
     }
 }
@@ -1555,26 +1672,20 @@ export class NativeEditorV2Bridge {
     }
 }
 
-/**
- * The v2 document handle: a decimal-string editor id plus its typed bridge.
- * Created only through the v2 create entry; destroy and autonomous error
- * subscription mirror the bridge.
- */
-let instantiateNativeEditorDocumentHandle!: (
-    editorId: string,
-    bridge: NativeEditorV2Bridge
-) => NativeEditorDocumentHandle;
+/** The public type returned only by createNativeEditorDocumentHandle. */
+export interface NativeEditorDocumentHandle {
+    readonly editorId: string;
+    readonly bridge: NativeEditorV2Bridge;
+    readonly isDestroyed: boolean;
+    destroy(): void;
+    addErrorListener(listener: (error: NativeEditorV2ErrorBase) => void): () => void;
+}
 
-export class NativeEditorDocumentHandle {
-    private constructor(
+class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandle {
+    constructor(
         public readonly editorId: string,
         public readonly bridge: NativeEditorV2Bridge
     ) {}
-
-    private static readonly installFactory = (() => {
-        instantiateNativeEditorDocumentHandle = (editorId, bridge) =>
-            new NativeEditorDocumentHandle(editorId, bridge);
-    })();
 
     get isDestroyed(): boolean {
         return this.bridge.isDestroyed;
@@ -1597,7 +1708,7 @@ export function createNativeEditorDocumentHandle(
         invokeNativeEditorV2('editorV2Create', configJson, snapshotState),
         normalizeNativeEditorV2CreateValue
     );
-    return instantiateNativeEditorDocumentHandle(
+    return new NativeEditorDocumentHandleImpl(
         value.editorId,
         new NativeEditorV2Bridge(value.editorId)
     );

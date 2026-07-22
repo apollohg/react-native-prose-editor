@@ -174,7 +174,7 @@ jest.mock('expo-modules-core', () => ({
 
 import {
     createNativeEditorDocumentHandle,
-    NativeEditorDocumentHandle,
+    type NativeEditorDocumentHandle,
     type NativeEditorV2CreateConfig,
     normalizeNativeEditorV2Bytes,
     normalizeNativeEditorV2DecimalId,
@@ -183,6 +183,7 @@ import {
     unwrapNativeEditorV2Result,
     _resetNativeModuleCache,
 } from '../NativeEditorBridge';
+import * as NativeEditorBridgeExports from '../NativeEditorBridge';
 import {
     NativeEditorBoundaryError,
     NativeEditorV2BoundaryError,
@@ -195,6 +196,7 @@ import {
     NativeEditorV2TransportError,
     type NativeEditorV2Error,
 } from '../NativeEditorBoundaryError';
+import { HARD_EDITOR_RESOURCE_LIMITS } from '../ResourceLimits';
 import { join } from 'path';
 import ts from 'typescript';
 
@@ -688,7 +690,7 @@ describe('NativeEditorBridge v2', () => {
             const diagnostics = compileCreateContractFixture(`
                 import {
                     createNativeEditorDocumentHandle,
-                    NativeEditorDocumentHandle,
+                    type NativeEditorDocumentHandle,
                     type NativeEditorV2CreateConfig,
                 } from '../NativeEditorBridge';
                 import type {
@@ -755,11 +757,15 @@ describe('NativeEditorBridge v2', () => {
             expect(declaration).toContain(
                 'export declare function createNativeEditorDocumentHandle(config: NativeEditorV2CreateConfig): NativeEditorDocumentHandle;'
             );
+            expect(declaration).toContain('export interface NativeEditorDocumentHandle');
             expect(declaration).not.toMatch(/static create\s*\(/);
         });
 
-        it('exposes no runtime static create alias', () => {
-            expect('create' in NativeEditorDocumentHandle).toBe(false);
+        it('does not expose a runtime document-handle constructor', () => {
+            const runtimeConstructor = (
+                NativeEditorBridgeExports as unknown as Record<string, unknown>
+            ).NativeEditorDocumentHandle;
+            expect(runtimeConstructor).toBeUndefined();
         });
 
         it('creates a handle with a decimal-string editorId and its bridge', () => {
@@ -1095,6 +1101,45 @@ describe('NativeEditorBridge v2', () => {
             expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
         });
 
+        it('bounds JSON normalization and rejects repeated-reference amplification', () => {
+            const captureCode = (config: NativeEditorV2CreateConfig): string => {
+                try {
+                    createNativeEditorDocumentHandle(config);
+                    return 'accepted';
+                } catch (error) {
+                    return (error as { code?: string }).code ?? 'unstructured';
+                }
+            };
+            const maxBytes = HARD_EDITOR_RESOURCE_LIMITS.maxInputBytes;
+            const documentOverhead = JSON.stringify({ payload: '' }).length;
+            const exactPayload = 'x'.repeat(maxBytes - documentOverhead);
+
+            expect(
+                captureCode({
+                    initialization: { type: 'localJson', json: { payload: exactPayload } },
+                })
+            ).toBe('accepted');
+
+            let amplification: Record<string, unknown> = { value: 'x' };
+            for (let depth = 0; depth < 8; depth += 1) {
+                amplification = { left: amplification, right: amplification };
+            }
+            const outcomes = [
+                captureCode({
+                    initialization: {
+                        type: 'localJson',
+                        json: { payload: `${exactPayload}x` },
+                    },
+                }),
+                captureCode({
+                    initialization: { type: 'localJson', json: amplification },
+                }),
+            ];
+
+            expect(outcomes).toEqual(['CONFIG_INVALID', 'CONFIG_INVALID']);
+            expect(mockNativeModule.editorV2Create).toHaveBeenCalledTimes(1);
+        });
+
         it('validates create policy and metadata scalars before native invocation', () => {
             const invalidConfigs: unknown[] = [
                 { initialization: { type: 'localEmpty' }, fragmentName: 1 },
@@ -1299,6 +1344,35 @@ describe('NativeEditorBridge v2', () => {
                     expect((error as { code?: string }).code).toBe('INVALID_RESOURCE_LIMIT');
                 }
             }
+            expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
+        });
+
+        it('does not trust a boundary error replayed by a later hostile create input', () => {
+            const limitError = catchThrown(() =>
+                createNativeEditorDocumentHandle({
+                    initialization: { type: 'localEmpty' },
+                    limits: { resource: { maxInputBytes: 0 } },
+                })
+            );
+            expect((limitError as NativeEditorV2ErrorBase).code).toBe('INVALID_RESOURCE_LIMIT');
+
+            const replayingConfig = new Proxy(
+                {},
+                {
+                    getPrototypeOf() {
+                        throw limitError;
+                    },
+                }
+            );
+            const replayed = catchThrown(() =>
+                createNativeEditorDocumentHandle(
+                    replayingConfig as unknown as NativeEditorV2CreateConfig
+                )
+            );
+
+            expect(replayed).not.toBe(limitError);
+            expect(replayed).toBeInstanceOf(NativeEditorV2BoundaryError);
+            expect((replayed as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
             expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
         });
 
