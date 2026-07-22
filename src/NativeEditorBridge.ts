@@ -1508,7 +1508,6 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
     envelope: Record<string, unknown>;
     limits: NativeEditorV2CreateConfig['limits'];
     snapshotState: Uint8Array | null;
-    schemaForDescriptor: SchemaDefinition | undefined;
 } {
     if (!isV2CreateRecord(config)) {
         throw invalidV2CreateRequestError('NativeEditorBridge: invalid v2 create config');
@@ -1551,7 +1550,6 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
     }
     const envelope = emptyV2CreateRecord();
     const schema = ownV2CreateValue(config, 'schema');
-    let schemaForDescriptor: SchemaDefinition | undefined;
     if (schema === null) {
         throw invalidV2CreateRequestError('NativeEditorBridge: invalid schema for v2 create');
     }
@@ -1559,7 +1557,6 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
         if (!isV2CreateRecord(schema)) {
             throw invalidV2CreateRequestError('NativeEditorBridge: invalid schema for v2 create');
         }
-        schemaForDescriptor = schema as unknown as SchemaDefinition;
         envelope.schema = normalizeV2JsonValue(schema, 'schema', jsonTraversal);
     }
     const fragmentName = ownV2CreateValue(config, 'fragmentName');
@@ -1647,8 +1644,75 @@ function buildV2CreateRequestUnchecked(config: NativeEditorV2CreateConfig): {
         envelope,
         limits: limits as NativeEditorV2CreateConfig['limits'],
         snapshotState,
-        schemaForDescriptor,
     };
+}
+
+function cloneAndFreezeDescriptorValue<T>(value: T): T {
+    if (value == null || typeof value !== 'object') return value;
+
+    type MutableDescriptorValue = Record<string, unknown>;
+    const setOwnValue = (target: MutableDescriptorValue, key: string, child: unknown): void => {
+        Object.defineProperty(target, key, {
+            value: child,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+        });
+    };
+    const cloneRoot: MutableDescriptorValue = (
+        Array.isArray(value) ? [] : {}
+    ) as MutableDescriptorValue;
+    const clones = new Map<object, MutableDescriptorValue>([[value, cloneRoot]]);
+    const pending: Array<{
+        source: Record<string, unknown>;
+        target: MutableDescriptorValue;
+    }> = [{ source: value as Record<string, unknown>, target: cloneRoot }];
+    const created = [cloneRoot];
+
+    while (pending.length > 0) {
+        const current = pending.pop();
+        if (current === undefined) break;
+        const keys = Array.isArray(current.source)
+            ? Array.from({ length: (current.source as unknown[]).length }, (_, index) => String(index))
+            : Object.keys(current.source);
+        for (const key of keys) {
+            const child = current.source[key];
+            if (child == null || typeof child !== 'object') {
+                setOwnValue(current.target, key, child);
+                continue;
+            }
+            const existing = clones.get(child);
+            if (existing !== undefined) {
+                setOwnValue(current.target, key, existing);
+                continue;
+            }
+            const childClone: MutableDescriptorValue = (
+                Array.isArray(child) ? [] : {}
+            ) as MutableDescriptorValue;
+            clones.set(child, childClone);
+            created.push(childClone);
+            setOwnValue(current.target, key, childClone);
+            pending.push({
+                source: child as Record<string, unknown>,
+                target: childClone,
+            });
+        }
+    }
+
+    for (let index = created.length - 1; index >= 0; index -= 1) {
+        Object.freeze(created[index]);
+    }
+    return cloneRoot as T;
+}
+
+function cloneAndFreezeDocumentDescriptor(
+    descriptor: ResolvedDocumentSchema
+): ResolvedDocumentSchema {
+    return Object.freeze({
+        schema: cloneAndFreezeDescriptorValue(descriptor.schema),
+        documentNodeName: descriptor.documentNodeName,
+        emptyDocument: cloneAndFreezeDescriptorValue(descriptor.emptyDocument),
+    });
 }
 
 function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
@@ -1668,9 +1732,11 @@ function buildV2CreateRequest(config: NativeEditorV2CreateConfig): {
     }
 
     validateV2CreateLimits(normalized.limits);
-    const documentDescriptor = resolveDocumentDescriptor(
-        normalized.schemaForDescriptor,
-        normalized.limits?.resource as EditorResourceLimits | undefined
+    const documentDescriptor = cloneAndFreezeDocumentDescriptor(
+        resolveDocumentDescriptor(
+            normalized.envelope.schema as SchemaDefinition | undefined,
+            normalized.limits?.resource as EditorResourceLimits | undefined
+        )
     );
     try {
         const configJson = serializeV2CreateEnvelope(normalized.envelope);

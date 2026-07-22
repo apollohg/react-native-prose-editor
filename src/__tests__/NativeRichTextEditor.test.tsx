@@ -343,6 +343,71 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
+    it('retains immutable custom-root defaults after the caller mutates its schema', () => {
+        const mutableCardDefault = {
+            appearance: { tone: 'blue' },
+            labels: ['initial'],
+        };
+        const schema: SchemaDefinition = {
+            nodes: [
+                { name: 'article', content: 'card', role: 'doc' },
+                {
+                    name: 'card',
+                    content: '',
+                    group: 'block',
+                    role: 'block',
+                    attrs: { config: { default: mutableCardDefault } },
+                },
+                { name: 'text', content: '', group: 'inline', role: 'text' },
+            ],
+            marks: [],
+        };
+        const handle = createNativeEditorDocumentHandle({
+            schema,
+            initialization: { type: 'localEmpty' },
+        });
+        mutableCardDefault.appearance.tone = 'mutated';
+        mutableCardDefault.labels.push('later');
+
+        const ref = createRef<NativeRichTextEditorRef>();
+        const { rerender } = render(<NativeRichTextEditor ref={ref} documentHandle={handle} />);
+        mockNativeModule.editorV2ApplyLocalApi.mockClear();
+
+        rerender(
+            <NativeRichTextEditor
+                ref={ref}
+                documentHandle={handle}
+                valueJSON={{ type: 'article', content: [] }}
+            />
+        );
+
+        const expectedEmptyArticle = {
+            type: 'article',
+            content: [
+                {
+                    type: 'card',
+                    attrs: {
+                        config: { appearance: { tone: 'blue' }, labels: ['initial'] },
+                    },
+                },
+            ],
+        };
+        const controlledRequest = JSON.parse(
+            mockNativeModule.editorV2ApplyLocalApi.mock.calls[0][1] as string
+        ) as Record<string, unknown>;
+        expect(controlledRequest.setJson).toEqual(expectedEmptyArticle);
+
+        act(() => ref.current!.clearContent());
+        const clearRequest = JSON.parse(
+            mockNativeModule.editorV2ReplaceDocument.mock.calls[
+                mockNativeModule.editorV2ReplaceDocument.mock.calls.length - 1
+            ][1] as string
+        ) as Record<string, unknown>;
+        expect(clearRequest.setJson).toEqual(expectedEmptyArticle);
+
+        handle.destroy();
+    });
+
     it('drives the retained document API through the v2 handle', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const ref = createRef<NativeRichTextEditorRef>();

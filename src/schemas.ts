@@ -364,7 +364,8 @@ function normalizeSchemaDefinition(schema: SchemaDefinition): SchemaDefinition |
         }
     };
     const nodes: NodeSpec[] = [];
-    for (const rawNode of schema.nodes) {
+    for (let nodeIndex = 0; nodeIndex < schema.nodes.length; nodeIndex += 1) {
+        const rawNode = schema.nodes[nodeIndex];
         if (rawNode == null || typeof rawNode !== 'object' || typeof rawNode.name !== 'string') {
             return null;
         }
@@ -392,7 +393,8 @@ function normalizeSchemaDefinition(schema: SchemaDefinition): SchemaDefinition |
     }
 
     const marks: MarkSpec[] = [];
-    for (const rawMark of schema.marks) {
+    for (let markIndex = 0; markIndex < schema.marks.length; markIndex += 1) {
+        const rawMark = schema.marks[markIndex];
         if (rawMark == null || typeof rawMark !== 'object' || typeof rawMark.name !== 'string') {
             return null;
         }
@@ -448,7 +450,8 @@ function admitSchemaCollections(
     const groupsByNode = new Map<NodeSpec, readonly string[]>();
     const attrsByNode = new Map<NodeSpec, ReadonlyArray<[string, AttrSpec]>>();
 
-    for (const node of schema.nodes) {
+    for (let nodeIndex = 0; nodeIndex < schema.nodes.length; nodeIndex += 1) {
+        const node = schema.nodes[nodeIndex];
         if (node == null || typeof node !== 'object') return null;
         const groups: string[] = [];
         if (typeof node.group === 'string') {
@@ -472,7 +475,8 @@ function admitSchemaCollections(
         attrsByNode.set(node, attrs);
     }
 
-    for (const mark of schema.marks) {
+    for (let markIndex = 0; markIndex < schema.marks.length; markIndex += 1) {
+        const mark = schema.marks[markIndex];
         if (!consumeSchemaWork(budget)) {
             throw schemaBoundaryError(budget.limit, budget.limit + 1);
         }
@@ -503,7 +507,8 @@ export function resolveDocumentSchema(
         throw schemaBoundaryError(resolvedLimits.maxSchemaNodes, schema.nodes.length);
     }
     let expressionBytes = 0;
-    for (const node of schema.nodes) {
+    for (let nodeIndex = 0; nodeIndex < schema.nodes.length; nodeIndex += 1) {
+        const node = schema.nodes[nodeIndex];
         if (node != null && typeof node.content === 'string') {
             expressionBytes += utf8ByteLengthUpTo(
                 node.content,
