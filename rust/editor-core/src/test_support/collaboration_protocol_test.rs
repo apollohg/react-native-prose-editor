@@ -911,6 +911,149 @@ fn bounded_dependencies_stay_quarantined_inside_the_engine() {
 }
 
 #[test]
+fn first_one_over_dependency_update_is_rejected_before_commit() {
+    let (_prefix, incoming) = dependent_room_updates();
+    let (id, snapshot) = create_ready_room();
+    let generation = synchronize_ready_room(id, &snapshot);
+    let before_session = session_audit(id).unwrap();
+    let before_engine = bridge::session_audit(id).unwrap();
+    let before_dependencies = remote_dependency_accounting(id).unwrap();
+    assert_eq!(before_dependencies, (0, 0));
+
+    set_collaboration_limit_for_test(id, "maxPendingDependencyUpdateBytes", incoming.len() - 1)
+        .unwrap();
+    let outcome = receive_message(id, 333, generation, &update_frame(incoming)).unwrap();
+    let close = outcome
+        .close
+        .as_ref()
+        .expect("the first one-over dependency candidate must close");
+    assert_eq!(
+        close.disposition,
+        CloseDisposition::Incompatible,
+        "{close:?}"
+    );
+    assert_eq!(
+        close.error.code, TRANSPORT_DEPENDENCY_LIMIT_EXCEEDED,
+        "{close:?}"
+    );
+    assert_eq!(
+        close.error.details.as_ref().unwrap()["field"],
+        "maxPendingDependencyUpdateBytes",
+    );
+    assert!(!outcome.remote_commit_applied, "{outcome:?}");
+
+    let mut expected_session = before_session;
+    expected_session.transport_state = TransportState::Incompatible;
+    assert_eq!(session_audit(id).unwrap(), expected_session);
+    assert_eq!(
+        bridge::session_audit(id).unwrap(),
+        before_engine,
+        "canonical JSON, encoded state, revisions, history, selection, and outbox must be unchanged",
+    );
+    assert_eq!(
+        remote_dependency_accounting(id).unwrap(),
+        before_dependencies,
+        "the refused candidate must not rewrite quarantine or charge work",
+    );
+    destroy_session(id);
+}
+
+#[test]
+fn recovery_update_is_judged_by_drained_candidate_state() {
+    let (recovery, incoming) = dependent_room_updates();
+    let (id, snapshot) = create_ready_room();
+    let generation = synchronize_ready_room(id, &snapshot);
+
+    let outcome = receive_message(id, 334, generation, &update_frame(incoming.clone())).unwrap();
+    assert!(outcome.close.is_none(), "{outcome:?}");
+    assert_eq!(
+        remote_dependency_accounting(id).unwrap(),
+        (incoming.len(), incoming.len() as u64),
+    );
+
+    // The candidate drains the quarantine, so neither retained bytes nor
+    // accumulated pending work may be charged for this recovery update.
+    set_collaboration_limit_for_test(id, "maxPendingDependencyUpdateBytes", 0).unwrap();
+    set_collaboration_limit_for_test(id, "maxPendingDependencyUpdateWork", 0).unwrap();
+    let outcome = receive_message(id, 335, generation, &update_frame(recovery)).unwrap();
+    assert!(outcome.close.is_none(), "{outcome:?}");
+    assert!(outcome.remote_commit_applied, "{outcome:?}");
+    assert_eq!(remote_dependency_accounting(id).unwrap(), (0, 0));
+    let json = session_audit(id)
+        .unwrap()
+        .document_json
+        .unwrap()
+        .to_string();
+    assert!(json.contains("ab"), "{json}");
+    destroy_session(id);
+}
+
+#[test]
+fn rejected_dependency_work_never_ratchets_or_rewrites_quarantine() {
+    let (recovery, delta_b, delta_c) = dependent_room_update_chain();
+    let (id, snapshot) = create_ready_room();
+    let generation = synchronize_ready_room(id, &snapshot);
+
+    let outcome = receive_message(id, 336, generation, &update_frame(delta_b.clone())).unwrap();
+    assert!(outcome.close.is_none(), "{outcome:?}");
+    let before_dependencies = remote_dependency_accounting(id).unwrap();
+    assert_eq!(before_dependencies, (delta_b.len(), delta_b.len() as u64));
+    set_collaboration_limit_for_test(id, "maxPendingDependencyUpdateWork", delta_b.len()).unwrap();
+    let before_session = session_audit(id).unwrap();
+    let before_engine = bridge::session_audit(id).unwrap();
+
+    let outcome = receive_message(id, 337, generation, &update_frame(delta_c)).unwrap();
+    let close = outcome
+        .close
+        .as_ref()
+        .expect("one-over candidate work must close");
+    assert_eq!(
+        close.disposition,
+        CloseDisposition::Incompatible,
+        "{close:?}"
+    );
+    assert_eq!(
+        close.error.code, TRANSPORT_DEPENDENCY_LIMIT_EXCEEDED,
+        "{close:?}"
+    );
+    assert_eq!(
+        close.error.details.as_ref().unwrap()["field"],
+        "maxPendingDependencyUpdateWork",
+    );
+    assert!(!outcome.remote_commit_applied, "{outcome:?}");
+
+    let mut expected_session = before_session;
+    expected_session.transport_state = TransportState::Incompatible;
+    assert_eq!(session_audit(id).unwrap(), expected_session);
+    assert_eq!(bridge::session_audit(id).unwrap(), before_engine);
+    assert_eq!(
+        remote_dependency_accounting(id).unwrap(),
+        before_dependencies,
+        "the refusal must preserve retained bytes and accumulated work",
+    );
+
+    // Probe the preserved quarantine directly: recovery may publish `b`,
+    // but the refused `c` must not have been installed into the candidate.
+    let slot = crate::registry::get_session(id).expect("session must remain registered");
+    slot.with_alive(|session| {
+        let prepared = session
+            .engine
+            .prepare_remote_update_v1(338, &recovery)
+            .unwrap();
+        assert!(!prepared.has_pending_dependencies());
+        session
+            .engine
+            .commit_prepared_remote_update(prepared)
+            .unwrap();
+        let json = session.engine.document_json().unwrap().to_string();
+        assert!(json.contains("ab"), "{json}");
+        assert!(!json.contains("abc"), "{json}");
+    })
+    .unwrap();
+    destroy_session(id);
+}
+
+#[test]
 fn dependency_byte_and_work_ceilings_close_as_incompatible() {
     let (_prefix, delta_b) = dependent_room_updates();
     let quarantined_len = delta_b.len();
@@ -1142,8 +1285,8 @@ fn update_exchange_converges_with_an_independent_raw_peer() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 18A: security-review finding I3 — dependency-quarantine byte/work
-// ceilings are charged BEFORE prepare/commit can mutate the quarantine.
+// Dependency-quarantine byte/work ceilings are charged from the prepared
+// post-state before commit can mutate the live quarantine.
 // ---------------------------------------------------------------------------
 
 /// `(prefix, delta_b, delta_c)`: both deltas depend on content only present
@@ -1209,9 +1352,9 @@ fn dependency_byte_ceiling_refuses_before_any_quarantine_mutation() {
     let (prefix, delta_b, delta_c) = dependent_room_update_chain();
     let retained = delta_b.len();
 
-    // One over: the pre-charged projection (retained + payload) crosses the
+    // One over: the exact merged candidate crosses the retained-byte
     // ceiling. The refusal must leave the quarantine byte-identical and the
-    // work counter untouched — the pre-mutation charge, not a post-mutation
+    // work counter untouched — candidate admission, not a post-commit
     // apology.
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
@@ -1251,7 +1394,7 @@ fn dependency_byte_ceiling_refuses_before_any_quarantine_mutation() {
     let close = outcome
         .close
         .as_ref()
-        .expect("one over the pre-charged byte ceiling must close");
+        .expect("one over the candidate byte ceiling must close");
     assert_eq!(
         close.disposition,
         CloseDisposition::Incompatible,
@@ -1279,27 +1422,24 @@ fn dependency_byte_ceiling_refuses_before_any_quarantine_mutation() {
     assert_eq!(bridge::session_audit(id).unwrap(), before_engine);
     destroy_session(id);
 
-    // Exact: the pre-charged projection at the ceiling admits.
+    // Exact: the prepared candidate at the ceiling admits.
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
     receive_message(id, 363, generation, &update_frame(delta_b.clone())).unwrap();
-    set_collaboration_limit_for_test(
-        id,
-        "maxPendingDependencyUpdateBytes",
-        retained + delta_c.len(),
-    )
-    .unwrap();
+    set_collaboration_limit_for_test(id, "maxPendingDependencyUpdateBytes", expected_retained)
+        .unwrap();
     let outcome = receive_message(id, 364, generation, &update_frame(delta_c.clone())).unwrap();
     assert!(outcome.close.is_none(), "{outcome:?}");
-    assert!(
-        remote_dependency_accounting(id).unwrap().0 >= retained,
-        "the merged quarantine stays pending",
+    assert_eq!(
+        remote_dependency_accounting(id).unwrap().0,
+        expected_retained,
+        "the exact admitted candidate stays pending",
     );
     destroy_session(id);
 
     // After pruning (the dependency completes and the quarantine drains),
     // the identical update succeeds — the refusal above was purely the
-    // projected charge, never the payload's content.
+    // retained candidate charge, never the payload's content.
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
     receive_message(id, 365, generation, &update_frame(delta_b.clone())).unwrap();
@@ -1340,8 +1480,8 @@ fn dependency_work_ceiling_refusal_never_ratchets_the_counter() {
     let (_prefix, delta_b, delta_c) = dependent_room_update_chain();
     let retained = delta_b.len();
 
-    // One over the work ceiling: the refusal must not ratchet the counter
-    // (the review's permanent-ratchet defect).
+    // One over the prepared candidate's work ceiling: the refusal must not
+    // ratchet the counter (the review's permanent-ratchet defect).
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
     receive_message(id, 371, generation, &update_frame(delta_b.clone())).unwrap();
@@ -1354,7 +1494,7 @@ fn dependency_work_ceiling_refusal_never_ratchets_the_counter() {
     let close = outcome
         .close
         .as_ref()
-        .expect("one over the pre-charged work ceiling must close");
+        .expect("one over the candidate work ceiling must close");
     assert_eq!(
         close.disposition,
         CloseDisposition::Incompatible,

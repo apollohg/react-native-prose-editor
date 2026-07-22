@@ -433,8 +433,8 @@ impl CollaborationRuntime {
     }
 
     /// Prepare + commit one remote Update-v1 through the sealed Task 6
-    /// seams, charging the dependency-quarantine byte/work ceilings BEFORE
-    /// the prepare can retain or merge anything. The runtime never retains a
+    /// seams, admitting dependency-quarantine byte/work ceilings against the
+    /// exact prepared post-state before commit. The runtime never retains a
     /// second payload copy: bytes stay inside the engine, the runtime keeps
     /// only the byte-unit work counter.
     fn admit_remote_update(
@@ -444,86 +444,66 @@ impl CollaborationRuntime {
         limits: &CollaborationLimits,
         update: &[u8],
     ) -> Result<EngineCommit, ReceiveFailure> {
-        // Pre-charge the byte ceiling: the post-admission retained figure
-        // never exceeds quarantined + payload (a fresh quarantine retains
-        // exactly the payload; a merge is bounded by its inputs), so a
-        // projected breach refuses with the quarantine byte-identical.
-        let quarantined_bytes = engine.pending_remote_dependency_bytes();
-        let projected_bytes = quarantined_bytes.saturating_add(update.len());
-        if projected_bytes > limits.max_pending_dependency_update_bytes {
-            return Err(limit_failure(
-                request_id,
-                TRANSPORT_DEPENDENCY_LIMIT_EXCEEDED,
-                MAX_PENDING_DEPENDENCY_BYTES_FIELD,
-                limits.max_pending_dependency_update_bytes as u64,
-                projected_bytes as u64,
-            ));
-        }
-        // Work is pre-charged only while a quarantine is pending — the one
-        // case where a further charge is certain. A first admission may
-        // apply cleanly (Step 2 initial sync included) and must never be
-        // charged for pending work it cannot cause; its exact charge is
-        // accounted post-commit below.
-        if quarantined_bytes > 0 {
-            let projected_work = self
-                .remote_dependency_work
-                .saturating_add(update.len() as u64);
-            if projected_work > limits.max_pending_dependency_update_work as u64 {
-                return Err(limit_failure(
-                    request_id,
-                    TRANSPORT_DEPENDENCY_LIMIT_EXCEEDED,
-                    MAX_PENDING_DEPENDENCY_WORK_FIELD,
-                    limits.max_pending_dependency_update_work as u64,
-                    projected_work,
-                ));
-            }
-        }
-
+        // Preparation owns temporary decode/merge buffers under the engine's
+        // maxEncodedStateBytes resource ceiling. The dependency ceilings
+        // below charge only the retained post-update candidate and its
+        // accumulated pending work.
         let prepared = engine
             .prepare_remote_update_v1(request_id, update)
             .map_err(|error| classify_admission_error(engine, request_id, update, error))?;
+        let candidate_bytes = prepared.retained_dependency_bytes();
+        let candidate_work = if prepared.has_pending_dependencies() {
+            self.remote_dependency_work
+                .checked_add(update.len() as u64)
+                .ok_or_else(|| dependency_work_overflow(request_id, limits))?
+        } else {
+            0
+        };
+        admit_dependency_candidate(request_id, candidate_bytes, candidate_work, limits)?;
+
         let commit = engine
             .commit_prepared_remote_update(prepared)
             .map_err(|error| classify_admission_error(engine, request_id, update, error))?;
-
-        let retained_bytes = engine.pending_remote_dependency_bytes();
-        if retained_bytes == 0 {
-            self.remote_dependency_work = 0;
-            return Ok(commit);
-        }
-        // Defensive backstop: unreachable while the pre-charge bounds the
-        // retained figure (a merged re-encode never exceeds the sum of its
-        // inputs); kept so the retained-bytes invariant holds even against a
-        // future yrs encoding change.
-        if retained_bytes > limits.max_pending_dependency_update_bytes {
-            return Err(limit_failure(
-                request_id,
-                TRANSPORT_DEPENDENCY_LIMIT_EXCEEDED,
-                MAX_PENDING_DEPENDENCY_BYTES_FIELD,
-                limits.max_pending_dependency_update_bytes as u64,
-                retained_bytes as u64,
-            ));
-        }
-        // Work is charged in encoded-byte units (the history-module idiom):
-        // every admission that leaves the quarantine pending charged its own
-        // payload length, bounding repeated merge amplification even when
-        // the merged retained bytes do not grow. A refusal leaves the
-        // counter un-ratcheted.
-        let charged_work = self
-            .remote_dependency_work
-            .saturating_add(update.len() as u64);
-        if charged_work > limits.max_pending_dependency_update_work as u64 {
-            return Err(limit_failure(
-                request_id,
-                TRANSPORT_DEPENDENCY_LIMIT_EXCEEDED,
-                MAX_PENDING_DEPENDENCY_WORK_FIELD,
-                limits.max_pending_dependency_update_work as u64,
-                charged_work,
-            ));
-        }
-        self.remote_dependency_work = charged_work;
+        self.remote_dependency_work = candidate_work;
         Ok(commit)
     }
+}
+
+fn admit_dependency_candidate(
+    request_id: u64,
+    candidate_bytes: usize,
+    candidate_work: u64,
+    limits: &CollaborationLimits,
+) -> Result<(), ReceiveFailure> {
+    if candidate_bytes > limits.max_pending_dependency_update_bytes {
+        return Err(limit_failure(
+            request_id,
+            TRANSPORT_DEPENDENCY_LIMIT_EXCEEDED,
+            MAX_PENDING_DEPENDENCY_BYTES_FIELD,
+            limits.max_pending_dependency_update_bytes as u64,
+            candidate_bytes as u64,
+        ));
+    }
+    if candidate_work > limits.max_pending_dependency_update_work as u64 {
+        return Err(limit_failure(
+            request_id,
+            TRANSPORT_DEPENDENCY_LIMIT_EXCEEDED,
+            MAX_PENDING_DEPENDENCY_WORK_FIELD,
+            limits.max_pending_dependency_update_work as u64,
+            candidate_work,
+        ));
+    }
+    Ok(())
+}
+
+fn dependency_work_overflow(request_id: u64, limits: &CollaborationLimits) -> ReceiveFailure {
+    limit_failure(
+        request_id,
+        TRANSPORT_DEPENDENCY_LIMIT_EXCEEDED,
+        MAX_PENDING_DEPENDENCY_WORK_FIELD,
+        limits.max_pending_dependency_update_work as u64,
+        u64::MAX,
+    )
 }
 
 /// The framed Sync Step 1 message owed after `socket_opened`, built from
