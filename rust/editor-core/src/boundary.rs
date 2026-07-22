@@ -1,5 +1,15 @@
 use serde::{Deserialize, Serialize};
 
+pub(crate) const HARD_MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
+
+pub(crate) fn deserialize_non_null_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 pub type BoundaryResult<T> = Result<T, BoundaryError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,12 +222,19 @@ pub struct ResourceLimits {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ResourceLimitOverrides {
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) max_input_bytes: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) max_document_nodes: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) max_document_depth: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) max_schema_nodes: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) max_schema_expression_bytes: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) max_collaboration_message_bytes: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub(crate) max_encoded_state_bytes: Option<usize>,
 }
 
@@ -280,7 +297,7 @@ impl ResourceLimits {
 
     pub(crate) fn validate(&self) -> BoundaryResult<()> {
         for (name, actual, ceiling) in [
-            ("maxInputBytes", self.max_input_bytes, 64 * 1024 * 1024),
+            ("maxInputBytes", self.max_input_bytes, HARD_MAX_INPUT_BYTES),
             ("maxDocumentNodes", self.max_document_nodes, 1_000_000),
             ("maxDocumentDepth", self.max_document_depth, 1_024),
             ("maxSchemaNodes", self.max_schema_nodes, 10_000),

@@ -21,10 +21,11 @@
     reason = "SessionError is the established unboxed session error envelope"
 )]
 
-use serde_json::Value;
+use serde_json::{value::RawValue, Value};
 
 use crate::boundary::{
-    BoundaryError, BoundedInput, InputKind, ResourceLimitOverrides, ResourceLimits,
+    deserialize_non_null_option, BoundaryError, BoundedInput, InputKind, ResourceLimitOverrides,
+    ResourceLimits, HARD_MAX_INPUT_BYTES,
 };
 use crate::document_api::DocumentApiFacade;
 use crate::native_transaction_bridge::{
@@ -51,6 +52,17 @@ pub(crate) const ABSENT_REQUEST_ID: u64 = 0;
 
 /// One supported version for every v2 request envelope.
 const V2_ENVELOPE_VERSION: u64 = 1;
+
+/// Non-payload create metadata is intentionally tiny. Schema and local
+/// document/HTML values are borrowed as `RawValue`s and excluded from this
+/// retained-envelope budget until configured limits have resolved.
+const CREATE_ENVELOPE_MAX_BYTES: usize = 64 * 1024;
+
+/// A create can carry at most two configured-input payloads: one schema and
+/// one local document/HTML value. This hard pre-parse bound prevents an
+/// unbounded syntax scan while still permitting each payload up to the
+/// authoritative hard max plus the fixed envelope allowance.
+const CREATE_WIRE_MAX_BYTES: usize = HARD_MAX_INPUT_BYTES * 2 + CREATE_ENVELOPE_MAX_BYTES;
 
 // ---------------------------------------------------------------------------
 // Shared session access (used by the collaboration and snapshot modules too)
@@ -197,52 +209,123 @@ struct HistoryRequestEnvelope {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CreateEnvelope {
-    schema: Option<Value>,
+struct CreateEnvelope<'a> {
+    #[serde(default, borrow, deserialize_with = "deserialize_non_null_raw_value")]
+    schema: Option<&'a RawValue>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     fragment_name: Option<String>,
-    initialization: InitializationEnvelope,
+    #[serde(borrow)]
+    initialization: &'a RawValue,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     policy: Option<PolicyEnvelope>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     limits: Option<LimitsEnvelope>,
 }
 
 #[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PolicyEnvelope {
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     max_length: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     read_only: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     input_filter: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     allow_base64_images: Option<bool>,
 }
 
 #[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LimitsEnvelope {
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     resource: Option<ResourceLimitOverrides>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     editing: Option<EditingLimitOverrides>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     collaboration: Option<CollaborationLimitOverrides>,
 }
 
-/// `deny_unknown_fields` cannot be enforced inside an internally tagged
-/// enum (same serde limitation the Task 7 bridge documents); no variant
-/// carries a privileged field. Variant names are camelCase via the enum;
-/// struct-variant fields need the per-variant attribute (serde applies
-/// enum-level `rename_all` to variant names only).
+/// First-pass initialization shape. Payloads remain borrowed and unknown
+/// fields remain visible to the retained-envelope byte calculation. A second
+/// exact variant parse runs only after all configured limits have resolved.
 #[derive(serde::Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-enum InitializationEnvelope {
+#[serde(rename_all = "camelCase")]
+struct InitializationProbe<'a> {
+    #[serde(rename = "type")]
+    kind: InitializationKind,
+    #[serde(default, borrow)]
+    json: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    html: Option<&'a RawValue>,
+}
+
+impl InitializationProbe<'_> {
+    fn deferred_payload_bytes(&self) -> usize {
+        match self.kind {
+            InitializationKind::LocalJson => self.json.map_or(0, |json| json.get().len()),
+            InitializationKind::LocalHtml => self.html.map_or(0, |html| html.get().len()),
+            InitializationKind::LocalEmpty | InitializationKind::Room => 0,
+        }
+    }
+}
+
+fn deserialize_non_null_raw_value<'de, D>(
+    deserializer: D,
+) -> Result<Option<&'de RawValue>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = <&RawValue as serde::Deserialize>::deserialize(deserializer)?;
+    if raw.get() == "null" {
+        return Err(serde::de::Error::custom("null is not allowed"));
+    }
+    Ok(Some(raw))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LocalEmptyInitialization {
+    #[serde(rename = "type")]
+    _kind: InitializationKind,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LocalJsonInitialization<'a> {
+    #[serde(rename = "type")]
+    _kind: InitializationKind,
+    #[serde(borrow)]
+    json: &'a RawValue,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LocalHtmlInitialization<'a> {
+    #[serde(rename = "type")]
+    _kind: InitializationKind,
+    #[serde(borrow)]
+    html: &'a RawValue,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RoomInitialization {
+    #[serde(rename = "type")]
+    _kind: InitializationKind,
+    document_id: String,
+    lineage_id: String,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
+    snapshot: Option<SnapshotMetadataEnvelope>,
+}
+
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum InitializationKind {
     LocalEmpty,
-    LocalJson {
-        json: Value,
-    },
-    LocalHtml {
-        html: String,
-    },
-    #[serde(rename_all = "camelCase")]
-    Room {
-        document_id: String,
-        lineage_id: String,
-        snapshot: Option<SnapshotMetadataEnvelope>,
-    },
+    LocalJson,
+    LocalHtml,
+    Room,
 }
 
 // ---------------------------------------------------------------------------
@@ -255,16 +338,18 @@ pub fn editor_v2_create(config_json: String, snapshot_state: Option<Vec<u8>>) ->
 }
 
 fn create_impl(config_json: &str, snapshot_state: Option<Vec<u8>>) -> Result<String, FfiError> {
-    let input = BoundedInput::new(config_json, InputKind::Config, &ResourceLimits::default())
-        .map_err(SessionError::from)
+    admit_create_wire_bytes(config_json.len()).map_err(ffi_error)?;
+    let envelope: CreateEnvelope<'_> = parse_create_json(config_json).map_err(ffi_error)?;
+    let initialization_probe: InitializationProbe<'_> =
+        parse_create_json(envelope.initialization.get()).map_err(ffi_error)?;
+    let deferred_payload_bytes = envelope
+        .schema
+        .map_or(0, |schema| schema.get().len())
+        .saturating_add(initialization_probe.deferred_payload_bytes());
+    admit_create_envelope_bytes(config_json.len().saturating_sub(deferred_payload_bytes))
         .map_err(ffi_error)?;
-    let envelope: CreateEnvelope = serde_json::from_str(input.as_str())
-        .map_err(|error| SessionError::from(BoundaryError::parse("CONFIG_INVALID", error)))
-        .map_err(ffi_error)?;
-    let (config, room_bound) = build_config(envelope, snapshot_state).map_err(ffi_error)?;
-    // Resolve create limits before schema/document/snapshot work. The outer
-    // JSON alone uses the fixed default envelope ceiling above; all payload
-    // admission from this point uses the configured resource limits.
+    let (config, room_bound) =
+        build_config(envelope, initialization_probe, snapshot_state).map_err(ffi_error)?;
     let schema = resolve_configured_create_schema(&config).map_err(ffi_error)?;
     let id = DocumentApiFacade::create(config).map_err(ffi_error)?;
     if room_bound {
@@ -283,6 +368,35 @@ fn create_impl(config_json: &str, snapshot_state: Option<Vec<u8>>) -> Result<Str
     Ok(serde_json::json!({ "editorId": id.to_string() }).to_string())
 }
 
+fn parse_create_json<'de, T>(json: &'de str) -> Result<T, SessionError>
+where
+    T: serde::Deserialize<'de>,
+{
+    serde_json::from_str(json)
+        .map_err(|error| SessionError::from(BoundaryError::parse("CONFIG_INVALID", error)))
+}
+
+fn admit_create_wire_bytes(actual: usize) -> Result<(), SessionError> {
+    if actual > CREATE_WIRE_MAX_BYTES {
+        return Err(
+            BoundaryError::limit("INPUT_LIMIT_EXCEEDED", CREATE_WIRE_MAX_BYTES, actual).into(),
+        );
+    }
+    Ok(())
+}
+
+fn admit_create_envelope_bytes(actual: usize) -> Result<(), SessionError> {
+    if actual > CREATE_ENVELOPE_MAX_BYTES {
+        return Err(BoundaryError::limit(
+            "INPUT_LIMIT_EXCEEDED",
+            CREATE_ENVELOPE_MAX_BYTES,
+            actual,
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn resolve_configured_create_schema(
     config: &EditorSessionConfig,
 ) -> Result<crate::schema::Schema, SessionError> {
@@ -297,13 +411,14 @@ fn resolve_configured_create_schema(
 }
 
 fn build_config(
-    envelope: CreateEnvelope,
+    envelope: CreateEnvelope<'_>,
+    initialization_probe: InitializationProbe<'_>,
     snapshot_state: Option<Vec<u8>>,
 ) -> Result<(EditorSessionConfig, bool), SessionError> {
     let CreateEnvelope {
         schema,
         fragment_name,
-        initialization,
+        initialization: initialization_json,
         policy,
         limits,
     } = envelope;
@@ -321,38 +436,56 @@ fn build_config(
     let resource_limits = ResourceLimits::resolve(resource.unwrap_or_default())?;
     let editing_limits = EditingLimits::resolve(editing.unwrap_or_default())?;
     let collaboration_limits = CollaborationLimits::resolve(collaboration.unwrap_or_default())?;
-    if !matches!(initialization, InitializationEnvelope::Room { .. }) && snapshot_state.is_some() {
+    if !matches!(initialization_probe.kind, InitializationKind::Room) && snapshot_state.is_some() {
         return Err(config_invalid(
             ABSENT_REQUEST_ID,
             "snapshot state bytes require a room initialization with snapshot metadata",
         ));
     }
-    let (initialization, room_bound) = match initialization {
-        InitializationEnvelope::LocalEmpty => (
-            EditorInitialization::Local {
-                initial_content: InitialContent::Empty,
-            },
-            false,
-        ),
-        InitializationEnvelope::LocalJson { json } => (
-            EditorInitialization::Local {
-                initial_content: InitialContent::Json(json.to_string()),
-            },
-            false,
-        ),
-        InitializationEnvelope::LocalHtml { html } => (
-            EditorInitialization::Local {
-                initial_content: InitialContent::Html(html),
-            },
-            false,
-        ),
-        InitializationEnvelope::Room {
-            document_id,
-            lineage_id,
-            snapshot,
-        } => {
-            let snapshot = match (snapshot, snapshot_state) {
+    let schema_json = schema
+        .map(|schema| materialize_raw_payload(schema, InputKind::Config, &resource_limits))
+        .transpose()?;
+    let (initialization, room_bound) = match initialization_probe.kind {
+        InitializationKind::LocalEmpty => {
+            let _: LocalEmptyInitialization = parse_create_json(initialization_json.get())?;
+            (
+                EditorInitialization::Local {
+                    initial_content: InitialContent::Empty,
+                },
+                false,
+            )
+        }
+        InitializationKind::LocalJson => {
+            let initialization: LocalJsonInitialization<'_> =
+                parse_create_json(initialization_json.get())?;
+            let json = materialize_raw_payload(
+                initialization.json,
+                InputKind::DocumentJson,
+                &resource_limits,
+            )?;
+            (
+                EditorInitialization::Local {
+                    initial_content: InitialContent::Json(json),
+                },
+                false,
+            )
+        }
+        InitializationKind::LocalHtml => {
+            let initialization: LocalHtmlInitialization<'_> =
+                parse_create_json(initialization_json.get())?;
+            let html = materialize_html(initialization.html, &resource_limits)?;
+            (
+                EditorInitialization::Local {
+                    initial_content: InitialContent::Html(html),
+                },
+                false,
+            )
+        }
+        InitializationKind::Room => {
+            let initialization: RoomInitialization = parse_create_json(initialization_json.get())?;
+            let snapshot = match (initialization.snapshot, snapshot_state) {
                 (Some(metadata), Some(encoded_state)) => {
+                    admit_snapshot_state(&encoded_state, &resource_limits)?;
                     Some(metadata.into_snapshot(encoded_state))
                 }
                 (None, None) => None,
@@ -366,8 +499,8 @@ fn build_config(
             (
                 EditorInitialization::Room {
                     scope: DocumentScope {
-                        document_id,
-                        lineage_id,
+                        document_id: initialization.document_id,
+                        lineage_id: initialization.lineage_id,
                     },
                     snapshot,
                 },
@@ -377,7 +510,7 @@ fn build_config(
     };
     Ok((
         EditorSessionConfig {
-            schema_json: schema.map(|schema| schema.to_string()),
+            schema_json,
             fragment_name: fragment_name.unwrap_or_else(|| "prosemirror".into()),
             initialization,
             resource_limits,
@@ -390,6 +523,42 @@ fn build_config(
         },
         room_bound,
     ))
+}
+
+fn materialize_raw_payload(
+    raw: &RawValue,
+    kind: InputKind,
+    limits: &ResourceLimits,
+) -> Result<String, SessionError> {
+    let input = BoundedInput::new(raw.get(), kind, limits)?;
+    Ok(input.as_str().to_owned())
+}
+
+fn materialize_html(raw: &RawValue, limits: &ResourceLimits) -> Result<String, SessionError> {
+    let json = raw.get();
+    if let Some(unescaped) = json
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .filter(|value| !value.as_bytes().contains(&b'\\'))
+    {
+        let input = BoundedInput::new(unescaped, InputKind::Html, limits)?;
+        return Ok(input.as_str().to_owned());
+    }
+    let html: String = parse_create_json(json)?;
+    BoundedInput::new(&html, InputKind::Html, limits)?;
+    Ok(html)
+}
+
+fn admit_snapshot_state(encoded_state: &[u8], limits: &ResourceLimits) -> Result<(), SessionError> {
+    if encoded_state.len() > limits.max_encoded_state_bytes {
+        return Err(BoundaryError::limit(
+            "INPUT_LIMIT_EXCEEDED",
+            limits.max_encoded_state_bytes,
+            encoded_state.len(),
+        )
+        .into());
+    }
+    Ok(())
 }
 
 #[uniffi::export]

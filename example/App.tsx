@@ -4,7 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
-    NativeEditorDocumentHandle,
+    createNativeEditorDocumentHandle,
     tiptapSchema,
     useYjsCollaboration,
     withMentionsSchema,
@@ -225,7 +225,7 @@ function AppScreen() {
     const documentHandle = useMemo(() => {
         if (!collaborationEnabled) {
             const localJson = localContentRef.current;
-            return NativeEditorDocumentHandle.create({
+            return createNativeEditorDocumentHandle({
                 schema: documentSchema,
                 initialization: localJson
                     ? { type: 'localJson', json: localJson }
@@ -233,7 +233,7 @@ function AppScreen() {
             });
         }
         const stored = roomSnapshotRef.current;
-        return NativeEditorDocumentHandle.create({
+        return createNativeEditorDocumentHandle({
             schema: documentSchema,
             initialization: {
                 type: 'room',

@@ -1,3 +1,5 @@
+use crate::boundary::deserialize_non_null_option;
+
 use super::{OperationError, OperationResult, YrsEngineError, YrsEngineResult};
 
 pub const HARD_MAX_OPERATIONS_PER_TRANSACTION: usize = 4_096;
@@ -16,9 +18,13 @@ pub struct EditingLimits {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EditingLimitOverrides {
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub max_operations_per_transaction: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub max_undo_groups: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub max_undo_retained_units: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_non_null_option")]
     pub max_derived_output_bytes: Option<usize>,
 }
 

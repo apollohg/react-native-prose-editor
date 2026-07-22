@@ -858,6 +858,29 @@ describe('NativeEditorBridge v2', () => {
         it('rejects unknown and removed create fields before native invocation', () => {
             const invalidConfigs: unknown[] = [
                 { initialization: { type: 'localEmpty' }, unknown: true },
+                { initialization: { type: 'localEmpty', unknown: true } },
+                {
+                    initialization: {
+                        type: 'localJson',
+                        json: { type: 'doc' },
+                        unknown: true,
+                    },
+                },
+                {
+                    initialization: {
+                        type: 'localHtml',
+                        html: '<p>x</p>',
+                        unknown: true,
+                    },
+                },
+                {
+                    initialization: {
+                        type: 'room',
+                        documentId: 'doc-1',
+                        lineageId: 'lineage-1',
+                        unknown: true,
+                    },
+                },
                 { initialization: { type: 'localEmpty' }, maxLength: 1 },
                 { initialization: { type: 'localEmpty' }, readOnly: true },
                 { initialization: { type: 'localEmpty' }, inputFilter: 'x' },
@@ -875,6 +898,88 @@ describe('NativeEditorBridge v2', () => {
                 {
                     initialization: { type: 'localEmpty' },
                     limits: { collaboration: { unknown: 1 } },
+                },
+            ];
+
+            for (const config of invalidConfigs) {
+                const error = catchThrown(() =>
+                    createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+                );
+                expect((error as { code?: string }).code).toBe('CONFIG_INVALID');
+            }
+            expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
+        });
+
+        it('rejects arbitrary prototypes and inherited create values before native invocation', () => {
+            const inheritedRoot = Object.create({ inherited: true }) as Record<string, unknown>;
+            inheritedRoot.initialization = { type: 'localEmpty' };
+
+            const inheritedInitialization = Object.create({ type: 'localEmpty' }) as Record<
+                string,
+                unknown
+            >;
+
+            const inheritedPolicy = Object.create({ maxLength: 100 }) as Record<string, unknown>;
+            const inheritedResource = Object.create({ maxInputBytes: 1024 }) as Record<
+                string,
+                unknown
+            >;
+
+            const invalidConfigs: unknown[] = [
+                inheritedRoot,
+                { initialization: inheritedInitialization },
+                { initialization: { type: 'localEmpty' }, policy: inheritedPolicy },
+                {
+                    initialization: { type: 'localEmpty' },
+                    limits: { resource: inheritedResource },
+                },
+            ];
+
+            for (const config of invalidConfigs) {
+                const error = catchThrown(() =>
+                    createNativeEditorDocumentHandle(config as NativeEditorV2CreateConfig)
+                );
+                expect((error as { code?: string }).code).toBe('CONFIG_INVALID');
+            }
+            expect(mockNativeModule.editorV2Create).not.toHaveBeenCalled();
+        });
+
+        it('serializes normalized own-property copies from null-prototype records', () => {
+            const initialization = Object.assign(Object.create(null), { type: 'localEmpty' });
+            const policy = Object.assign(Object.create(null), { readOnly: true });
+            const resource = Object.assign(Object.create(null), { maxInputBytes: 1024 });
+            const limits = Object.assign(Object.create(null), { resource });
+            const config = Object.assign(Object.create(null), {
+                initialization,
+                policy,
+                limits,
+            }) as NativeEditorV2CreateConfig;
+
+            createNativeEditorDocumentHandle(config);
+
+            const [configJson] = mockNativeModule.editorV2Create.mock.calls[0];
+            expect(JSON.parse(configJson)).toEqual({
+                initialization: { type: 'localEmpty' },
+                policy: { readOnly: true },
+                limits: { resource: { maxInputBytes: 1024 } },
+            });
+        });
+
+        it('rejects explicit null for optional create fields before native invocation', () => {
+            const invalidConfigs: unknown[] = [
+                { initialization: { type: 'localEmpty' }, schema: null },
+                { initialization: { type: 'localEmpty' }, fragmentName: null },
+                { initialization: { type: 'localEmpty' }, policy: null },
+                { initialization: { type: 'localEmpty' }, limits: null },
+                { initialization: { type: 'localEmpty' }, policy: { maxLength: null } },
+                { initialization: { type: 'localEmpty' }, limits: { resource: null } },
+                {
+                    initialization: {
+                        type: 'room',
+                        documentId: 'doc-1',
+                        lineageId: 'lineage-1',
+                        snapshot: null,
+                    },
                 },
             ];
 

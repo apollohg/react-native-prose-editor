@@ -394,7 +394,7 @@ export interface ImageRequestContext {
     /**
      * Advisory: whether the host picker may offer base64/data-URL sources.
      * Enforcement lives in the handle's creation config
-     * (`NativeEditorV2CreateConfig.allowBase64Images`); this flag only
+     * (`NativeEditorV2CreateConfig.policy.allowBase64Images`); this flag only
      * mirrors it for the host UI and should be kept in sync via the
      * `allowBase64Images` prop.
      */
@@ -409,7 +409,7 @@ export interface ImageRequestContext {
  *   belongs to the handle's creation config (`NativeEditorV2Initialization`:
  *   `localEmpty` / `localJson` / `localHtml` / `room`).
  * - `maxLength`, engine-enforced `allowBase64Images`, `readOnly`, and
- *   `inputFilter` moved to `NativeEditorV2CreateConfig` as well.
+ *   `inputFilter` moved to `NativeEditorV2CreateConfig.policy` as well.
  * - `autoDetectLinks`, `preserveSelectionOnValueJSONReset`, and
  *   `selectionOnValueJSONReset` were removed with the legacy bridge and have
  *   no v2 equivalent.

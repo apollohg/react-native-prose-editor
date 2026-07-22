@@ -90,15 +90,55 @@ pub(crate) struct CollaborationLimits {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CollaborationLimitOverrides {
+    #[serde(
+        default,
+        deserialize_with = "crate::boundary::deserialize_non_null_option"
+    )]
     max_frames_per_message: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "crate::boundary::deserialize_non_null_option"
+    )]
     max_frame_bytes: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "crate::boundary::deserialize_non_null_option"
+    )]
     max_aggregate_response_bytes: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "crate::boundary::deserialize_non_null_option"
+    )]
     max_awareness_peers: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "crate::boundary::deserialize_non_null_option"
+    )]
     max_awareness_peer_bytes: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "crate::boundary::deserialize_non_null_option"
+    )]
     max_awareness_bytes: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "crate::boundary::deserialize_non_null_option"
+    )]
     max_pending_outbox_messages: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "crate::boundary::deserialize_non_null_option"
+    )]
     max_pending_outbox_bytes: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "crate::boundary::deserialize_non_null_option"
+    )]
     max_pending_dependency_update_bytes: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "crate::boundary::deserialize_non_null_option"
+    )]
     max_pending_dependency_update_work: Option<usize>,
 }
 

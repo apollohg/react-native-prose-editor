@@ -101,7 +101,7 @@ config, not on the component:
 ```tsx
 import React, { useEffect, useMemo, useRef } from 'react';
 import {
-  NativeEditorDocumentHandle,
+  createNativeEditorDocumentHandle,
   NativeRichTextEditor,
   type NativeRichTextEditorRef,
 } from '@apollohg/react-native-prose-editor';
@@ -111,7 +111,7 @@ export function EditorScreen() {
 
   const documentHandle = useMemo(
     () =>
-      NativeEditorDocumentHandle.create({
+      createNativeEditorDocumentHandle({
         initialization: { type: 'localHtml', html: '<p>Hello world</p>' },
       }),
     []
@@ -131,9 +131,10 @@ export function EditorScreen() {
 }
 ```
 
-`NativeEditorV2CreateConfig` accepts `schema`, `fragmentName`, `maxLength`,
-`readOnly`, `inputFilter`, `allowBase64Images`, and a required
-`initialization`:
+`NativeEditorV2CreateConfig` accepts `schema`, `fragmentName`, a required
+`initialization`, grouped `policy` (`maxLength`, `readOnly`, `inputFilter`,
+`allowBase64Images`), and grouped `limits` (`resource`, `editing`,
+`collaboration`):
 
 - `{ type: 'localEmpty' }` — an empty local document
 - `{ type: 'localJson', json }` — a local document seeded from ProseMirror JSON
@@ -212,7 +213,7 @@ no client-side seeding or encoded-state APIs — see the migration table in the
 ```tsx
 import React, { useEffect, useMemo } from 'react';
 import {
-  NativeEditorDocumentHandle,
+  createNativeEditorDocumentHandle,
   NativeRichTextEditor,
   useYjsCollaboration,
 } from '@apollohg/react-native-prose-editor';
@@ -220,7 +221,7 @@ import {
 export function CollaborativeEditor({ documentId }: { documentId: string }) {
   const documentHandle = useMemo(
     () =>
-      NativeEditorDocumentHandle.create({
+      createNativeEditorDocumentHandle({
         initialization: {
           type: 'room',
           documentId,
@@ -266,7 +267,7 @@ export once, persist the two fields, and hand them back at handle creation:
 const exported = documentHandle.bridge.snapshotExport();
 // Persist exported.metadataJson (string) and exported.encodedState (Uint8Array).
 
-const restoredHandle = NativeEditorDocumentHandle.create({
+const restoredHandle = createNativeEditorDocumentHandle({
   initialization: {
     type: 'room',
     documentId,

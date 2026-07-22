@@ -88,6 +88,17 @@ fn assert_create_rejected(config: serde_json::Value) {
     assert!(result.error.is_some(), "rejection must carry an error");
 }
 
+fn create_error_from_json(config_json: String) -> FfiError {
+    let result = super::editor::editor_v2_create(config_json, None);
+    if let Some(value) = result.value {
+        let value: serde_json::Value = serde_json::from_str(&value).unwrap();
+        let editor_id = value["editorId"].as_str().unwrap().to_owned();
+        let _ = super::editor::editor_v2_destroy(editor_id);
+        panic!("create unexpectedly accepted the config");
+    }
+    result.error.expect("rejection must carry an error")
+}
+
 #[test]
 fn create_installs_every_limit_override_in_the_created_session() {
     let config = json!({
@@ -182,6 +193,29 @@ fn create_rejects_fractional_limit_json_for_every_limit_field() {
 fn create_rejects_unknown_root_and_nested_group_fields() {
     for config in [
         json!({ "initialization": { "type": "localEmpty" }, "unknown": true }),
+        json!({ "initialization": { "type": "localEmpty", "unknown": true } }),
+        json!({
+            "initialization": {
+                "type": "localJson",
+                "json": { "type": "doc" },
+                "unknown": true
+            }
+        }),
+        json!({
+            "initialization": {
+                "type": "localHtml",
+                "html": "<p>x</p>",
+                "unknown": true
+            }
+        }),
+        json!({
+            "initialization": {
+                "type": "room",
+                "documentId": "doc-1",
+                "lineageId": "lineage-1",
+                "unknown": true
+            }
+        }),
         json!({
             "initialization": { "type": "localEmpty" },
             "policy": { "unknown": true }
@@ -205,6 +239,83 @@ fn create_rejects_unknown_root_and_nested_group_fields() {
     ] {
         assert_create_rejected(config);
     }
+}
+
+#[test]
+fn create_rejects_explicit_null_for_every_optional_create_field() {
+    let mut configs = vec![
+        json!({ "initialization": { "type": "localEmpty" }, "schema": null }),
+        json!({ "initialization": { "type": "localEmpty" }, "fragmentName": null }),
+        json!({ "initialization": { "type": "localEmpty" }, "policy": null }),
+        json!({ "initialization": { "type": "localEmpty" }, "limits": null }),
+        json!({
+            "initialization": {
+                "type": "room",
+                "documentId": "doc-1",
+                "lineageId": "lineage-1",
+                "snapshot": null
+            }
+        }),
+    ];
+    for field in ["maxLength", "readOnly", "inputFilter", "allowBase64Images"] {
+        let mut config = json!({
+            "initialization": { "type": "localEmpty" },
+            "policy": {}
+        });
+        config["policy"][field] = serde_json::Value::Null;
+        configs.push(config);
+    }
+    for group in ["resource", "editing", "collaboration"] {
+        let mut config = json!({
+            "initialization": { "type": "localEmpty" },
+            "limits": {}
+        });
+        config["limits"][group] = serde_json::Value::Null;
+        configs.push(config);
+    }
+    for (group, field, _) in CREATE_LIMIT_CASES {
+        configs.push(create_config_with_limit(
+            group,
+            field,
+            serde_json::Value::Null,
+        ));
+    }
+
+    for config in configs {
+        let error = create_error_from_json(config.to_string());
+        assert_eq!(error.code, "CONFIG_INVALID", "config: {config}");
+    }
+}
+
+#[test]
+fn create_resolves_limits_before_materializing_initialization_payload() {
+    let error = create_error_from_json(
+        json!({
+            "initialization": { "type": "localHtml", "html": { "not": "a string" } },
+            "limits": { "resource": { "maxInputBytes": 0 } }
+        })
+        .to_string(),
+    );
+    assert_eq!(error.code, "INVALID_RESOURCE_LIMIT");
+}
+
+#[test]
+fn create_uses_configured_max_input_bytes_above_the_default_for_html() {
+    let html = " ".repeat(ResourceLimits::default().max_input_bytes + 1);
+    let config_json = format!(
+        r#"{{"initialization":{{"type":"localHtml","html":"{html}"}},"limits":{{"resource":{{"maxInputBytes":{}}}}}}}"#,
+        html.len()
+    );
+    let result = super::editor::editor_v2_create(config_json, None);
+    let error = result.error.as_ref();
+    assert!(error.is_none(), "configured create failed: {error:?}");
+    let value: serde_json::Value =
+        serde_json::from_str(result.value.as_deref().expect("create value")).unwrap();
+    let editor_id = value["editorId"].as_str().unwrap().to_owned();
+    assert_eq!(
+        super::editor::editor_v2_destroy(editor_id).value,
+        Some(true)
+    );
 }
 
 #[test]
