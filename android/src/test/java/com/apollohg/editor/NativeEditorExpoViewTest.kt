@@ -521,7 +521,7 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
-    fun `outside tap handler installs from app context current activity`() {
+    fun `outside tap handler resolves the app context current activity`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val host = FrameLayout(activity)
         activity.setContentView(host)
@@ -539,7 +539,6 @@ class NativeEditorExpoViewTest {
 
         try {
             view.installOutsideTapBlurHandlerForTesting()
-            assertTrue(view.isOutsideTapBlurHandlerInstalledForTesting())
 
             val event = MotionEvent.obtain(0L, 0L, MotionEvent.ACTION_DOWN, 500f, 500f, 0)
             assertEquals(
@@ -2722,37 +2721,22 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
-    fun `outside tap observer is shared per window and removed after last view`() {
+    fun `outside tap handler does not add a touch overlay to the window content`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val host = activity.findViewById<FrameLayout>(android.R.id.content)
-        val firstExpoContext = testExpoContext(activity)
-        val secondExpoContext = testExpoContext(activity)
-        val firstView = NativeEditorExpoView(firstExpoContext.context, firstExpoContext.appContext)
-        val secondView = NativeEditorExpoView(secondExpoContext.context, secondExpoContext.appContext)
+        val expoContext = testExpoContext(activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
         val originalChildCount = host.childCount
 
-        firstView.installOutsideTapBlurHandlerForTesting()
-        val observer = host.getChildAt(host.childCount - 1)
-        assertEquals(originalChildCount + 1, host.childCount)
-
-        secondView.installOutsideTapBlurHandlerForTesting()
-
-        assertEquals(originalChildCount + 1, host.childCount)
-        assertSame(observer, host.getChildAt(host.childCount - 1))
-
-        firstView.uninstallOutsideTapBlurHandlerForTesting()
-
-        assertEquals(originalChildCount + 1, host.childCount)
-        assertSame(observer, host.getChildAt(host.childCount - 1))
-
-        secondView.uninstallOutsideTapBlurHandlerForTesting()
-        shadowOf(Looper.getMainLooper()).idle()
+        view.installOutsideTapBlurHandlerForTesting()
 
         assertEquals(originalChildCount, host.childCount)
+
+        view.uninstallOutsideTapBlurHandlerForTesting()
     }
 
     @Test
-    fun `outside tap observer does not consume touches and confirms tap before scheduling blur`() {
+    fun `outside tap confirmation schedules blur after a classified outside tap`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val host = activity.findViewById<FrameLayout>(android.R.id.content)
         val expoContext = testExpoContext(activity)
@@ -2769,26 +2753,18 @@ class NativeEditorExpoViewTest {
         view.onFocusChangeForTesting = {}
         view.onOutsideTapTraceForTesting = { event -> trace.add(event) }
 
-        view.installOutsideTapBlurHandlerForTesting()
-        val observer = host.getChildAt(host.childCount - 1)
-
-        val event = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, 9999f, 9999f, 0)
-        val handled = observer.dispatchTouchEvent(event)
-        event.recycle()
-
-        assertFalse(handled)
-        assertFalse(view.hasPendingOutsideTapBlurForTesting())
-
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(151))
+        val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, 9999f, 9999f, 0)
+        val decision = view.prepareOutsideTapDecisionForWindowEvent(down)
+        view.handleOutsideTapDecisionFromWindowDispatcher(decision)
+        down.recycle()
 
         assertTrue(trace.joinToString(separator = "\n"), view.hasPendingOutsideTapBlurForTesting())
 
         view.cancelOutsideTapBlurFromWindowDispatcher()
-        view.uninstallOutsideTapBlurHandlerForTesting()
     }
 
     @Test
-    fun `outside tap observer cancels outside blur candidate when gesture moves like scroll`() {
+    fun `outside tap window callback cancels an outside blur candidate when a gesture moves like scroll`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val host = activity.findViewById<FrameLayout>(android.R.id.content)
         val expoContext = testExpoContext(activity)
@@ -2804,16 +2780,12 @@ class NativeEditorExpoViewTest {
         view.onFocusChangeForTesting = {}
 
         view.installOutsideTapBlurHandlerForTesting()
-        val observer = host.getChildAt(host.childCount - 1)
-
         val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, 9999f, 9999f, 0)
         val move = MotionEvent.obtain(100L, 116L, MotionEvent.ACTION_MOVE, 9999f, 10099f, 0)
-        observer.dispatchTouchEvent(down)
-        observer.dispatchTouchEvent(move)
+        view.dispatchOutsideTapWindowEventForTesting(down)
+        view.dispatchOutsideTapWindowEventForTesting(move)
         down.recycle()
         move.recycle()
-
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(151))
 
         assertFalse(view.hasPendingOutsideTapBlurForTesting())
 
@@ -2821,7 +2793,7 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
-    fun `outside tap handler reinstall does not duplicate observer for same view`() {
+    fun `outside tap handler reinstall does not duplicate the window callback for the same view`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val host = activity.findViewById<FrameLayout>(android.R.id.content)
         val expoContext = testExpoContext(activity)
@@ -2834,14 +2806,8 @@ class NativeEditorExpoViewTest {
         view.onFocusChangeForTesting = {}
 
         view.installOutsideTapBlurHandlerForTesting()
-        assertTrue(view.isOutsideTapBlurHandlerInstalledForTesting())
-        val childCount = host.childCount
-        val observer = host.getChildAt(host.childCount - 1)
 
         view.installOutsideTapBlurHandlerForTesting()
-        assertTrue(view.isOutsideTapBlurHandlerInstalledForTesting())
-        assertEquals(childCount, host.childCount)
-        assertSame(observer, host.getChildAt(host.childCount - 1))
 
         val event = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, 9999f, 9999f, 0)
         assertEquals(

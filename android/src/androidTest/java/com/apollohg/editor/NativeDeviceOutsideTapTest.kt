@@ -222,7 +222,6 @@ class NativeDeviceOutsideTapTest {
                     recordTapGeometry(activity, "toolbar", toolbarTargetRef.get(), outsideTapTrace)
                 }
                 tapCenterOnScreen(toolbarTargetRef.get(), "toolbar", outsideTapTrace)
-                SystemClock.sleep(400)
                 instrumentation.waitForIdleSync()
 
                 assertTrue(
@@ -310,7 +309,7 @@ class NativeDeviceOutsideTapTest {
                         outsideTarget,
                         LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
-                            dp(activity, 720)
+                            dp(activity, 160)
                         ).apply {
                             leftMargin = dp(activity, 16)
                             rightMargin = dp(activity, 16)
@@ -320,7 +319,7 @@ class NativeDeviceOutsideTapTest {
                         View(activity),
                         LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
-                            dp(activity, 1200)
+                            dp(activity, 1760)
                         )
                     )
                     activity.setContentView(scrollView)
@@ -349,8 +348,8 @@ class NativeDeviceOutsideTapTest {
                 waitUntil("editor should gain focus") {
                     editorRef.get().richTextView.editorEditText.hasFocus()
                 }
-                waitUntil("outside target should be laid out") {
-                    outsideTargetRef.get().isShown && outsideTargetRef.get().height > 0
+                waitUntil("outside target should have a visible swipe region") {
+                    hasVisibleSwipeRegion(outsideTargetRef.get())
                 }
 
                 scenario.onActivity {
@@ -363,10 +362,8 @@ class NativeDeviceOutsideTapTest {
                         outsideTapTrace
                     )
                 }
-                swipeUpFromView(
+                swipeUpFromVisibleRegion(
                     outsideTargetRef.get(),
-                    startOffsetDp = 120,
-                    distanceDp = 180,
                     label = "outside scroll",
                     trace = outsideTapTrace
                 )
@@ -379,7 +376,6 @@ class NativeDeviceOutsideTapTest {
                     scrollViewRef.get().scrollY > initialScrollY.get()
                 }
 
-                SystemClock.sleep(700)
                 instrumentation.waitForIdleSync()
                 scenario.onActivity {
                     recordScrollGeometry(
@@ -470,7 +466,7 @@ class NativeDeviceOutsideTapTest {
                         outsideTarget,
                         LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
-                            dp(activity, 680)
+                            dp(activity, 320)
                         ).apply {
                             leftMargin = dp(activity, 16)
                             rightMargin = dp(activity, 16)
@@ -480,7 +476,7 @@ class NativeDeviceOutsideTapTest {
                         View(activity),
                         LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
-                            dp(activity, 1600)
+                            dp(activity, 1960)
                         )
                     )
                     root.addView(
@@ -528,8 +524,8 @@ class NativeDeviceOutsideTapTest {
                 waitUntil("editor should gain focus") {
                     editorRef.get().richTextView.editorEditText.hasFocus()
                 }
-                waitUntil("outside target should be laid out") {
-                    outsideTargetRef.get().isShown && outsideTargetRef.get().height > 0
+                waitUntil("outside target should have a visible swipe region") {
+                    hasVisibleSwipeRegion(outsideTargetRef.get())
                 }
 
                 scenario.onActivity {
@@ -542,10 +538,8 @@ class NativeDeviceOutsideTapTest {
                         outsideTapTrace
                     )
                 }
-                swipeUpFromView(
+                swipeUpFromVisibleRegion(
                     outsideTargetRef.get(),
-                    startOffsetDp = 260,
-                    distanceDp = 220,
                     label = "chat list scroll",
                     trace = outsideTapTrace
                 )
@@ -558,7 +552,6 @@ class NativeDeviceOutsideTapTest {
                     scrollViewRef.get().scrollY > initialScrollY.get()
                 }
 
-                SystemClock.sleep(700)
                 instrumentation.waitForIdleSync()
                 scenario.onActivity {
                     recordScrollGeometry(
@@ -614,24 +607,29 @@ class NativeDeviceOutsideTapTest {
         up.recycle()
     }
 
-    private fun swipeUpFromView(
+    private fun hasVisibleSwipeRegion(view: View): Boolean {
+        val visibleBounds = android.graphics.Rect()
+        return view.getGlobalVisibleRect(visibleBounds) &&
+            visibleBounds.width() > 0 &&
+            visibleBounds.height() >= dp(view.context, 48)
+    }
+
+    private fun swipeUpFromVisibleRegion(
         view: View,
-        startOffsetDp: Int,
-        distanceDp: Int,
         label: String,
         trace: MutableList<String>
     ) {
-        val location = IntArray(2)
-        view.getLocationOnScreen(location)
-        val safeHeight = view.height.coerceAtLeast(2)
-        val startOffsetPx = dp(view.context, startOffsetDp).coerceIn(1, safeHeight - 1)
-        val distancePx = dp(view.context, distanceDp)
-        val x = location[0] + view.width / 2f
-        val startY = location[1] + startOffsetPx.toFloat()
-        val endY = startY - distancePx
+        val visibleBounds = android.graphics.Rect()
+        assertTrue(
+            "outside target must have a visible swipe region",
+            view.getGlobalVisibleRect(visibleBounds) && visibleBounds.height() >= dp(view.context, 48)
+        )
+        val x = visibleBounds.exactCenterX()
+        val startY = visibleBounds.top + visibleBounds.height() * 3f / 4f
+        val endY = visibleBounds.top + visibleBounds.height() / 4f
         trace.add(
             "$label swipe start=${x.toInt()},${startY.toInt()} end=${x.toInt()},${endY.toInt()} " +
-                "loc=${location[0]},${location[1]} size=${view.width}x${view.height} shown=${view.isShown}"
+                "visible=${visibleBounds.flattenToString()}"
         )
 
         val downTime = SystemClock.uptimeMillis()
@@ -642,7 +640,6 @@ class NativeDeviceOutsideTapTest {
 
         val steps = 6
         for (step in 1..steps) {
-            SystemClock.sleep(16)
             eventTime = SystemClock.uptimeMillis()
             val fraction = step.toFloat() / steps
             val y = startY + (endY - startY) * fraction
@@ -651,7 +648,6 @@ class NativeDeviceOutsideTapTest {
             move.recycle()
         }
 
-        SystemClock.sleep(16)
         eventTime = SystemClock.uptimeMillis()
         val up = MotionEvent.obtain(downTime, eventTime, MotionEvent.ACTION_UP, x, endY, 0)
         instrumentation.sendPointerSync(up)
@@ -668,7 +664,7 @@ class NativeDeviceOutsideTapTest {
         while (SystemClock.uptimeMillis() < deadline) {
             instrumentation.waitForIdleSync()
             if (predicate()) return
-            SystemClock.sleep(50)
+            Thread.yield()
         }
         val detailText = detail()
         assertTrue(

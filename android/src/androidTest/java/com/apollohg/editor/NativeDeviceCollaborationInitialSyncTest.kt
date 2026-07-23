@@ -140,7 +140,7 @@ class NativeDeviceCollaborationInitialSyncTest {
     private fun replaceDocumentV2(adapter: EditorV2Adapter, documentJson: String) {
         val requestJson = JSONObject()
             .put("version", 1)
-            .put("requestId", 1)
+            .put("requestId", "1")
             .put("setJson", JSONObject(documentJson))
             .put("history", "undoableBoundary")
             .toString()
