@@ -1332,7 +1332,7 @@ fn collaboration_binary_round_trip_and_awareness_flow_with_a_raw_peer() {
 }
 
 #[test]
-fn collaboration_tick_uses_canonical_millis_and_reports_deadline_changes() {
+fn collaboration_task8_tick_uses_canonical_millis_and_reports_deadline_changes() {
     let snapshot = snapshot_source();
     let id = create_handle_with_state(
         room_config(Some(&snapshot)),
@@ -1395,6 +1395,68 @@ fn collaboration_tick_uses_canonical_millis_and_reports_deadline_changes() {
 }
 
 #[test]
+fn collaboration_task8_tick_rejects_regressing_time_without_corrupting_peer_expiry() {
+    let snapshot = snapshot_source();
+    let id = create_handle_with_state(
+        room_config(Some(&snapshot)),
+        Some(snapshot.encoded_state.clone()),
+    );
+    let generation = synchronize_v2(&id, &RawPeer::from_snapshot(&snapshot));
+
+    ok_json(&v2_collab::editor_v2_collaboration_tick(
+        id.clone(),
+        "10000".into(),
+    ));
+    let error = err_json(&v2_collab::editor_v2_collaboration_tick(
+        id.clone(),
+        "9999".into(),
+    ));
+    assert_error(&error, "transport", "AWARENESS_TIME_REGRESSION", None);
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            error
+                .details_json
+                .as_deref()
+                .expect("regressing time errors carry clock context"),
+        )
+        .expect("error details are JSON"),
+        json!({ "nowMillis": "9999", "lastNowMillis": "10000" }),
+    );
+
+    // The remote update must retain the last accepted tick time (10s), not
+    // the rejected 9_999ms input, so expiry remains scheduled for 40s.
+    let clients = [(
+        yrs::ClientID::new(9_001),
+        yrs::sync::awareness::AwarenessUpdateEntry {
+            clock: 1,
+            json: json!({ "name": "monotonic peer" }).to_string().into(),
+        },
+    )]
+    .into_iter()
+    .collect();
+    let receive = ok_json(&v2_collab::editor_v2_collaboration_receive(
+        id.clone(),
+        generation,
+        Message::Awareness(yrs::sync::awareness::AwarenessUpdate { clients }).encode_v1(),
+    ));
+    assert_eq!(receive["close"], Value::Null, "{receive:?}");
+
+    let before = ok_json(&v2_collab::editor_v2_collaboration_tick(
+        id.clone(),
+        "39999".into(),
+    ));
+    assert_eq!(before["expiredPeers"], json!([]), "{before:?}");
+    assert_eq!(before["nextDeadlineMillis"], json!("40000"), "{before:?}");
+
+    let at = ok_json(&v2_collab::editor_v2_collaboration_tick(
+        id.clone(),
+        "40000".into(),
+    ));
+    assert_eq!(at["expiredPeers"], json!(["9001"]), "{at:?}");
+    destroy_handle(&id);
+}
+
+#[test]
 fn collaboration_tick_expires_remote_peers_with_decimal_ids() {
     let snapshot = snapshot_source();
     let id = create_handle_with_state(
@@ -1437,7 +1499,7 @@ fn collaboration_tick_expires_remote_peers_with_decimal_ids() {
 }
 
 #[test]
-fn collaboration_detach_and_reattach_escape_incompatible_with_next_generation() {
+fn collaboration_task8_detach_and_reattach_are_idempotent_after_incompatible() {
     let snapshot = snapshot_source();
     let id = create_handle_with_state(
         room_config(Some(&snapshot)),
@@ -1458,8 +1520,10 @@ fn collaboration_detach_and_reattach_escape_incompatible_with_next_generation() 
 
     ok_unit(&v2_collab::editor_v2_collaboration_detach(id.clone()));
     assert_eq!(state_of(&id)["transportState"], "Detached");
-    let error = err_unit(&v2_collab::editor_v2_collaboration_detach(id.clone()));
-    assert_error(&error, "transport", "TRANSPORT_INVALID_TRANSITION", None);
+    ok_unit(&v2_collab::editor_v2_collaboration_detach(id.clone()));
+    assert_eq!(state_of(&id)["transportState"], "Detached");
+    ok_unit(&v2_collab::editor_v2_collaboration_reattach(id.clone()));
+    assert_eq!(state_of(&id)["transportState"], "Disconnected");
     ok_unit(&v2_collab::editor_v2_collaboration_reattach(id.clone()));
     assert_eq!(state_of(&id)["transportState"], "Disconnected");
 

@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::ffi_v2::types::AWARENESS_CLOCK_EXHAUSTED;
+use crate::ffi_v2::types::{decimal_u64, AWARENESS_CLOCK_EXHAUSTED};
 use crate::session::{CollaborationLimits, ErrorDomain, SessionError, TransportState};
 use crate::yrs_engine::{AwarenessLimits, YrsDocumentEngine, YrsEngineError};
 
@@ -39,6 +39,8 @@ pub const AWARENESS_EXPIRY_MILLIS: u64 = 30_000;
 
 /// Refusal code for a desired awareness state that is not valid JSON.
 pub const AWARENESS_STATE_INVALID: &str = "AWARENESS_STATE_INVALID";
+/// Refusal code for a tick whose deterministic time regresses.
+pub const AWARENESS_TIME_REGRESSION: &str = "AWARENESS_TIME_REGRESSION";
 
 /// Wire action reported by awareness-shaped refusals.
 const AWARENESS_ACTION: &str = "awareness";
@@ -184,6 +186,20 @@ fn engine_error_with_request(error: YrsEngineError, request_id: u64) -> SessionE
         SessionError::from(error)
     };
     error.request_id = Some(request_id);
+    error
+}
+
+fn time_regression_error(request_id: u64, now_millis: u64, last_now_millis: u64) -> SessionError {
+    let mut error = SessionError::new(
+        ErrorDomain::Transport,
+        AWARENESS_TIME_REGRESSION,
+        "awareness tick nowMillis must not decrease",
+    );
+    error.request_id = Some(request_id);
+    error.details = Some(serde_json::json!({
+        "nowMillis": decimal_u64(now_millis),
+        "lastNowMillis": decimal_u64(last_now_millis),
+    }));
     error
 }
 
@@ -406,6 +422,13 @@ impl CollaborationRuntime {
             transport_state,
             limits,
         } = context;
+        if now_millis < self.awareness.now_millis {
+            return Err(time_regression_error(
+                request_id,
+                now_millis,
+                self.awareness.now_millis,
+            ));
+        }
         self.awareness.now_millis = now_millis;
 
         let expired_peers: Vec<u64> = self

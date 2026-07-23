@@ -190,12 +190,12 @@ impl TransportStateMachine {
         Ok(())
     }
 
-    /// Any live transport state except `Detached` -> `Detached`. Tears down
-    /// only transport state: the runtime, its outbox, and the document are
-    /// untouched by design.
-    pub(crate) fn detach(&mut self, request_id: u64) -> Result<(), SessionError> {
+    /// Any live transport state -> `Detached`; repeated detaches are no-ops.
+    /// Tears down only transport state: the runtime, its outbox, and the
+    /// document are untouched by design.
+    pub(crate) fn detach(&mut self, _request_id: u64) -> Result<(), SessionError> {
         if self.state == TransportState::Detached {
-            return Err(invalid_transition(request_id, "detach", self.state));
+            return Ok(());
         }
         self.live_attempt = None;
         self.state = TransportState::Detached;
@@ -203,8 +203,9 @@ impl TransportStateMachine {
     }
 
     /// The explicit reattach half of the `Incompatible` escape hatch:
-    /// `Detached` -> `Disconnected` on a room-bound session, after which
-    /// `begin_connect` is accepted again.
+    /// `Detached` -> `Disconnected` on a room-bound session; repeated
+    /// room-bound reattaches from `Disconnected` are no-ops. `begin_connect`
+    /// is accepted after either successful outcome.
     pub(crate) fn reattach(
         &mut self,
         request_id: u64,
@@ -213,11 +214,14 @@ impl TransportStateMachine {
         if !room_bound {
             return Err(not_room_bound(request_id, "reattach", self.state));
         }
-        if self.state != TransportState::Detached {
-            return Err(invalid_transition(request_id, "reattach", self.state));
+        match self.state {
+            TransportState::Detached => {
+                self.state = TransportState::Disconnected;
+                Ok(())
+            }
+            TransportState::Disconnected => Ok(()),
+            _ => Err(invalid_transition(request_id, "reattach", self.state)),
         }
-        self.state = TransportState::Disconnected;
-        Ok(())
     }
 
     /// Crate-private Task 9 seam: an accepted current-generation Sync
