@@ -50,7 +50,9 @@ fn shared_hostile_fixtures_execute_against_the_rust_v2_boundary() {
             id.clone(),
             serde_json::json!({
                 "version": 1,
-                "requestId": 1,
+                // v2 request IDs are canonical decimal strings; a numeric ID
+                // is CONFIG_INVALID before the hostile document is admitted.
+                "requestId": "1",
                 "setJson": fixtures[name]["document"],
                 "history": "undoableBoundary",
             })
