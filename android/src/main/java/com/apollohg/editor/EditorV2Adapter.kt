@@ -160,12 +160,6 @@ internal class EditorV2Adapter private constructor(
 
     // ── Structured reads ──
 
-    private data class V2State(
-        val documentRevision: ULong,
-        val canUndo: Boolean,
-        val canRedo: Boolean,
-    )
-
     private fun emit(error: EditorV2Error) {
         debugNotes.add("emit ${error.domain}/${error.code}: ${error.message}")
         onAutonomousError?.invoke(error)
@@ -349,7 +343,11 @@ internal class EditorV2Adapter private constructor(
         baseDocumentRevision = snapshot.documentRevision
         stateRevision = snapshot.stateRevision
         cachedScalarLength = snapshot.scalarLength
-        cachedAuthoritativeScalarSelection = snapshot.scalarSelection
+        cachedAuthoritativeScalarSelection = snapshot.scalarSelection?.copyOf()
+        // The frozen atomic snapshot is also the engine-authoritative answer
+        // for local selection suppression. Keeping the old mirror here would
+        // let an external selection be silently skipped by the next input.
+        lastSyncedScalarSelection = snapshot.scalarSelection?.copyOf()
         cachedActiveState = snapshot.activeState
         cachedHistoryState = snapshot.historyState
         cachedViewUpdateJson = updateJson
@@ -377,34 +375,6 @@ internal class EditorV2Adapter private constructor(
         if (parseAtomicRenderSnapshot(renderJson) != null) return true
         emit(contractError("v2 atomic render snapshot violates the frozen shape"))
         return false
-    }
-
-    private fun fetchState(): V2State? {
-        return when (val result = backend.getState(editorId)) {
-            is EditorV2CallResult.Err -> {
-                emit(result.error)
-                null
-            }
-            is EditorV2CallResult.Ok -> {
-                try {
-                    val json = JSONObject(result.value)
-                    val revision = ulongField(json, "documentRevision")
-                    if (revision == null) {
-                        emit(contractError("v2 getState value violates the frozen shape"))
-                        null
-                    } else {
-                        V2State(
-                            documentRevision = revision,
-                            canUndo = json.getBoolean("canUndo"),
-                            canRedo = json.getBoolean("canRedo"),
-                        )
-                    }
-                } catch (error: Exception) {
-                    emit(contractError("v2 getState value violates the frozen shape"))
-                    null
-                }
-            }
-        }
     }
 
     private fun fetchDocumentJson(): String? {
@@ -453,7 +423,7 @@ internal class EditorV2Adapter private constructor(
         refreshInternal(mirrorSelection)
 
     override fun currentStateJson(): String? =
-        refreshInternal(lastSyncedScalarSelection)
+        refreshInternal(cachedAuthoritativeScalarSelection?.copyOf())
 
     override fun documentHtml(): String? {
         if (destroyed) return null
@@ -487,11 +457,14 @@ internal class EditorV2Adapter private constructor(
         }
     }
 
-    override fun historyCanUndo(): Boolean? = fetchState()?.canUndo
-    override fun historyCanRedo(): Boolean? = fetchState()?.canRedo
+    override fun historyCanUndo(): Boolean? =
+        cachedHistoryState?.let { exactBool(it.opt("canUndo")) }
+
+    override fun historyCanRedo(): Boolean? =
+        cachedHistoryState?.let { exactBool(it.opt("canRedo")) }
 
     override fun selectionJson(): String? {
-        val update = refreshInternal(lastSyncedScalarSelection) ?: return null
+        val update = refreshInternal(cachedAuthoritativeScalarSelection?.copyOf()) ?: return null
         return try {
             JSONObject(update).getJSONObject("selection").toString()
         } catch (error: Exception) {
@@ -510,6 +483,14 @@ internal class EditorV2Adapter private constructor(
     private fun clampScalar(scalar: Int): Int {
         val extent = cachedScalarLength ?: return scalar
         return scalar.coerceIn(0, extent)
+    }
+
+    private fun invalidateCachedAtomicState(selection: IntArray?) {
+        cachedAuthoritativeScalarSelection = selection?.copyOf()
+        cachedScalarLength = null
+        cachedActiveState = null
+        cachedHistoryState = null
+        cachedViewUpdateJson = null
     }
 
     private fun ensureSelection(anchor: Int, head: Int): SelectionSyncOutcome {
@@ -544,7 +525,14 @@ internal class EditorV2Adapter private constructor(
                         baseDocumentRevision = outcome.revision
                     }
                 }
-                lastSyncedScalarSelection = intArrayOf(clampedAnchor, clampedHead)
+                val synchronizedSelection = intArrayOf(clampedAnchor, clampedHead)
+                lastSyncedScalarSelection = synchronizedSelection
+                cachedAuthoritativeScalarSelection = synchronizedSelection.copyOf()
+                // Selection changes can affect active state and state revision,
+                // but retain the last atomic history result until a document
+                // mutation supplies its next locked snapshot.
+                cachedActiveState = null
+                cachedViewUpdateJson = null
                 SelectionSyncOutcome.Ok
             }
             is EditorV2CallResult.Err -> {
@@ -695,6 +683,7 @@ internal class EditorV2Adapter private constructor(
                         if (postSelectionMirror != null) {
                             lastSyncedScalarSelection = postSelectionMirror
                         }
+                        invalidateCachedAtomicState(postSelectionMirror ?: preSelection)
                     }
                     is MutationOutcome.NotApplicable -> {
                         return refreshInternal(postSelectionMirror ?: preSelection)
@@ -703,6 +692,7 @@ internal class EditorV2Adapter private constructor(
                         baseDocumentRevision = outcome.revision
                         // Whole-root replacement resets the engine-side selection.
                         lastSyncedScalarSelection = null
+                        invalidateCachedAtomicState(null)
                     }
                 }
                 val mirror = if (includeSelectionInUpdate) postSelectionMirror ?: preSelection else null
@@ -729,6 +719,10 @@ internal class EditorV2Adapter private constructor(
                 } catch (error: Exception) {
                     emit(contractError("v2 history outcome violates the frozen shape"))
                     return null
+                }
+                if (changed) {
+                    invalidateCachedAtomicState(null)
+                    lastSyncedScalarSelection = null
                 }
                 val update = refreshInternal(null) ?: return null
                 if (changed) {

@@ -505,6 +505,51 @@ class EditorV2AdapterTest {
         assertEquals(4uL, adapter.baseDocumentRevision)
     }
 
+    @Test
+    fun `external atomic adoption serves authoritative selection and history without split state reads`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>ab</p>")
+        val session = sessionOf(adapter)
+        val snapshot = JSONObject(atomicRenderSnapshot("ab", session.revision.toString(), selectionScalar = 2))
+            .put("historyState", JSONObject().put("canUndo", false).put("canRedo", true))
+            .toString()
+
+        assertNotNull(adoptExternalRender(adapter, snapshot))
+        backend.calls.clear()
+
+        assertEquals(false, adapter.historyCanUndo())
+        assertEquals(true, adapter.historyCanRedo())
+        val state = JSONObject(adapter.currentStateJson())
+        assertEquals(2, state.getJSONObject("selection").getInt("anchorScalar"))
+        assertEquals(2, JSONObject(adapter.selectionJson()).getInt("anchorScalar"))
+        assertEquals(0, backend.calls.count { it == "getState" })
+    }
+
+    @Test
+    fun `local selection and mutation replace adopted authoritative caches coherently`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>ab</p>")
+        assertNotNull(adapter.syncSelection(1, 1))
+        val session = sessionOf(adapter)
+        session.anchor = 2
+        session.head = 2
+        session.revision += 1u
+        val externalSnapshot = atomicRenderSnapshot("ab", session.revision.toString(), selectionScalar = 2)
+        assertNotNull(adoptExternalRender(adapter, externalSnapshot))
+
+        backend.calls.clear()
+        assertNotNull(adapter.syncSelection(1, 1))
+        assertTrue(backend.calls.contains("setSelection"))
+
+        backend.calls.clear()
+        val updated = adapter.insertText("x", 1)
+        assertEquals("axb", renderedText(updated))
+        assertEquals(true, adapter.historyCanUndo())
+        assertEquals(false, adapter.historyCanRedo())
+        assertEquals(0, backend.calls.count { it == "getState" })
+        assertEquals(2, JSONObject(adapter.selectionJson()).getInt("anchorScalar"))
+    }
+
     // MARK: undo/redo
 
     @Test

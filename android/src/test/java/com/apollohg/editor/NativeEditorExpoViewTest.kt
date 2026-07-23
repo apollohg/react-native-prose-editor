@@ -2971,6 +2971,48 @@ class NativeEditorExpoViewTest {
         }
     }
 
+    @Test
+    fun `external atomic view update keeps adopted selection through toolbar state refresh without state reads`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val session = backend.sessions.getValue(adapter.editorId)
+        session.text = StringBuilder("ab")
+        session.anchor = 2
+        session.head = 2
+        session.revision = 1u
+        val externalSnapshot = JSONObject(atomicRenderUpdateJson("ab", "1"))
+            .put(
+                "selection",
+                JSONObject()
+                    .put("type", "text")
+                    .put("anchor", 2)
+                    .put("head", 2)
+                    .put("anchorScalar", 2)
+                    .put("headScalar", 2)
+            )
+            .toString()
+        try {
+            view.onAddonEventForTesting = {}
+            view.onEditorReadyForTesting = {}
+            view.onSelectionChangeForTesting = {}
+            view.setAttachedToNativeWindowForTesting(true)
+            view.setEditorId(viewToken)
+
+            assertTrue(view.applyEditorUpdate(externalSnapshot))
+            backend.calls.clear()
+
+            val state = JSONObject(view.refreshToolbarStateFromEditorSelectionForTesting())
+            assertEquals(2, state.getJSONObject("selection").getInt("anchorScalar"))
+            assertEquals(0, backend.calls.count { it == "getState" })
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
     private fun renderUpdateJson(text: String): String =
         JSONObject()
             .put(
