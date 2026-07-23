@@ -738,9 +738,13 @@ export const NativeRichTextEditor = forwardRef<
     }, [applyTypedUpdateState]);
 
     // ── View update pushes (JS-driven engine changes only) ──────
-    const [pushedUpdate, setPushedUpdate] = useState<{ json: string; revision: number } | null>(
-        null
-    );
+    const [pushedUpdate, setPushedUpdate] = useState<{
+        json: string;
+        revision: number;
+        editorId: string;
+    } | null>(null);
+    const currentPushedUpdateEditorIdRef = useRef(editorId);
+    currentPushedUpdateEditorIdRef.current = editorId;
     const pushRevisionRef = useRef(0);
     const lastPushedEngineRevisionRef = useRef<string | null>(null);
     const lastNativeDrivenRevisionRef = useRef<string | null>(null);
@@ -748,6 +752,7 @@ export const NativeRichTextEditor = forwardRef<
 
     const pushEngineUpdateToView = useCallback(() => {
         if (documentHandle.isDestroyed) return;
+        const sourceEditorId = documentHandle.editorId;
         const allocation = allocateEditorUpdateRevision(pushRevisionRef.current);
         if ('error' in allocation) {
             bridge._emitAutonomousError(allocation.error);
@@ -758,8 +763,21 @@ export const NativeRichTextEditor = forwardRef<
         lastPushedEngineRevisionRef.current = snapshot.documentVersion;
         const updateJson = JSON.stringify(snapshot);
         pushRevisionRef.current = allocation.revision;
-        setPushedUpdate({ json: updateJson, revision: allocation.revision });
+        setPushedUpdate(
+            sourceEditorId === currentPushedUpdateEditorIdRef.current
+                ? { json: updateJson, revision: allocation.revision, editorId: sourceEditorId }
+                : null
+        );
     }, [applyTypedUpdateState, bridge, documentHandle]);
+
+    // A pending update is owned by the handle that produced its snapshot.
+    // Drop it when this component rebinds, so no old session state reaches
+    // the next native view binding.
+    useEffect(() => {
+        setPushedUpdate((current) =>
+            current?.editorId === editorId ? current : null
+        );
+    }, [editorId]);
 
     // After a JS-driven engine change (controlled apply, remote commit,
     // document-API mutation) the view learns the new state here. Native-
@@ -1176,6 +1194,7 @@ export const NativeRichTextEditor = forwardRef<
     }
     const nativeViewStyle =
         nativeViewStyleParts.length <= 1 ? nativeViewStyleParts[0] : nativeViewStyleParts;
+    const currentPushedUpdate = pushedUpdate?.editorId === editorId ? pushedUpdate : null;
 
     return (
         <View style={[styles.container, containerStyle]}>
@@ -1200,9 +1219,9 @@ export const NativeRichTextEditor = forwardRef<
                 addonsJson={addonsJson}
                 toolbarItemsJson={toolbarItemsJson}
                 remoteSelectionsJson={remoteSelectionsJson}
-                editorUpdateJson={pushedUpdate?.json}
-                editorUpdateEditorId={pushedUpdate != null ? editorId : undefined}
-                editorUpdateRevision={pushedUpdate?.revision ?? 0}
+                editorUpdateJson={currentPushedUpdate?.json}
+                editorUpdateEditorId={currentPushedUpdate?.editorId}
+                editorUpdateRevision={currentPushedUpdate?.revision ?? 0}
                 onEditorUpdate={handleEditorUpdate}
                 onSelectionChange={handleSelectionChange}
                 onFocusChange={handleFocusChange}

@@ -1153,6 +1153,55 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
+    it('drops a pending pushed update when the same editor component rebinds to another handle', () => {
+        const handleA = createV2LocalHandle(V2_INITIAL_DOC);
+        const handleB = createV2LocalHandle(V2_DOC_B);
+        const ref = createRef<NativeRichTextEditorRef>();
+        const { getByTestId, rerender } = render(
+            <NativeRichTextEditor ref={ref} documentHandle={handleA} />
+        );
+
+        act(() => {
+            ref.current!.toggleMark('bold');
+        });
+        expect(getByTestId('native-editor-view').props.editorUpdateEditorId).toBe(handleA.editorId);
+
+        rerender(<NativeRichTextEditor ref={ref} documentHandle={handleB} />);
+
+        const view = getByTestId('native-editor-view');
+        expect(view.props.editorId).toBe(handleB.editorId);
+        expect(view.props.editorUpdateJson).toBeUndefined();
+        expect(view.props.editorUpdateEditorId).toBeUndefined();
+        handleA.destroy();
+        handleB.destroy();
+    });
+
+    it('drops an A snapshot that completes after the same editor component rebinds to B', () => {
+        const handleA = createV2LocalHandle(V2_INITIAL_DOC);
+        const handleB = createV2LocalHandle(V2_DOC_B);
+        const ref = createRef<NativeRichTextEditorRef>();
+        const { getByTestId, rerender } = render(
+            <NativeRichTextEditor ref={ref} documentHandle={handleA} />
+        );
+        const renderAUpdate = handleA.bridge.renderUpdate.bind(handleA.bridge);
+        const renderUpdate = jest.spyOn(handleA.bridge, 'renderUpdate').mockImplementation(() => {
+            rerender(<NativeRichTextEditor ref={ref} documentHandle={handleB} />);
+            return renderAUpdate();
+        });
+
+        act(() => {
+            ref.current!.toggleMark('bold');
+        });
+
+        const view = getByTestId('native-editor-view');
+        expect(view.props.editorId).toBe(handleB.editorId);
+        expect(view.props.editorUpdateJson).toBeUndefined();
+        expect(view.props.editorUpdateEditorId).toBeUndefined();
+        renderUpdate.mockRestore();
+        handleA.destroy();
+        handleB.destroy();
+    });
+
     it('applies a JS-driven render snapshot locally without parsing its native handoff JSON', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const ref = createRef<NativeRichTextEditorRef>();
