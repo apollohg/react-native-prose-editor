@@ -1068,6 +1068,115 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
+    it('applies a JS-driven render snapshot locally without parsing its native handoff JSON', () => {
+        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+        const ref = createRef<NativeRichTextEditorRef>();
+        const onActiveStateChange = jest.fn();
+        const snapshot = Object.freeze({
+            renderBlocks: Object.freeze([]),
+            renderPatch: null,
+            selection: Object.freeze({ type: 'text' as const, anchor: 1, head: 1 }),
+            activeState: Object.freeze({
+                marks: Object.freeze({ bold: true }),
+                markAttrs: Object.freeze({}),
+                nodes: Object.freeze({}),
+                commands: Object.freeze({}),
+                allowedMarks: Object.freeze([]),
+                insertableNodes: Object.freeze([]),
+            }),
+            historyState: Object.freeze({ canUndo: true, canRedo: false }),
+            documentVersion: '42',
+            stateRevision: '7',
+            scalarLength: 5,
+        }) as ReturnType<typeof handle.bridge.renderUpdate>;
+        const snapshotJson = JSON.stringify(snapshot);
+        const renderUpdate = jest
+            .spyOn(handle.bridge, 'renderUpdate')
+            .mockReturnValue(snapshot);
+        const parse = jest.spyOn(JSON, 'parse');
+        const { getByTestId } = render(
+            <NativeRichTextEditor
+                ref={ref}
+                documentHandle={handle}
+                onActiveStateChange={onActiveStateChange}
+            />
+        );
+
+        act(() => {
+            ref.current!.toggleMark('bold');
+        });
+
+        expect(getByTestId('native-editor-view').props.editorUpdateJson).toBe(snapshotJson);
+        expect(onActiveStateChange.mock.calls.at(-1)![0]).toBe(snapshot.activeState);
+        expect(parse).not.toHaveBeenCalledWith(snapshotJson);
+        parse.mockRestore();
+        renderUpdate.mockRestore();
+        handle.destroy();
+    });
+
+    it('maps astral scalars, block and atom extents, and selected active state through the fake snapshot', () => {
+        const handle = createV2LocalHandle({
+            type: 'doc',
+            content: [
+                {
+                    type: 'paragraph',
+                    content: [
+                        {
+                            type: 'text',
+                            text: 'A😀',
+                            marks: [{ type: 'bold' }],
+                        },
+                    ],
+                },
+                {
+                    type: 'paragraph',
+                    content: [{ type: 'text', text: 'I', marks: [{ type: 'italic' }] }],
+                },
+                { type: 'image', attrs: { src: 'https://example.test/image.png' } },
+                {
+                    type: 'paragraph',
+                    content: [{ type: 'text', text: 'Z' }],
+                },
+            ],
+        });
+
+        handle.bridge.setSelection({
+            baseDocumentRevision: '1',
+            selection: { type: 'text', anchor: 5, head: 5 },
+        });
+        const authoritative = handle.bridge.renderUpdate();
+        expect(authoritative.scalarLength).toBe(5);
+        expect(authoritative.selection).toEqual({
+            type: 'text',
+            anchor: 5,
+            head: 5,
+            anchorScalar: 2,
+            headScalar: 2,
+        });
+        expect(authoritative.activeState.marks).toEqual({ italic: true });
+
+        const astral = handle.bridge.renderUpdate({ anchor: 1, head: 1 });
+        expect(astral.selection).toEqual({
+            type: 'text',
+            anchor: 2,
+            head: 2,
+            anchorScalar: 1,
+            headScalar: 1,
+        });
+        expect(astral.activeState.marks).toEqual({ bold: true });
+
+        const atom = handle.bridge.renderUpdate({ anchor: 3, head: 3 });
+        expect(atom.selection).toEqual({
+            type: 'text',
+            anchor: 7,
+            head: 7,
+            anchorScalar: 3,
+            headScalar: 3,
+        });
+        expect(atom.activeState.marks).toEqual({});
+        handle.destroy();
+    });
+
     it('suppresses the view update after the editor update revision is exhausted', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const ref = createRef<NativeRichTextEditorRef>();

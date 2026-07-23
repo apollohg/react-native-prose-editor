@@ -226,6 +226,186 @@ function appendText(doc: DocumentJSON, text: string): DocumentJSON {
     return next;
 }
 
+type FakeDocumentNode = Record<string, unknown>;
+
+interface FakeScalarSpan {
+    scalarStart: number;
+    scalarEnd: number;
+    documentStart: number;
+    documentEnd: number;
+    marks: FakeDocumentNode[];
+    ancestors: FakeDocumentNode[];
+}
+
+interface FakeNodeContext {
+    documentStart: number;
+    documentEnd: number;
+    ancestors: FakeDocumentNode[];
+}
+
+interface FakeScalarDocumentMap {
+    scalarLength: number;
+    clampDocumentOffset(offset: number): number;
+    scalarToDocument(offset: number): number;
+    documentToScalar(offset: number): number;
+    activeStateAt(offset: number): {
+        marks: Record<string, boolean>;
+        markAttrs: Record<string, Record<string, unknown>>;
+        nodes: Record<string, boolean>;
+    };
+}
+
+/** The native snapshot measures text in Unicode scalar values, never UTF-16 code units. */
+function unicodeScalarLength(text: string): number {
+    return Array.from(text).length;
+}
+
+function isFakeAtomicNode(node: FakeDocumentNode): boolean {
+    return (
+        node.atom === true ||
+        node.type === 'hardBreak' ||
+        node.type === 'image' ||
+        node.type === 'horizontalRule'
+    );
+}
+
+/**
+ * Model the ProseMirror-style positions behind the production snapshot. The document
+ * itself starts at position zero; non-leaf nodes consume an opening and closing
+ * document position, while text consumes one position per Unicode scalar and atomic
+ * nodes consume one position/scalar.
+ */
+function fakeScalarDocumentMap(doc: DocumentJSON): FakeScalarDocumentMap {
+    const spans: FakeScalarSpan[] = [];
+    const nodeContexts: FakeNodeContext[] = [];
+    let scalarLength = 0;
+    let documentLength = 0;
+
+    const visit = (node: FakeDocumentNode, ancestors: FakeDocumentNode[], isDocument: boolean) => {
+        const text = typeof node.text === 'string' ? node.text : null;
+        if (text != null) {
+            const length = unicodeScalarLength(text);
+            spans.push({
+                scalarStart: scalarLength,
+                scalarEnd: scalarLength + length,
+                documentStart: documentLength,
+                documentEnd: documentLength + length,
+                marks: Array.isArray(node.marks)
+                    ? node.marks.filter(
+                          (mark): mark is FakeDocumentNode =>
+                              mark != null && typeof mark === 'object' && !Array.isArray(mark)
+                      )
+                    : [],
+                ancestors,
+            });
+            scalarLength += length;
+            documentLength += length;
+            return;
+        }
+
+        if (isFakeAtomicNode(node)) {
+            spans.push({
+                scalarStart: scalarLength,
+                scalarEnd: scalarLength + 1,
+                documentStart: documentLength,
+                documentEnd: documentLength + 1,
+                marks: [],
+                ancestors,
+            });
+            scalarLength += 1;
+            documentLength += 1;
+            return;
+        }
+
+        if (!isDocument) documentLength += 1;
+        const contentStart = documentLength;
+        const content = Array.isArray(node.content) ? node.content : [];
+        for (const child of content) {
+            if (child != null && typeof child === 'object' && !Array.isArray(child)) {
+                visit(child as FakeDocumentNode, [...ancestors, node], false);
+            }
+        }
+        if (!isDocument) {
+            nodeContexts.push({
+                documentStart: contentStart,
+                documentEnd: documentLength,
+                ancestors: [...ancestors, node],
+            });
+        }
+        if (!isDocument) documentLength += 1;
+    };
+
+    visit(doc as FakeDocumentNode, [], true);
+
+    const clampScalar = (offset: number) => Math.min(Math.max(offset, 0), scalarLength);
+    const clampDocumentOffset = (offset: number) =>
+        Math.min(Math.max(offset, 0), documentLength);
+    const scalarToDocument = (offset: number) => {
+        const scalar = clampScalar(offset);
+        const span = spans.find(
+            (candidate) =>
+                scalar >= candidate.scalarStart &&
+                scalar <= candidate.scalarEnd &&
+                (scalar < candidate.scalarEnd || candidate === spans[spans.length - 1])
+        );
+        return span
+            ? span.documentStart + (scalar - span.scalarStart)
+            : clampDocumentOffset(scalar === 0 ? 1 : documentLength);
+    };
+    const documentToScalar = (offset: number) => {
+        const position = clampDocumentOffset(offset);
+        const span = spans.find(
+            (candidate) =>
+                position >= candidate.documentStart &&
+                position <= candidate.documentEnd &&
+                (position < candidate.documentEnd || candidate === spans[spans.length - 1])
+        );
+        if (span) return span.scalarStart + (position - span.documentStart);
+        const previous = [...spans]
+            .reverse()
+            .find((candidate) => candidate.documentEnd <= position);
+        return previous?.scalarEnd ?? 0;
+    };
+    const activeStateAt = (offset: number) => {
+        const position = clampDocumentOffset(offset);
+        const span = spans.find(
+            (candidate) =>
+                position >= candidate.documentStart &&
+                position <= candidate.documentEnd &&
+                (position < candidate.documentEnd || candidate === spans[spans.length - 1])
+        );
+        const marks: Record<string, boolean> = {};
+        const markAttrs: Record<string, Record<string, unknown>> = {};
+        const nodes: Record<string, boolean> = {};
+        for (const mark of span?.marks ?? []) {
+            const type = typeof mark.type === 'string' ? mark.type : '';
+            if (!type) continue;
+            marks[type] = true;
+            if (mark.attrs != null && typeof mark.attrs === 'object' && !Array.isArray(mark.attrs)) {
+                markAttrs[type] = { ...(mark.attrs as Record<string, unknown>) };
+            }
+        }
+        const nodeContext = nodeContexts
+            .filter(
+                (candidate) =>
+                    position >= candidate.documentStart && position <= candidate.documentEnd
+            )
+            .sort((left, right) => right.ancestors.length - left.ancestors.length)[0];
+        for (const node of nodeContext?.ancestors ?? span?.ancestors ?? []) {
+            const type = typeof node.type === 'string' ? node.type : '';
+            if (type === 'heading') {
+                const level = (node.attrs as Record<string, unknown> | undefined)?.level;
+                if (level != null) nodes[`heading:${String(level)}`] = true;
+            } else if (type === 'blockquote' || type === 'bulletList' || type === 'orderedList') {
+                nodes[type] = true;
+            }
+        }
+        return { marks, markAttrs, nodes };
+    };
+
+    return { scalarLength, clampDocumentOffset, scalarToDocument, documentToScalar, activeStateAt };
+}
+
 /** Outbound document frames carry their revision so tests can assert order. */
 function documentFrame(revision: number): Uint8Array {
     return new Uint8Array([0x64, revision & 0xff]);
@@ -875,18 +1055,26 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                                 ...(text.length > 0
                                     ? [{ type: 'textRun', text, marks: [] as string[] }]
                                     : []),
-                                { type: 'blockEnd', nodeType },
+                                { type: 'blockEnd' },
                             ];
                         }
                     );
-                    const scalarLength = fakeHtmlForDoc(session.doc).replace(/<[^>]+>/g, '').length;
+                    const scalarMap = fakeScalarDocumentMap(session.doc);
+                    const selection =
+                        mirrorAnchor != null && mirrorHead != null
+                            ? {
+                                  anchor: scalarMap.scalarToDocument(exactV2U32(mirrorAnchor)!),
+                                  head: scalarMap.scalarToDocument(exactV2U32(mirrorHead)!),
+                              }
+                            : session.selection;
+                    const activeState = scalarMap.activeStateAt(selection.head);
                     const update: Record<string, unknown> = {
                         renderBlocks: blocks,
                         renderPatch: null,
                         activeState: {
-                            marks: { ...session.activeMarks },
-                            markAttrs: { ...session.activeMarkAttrs },
-                            nodes: { ...session.activeNodes },
+                            marks: activeState.marks,
+                            markAttrs: activeState.markAttrs,
+                            nodes: activeState.nodes,
                             commands: {},
                             allowedMarks: ['bold', 'italic', 'underline', 'strike', 'link'],
                             insertableNodes: ['image', 'horizontalRule', 'hardBreak'],
@@ -897,25 +1085,23 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                         },
                         documentVersion: String(session.documentRevision),
                         stateRevision: String(session.stateRevision),
-                        scalarLength,
+                        scalarLength: scalarMap.scalarLength,
                     };
                     if (mirrorAnchor != null && mirrorHead != null) {
-                        const anchor = exactV2U32(mirrorAnchor)!;
-                        const head = exactV2U32(mirrorHead)!;
                         update.selection = {
                             type: 'text',
-                            anchor,
-                            head,
-                            anchorScalar: anchor,
-                            headScalar: head,
+                            anchor: selection.anchor,
+                            head: selection.head,
+                            anchorScalar: scalarMap.documentToScalar(selection.anchor),
+                            headScalar: scalarMap.documentToScalar(selection.head),
                         };
                     } else {
                         update.selection = {
                             type: 'text',
-                            anchor: session.selection.anchor,
-                            head: session.selection.head,
-                            anchorScalar: session.selection.anchor,
-                            headScalar: session.selection.head,
+                            anchor: selection.anchor,
+                            head: selection.head,
+                            anchorScalar: scalarMap.documentToScalar(selection.anchor),
+                            headScalar: scalarMap.documentToScalar(selection.head),
                         };
                     }
                     return okRecord(JSON.stringify(update));
@@ -959,7 +1145,11 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 const anchor = exactV2U32(selection?.anchor);
                 const head = exactV2U32(selection?.head);
                 if (anchor != null && head != null) {
-                    session.selection = { anchor, head };
+                    const scalarMap = fakeScalarDocumentMap(session.doc);
+                    session.selection = {
+                        anchor: scalarMap.clampDocumentOffset(anchor),
+                        head: scalarMap.clampDocumentOffset(head),
+                    };
                     session.stateRevision += 1;
                 }
                 return okRecord(JSON.stringify({ type: 'notApplicable' }));

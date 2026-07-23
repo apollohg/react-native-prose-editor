@@ -1890,7 +1890,11 @@ fn render_update_cannot_mix_fields_with_a_concurrent_mutation() {
     let state_before = state_of(&id);
     let (entered_tx, entered_rx) = sync_channel(0);
     let (resume_tx, resume_rx) = sync_channel(0);
-    v2_render::install_render_snapshot_test_hook(entered_tx, resume_rx);
+    let _hook = v2_render::install_render_snapshot_test_hook(
+        id.parse().expect("editor handle is a canonical u64"),
+        entered_tx,
+        resume_rx,
+    );
 
     let render_id = id.clone();
     let render_thread =

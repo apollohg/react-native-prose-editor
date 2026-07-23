@@ -95,16 +95,26 @@ export interface HistoryState {
     canRedo: boolean;
 }
 
-export interface NativeEditorV2AtomicRenderSnapshot {
-    readonly renderBlocks: RenderElement[][];
-    readonly renderPatch: RenderBlocksPatch | null;
-    readonly selection: Selection;
-    readonly activeState: ActiveState;
-    readonly historyState: HistoryState;
-    readonly documentVersion: string;
-    readonly stateRevision: string;
-    readonly scalarLength: number;
+type DeepReadonly<T> = T extends ReadonlyArray<infer Item>
+    ? ReadonlyArray<DeepReadonly<Item>>
+    : T extends object
+      ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+      : T;
+
+interface NativeEditorV2AtomicRenderSnapshotShape {
+    renderBlocks: RenderElement[][];
+    renderPatch: RenderBlocksPatch | null;
+    selection: Selection;
+    activeState: ActiveState;
+    historyState: HistoryState;
+    documentVersion: string;
+    stateRevision: string;
+    scalarLength: number;
 }
+
+/** A recursively immutable view of the value frozen by renderUpdate(). */
+export type NativeEditorV2AtomicRenderSnapshot =
+    DeepReadonly<NativeEditorV2AtomicRenderSnapshotShape>;
 
 export interface EditorUpdate {
     renderElements: RenderElement[];
@@ -499,8 +509,89 @@ function stringArray(value: unknown): value is string[] {
     return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
-function validRenderMark(value: unknown): boolean {
-    return typeof value === 'string' || (isPlainRecord(value) && typeof value.type === 'string');
+function validJsonValue(value: unknown): boolean {
+    if (value === null) return true;
+    if (typeof value === 'string' || typeof value === 'boolean') return true;
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (Array.isArray(value)) return value.every(validJsonValue);
+    return isPlainRecord(value) && Object.values(value).every(validJsonValue);
+}
+
+function validRenderMark(value: unknown): value is RenderMark {
+    return (
+        typeof value === 'string' ||
+        (isPlainRecord(value) &&
+            typeof value.type === 'string' &&
+            Object.values(value).every(validJsonValue))
+    );
+}
+
+const EDITOR_MENTION_THEME_STRING_FIELDS = [
+    'textColor',
+    'backgroundColor',
+    'borderColor',
+    'popoverBackgroundColor',
+    'popoverBorderColor',
+    'popoverShadowColor',
+    'optionTextColor',
+    'optionSecondaryTextColor',
+    'optionHighlightedBackgroundColor',
+    'optionHighlightedTextColor',
+] as const satisfies readonly (keyof EditorMentionTheme)[];
+
+const EDITOR_MENTION_THEME_NUMBER_FIELDS = [
+    'borderWidth',
+    'borderRadius',
+    'popoverBorderWidth',
+    'popoverBorderRadius',
+] as const satisfies readonly (keyof EditorMentionTheme)[];
+
+const EDITOR_MENTION_THEME_FONT_WEIGHTS: ReadonlySet<
+    NonNullable<EditorMentionTheme['fontWeight']>
+> = new Set([
+    'normal',
+    'bold',
+    '100',
+    '200',
+    '300',
+    '400',
+    '500',
+    '600',
+    '700',
+    '800',
+    '900',
+]);
+
+const EDITOR_MENTION_THEME_FIELDS = [
+    ...EDITOR_MENTION_THEME_STRING_FIELDS,
+    ...EDITOR_MENTION_THEME_NUMBER_FIELDS,
+    'fontWeight',
+] as const satisfies readonly (keyof EditorMentionTheme)[];
+
+function validEditorMentionTheme(value: unknown): value is EditorMentionTheme {
+    if (!isPlainRecord(value) || !hasOnlyOwnKeys(value, EDITOR_MENTION_THEME_FIELDS)) {
+        return false;
+    }
+    if (
+        !EDITOR_MENTION_THEME_STRING_FIELDS.every(
+            (field) => value[field] === undefined || typeof value[field] === 'string'
+        ) ||
+        !EDITOR_MENTION_THEME_NUMBER_FIELDS.every(
+            (field) =>
+                value[field] === undefined ||
+                (typeof value[field] === 'number' && Number.isFinite(value[field]))
+        )
+    ) {
+        return false;
+    }
+    const fontWeight = value.fontWeight;
+    return (
+        fontWeight === undefined ||
+        (typeof fontWeight === 'string' &&
+            EDITOR_MENTION_THEME_FONT_WEIGHTS.has(
+                fontWeight as NonNullable<EditorMentionTheme['fontWeight']>
+            ))
+    );
 }
 
 function validListContext(value: unknown): value is ListContext {
@@ -568,7 +659,7 @@ function validRenderElement(value: unknown): value is RenderElement {
                 typeof value.nodeType === 'string' &&
                 typeof value.label === 'string' &&
                 nativeEditorV2U32(value.docPos) != null &&
-                (value.mentionTheme === undefined || isPlainRecord(value.mentionTheme))
+                (value.mentionTheme === undefined || validEditorMentionTheme(value.mentionTheme))
             );
         case 'opaqueBlockAtom':
             return (

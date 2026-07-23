@@ -27,6 +27,7 @@ import {
     type DocumentJSON,
     type HistoryState,
     type NativeEditorDocumentHandle,
+    type NativeEditorV2AtomicRenderSnapshot,
     type Selection,
 } from './NativeEditorBridge';
 import { NativeEditorV2OperationError } from './NativeEditorBoundaryError';
@@ -692,6 +693,21 @@ export const NativeRichTextEditor = forwardRef<
     const latestRevisionRef = useRef<string | null>(null);
     latestRevisionRef.current = document.documentRevision;
 
+    const applyTypedUpdateState = useCallback(
+        (update: Pick<NativeEditorV2AtomicRenderSnapshot, 'selection' | 'activeState'>) => {
+            selectionRef.current = update.selection;
+            const nextActiveState = update.activeState;
+            activeStateRef.current = nextActiveState;
+            setActiveState(nextActiveState);
+            const key = stringifyCachedJson(nextActiveState);
+            if (key !== activeStateKeyRef.current) {
+                activeStateKeyRef.current = key;
+                onActiveStateChangeRef.current?.(nextActiveState);
+            }
+        },
+        []
+    );
+
     const applyUpdateState = useCallback((updateJson: string | null | undefined) => {
         if (typeof updateJson !== 'string' || updateJson.length === 0) return null;
         let parsed: Record<string, unknown>;
@@ -703,11 +719,12 @@ export const NativeRichTextEditor = forwardRef<
             return null;
         }
         const nextSelection = parseSelectionFromUpdate(parsed.selection);
-        if (nextSelection) {
-            selectionRef.current = nextSelection;
-        }
         const nextActiveState = parseActiveStateFromUpdate(parsed.activeState);
-        if (nextActiveState) {
+        if (nextSelection && nextActiveState) {
+            applyTypedUpdateState({ selection: nextSelection, activeState: nextActiveState });
+        } else if (nextSelection) {
+            selectionRef.current = nextSelection;
+        } else if (nextActiveState) {
             activeStateRef.current = nextActiveState;
             setActiveState(nextActiveState);
             const key = stringifyCachedJson(nextActiveState);
@@ -717,7 +734,7 @@ export const NativeRichTextEditor = forwardRef<
             }
         }
         return parsed;
-    }, []);
+    }, [applyTypedUpdateState]);
 
     // ── View update pushes (JS-driven engine changes only) ──────
     const [pushedUpdate, setPushedUpdate] = useState<{ json: string; revision: number } | null>(
@@ -735,15 +752,13 @@ export const NativeRichTextEditor = forwardRef<
             bridge._emitAutonomousError(allocation.error);
             return;
         }
-        const updateJson = JSON.stringify(bridge.renderUpdate());
-        const parsed = applyUpdateState(updateJson);
-        const documentVersion = parsed?.documentVersion;
-        if (typeof documentVersion === 'string') {
-            lastPushedEngineRevisionRef.current = documentVersion;
-        }
+        const snapshot = bridge.renderUpdate();
+        applyTypedUpdateState(snapshot);
+        lastPushedEngineRevisionRef.current = snapshot.documentVersion;
+        const updateJson = JSON.stringify(snapshot);
         pushRevisionRef.current = allocation.revision;
         setPushedUpdate({ json: updateJson, revision: allocation.revision });
-    }, [applyUpdateState, bridge, documentHandle]);
+    }, [applyTypedUpdateState, bridge, documentHandle]);
 
     // After a JS-driven engine change (controlled apply, remote commit,
     // document-API mutation) the view learns the new state here. Native-

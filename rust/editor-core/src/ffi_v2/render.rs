@@ -66,6 +66,7 @@ static SESSION_SCHEMAS: LazyLock<Mutex<HashMap<u64, Schema>>> =
 
 #[cfg(test)]
 struct RenderSnapshotTestHook {
+    editor_id: u64,
     entered: std::sync::mpsc::SyncSender<()>,
     resume: std::sync::mpsc::Receiver<()>,
 }
@@ -75,22 +76,61 @@ static RENDER_SNAPSHOT_TEST_HOOK: LazyLock<Mutex<Option<RenderSnapshotTestHook>>
     LazyLock::new(|| Mutex::new(None));
 
 #[cfg(test)]
-pub(crate) fn install_render_snapshot_test_hook(
-    entered: std::sync::mpsc::SyncSender<()>,
-    resume: std::sync::mpsc::Receiver<()>,
-) {
-    *RENDER_SNAPSHOT_TEST_HOOK
-        .lock()
-        .expect("render snapshot test hook poisoned") =
-        Some(RenderSnapshotTestHook { entered, resume });
+pub(crate) struct RenderSnapshotTestHookGuard {
+    editor_id: u64,
 }
 
 #[cfg(test)]
-fn pause_render_snapshot_for_test() {
-    let hook = RENDER_SNAPSHOT_TEST_HOOK
+impl Drop for RenderSnapshotTestHookGuard {
+    fn drop(&mut self) {
+        let mut hook = RENDER_SNAPSHOT_TEST_HOOK
+            .lock()
+            .expect("render snapshot test hook poisoned");
+        if hook
+            .as_ref()
+            .is_some_and(|hook| hook.editor_id == self.editor_id)
+        {
+            hook.take();
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_render_snapshot_test_hook(
+    editor_id: u64,
+    entered: std::sync::mpsc::SyncSender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+) -> RenderSnapshotTestHookGuard {
+    *RENDER_SNAPSHOT_TEST_HOOK
         .lock()
-        .expect("render snapshot test hook poisoned")
-        .take();
+        .expect("render snapshot test hook poisoned") =
+        Some(RenderSnapshotTestHook {
+            editor_id,
+            entered,
+            resume,
+        });
+    RenderSnapshotTestHookGuard { editor_id }
+}
+
+#[cfg(test)]
+fn pause_render_snapshot_for_test(editor_id: &str) {
+    let editor_id = match parse_canonical_u64(editor_id) {
+        Some(editor_id) => editor_id,
+        None => return,
+    };
+    let hook = {
+        let mut hook = RENDER_SNAPSHOT_TEST_HOOK
+            .lock()
+            .expect("render snapshot test hook poisoned");
+        if hook
+            .as_ref()
+            .is_some_and(|hook| hook.editor_id == editor_id)
+        {
+            hook.take()
+        } else {
+            None
+        }
+    };
     if let Some(hook) = hook {
         hook.entered
             .send(())
@@ -102,7 +142,7 @@ fn pause_render_snapshot_for_test() {
 }
 
 #[cfg(not(test))]
-fn pause_render_snapshot_for_test() {}
+fn pause_render_snapshot_for_test(_: &str) {}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -265,7 +305,7 @@ pub fn editor_v2_render_update(
 
         let render_blocks = crate::render::incremental::try_render_blocks(document, &schema)
             .map_err(render_preparation_error)?;
-        pause_render_snapshot_for_test();
+        pause_render_snapshot_for_test(&editor_id);
 
         let (selection, selection_value, stored_marks) = match mirror {
             Some((anchor, head)) => {
