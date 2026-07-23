@@ -2016,6 +2016,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var pendingEditorUpdateRetryScheduled = false
     private var pendingEditorUpdateRetryEditorId: UInt64?
     private var pendingEditorUpdateRetryGeneration: UInt64 = 0
+    /// Internal-only fallback for boundary rejections that cannot reach an
+    /// adapter callback because the paired adapter is absent. Task 15 owns
+    /// application-visible event wiring; these deterministic records do not
+    /// dispatch an Expo event.
+    private var editorUpdateInternalRejections: [String] = []
     private var pendingViewCommandUpdateJSON: String?
     private var pendingViewCommandUpdateEditorId: UInt64?
     private var pendingViewCommandUpdateRetryScheduled = false
@@ -2672,28 +2677,36 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     func applyPendingEditorUpdateIfNeeded() {
         guard pendingEditorUpdateRevision != 0 else { return }
         guard pendingEditorUpdateRevision != appliedEditorUpdateRevision else { return }
-        guard let updateJSON = pendingEditorUpdateJSON else { return }
         let pendingRevision = pendingEditorUpdateRevision
+        guard let updateJSON = pendingEditorUpdateJSON else {
+            reportRejectedEditorUpdateEnvelope(
+                "external editor update JSON is missing",
+                fallbackClassification: "missingUpdateJSON"
+            )
+            consumePendingEditorUpdate(revision: pendingRevision)
+            return
+        }
         switch applyEditorUpdateOutcome(updateJSON, sourceEditorId: pendingEditorUpdateEditorId) {
         case .applied:
-            appliedEditorUpdateRevision = pendingRevision
-            pendingEditorUpdateJSON = nil
-            pendingEditorUpdateEditorId = nil
-            pendingEditorUpdateRevision = 0
+            consumePendingEditorUpdate(revision: pendingRevision)
         case .retryableDeferred:
             schedulePendingEditorUpdateRetry()
         case .rejected:
             // Mark this prop revision consumed before discarding its envelope:
             // OnViewDidUpdateProps can run again with the same values, but a
             // permanent rejection must not report or retry a second time.
-            appliedEditorUpdateRevision = pendingRevision
-            pendingEditorUpdateJSON = nil
-            pendingEditorUpdateEditorId = nil
-            pendingEditorUpdateRevision = 0
-            pendingEditorUpdateRetryScheduled = false
-            pendingEditorUpdateRetryEditorId = nil
-            pendingEditorUpdateRetryGeneration &+= 1
+            consumePendingEditorUpdate(revision: pendingRevision)
         }
+    }
+
+    private func consumePendingEditorUpdate(revision: Int) {
+        appliedEditorUpdateRevision = revision
+        pendingEditorUpdateJSON = nil
+        pendingEditorUpdateEditorId = nil
+        pendingEditorUpdateRevision = 0
+        pendingEditorUpdateRetryScheduled = false
+        pendingEditorUpdateRetryEditorId = nil
+        pendingEditorUpdateRetryGeneration &+= 1
     }
 
     private func schedulePendingEditorUpdateRetry() {
@@ -2720,9 +2733,17 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     // MARK: - View Commands
 
-    private func reportRejectedEditorUpdateEnvelope(_ message: String) {
-        EditorV2Registry.adapter(forLegacyId: richTextView.editorId)?
-            .rejectExternalRenderEnvelope(message)
+    private func reportRejectedEditorUpdateEnvelope(
+        _ message: String,
+        fallbackClassification: String
+    ) {
+        if let adapter = EditorV2Registry.adapter(forLegacyId: richTextView.editorId) {
+            adapter.rejectExternalRenderEnvelope(message)
+        } else {
+            editorUpdateInternalRejections.append(
+                "boundary/FFI_RESULT_INVALID/\(fallbackClassification)"
+            )
+        }
     }
 
     private func applyEditorUpdateOutcome(
@@ -2730,21 +2751,44 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         sourceEditorId: String?
     ) -> EditorUpdateApplyOutcome {
         let boundEditorId = richTextView.editorId
-        guard boundEditorId != 0,
-              let sourceEditorId,
-              sourceEditorId == String(boundEditorId)
-        else {
+        guard boundEditorId != 0 else {
             reportRejectedEditorUpdateEnvelope(
-                "external editor update source does not match the bound canonical editor id"
+                "external editor update has no bound adapter",
+                fallbackClassification: "missingAdapter"
             )
+            return .rejected
+        }
+        guard let sourceEditorId else {
+            reportRejectedEditorUpdateEnvelope(
+                "external editor update source id is missing or malformed",
+                fallbackClassification: "malformedSourceEditorId"
+            )
+            return .rejected
+        }
+        guard sourceEditorId == String(boundEditorId) else {
+            reportRejectedEditorUpdateEnvelope(
+                "external editor update source does not match the bound canonical editor id",
+                fallbackClassification: "sourceEditorMismatch"
+            )
+            return .rejected
+        }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: boundEditorId) else {
+            reportRejectedEditorUpdateEnvelope(
+                "external editor update adapter is missing",
+                fallbackClassification: "missingAdapter"
+            )
+            return .rejected
+        }
+        guard !adapter.isDestroyed else {
+            adapter.rejectExternalRenderEnvelope("external editor update adapter is destroyed")
             return .rejected
         }
         guard richTextView.textView.prepareForExternalEditorUpdate() else {
             return .retryableDeferred
         }
-        guard let adapter = EditorV2Registry.adapter(forLegacyId: boundEditorId),
-              let adoptedUpdateJSON = adapter.adoptExternalRender(updateJson)
-        else {
+        guard let adoptedUpdateJSON = adapter.adoptExternalRender(updateJson) else {
+            // The adapter owns strict-parser and destroyed-race reporting.
+            // Do not add a second view-side record for the same rejection.
             return .rejected
         }
         isApplyingJSUpdate = true

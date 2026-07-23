@@ -3215,8 +3215,13 @@ final class RichTextEditorViewTests: XCTestCase {
 
         XCTAssertEqual(view.richTextView.textView.textStorage.string, "Second")
         XCTAssertEqual(errors.count, 1)
+        XCTAssertEqual(errors.first?.domain, "boundary")
+        XCTAssertEqual(errors.first?.code, "FFI_RESULT_INVALID")
         view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
         XCTAssertEqual(errors.count, 1, "a permanent source mismatch must not schedule another attempt")
+        assertNoPendingEditorUpdate(in: view)
+        XCTAssertEqual(internalEditorUpdateRejections(in: view), [])
     }
 
     func testPendingEditorUpdateAcceptsCanonicalSourceAndRejectsMalformedSourceOnce() {
@@ -3263,7 +3268,38 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(view.richTextView.textView.textStorage.string, "Canonical")
         XCTAssertEqual(errors.count, 1)
         view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
         XCTAssertEqual(errors.count, 1)
+        assertNoPendingEditorUpdate(in: view)
+        XCTAssertEqual(internalEditorUpdateRejections(in: view), [])
+    }
+
+    func testMissingPendingEditorUpdateJSONReportsThroughAdapterOnceAndIsConsumed() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected adapter")
+            return
+        }
+        var errors: [FfiError] = []
+        adapter.onAutonomousError = { errors.append($0) }
+
+        let view = NativeEditorExpoView()
+        view.setEditorId(editorId)
+        view.setPendingEditorUpdateJson(nil)
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(1)
+
+        view.applyPendingEditorUpdateIfNeeded()
+        view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
+        flushMainQueue()
+
+        XCTAssertEqual(errors.count, 1)
+        XCTAssertEqual(errors.first?.domain, "boundary")
+        XCTAssertEqual(errors.first?.code, "FFI_RESULT_INVALID")
+        XCTAssertEqual(internalEditorUpdateRejections(in: view), [])
+        assertNoPendingEditorUpdate(in: view)
     }
 
     func testPermanentInvalidPendingEditorUpdateReportsOnceWithoutRetry() {
@@ -3275,6 +3311,7 @@ final class RichTextEditorViewTests: XCTestCase {
         }
         var errors: [FfiError] = []
         adapter.onAutonomousError = { errors.append($0) }
+        let debugNotesBefore = adapter.debugNotes
 
         let view = NativeEditorExpoView()
         view.setEditorId(editorId)
@@ -3288,7 +3325,89 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(errors.count, 1)
         XCTAssertEqual(errors.first?.code, "FFI_RESULT_INVALID")
         view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
         XCTAssertEqual(errors.count, 1)
+        XCTAssertEqual(adapter.debugNotes, debugNotesBefore)
+        XCTAssertEqual(internalEditorUpdateRejections(in: view), [])
+        assertNoPendingEditorUpdate(in: view)
+    }
+
+    func testMissingPendingEditorUpdateAdapterRecordsOneInternalBoundaryRejectionAndConsumes() {
+        let editorId = makeV2Editor()
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected adapter")
+            destroyV2Editor(id: editorId)
+            return
+        }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Initial</p>")
+
+        let view = NativeEditorExpoView()
+        view.setEditorId(editorId)
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Remote</p>")
+        guard let update = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value else {
+            XCTFail("expected atomic render snapshot")
+            destroyV2Editor(id: editorId)
+            return
+        }
+        let removedAdapter = EditorV2Registry.removePairing(forLegacyId: editorId)
+        defer { removedAdapter?.destroy() }
+
+        view.setPendingEditorUpdateJson(update)
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+        view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
+        flushMainQueue()
+
+        XCTAssertEqual(
+            internalEditorUpdateRejections(in: view),
+            ["boundary/FFI_RESULT_INVALID/missingAdapter"]
+        )
+        assertNoPendingEditorUpdate(in: view)
+    }
+
+    func testDestroyedPendingEditorUpdateAdapterReportsOnceAndConsumes() {
+        let editorId = makeV2Editor()
+        defer { EditorV2Registry.removePairing(forLegacyId: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected adapter")
+            return
+        }
+        var errors: [FfiError] = []
+        adapter.onAutonomousError = { errors.append($0) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Initial</p>")
+
+        let view = NativeEditorExpoView()
+        view.setEditorId(editorId)
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Remote</p>")
+        guard let update = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value else {
+            XCTFail("expected atomic render snapshot")
+            return
+        }
+        XCTAssertNil(adapter.destroy())
+
+        view.setPendingEditorUpdateJson(update)
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+        view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
+        flushMainQueue()
+
+        XCTAssertEqual(errors.count, 1)
+        XCTAssertEqual(errors.first?.domain, "boundary")
+        XCTAssertEqual(errors.first?.code, "FFI_RESULT_INVALID")
+        XCTAssertEqual(internalEditorUpdateRejections(in: view), [])
+        assertNoPendingEditorUpdate(in: view)
     }
 
     func testPendingEditorUpdateRetriesCompositionDeferralThenApplies() {
@@ -3328,6 +3447,14 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
 
         XCTAssertEqual(view.richTextView.textView.textStorage.string, "Remote")
+        XCTAssertEqual(internalEditorUpdateRejections(in: view), [])
+        assertNoPendingEditorUpdate(in: view)
+    }
+
+    func testTask15EditorErrorEventRemainsAbsentFromTheView() {
+        let eventNames = Set(Mirror(reflecting: NativeEditorExpoView()).children.compactMap(\.label))
+
+        XCTAssertFalse(eventNames.contains("onEditorError"))
     }
 
     func testRebindClearsPendingEditorUpdateSourceAndPayload() {
@@ -7638,6 +7765,28 @@ final class RichTextEditorViewTests: XCTestCase {
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 1.0)
+    }
+
+    private func internalEditorUpdateRejections(in view: NativeEditorExpoView) -> [String] {
+        Mirror(reflecting: view).children.first {
+            $0.label == "editorUpdateInternalRejections"
+        }?.value as? [String] ?? []
+    }
+
+    private func assertNoPendingEditorUpdate(
+        in view: NativeEditorExpoView,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let state = Dictionary(uniqueKeysWithValues: Mirror(reflecting: view).children.compactMap {
+            child -> (String, Any)? in
+            guard let label = child.label else { return nil }
+            return (label, child.value)
+        })
+        XCTAssertNil(state["pendingEditorUpdateJSON"] as? String, file: file, line: line)
+        XCTAssertNil(state["pendingEditorUpdateEditorId"] as? String, file: file, line: line)
+        XCTAssertEqual(state["pendingEditorUpdateRevision"] as? Int, 0, file: file, line: line)
+        XCTAssertEqual(state["pendingEditorUpdateRetryScheduled"] as? Bool, false, file: file, line: line)
     }
 
     private func currentSelection(in editorId: UInt64) -> [String: Any] {

@@ -76,6 +76,10 @@ final class EditorV2Adapter {
     private(set) var debugNotes: [String] = []
     private var destroyed = false
 
+    var isDestroyed: Bool {
+        destroyed
+    }
+
     private init(editorId: String, roomBound: Bool, baseDocumentRevision: UInt64) {
         self.editorId = editorId
         self.roomBound = roomBound
@@ -676,7 +680,10 @@ final class EditorV2Adapter {
     /// native view accepts further input. The caller applies the returned
     /// payload synchronously in the same editor-scoped operation.
     func adoptExternalRender(_ renderJSON: String) -> String? {
-        guard !destroyed else { return nil }
+        guard !destroyed else {
+            rejectExternalRenderEnvelope("external editor update adapter is destroyed")
+            return nil
+        }
         guard let snapshot = Self.parseAtomicRenderSnapshot(renderJSON),
               let adopted = adopt(snapshot, strippingViewSelection: false)
         else {
