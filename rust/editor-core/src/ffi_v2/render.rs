@@ -51,8 +51,8 @@ use crate::position::PositionMap;
 use crate::schema::{presets::tiptap_schema, Schema};
 use crate::selection::Selection;
 use crate::session::SessionError;
-use crate::yrs_engine::YrsEngineError;
 use crate::yrs_engine::ResolvedSelection;
+use crate::yrs_engine::YrsEngineError;
 
 use super::editor::{json_result, with_editor};
 use super::types::{decimal_u64, parse_canonical_u64, FfiJsonResult};
@@ -81,10 +81,8 @@ pub(crate) fn install_render_snapshot_test_hook(
 ) {
     *RENDER_SNAPSHOT_TEST_HOOK
         .lock()
-        .expect("render snapshot test hook poisoned") = Some(RenderSnapshotTestHook {
-        entered,
-        resume,
-    });
+        .expect("render snapshot test hook poisoned") =
+        Some(RenderSnapshotTestHook { entered, resume });
 }
 
 #[cfg(test)]
@@ -207,9 +205,7 @@ fn selection_json(document: &Document, position_map: &PositionMap, selection: &S
 
 fn resolved_selection_to_legacy(selection: &ResolvedSelection) -> Selection {
     match selection {
-        ResolvedSelection::Text { anchor, head } => {
-            Selection::text(anchor.document, head.document)
-        }
+        ResolvedSelection::Text { anchor, head } => Selection::text(anchor.document, head.document),
         ResolvedSelection::Node { at } => Selection::node(at.document),
         ResolvedSelection::All => Selection::all(),
     }

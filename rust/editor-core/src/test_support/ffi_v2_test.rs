@@ -1887,14 +1887,14 @@ fn render_update_cannot_mix_fields_with_a_concurrent_mutation() {
 
     let id = create_handle(local_json_config(FIXTURE_MULTI_BLOCK));
     let base_revision = revision_of(&id);
+    let state_before = state_of(&id);
     let (entered_tx, entered_rx) = sync_channel(0);
     let (resume_tx, resume_rx) = sync_channel(0);
     v2_render::install_render_snapshot_test_hook(entered_tx, resume_rx);
 
     let render_id = id.clone();
-    let render_thread = std::thread::spawn(move || {
-        v2_render::editor_v2_render_update(render_id, None, None)
-    });
+    let render_thread =
+        std::thread::spawn(move || v2_render::editor_v2_render_update(render_id, None, None));
     entered_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("render snapshot reached the forced pause");
@@ -1902,10 +1902,7 @@ fn render_update_cannot_mix_fields_with_a_concurrent_mutation() {
     let mutation_id = id.clone();
     let (mutation_tx, mutation_rx) = sync_channel(1);
     let mutation_thread = std::thread::spawn(move || {
-        let result = v2::editor_v2_apply_input(
-            mutation_id,
-            input_envelope(71, base_revision, "Z"),
-        );
+        let result = v2::editor_v2_apply_input(mutation_id, input_envelope(71, base_revision, "Z"));
         mutation_tx.send(result).unwrap();
     });
     assert!(matches!(
@@ -1921,9 +1918,15 @@ fn render_update_cannot_mix_fields_with_a_concurrent_mutation() {
     ok_json(&mutation);
     mutation_thread.join().expect("mutation thread succeeds");
 
-    assert_eq!(snapshot["documentVersion"], json!("0"));
-    assert_eq!(snapshot["stateRevision"], json!("0"));
-    assert_eq!(snapshot["historyState"], json!({ "canUndo": false, "canRedo": false }));
+    assert_eq!(
+        snapshot["documentVersion"],
+        state_before["documentRevision"]
+    );
+    assert_eq!(snapshot["stateRevision"], state_before["stateRevision"]);
+    assert_eq!(
+        snapshot["historyState"],
+        json!({ "canUndo": false, "canRedo": false })
+    );
     assert_eq!(snapshot["selection"]["type"], json!("text"));
     assert_eq!(snapshot["selection"]["anchor"], json!(1));
     assert_eq!(snapshot["selection"]["head"], json!(1));
@@ -1932,7 +1935,7 @@ fn render_update_cannot_mix_fields_with_a_concurrent_mutation() {
         !snapshot["renderBlocks"].to_string().contains('Z'),
         "render content must come from the same pre-mutation state"
     );
-    assert_eq!(revision_of(&id), 1);
+    assert_eq!(revision_of(&id), base_revision + 1);
     destroy_handle(&id);
 }
 
@@ -1964,9 +1967,13 @@ fn render_update_active_state_uses_authoritative_or_explicit_mirror_selection() 
         id.clone(),
         selection_envelope(61, revision, 8, 8),
     ));
+    let expected_selection = ok_json(&v2_render::editor_v2_resolve_scalar_selection(
+        id.clone(),
+        8,
+        8,
+    ));
     let update = ok_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
-    assert_eq!(update["selection"]["anchor"], json!(8));
-    assert_eq!(update["selection"]["head"], json!(8));
+    assert_eq!(update["selection"], expected_selection);
     assert_eq!(update["activeState"]["marks"]["bold"], json!(true));
 
     destroy_handle(&id);
