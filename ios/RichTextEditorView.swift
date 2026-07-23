@@ -3831,12 +3831,31 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         )
     }
 
+    struct ExternalEditorUpdatePreparation {
+        let ready: Bool
+        let committedRustState: Bool
+    }
+
     @discardableResult
     func prepareForExternalEditorUpdate() -> Bool {
-        guard prepareActiveCompositionForExternalMutation() else { return false }
-        return drainPendingNativeTextMutation(
+        prepareForExternalEditorUpdateResult().ready
+    }
+
+    func prepareForExternalEditorUpdateResult() -> ExternalEditorUpdatePreparation {
+        let committedMutationGeneration = EditorV2Registry.adapter(forLegacyId: editorId)?
+            .committedMutationGeneration
+        guard prepareActiveCompositionForExternalMutation() else {
+            return ExternalEditorUpdatePreparation(ready: false, committedRustState: false)
+        }
+        let ready = drainPendingNativeTextMutation(
             allowAfterBlur: true,
             allowWhileIntercepting: true
+        )
+        let committedRustState = EditorV2Registry.adapter(forLegacyId: editorId)?
+            .committedMutationGeneration != committedMutationGeneration
+        return ExternalEditorUpdatePreparation(
+            ready: ready,
+            committedRustState: ready && committedRustState
         )
     }
 

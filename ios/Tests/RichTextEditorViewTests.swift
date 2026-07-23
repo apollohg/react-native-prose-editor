@@ -3142,6 +3142,54 @@ final class RichTextEditorViewTests: XCTestCase {
         )
     }
 
+    func testExternalRenderCapturedBeforeMarkedTextPreflightRefreshesBeforeNextKeystroke() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected the v2 adapter paired to the native editor")
+            return
+        }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>base</p>")
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+        setCollapsedSelection(in: view.richTextView.textView, utf16Offset: 4)
+        XCTAssertTrue(view.richTextView.textView.becomeFirstResponder())
+
+        let revisionN = adapter.baseDocumentRevision
+        let snapshot = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        )
+        guard let externalRenderAtN = snapshot.value, snapshot.error == nil else {
+            XCTFail("external render failed: \(String(describing: snapshot.error))")
+            return
+        }
+
+        view.richTextView.textView.setMarkedText("IME", selectedRange: NSRange(location: 3, length: 0))
+
+        XCTAssertTrue(view.applyEditorUpdate(externalRenderAtN))
+        XCTAssertEqual(adapter.baseDocumentRevision, revisionN + 1)
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>baseIME</p>")
+
+        view.richTextView.textView.insertText("!")
+
+        XCTAssertEqual(adapter.baseDocumentRevision, revisionN + 2)
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>baseIME!</p>")
+        XCTAssertFalse(
+            adapter.debugNotes.contains(where: { $0.contains("mismatch-refresh") }),
+            "the stale external render must not overwrite the post-preflight adapter revision"
+        )
+        XCTAssertEqual(view.richTextView.textView.reconciliationCount, 0)
+    }
+
     func testBindingAdoptsExactlyOneAtomicSnapshotForViewAndToolbar() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

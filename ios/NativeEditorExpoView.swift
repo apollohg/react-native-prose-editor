@@ -2783,10 +2783,24 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             adapter.rejectExternalRenderEnvelope("external editor update adapter is destroyed")
             return .rejected
         }
-        guard richTextView.textView.prepareForExternalEditorUpdate() else {
+        let preflight = richTextView.textView.prepareForExternalEditorUpdateResult()
+        guard preflight.ready else {
             return .retryableDeferred
         }
-        guard let adoptedUpdateJSON = adapter.adoptExternalRender(updateJson) else {
+        let adoptedUpdateJSON: String?
+        if preflight.committedRustState {
+            // The incoming render was captured before preflight committed a
+            // native mutation. Validate its envelope once, but never adopt
+            // its stale revision; refresh and adopt exactly one current,
+            // editor-scoped atomic snapshot instead.
+            guard adapter.validateExternalRender(updateJson) else {
+                return .rejected
+            }
+            adoptedUpdateJSON = adapter.refreshFromRustState(mirrorSelection: nil)
+        } else {
+            adoptedUpdateJSON = adapter.adoptExternalRender(updateJson)
+        }
+        guard let adoptedUpdateJSON else {
             // The adapter owns strict-parser and destroyed-race reporting.
             // Do not add a second view-side record for the same rejection.
             return .rejected
