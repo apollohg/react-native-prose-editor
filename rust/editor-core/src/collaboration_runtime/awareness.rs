@@ -86,21 +86,23 @@ impl AwarenessRuntimeState {
 
     /// The requested next tick: the earlier of the local renewal deadline
     /// (while synchronized with a desired state) and the earliest remote
-    /// expiry deadline. `None` means no clock work is pending.
+    /// expiry deadline. Candidates beyond the representable clock range are
+    /// unschedulable and omitted. `None` means no clock work is pending.
     fn next_deadline_millis(&self, transport_state: TransportState) -> Option<u64> {
-        let renewal = (transport_state == TransportState::Synchronized
-            && self.desired_state.is_some())
-        .then(|| {
-            self.last_local_publish_millis
-                .map_or(self.now_millis, |published| {
-                    published.saturating_add(AWARENESS_RENEWAL_INTERVAL_MILLIS)
-                })
-        });
+        let renewal =
+            if transport_state == TransportState::Synchronized && self.desired_state.is_some() {
+                self.last_local_publish_millis.map_or_else(
+                    || Some(self.now_millis),
+                    |published| published.checked_add(AWARENESS_RENEWAL_INTERVAL_MILLIS),
+                )
+            } else {
+                None
+            };
         let expiry = self
             .peer_activity
             .values()
-            .min()
-            .map(|seen| seen.saturating_add(AWARENESS_EXPIRY_MILLIS));
+            .filter_map(|seen| seen.checked_add(AWARENESS_EXPIRY_MILLIS))
+            .min();
         match (renewal, expiry) {
             (Some(renewal), Some(expiry)) => Some(renewal.min(expiry)),
             (deadline @ Some(_), None) | (None, deadline @ Some(_)) => deadline,
@@ -599,6 +601,79 @@ mod tests {
             state.next_deadline_millis(TransportState::Synchronized),
             Some(9_000),
         );
+    }
+
+    #[test]
+    fn task8_fourth_remediation_local_max_timestamp_has_no_deadline() {
+        let mut state = AwarenessRuntimeState::new();
+        state.now_millis = u64::MAX;
+        state.desired_state = Some(json!({"name": "local"}));
+        state.last_local_publish_millis = Some(u64::MAX);
+
+        assert_eq!(
+            state.next_deadline_millis(TransportState::Synchronized),
+            None,
+        );
+    }
+
+    #[test]
+    fn task8_fourth_remediation_remote_max_timestamp_has_no_deadline() {
+        let mut state = AwarenessRuntimeState::new();
+        state.now_millis = u64::MAX;
+        state.peer_activity.insert(7, u64::MAX);
+
+        assert_eq!(
+            state.next_deadline_millis(TransportState::Disconnected),
+            None,
+        );
+    }
+
+    #[test]
+    fn task8_fourth_remediation_mixed_deadlines_keep_the_representable_candidate() {
+        let mut state = AwarenessRuntimeState::new();
+        state.desired_state = Some(json!({"name": "local"}));
+        state.last_local_publish_millis = Some(u64::MAX);
+        state.peer_activity.insert(7, 1_000);
+        assert_eq!(
+            state.next_deadline_millis(TransportState::Synchronized),
+            Some(1_000 + AWARENESS_EXPIRY_MILLIS),
+        );
+
+        state.last_local_publish_millis = Some(2_000);
+        state.peer_activity.clear();
+        state.peer_activity.insert(7, u64::MAX);
+        assert_eq!(
+            state.next_deadline_millis(TransportState::Synchronized),
+            Some(2_000 + AWARENESS_RENEWAL_INTERVAL_MILLIS),
+        );
+    }
+
+    #[test]
+    fn task8_fourth_remediation_tick_at_equal_max_does_no_false_clock_work() {
+        let mut runtime = runtime();
+        let mut engine = engine();
+        let limits = CollaborationLimits::default();
+        runtime.awareness.now_millis = u64::MAX;
+        runtime.awareness.desired_state = Some(json!({"name": "local"}));
+        runtime.awareness.last_local_publish_millis = Some(u64::MAX);
+        runtime.awareness.peer_activity.insert(7, u64::MAX);
+
+        let outcome = runtime
+            .tick(
+                REQUEST_ID,
+                u64::MAX,
+                context(&mut engine, TransportState::Synchronized, &limits),
+            )
+            .unwrap();
+
+        assert!(!outcome.renewed_local, "{outcome:?}");
+        assert!(!outcome.outbound_changed, "{outcome:?}");
+        assert!(outcome.expired_peers.is_empty(), "{outcome:?}");
+        assert!(!outcome.peers_changed, "{outcome:?}");
+        assert_eq!(outcome.next_deadline_millis, None, "{outcome:?}");
+        assert_eq!(runtime.awareness.last_local_publish_millis, Some(u64::MAX));
+        assert_eq!(runtime.awareness.peer_activity.get(&7), Some(&u64::MAX));
+        assert_eq!(runtime.outbox().pending_protocol_reply_count(), 0);
     }
 
     #[test]
