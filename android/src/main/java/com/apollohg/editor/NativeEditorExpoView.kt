@@ -707,6 +707,11 @@ class NativeEditorExpoView(
         val updateJSON: String
     )
 
+    private data class PreflightUpdateEvent(
+        val updateJSON: String,
+        val documentRevision: String
+    )
+
     val richTextView: RichTextEditorView = RichTextEditorView(context)
     private val keyboardToolbarView = EditorKeyboardToolbarView(context)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -1811,15 +1816,19 @@ class NativeEditorExpoView(
         }
     }
 
+    private fun preflightUpdateEventFromJSON(updateJSON: String?): PreflightUpdateEvent? {
+        val update = updateJSON ?: return null
+        val documentRevision = documentVersionFromUpdateJSON(update) ?: return null
+        return PreflightUpdateEvent(updateJSON = update, documentRevision = documentRevision)
+    }
+
     private fun addPreflightUpdateToEvent(
         event: MutableMap<String, Any>,
-        updateJSON: String?
+        preflightUpdate: PreflightUpdateEvent?
     ) {
-        if (updateJSON == null) return
-        event["updateJson"] = updateJSON
-        documentVersionFromUpdateJSON(updateJSON)?.let { version ->
-            event["documentRevision"] = version
-        }
+        preflightUpdate ?: return
+        event["updateJson"] = preflightUpdate.updateJSON
+        event["documentRevision"] = preflightUpdate.documentRevision
     }
 
     private fun emitAddonEvent(payload: Map<String, Any>) {
@@ -3329,7 +3338,7 @@ class NativeEditorExpoView(
             clearPendingNativeActionRetry()
             return
         }
-        var preflightUpdateJSON: String? = null
+        var preflightUpdate: PreflightUpdateEvent? = null
         val needsEditorPreflight = when (item.type) {
             ToolbarItemKind.mark,
             ToolbarItemKind.heading,
@@ -3355,8 +3364,8 @@ class NativeEditorExpoView(
                 }
                 return
             }
-            preflightUpdateJSON = preparation.updateJSON
-            noteDocumentVersionFromUpdateJSON(preflightUpdateJSON)
+            preflightUpdate = preflightUpdateEventFromJSON(preparation.updateJSON)
+            preflightUpdate?.let { lastDocumentVersion = it.documentRevision }
             clearPendingNativeActionRetry()
         }
         if (handleDestroyedCurrentEditorIfNeeded()) return
@@ -3379,7 +3388,7 @@ class NativeEditorExpoView(
                     "key" to it,
                     "editorId" to eventEditorId(richTextView.editorId)
                 )
-                addPreflightUpdateToEvent(payload, preflightUpdateJSON)
+                addPreflightUpdateToEvent(payload, preflightUpdate)
                 onToolbarActionForTesting?.invoke(payload) ?: onToolbarAction(payload)
             }
             ToolbarItemKind.group -> Unit

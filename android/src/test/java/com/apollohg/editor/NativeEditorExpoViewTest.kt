@@ -637,7 +637,7 @@ class NativeEditorExpoViewTest {
         val adapter = attachAdapterForViewTest(backend)
         val viewToken = EditorV2Registry.register(adapter)
         val editText = view.richTextView.editorEditText
-        var toolbarActionPayload: Map<String, Any>? = null
+        val toolbarActionPayloads = mutableListOf<Map<String, Any>>()
 
         try {
             view.onAddonEventForTesting = {}
@@ -651,7 +651,7 @@ class NativeEditorExpoViewTest {
             assertNotNull(inputConnection)
             assertTrue(inputConnection!!.setComposingText("native", 1))
             view.onToolbarActionForTesting = { payload ->
-                toolbarActionPayload = payload
+                toolbarActionPayloads += payload
             }
 
             view.handleToolbarItemPressForTesting(
@@ -662,8 +662,8 @@ class NativeEditorExpoViewTest {
                 )
             )
 
-            assertNotNull(toolbarActionPayload)
-            val payload = toolbarActionPayload!!
+            assertEquals(1, toolbarActionPayloads.size)
+            val payload = toolbarActionPayloads.single()
             val updateJson = payload["updateJson"] as String
             val snapshotRevision = JSONObject(updateJson).getString("documentVersion")
             assertEquals(snapshotRevision, payload["documentRevision"])
@@ -676,13 +676,37 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
+    fun `toolbar action omits both preflight fields for malformed document version payload`() {
+        assertInvalidToolbarPreflightOmitsAtomicFields("{malformed")
+    }
+
+    @Test
+    fun `toolbar action omits both preflight fields for missing document version`() {
+        assertInvalidToolbarPreflightOmitsAtomicFields(
+            JSONObject(atomicRenderUpdateJson("native", "1")).apply {
+                remove("documentVersion")
+            }
+                .toString()
+        )
+    }
+
+    @Test
+    fun `toolbar action omits both preflight fields for noncanonical document version`() {
+        assertInvalidToolbarPreflightOmitsAtomicFields(
+            JSONObject(atomicRenderUpdateJson("native", "1"))
+                .put("documentVersion", "01")
+                .toString()
+        )
+    }
+
+    @Test
     fun `action-only toolbar event omits cached document revision`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
         val backend = FakeEditorV2Backend()
         val adapter = attachAdapterForViewTest(backend)
         val viewToken = EditorV2Registry.register(adapter)
-        var toolbarActionPayload: Map<String, Any>? = null
+        val toolbarActionPayloads = mutableListOf<Map<String, Any>>()
 
         try {
             view.onAddonEventForTesting = {}
@@ -693,7 +717,7 @@ class NativeEditorExpoViewTest {
             view.setEditorId(viewToken)
             view.setLastDocumentVersionForTesting("42")
             view.onToolbarActionForTesting = { payload ->
-                toolbarActionPayload = payload
+                toolbarActionPayloads += payload
             }
 
             view.handleToolbarItemPressForTesting(
@@ -704,8 +728,8 @@ class NativeEditorExpoViewTest {
                 )
             )
 
-            assertNotNull(toolbarActionPayload)
-            val payload = toolbarActionPayload!!
+            assertEquals(1, toolbarActionPayloads.size)
+            val payload = toolbarActionPayloads.single()
             assertFalse(payload.containsKey("updateJson"))
             assertFalse(payload.containsKey("documentRevision"))
             assertEquals("custom", payload["key"])
@@ -3116,6 +3140,52 @@ class NativeEditorExpoViewTest {
             JSONObject(created.value).getString("editorId"),
             roomBound = false
         )!!
+    }
+
+    private fun assertInvalidToolbarPreflightOmitsAtomicFields(preflightUpdateJson: String) {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val editText = view.richTextView.editorEditText
+        val toolbarActionPayloads = mutableListOf<Map<String, Any>>()
+
+        try {
+            view.onAddonEventForTesting = {}
+            view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+            view.onEditorReadyForTesting = {}
+            view.onSelectionChangeForTesting = {}
+            view.setAttachedToNativeWindowForTesting(true)
+            view.setEditorId(viewToken)
+            editText.v2Driver = object : EditorV2Driver by adapter {
+                override fun insertText(text: String, atScalarPos: Int): String = preflightUpdateJson
+            }
+            editText.setSelection(0)
+            val inputConnection = editText.onCreateInputConnection(EditorInfo())
+            assertNotNull(inputConnection)
+            assertTrue(inputConnection!!.setComposingText("native", 1))
+            view.onToolbarActionForTesting = { payload ->
+                toolbarActionPayloads += payload
+            }
+
+            view.handleToolbarItemPressForTesting(
+                NativeToolbarItem(
+                    type = ToolbarItemKind.action,
+                    key = "custom",
+                    label = "Custom"
+                )
+            )
+
+            assertEquals(1, toolbarActionPayloads.size)
+            val toolbarActionPayload = toolbarActionPayloads.single()
+            assertFalse(toolbarActionPayload.containsKey("updateJson"))
+            assertFalse(toolbarActionPayload.containsKey("documentRevision"))
+            assertFalse(view.hasPendingNativeActionForTesting())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
     }
 
     private data class TestExpoContext(
