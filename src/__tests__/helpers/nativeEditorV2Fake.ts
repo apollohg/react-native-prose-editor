@@ -782,6 +782,17 @@ function moveFakeCursorAcrossEdit(
             head: moveFakeStickyPoint(session.localAwarenessCursor.head, before, after),
         };
     }
+    session.remotePeers = session.remotePeers.map((peer) =>
+        peer.cursor == null
+            ? peer
+            : {
+                  ...peer,
+                  cursor: {
+                      anchor: moveFakeStickyPoint(peer.cursor.anchor, before, after),
+                      head: moveFakeStickyPoint(peer.cursor.head, before, after),
+                  },
+              }
+    );
 }
 
 function installFakeDocument(session: FakeSession, nextDoc: DocumentJSON): void {

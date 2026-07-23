@@ -50,6 +50,33 @@ export type YjsRetryInterval = number | ((context: YjsRetryContext) => number | 
 
 const DEFAULT_RETRY_BASE_INTERVAL_MS = 500;
 const DEFAULT_RETRY_MAX_INTERVAL_MS = 30_000;
+const MAX_HOST_TIMER_DELAY_MILLIS = 2_147_483_647;
+const MAX_HOST_TIMER_DELAY_MILLIS_BIGINT = BigInt(MAX_HOST_TIMER_DELAY_MILLIS);
+
+/** Monotonic time supplied to Rust's awareness tick as canonical decimal text. */
+export interface MonotonicClock {
+    nowMillis(): bigint;
+}
+
+/** Host timer surface kept separate from the monotonic clock for deterministic tests. */
+export interface TimerHarness {
+    setTimeout(callback: () => void, delayMillis: number): unknown;
+    clearTimeout(timer: unknown): void;
+}
+
+const productionMonotonicClock: MonotonicClock = {
+    nowMillis: () =>
+        BigInt(
+            Math.floor(
+                (globalThis as unknown as { performance: { now(): number } }).performance.now()
+            )
+        ),
+};
+
+const productionTimerHarness: TimerHarness = {
+    setTimeout: (callback, delayMillis) => setTimeout(callback, delayMillis),
+    clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+};
 
 export interface LocalAwarenessUser {
     userId: string;
@@ -88,6 +115,10 @@ export interface YjsCollaborationOptions {
     connect?: boolean;
     /** Backoff timer scheduling only — Rust owns retry eligibility. */
     retryIntervalMs?: YjsRetryInterval | false;
+    /** Test seam; production uses floored performance.now(). */
+    monotonicClock?: MonotonicClock;
+    /** Test seam for the one controller-owned awareness timer. */
+    awarenessTimer?: TimerHarness;
     localAwareness?: LocalAwarenessUser;
     onPeersChange?: (peers: NativeEditorV2PeerInfo[]) => void;
     onStateChange?: (state: YjsCollaborationState) => void;
@@ -278,11 +309,15 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     private readonly createWebSocket: () => WebSocket;
     private readonly retryIntervalMs?: YjsRetryInterval | false;
     private readonly documentId: string;
+    private readonly monotonicClock: MonotonicClock;
+    private readonly awarenessTimerHarness: TimerHarness;
     private socket: WebSocket | null = null;
     private generation: string | null = null;
     private destroyed = false;
     private retryAttempt = 0;
     private retryTimer: ReturnType<typeof setTimeout> | null = null;
+    private awarenessTimer: unknown | null = null;
+    private awarenessTimerEpoch = 0;
     private isManuallyDisconnected = false;
     private desiredAwareness: NativeEditorLocalAwarenessIntent | null = null;
     private _state: YjsCollaborationState;
@@ -295,6 +330,8 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.createWebSocket = options.createWebSocket;
         this.retryIntervalMs = options.retryIntervalMs;
         this.documentId = options.documentId;
+        this.monotonicClock = options.monotonicClock ?? productionMonotonicClock;
+        this.awarenessTimerHarness = options.awarenessTimer ?? productionTimerHarness;
         if (options.localAwareness != null) {
             this.publishAwarenessCandidate({
                 state: { user: { ...options.localAwareness } },
@@ -357,6 +394,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             } else {
                 this.renderEngineState({ lastError: error });
             }
+            this.refreshPeers();
             this.scheduleRetry(error);
             return;
         }
@@ -418,6 +456,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             }
             this.drainOutbound(socket, generation);
             this.refreshPeers();
+            this.tickAwareness();
         };
 
         socket.onerror = () => {
@@ -451,6 +490,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.isManuallyDisconnected = true;
         this.retryAttempt = 0;
         this.cancelRetry();
+        this.cancelAwarenessTick();
         const socket = this.socket;
         const generation = this.generation;
         this.socket = null;
@@ -481,6 +521,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         try {
             this.handle.bridge.collaborationDetach();
             this.handle.bridge.collaborationReattach();
+            this.refreshPeers();
         } catch (error) {
             const lifecycleError = asError(error, 'Yjs collaboration reconnect lifecycle failure');
             this.callbacks.onError?.(lifecycleError);
@@ -494,6 +535,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         if (this.destroyed) return;
         this.destroyed = true;
         this.cancelRetry();
+        this.cancelAwarenessTick();
         const socket = this.socket;
         const generation = this.generation;
         this.socket = null;
@@ -514,6 +556,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
                 // Ignore close failures during teardown.
             }
         }
+        this.refreshPeers();
         this.setState({ status: 'destroyed', isConnected: false });
     }
 
@@ -547,6 +590,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         const socket = this.socket;
         const generation = this.generation;
         this.refreshDocument();
+        this.refreshPeers();
         if (!socket || !generation) return;
         this.drainOutbound(socket, generation);
     }
@@ -561,6 +605,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         if (this.socket === socket) {
             this.socket = null;
             this.generation = null;
+            this.cancelAwarenessTick();
         }
     }
 
@@ -640,6 +685,76 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         }
     }
 
+    private hasLiveAwarenessGeneration(): boolean {
+        return (
+            this.socket != null &&
+            this.generation != null &&
+            this.socket.readyState === WebSocket.OPEN
+        );
+    }
+
+    /**
+     * Rust remains the authority for awareness timing. One host callback asks
+     * it for work at the current monotonic instant, applies that result once,
+     * and then schedules solely from the returned deadline.
+     */
+    private tickAwareness(): void {
+        if (this.destroyed || !this.hasLiveAwarenessGeneration()) {
+            this.cancelAwarenessTick();
+            return;
+        }
+        const socket = this.socket;
+        const generation = this.generation;
+        if (socket == null || generation == null) return;
+
+        let result;
+        try {
+            result = this.handle.bridge.collaborationTick(this.monotonicClock.nowMillis().toString());
+        } catch (error) {
+            this.handleTransportCallFailure(error, socket, generation);
+            return;
+        }
+
+        if (result.outboundChanged) {
+            this.drainOutbound(socket, generation);
+        }
+        if (result.peersChanged) {
+            this.refreshPeers();
+        }
+        this.scheduleAwarenessTick(result.nextDeadlineMillis);
+    }
+
+    private scheduleAwarenessTick(nextDeadlineMillis: string | null): void {
+        this.cancelAwarenessTick();
+        if (this.destroyed || nextDeadlineMillis == null || !this.hasLiveAwarenessGeneration()) return;
+
+        let deadlineMillis: bigint;
+        try {
+            deadlineMillis = BigInt(nextDeadlineMillis);
+        } catch {
+            return;
+        }
+        const nowMillis = this.monotonicClock.nowMillis();
+        const delayMillis = deadlineMillis > nowMillis ? deadlineMillis - nowMillis : 0n;
+        const hostDelayMillis =
+            delayMillis > MAX_HOST_TIMER_DELAY_MILLIS_BIGINT
+                ? MAX_HOST_TIMER_DELAY_MILLIS
+                : Number(delayMillis);
+        const timerEpoch = this.awarenessTimerEpoch;
+        this.awarenessTimer = this.awarenessTimerHarness.setTimeout(() => {
+            if (this.destroyed || this.awarenessTimerEpoch !== timerEpoch) return;
+            this.awarenessTimer = null;
+            this.tickAwareness();
+        }, hostDelayMillis);
+    }
+
+    private cancelAwarenessTick(): void {
+        this.awarenessTimerEpoch += 1;
+        if (this.awarenessTimer == null) return;
+        this.awarenessTimerHarness.clearTimeout(this.awarenessTimer);
+        this.awarenessTimer = null;
+    }
+
     private publishAwarenessCandidate(candidate: NativeEditorLocalAwarenessIntent): void {
         try {
             this.handle.bridge.collaborationSetAwareness(candidate);
@@ -654,6 +769,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             this.drainOutbound(socket, generation);
         }
         this.refreshPeers();
+        this.tickAwareness();
     }
 
     private readEngineState(): YjsCollaborationState {

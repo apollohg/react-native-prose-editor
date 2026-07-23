@@ -1,4 +1,4 @@
-// ─── YjsCollaboration (Task 14 thin controller) Tests ──────────
+// ─── YjsCollaboration (Task 10 awareness scheduling) Tests ─────
 // The legacy collaboration controller owned session creation, retry
 // decisions, awareness clocks, valueJSON reset sync, and raw encoded-state
 // APIs. All of that is removed. The Task 14 controller is a thin shell over
@@ -134,6 +134,77 @@ function remotePeer(overrides: Partial<NativeEditorV2PeerInfo> = {}): NativeEdit
     };
 }
 
+const MAX_HOST_TIMER_DELAY_MILLIS = 2_147_483_647;
+
+/**
+ * A manual monotonic clock and timer host. Advancing time fires every timer
+ * already due at the final monotonic instant, deliberately exercising late
+ * callbacks without borrowing Jest's wall clock.
+ */
+class FakeMonotonicClockTimer {
+    private _nowMillis: bigint;
+    private nextTimerId = 1;
+    private readonly timers = new Map<
+        number,
+        { callback: () => void; deadlineMillis: bigint }
+    >();
+    readonly scheduledDelays: number[] = [];
+    clearCalls = 0;
+
+    constructor(nowMillis = 0n) {
+        this._nowMillis = nowMillis;
+    }
+
+    nowMillis = (): bigint => this._nowMillis;
+
+    setTimeout = (callback: () => void, delayMillis: number): number => {
+        if (!Number.isSafeInteger(delayMillis) || delayMillis < 0) {
+            throw new Error(`invalid fake timer delay ${delayMillis}`);
+        }
+        const timerId = this.nextTimerId++;
+        this.scheduledDelays.push(delayMillis);
+        this.timers.set(timerId, {
+            callback,
+            deadlineMillis: this._nowMillis + BigInt(delayMillis),
+        });
+        return timerId;
+    };
+
+    clearTimeout = (timerId: number): void => {
+        this.clearCalls += 1;
+        this.timers.delete(timerId);
+    };
+
+    get activeTimerCount(): number {
+        return this.timers.size;
+    }
+
+    advanceBy(millis: bigint): void {
+        if (millis < 0n) throw new Error('fake monotonic time cannot move backwards');
+        this._nowMillis += millis;
+        for (;;) {
+            const ready = [...this.timers.entries()]
+                .filter(([, timer]) => timer.deadlineMillis <= this._nowMillis)
+                .sort(([, left], [, right]) =>
+                    left.deadlineMillis < right.deadlineMillis
+                        ? -1
+                        : left.deadlineMillis > right.deadlineMillis
+                          ? 1
+                          : 0
+                )[0];
+            if (ready == null) return;
+            const [timerId, timer] = ready;
+            this.timers.delete(timerId);
+            timer.callback();
+        }
+    }
+}
+
+type TestControllerOptions = Partial<YjsCollaborationOptions> & {
+    monotonicClock?: FakeMonotonicClockTimer;
+    awarenessTimer?: FakeMonotonicClockTimer;
+};
+
 function rejectedAwarenessResult(message: string): Record<string, unknown> {
     return {
         value: null,
@@ -229,27 +300,29 @@ interface ControllerSetup {
 }
 
 function setupController(
-    overrides: Partial<YjsCollaborationOptions> & { handle?: NativeEditorDocumentHandle } = {}
+    overrides: TestControllerOptions & { handle?: NativeEditorDocumentHandle } = {}
 ): ControllerSetup {
     const sockets: MockWebSocket[] = [];
     const states: YjsCollaborationState[] = [];
     const errors: Error[] = [];
     const peersLog: NativeEditorV2PeerInfo[][] = [];
     const handle = overrides.handle ?? createRoomHandle();
-    const controller = createYjsCollaborationController({
-        documentId: 'doc-1',
-        handle,
-        connect: false,
-        createWebSocket: () => {
-            const socket = new MockWebSocket();
-            sockets.push(socket);
-            return socket as unknown as WebSocket;
-        },
-        onStateChange: (state) => states.push({ ...state }),
-        onError: (error) => errors.push(error),
-        onPeersChange: (peers) => peersLog.push(peers),
-        ...overrides,
-    });
+    const controller = createYjsCollaborationController(
+        {
+            documentId: 'doc-1',
+            handle,
+            connect: false,
+            createWebSocket: () => {
+                const socket = new MockWebSocket();
+                sockets.push(socket);
+                return socket as unknown as WebSocket;
+            },
+            onStateChange: (state) => states.push({ ...state }),
+            onError: (error) => errors.push(error),
+            onPeersChange: (peers) => peersLog.push(peers),
+            ...overrides,
+        } as YjsCollaborationOptions
+    );
     return { controller, handle, sockets, states, errors, peersLog };
 }
 
@@ -921,6 +994,130 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         });
     });
 
+    it('renews local awareness at exactly 15 seconds, drains the current generation, and retains one timer', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        setup.controller.connect();
+        openAndSynchronize(setup);
+
+        expect(runtime.module.editorV2CollaborationTick).toHaveBeenLastCalledWith(
+            setup.handle.editorId,
+            '0'
+        );
+        expect(clock.activeTimerCount).toBe(1);
+        expect(clock.scheduledDelays).toEqual([15_000]);
+
+        clock.advanceBy(14_999n);
+        expect(runtime.module.editorV2CollaborationTick).toHaveBeenCalledTimes(1);
+        expect(sentFrames(setup.sockets[0]).at(-1)).toEqual([0x61, 2]);
+
+        clock.advanceBy(1n);
+        expect(runtime.module.editorV2CollaborationTick).toHaveBeenLastCalledWith(
+            setup.handle.editorId,
+            '15000'
+        );
+        expect(sentFrames(setup.sockets[0]).at(-1)).toEqual([0x61, 3]);
+        expect(clock.activeTimerCount).toBe(1);
+        expect(clock.scheduledDelays).toEqual([15_000, 15_000]);
+    });
+
+    it('expires remote peers at exactly 30 seconds and cancels when Rust returns no deadline', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        setup.controller.connect();
+        openAndSynchronize(setup);
+        expect(clock.activeTimerCount).toBe(0);
+
+        runtime.pushRemotePeers(setup.handle.editorId, [remotePeer({ clientId: '7' })]);
+        setup.sockets[0].receive(V2_FAKE_AWARENESS_FRAME);
+        expect(setup.controller.peers).toEqual([remotePeer({ clientId: '7' })]);
+        expect(clock.activeTimerCount).toBe(1);
+        expect(clock.scheduledDelays).toEqual([30_000]);
+
+        clock.advanceBy(29_999n);
+        expect(setup.controller.peers).toHaveLength(1);
+
+        clock.advanceBy(1n);
+        expect(runtime.module.editorV2CollaborationTick).toHaveBeenLastCalledWith(
+            setup.handle.editorId,
+            '30000'
+        );
+        expect(setup.controller.peers).toEqual([]);
+        expect(clock.activeTimerCount).toBe(0);
+    });
+
+    it('cancels the previous awareness timer before replacing it and during teardown', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        setup.controller.connect();
+        openAndSynchronize(setup);
+        expect(clock.activeTimerCount).toBe(1);
+
+        const clearsBeforeUpdate = clock.clearCalls;
+        setup.controller.handleFocusChange(true);
+        expect(clock.clearCalls).toBe(clearsBeforeUpdate + 1);
+        expect(clock.activeTimerCount).toBe(1);
+
+        const tickCallsBeforeDestroy = runtime.module.editorV2CollaborationTick.mock.calls.length;
+        const clearsBeforeDestroy = clock.clearCalls;
+        setup.controller.destroy();
+        expect(clock.clearCalls).toBe(clearsBeforeDestroy + 1);
+        expect(clock.activeTimerCount).toBe(0);
+
+        clock.advanceBy(60_000n);
+        expect(runtime.module.editorV2CollaborationTick).toHaveBeenCalledTimes(
+            tickCallsBeforeDestroy
+        );
+    });
+
+    it('uses bigint deadlines, clamps only the host delay, and ticks once at a late callback time', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        const tick = jest
+            .spyOn(setup.handle.bridge, 'collaborationTick')
+            .mockImplementation((nowMillis) => ({
+                nextDeadlineMillis:
+                    tick.mock.calls.length === 1
+                        ? '9007199254740993'
+                        : (BigInt(nowMillis) + 5n).toString(),
+                renewedLocal: false,
+                expiredPeers: [],
+                outboundChanged: false,
+                peersChanged: false,
+            }));
+
+        setup.controller.connect();
+        openAndSynchronize(setup);
+        expect(clock.scheduledDelays).toEqual([MAX_HOST_TIMER_DELAY_MILLIS]);
+        expect(clock.activeTimerCount).toBe(1);
+
+        clock.advanceBy(BigInt(MAX_HOST_TIMER_DELAY_MILLIS) + 9n);
+        expect(tick).toHaveBeenCalledTimes(2);
+        expect(tick).toHaveBeenLastCalledWith(
+            (BigInt(MAX_HOST_TIMER_DELAY_MILLIS) + 9n).toString()
+        );
+        expect(clock.scheduledDelays).toEqual([MAX_HOST_TIMER_DELAY_MILLIS, 5]);
+        expect(clock.activeTimerCount).toBe(1);
+    });
+
     it('makes detach and reattach idempotent without reopening an incompatible transport early', () => {
         const handle = createRoomHandle({ withSnapshot: true });
         const generation = handle.bridge.collaborationBeginConnect();
@@ -1154,7 +1351,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             expect(
                 runtime.module.editorV2CollaborationSetAwareness(
                     handle.editorId,
-                    JSON.stringify({ state: 'must reject' })
+                    JSON.stringify(localAwarenessIntent({ state: 'must reject' }))
                 )
             ).toEqual({ value: null, error: AWARENESS_CLOCK_EXHAUSTED_ERROR });
             expect(fakeAwarenessAudit(handle.editorId)).toEqual(before);
@@ -1655,6 +1852,134 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
     });
 
     // ── Awareness / peers ───────────────────────────────────────
+
+    it('refreshes sticky local peers after every local commit offline and drains document frames only while live', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        setup.controller.handleSelectionChange({ type: 'text', anchor: 9, head: 9 });
+        setup.handle.bridge.applyInput({ baseDocumentRevision: '7', text: '++' });
+
+        const peerReadsBeforeOfflineCommit =
+            runtime.module.editorV2CollaborationPeers.mock.calls.length;
+        const outboundDrainsBeforeOfflineCommit =
+            runtime.module.editorV2CollaborationTakeOutbound.mock.calls.length;
+        setup.controller.handleLocalCommit();
+        expect(runtime.module.editorV2CollaborationPeers).toHaveBeenCalledTimes(
+            peerReadsBeforeOfflineCommit + 1
+        );
+        expect(runtime.module.editorV2CollaborationTakeOutbound).toHaveBeenCalledTimes(
+            outboundDrainsBeforeOfflineCommit
+        );
+        expect(setup.controller.state.documentRevision).toBe('8');
+
+        setup.controller.connect();
+        openAndSynchronize(setup);
+        expect(setup.controller.peers[0]).toEqual(
+            expect.objectContaining({ isLocal: true, cursor: { anchor: 11, head: 11 } })
+        );
+
+        setup.handle.bridge.applyInput({ baseDocumentRevision: '8', text: '!' });
+        const outboundDrainsBeforeLiveCommit =
+            runtime.module.editorV2CollaborationTakeOutbound.mock.calls.length;
+        setup.controller.handleLocalCommit();
+        expect(setup.controller.peers[0]).toEqual(
+            expect.objectContaining({ isLocal: true, cursor: { anchor: 12, head: 12 } })
+        );
+        expect(runtime.module.editorV2CollaborationTakeOutbound.mock.calls.length).toBeGreaterThan(
+            outboundDrainsBeforeLiveCommit
+        );
+        expect(runtime.session(setup.handle.editorId).documentRevision).toBe(9);
+    });
+
+    it('refreshes resolved remote peer cursors after a remote document commit without writing the document', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        setup.controller.connect();
+        openAndSynchronize(setup);
+
+        runtime.pushRemotePeers(setup.handle.editorId, [
+            remotePeer({ clientId: '2', cursor: { anchor: 9, head: 9 } }),
+        ]);
+        setup.sockets[0].receive(V2_FAKE_AWARENESS_FRAME);
+        expect(setup.controller.peers[0]).toEqual(
+            expect.objectContaining({ clientId: '2', cursor: { anchor: 9, head: 9 } })
+        );
+
+        const localInputWritesBeforeRemoteCommit =
+            runtime.module.editorV2ApplyInput.mock.calls.length;
+        runtime.pushRemoteDoc(setup.handle.editorId, fakeDocForText('XXsnapshot'));
+        setup.sockets[0].receive(V2_FAKE_UPDATE_FRAME);
+        expect(setup.controller.peers[0]).toEqual(
+            expect.objectContaining({ clientId: '2', cursor: { anchor: 11, head: 11 } })
+        );
+        expect(runtime.module.editorV2ApplyInput).toHaveBeenCalledTimes(
+            localInputWritesBeforeRemoteCommit
+        );
+        expect(runtime.session(setup.handle.editorId).documentRevision).toBe(8);
+    });
+
+    it('refreshes peers after a snapshot-restore commit and reattach without extra document writes', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        setup.controller.handleSelectionChange({ type: 'text', anchor: 9, head: 9 });
+        setup.controller.connect();
+        openAndSynchronize(setup);
+        setup.controller.disconnect();
+
+        setup.handle.bridge.snapshotRestore(
+            {
+                formatVersion: 1,
+                documentId: 'doc-1',
+                lineageId: 'lineage-1',
+                fragmentName: 'prosemirror',
+                schemaFingerprint: 'fakefingerprint',
+            },
+            snapshotState(fakeDocForText('go'), 20)
+        );
+        const peerReadsBeforeSnapshotCommit =
+            runtime.module.editorV2CollaborationPeers.mock.calls.length;
+        const localInputWritesBeforeSnapshotCommit =
+            runtime.module.editorV2ApplyInput.mock.calls.length;
+        setup.controller.handleLocalCommit();
+        expect(runtime.module.editorV2CollaborationPeers).toHaveBeenCalledTimes(
+            peerReadsBeforeSnapshotCommit + 1
+        );
+        expect(runtime.module.editorV2ApplyInput).toHaveBeenCalledTimes(
+            localInputWritesBeforeSnapshotCommit
+        );
+        expect(runtime.session(setup.handle.editorId).documentRevision).toBe(20);
+
+        setup.controller.reconnect();
+        const reattachOrder = runtime.module.editorV2CollaborationReattach.mock.invocationCallOrder.at(-1);
+        const beginConnectOrder =
+            runtime.module.editorV2CollaborationBeginConnect.mock.invocationCallOrder.at(-1);
+        expect(reattachOrder).toBeDefined();
+        expect(beginConnectOrder).toBeDefined();
+        expect(
+            runtime.module.editorV2CollaborationPeers.mock.invocationCallOrder.some(
+                (order) => order > (reattachOrder as number) && order < (beginConnectOrder as number)
+            )
+        ).toBe(true);
+
+        openAndSynchronize(setup, 1);
+        expect(setup.controller.peers[0]).toEqual(
+            expect.objectContaining({ isLocal: true, cursor: { anchor: 3, head: 3 } })
+        );
+    });
 
     it('publishes desired awareness through Rust with no TypeScript clock bookkeeping, and renders peers', () => {
         const setup = setupController({
