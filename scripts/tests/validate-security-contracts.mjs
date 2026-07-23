@@ -54,6 +54,17 @@ function evaluateInteger(expression) {
     return Function(`"use strict"; return (${expression.replaceAll('_', '')});`)();
 }
 
+function evaluateRustInteger(source, expression) {
+    if (/^[A-Z][A-Z0-9_]*$/.test(expression)) {
+        const match = source.match(
+            new RegExp(`(?:pub\\(crate\\))?const${expression}:usize=([\\d_*+]+);`)
+        );
+        assert.ok(match, `Rust integer constant missing for ${expression}`);
+        expression = match[1];
+    }
+    return evaluateInteger(expression);
+}
+
 function objectAssignments(source, anchor, mapping = {}) {
     const start = source.indexOf(anchor);
     assert.notEqual(start, -1, `missing contract anchor: ${anchor}`);
@@ -99,6 +110,7 @@ assert.deepEqual(tsImageDefaults, imageDefaults);
 assert.deepEqual(tsImageCeilings, imageCeilings);
 
 const rust = read('rust/editor-core/src/boundary.rs');
+const compactRust = rust.replaceAll(/\s/g, '');
 const rustNames = Object.fromEntries(
     Object.keys(resourceDefaults).map((name) => [
         name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
@@ -111,11 +123,11 @@ assert.deepEqual(
 );
 for (const [name, ceiling] of Object.entries(resourceCeilings)) {
     const snake = name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
-    const match = rust
-        .replaceAll(/\s/g, '')
-        .match(new RegExp(`\\("${name}",(?:self|limits)\\.${snake},([\\d_*+]+),?\\)`));
+    const match = compactRust.match(
+        new RegExp(`\\("${name}",(?:self|limits)\\.${snake},([A-Z][A-Z0-9_]*|[\\d_*+]+),?\\)`)
+    );
     assert.ok(match, `Rust ceiling missing for ${name}`);
-    assert.equal(evaluateInteger(match[1]), ceiling, `Rust ceiling drift for ${name}`);
+    assert.equal(evaluateRustInteger(compactRust, match[1]), ceiling, `Rust ceiling drift for ${name}`);
 }
 
 const android = read('android/src/main/java/com/apollohg/editor/RenderBridge.kt');
