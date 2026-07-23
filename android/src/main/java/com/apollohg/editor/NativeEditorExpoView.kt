@@ -43,6 +43,17 @@ internal enum class NativeEditorOutsideTapDecision {
     OUTSIDE_EDITOR
 }
 
+private enum class PendingEditorUpdateApplyOutcome {
+    APPLIED,
+    RETRYABLE_DEFERRED,
+    PERMANENTLY_REJECTED
+}
+
+private enum class PendingEditorUpdateKind {
+    ORDINARY,
+    RESET
+}
+
 private class WeakNativeEditorExpoView private constructor(
     val view: WeakReference<NativeEditorExpoView?>
 ) {
@@ -773,6 +784,7 @@ class NativeEditorExpoView(
     private var lastEditorResetUpdateEditorIdProp: Long? = null
     private var pendingEditorUpdateRetryScheduled = false
     private var pendingEditorUpdateRetryEditorId: Long? = null
+    private var pendingEditorUpdateRetryKind: PendingEditorUpdateKind? = null
     private var pendingEditorUpdateRetryGeneration = 0
     private var pendingEditorUpdateRetryAttempts = 0
     private var pendingEditorUpdateForcedRecoveryAttempted = false
@@ -1278,13 +1290,20 @@ class NativeEditorExpoView(
                 refreshReadyStateIfSettled()
                 return@Runnable
             }
-            if (applyEditorResetUpdate(updateJson)) {
-                appliedEditorResetUpdateRevision = revision
-                clearPendingEditorResetUpdateState(resetAppliedRevision = false)
-                emitEditorReady(editorUpdateRevision = revision)
-                refreshReadyStateIfSettled()
-            } else {
-                schedulePendingEditorUpdateRetry()
+            when (applyEditorResetUpdateOutcome(updateJson)) {
+                PendingEditorUpdateApplyOutcome.APPLIED -> {
+                    appliedEditorResetUpdateRevision = revision
+                    clearPendingEditorResetUpdateState(resetAppliedRevision = false)
+                    emitEditorReady(editorUpdateRevision = revision)
+                    refreshReadyStateIfSettled()
+                }
+                PendingEditorUpdateApplyOutcome.RETRYABLE_DEFERRED -> {
+                    schedulePendingEditorUpdateRetry(PendingEditorUpdateKind.RESET)
+                }
+                PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED -> {
+                    clearPendingEditorResetUpdateState(resetAppliedRevision = false)
+                    refreshReadyStateIfSettled()
+                }
             }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -1326,18 +1345,25 @@ class NativeEditorExpoView(
                 refreshReadyStateIfSettled()
                 return@Runnable
             }
-            if (applyEditorUpdate(updateJson, scheduleViewCommandRetry = false)) {
-                appliedEditorUpdateRevision = revision
-                pendingEditorUpdateJson = null
-                pendingEditorUpdateEditorId = null
-                pendingEditorUpdateRevision = 0L
-                pendingEditorUpdateRetryAttempts = 0
-                pendingEditorUpdateForcedRecoveryAttempted = false
-                cancelPendingEditorUpdateRetry()
-                emitEditorReady(editorUpdateRevision = revision)
-                refreshReadyStateIfSettled()
-            } else {
-                schedulePendingEditorUpdateRetry()
+            when (applyEditorUpdateOutcome(updateJson, scheduleViewCommandRetry = false)) {
+                PendingEditorUpdateApplyOutcome.APPLIED -> {
+                    appliedEditorUpdateRevision = revision
+                    pendingEditorUpdateJson = null
+                    pendingEditorUpdateEditorId = null
+                    pendingEditorUpdateRevision = 0L
+                    pendingEditorUpdateRetryAttempts = 0
+                    pendingEditorUpdateForcedRecoveryAttempted = false
+                    cancelPendingEditorUpdateRetry(PendingEditorUpdateKind.ORDINARY)
+                    emitEditorReady(editorUpdateRevision = revision)
+                    refreshReadyStateIfSettled()
+                }
+                PendingEditorUpdateApplyOutcome.RETRYABLE_DEFERRED -> {
+                    schedulePendingEditorUpdateRetry(PendingEditorUpdateKind.ORDINARY)
+                }
+                PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED -> {
+                    clearPendingEditorUpdateState(resetAppliedRevision = false)
+                    refreshReadyStateIfSettled()
+                }
             }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -1354,7 +1380,7 @@ class NativeEditorExpoView(
         if (resetAppliedRevision) {
             appliedEditorUpdateRevision = 0L
         }
-        cancelPendingEditorUpdateRetry()
+        cancelPendingEditorUpdateRetry(PendingEditorUpdateKind.ORDINARY)
     }
 
     private fun clearPendingEditorResetUpdateState(resetAppliedRevision: Boolean = true) {
@@ -1364,17 +1390,22 @@ class NativeEditorExpoView(
         if (resetAppliedRevision) {
             appliedEditorResetUpdateRevision = 0L
         }
+        cancelPendingEditorUpdateRetry(PendingEditorUpdateKind.RESET)
     }
 
-    private fun cancelPendingEditorUpdateRetry() {
+    private fun cancelPendingEditorUpdateRetry(kind: PendingEditorUpdateKind? = null) {
+        if (kind != null && pendingEditorUpdateRetryKind != null && pendingEditorUpdateRetryKind != kind) {
+            return
+        }
         pendingEditorUpdateRetryScheduled = false
         pendingEditorUpdateRetryEditorId = null
+        pendingEditorUpdateRetryKind = null
         pendingEditorUpdateRetryAttempts = 0
         pendingEditorUpdateForcedRecoveryAttempted = false
         pendingEditorUpdateRetryGeneration += 1
     }
 
-    private fun schedulePendingEditorUpdateRetry() {
+    private fun schedulePendingEditorUpdateRetry(kind: PendingEditorUpdateKind) {
         if (pendingEditorUpdateRetryScheduled) return
         val pastFastRetryBudget =
             pendingEditorUpdateRetryAttempts >= MAX_PENDING_UPDATE_RETRY_ATTEMPTS
@@ -1391,6 +1422,7 @@ class NativeEditorExpoView(
             pendingEditorUpdateRetryAttempts += 1
         }
         pendingEditorUpdateRetryEditorId = richTextView.editorId
+        pendingEditorUpdateRetryKind = kind
         pendingEditorUpdateRetryScheduled = true
         pendingEditorUpdateRetryGeneration += 1
         val retryGeneration = pendingEditorUpdateRetryGeneration
@@ -1402,11 +1434,16 @@ class NativeEditorExpoView(
         val retry = Runnable {
             if (retryGeneration != pendingEditorUpdateRetryGeneration) return@Runnable
             if (pendingEditorUpdateRetryEditorId != richTextView.editorId) {
-                clearPendingEditorUpdateState()
+                when (pendingEditorUpdateRetryKind) {
+                    PendingEditorUpdateKind.ORDINARY -> clearPendingEditorUpdateState()
+                    PendingEditorUpdateKind.RESET -> clearPendingEditorResetUpdateState()
+                    null -> Unit
+                }
                 return@Runnable
             }
             pendingEditorUpdateRetryScheduled = false
             pendingEditorUpdateRetryEditorId = null
+            pendingEditorUpdateRetryKind = null
             applyPendingEditorResetUpdateIfNeeded()
             applyPendingEditorUpdateIfNeeded()
         }
@@ -1504,7 +1541,7 @@ class NativeEditorExpoView(
                 return@Runnable
             }
             pendingViewCommandUpdateRetryScheduled = false
-            if (applyEditorUpdate(retryJson, scheduleViewCommandRetry = true)) {
+            if (applyEditorUpdateOutcome(retryJson, scheduleViewCommandRetry = true) == PendingEditorUpdateApplyOutcome.APPLIED) {
                 clearPendingViewCommandUpdateRetry()
             }
         }
@@ -1550,7 +1587,7 @@ class NativeEditorExpoView(
             pendingViewCommandUpdateRetryAttempts = 0
             pendingViewCommandUpdateRetryScheduled = false
             pendingViewCommandUpdateRetryGeneration += 1
-            if (applyEditorUpdate(updateJson, scheduleViewCommandRetry = true)) {
+            if (applyEditorUpdateOutcome(updateJson, scheduleViewCommandRetry = true) == PendingEditorUpdateApplyOutcome.APPLIED) {
                 clearPendingViewCommandUpdateRetry()
             }
         }
@@ -2198,31 +2235,44 @@ class NativeEditorExpoView(
 
     /** Applies an editor update from JS without echoing it back through events. */
     fun applyEditorUpdate(updateJson: String): Boolean =
-        applyEditorUpdate(updateJson, scheduleViewCommandRetry = true)
+        applyEditorUpdateOutcome(updateJson, scheduleViewCommandRetry = true) ==
+            PendingEditorUpdateApplyOutcome.APPLIED
 
     /** Applies a reset-style update from JS, discarding pending native composition. */
     fun applyEditorResetUpdate(updateJson: String): Boolean {
+        return applyEditorResetUpdateOutcome(updateJson) == PendingEditorUpdateApplyOutcome.APPLIED
+    }
+
+    private fun applyEditorResetUpdateOutcome(updateJson: String): PendingEditorUpdateApplyOutcome {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             val postedEditorId = richTextView.editorId
             val apply = Runnable {
                 if (postedEditorId != richTextView.editorId) return@Runnable
-                applyEditorResetUpdate(updateJson)
+                applyEditorResetUpdateOutcome(updateJson)
             }
             if (!post(apply)) {
                 richTextView.post(apply)
             }
-            return false
+            return PendingEditorUpdateApplyOutcome.RETRYABLE_DEFERRED
         }
         if (handleDestroyedCurrentEditorIfNeeded()) {
-            return false
+            return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
+        }
+        val adapter = EditorV2Registry.adapterForViewToken(richTextView.editorId)
+        if (adapter != null && !adapter.validateExternalRender(updateJson)) {
+            return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
         }
         if (!isEditorReadyForNativeUpdate()) {
-            return false
+            return PendingEditorUpdateApplyOutcome.RETRYABLE_DEFERRED
         }
+        // The reset must be a valid external snapshot before it is allowed to
+        // supersede any distinct ordinary pending update.
         clearPendingEditorUpdateState(resetAppliedRevision = false)
         clearPendingViewCommandUpdateRetry()
-        val adapter = EditorV2Registry.adapterForViewToken(richTextView.editorId)
-        val adoptedUpdateJson = if (adapter == null) updateJson else adapter.adoptExternalRender(updateJson) ?: return false
+        val adoptedUpdateJson = if (adapter == null) updateJson else {
+            adapter.adoptExternalRender(updateJson)
+                ?: return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
+        }
         isApplyingJSUpdate = true
         val applied = try {
             richTextView.editorEditText.applyUpdateJSON(
@@ -2240,7 +2290,11 @@ class NativeEditorExpoView(
         if (applied) {
             refreshReadyStateIfSettled()
         }
-        return applied
+        return if (applied) {
+            PendingEditorUpdateApplyOutcome.APPLIED
+        } else {
+            PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
+        }
     }
 
     private fun isEditorReadyForNativeUpdate(): Boolean {
@@ -2248,35 +2302,38 @@ class NativeEditorExpoView(
         return editorId == 0L || (isAttachedToNativeWindow && richTextView.editorEditText.editorId == editorId)
     }
 
-    private fun applyEditorUpdate(
+    private fun applyEditorUpdateOutcome(
         updateJson: String,
         scheduleViewCommandRetry: Boolean,
         expectedEditorId: Long? = null
-    ): Boolean {
+    ): PendingEditorUpdateApplyOutcome {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             val postedEditorId = expectedEditorId ?: richTextView.editorId
             val apply = Runnable {
                 if (postedEditorId != richTextView.editorId) return@Runnable
-                applyEditorUpdate(updateJson, scheduleViewCommandRetry, postedEditorId)
+                applyEditorUpdateOutcome(updateJson, scheduleViewCommandRetry, postedEditorId)
             }
             if (!post(apply)) {
                 richTextView.post(apply)
             }
-            return false
+            return PendingEditorUpdateApplyOutcome.RETRYABLE_DEFERRED
         }
         if (expectedEditorId != null && expectedEditorId != richTextView.editorId) {
-            return false
+            return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
         }
         if (handleDestroyedCurrentEditorIfNeeded()) {
-            return false
+            return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
+        }
+        val adapter = EditorV2Registry.adapterForViewToken(richTextView.editorId)
+        if (adapter != null && !adapter.validateExternalRender(updateJson)) {
+            return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
         }
         if (!isEditorReadyForNativeUpdate()) {
             if (scheduleViewCommandRetry) {
                 scheduleViewCommandUpdateRetry(updateJson)
             }
-            return false
+            return PendingEditorUpdateApplyOutcome.RETRYABLE_DEFERRED
         }
-        val adapter = EditorV2Registry.adapterForViewToken(richTextView.editorId)
         val revisionBeforePreflight = adapter?.baseDocumentRevision
         if (
             blockEditorUpdatePreflightForTesting ||
@@ -2285,7 +2342,7 @@ class NativeEditorExpoView(
             if (scheduleViewCommandRetry) {
                 scheduleViewCommandUpdateRetry(updateJson)
             }
-            return false
+            return PendingEditorUpdateApplyOutcome.RETRYABLE_DEFERRED
         }
         // A composition preflight may have committed native state. Validate
         // the supplied snapshot but never install its now-stale revision;
@@ -2293,10 +2350,9 @@ class NativeEditorExpoView(
         val adoptedUpdateJson = if (adapter == null) {
             updateJson
         } else if (adapter.baseDocumentRevision != revisionBeforePreflight) {
-            if (!adapter.validateExternalRender(updateJson)) return false
-            adapter.refreshFromRustState(null) ?: return false
+            adapter.refreshFromRustState(null) ?: return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
         } else {
-            adapter.adoptExternalRender(updateJson) ?: return false
+            adapter.adoptExternalRender(updateJson) ?: return PendingEditorUpdateApplyOutcome.PERMANENTLY_REJECTED
         }
         isApplyingJSUpdate = true
         return try {
@@ -2305,13 +2361,13 @@ class NativeEditorExpoView(
                 refreshInputConnectionForExternalUpdate = true
             )
             clearPendingEditorUpdateDispatchQueue("jsUpdate")
-            true
+            PendingEditorUpdateApplyOutcome.APPLIED
         } catch (error: Throwable) {
             Log.w(LOG_TAG, "Failed to apply JS editor update", error)
             if (scheduleViewCommandRetry) {
                 scheduleViewCommandUpdateRetry(updateJson)
             }
-            false
+            PendingEditorUpdateApplyOutcome.RETRYABLE_DEFERRED
         } finally {
             isApplyingJSUpdate = false
         }
