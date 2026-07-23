@@ -731,12 +731,71 @@ export const NativeRichTextEditor = forwardRef<
 
     // ── Engine-observed interactive state ───────────────────────
     const [activeState, setActiveState] = useState<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
+    const [pushedUpdate, setPushedUpdate] = useState<{
+        json: string;
+        revision: number;
+        editorId: string;
+    } | null>(null);
+    const [autoGrowHeight, setAutoGrowHeight] = useState<number | null>(null);
     const activeStateRef = useRef<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
     const activeStateKeyRef = useRef<string | null>(null);
     const selectionRef = useRef<Selection>({ type: 'text', anchor: 0, head: 0 });
     const isFocusedRef = useRef(false);
     const latestRevisionRef = useRef<string | null>(null);
-    latestRevisionRef.current = document.documentRevision;
+    const currentPushedUpdateEditorIdRef = useRef(editorId);
+    currentPushedUpdateEditorIdRef.current = editorId;
+    const pushRevisionRef = useRef(0);
+    const lastPushedEngineRevisionRef = useRef<string | null>(null);
+    const lastNativeDrivenRevisionRef = useRef<string | null>(null);
+    const lastAcceptedNativeCommitRevisionRef = useRef<string | null>(null);
+    const didObserveInitialRevisionRef = useRef(false);
+    const toolbarItemsSerializationCacheRef = useRef<{
+        toolbarItems: readonly EditorToolbarItem[];
+        editable: boolean;
+        isLinkActive: boolean;
+        allowsLink: boolean;
+        canRequestLink: boolean;
+        canRequestImage: boolean;
+        canInsertImage: boolean;
+        serialized: string;
+    } | null>(null);
+    const revisionScopeEditorIdRef = useRef(editorId);
+    const latestRevisionScopeEditorIdRef = useRef<string | null>(editorId);
+    const didRebindRevisionScope = revisionScopeEditorIdRef.current !== editorId;
+    if (didRebindRevisionScope) {
+        revisionScopeEditorIdRef.current = editorId;
+        latestRevisionScopeEditorIdRef.current = null;
+        latestRevisionRef.current = null;
+        selectionRef.current = { type: 'text', anchor: 0, head: 0 };
+        activeStateRef.current = EMPTY_ACTIVE_STATE;
+        activeStateKeyRef.current = null;
+        isFocusedRef.current = false;
+        toolbarItemsSerializationCacheRef.current = null;
+        setActiveState(EMPTY_ACTIVE_STATE);
+        setPushedUpdate(null);
+        setAutoGrowHeight(null);
+        pushRevisionRef.current = 0;
+        lastPushedEngineRevisionRef.current = null;
+        lastNativeDrivenRevisionRef.current = null;
+        lastAcceptedNativeCommitRevisionRef.current = null;
+        didObserveInitialRevisionRef.current = false;
+    } else if (latestRevisionScopeEditorIdRef.current === editorId) {
+        latestRevisionRef.current = document.documentRevision;
+    }
+
+    // A changed handle initially shares the previous hook render. Do not
+    // trust that render's revision: establish the new mutation base only by
+    // reading the currently bound handle after the rebind commits.
+    useEffect(() => {
+        if (
+            latestRevisionScopeEditorIdRef.current === editorId ||
+            documentHandle.isDestroyed
+        ) {
+            return;
+        }
+        latestRevisionRef.current = documentHandle.bridge.getState().documentRevision;
+        latestRevisionScopeEditorIdRef.current = editorId;
+    }, [documentHandle, editorId]);
 
     const applyTypedUpdateState = useCallback(
         (update: Pick<NativeEditorV2AtomicRenderSnapshot, 'selection' | 'activeState'>) => {
@@ -782,27 +841,6 @@ export const NativeRichTextEditor = forwardRef<
     }, [applyTypedUpdateState]);
 
     // ── View update pushes (JS-driven engine changes only) ──────
-    const [pushedUpdate, setPushedUpdate] = useState<{
-        json: string;
-        revision: number;
-        editorId: string;
-    } | null>(null);
-    const currentPushedUpdateEditorIdRef = useRef(editorId);
-    currentPushedUpdateEditorIdRef.current = editorId;
-    const pushRevisionRef = useRef(0);
-    const lastPushedEngineRevisionRef = useRef<string | null>(null);
-    const lastNativeDrivenRevisionRef = useRef<string | null>(null);
-    const lastAcceptedNativeCommitRevisionRef = useRef<string | null>(null);
-    const didObserveInitialRevisionRef = useRef(false);
-    const revisionScopeEditorIdRef = useRef(editorId);
-    const didRebindRevisionScope = revisionScopeEditorIdRef.current !== editorId;
-    if (didRebindRevisionScope) {
-        revisionScopeEditorIdRef.current = editorId;
-        lastPushedEngineRevisionRef.current = null;
-        lastNativeDrivenRevisionRef.current = null;
-        lastAcceptedNativeCommitRevisionRef.current = null;
-        didObserveInitialRevisionRef.current = false;
-    }
 
     const pushEngineUpdateToView = useCallback(() => {
         if (documentHandle.isDestroyed) return;
@@ -1140,7 +1178,6 @@ export const NativeRichTextEditor = forwardRef<
         [documentHandle, isForThisEditor]
     );
 
-    const [autoGrowHeight, setAutoGrowHeight] = useState<number | null>(null);
     const handleContentHeightChange = useCallback(
         (event: NativeSyntheticEvent<NativeContentHeightEvent>) => {
             if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
@@ -1219,16 +1256,6 @@ export const NativeRichTextEditor = forwardRef<
         serializeRemoteSelections(selections)
     );
 
-    const toolbarItemsSerializationCacheRef = useRef<{
-        toolbarItems: readonly EditorToolbarItem[];
-        editable: boolean;
-        isLinkActive: boolean;
-        allowsLink: boolean;
-        canRequestLink: boolean;
-        canRequestImage: boolean;
-        canInsertImage: boolean;
-        serialized: string;
-    } | null>(null);
     const isLinkActive = activeState.marks.link === true;
     const allowsLink = activeState.allowedMarks.includes('link');
     const canInsertImage = activeState.insertableNodes.includes(IMAGE_NODE_NAME);

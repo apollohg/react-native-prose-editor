@@ -1282,6 +1282,100 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handleB.destroy();
     });
 
+    it('clears A interaction state before B publishes its authoritative snapshot', () => {
+        const handleA = createV2LocalHandle(fakeDocForText('alpha'));
+        const handleB = createV2LocalHandle({
+            type: 'doc',
+            content: [
+                {
+                    type: 'paragraph',
+                    content: [{ type: 'text', text: 'beta', marks: [{ type: 'italic' }] }],
+                },
+            ],
+        });
+        const ref = createRef<NativeRichTextEditorRef>();
+        const onFocus = jest.fn();
+        const onRequestLink = jest.fn();
+        const toolbarItems: NonNullable<NativeRichTextEditorProps['toolbarItems']> = [
+            { type: 'mark', mark: 'bold', label: 'Bold', icon: 'bold' },
+            { type: 'mark', mark: 'italic', label: 'Italic', icon: 'italic' },
+        ];
+        const { getByLabelText, getByTestId, rerender } = render(
+            <NativeRichTextEditor
+                ref={ref}
+                documentHandle={handleA}
+                toolbarItems={toolbarItems}
+                toolbarPlacement='inline'
+                onFocus={onFocus}
+                onRequestLink={onRequestLink}
+            />
+        );
+
+        act(() => {
+            ref.current!.toggleMark('bold');
+            getByTestId('native-editor-view').props.onSelectionChange({
+                nativeEvent: {
+                    anchor: 2,
+                    head: 2,
+                    editorId: handleA.editorId,
+                },
+            });
+            getByTestId('native-editor-view').props.onFocusChange({
+                nativeEvent: { isFocused: true, editorId: handleA.editorId },
+            });
+        });
+        expect(getByLabelText('Bold').props.accessibilityState.selected).toBe(true);
+        expect(onFocus).toHaveBeenCalledTimes(1);
+
+        rerender(
+            <NativeRichTextEditor
+                ref={ref}
+                documentHandle={handleB}
+                toolbarItems={toolbarItems}
+                toolbarPlacement='inline'
+                onFocus={onFocus}
+                onRequestLink={onRequestLink}
+            />
+        );
+
+        const view = getByTestId('native-editor-view');
+        expect(getByLabelText('Bold').props.accessibilityState.selected).toBe(false);
+        act(() => {
+            view.props.onToolbarAction({
+                nativeEvent: { key: '__native-editor-link__', editorId: handleB.editorId },
+            });
+            view.props.onFocusChange({
+                nativeEvent: { isFocused: true, editorId: handleB.editorId },
+            });
+        });
+        expect(onRequestLink.mock.calls.at(-1)![0].selection).toEqual({
+            type: 'text',
+            anchor: 0,
+            head: 0,
+        });
+        expect(onFocus).toHaveBeenCalledTimes(2);
+
+        act(() => {
+            view.props.onEditorUpdate({
+                nativeEvent: {
+                    editorId: handleB.editorId,
+                    updateJson: renderUpdateValue(handleB.editorId, 2, 2),
+                    documentRevision: handleB.bridge.getState().documentRevision,
+                },
+            });
+        });
+
+        expect(getByLabelText('Bold').props.accessibilityState.selected).toBe(false);
+        expect(getByLabelText('Italic').props.accessibilityState.selected).toBe(true);
+        act(() => ref.current!.toggleMark('bold'));
+        const request = JSON.parse(
+            mockNativeModule.editorV2ApplyCommand.mock.calls.at(-1)![1] as string
+        ) as { baseDocumentRevision: string };
+        expect(request.baseDocumentRevision).toBe(handleB.bridge.getState().documentRevision);
+        handleA.destroy();
+        handleB.destroy();
+    });
+
     it('treats B revisions as new observations after rebinding from A', () => {
         const handleA = createV2LocalHandle(V2_INITIAL_DOC);
         const handleB = createV2LocalHandle(V2_DOC_B);
