@@ -856,6 +856,7 @@ class NativeEditorExpoViewTest {
             adapter.onAutonomousError = { errors += it }
             view.onAddonEventForTesting = {}
             view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+            view.onEditorReadyForTesting = {}
             view.richTextView.setEditorIdWhileDetached(viewToken)
             view.richTextView.editorEditText.editorId = viewToken
             view.setAttachedToNativeWindowForTesting(true)
