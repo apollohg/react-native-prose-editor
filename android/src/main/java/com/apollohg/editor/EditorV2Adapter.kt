@@ -353,6 +353,8 @@ internal class EditorV2Adapter private constructor(
     }
 
     private data class AtomicRenderSnapshot(
+        /** Original validated wire payload for controlled-prop delivery. */
+        val atomicRenderJson: String,
         val viewUpdateJson: String,
         val documentRevision: ULong,
         val stateRevision: ULong,
@@ -375,8 +377,18 @@ internal class EditorV2Adapter private constructor(
             val state = ulongField(object_, "stateRevision") ?: return null
             val scalarLength = scalarField(object_, "scalarLength") ?: return null
             val scalarSelection = scalarSelection(object_.opt("selection"))
+            val atomicRenderJson = object_.toString()
             object_.remove("scalarLength")
-            AtomicRenderSnapshot(object_.toString(), revision, state, scalarLength, scalarSelection, JSONObject(object_.getJSONObject("activeState").toString()), JSONObject(history.toString()))
+            AtomicRenderSnapshot(
+                atomicRenderJson,
+                object_.toString(),
+                revision,
+                state,
+                scalarLength,
+                scalarSelection,
+                JSONObject(object_.getJSONObject("activeState").toString()),
+                JSONObject(history.toString())
+            )
         } catch (_: Exception) {
             null
         }
@@ -435,7 +447,11 @@ internal class EditorV2Adapter private constructor(
 
     // ── Render derivation (v2 render accessor) ──
 
-    private fun refreshInternal(mirrorSelection: IntArray?): String? {
+    private fun refreshInternal(
+        mirrorSelection: IntArray?,
+        stripViewSelection: Boolean = mirrorSelection == null,
+        controlledPropSnapshot: Boolean = false,
+    ): String? {
         if (destroyed) {
             emit(destroyedError())
             return null
@@ -461,12 +477,21 @@ internal class EditorV2Adapter private constructor(
         } else {
             // Preserve an IME-owned caret only after authoritative active and
             // history state has been adopted from the post-operation snapshot.
-            adopt(snapshot, stripViewSelection = mirrorSelection == null)
+            val viewUpdateJson = adopt(snapshot, stripViewSelection = stripViewSelection)
+            if (controlledPropSnapshot) snapshot.atomicRenderJson else viewUpdateJson
         }
     }
 
     override fun refreshFromRustState(mirrorSelection: IntArray?): String? =
-        refreshInternal(mirrorSelection)
+        // This result crosses the controlled-prop boundary, which admits only
+        // complete frozen atomic render snapshots. Its parse/adopt side effect
+        // updates adapter caches, but its public result must retain every
+        // validated wire field, including selection and scalarLength.
+        refreshInternal(
+            mirrorSelection,
+            stripViewSelection = false,
+            controlledPropSnapshot = true
+        )
 
     override fun currentStateJson(): String? =
         refreshInternal(cachedAuthoritativeScalarSelection?.copyOf())
