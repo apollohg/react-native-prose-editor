@@ -133,7 +133,7 @@ class NativeDeviceOutsideTapTest {
                 scenario.onActivity {
                     editorRef.get()?.uninstallOutsideTapBlurHandlerForTesting()
                 }
-                EditorV2Registry.destroyPair(editorId)
+                releasePairedV2TestEditor(editorId)
             }
         }
     }
@@ -238,7 +238,7 @@ class NativeDeviceOutsideTapTest {
                 scenario.onActivity {
                     editorRef.get()?.uninstallOutsideTapBlurHandlerForTesting()
                 }
-                EditorV2Registry.destroyPair(editorId)
+                releasePairedV2TestEditor(editorId)
             }
         }
     }
@@ -404,7 +404,7 @@ class NativeDeviceOutsideTapTest {
                 scenario.onActivity {
                     editorRef.get()?.uninstallOutsideTapBlurHandlerForTesting()
                 }
-                EditorV2Registry.destroyPair(editorId)
+                releasePairedV2TestEditor(editorId)
             }
         }
     }
@@ -583,7 +583,7 @@ class NativeDeviceOutsideTapTest {
                 scenario.onActivity {
                     editorRef.get()?.uninstallOutsideTapBlurHandlerForTesting()
                 }
-                EditorV2Registry.destroyPair(editorId)
+                releasePairedV2TestEditor(editorId)
             }
         }
     }

@@ -285,7 +285,7 @@ class NativeDeviceImeRegressionTest {
             val document = adapter.documentJson()?.let(::JSONObject) ?: error("missing document JSON")
             assertEquals(2, document.getJSONArray("content").length())
         } finally {
-            EditorV2Registry.destroyPair(editorId)
+            releasePairedV2TestEditor(editorId)
         }
     }
 

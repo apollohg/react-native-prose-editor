@@ -15,10 +15,18 @@ internal fun createPairedV2TestEditor(): Pair<EditorV2Adapter, Long> {
             error("v2 editor create failed: ${result.error.code}: ${result.error.message}")
     }
     val editorId = JSONObject(created).getString("editorId")
-    val publicId = editorId.toLongOrNull()
-        ?: error("v2 editor handle is outside the current native view id range")
     val adapter = EditorV2Adapter.attach(UniffiEditorV2Backend, editorId, roomBound = false)
         ?: error("v2 editor create returned an unattached handle")
-    EditorV2Registry.register(adapter, publicId)
-    return adapter to publicId
+    val viewToken = EditorV2Registry.register(adapter)
+    return adapter to viewToken
+}
+
+/** Release a test pairing by its opaque view token after destroying its engine session. */
+internal fun releasePairedV2TestEditor(viewToken: Long) {
+    val handle = EditorV2Registry.handleForViewToken(viewToken) ?: return
+    try {
+        EditorV2Registry.adapterForViewToken(viewToken)?.destroy()
+    } finally {
+        EditorV2Registry.dropPair(handle)
+    }
 }

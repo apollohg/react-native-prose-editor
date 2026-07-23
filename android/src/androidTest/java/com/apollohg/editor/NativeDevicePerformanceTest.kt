@@ -151,7 +151,7 @@ class NativeDevicePerformanceTest {
             reportStats(stats)
             assertTrue("average typing time should be positive", stats.averageMillis > 0.0)
         } finally {
-            EditorV2Registry.destroyPair(editorId)
+            releasePairedV2TestEditor(editorId)
         }
     }
 
@@ -197,7 +197,7 @@ class NativeDevicePerformanceTest {
             reportStats(stats)
             assertTrue("average paragraph split time should be positive", stats.averageMillis > 0.0)
         } finally {
-            EditorV2Registry.destroyPair(editorId)
+            releasePairedV2TestEditor(editorId)
         }
     }
 
@@ -239,7 +239,7 @@ class NativeDevicePerformanceTest {
             reportStats(stats)
             assertTrue("average selection scrub time should be positive", stats.averageMillis > 0.0)
         } finally {
-            EditorV2Registry.destroyPair(editorId)
+            releasePairedV2TestEditor(editorId)
         }
     }
 

@@ -68,7 +68,7 @@ class NativeDeviceCollaborationInitialSyncTest {
                         "Remote replace sync"
                 }
             } finally {
-                EditorV2Registry.destroyPair(editorId)
+                releasePairedV2TestEditor(editorId)
             }
         }
     }
@@ -112,7 +112,7 @@ class NativeDeviceCollaborationInitialSyncTest {
                         "Remote reset sync"
                 }
             } finally {
-                EditorV2Registry.destroyPair(editorId)
+                releasePairedV2TestEditor(editorId)
             }
         }
     }
