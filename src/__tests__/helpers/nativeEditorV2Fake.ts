@@ -228,18 +228,23 @@ function appendText(doc: DocumentJSON, text: string): DocumentJSON {
 
 type FakeDocumentNode = Record<string, unknown>;
 
-interface FakeScalarSpan {
+interface FakeInlineSpan {
     scalarStart: number;
     scalarEnd: number;
     documentStart: number;
     documentEnd: number;
+    kind: 'text' | 'atom';
     marks: FakeDocumentNode[];
-    ancestors: FakeDocumentNode[];
 }
 
-interface FakeNodeContext {
+interface FakePositionBlock {
+    scalarStart: number;
+    scalarLength: number;
     documentStart: number;
     documentEnd: number;
+    isVoid: boolean;
+    isPlaceholder: boolean;
+    inlineSpans: FakeInlineSpan[];
     ancestors: FakeDocumentNode[];
 }
 
@@ -260,120 +265,252 @@ function unicodeScalarLength(text: string): number {
     return Array.from(text).length;
 }
 
-function isFakeAtomicNode(node: FakeDocumentNode): boolean {
+function isFakeVoidNode(node: FakeDocumentNode): boolean {
     return (
         node.atom === true ||
         node.type === 'hardBreak' ||
+        node.type === 'hard_break' ||
+        node.type === 'mention' ||
         node.type === 'image' ||
-        node.type === 'horizontalRule'
+        node.type === 'horizontalRule' ||
+        node.type === 'horizontal_rule'
+    );
+}
+
+function isFakeBlockVoidNode(node: FakeDocumentNode): boolean {
+    return (
+        node.atom === true ||
+        node.type === 'image' ||
+        node.type === 'horizontalRule' ||
+        node.type === 'horizontal_rule'
+    );
+}
+
+function fakeAtomLabel(node: FakeDocumentNode): string {
+    const type = typeof node.type === 'string' ? node.type : '';
+    const attrs =
+        node.attrs != null && typeof node.attrs === 'object' && !Array.isArray(node.attrs)
+            ? (node.attrs as Record<string, unknown>)
+            : {};
+    let label = typeof attrs.label === 'string' && attrs.label.length > 0 ? attrs.label : type;
+    const trigger = typeof attrs.mentionSuggestionChar === 'string' ? attrs.mentionSuggestionChar : '';
+    if (type === 'mention' && trigger.length > 0 && !label.startsWith(trigger)) {
+        label = `${trigger}${label}`;
+    }
+    return type === 'mention' ? label : `[${label}]`;
+}
+
+function fakeInlineAtomScalarLength(node: FakeDocumentNode): number {
+    return node.type === 'hardBreak' || node.type === 'hard_break'
+        ? 1
+        : unicodeScalarLength(fakeAtomLabel(node));
+}
+
+function fakeBlockAtomScalarLength(node: FakeDocumentNode): number {
+    return node.type === 'image' ||
+        node.type === 'horizontalRule' ||
+        node.type === 'horizontal_rule'
+        ? 1
+        : unicodeScalarLength(fakeAtomLabel(node));
+}
+
+function fakeDocumentNodeSize(node: FakeDocumentNode): number {
+    if (typeof node.text === 'string') return unicodeScalarLength(node.text);
+    if (isFakeVoidNode(node)) return 1;
+    const content = Array.isArray(node.content) ? node.content : [];
+    return (
+        2 +
+        content.reduce(
+            (total, child) =>
+                child != null && typeof child === 'object' && !Array.isArray(child)
+                    ? total + fakeDocumentNodeSize(child as FakeDocumentNode)
+                    : total,
+            0
+        )
     );
 }
 
 /**
- * Model the ProseMirror-style positions behind the production snapshot. The document
- * itself starts at position zero; non-leaf nodes consume an opening and closing
- * document position, while text consumes one position per Unicode scalar and atomic
- * nodes consume one position/scalar.
+ * Model the production PositionMap for the fake's supported top-level block schema.
+ * Text blocks expose an empty-block placeholder; block boundaries contribute one
+ * rendered separator scalar; and opaque atoms keep their one-token document extent
+ * while exposing their rendered scalar width.
  */
 function fakeScalarDocumentMap(doc: DocumentJSON): FakeScalarDocumentMap {
-    const spans: FakeScalarSpan[] = [];
-    const nodeContexts: FakeNodeContext[] = [];
-    let scalarLength = 0;
+    const blocks: FakePositionBlock[] = [];
+    const content = Array.isArray(doc.content) ? doc.content : [];
     let documentLength = 0;
 
-    const visit = (node: FakeDocumentNode, ancestors: FakeDocumentNode[], isDocument: boolean) => {
-        const text = typeof node.text === 'string' ? node.text : null;
-        if (text != null) {
-            const length = unicodeScalarLength(text);
-            spans.push({
-                scalarStart: scalarLength,
-                scalarEnd: scalarLength + length,
+    for (const rawBlock of content) {
+        if (rawBlock == null || typeof rawBlock !== 'object' || Array.isArray(rawBlock)) continue;
+        const block = rawBlock as FakeDocumentNode;
+        if (isFakeBlockVoidNode(block)) {
+            blocks.push({
+                scalarStart: 0,
+                scalarLength: fakeBlockAtomScalarLength(block),
                 documentStart: documentLength,
-                documentEnd: documentLength + length,
-                marks: Array.isArray(node.marks)
-                    ? node.marks.filter(
-                          (mark): mark is FakeDocumentNode =>
-                              mark != null && typeof mark === 'object' && !Array.isArray(mark)
-                      )
-                    : [],
-                ancestors,
+                documentEnd: documentLength,
+                isVoid: true,
+                isPlaceholder: false,
+                inlineSpans: [],
+                ancestors: [block],
             });
-            scalarLength += length;
-            documentLength += length;
-            return;
+            documentLength += fakeDocumentNodeSize(block);
+            continue;
         }
 
-        if (isFakeAtomicNode(node)) {
-            spans.push({
-                scalarStart: scalarLength,
-                scalarEnd: scalarLength + 1,
-                documentStart: documentLength,
-                documentEnd: documentLength + 1,
-                marks: [],
-                ancestors,
-            });
-            scalarLength += 1;
-            documentLength += 1;
-            return;
-        }
-
-        if (!isDocument) documentLength += 1;
-        const contentStart = documentLength;
-        const content = Array.isArray(node.content) ? node.content : [];
-        for (const child of content) {
-            if (child != null && typeof child === 'object' && !Array.isArray(child)) {
-                visit(child as FakeDocumentNode, [...ancestors, node], false);
+        const inline = Array.isArray(block.content) ? block.content : [];
+        const documentStart = documentLength + 1;
+        let inlineDocumentOffset = documentStart;
+        let inlineScalarOffset = 0;
+        const inlineSpans: FakeInlineSpan[] = [];
+        for (const rawInline of inline) {
+            if (
+                rawInline == null ||
+                typeof rawInline !== 'object' ||
+                Array.isArray(rawInline)
+            ) {
+                continue;
+            }
+            const inlineNode = rawInline as FakeDocumentNode;
+            if (typeof inlineNode.text === 'string') {
+                const length = unicodeScalarLength(inlineNode.text);
+                inlineSpans.push({
+                    scalarStart: inlineScalarOffset,
+                    scalarEnd: inlineScalarOffset + length,
+                    documentStart: inlineDocumentOffset,
+                    documentEnd: inlineDocumentOffset + length,
+                    kind: 'text',
+                    marks: Array.isArray(inlineNode.marks)
+                        ? inlineNode.marks.filter(
+                              (mark): mark is FakeDocumentNode =>
+                                  mark != null && typeof mark === 'object' && !Array.isArray(mark)
+                          )
+                        : [],
+                });
+                inlineScalarOffset += length;
+                inlineDocumentOffset += length;
+            } else if (isFakeVoidNode(inlineNode)) {
+                const length = fakeInlineAtomScalarLength(inlineNode);
+                inlineSpans.push({
+                    scalarStart: inlineScalarOffset,
+                    scalarEnd: inlineScalarOffset + length,
+                    documentStart: inlineDocumentOffset,
+                    documentEnd: inlineDocumentOffset + 1,
+                    kind: 'atom',
+                    marks: [],
+                });
+                inlineScalarOffset += length;
+                inlineDocumentOffset += 1;
+            } else {
+                inlineDocumentOffset += fakeDocumentNodeSize(inlineNode);
             }
         }
-        if (!isDocument) {
-            nodeContexts.push({
-                documentStart: contentStart,
-                documentEnd: documentLength,
-                ancestors: [...ancestors, node],
-            });
-        }
-        if (!isDocument) documentLength += 1;
-    };
+        const isPlaceholder = inline.length === 0;
+        blocks.push({
+            scalarStart: 0,
+            scalarLength: isPlaceholder ? 1 : inlineScalarOffset,
+            documentStart,
+            documentEnd: inlineDocumentOffset,
+            isVoid: false,
+            isPlaceholder,
+            inlineSpans,
+            ancestors: [block],
+        });
+        documentLength += fakeDocumentNodeSize(block);
+    }
 
-    visit(doc as FakeDocumentNode, [], true);
+    let scalarLength = 0;
+    for (const [index, block] of blocks.entries()) {
+        block.scalarStart = scalarLength;
+        scalarLength += block.scalarLength + (index + 1 < blocks.length ? 1 : 0);
+    }
 
     const clampScalar = (offset: number) => Math.min(Math.max(offset, 0), scalarLength);
     const clampDocumentOffset = (offset: number) =>
         Math.min(Math.max(offset, 0), documentLength);
+    const blockForDocumentOffset = (offset: number): FakePositionBlock | undefined => {
+        let previous: FakePositionBlock | undefined;
+        for (const block of blocks) {
+            if (block.isVoid) {
+                if (offset === block.documentStart) return block;
+                if (offset < block.documentStart) {
+                    if (!previous) return block;
+                    return offset - previous.documentEnd <= block.documentStart - offset
+                        ? previous
+                        : block;
+                }
+                previous = block;
+                continue;
+            }
+            if (offset >= block.documentStart && offset <= block.documentEnd) return block;
+            if (offset < block.documentStart) {
+                if (!previous) return block;
+                return offset - previous.documentEnd <= block.documentStart - offset
+                    ? previous
+                    : block;
+            }
+            previous = block;
+        }
+        return previous;
+    };
     const scalarToDocument = (offset: number) => {
         const scalar = clampScalar(offset);
-        const span = spans.find(
+        const block = [...blocks]
+            .reverse()
+            .find((candidate) => candidate.scalarStart <= scalar);
+        if (!block) return 0;
+        const intraScalar = scalar - block.scalarStart;
+        if (block.isVoid) {
+            return intraScalar >= block.scalarLength
+                ? block.documentStart + 1
+                : block.documentStart;
+        }
+        if (block.isPlaceholder) return block.documentStart;
+        const span = block.inlineSpans.find(
             (candidate) =>
-                scalar >= candidate.scalarStart &&
-                scalar <= candidate.scalarEnd &&
-                (scalar < candidate.scalarEnd || candidate === spans[spans.length - 1])
+                intraScalar >= candidate.scalarStart && intraScalar < candidate.scalarEnd
         );
-        return span
-            ? span.documentStart + (scalar - span.scalarStart)
-            : clampDocumentOffset(scalar === 0 ? 1 : documentLength);
+        if (!span) return block.documentEnd;
+        return span.kind === 'text'
+            ? span.documentStart + (intraScalar - span.scalarStart)
+            : span.documentStart;
     };
     const documentToScalar = (offset: number) => {
         const position = clampDocumentOffset(offset);
-        const span = spans.find(
-            (candidate) =>
-                position >= candidate.documentStart &&
-                position <= candidate.documentEnd &&
-                (position < candidate.documentEnd || candidate === spans[spans.length - 1])
-        );
-        if (span) return span.scalarStart + (position - span.documentStart);
-        const previous = [...spans]
-            .reverse()
-            .find((candidate) => candidate.documentEnd <= position);
-        return previous?.scalarEnd ?? 0;
+        const block = blockForDocumentOffset(position);
+        if (!block) return scalarLength;
+        if (block.isVoid) {
+            return block.scalarStart +
+                (position <= block.documentStart ? 0 : block.scalarLength);
+        }
+        if (block.isPlaceholder) {
+            return block.scalarStart +
+                (position < block.documentStart ? 0 : block.scalarLength);
+        }
+        if (position < block.documentStart) return block.scalarStart;
+        if (position > block.documentEnd) return block.scalarStart + block.scalarLength;
+        for (const span of block.inlineSpans) {
+            if (position < span.documentStart) return block.scalarStart + span.scalarStart;
+            if (position < span.documentEnd) {
+                return block.scalarStart +
+                    span.scalarStart +
+                    (span.kind === 'text' ? position - span.documentStart : 0);
+            }
+        }
+        return block.scalarStart + block.scalarLength;
     };
     const activeStateAt = (offset: number) => {
         const position = clampDocumentOffset(offset);
-        const span = spans.find(
-            (candidate) =>
-                position >= candidate.documentStart &&
-                position <= candidate.documentEnd &&
-                (position < candidate.documentEnd || candidate === spans[spans.length - 1])
-        );
+        const block = blockForDocumentOffset(position);
+        const span =
+            block?.inlineSpans.find(
+                (candidate) =>
+                    position >= candidate.documentStart && position < candidate.documentEnd
+            ) ??
+            [...(block?.inlineSpans ?? [])]
+                .reverse()
+                .find((candidate) => position === candidate.documentEnd);
         const marks: Record<string, boolean> = {};
         const markAttrs: Record<string, Record<string, unknown>> = {};
         const nodes: Record<string, boolean> = {};
@@ -385,13 +522,7 @@ function fakeScalarDocumentMap(doc: DocumentJSON): FakeScalarDocumentMap {
                 markAttrs[type] = { ...(mark.attrs as Record<string, unknown>) };
             }
         }
-        const nodeContext = nodeContexts
-            .filter(
-                (candidate) =>
-                    position >= candidate.documentStart && position <= candidate.documentEnd
-            )
-            .sort((left, right) => right.ancestors.length - left.ancestors.length)[0];
-        for (const node of nodeContext?.ancestors ?? span?.ancestors ?? []) {
+        for (const node of block?.ancestors ?? []) {
             const type = typeof node.type === 'string' ? node.type : '';
             if (type === 'heading') {
                 const level = (node.attrs as Record<string, unknown> | undefined)?.level;
@@ -435,6 +566,8 @@ interface FakeSession {
     activeMarks: Record<string, boolean>;
     activeMarkAttrs: Record<string, Record<string, unknown>>;
     activeNodes: Record<string, boolean>;
+    hasStoredMarks: boolean;
+    hasStoredNodes: boolean;
     selection: { anchor: number; head: number };
     liveGeneration: number | null;
     lastIssuedGeneration: number;
@@ -759,6 +892,8 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 activeMarks: {},
                 activeMarkAttrs: {},
                 activeNodes: {},
+                hasStoredMarks: false,
+                hasStoredNodes: false,
                 selection: { anchor: 1, head: 1 },
                 liveGeneration: null,
                 lastIssuedGeneration: 0,
@@ -941,54 +1076,92 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     next.content = content;
                     session.doc = next;
                 };
+                const documentActiveState = () =>
+                    fakeScalarDocumentMap(session.doc).activeStateAt(session.selection.head);
+                const storedMarks = () => {
+                    const documentState = documentActiveState();
+                    return {
+                        marks: {
+                            ...(session.hasStoredMarks ? session.activeMarks : documentState.marks),
+                        },
+                        markAttrs: {
+                            ...(session.hasStoredMarks
+                                ? session.activeMarkAttrs
+                                : documentState.markAttrs),
+                        },
+                    };
+                };
+                const storedNodes = () => ({
+                    ...(session.hasStoredNodes
+                        ? session.activeNodes
+                        : documentActiveState().nodes),
+                });
                 switch (type) {
                     case 'toggleMark': {
                         const markType = String(command.markType ?? '');
-                        if (session.activeMarks[markType]) {
-                            session.activeMarks[markType] = false;
+                        const next = storedMarks();
+                        if (next.marks[markType]) {
+                            next.marks[markType] = false;
+                            session.activeMarks = next.marks;
+                            session.activeMarkAttrs = next.markAttrs;
                             delete session.activeMarkAttrs[markType];
                         } else {
-                            session.activeMarks[markType] = true;
+                            next.marks[markType] = true;
+                            session.activeMarks = next.marks;
+                            session.activeMarkAttrs = next.markAttrs;
                         }
+                        session.hasStoredMarks = true;
                         return stateOnlyOutcome();
                     }
                     case 'setMark': {
                         const markType = String(command.markType ?? '');
-                        session.activeMarks[markType] = true;
-                        session.activeMarkAttrs[markType] =
+                        const next = storedMarks();
+                        next.marks[markType] = true;
+                        next.markAttrs[markType] =
                             (command.attrs as Record<string, unknown>) ?? {};
+                        session.activeMarks = next.marks;
+                        session.activeMarkAttrs = next.markAttrs;
+                        session.hasStoredMarks = true;
                         return stateOnlyOutcome();
                     }
                     case 'unsetMark': {
                         const markType = String(command.markType ?? '');
-                        session.activeMarks[markType] = false;
+                        const next = storedMarks();
+                        next.marks[markType] = false;
+                        session.activeMarks = next.marks;
+                        session.activeMarkAttrs = next.markAttrs;
                         delete session.activeMarkAttrs[markType];
+                        session.hasStoredMarks = true;
                         return stateOnlyOutcome();
                     }
                     case 'toggleHeading': {
                         const level = String(command.level ?? '');
                         const key = `heading:${level}`;
-                        if (session.activeNodes[key]) {
-                            delete session.activeNodes[key];
-                        } else {
-                            session.activeNodes[key] = true;
-                        }
+                        const next = storedNodes();
+                        next[key] = !next[key];
+                        session.activeNodes = next;
+                        session.hasStoredNodes = true;
                         return stateOnlyOutcome();
                     }
                     case 'toggleBlockquote': {
-                        if (session.activeNodes.blockquote) {
-                            delete session.activeNodes.blockquote;
-                        } else {
-                            session.activeNodes.blockquote = true;
-                        }
+                        const next = storedNodes();
+                        next.blockquote = !next.blockquote;
+                        session.activeNodes = next;
+                        session.hasStoredNodes = true;
                         return stateOnlyOutcome();
                     }
                     case 'wrapInList': {
-                        session.activeNodes[String(command.listType ?? '')] = true;
+                        const next = storedNodes();
+                        next[String(command.listType ?? '')] = true;
+                        session.activeNodes = next;
+                        session.hasStoredNodes = true;
                         return stateOnlyOutcome();
                     }
                     case 'unwrapFromList': {
-                        session.activeNodes = {};
+                        session.activeNodes = Object.fromEntries(
+                            Object.keys(storedNodes()).map((key) => [key, false])
+                        );
+                        session.hasStoredNodes = true;
                         return stateOnlyOutcome();
                     }
                     case 'indentListItem':
@@ -1067,14 +1240,35 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                                   head: scalarMap.scalarToDocument(exactV2U32(mirrorHead)!),
                               }
                             : session.selection;
-                    const activeState = scalarMap.activeStateAt(selection.head);
+                    const documentActiveState = scalarMap.activeStateAt(selection.head);
+                    const usesStoredState =
+                        mirrorAnchor == null &&
+                        mirrorHead == null &&
+                        selection.anchor === selection.head;
+                    const marks = { ...documentActiveState.marks };
+                    const markAttrs = { ...documentActiveState.markAttrs };
+                    const nodes = { ...documentActiveState.nodes };
+                    if (usesStoredState && session.hasStoredMarks) {
+                        for (const [markType, active] of Object.entries(session.activeMarks)) {
+                            marks[markType] = active;
+                            if (!active) delete markAttrs[markType];
+                        }
+                        for (const [markType, attrs] of Object.entries(session.activeMarkAttrs)) {
+                            if (marks[markType] && Object.keys(attrs).length > 0) {
+                                markAttrs[markType] = { ...attrs };
+                            }
+                        }
+                    }
+                    if (usesStoredState && session.hasStoredNodes) {
+                        Object.assign(nodes, session.activeNodes);
+                    }
                     const update: Record<string, unknown> = {
                         renderBlocks: blocks,
                         renderPatch: null,
                         activeState: {
-                            marks: activeState.marks,
-                            markAttrs: activeState.markAttrs,
-                            nodes: activeState.nodes,
+                            marks,
+                            markAttrs,
+                            nodes,
                             commands: {},
                             allowedMarks: ['bold', 'italic', 'underline', 'strike', 'link'],
                             insertableNodes: ['image', 'horizontalRule', 'hardBreak'],

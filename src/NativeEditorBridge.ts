@@ -2250,11 +2250,10 @@ export class NativeEditorV2Bridge {
     }
 
     /**
-     * Fetch the engine's current render update (render blocks, active state,
-     * history state, document version) as raw update JSON — the payload a
-     * bound native view applies after a JS-driven engine change. A scalar
-     * mirror selection resolves the engine selection into the update (doc
-     * and scalar positions); without one the update carries no selection.
+     * Fetch the complete typed, immutable render snapshot a bound native view
+     * applies after a JS-driven engine change. Without a scalar mirror, its
+     * selection is the engine-authoritative selection; a mirror resolves only
+     * this snapshot's selection into document and scalar positions.
      */
     renderUpdate(
         mirrorScalarSelection?: { anchor: number; head: number }

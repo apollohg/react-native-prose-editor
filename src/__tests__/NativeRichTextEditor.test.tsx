@@ -1030,8 +1030,16 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
-    it('drives the toolbar enabled state from the engine active state after a command', () => {
-        const handle = createV2LocalHandle(V2_INITIAL_DOC);
+    it('drives the toolbar from collapsed stored state without leaking it into explicit mirrors', () => {
+        const handle = createV2LocalHandle({
+            type: 'doc',
+            content: [
+                {
+                    type: 'paragraph',
+                    content: [{ type: 'text', text: 'bold', marks: [{ type: 'bold' }] }],
+                },
+            ],
+        });
         const ref = createRef<NativeRichTextEditorRef>();
         const onActiveStateChange = jest.fn();
         const { getByTestId } = render(
@@ -1050,21 +1058,44 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         let pushed = JSON.parse(view.props.editorUpdateJson as string) as {
             activeState: { marks: Record<string, boolean> };
         };
-        expect(pushed.activeState.marks.bold).toBe(true);
+        expect(pushed.activeState.marks.bold).toBe(false);
         expect(view.props.editorUpdateRevision).toBeGreaterThan(0);
         expect(view.props.editorUpdateEditorId).toBe(handle.editorId);
         expect(onActiveStateChange).toHaveBeenCalled();
         expect(
             (onActiveStateChange.mock.calls.at(-1)![0] as { marks: Record<string, boolean> })
                 .marks.bold
-        ).toBe(true);
+        ).toBe(false);
+
+        const mirror = handle.bridge.renderUpdate({ anchor: 0, head: 0 });
+        expect(mirror.activeState).toMatchObject({
+            marks: { bold: true },
+            markAttrs: {},
+            nodes: {},
+        });
 
         act(() => {
             ref.current!.toggleMark('bold');
         });
         view = getByTestId('native-editor-view');
         pushed = JSON.parse(view.props.editorUpdateJson as string);
-        expect(pushed.activeState.marks.bold).toBe(false);
+        expect(pushed.activeState.marks.bold).toBe(true);
+
+        act(() => {
+            ref.current!.setLink('https://example.test/stored');
+            ref.current!.toggleHeading(2);
+        });
+        pushed = JSON.parse(getByTestId('native-editor-view').props.editorUpdateJson as string);
+        expect(pushed.activeState).toMatchObject({
+            marks: { bold: true, link: true },
+            markAttrs: { link: { href: 'https://example.test/stored' } },
+            nodes: { 'heading:2': true },
+        });
+        expect(handle.bridge.renderUpdate({ anchor: 0, head: 0 }).activeState).toMatchObject({
+            marks: { bold: true },
+            markAttrs: {},
+            nodes: {},
+        });
         handle.destroy();
     });
 
@@ -1145,15 +1176,30 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             selection: { type: 'text', anchor: 5, head: 5 },
         });
         const authoritative = handle.bridge.renderUpdate();
-        expect(authoritative.scalarLength).toBe(5);
+        expect(authoritative.scalarLength).toBe(8);
         expect(authoritative.selection).toEqual({
             type: 'text',
             anchor: 5,
             head: 5,
-            anchorScalar: 2,
-            headScalar: 2,
+            anchorScalar: 3,
+            headScalar: 3,
         });
         expect(authoritative.activeState.marks).toEqual({ italic: true });
+
+        const selections = [0, 2, 3, 4, 5, 6, 7, 8, 99].map(
+            (scalar) => handle.bridge.renderUpdate({ anchor: scalar, head: scalar }).selection
+        );
+        expect(selections).toEqual([
+            { type: 'text', anchor: 1, head: 1, anchorScalar: 0, headScalar: 0 },
+            { type: 'text', anchor: 3, head: 3, anchorScalar: 2, headScalar: 2 },
+            { type: 'text', anchor: 5, head: 5, anchorScalar: 3, headScalar: 3 },
+            { type: 'text', anchor: 6, head: 6, anchorScalar: 4, headScalar: 4 },
+            { type: 'text', anchor: 7, head: 7, anchorScalar: 5, headScalar: 5 },
+            { type: 'text', anchor: 8, head: 8, anchorScalar: 6, headScalar: 6 },
+            { type: 'text', anchor: 9, head: 9, anchorScalar: 7, headScalar: 7 },
+            { type: 'text', anchor: 10, head: 10, anchorScalar: 8, headScalar: 8 },
+            { type: 'text', anchor: 10, head: 10, anchorScalar: 8, headScalar: 8 },
+        ]);
 
         const astral = handle.bridge.renderUpdate({ anchor: 1, head: 1 });
         expect(astral.selection).toEqual({
@@ -1165,15 +1211,55 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         });
         expect(astral.activeState.marks).toEqual({ bold: true });
 
-        const atom = handle.bridge.renderUpdate({ anchor: 3, head: 3 });
+        const atom = handle.bridge.renderUpdate({ anchor: 5, head: 5 });
         expect(atom.selection).toEqual({
             type: 'text',
             anchor: 7,
             head: 7,
-            anchorScalar: 3,
-            headScalar: 3,
+            anchorScalar: 5,
+            headScalar: 5,
         });
         expect(atom.activeState.marks).toEqual({});
+        handle.destroy();
+    });
+
+    it('maps empty placeholders plus supported inline and block atoms through the fake snapshot', () => {
+        const handle = createV2LocalHandle({
+            type: 'doc',
+            content: [
+                { type: 'paragraph' },
+                {
+                    type: 'paragraph',
+                    content: [
+                        { type: 'hardBreak' },
+                        {
+                            type: 'mention',
+                            atom: true,
+                            attrs: { label: 'Ada', mentionSuggestionChar: '@' },
+                        },
+                    ],
+                },
+                { type: 'callout', atom: true, attrs: { label: 'X' } },
+            ],
+        });
+
+        expect(handle.bridge.renderUpdate().scalarLength).toBe(11);
+        expect(
+            [0, 1, 2, 3, 6, 7, 8, 9, 11, 99].map(
+                (scalar) => handle.bridge.renderUpdate({ anchor: scalar, head: scalar }).selection
+            )
+        ).toEqual([
+            { type: 'text', anchor: 1, head: 1, anchorScalar: 1, headScalar: 1 },
+            { type: 'text', anchor: 1, head: 1, anchorScalar: 1, headScalar: 1 },
+            { type: 'text', anchor: 3, head: 3, anchorScalar: 2, headScalar: 2 },
+            { type: 'text', anchor: 4, head: 4, anchorScalar: 3, headScalar: 3 },
+            { type: 'text', anchor: 4, head: 4, anchorScalar: 3, headScalar: 3 },
+            { type: 'text', anchor: 5, head: 5, anchorScalar: 7, headScalar: 7 },
+            { type: 'text', anchor: 6, head: 6, anchorScalar: 8, headScalar: 8 },
+            { type: 'text', anchor: 6, head: 6, anchorScalar: 8, headScalar: 8 },
+            { type: 'text', anchor: 7, head: 7, anchorScalar: 11, headScalar: 11 },
+            { type: 'text', anchor: 7, head: 7, anchorScalar: 11, headScalar: 11 },
+        ]);
         handle.destroy();
     });
 
