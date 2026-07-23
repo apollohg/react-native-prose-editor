@@ -1,4 +1,5 @@
 import type { NativeEditorDocumentHandle } from '../NativeEditorBridge';
+import type { ReadonlyActiveState } from '../index';
 import type { NativeRichTextEditorProps } from '../NativeRichTextEditor';
 
 declare const documentHandle: NativeEditorDocumentHandle;
@@ -54,3 +55,14 @@ const removedComponentProps: readonly NativeRichTextEditorProps[] = [
 ];
 
 void removedComponentProps;
+
+declare const readonlyActiveState: ReadonlyActiveState;
+void readonlyActiveState;
+
+const readonlyActiveStateCallback: NonNullable<NativeRichTextEditorProps['onActiveStateChange']> =
+    (state) => {
+        // @ts-expect-error render snapshots must remain recursively immutable for consumers
+        state.marks.bold = false;
+    };
+
+void readonlyActiveStateCallback;

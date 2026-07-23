@@ -19,7 +19,7 @@ import {
     useWindowDimensions,
 } from 'react-native';
 
-import type { ActiveState, HistoryState } from './NativeEditorBridge';
+import type { HistoryState, ReadonlyActiveState } from './NativeEditorBridge';
 import type { EditorMentionTheme, EditorToolbarTheme } from './EditorTheme';
 import type { MentionSuggestion } from './addons';
 
@@ -480,7 +480,7 @@ export const DEFAULT_EDITOR_TOOLBAR_ITEMS: readonly EditorToolbarItem[] = [
 
 export interface EditorToolbarProps {
     /** Currently active marks and nodes from the Rust engine. */
-    activeState: ActiveState;
+    activeState: ReadonlyActiveState;
     /** Current undo/redo availability. */
     historyState: HistoryState;
     /** Toggle bold mark. */

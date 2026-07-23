@@ -28,6 +28,7 @@ import {
     type HistoryState,
     type NativeEditorDocumentHandle,
     type NativeEditorV2AtomicRenderSnapshot,
+    type ReadonlyActiveState,
     type Selection,
 } from './NativeEditorBridge';
 import { NativeEditorV2OperationError } from './NativeEditorBoundaryError';
@@ -201,7 +202,7 @@ function isRevisionMismatchError(error: unknown): boolean {
 
 function mapToolbarChildForNative(
     item: EditorToolbarGroupChildItem,
-    activeState: ActiveState,
+    activeState: ReadonlyActiveState,
     editable: boolean,
     onRequestLink?: NativeRichTextEditorProps['onRequestLink'],
     onRequestImage?: NativeRichTextEditorProps['onRequestImage']
@@ -236,7 +237,7 @@ function mapToolbarChildForNative(
 
 function mapToolbarItemsForNative(
     items: readonly EditorToolbarItem[],
-    activeState: ActiveState,
+    activeState: ReadonlyActiveState,
     editable: boolean,
     onRequestLink?: NativeRichTextEditorProps['onRequestLink'],
     onRequestImage?: NativeRichTextEditorProps['onRequestImage']
@@ -470,7 +471,7 @@ export interface NativeRichTextEditorProps {
     /** Called when selection changes (engine doc positions). */
     onSelectionChange?: (selection: Selection) => void;
     /** Called when active formatting state changes. */
-    onActiveStateChange?: (state: ActiveState) => void;
+    onActiveStateChange?: (state: ReadonlyActiveState) => void;
     /** Called when undo/redo availability changes. */
     onHistoryStateChange?: (state: HistoryState) => void;
     /** Called when the editor gains focus. */
@@ -685,8 +686,8 @@ export const NativeRichTextEditor = forwardRef<
     onLocalDocumentCommitRef.current = onLocalDocumentCommit;
 
     // ── Engine-observed interactive state ───────────────────────
-    const [activeState, setActiveState] = useState<ActiveState>(EMPTY_ACTIVE_STATE);
-    const activeStateRef = useRef<ActiveState>(EMPTY_ACTIVE_STATE);
+    const [activeState, setActiveState] = useState<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
+    const activeStateRef = useRef<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
     const activeStateKeyRef = useRef<string | null>(null);
     const selectionRef = useRef<Selection>({ type: 'text', anchor: 0, head: 0 });
     const isFocusedRef = useRef(false);

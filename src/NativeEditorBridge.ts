@@ -101,6 +101,9 @@ type DeepReadonly<T> = T extends ReadonlyArray<infer Item>
       ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
       : T;
 
+/** A recursively immutable active-state view supplied by atomic render snapshots. */
+export type ReadonlyActiveState = DeepReadonly<ActiveState>;
+
 interface NativeEditorV2AtomicRenderSnapshotShape {
     renderBlocks: RenderElement[][];
     renderPatch: RenderBlocksPatch | null;

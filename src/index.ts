@@ -111,6 +111,7 @@ export {
 export type {
     Selection,
     ActiveState,
+    ReadonlyActiveState,
     HistoryState,
     EditorUpdate,
     RenderBlocksPatch,
