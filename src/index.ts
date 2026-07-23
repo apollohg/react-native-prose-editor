@@ -123,6 +123,7 @@ export type {
 export {
     createNativeEditorDocumentHandle,
     type NativeEditorDocumentHandle,
+    type NativeEditorLocalAwarenessIntent,
     type NativeEditorV2CreateConfig,
     type NativeEditorV2Initialization,
     type NativeEditorV2PeerInfo,

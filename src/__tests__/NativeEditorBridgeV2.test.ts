@@ -2413,6 +2413,21 @@ describe('NativeEditorBridge v2', () => {
             });
             expect(mockNativeModule.editorV2CollaborationSetAwareness).not.toHaveBeenCalled();
         });
+
+        it('exports the local awareness intent from the public package surface', () => {
+            const diagnostics = compileTypeScriptContractFixture(`
+                import type { NativeEditorLocalAwarenessIntent } from '../index';
+
+                const intent: NativeEditorLocalAwarenessIntent = {
+                    state: { user: { name: 'Alice' } },
+                    focused: true,
+                    selection: { type: 'text', anchor: 2, head: 5 },
+                };
+                void intent;
+            `);
+
+            expect(diagnostics).toBe('');
+        });
     });
 
     describe('autonomous error events', () => {

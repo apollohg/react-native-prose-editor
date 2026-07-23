@@ -587,6 +587,7 @@ interface FakeSession {
     protocolQueue: Uint8Array[];
     documentQueue: Uint8Array[];
     desiredAwareness: NativeEditorLocalAwarenessIntent | null;
+    localAwarenessCursor: { anchor: number; head: number } | null;
     localClientId: string;
     localClock: number;
     localAwarenessLive: boolean;
@@ -604,15 +605,7 @@ function isFakeRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const FAKE_AWARENESS_INTENT_KEYS = new Set(['state', 'focused', 'selection']);
-const FAKE_AWARENESS_SELECTION_KEYS = new Set([
-    'type',
-    'anchor',
-    'head',
-    'pos',
-    'anchorScalar',
-    'headScalar',
-    'posScalar',
-]);
+const FAKE_AWARENESS_SELECTION_KEYS = new Set(['type', 'anchor', 'head']);
 
 function hasFakeReservedCursor(value: unknown): boolean {
     const pending: unknown[] = [value];
@@ -635,7 +628,7 @@ function hasFakeReservedCursor(value: unknown): boolean {
 function validFakeAwarenessSelection(value: unknown): value is Selection {
     if (!isFakeRecord(value)) return false;
     const type = value.type;
-    if (type !== 'text' && type !== 'node' && type !== 'all') return false;
+    if (type !== 'text') return false;
     const fields = ['anchor', 'head', 'pos', 'anchorScalar', 'headScalar', 'posScalar'];
     if (
         Reflect.ownKeys(value).some(
@@ -647,11 +640,7 @@ function validFakeAwarenessSelection(value: unknown): value is Selection {
     for (const field of fields) {
         if (value[field] !== undefined && exactV2U32(value[field]) == null) return false;
     }
-    return (
-        (type !== 'text' ||
-            (exactV2U32(value.anchor) != null && exactV2U32(value.head) != null)) &&
-        (type !== 'node' || exactV2U32(value.pos) != null)
-    );
+    return exactV2U32(value.anchor) != null && exactV2U32(value.head) != null;
 }
 
 function parseFakeAwarenessIntent(
@@ -689,20 +678,116 @@ function fakeCursorForSelection(selection: Selection | undefined): { anchor: num
     if (selection?.type === 'text' && selection.anchor != null && selection.head != null) {
         return { anchor: selection.anchor, head: selection.head };
     }
-    if (selection?.type === 'node' && selection.pos != null) {
-        return { anchor: selection.pos, head: selection.pos };
-    }
     return null;
 }
 
-function projectFakeLocalAwareness(intent: NativeEditorLocalAwarenessIntent): {
+function projectFakeLocalAwareness(
+    intent: NativeEditorLocalAwarenessIntent,
+    cursor: { anchor: number; head: number } | null
+): {
     state: Record<string, unknown>;
     cursor: { anchor: number; head: number } | null;
 } {
-    return {
-        state: { ...intent.state, focused: intent.focused },
-        cursor: fakeCursorForSelection(intent.selection),
+    const state: Record<string, unknown> = {
+        state: intent.state,
+        focused: intent.focused,
     };
+    if (cursor != null) {
+        state.cursor = {
+            anchor: { type: 'fakeEngineSticky', association: 'after' },
+            head: { type: 'fakeEngineSticky', association: 'after' },
+        };
+    }
+    return {
+        state,
+        cursor,
+    };
+}
+
+function fakeScalarText(doc: DocumentJSON): string[] {
+    const blocks = Array.isArray(doc.content) ? doc.content : [];
+    return Array.from(
+        blocks
+            .map((rawBlock) => {
+                if (rawBlock == null || typeof rawBlock !== 'object' || Array.isArray(rawBlock)) {
+                    return '';
+                }
+                const block = rawBlock as FakeDocumentNode;
+                if (isFakeBlockVoidNode(block)) return fakeAtomLabel(block);
+                const inline = Array.isArray(block.content) ? block.content : [];
+                return inline
+                    .map((rawInline) => {
+                        if (
+                            rawInline == null ||
+                            typeof rawInline !== 'object' ||
+                            Array.isArray(rawInline)
+                        ) {
+                            return '';
+                        }
+                        const node = rawInline as FakeDocumentNode;
+                        if (typeof node.text === 'string') return node.text;
+                        return isFakeVoidNode(node) ? fakeAtomLabel(node) : '';
+                    })
+                    .join('');
+            })
+            .join('\n')
+    );
+}
+
+function moveFakeStickyPoint(
+    position: number,
+    before: DocumentJSON,
+    after: DocumentJSON
+): number {
+    const beforeMap = fakeScalarDocumentMap(before);
+    const afterMap = fakeScalarDocumentMap(after);
+    const beforeText = fakeScalarText(before);
+    const afterText = fakeScalarText(after);
+    let prefix = 0;
+    while (
+        prefix < beforeText.length &&
+        prefix < afterText.length &&
+        beforeText[prefix] === afterText[prefix]
+    ) {
+        prefix += 1;
+    }
+    let suffix = 0;
+    while (
+        suffix < beforeText.length - prefix &&
+        suffix < afterText.length - prefix &&
+        beforeText[beforeText.length - suffix - 1] === afterText[afterText.length - suffix - 1]
+    ) {
+        suffix += 1;
+    }
+    const oldChangedEnd = beforeText.length - suffix;
+    const insertedLength = afterText.length - prefix - suffix;
+    const scalar = beforeMap.documentToScalar(position);
+    const movedScalar =
+        scalar < prefix
+            ? scalar
+            : scalar <= oldChangedEnd
+              ? prefix + insertedLength
+              : scalar + afterText.length - beforeText.length;
+    return afterMap.scalarToDocument(movedScalar);
+}
+
+function moveFakeCursorAcrossEdit(
+    session: FakeSession,
+    before: DocumentJSON,
+    after: DocumentJSON
+): void {
+    if (session.localAwarenessCursor != null) {
+        session.localAwarenessCursor = {
+            anchor: moveFakeStickyPoint(session.localAwarenessCursor.anchor, before, after),
+            head: moveFakeStickyPoint(session.localAwarenessCursor.head, before, after),
+        };
+    }
+}
+
+function installFakeDocument(session: FakeSession, nextDoc: DocumentJSON): void {
+    const next = cloneDoc(nextDoc);
+    moveFakeCursorAcrossEdit(session, session.doc, next);
+    session.doc = next;
 }
 
 export interface FakeV2SessionHandle {
@@ -1067,7 +1152,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             session.undoStack = [];
             session.redoStack = [];
         }
-        session.doc = cloneDoc(nextDoc);
+        installFakeDocument(session, nextDoc);
         session.documentRevision += 1;
         queueDocumentUpdate(session);
     }
@@ -1150,7 +1235,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             let documentPromoted = false;
             if (session.documentState === 'AwaitRemote') {
                 const remote = pendingFor(session.editorId);
-                session.doc = cloneDoc(remote.docs.shift() ?? EMPTY_DOC);
+                installFakeDocument(session, remote.docs.shift() ?? EMPTY_DOC);
                 session.documentState = 'RoomReady';
                 session.renderState = 'Ready';
                 session.documentRevision += 1;
@@ -1191,7 +1276,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 retireGeneration(session, 'Disconnected');
                 return outcome({ close: { disposition: 'retryable', error } });
             }
-            session.doc = cloneDoc(nextDoc);
+            installFakeDocument(session, nextDoc);
             session.documentRevision += 1;
             return outcome({ remoteCommitApplied: true });
         }
@@ -1281,6 +1366,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 protocolQueue: [],
                 documentQueue: [],
                 desiredAwareness: null,
+                localAwarenessCursor: null,
                 localClientId: String((clientIdCounter += 1)),
                 localClock: 0,
                 localAwarenessLive: false,
@@ -1394,7 +1480,10 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 }
                 session.undoStack.push(cloneDoc(session.doc));
                 session.redoStack = [];
-                session.doc = appendText(session.doc, String(request.text ?? ''));
+                installFakeDocument(
+                    session,
+                    appendText(session.doc, String(request.text ?? ''))
+                );
                 session.documentRevision += 1;
                 session.stateRevision += 1;
                 queueDocumentUpdate(session);
@@ -1444,7 +1533,9 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 const docChangeOutcome = (apply: () => void) => {
                     session.undoStack.push(cloneDoc(session.doc));
                     session.redoStack = [];
+                    const before = cloneDoc(session.doc);
                     apply();
+                    moveFakeCursorAcrossEdit(session, before, session.doc);
                     session.documentRevision += 1;
                     session.stateRevision += 1;
                     queueDocumentUpdate(session);
@@ -1747,7 +1838,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 const previous = session.undoStack.pop();
                 if (!previous) return okRecord(JSON.stringify({ changed: false }));
                 session.redoStack.push(cloneDoc(session.doc));
-                session.doc = previous;
+                installFakeDocument(session, previous);
                 session.documentRevision += 1;
                 queueDocumentUpdate(session);
                 return okRecord(JSON.stringify({ changed: true }));
@@ -1761,7 +1852,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 const next = session.redoStack.pop();
                 if (!next) return okRecord(JSON.stringify({ changed: false }));
                 session.undoStack.push(cloneDoc(session.doc));
-                session.doc = next;
+                installFakeDocument(session, next);
                 session.documentRevision += 1;
                 queueDocumentUpdate(session);
                 return okRecord(JSON.stringify({ changed: true }));
@@ -1881,13 +1972,28 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     const clockError = clearLocalAwareness(session);
                     if (clockError) return errRecord(clockError);
                     session.desiredAwareness = null;
+                    session.localAwarenessCursor = null;
                     session.lastLocalAwarenessPublishMillis = null;
                 } else {
                     const desiredAwareness = parseFakeAwarenessIntent(awarenessJson);
                     if ('domain' in desiredAwareness) return errRecord(desiredAwareness);
+                    const cursor = fakeCursorForSelection(desiredAwareness.selection);
+                    if (cursor != null) {
+                        const positionMap = fakeScalarDocumentMap(session.doc);
+                        if (
+                            positionMap.clampDocumentOffset(cursor.anchor) !== cursor.anchor ||
+                            positionMap.clampDocumentOffset(cursor.head) !== cursor.head
+                        ) {
+                            return boundaryError(
+                                'AWARENESS_STATE_INVALID',
+                                'local awareness selection is outside the current document'
+                            );
+                        }
+                    }
                     const clockError = setLocalAwarenessState(session);
                     if (clockError) return errRecord(clockError);
                     session.desiredAwareness = desiredAwareness;
+                    session.localAwarenessCursor = cursor;
                 }
                 if (awarenessJson.trim() !== 'null' && session.transportState === 'Synchronized') {
                     enqueueLocalAwareness(session);
@@ -1899,7 +2005,10 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             withSession(editorId, (session) => {
                 const peers: NativeEditorV2PeerInfo[] = [];
                 if (session.localAwarenessLive && session.desiredAwareness != null) {
-                    const local = projectFakeLocalAwareness(session.desiredAwareness);
+                    const local = projectFakeLocalAwareness(
+                        session.desiredAwareness,
+                        session.localAwarenessCursor
+                    );
                     peers.push({
                         clientId: session.localClientId,
                         clock: session.localClock,
@@ -2070,7 +2179,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                         doc: DocumentJSON;
                         revision?: number;
                     };
-                    session.doc = cloneDoc(parsed.doc);
+                    installFakeDocument(session, parsed.doc);
                     session.documentRevision =
                         typeof parsed.revision === 'number' ? parsed.revision : 1;
                     session.documentState = 'RoomReady';

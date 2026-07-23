@@ -204,9 +204,15 @@ function peersToRemoteSelections(
         if (!range) return [];
 
         const state = peer.state;
+        const applicationState =
+            state && typeof state.state === 'object' && state.state !== null
+                ? (state.state as Record<string, unknown>)
+                : null;
         const user =
-            state && typeof state.user === 'object' && state.user !== null
-                ? (state.user as Record<string, unknown>)
+            applicationState &&
+            typeof applicationState.user === 'object' &&
+            applicationState.user !== null
+                ? (applicationState.user as Record<string, unknown>)
                 : null;
 
         return [
@@ -230,6 +236,15 @@ function peersToRemoteSelections(
     });
 }
 
+function normalizeAwarenessSelection(selection: Selection): Selection | undefined {
+    if (selection.type !== 'text') return undefined;
+    return {
+        type: 'text',
+        anchor: selection.anchor,
+        head: selection.head,
+    };
+}
+
 function mergeAwarenessPartial(
     base: NativeEditorLocalAwarenessIntent,
     partial: Partial<LocalAwarenessState>
@@ -247,7 +262,10 @@ function mergeAwarenessPartial(
         focused: 'focused' in partial && partial.focused !== undefined ? partial.focused : base.focused,
     };
     if ('selection' in partial) {
-        if (partial.selection !== undefined) next.selection = partial.selection;
+        if (partial.selection !== undefined) {
+            const selection = normalizeAwarenessSelection(partial.selection);
+            if (selection !== undefined) next.selection = selection;
+        }
     } else if (base.selection !== undefined) {
         next.selection = base.selection;
     }
@@ -278,11 +296,10 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.retryIntervalMs = options.retryIntervalMs;
         this.documentId = options.documentId;
         if (options.localAwareness != null) {
-            this.desiredAwareness = {
+            this.publishAwarenessCandidate({
                 state: { user: { ...options.localAwareness } },
                 focused: false,
-            };
-            this.publishDesiredAwareness();
+            });
         }
         this._state = this.readEngineState();
         if (options.connect !== false) {
@@ -508,35 +525,21 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         );
         const nextKey = JSON.stringify(next);
         if (nextKey === JSON.stringify(this.desiredAwareness)) return;
-        this.desiredAwareness = next;
-        this.publishDesiredAwareness();
+        this.publishAwarenessCandidate(next);
     }
 
     handleSelectionChange(selection: Selection): void {
         if (this.destroyed || this.desiredAwareness == null) return;
         const next = mergeAwarenessPartial(this.desiredAwareness, { focused: true, selection });
         if (JSON.stringify(next) === JSON.stringify(this.desiredAwareness)) return;
-        this.desiredAwareness = next;
-        this.publishDesiredAwareness();
+        this.publishAwarenessCandidate(next);
     }
 
     handleFocusChange(focused: boolean): void {
         if (this.destroyed || this.desiredAwareness == null) return;
         const next = mergeAwarenessPartial(this.desiredAwareness, { focused });
         if (JSON.stringify(next) === JSON.stringify(this.desiredAwareness)) return;
-        this.desiredAwareness = next;
-        this.publishDesiredAwareness();
-    }
-
-    setLocalAwarenessUser(user: LocalAwarenessUser | null): void {
-        if (this.destroyed) return;
-        if (user == null) {
-            if (this.desiredAwareness == null) return;
-            this.desiredAwareness = null;
-            this.publishDesiredAwareness();
-            return;
-        }
-        this.updateLocalAwareness({ user });
+        this.publishAwarenessCandidate(next);
     }
 
     handleLocalCommit(): void {
@@ -637,13 +640,14 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         }
     }
 
-    private publishDesiredAwareness(): void {
+    private publishAwarenessCandidate(candidate: NativeEditorLocalAwarenessIntent): void {
         try {
-            this.handle.bridge.collaborationSetAwareness(this.desiredAwareness);
+            this.handle.bridge.collaborationSetAwareness(candidate);
         } catch (error) {
             this.callbacks.onError?.(asError(error, 'Yjs collaboration awareness failure'));
             return;
         }
+        this.desiredAwareness = candidate;
         const socket = this.socket;
         const generation = this.generation;
         if (socket && generation && socket.readyState === WebSocket.OPEN) {
@@ -860,7 +864,8 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
     }, [options.documentId, options.handle]);
 
     useEffect(() => {
-        controllerRef.current?.setLocalAwarenessUser(options.localAwareness ?? null);
+        if (options.localAwareness == null) return;
+        controllerRef.current?.updateLocalAwareness({ user: options.localAwareness });
     }, [localAwarenessKey, options.localAwareness]);
 
     useEffect(() => {

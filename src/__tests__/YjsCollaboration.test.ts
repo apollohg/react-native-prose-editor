@@ -125,9 +125,28 @@ function remotePeer(overrides: Partial<NativeEditorV2PeerInfo> = {}): NativeEdit
         clientId: '42',
         clock: 3,
         isLocal: false,
-        state: { user: { userId: '2', name: 'Bob', color: '#00f' }, focused: true },
+        state: {
+            state: { user: { userId: '2', name: 'Bob', color: '#00f' } },
+            focused: true,
+        },
         cursor: { anchor: 4, head: 9 },
         ...overrides,
+    };
+}
+
+function rejectedAwarenessResult(message: string): Record<string, unknown> {
+    return {
+        value: null,
+        error: {
+            domain: 'boundary',
+            code: 'AWARENESS_STATE_INVALID',
+            message,
+            requestId: null,
+            operationIndex: null,
+            limit: null,
+            actual: null,
+            details: null,
+        },
     };
 }
 
@@ -927,7 +946,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             expect.objectContaining({
                 isLocal: true,
                 clock: 1,
-                state: { user: ALICE, focused: false },
+                state: { state: { user: ALICE }, focused: false },
             }),
         ]);
         expect(runtime.queuedFrames(handle.editorId)).toEqual([]);
@@ -940,7 +959,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             expect.objectContaining({
                 isLocal: true,
                 clock: 2,
-                state: { user: updatedLocal, focused: false },
+                state: { state: { user: updatedLocal }, focused: false },
             }),
         ]);
         expect(runtime.queuedFrames(handle.editorId)).toEqual([]);
@@ -950,7 +969,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             expect.objectContaining({
                 isLocal: true,
                 clock: 3,
-                state: { user: updatedLocal, focused: false },
+                state: { state: { user: updatedLocal }, focused: false },
             }),
         ]);
         expect(runtime.queuedFrames(handle.editorId).map((frame) => Array.from(frame))).toEqual([
@@ -972,7 +991,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             expect.objectContaining({
                 isLocal: true,
                 clock: 5,
-                state: { user: updatedLocal, focused: false },
+                state: { state: { user: updatedLocal }, focused: false },
             }),
         ]);
 
@@ -1030,7 +1049,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(after.lastLocalAwarenessPublishMillis).toBe(publishBefore);
     });
 
-    it('fake validates typed intents atomically and projects its owned cursor separately from state', () => {
+    it('fake validates the production text-only intent and publishes nested engine-owned cursor state', () => {
         const handle = createRoomHandle({ withSnapshot: true });
         const intent: NativeEditorLocalAwarenessIntent = {
             state: { user: ALICE, selection: { anchor: 90, head: 91 } },
@@ -1058,10 +1077,50 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(fakeAwarenessAudit(handle.editorId)).toEqual(before);
         expect(handle.bridge.collaborationPeers()).toEqual([
             expect.objectContaining({
-                state: { user: ALICE, selection: { anchor: 90, head: 91 }, focused: true },
+                state: {
+                    state: { user: ALICE, selection: { anchor: 90, head: 91 } },
+                    focused: true,
+                    cursor: expect.any(Object),
+                },
                 cursor: { anchor: 2, head: 5 },
             }),
         ]);
+
+        for (const selection of [null, { type: 'node', pos: 2 }, { type: 'all' }]) {
+            const invalidBefore = fakeAwarenessAudit(handle.editorId);
+            const invalid = runtime.module.editorV2CollaborationSetAwareness(
+                handle.editorId,
+                JSON.stringify({ state: { user: ALICE }, focused: true, selection })
+            );
+            expect(invalid).toMatchObject({
+                value: null,
+                error: { domain: 'boundary', code: 'AWARENESS_STATE_INVALID' },
+            });
+            expect(fakeAwarenessAudit(handle.editorId)).toEqual(invalidBefore);
+        }
+    });
+
+    it('fake resolves one engine-owned cursor across local and remote document edits', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        handle.bridge.collaborationSetAwareness({
+            state: { user: ALICE },
+            focused: true,
+            selection: { type: 'text', anchor: 9, head: 9 },
+        });
+        expect(handle.bridge.collaborationPeers()[0].cursor).toEqual({ anchor: 9, head: 9 });
+
+        handle.bridge.applyInput({
+            baseDocumentRevision: '7',
+            text: '++',
+        });
+        expect(handle.bridge.collaborationPeers()[0].cursor).toEqual({ anchor: 11, head: 11 });
+
+        const generation = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(generation);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+        runtime.pushRemoteDoc(handle.editorId, fakeDocForText('XXsnapshot++'));
+        handle.bridge.collaborationReceive(generation, V2_FAKE_UPDATE_FRAME);
+        expect(handle.bridge.collaborationPeers()[0].cursor).toEqual({ anchor: 13, head: 13 });
     });
 
     it('reserves local clock headroom and rejects set-awareness atomically in every transport state', () => {
@@ -1628,7 +1687,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
                 clientId: expect.any(String),
                 clock: 2,
                 isLocal: true,
-                state: { user: ALICE, focused: false },
+                state: { state: { user: ALICE }, focused: false },
                 cursor: null,
             },
         ]);
@@ -1672,6 +1731,67 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             focused: false,
             selection: { type: 'text', anchor: 2, head: 5 },
         });
+    });
+
+    it('commits focus, user, and selection candidates only after native acceptance', () => {
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+        });
+        const nativeSet = runtime.module.editorV2CollaborationSetAwareness;
+
+        nativeSet.mockImplementationOnce(() => rejectedAwarenessResult('focus rejected'));
+        setup.controller.handleFocusChange(true);
+        setup.controller.updateLocalAwareness({ user: { ...ALICE, name: 'Alice II' } });
+        expect(JSON.parse(nativeSet.mock.calls.at(-1)?.[1] as string)).toEqual({
+            state: { user: { ...ALICE, name: 'Alice II' } },
+            focused: false,
+        });
+
+        nativeSet.mockImplementationOnce(() => rejectedAwarenessResult('user rejected'));
+        setup.controller.updateLocalAwareness({ user: { ...ALICE, name: 'Rejected' } });
+        setup.controller.handleSelectionChange({ type: 'text', anchor: 2, head: 5 });
+        expect(JSON.parse(nativeSet.mock.calls.at(-1)?.[1] as string)).toEqual({
+            state: { user: { ...ALICE, name: 'Alice II' } },
+            focused: true,
+            selection: { type: 'text', anchor: 2, head: 5 },
+        });
+
+        setup.controller.handleSelectionChange({ type: 'text', anchor: 999, head: 999 });
+        setup.controller.handleFocusChange(false);
+        expect(JSON.parse(nativeSet.mock.calls.at(-1)?.[1] as string)).toEqual({
+            state: { user: { ...ALICE, name: 'Alice II' } },
+            focused: false,
+            selection: { type: 'text', anchor: 2, head: 5 },
+        });
+        expect(setup.errors.map((error) => error.message)).toEqual([
+            'focus rejected',
+            'user rejected',
+            expect.stringContaining('outside'),
+        ]);
+    });
+
+    it('normalizes node and all selections to a cursorless awareness intent', () => {
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+        });
+        setup.controller.handleSelectionChange({ type: 'text', anchor: 2, head: 5 });
+
+        setup.controller.handleSelectionChange({ type: 'node', pos: 3 });
+        expect(
+            JSON.parse(
+                runtime.module.editorV2CollaborationSetAwareness.mock.calls.at(-1)?.[1] as string
+            )
+        ).toEqual({ state: { user: ALICE }, focused: true });
+
+        setup.controller.handleSelectionChange({ type: 'text', anchor: 3, head: 4 });
+        setup.controller.handleSelectionChange({ type: 'all' });
+        expect(
+            JSON.parse(
+                runtime.module.editorV2CollaborationSetAwareness.mock.calls.at(-1)?.[1] as string
+            )
+        ).toEqual({ state: { user: ALICE }, focused: true });
     });
 
     it('setting identical awareness twice emits no publish', () => {
@@ -1842,9 +1962,11 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             runtime.pushRemotePeers(handle.editorId, [
                 remotePeer({
                     state: {
-                        user: { userId: '2', name: 'Bob', color: '#00f' },
+                        state: {
+                            user: { userId: '2', name: 'Bob', color: '#00f' },
+                            selection: { anchor: 90, head: 91 },
+                        },
                         focused: true,
-                        selection: { anchor: 90, head: 91 },
                     },
                     cursor: { anchor: 4, head: 9 },
                 }),
@@ -1852,8 +1974,11 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
                     clientId: '43',
                     cursor: null,
                     state: {
-                        user: { userId: '3', name: 'Carol', color: '#0a0' },
-                        selection: { anchor: 40, head: 41 },
+                        state: {
+                            user: { userId: '3', name: 'Carol', color: '#0a0' },
+                            selection: { anchor: 40, head: 41 },
+                        },
+                        focused: true,
                     },
                 }),
             ]);
@@ -1902,7 +2027,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
 
     it('re-publishes the desired awareness when the localAwareness prop updates', () => {
         const handle = createRoomHandle({ withSnapshot: true });
-        let localAwareness = ALICE;
+        let localAwareness: typeof ALICE | undefined = ALICE;
         const { rerender } = renderHook(() =>
             useYjsCollaboration({
                 documentId: 'doc-1',
@@ -1926,6 +2051,11 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             state: { user: { ...ALICE, name: 'Alice II' } },
             focused: false,
         });
+
+        localAwareness = undefined;
+        rerender();
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(2);
+        expect(runtime.session(handle.editorId).desiredAwareness).not.toBeNull();
     });
 
     // ── Removal proofs ──────────────────────────────────────────
