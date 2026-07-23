@@ -35,7 +35,7 @@ android {
     // regenerated UniFFI Kotlin bindings are wired into every variant.
     sourceSets {
         main {
-            jniLibs.srcDirs += [
+            jniLibs.srcDirs = [
                 "${project.projectDir}/../rust/android"
             ]
             java.srcDirs += [

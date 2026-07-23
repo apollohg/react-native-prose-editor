@@ -27,11 +27,7 @@ Pod::Spec.new do |s|
   # Prebuilt Rust static library as XCFramework. CocoaPods only reliably
   # picks up vendored binaries that live under the pod root, so build-ios.sh
   # syncs the generated XCFramework into this ios/ directory.
-  xcframework_path = File.join(__dir__, 'EditorCore.xcframework')
-
-  if File.exist?(xcframework_path)
-    s.vendored_frameworks = 'EditorCore.xcframework'
-  end
+  s.vendored_frameworks = 'EditorCore.xcframework'
 
   # The UniFFI C header and modulemap for the Rust FFI layer
   s.preserve_paths = [
