@@ -29,6 +29,15 @@ mod command_planner;
 mod document_api;
 #[path = "../src/editor_state.rs"]
 mod editor_state;
+// Path-included engine sources retain their production dependency on the v2
+// wire primitives. Re-export only that shared types module at the benchmark
+// crate root; the benchmark must not pull in the v2 export entrypoints.
+#[path = "../src/ffi_v2/types.rs"]
+pub(crate) mod ffi_v2_types;
+pub(crate) mod ffi_v2 {
+    pub(crate) use super::ffi_v2_types as types;
+}
+uniffi::setup_scaffolding!();
 #[path = "../src/model/mod.rs"]
 mod model;
 #[path = "../src/native_transaction_bridge.rs"]
