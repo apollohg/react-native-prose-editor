@@ -2010,6 +2010,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var lastToolbarItemsJSON: String?
     private var lastToolbarFrameJSON: String?
     private var pendingEditorUpdateJSON: String?
+    private var pendingEditorUpdateEditorId: String?
     private var pendingEditorUpdateRevision = 0
     private var appliedEditorUpdateRevision = 0
     private var pendingEditorUpdateRetryScheduled = false
@@ -2062,6 +2063,12 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private var lastEmittedContentHeight: CGFloat = 0
     private var cachedAutoGrowContentHeight: CGFloat = 0
     private var lastAddonEventJSONForTestingValue: String?
+
+    private enum EditorUpdateApplyOutcome {
+        case applied
+        case retryableDeferred
+        case rejected
+    }
 
     private enum PendingAccessoryRetryAction: Hashable {
         case reloadInputViews
@@ -2212,9 +2219,13 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             clearPendingAccessoryRetry()
             clearPendingMentionSuggestionRetry()
         }
-        imageLoadOwner.withCurrent {
-            richTextView.editorId = id
-        }
+        // Fetch and adopt one atomic snapshot before the host's bind path
+        // asks `currentStateJSON()`. The adapter hands that exact payload to
+        // the bind, avoiding an independent cache-adopting render.
+        let initialBindUpdateJSON = id == 0
+            ? nil
+            : EditorV2Registry.adapter(forLegacyId: id)?.initialUpdateJSON()
+        imageLoadOwner.withCurrent { richTextView.editorId = id }
         if id != 0 {
             guard NativeEditorViewRegistry.shared.register(editorId: id, view: self) else {
                 handleEditorDestroyed(id)
@@ -2222,8 +2233,9 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             }
         }
         if id != 0 {
-            let stateJSON = EditorV2Shadow.getCurrentState(id: id)
-            if let state = NativeToolbarState(updateJSON: stateJSON) {
+            if let initialBindUpdateJSON,
+               let state = NativeToolbarState(updateJSON: initialBindUpdateJSON)
+            {
                 toolbarState = state
                 accessoryToolbar.apply(state: state)
             } else {
@@ -2266,6 +2278,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     private func clearPendingEditorUpdateRetries() {
         pendingEditorUpdateJSON = nil
+        pendingEditorUpdateEditorId = nil
         pendingEditorUpdateRevision = 0
         appliedEditorUpdateRevision = 0
         pendingEditorUpdateRetryScheduled = false
@@ -2636,6 +2649,20 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     func setPendingEditorUpdateJson(_ editorUpdateJson: String?) {
         pendingEditorUpdateJSON = editorUpdateJson
+        if editorUpdateJson == nil {
+            pendingEditorUpdateEditorId = nil
+        }
+    }
+
+    func setPendingEditorUpdateEditorId(_ editorUpdateEditorId: String?) {
+        guard let editorUpdateEditorId,
+              let canonicalEditorId = v2CanonicalUInt64String(editorUpdateEditorId),
+              canonicalEditorId != "0"
+        else {
+            pendingEditorUpdateEditorId = nil
+            return
+        }
+        pendingEditorUpdateEditorId = canonicalEditorId
     }
 
     func setPendingEditorUpdateRevision(_ editorUpdateRevision: Int) {
@@ -2646,11 +2673,27 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         guard pendingEditorUpdateRevision != 0 else { return }
         guard pendingEditorUpdateRevision != appliedEditorUpdateRevision else { return }
         guard let updateJSON = pendingEditorUpdateJSON else { return }
-        guard applyEditorUpdate(updateJSON) else {
+        let pendingRevision = pendingEditorUpdateRevision
+        switch applyEditorUpdateOutcome(updateJSON, sourceEditorId: pendingEditorUpdateEditorId) {
+        case .applied:
+            appliedEditorUpdateRevision = pendingRevision
+            pendingEditorUpdateJSON = nil
+            pendingEditorUpdateEditorId = nil
+            pendingEditorUpdateRevision = 0
+        case .retryableDeferred:
             schedulePendingEditorUpdateRetry()
-            return
+        case .rejected:
+            // Mark this prop revision consumed before discarding its envelope:
+            // OnViewDidUpdateProps can run again with the same values, but a
+            // permanent rejection must not report or retry a second time.
+            appliedEditorUpdateRevision = pendingRevision
+            pendingEditorUpdateJSON = nil
+            pendingEditorUpdateEditorId = nil
+            pendingEditorUpdateRevision = 0
+            pendingEditorUpdateRetryScheduled = false
+            pendingEditorUpdateRetryEditorId = nil
+            pendingEditorUpdateRetryGeneration &+= 1
         }
-        appliedEditorUpdateRevision = pendingEditorUpdateRevision
     }
 
     private func schedulePendingEditorUpdateRetry() {
@@ -2677,18 +2720,32 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     // MARK: - View Commands
 
-    /// Apply an editor update from JS. Sets the echo-suppression flag so the
-    /// resulting delegate callback is NOT re-dispatched back to JS.
-    @discardableResult
-    func applyEditorUpdate(_ updateJson: String) -> Bool {
-        guard richTextView.textView.prepareForExternalEditorUpdate() else {
-            scheduleViewCommandUpdateRetry(updateJson)
-            return false
+    private func reportRejectedEditorUpdateEnvelope(_ message: String) {
+        EditorV2Registry.adapter(forLegacyId: richTextView.editorId)?
+            .rejectExternalRenderEnvelope(message)
+    }
+
+    private func applyEditorUpdateOutcome(
+        _ updateJson: String,
+        sourceEditorId: String?
+    ) -> EditorUpdateApplyOutcome {
+        let boundEditorId = richTextView.editorId
+        guard boundEditorId != 0,
+              let sourceEditorId,
+              sourceEditorId == String(boundEditorId)
+        else {
+            reportRejectedEditorUpdateEnvelope(
+                "external editor update source does not match the bound canonical editor id"
+            )
+            return .rejected
         }
-        guard let adapter = EditorV2Registry.adapter(forLegacyId: richTextView.editorId),
+        guard richTextView.textView.prepareForExternalEditorUpdate() else {
+            return .retryableDeferred
+        }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: boundEditorId),
               let adoptedUpdateJSON = adapter.adoptExternalRender(updateJson)
         else {
-            return false
+            return .rejected
         }
         isApplyingJSUpdate = true
         defer { isApplyingJSUpdate = false }
@@ -2698,10 +2755,26 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             // whose revision has not already been adopted for native input.
             richTextView.textView.applyUpdateJSON(adoptedUpdateJSON)
         }
-        return true
+        return .applied
     }
 
-    private func scheduleViewCommandUpdateRetry(_ updateJson: String) {
+    /// Apply an editor update from JS. Sets the echo-suppression flag so the
+    /// resulting delegate callback is NOT re-dispatched back to JS.
+    @discardableResult
+    func applyEditorUpdate(_ updateJson: String) -> Bool {
+        let sourceEditorId = richTextView.editorId == 0 ? nil : String(richTextView.editorId)
+        switch applyEditorUpdateOutcome(updateJson, sourceEditorId: sourceEditorId) {
+        case .applied:
+            return true
+        case .retryableDeferred:
+            scheduleViewCommandUpdateRetry(updateJson, sourceEditorId: sourceEditorId)
+            return false
+        case .rejected:
+            return false
+        }
+    }
+
+    private func scheduleViewCommandUpdateRetry(_ updateJson: String, sourceEditorId: String?) {
         pendingViewCommandUpdateJSON = updateJson
         pendingViewCommandUpdateEditorId = richTextView.editorId
         guard !pendingViewCommandUpdateRetryScheduled else { return }
@@ -2729,21 +2802,19 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
                 self.pendingViewCommandUpdateRetryScheduled = false
                 return
             }
+            let updateJSON = self.pendingViewCommandUpdateJSON
             self.pendingViewCommandUpdateJSON = nil
             self.pendingViewCommandUpdateEditorId = nil
             self.pendingViewCommandUpdateRetryScheduled = false
-            guard let adapter = EditorV2Registry.adapter(forLegacyId: self.richTextView.editorId),
-                  let updateJSON = adapter.refreshFromRustState(mirrorSelection: nil)
-            else {
+            guard let updateJSON else { return }
+            switch self.applyEditorUpdateOutcome(
+                updateJSON,
+                sourceEditorId: sourceEditorId
+            ) {
+            case .applied, .rejected:
                 return
-            }
-            // A Rust refresh already adopts adapter state. Apply its
-            // view-facing payload directly so retry cannot split cache and
-            // rendered content.
-            self.isApplyingJSUpdate = true
-            defer { self.isApplyingJSUpdate = false }
-            self.imageLoadOwner.withCurrent {
-                self.richTextView.textView.applyUpdateJSON(updateJSON)
+            case .retryableDeferred:
+                self.scheduleViewCommandUpdateRetry(updateJSON, sourceEditorId: sourceEditorId)
             }
         }
     }

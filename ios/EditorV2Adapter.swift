@@ -66,6 +66,10 @@ final class EditorV2Adapter {
     private var cachedActiveState: [String: Any]?
     private var cachedHistoryState: (canUndo: Bool, canRedo: Bool)?
     private var cachedViewUpdateJSON: String?
+    /// The initial host bind has to render the text view through its existing
+    /// `currentStateJSON()` seam. Keep exactly one adopted snapshot for that
+    /// immediate consumption so the toolbar and adapter cache share it.
+    private var pendingInitialBindUpdateJSON: String?
     /// Diagnostics: structured notes for adapter-path failures
     /// (mismatch refreshes, derivation failures) that never surface as
     /// autonomous error events.
@@ -172,6 +176,13 @@ final class EditorV2Adapter {
     /// an otherwise atomic no-op.
     private func rejectAtomicRenderSnapshot() {
         onAutonomousError?(Self.contractError("v2 atomic render snapshot violates the frozen shape"))
+    }
+
+    /// View-side envelope failures (missing/mismatched source ids) have no
+    /// engine call to classify. Route them through the same boundary error
+    /// channel as a rejected external snapshot, once per discarded envelope.
+    func rejectExternalRenderEnvelope(_ message: String) {
+        onAutonomousError?(Self.contractError(message))
     }
 
     private func requestIdExhaustedError() -> FfiError {
@@ -747,12 +758,18 @@ final class EditorV2Adapter {
     /// Synthesized current-state update (selection/activeState included,
     /// mirroring the legacy `editorGetCurrentState` contract).
     func currentStateJSON() -> String? {
-        refreshInternal(mirrorSelection: lastSyncedScalarSelection)?.updateJSON
+        if let initialBindUpdateJSON = pendingInitialBindUpdateJSON {
+            pendingInitialBindUpdateJSON = nil
+            return initialBindUpdateJSON
+        }
+        return refreshInternal(mirrorSelection: lastSyncedScalarSelection)?.updateJSON
     }
 
     /// The initial bind render.
     func initialUpdateJSON() -> String? {
-        refreshInternal(mirrorSelection: nil)?.updateJSON
+        let updateJSON = refreshInternal(mirrorSelection: nil)?.updateJSON
+        pendingInitialBindUpdateJSON = updateJSON
+        return updateJSON
     }
 
     func documentHtml() -> String? {

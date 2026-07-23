@@ -529,6 +529,9 @@ public class NativeEditorModule: Module {
             Prop("editorUpdateJson") { (view: NativeEditorExpoView, editorUpdateJson: String?) in
                 view.setPendingEditorUpdateJson(editorUpdateJson)
             }
+            Prop("editorUpdateEditorId") { (view: NativeEditorExpoView, editorUpdateEditorId: String?) in
+                view.setPendingEditorUpdateEditorId(editorUpdateEditorId)
+            }
             Prop("editorUpdateRevision") { (view: NativeEditorExpoView, editorUpdateRevision: Double) in
                 guard let exactRevision = v2ExactUInt32(NSNumber(value: editorUpdateRevision)) else {
                     return

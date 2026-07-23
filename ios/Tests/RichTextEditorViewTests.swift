@@ -3142,6 +3142,237 @@ final class RichTextEditorViewTests: XCTestCase {
         )
     }
 
+    func testBindingAdoptsExactlyOneAtomicSnapshotForViewAndToolbar() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected the v2 adapter paired to the native editor")
+            return
+        }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Bound</p>")
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+
+        let renderCallsBefore = adapter.renderUpdateCallCountForTesting
+        view.setEditorId(editorId)
+
+        XCTAssertEqual(
+            adapter.renderUpdateCallCountForTesting,
+            renderCallsBefore + 1,
+            "binding must use one atomic render snapshot for both cache adoption and toolbar state"
+        )
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "Bound")
+    }
+
+    func testPendingEditorUpdateRejectsStaleCrossEditorSourceWithoutRetrying() {
+        let firstEditorId = makeV2Editor()
+        let secondEditorId = makeV2Editor()
+        defer {
+            destroyV2Editor(id: firstEditorId)
+            destroyV2Editor(id: secondEditorId)
+        }
+        _ = EditorV2Shadow.setHtml(id: firstEditorId, html: "<p>First</p>")
+        _ = EditorV2Shadow.setHtml(id: secondEditorId, html: "<p>Second</p>")
+        guard let secondAdapter = EditorV2Registry.adapter(forLegacyId: secondEditorId) else {
+            XCTFail("expected second adapter")
+            return
+        }
+        var errors: [FfiError] = []
+        secondAdapter.onAutonomousError = { errors.append($0) }
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(secondEditorId)
+
+        _ = EditorV2Shadow.replaceHtml(id: firstEditorId, html: "<p>Remote first</p>")
+        guard let firstAdapter = EditorV2Registry.adapter(forLegacyId: firstEditorId),
+              let staleUpdate = editorV2RenderUpdate(
+                editorId: firstAdapter.editorId,
+                mirrorScalarAnchor: nil,
+                mirrorScalarHead: nil
+              ).value
+        else {
+            XCTFail("expected atomic render snapshot")
+            return
+        }
+        view.setPendingEditorUpdateJson(staleUpdate)
+        view.setPendingEditorUpdateEditorId(String(firstEditorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
+        flushMainQueue()
+
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "Second")
+        XCTAssertEqual(errors.count, 1)
+        view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(errors.count, 1, "a permanent source mismatch must not schedule another attempt")
+    }
+
+    func testPendingEditorUpdateAcceptsCanonicalSourceAndRejectsMalformedSourceOnce() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected adapter")
+            return
+        }
+        var errors: [FfiError] = []
+        adapter.onAutonomousError = { errors.append($0) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>Initial</p>")
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Canonical</p>")
+        guard let accepted = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value else {
+            XCTFail("expected atomic render snapshot")
+            return
+        }
+        view.setPendingEditorUpdateJson(accepted)
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "Canonical")
+
+        view.setPendingEditorUpdateJson(accepted)
+        view.setPendingEditorUpdateEditorId("00\(editorId)")
+        view.setPendingEditorUpdateRevision(2)
+        view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
+
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "Canonical")
+        XCTAssertEqual(errors.count, 1)
+        view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(errors.count, 1)
+    }
+
+    func testPermanentInvalidPendingEditorUpdateReportsOnceWithoutRetry() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected adapter")
+            return
+        }
+        var errors: [FfiError] = []
+        adapter.onAutonomousError = { errors.append($0) }
+
+        let view = NativeEditorExpoView()
+        view.setEditorId(editorId)
+        view.setPendingEditorUpdateJson("{malformed")
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
+        flushMainQueue()
+
+        XCTAssertEqual(errors.count, 1)
+        XCTAssertEqual(errors.first?.code, "FFI_RESULT_INVALID")
+        view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(errors.count, 1)
+    }
+
+    func testPendingEditorUpdateRetriesCompositionDeferralThenApplies() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>First</p>")
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+        setCollapsedSelection(in: view.richTextView.textView, utf16Offset: 0)
+
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Remote</p>")
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId),
+              let update = editorV2RenderUpdate(
+                editorId: adapter.editorId,
+                mirrorScalarAnchor: nil,
+                mirrorScalarHead: nil
+              ).value
+        else {
+            XCTFail("expected atomic render snapshot")
+            return
+        }
+        view.richTextView.textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
+        view.setPendingEditorUpdateJson(update)
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "First")
+
+        flushMainQueue()
+        flushMainQueue()
+
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "Remote")
+    }
+
+    func testRebindClearsPendingEditorUpdateSourceAndPayload() {
+        let firstEditorId = makeV2Editor()
+        let secondEditorId = makeV2Editor()
+        defer {
+            destroyV2Editor(id: firstEditorId)
+            destroyV2Editor(id: secondEditorId)
+        }
+        _ = EditorV2Shadow.setHtml(id: firstEditorId, html: "<p>First</p>")
+        _ = EditorV2Shadow.setHtml(id: secondEditorId, html: "<p>Second</p>")
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(firstEditorId)
+        setCollapsedSelection(in: view.richTextView.textView, utf16Offset: 0)
+        _ = EditorV2Shadow.replaceHtml(id: firstEditorId, html: "<p>Remote</p>")
+        guard let firstAdapter = EditorV2Registry.adapter(forLegacyId: firstEditorId),
+              let update = editorV2RenderUpdate(
+                editorId: firstAdapter.editorId,
+                mirrorScalarAnchor: nil,
+                mirrorScalarHead: nil
+              ).value
+        else {
+            XCTFail("expected atomic render snapshot")
+            return
+        }
+        view.richTextView.textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
+        view.setPendingEditorUpdateJson(update)
+        view.setPendingEditorUpdateEditorId(String(firstEditorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+
+        view.setEditorId(secondEditorId)
+        flushMainQueue()
+        flushMainQueue()
+
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "Second")
+    }
+
     func testInputTraitChangesDrainPendingNativeAutocorrectBeforeReload() {
         assertPendingNativeAutocorrectSurvivesInputTraitChange {
             $0.setAutoCorrect(true)
@@ -3577,7 +3808,17 @@ final class RichTextEditorViewTests: XCTestCase {
         view.setEditorId(editorId)
         setCollapsedSelection(in: view.richTextView.textView, utf16Offset: 0)
 
-        let updateJSON = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Remote</p>")
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Remote</p>")
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId),
+              let updateJSON = editorV2RenderUpdate(
+                editorId: adapter.editorId,
+                mirrorScalarAnchor: nil,
+                mirrorScalarHead: nil
+              ).value
+        else {
+            XCTFail("expected atomic render snapshot")
+            return
+        }
         view.richTextView.textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
 
         XCTAssertFalse(view.applyEditorUpdate(updateJSON))
