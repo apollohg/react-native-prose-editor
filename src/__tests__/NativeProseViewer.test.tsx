@@ -195,11 +195,12 @@ describe('NativeProseViewer', () => {
         );
 
         const config = JSON.parse(mockRenderDocumentJson.mock.calls[0]?.[0] as string);
-        expect(config.resourceLimits).toMatchObject({
+        expect(config.limits.resource).toMatchObject({
             maxInputBytes: 20 * 1024 * 1024,
             maxSchemaNodes: 500,
             maxEncodedStateBytes: 50 * 1024 * 1024,
         });
+        expect(config.resourceLimits).toBeUndefined();
     });
 
     it('does not rescan or rerender for semantically equal inline resource limits', () => {

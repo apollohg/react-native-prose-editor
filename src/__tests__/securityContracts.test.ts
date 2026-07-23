@@ -15,6 +15,23 @@ const fixturePath =
     path.resolve(__dirname, '../../scripts/tests/security-contract-fixtures.json');
 const fixtures = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
 
+const V2_U64_ERROR_FIELDS = ['operationIndex', 'limit', 'actual'] as const;
+
+/**
+ * Shared security fixtures use JSON numbers for logical counters. The frozen
+ * 1.0 FFI v2 wire contract carries every u64 as a canonical decimal string.
+ */
+function toV2WireError(error: Record<string, unknown>): Record<string, unknown> {
+    return Object.fromEntries(
+        Object.entries(error).map(([field, value]) => [
+            field,
+            (V2_U64_ERROR_FIELDS as readonly string[]).includes(field) && typeof value === 'number'
+                ? String(value)
+                : value,
+        ])
+    );
+}
+
 describe('shared hostile security fixtures', () => {
     it('executes oversized schema admission against the TypeScript boundary', () => {
         const nodeCount = fixtures.oversizedSchema.nodeCount as number;
@@ -105,7 +122,8 @@ describe('FFI v2 error contract', () => {
     it.each(contract.goldenErrors)(
         'normalizes $domain/$code with explicit nullable fields',
         (error: Record<string, unknown>) => {
-            expect(normalizeNativeEditorV2Error({ ok: false, error })).toEqual(error);
+            const wireError = toV2WireError(error);
+            expect(normalizeNativeEditorV2Error({ ok: false, error: wireError })).toEqual(wireError);
         }
     );
 
@@ -118,9 +136,18 @@ describe('FFI v2 error contract', () => {
             expect(error).toBeDefined();
             expect(error.domain).toBe(contract.operationCodeDomains[code]);
             expect(error.requestId).toMatch(/^(0|[1-9]\d*)$/);
-            expect(normalizeNativeEditorV2Error({ ok: false, error })).toEqual(error);
+            const wireError = toV2WireError(error);
+            expect(normalizeNativeEditorV2Error({ ok: false, error: wireError })).toEqual(wireError);
         }
     );
+
+    it('rejects legacy numeric error counters from the shared fixture', () => {
+        const legacyError = contract.goldenErrors.find(
+            (error: Record<string, unknown>) => typeof error.operationIndex === 'number'
+        );
+        expect(legacyError).toBeDefined();
+        expect(normalizeNativeEditorV2Error({ ok: false, error: legacyError })).toBeNull();
+    });
 
     it.each(contract.invalidRequestIds)(
         'rejects non-canonical decimal request ID %p',

@@ -530,7 +530,7 @@ describe('NativeEditorBridge v2', () => {
             }
         );
 
-        it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '01', '+1', '7', NaN])(
+        it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '01', '+1', NaN])(
             'rejects invalid limit field value %p',
             (fieldValue) => {
                 expect(
@@ -850,7 +850,7 @@ describe('NativeEditorBridge v2', () => {
             );
             expectNonRetryable(
                 catchThrown(() =>
-                    handle.bridge.applyInput({ baseDocumentRevision: 4 as never, text: 'x' })
+                    handle.bridge.applyInput({ baseDocumentRevision: '4', text: 'x' })
                 ),
                 'FFI_RESULT_INVALID'
             );
