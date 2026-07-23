@@ -741,6 +741,77 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(runtime.module.editorV2CollaborationTakeOutbound).toHaveBeenCalled();
     });
 
+    it('models the deterministic awareness renewal, expiry, flags, and next deadline', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        const generation = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(generation);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+
+        expect(handle.bridge.collaborationTick('14999')).toEqual({
+            nextDeadlineMillis: '15000',
+            renewedLocal: false,
+            expiredPeers: [],
+            outboundChanged: false,
+            peersChanged: false,
+        });
+        expect(() => handle.bridge.collaborationTick('14998')).toThrow(
+            expect.objectContaining({
+                code: 'AWARENESS_TIME_REGRESSION',
+                details: { nowMillis: '14998', lastNowMillis: '14999' },
+            })
+        );
+
+        runtime.pushRemotePeers(handle.editorId, [
+            remotePeer({ clientId: '10' }),
+            remotePeer({ clientId: '2' }),
+        ]);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
+
+        expect(handle.bridge.collaborationTick('15000')).toEqual({
+            nextDeadlineMillis: '30000',
+            renewedLocal: true,
+            expiredPeers: [],
+            outboundChanged: true,
+            peersChanged: false,
+        });
+        expect(handle.bridge.collaborationTick('44998')).toEqual({
+            nextDeadlineMillis: '44999',
+            renewedLocal: true,
+            expiredPeers: [],
+            outboundChanged: true,
+            peersChanged: false,
+        });
+        expect(handle.bridge.collaborationTick('44999')).toEqual({
+            nextDeadlineMillis: '59998',
+            renewedLocal: false,
+            expiredPeers: ['2', '10'],
+            outboundChanged: false,
+            peersChanged: true,
+        });
+        expect(handle.bridge.collaborationPeers()).toEqual([
+            expect.objectContaining({ isLocal: true, clock: 3 }),
+        ]);
+    });
+
+    it('makes detach and reattach idempotent without reopening an incompatible transport early', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        const generation = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(generation);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_INCOMPATIBLE_FRAME);
+
+        expect(() => handle.bridge.collaborationBeginConnect()).toThrow(
+            expect.objectContaining({ code: 'TRANSPORT_INCOMPATIBLE' })
+        );
+        handle.bridge.collaborationDetach();
+        handle.bridge.collaborationDetach();
+        expect(handle.bridge.getState().transportState).toBe('Detached');
+        handle.bridge.collaborationReattach();
+        handle.bridge.collaborationReattach();
+        expect(handle.bridge.getState().transportState).toBe('Disconnected');
+        expect(handle.bridge.collaborationBeginConnect()).toBe('2');
+    });
+
     // ── Awareness / peers ───────────────────────────────────────
 
     it('publishes desired awareness through Rust with no TypeScript clock bookkeeping, and renders peers', () => {
