@@ -2736,8 +2736,17 @@ class NativeEditorExpoView(
                 "editorId" to event.editorId,
                 "error" to event.error.toJSMap(),
             )
-            onEditorErrorForTesting?.invoke(payload) ?: onEditorError(payload)
+            dispatchEditorError(payload)
         }
+    }
+
+    private fun dispatchEditorError(payload: Map<String, Any>) {
+        onEditorErrorForTesting?.let { callback ->
+            callback(payload)
+            return
+        }
+        if (!appContext.hasActiveReactInstance) return
+        onEditorError(payload)
     }
 
     private fun isLiveEditorErrorBinding(event: PendingEditorErrorEvent): Boolean {

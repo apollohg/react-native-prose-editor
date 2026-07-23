@@ -90,8 +90,8 @@ class NativeDeviceCollaborationInitialSyncTest {
 
                 val updateJson = AtomicReference<String>()
                 scenario.onActivity {
-                    val update = adapter.setContentJson(documentJson("Remote reset sync"))
-                    if (update == null) return@onActivity
+                    if (adapter.setContentJson(documentJson("Remote reset sync")) == null) return@onActivity
+                    val update = atomicRenderSnapshot(adapter)
                     updateJson.set(update)
                     editorRef.get().setPendingEditorResetUpdateJson(update)
                     editorRef.get().setPendingEditorResetUpdateEditorId(editorId)
@@ -111,6 +111,15 @@ class NativeDeviceCollaborationInitialSyncTest {
                     editorRef.get().richTextView.editorEditText.text.toString() ==
                         "Remote reset sync"
                 }
+
+                // A malformed external snapshot still reports an editor error, but the test
+                // host has no Catalyst instance. Delivery must be dropped without crashing.
+                adapter.adoptExternalRender("{}")
+                instrumentation.waitForIdleSync()
+                assertTrue(
+                    "editor error queue should drain after the React instance is unavailable",
+                    editorRef.get().pendingEditorErrorEventCountForTesting() == 0
+                )
             } finally {
                 releasePairedV2TestEditor(editorId)
             }
@@ -120,6 +129,13 @@ class NativeDeviceCollaborationInitialSyncTest {
     private fun createV2Editor(): Pair<EditorV2Adapter, Long> {
         return createPairedV2TestEditor()
     }
+
+    private fun atomicRenderSnapshot(adapter: EditorV2Adapter): String =
+        when (val result = UniffiEditorV2Backend.renderUpdate(adapter.editorId, null, null)) {
+            is EditorV2CallResult.Ok -> result.value
+            is EditorV2CallResult.Err ->
+                error("v2 renderUpdate failed: ${result.error.code}: ${result.error.message}")
+        }
 
     private fun replaceDocumentV2(adapter: EditorV2Adapter, documentJson: String) {
         val requestJson = JSONObject()
