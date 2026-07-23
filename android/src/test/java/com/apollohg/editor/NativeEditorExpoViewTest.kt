@@ -676,6 +676,47 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
+    fun `action-only toolbar event omits cached document revision`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        var toolbarActionPayload: Map<String, Any>? = null
+
+        try {
+            view.onAddonEventForTesting = {}
+            view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+            view.onEditorReadyForTesting = {}
+            view.onSelectionChangeForTesting = {}
+            view.setAttachedToNativeWindowForTesting(true)
+            view.setEditorId(viewToken)
+            view.setLastDocumentVersionForTesting("42")
+            view.onToolbarActionForTesting = { payload ->
+                toolbarActionPayload = payload
+            }
+
+            view.handleToolbarItemPressForTesting(
+                NativeToolbarItem(
+                    type = ToolbarItemKind.action,
+                    key = "custom",
+                    label = "Custom"
+                )
+            )
+
+            assertNotNull(toolbarActionPayload)
+            val payload = toolbarActionPayload!!
+            assertFalse(payload.containsKey("updateJson"))
+            assertFalse(payload.containsKey("documentRevision"))
+            assertEquals("custom", payload["key"])
+            assertEquals(adapter.editorId, payload["editorId"])
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
     fun `autofocus requested before attach applies when editor becomes focusable`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val parent = FrameLayout(activity)
@@ -1467,7 +1508,8 @@ class NativeEditorExpoViewTest {
 
         assertFalse(view.hasPendingNativeActionForTesting())
         assertEquals("custom", toolbarActionPayload?.get("key"))
-        assertEquals("2", toolbarActionPayload?.get("documentRevision"))
+        assertFalse(toolbarActionPayload!!.containsKey("updateJson"))
+        assertFalse(toolbarActionPayload.containsKey("documentRevision"))
 
         NativeEditorViewRegistry.unregister(editorId, view)
     }

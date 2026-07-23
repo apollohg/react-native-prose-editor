@@ -3380,11 +3380,6 @@ class NativeEditorExpoView(
                     "editorId" to eventEditorId(richTextView.editorId)
                 )
                 addPreflightUpdateToEvent(payload, preflightUpdateJSON)
-                if (!payload.containsKey("documentRevision")) {
-                    lastDocumentVersion?.let { version ->
-                        payload["documentRevision"] = version
-                    }
-                }
                 onToolbarActionForTesting?.invoke(payload) ?: onToolbarAction(payload)
             }
             ToolbarItemKind.group -> Unit
