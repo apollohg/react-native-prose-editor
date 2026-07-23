@@ -279,42 +279,65 @@ func createEditorV2SessionFromModule(
     }
 }
 
-func destroyPairedEditorV2FromModule(nativeViewId: UInt64) -> FfiUnitResult {
-    if let error = EditorV2Registry.destroyPair(forLegacyId: nativeViewId) {
-        return FfiUnitResult(value: nil, error: error)
-    }
-    return FfiUnitResult(value: true, error: nil)
-}
-
-/// Destroy a canonical but unpaired public session. A live native view can
-/// briefly outlast its pairing during teardown, so it receives the same
-/// reversible reservation as the paired path before Rust is called.
-func destroyUnpairedEditorV2FromModule(
+/// One canonical-handle destroy transaction. The handle reservation is the
+/// contention authority because pairings are removed before native view
+/// finalization. A paired adapter supplies its own FFI so its error owner is
+/// committed only for exact terminal records; an unpaired session calls the
+/// supplied public FFI directly.
+func destroyEditorV2FromModule(
     editorId: String,
-    nativeViewId: UInt64,
     destroy: (String) -> FfiUnitResult = { editorId in
         editorV2Destroy(editorId: editorId)
     }
 ) -> FfiUnitResult {
+    guard let nativeViewId = v2UInt64Argument(editorId), nativeViewId > 0 else {
+        return destroy(editorId)
+    }
+    guard EditorV2Registry.acquireHandleDestroyReservation(forLegacyId: nativeViewId) else {
+        return FfiUnitResult(value: nil, error: v2DestroyAlreadyInProgressError())
+    }
+    defer {
+        // The canonical-handle reservation remains visible until all paired
+        // cleanup has completed, including after the pairing disappears.
+        EditorV2Registry.releaseHandleDestroyReservation(forLegacyId: nativeViewId)
+    }
+
+    // Pair lookup follows reservation acquisition. Do not make routing or
+    // contention decisions from a pairing that terminal teardown removes.
+    let adapter = EditorV2Registry.adapter(forLegacyId: nativeViewId)
     let viewRegistry = NativeEditorViewRegistry.shared
     let reservation = viewRegistry.acquireDestroyReservation(editorId: nativeViewId)
     if reservation == .alreadyInProgress {
         return FfiUnitResult(value: nil, error: v2DestroyAlreadyInProgressError())
     }
     let reserved = reservation == .reserved
+    if adapter != nil && !reserved {
+        return FfiUnitResult(
+            value: nil,
+            error: FfiError(
+                domain: "boundary",
+                code: "FFI_RESULT_INVALID",
+                message: "v2 destroy could not reserve its native view",
+                requestId: nil,
+                operationIndex: nil,
+                limit: nil,
+                actual: nil,
+                detailsJson: nil
+            )
+        )
+    }
 
-    let result = destroy(editorId)
+    let result = adapter?.destroyForModuleTransaction() ?? destroy(editorId)
+    EditorV2Registry.onDestroyFfiResultReceivedForTesting?(nativeViewId)
     switch (result.value, result.error) {
     case let (value?, nil) where value:
-        if reserved { viewRegistry.finalizeDestroy(editorId: nativeViewId) }
-        return result
+        break
     case let (nil, error?) where error.domain == "lifecycle"
         && (error.code == "ENGINE_DESTROYED" || error.code == "ENGINE_DESTROYING"):
-        if reserved { viewRegistry.finalizeDestroy(editorId: nativeViewId) }
-        return result
+        break
     case let (nil, error?):
         if reserved { viewRegistry.rollbackDestroy(editorId: nativeViewId) }
-        return FfiUnitResult(value: nil, error: error)
+        return result
     default:
         if reserved { viewRegistry.rollbackDestroy(editorId: nativeViewId) }
         return FfiUnitResult(
@@ -331,6 +354,28 @@ func destroyUnpairedEditorV2FromModule(
             )
         )
     }
+
+    // Terminal result only: the adapter clears its error owner before this
+    // point, then its pairing is removed while the command/callback gate is
+    // still held. The handle transaction remains held through finalization.
+    if adapter != nil {
+        _ = EditorV2Registry.removePairing(forLegacyId: nativeViewId)
+        EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting?(nativeViewId)
+    }
+    if reserved { viewRegistry.finalizeDestroy(editorId: nativeViewId) }
+    return result
+}
+
+/// Test-facing wrapper retained only to inject the raw FFI result for an
+/// unpaired handle. Production routing uses `destroyEditorV2FromModule`.
+func destroyUnpairedEditorV2FromModule(
+    editorId: String,
+    nativeViewId _: UInt64,
+    destroy: (String) -> FfiUnitResult = { editorId in
+        editorV2Destroy(editorId: editorId)
+    }
+) -> FfiUnitResult {
+    destroyEditorV2FromModule(editorId: editorId, destroy: destroy)
 }
 
 /// Whether the JS-facing create config initializes a room-bound session
@@ -434,20 +479,7 @@ public class NativeEditorModule: Module {
             createEditorV2SessionFromModule(configJson: configJson, snapshotState: snapshotState)
         }
         Function("editorV2Destroy") { (editorId: String) -> [String: Any] in
-            if let nativeViewId = v2UInt64Argument(editorId), nativeViewId > 0 {
-                if EditorV2Registry.adapter(forLegacyId: nativeViewId) != nil {
-                    return v2UnitResultDictionary(
-                        destroyPairedEditorV2FromModule(nativeViewId: nativeViewId)
-                    )
-                }
-                return v2UnitResultDictionary(
-                    destroyUnpairedEditorV2FromModule(
-                        editorId: editorId,
-                        nativeViewId: nativeViewId
-                    )
-                )
-            }
-            return v2UnitResultDictionary(editorV2Destroy(editorId: editorId))
+            v2UnitResultDictionary(destroyEditorV2FromModule(editorId: editorId))
         }
         Function("editorV2GetState") { (editorId: String) -> [String: Any] in
             v2JsonResultDictionary(editorV2GetState(editorId: editorId))

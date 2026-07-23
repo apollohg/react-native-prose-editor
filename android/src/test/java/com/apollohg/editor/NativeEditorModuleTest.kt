@@ -132,6 +132,238 @@ class NativeEditorModuleTest {
     }
 
     @Test
+    fun `handle transaction blocks contender before pairing lookup`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"localEmpty\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            JSONObject(created.value).getString("editorId"),
+            roomBound = false,
+        )!!
+        val viewToken = EditorV2Registry.register(adapter)
+        NativeEditorViewRegistry.markEditorCreated(viewToken)
+        val reservationAcquired = java.util.concurrent.CountDownLatch(1)
+        val releaseOwner = java.util.concurrent.CountDownLatch(1)
+        val ownerFinished = java.util.concurrent.CountDownLatch(1)
+        val destroyAttempts = java.util.concurrent.atomic.AtomicInteger(0)
+        EditorV2Registry.onHandleDestroyReservationAcquiredForTesting = { handle ->
+            if (handle == adapter.editorId) {
+                reservationAcquired.countDown()
+                releaseOwner.await()
+            }
+        }
+
+        try {
+            val destroy: (String) -> FfiUnitResult = {
+                destroyAttempts.incrementAndGet()
+                FfiUnitResult(true, null)
+            }
+            val owner = Thread {
+                val result = destroyEditorV2FromModule(adapter.editorId, destroy)
+                assertEquals(true, result.value)
+                assertNull(result.error)
+                ownerFinished.countDown()
+            }
+            owner.start()
+            assertTrue(reservationAcquired.await(1, java.util.concurrent.TimeUnit.SECONDS))
+
+            val contender = destroyEditorV2FromModule(adapter.editorId, destroy)
+            assertNull(contender.value)
+            assertEquals("operation", contender.error?.domain)
+            assertEquals("OPERATION_INVALID", contender.error?.code)
+            assertEquals("destroy already in progress", contender.error?.message)
+            assertEquals(0, destroyAttempts.get())
+
+            releaseOwner.countDown()
+            assertTrue(ownerFinished.await(1, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals(1, destroyAttempts.get())
+            assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(adapter.editorId))
+        } finally {
+            EditorV2Registry.onHandleDestroyReservationAcquiredForTesting = null
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.invalidateDestroyedEditor(viewToken)
+        }
+    }
+
+    @Test
+    fun `handle transaction blocks contender after ffi and after pairing removal`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"localEmpty\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            JSONObject(created.value).getString("editorId"),
+            roomBound = false,
+        )!!
+        val viewToken = EditorV2Registry.register(adapter)
+        NativeEditorViewRegistry.markEditorCreated(viewToken)
+        val ffiReturned = java.util.concurrent.CountDownLatch(1)
+        val releaseAfterFfi = java.util.concurrent.CountDownLatch(1)
+        val pairRemoved = java.util.concurrent.CountDownLatch(1)
+        val releaseAfterPairRemoval = java.util.concurrent.CountDownLatch(1)
+        val ownerFinished = java.util.concurrent.CountDownLatch(1)
+        val destroyAttempts = java.util.concurrent.atomic.AtomicInteger(0)
+        EditorV2Registry.onDestroyFfiResultReceivedForTesting = { handle ->
+            if (handle == adapter.editorId) {
+                ffiReturned.countDown()
+                releaseAfterFfi.await()
+            }
+        }
+        EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting = { handle ->
+            if (handle == adapter.editorId) {
+                pairRemoved.countDown()
+                releaseAfterPairRemoval.await()
+            }
+        }
+
+        try {
+            val destroy: (String) -> FfiUnitResult = {
+                destroyAttempts.incrementAndGet()
+                FfiUnitResult(true, null)
+            }
+            val owner = Thread {
+                val result = destroyEditorV2FromModule(adapter.editorId, destroy)
+                assertEquals(true, result.value)
+                assertNull(result.error)
+                ownerFinished.countDown()
+            }
+            owner.start()
+            assertTrue(ffiReturned.await(1, java.util.concurrent.TimeUnit.SECONDS))
+
+            val afterFfi = destroyEditorV2FromModule(adapter.editorId, destroy)
+            assertEquals("OPERATION_INVALID", afterFfi.error?.code)
+            assertEquals("destroy already in progress", afterFfi.error?.message)
+            assertEquals(1, destroyAttempts.get())
+
+            releaseAfterFfi.countDown()
+            assertTrue(pairRemoved.await(1, java.util.concurrent.TimeUnit.SECONDS))
+            assertNull(EditorV2Registry.viewTokenForHandle(adapter.editorId))
+
+            val afterPairRemoval = destroyEditorV2FromModule(adapter.editorId, destroy)
+            assertEquals("OPERATION_INVALID", afterPairRemoval.error?.code)
+            assertEquals("destroy already in progress", afterPairRemoval.error?.message)
+            assertEquals(1, destroyAttempts.get())
+
+            releaseAfterPairRemoval.countDown()
+            assertTrue(ownerFinished.await(1, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(adapter.editorId))
+        } finally {
+            EditorV2Registry.onDestroyFfiResultReceivedForTesting = null
+            EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting = null
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.invalidateDestroyedEditor(viewToken)
+        }
+    }
+
+    @Test
+    fun `handle transaction preserves lifecycle terminal result for paired and unpaired editors`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"localEmpty\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            JSONObject(created.value).getString("editorId"),
+            roomBound = false,
+        )!!
+        val viewToken = EditorV2Registry.register(adapter)
+        NativeEditorViewRegistry.markEditorCreated(viewToken)
+        val lifecycle = FfiError(
+            "lifecycle",
+            "ENGINE_DESTROYED",
+            "already destroyed by the engine",
+            "request-7",
+            "3",
+            null,
+            null,
+            "{\"source\":\"test\"}",
+        )
+
+        try {
+            val paired = destroyEditorV2FromModule(adapter.editorId) {
+                FfiUnitResult(null, lifecycle)
+            }
+            assertNull(paired.value)
+            assertEquals(lifecycle, paired.error)
+            assertNull(EditorV2Registry.viewTokenForHandle(adapter.editorId))
+
+            val unpairedHandle = "9000111"
+            val unpaired = destroyEditorV2FromModule(unpairedHandle) {
+                FfiUnitResult(null, lifecycle)
+            }
+            assertNull(unpaired.value)
+            assertEquals(lifecycle, unpaired.error)
+            assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(unpairedHandle))
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.invalidateDestroyedEditor(viewToken)
+        }
+    }
+
+    @Test
+    fun `unpaired handle transaction matches paired rollback and retry contention`() {
+        val handle = "9000112"
+        val ffiEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseOwner = java.util.concurrent.CountDownLatch(1)
+        val ownerFinished = java.util.concurrent.CountDownLatch(1)
+        val destroyAttempts = java.util.concurrent.atomic.AtomicInteger(0)
+        val ownerResult = java.util.concurrent.atomic.AtomicReference<FfiUnitResult>()
+        val destroy: (String) -> FfiUnitResult = { editorId ->
+            assertEquals(handle, editorId)
+            if (destroyAttempts.incrementAndGet() == 1) {
+                ffiEntered.countDown()
+                releaseOwner.await()
+                FfiUnitResult(
+                    null,
+                    FfiError(
+                        "operation",
+                        "OPERATION_INVALID",
+                        "owner retryable destroy failure",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                    ),
+                )
+            } else {
+                FfiUnitResult(true, null)
+            }
+        }
+
+        val owner = Thread {
+            ownerResult.set(destroyEditorV2FromModule(handle, destroy))
+            ownerFinished.countDown()
+        }
+        owner.start()
+        assertTrue(ffiEntered.await(1, java.util.concurrent.TimeUnit.SECONDS))
+
+        val contender = destroyEditorV2FromModule(handle, destroy)
+        assertNull(contender.value)
+        assertEquals("operation", contender.error?.domain)
+        assertEquals("OPERATION_INVALID", contender.error?.code)
+        assertEquals("destroy already in progress", contender.error?.message)
+        assertEquals(1, destroyAttempts.get())
+
+        releaseOwner.countDown()
+        assertTrue(ownerFinished.await(1, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals("owner retryable destroy failure", ownerResult.get().error?.message)
+        assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(handle))
+
+        val retry = destroyEditorV2FromModule(handle, destroy)
+        assertEquals(true, retry.value)
+        assertNull(retry.error)
+        assertEquals(2, destroyAttempts.get())
+        assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(handle))
+    }
+
+    @Test
     fun `module destroy contention returns retryable error then owner success finalizes once`() {
         val backend = FakeEditorV2Backend()
         val created = backend.create(
@@ -265,6 +497,7 @@ class NativeEditorModuleTest {
             assertEquals("owner retryable destroy failure", ownerResult.get().error?.message)
             assertEquals(viewToken, EditorV2Registry.viewTokenForHandle(adapter.editorId))
             assertFalse(NativeEditorViewRegistry.isDestroyed(viewToken))
+            assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(adapter.editorId))
 
             val retry = destroyEditorV2FromModule(adapter.editorId, destroy)
             assertEquals(true, retry.value)
@@ -337,6 +570,7 @@ class NativeEditorModuleTest {
             assertEquals("OPERATION_INVALID", first.error?.code)
             assertEquals(viewToken, EditorV2Registry.viewTokenForHandle(adapter.editorId))
             assertTrue(EditorV2Registry.adapterForViewToken(viewToken) === adapter)
+            assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(adapter.editorId))
 
             val second = destroyEditorV2FromModule(adapter.editorId) {
                 destroyAttempts += 1
@@ -467,12 +701,27 @@ class NativeEditorModuleTest {
             assertTrue(completed.get())
             assertNotNull("owner release must defer view cleanup to main", view.editorErrorCallbackTokenForTesting())
             assertEquals(1, view.pendingEditorErrorEventCountForTesting())
+            assertTrue(
+                "the canonical handle stays owned until deferred view cleanup releases its reservation",
+                EditorV2Registry.isHandleDestroyReservedForTesting(adapter.editorId),
+            )
+            var contenderFfiCalls = 0
+            val contender = destroyEditorV2FromModule(adapter.editorId) {
+                contenderFfiCalls += 1
+                FfiUnitResult(true, null)
+            }
+            assertNull(contender.value)
+            assertEquals("operation", contender.error?.domain)
+            assertEquals("OPERATION_INVALID", contender.error?.code)
+            assertEquals("destroy already in progress", contender.error?.message)
+            assertEquals(0, contenderFfiCalls)
 
             shadowOf(Looper.getMainLooper()).idle()
 
             assertTrue(errors.isEmpty())
             assertEquals(0, view.pendingEditorErrorEventCountForTesting())
             assertEquals(0L, view.richTextView.editorId)
+            assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(adapter.editorId))
         } finally {
             EditorV2Registry.remove(adapter.editorId)
             NativeEditorViewRegistry.unregister(viewToken, view)

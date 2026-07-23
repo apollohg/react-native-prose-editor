@@ -149,28 +149,50 @@ final class EditorV2Adapter {
         return UInt64(editorId) != nil
     }
 
-    /// Destroy the v2 session. Repeated destroy is safe; an already-destroyed
-    /// native session satisfies the caller's goal (mirrors the TS bridge).
+    /// Execute one destroy FFI call and preserve its exact terminal result.
+    /// The public module transaction owns pairing removal and view teardown;
+    /// this adapter owns only its local lifecycle and autonomous-error owner.
     @discardableResult
-    func destroy() -> FfiError? {
-        if destroyed { return nil }
+    func destroyForModuleTransaction() -> FfiUnitResult {
         let result = destroySession(editorId)
         switch (result.value, result.error) {
         case let (value?, nil) where value:
-            break
+            clearAutonomousErrorOwner()
+            destroyed = true
+            return result
         case let (nil, error?) where error.domain == "lifecycle"
             && (error.code == "ENGINE_DESTROYED" || error.code == "ENGINE_DESTROYING"):
-            // An already-destroyed native session still commits the local
-            // teardown below.
-            break
+            clearAutonomousErrorOwner()
+            destroyed = true
+            return result
+        case let (nil, error?):
+            return FfiUnitResult(value: nil, error: error)
+        default:
+            return FfiUnitResult(
+                value: nil,
+                error: contractError("v2 destroy result violates the frozen unit-result shape")
+            )
+        }
+    }
+
+    /// Internal cleanup convenience. Public destroy routing must use
+    /// `destroyForModuleTransaction()` so lifecycle terminal records remain
+    /// observable at the module boundary.
+    @discardableResult
+    func destroy() -> FfiError? {
+        if destroyed { return nil }
+        let result = destroyForModuleTransaction()
+        switch (result.value, result.error) {
+        case let (value?, nil) where value:
+            return nil
+        case let (nil, error?) where error.domain == "lifecycle"
+            && (error.code == "ENGINE_DESTROYED" || error.code == "ENGINE_DESTROYING"):
+            return nil
         case let (nil, error?):
             return error
         default:
             return contractError("v2 destroy result violates the frozen unit-result shape")
         }
-        clearAutonomousErrorOwner()
-        destroyed = true
-        return nil
     }
 
     // MARK: - Envelopes and result normalization
@@ -1666,6 +1688,10 @@ func v2DestroyAlreadyInProgressError() -> FfiError {
 enum EditorV2Registry {
     private static let lock = NSLock()
     private static var pairings: [UInt64: EditorV2Adapter] = [:]
+    private static var destroyingLegacyIds: Set<UInt64> = []
+    static var onHandleDestroyReservationAcquiredForTesting: ((UInt64) -> Void)?
+    static var onDestroyFfiResultReceivedForTesting: ((UInt64) -> Void)?
+    static var onPairRemovedBeforeDestroyFinalizationForTesting: ((UInt64) -> Void)?
 
     static func register(_ adapter: EditorV2Adapter, forLegacyId legacyId: UInt64) {
         lock.lock()
@@ -1679,6 +1705,33 @@ enum EditorV2Registry {
         return pairings[legacyId]
     }
 
+    /// Acquire canonical public-handle ownership before consulting the
+    /// pairing. Pair removal is part of terminal teardown, so the pairing
+    /// cannot be the source of truth for transaction contention.
+    static func acquireHandleDestroyReservation(forLegacyId legacyId: UInt64) -> Bool {
+        lock.lock()
+        guard !destroyingLegacyIds.contains(legacyId) else {
+            lock.unlock()
+            return false
+        }
+        destroyingLegacyIds.insert(legacyId)
+        lock.unlock()
+        onHandleDestroyReservationAcquiredForTesting?(legacyId)
+        return true
+    }
+
+    static func releaseHandleDestroyReservation(forLegacyId legacyId: UInt64) {
+        lock.lock()
+        destroyingLegacyIds.remove(legacyId)
+        lock.unlock()
+    }
+
+    static func isHandleDestroyReservedForTesting(_ legacyId: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return destroyingLegacyIds.contains(legacyId)
+    }
+
     @discardableResult
     static func removePairing(forLegacyId legacyId: UInt64) -> EditorV2Adapter? {
         lock.lock()
@@ -1690,21 +1743,7 @@ enum EditorV2Registry {
     /// once native destruction has succeeded or the session is already gone.
     @discardableResult
     static func destroyPair(forLegacyId legacyId: UInt64) -> FfiError? {
-        guard let adapter = adapter(forLegacyId: legacyId) else { return nil }
-        let viewRegistry = NativeEditorViewRegistry.shared
-        // Claim the lifecycle slot before invoking Rust. A competing destroy
-        // receives a retryable operation error and views remain gated until
-        // the reservation owner commits or rolls back.
-        guard viewRegistry.reserveDestroy(editorId: legacyId) else {
-            return v2DestroyAlreadyInProgressError()
-        }
-        if let error = adapter.destroy() {
-            viewRegistry.rollbackDestroy(editorId: legacyId)
-            return error
-        }
-        _ = removePairing(forLegacyId: legacyId)
-        viewRegistry.finalizeDestroy(editorId: legacyId)
-        return nil
+        destroyEditorV2FromModule(editorId: String(legacyId)).error
     }
 
 }

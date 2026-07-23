@@ -42,77 +42,92 @@ internal fun destroyEditorThenInvalidate(
 }
 
 /**
- * Module-facing destruction boundary for a paired v2 editor. Autonomous
- * callbacks, view teardown, and pairing release commit only after native
- * destruction succeeds (or the session is already gone), so a recoverable
- * failure leaves the paired session available for retry.
+ * Module-facing destruction transaction for a canonical v2 handle. A paired
+ * editor additionally owns a view reservation; an unpaired editor still owns
+ * the handle transaction. Recoverable results leave both routes retryable.
  */
 internal fun destroyEditorV2FromModule(
     editorId: String,
     destroy: (String) -> FfiUnitResult = ::editorV2Destroy,
 ): FfiUnitResult {
     val canonicalHandle = canonicalV2U64(editorId) ?: return destroy(editorId)
-    val viewToken = EditorV2Registry.viewTokenForHandle(canonicalHandle)
-    val reservation = viewToken?.let(NativeEditorViewRegistry::acquireDestroyReservation)
-        ?: NativeEditorDestroyReservationResult.UNAVAILABLE
-    val reserved = reservation == NativeEditorDestroyReservationResult.RESERVED
-    if (viewToken != null && !reserved) {
-        // A competing destroy owns the reservation. Do not issue a second FFI
-        // destroy; return a retryable operation error while teardown is pending.
-        if (reservation == NativeEditorDestroyReservationResult.ALREADY_IN_PROGRESS) {
-            return destroyAlreadyInProgressResult()
-        }
-        return FfiUnitResult(
-            null,
-            FfiError(
-                "boundary",
-                "FFI_RESULT_INVALID",
-                "v2 destroy could not reserve its native view",
-                null,
-                null,
-                null,
-                null,
-                null,
-            ),
-        )
+    if (
+        EditorV2Registry.acquireHandleDestroyReservation(canonicalHandle) !=
+            EditorV2DestroyReservationResult.RESERVED
+    ) {
+        return destroyAlreadyInProgressResult()
     }
-    val result = destroy(canonicalHandle)
-    val error = result.error
-    when {
-        result.value == true && error == null -> Unit
-        result.value == null &&
-            error?.domain == "lifecycle" &&
-            error.code in setOf("ENGINE_DESTROYED", "ENGINE_DESTROYING") -> Unit
-        result.value == null && error != null -> {
-            if (reserved) NativeEditorViewRegistry.rollbackDestroy(viewToken!!)
-            return result
+    var releaseHandleAfterViewFinalization = false
+    try {
+        // Pair lookup is intentionally after canonical-handle ownership has
+        // been acquired. The pairing can disappear during terminal teardown;
+        // the handle reservation cannot.
+        val viewToken = EditorV2Registry.viewTokenForHandle(canonicalHandle)
+        val reservation = viewToken?.let(NativeEditorViewRegistry::acquireDestroyReservation)
+            ?: NativeEditorDestroyReservationResult.UNAVAILABLE
+        val reserved = reservation == NativeEditorDestroyReservationResult.RESERVED
+        if (viewToken != null && !reserved) {
+            if (reservation == NativeEditorDestroyReservationResult.ALREADY_IN_PROGRESS) {
+                return destroyAlreadyInProgressResult()
+            }
+            return invalidDestroyResult("v2 destroy could not reserve its native view")
         }
-        else -> {
-            if (reserved) NativeEditorViewRegistry.rollbackDestroy(viewToken!!)
-            return FfiUnitResult(
-                null,
-                FfiError(
-                    "boundary",
-                    "FFI_RESULT_INVALID",
-                    "v2 destroy result violates the frozen unit-result shape",
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                ),
-            )
-        }
-    }
 
-    // Remove the pairing and its autonomous-error owner while the destroy
-    // reservation still gates view commands and callback eligibility.
-    EditorV2Registry.dropPair(canonicalHandle)
-    if (reserved) {
-        NativeEditorViewRegistry.finalizeDestroy(viewToken!!)
+        val result = destroy(canonicalHandle)
+        EditorV2Registry.onDestroyFfiResultReceivedForTesting?.invoke(canonicalHandle)
+        val error = result.error
+        when {
+            result.value == true && error == null -> Unit
+            result.value == null &&
+                error?.domain == "lifecycle" &&
+                error.code in setOf("ENGINE_DESTROYED", "ENGINE_DESTROYING") -> Unit
+            result.value == null && error != null -> {
+                if (reserved) NativeEditorViewRegistry.rollbackDestroy(viewToken!!)
+                return result
+            }
+            else -> {
+                if (reserved) NativeEditorViewRegistry.rollbackDestroy(viewToken!!)
+                return invalidDestroyResult("v2 destroy result violates the frozen unit-result shape")
+            }
+        }
+
+        // The owner clears callback ownership and removes the pairing while
+        // both reservations still gate callbacks and view commands.
+        EditorV2Registry.dropPair(canonicalHandle)
+        EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting?.invoke(canonicalHandle)
+        if (reserved) {
+            // Off-main finalization can finish after its bounded wait. Keep
+            // canonical-handle ownership until the view reservation releases,
+            // not merely until this call returns.
+            releaseHandleAfterViewFinalization = true
+            NativeEditorViewRegistry.finalizeDestroy(viewToken!!) {
+                EditorV2Registry.releaseHandleDestroyReservation(canonicalHandle)
+            }
+        }
+        return result
+    } finally {
+        // This is deliberately last: contenders must remain blocked through
+        // pairing removal and native-view invalidation. A paired off-main
+        // finalization releases it from that finalization's completion.
+        if (!releaseHandleAfterViewFinalization) {
+            EditorV2Registry.releaseHandleDestroyReservation(canonicalHandle)
+        }
     }
-    return result
 }
+
+private fun invalidDestroyResult(message: String): FfiUnitResult = FfiUnitResult(
+    null,
+    FfiError(
+        "boundary",
+        "FFI_RESULT_INVALID",
+        message,
+        null,
+        null,
+        null,
+        null,
+        null,
+    ),
+)
 
 // ── Frozen v2 result-record bridging ─────────────────────────────────────
 // Every editorV2* module entry returns the raw UniFFI result record as a

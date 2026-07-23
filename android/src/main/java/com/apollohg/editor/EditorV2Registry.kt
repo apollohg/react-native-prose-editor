@@ -3,6 +3,11 @@ package com.apollohg.editor
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
+internal enum class EditorV2DestroyReservationResult {
+    RESERVED,
+    ALREADY_IN_PROGRESS,
+}
+
 /**
  * The v2 pairing registry keeps the public editor handle as its canonical
  * decimal string. A separate, opaque view token exists only for the Android
@@ -17,7 +22,15 @@ internal object EditorV2Registry {
 
     private val pairingsByHandle = ConcurrentHashMap<String, Pairing>()
     private val pairingsByViewToken = ConcurrentHashMap<Long, Pairing>()
+    private val destroyingHandles = ConcurrentHashMap.newKeySet<String>()
     private val nextViewToken = AtomicLong(0)
+
+    @Volatile
+    internal var onHandleDestroyReservationAcquiredForTesting: ((String) -> Unit)? = null
+    @Volatile
+    internal var onDestroyFfiResultReceivedForTesting: ((String) -> Unit)? = null
+    @Volatile
+    internal var onPairRemovedBeforeDestroyFinalizationForTesting: ((String) -> Unit)? = null
 
     fun register(adapter: EditorV2Adapter): Long {
         val token = nextViewToken.incrementAndGet()
@@ -29,6 +42,26 @@ internal object EditorV2Registry {
     }
 
     fun viewTokenForHandle(handle: String): Long? = pairingsByHandle[handle]?.viewToken
+
+    /**
+     * The public v2 handle owns the destroy transaction. It is deliberately
+     * separate from the mutable pairing so contenders still observe the
+     * transaction after the owner has removed that pairing.
+     */
+    fun acquireHandleDestroyReservation(handle: String): EditorV2DestroyReservationResult {
+        if (!destroyingHandles.add(handle)) {
+            return EditorV2DestroyReservationResult.ALREADY_IN_PROGRESS
+        }
+        onHandleDestroyReservationAcquiredForTesting?.invoke(handle)
+        return EditorV2DestroyReservationResult.RESERVED
+    }
+
+    fun releaseHandleDestroyReservation(handle: String) {
+        destroyingHandles.remove(handle)
+    }
+
+    internal fun isHandleDestroyReservedForTesting(handle: String): Boolean =
+        destroyingHandles.contains(handle)
 
     fun adapterForViewToken(viewToken: Long): EditorV2Adapter? = pairingsByViewToken[viewToken]?.adapter
 

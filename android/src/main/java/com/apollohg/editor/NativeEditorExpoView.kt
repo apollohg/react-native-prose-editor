@@ -200,9 +200,14 @@ internal object NativeEditorViewRegistry {
         finalizeDestroy(editorId)
     }
 
-    fun finalizeDestroy(editorId: Long) {
+    /**
+     * Finalize a reserved destroy. Off-main callers may time out while the
+     * main-thread invalidation is still queued, so completion is reported only
+     * after the reservation itself has been released.
+     */
+    fun finalizeDestroy(editorId: Long, onCompleted: (() -> Unit)? = null) {
         val affectedViews = synchronized(this) {
-            if (!destroyingEditorIds.contains(editorId)) return
+            if (!destroyingEditorIds.contains(editorId)) return@synchronized null
             val views = listOfNotNull(
                 *viewsByEditorId.remove(editorId)
                     .orEmpty()
@@ -216,12 +221,20 @@ internal object NativeEditorViewRegistry {
                 .distinct()
             views to inputViews
         }
-        onFinalizeDestroyForTesting?.invoke(editorId)
-        if (affectedViews.first.isEmpty() && affectedViews.second.isEmpty()) {
+        if (affectedViews == null) {
+            onCompleted?.invoke()
+            return
+        }
+        fun releaseReservation() {
             synchronized(this) {
                 destroyingEditorIds.remove(editorId)
                 destroyReservationWasLive.remove(editorId)
             }
+            onCompleted?.invoke()
+        }
+        onFinalizeDestroyForTesting?.invoke(editorId)
+        if (affectedViews.first.isEmpty() && affectedViews.second.isEmpty()) {
+            releaseReservation()
             return
         }
         val invalidate = Runnable {
@@ -233,10 +246,7 @@ internal object NativeEditorViewRegistry {
                     view.handleEditorDestroyedFromRegistry(editorId)
                 }
             } finally {
-                synchronized(this) {
-                    destroyingEditorIds.remove(editorId)
-                    destroyReservationWasLive.remove(editorId)
-                }
+                releaseReservation()
             }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -251,10 +261,7 @@ internal object NativeEditorViewRegistry {
                 }
             }
             if (!posted) {
-                synchronized(this) {
-                    destroyingEditorIds.remove(editorId)
-                    destroyReservationWasLive.remove(editorId)
-                }
+                releaseReservation()
                 return
             }
             try {
