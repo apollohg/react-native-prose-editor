@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -60,6 +60,12 @@ function run(...args) {
   return { status: result.status, output: `${result.stdout}\n${result.stderr}` };
 }
 
+function runFixtureCommand(command, args, options = {}) {
+  const result = spawnSync(command, args, { cwd: repoRoot, encoding: "utf8", ...options });
+  assert.equal(result.status, 0, `fixture command failed: ${command} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
+  return result.stdout;
+}
+
 function expectPass(name, result) {
   if (result.status !== 0) {
     failures.push(`${name}: expected success, got ${result.status}\n${result.output}`);
@@ -89,9 +95,35 @@ function runWrongNativeChecksumFixture() {
   );
 }
 
+function runDuplicateIosChecksumFixture() {
+  const duplicateIosChecksum = makeFixture("duplicate-ios-checksum");
+  const archive = join(duplicateIosChecksum, "ios/EditorCore.xcframework/ios-arm64/libeditor_core.a");
+  const extractedObjects = join(workDir, "duplicate-ios-checksum-objects");
+  mkdirSync(extractedObjects, { recursive: true });
+  runFixtureCommand("ar", ["-x", archive], { cwd: extractedObjects });
+
+  const checksumObject = readdirSync(extractedObjects).find((name) => {
+    if (!name.endsWith(".o")) return false;
+    const result = spawnSync("nm", ["-gU", join(extractedObjects, name)], { encoding: "utf8" });
+    return result.status === 0 && result.stdout.includes("_uniffi_editor_core_checksum_func_editor_v2_apply_command");
+  });
+  assert.ok(checksumObject, "fixture setup could not find the iOS checksum-defining object");
+
+  const duplicateObject = join(extractedObjects, "foreign-checksum-provider.o");
+  cpSync(join(extractedObjects, checksumObject), duplicateObject);
+  runFixtureCommand("ar", ["-rcs", archive, duplicateObject]);
+  expectFailure(
+    "duplicate iOS checksum under a non-editor_core member name",
+    run("--validate-xcframework", join(duplicateIosChecksum, "ios/EditorCore.xcframework")),
+    /iOS device arm64 archive has duplicate checksum symbol editor_v2_apply_command/,
+  );
+}
+
 try {
   if (process.env.VALIDATE_PACKED_PACKAGE_FIXTURE === "wrong-native-checksum") {
     runWrongNativeChecksumFixture();
+  } else if (process.env.VALIDATE_PACKED_PACKAGE_FIXTURE === "duplicate-ios-checksum") {
+    runDuplicateIosChecksumFixture();
   } else {
     const baseline = makeFixture("baseline");
     expectPass("baseline ABI", run("--validate-abi-root", baseline));
@@ -201,6 +233,7 @@ try {
     /Android consumer package is missing libeditor_core\.so for arm64-v8a/,
   );
   runWrongNativeChecksumFixture();
+  runDuplicateIosChecksumFixture();
   }
 } finally {
   rmSync(workDir, { recursive: true, force: true });

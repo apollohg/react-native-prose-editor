@@ -200,25 +200,28 @@ def macho_object_symbols(data, architecture, expected, label)
   symbol_table = nil
 
   command_count.times do
+    fail_closed("#{label} has a truncated Mach-O load command header") if command_offset + 8 > command_limit
     command = u32le(data, command_offset, label)
     size = u32le(data, command_offset + 4, label)
     fail_closed("#{label} has an invalid Mach-O load command") if size < 8
     fail_closed("#{label} has a load command outside its declared command area") if command_offset + size > command_limit
     if command == 0x19
+      fail_closed("#{label} has an LC_SEGMENT_64 command smaller than 72 bytes") if size < 72
       section_count = u32le(data, command_offset + 64, label)
-      fail_closed("#{label} has a truncated Mach-O segment command") unless size == 72 + section_count * 80
+      fail_closed("#{label} has an invalid LC_SEGMENT_64 section layout") unless size == 72 + section_count * 80
       section_count.times do |index|
         offset = command_offset + 72 + index * 80
         sections << { address: u64le(data, offset + 32, label), size: u64le(data, offset + 40, label), offset: u32le(data, offset + 48, label) }
       end
     elsif command == 0x2
+      fail_closed("#{label} has an LC_SYMTAB command whose size is not 24 bytes") unless size == 24
       fail_closed("#{label} has duplicate Mach-O symbol tables") if symbol_table
       symbol_table = { offset: u32le(data, command_offset + 8, label), count: u32le(data, command_offset + 12, label), strings: u32le(data, command_offset + 16, label), string_size: u32le(data, command_offset + 20, label) }
     end
     command_offset += size
   end
   fail_closed("#{label} has an incomplete Mach-O load command area") unless command_offset == command_limit
-  fail_closed("#{label} has no Mach-O symbol table") unless symbol_table
+  return {} unless symbol_table
   require_range(data, symbol_table[:offset], symbol_table[:count] * 16, label)
   require_range(data, symbol_table[:strings], symbol_table[:string_size], label)
 
