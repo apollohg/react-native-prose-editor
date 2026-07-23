@@ -190,6 +190,19 @@ function resetMockNativeModule() {
             })
         )
     );
+    mockNativeModule.editorV2CollaborationTick = jest.fn(() =>
+        okRecord(
+            JSON.stringify({
+                nextDeadlineMillis: HUGE_U64_DECIMAL,
+                renewedLocal: true,
+                expiredPeers: ['7', HUGE_U64_DECIMAL],
+                outboundChanged: true,
+                peersChanged: false,
+            })
+        )
+    );
+    mockNativeModule.editorV2CollaborationDetach = jest.fn(() => okRecord(true));
+    mockNativeModule.editorV2CollaborationReattach = jest.fn(() => okRecord(true));
 }
 
 resetMockNativeModule();
@@ -2142,6 +2155,97 @@ describe('NativeEditorBridge v2', () => {
             );
             expect(handle.bridge.collaborationBeginConnect()).toBe(HUGE_U64_DECIMAL);
         });
+
+        it('normalizes the exact tick result shape and invokes the lifecycle entries', () => {
+            const handle = createHandle();
+
+            expect(handle.bridge.collaborationTick(HUGE_U64_DECIMAL)).toEqual({
+                nextDeadlineMillis: HUGE_U64_DECIMAL,
+                renewedLocal: true,
+                expiredPeers: ['7', HUGE_U64_DECIMAL],
+                outboundChanged: true,
+                peersChanged: false,
+            });
+            expect(mockNativeModule.editorV2CollaborationTick).toHaveBeenCalledWith(
+                handle.editorId,
+                HUGE_U64_DECIMAL
+            );
+
+            handle.bridge.collaborationDetach();
+            handle.bridge.collaborationReattach();
+            expect(mockNativeModule.editorV2CollaborationDetach).toHaveBeenCalledWith(
+                handle.editorId
+            );
+            expect(mockNativeModule.editorV2CollaborationReattach).toHaveBeenCalledWith(
+                handle.editorId
+            );
+        });
+
+        it.each([
+            {
+                nextDeadlineMillis: '8',
+                renewedLocal: false,
+                expiredPeers: [],
+                outboundChanged: false,
+            },
+            {
+                nextDeadlineMillis: '8',
+                renewedLocal: false,
+                expiredPeers: [],
+                outboundChanged: false,
+                peersChanged: true,
+                unexpected: true,
+            },
+            {
+                nextDeadlineMillis: '08',
+                renewedLocal: false,
+                expiredPeers: [],
+                outboundChanged: false,
+                peersChanged: true,
+            },
+            {
+                nextDeadlineMillis: null,
+                renewedLocal: false,
+                expiredPeers: ['01'],
+                outboundChanged: false,
+                peersChanged: true,
+            },
+            {
+                nextDeadlineMillis: null,
+                renewedLocal: 'false',
+                expiredPeers: [],
+                outboundChanged: false,
+                peersChanged: true,
+            },
+        ])('rejects malformed tick result shape %#', (value) => {
+            const handle = createHandle();
+            mockNativeModule.editorV2CollaborationTick.mockReturnValueOnce(
+                okRecord(JSON.stringify(value))
+            );
+
+            expectNonRetryable(
+                catchThrown(() => handle.bridge.collaborationTick('0')),
+                'FFI_RESULT_INVALID'
+            );
+        });
+
+        it.each(['', '00', '01', '-1', '+1', '1.0', ' 1', '1 ', '1e3', ONE_OVER_U64_DECIMAL])(
+            'rejects non-canonical tick nowMillis %p before native invocation',
+            (nowMillis) => {
+                const handle = createHandle();
+
+                const error = catchThrown(() =>
+                    (
+                        handle.bridge as unknown as {
+                            collaborationTick(value: unknown): unknown;
+                        }
+                    ).collaborationTick(nowMillis)
+                );
+                expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
+                expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
+                expect(mockNativeModule.editorV2CollaborationTick).not.toHaveBeenCalled();
+            }
+        );
 
         it('normalizes the receive outcome including a structured close cause', () => {
             const handle = createHandle();

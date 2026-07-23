@@ -15,7 +15,7 @@
 // - offline local edits queue document frames; take_outbound drains protocol
 //   replies before document frames, one frame per call, empty queue -> empty
 //   bytes;
-// - snapshot restore is the detach/reattach path out of Incompatible;
+// - explicit detach/reattach is the path out of Incompatible;
 // - a real undo stack so replace/reset history policy is verifiable through
 //   engine undo state instead of document content.
 //
@@ -1508,6 +1508,61 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 }
                 peers.push(...session.remotePeers);
                 return okRecord(JSON.stringify({ peers }));
+            })
+        ),
+        editorV2CollaborationTick: jest.fn((editorId: string, nowMillis: string) =>
+            withSession(editorId, (session) => {
+                if (!session.roomBound) {
+                    return boundaryError(
+                        'CONFIG_INVALID',
+                        'local sessions have no attached collaboration runtime'
+                    );
+                }
+                if (canonicalV2U64(nowMillis) == null) {
+                    return boundaryError('CONFIG_INVALID', 'nowMillis must be canonical decimal u64 text');
+                }
+                return okRecord(
+                    JSON.stringify({
+                        nextDeadlineMillis: null,
+                        renewedLocal: false,
+                        expiredPeers: [],
+                        outboundChanged: false,
+                        peersChanged: false,
+                    })
+                );
+            })
+        ),
+        editorV2CollaborationDetach: jest.fn((editorId: string) =>
+            withSession(editorId, (session) => {
+                if (session.transportState === 'Detached') {
+                    return transportError(
+                        'TRANSPORT_INVALID_TRANSITION',
+                        'detach is not admitted from Detached'
+                    );
+                }
+                session.liveGeneration = null;
+                session.transportState = 'Detached';
+                session.remotePeers = [];
+                return okRecord(true);
+            })
+        ),
+        editorV2CollaborationReattach: jest.fn((editorId: string) =>
+            withSession(editorId, (session) => {
+                if (!session.roomBound) {
+                    return transportError(
+                        'TRANSPORT_NOT_ROOM_BOUND',
+                        'local-only sessions have no room binding to reattach'
+                    );
+                }
+                if (session.transportState !== 'Detached') {
+                    return transportError(
+                        'TRANSPORT_INVALID_TRANSITION',
+                        `reattach is only admitted from Detached (found ${session.transportState})`
+                    );
+                }
+                session.transportState = 'Disconnected';
+                session.remotePeers = [];
+                return okRecord(true);
             })
         ),
         editorV2SnapshotExport: jest.fn((editorId: string) =>

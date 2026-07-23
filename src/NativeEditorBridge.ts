@@ -222,6 +222,9 @@ export interface NativeEditorV2Module {
     editorV2CollaborationTakeOutbound(editorId: string, generation: string): unknown;
     editorV2CollaborationSetAwareness(editorId: string, awarenessJson: string): unknown;
     editorV2CollaborationPeers(editorId: string): unknown;
+    editorV2CollaborationTick(editorId: string, nowMillis: string): unknown;
+    editorV2CollaborationDetach(editorId: string): unknown;
+    editorV2CollaborationReattach(editorId: string): unknown;
     editorV2SnapshotExport(editorId: string): unknown;
     editorV2SnapshotRestore(editorId: string, metadataJson: string, encodedState: Uint8Array): unknown;
 }
@@ -870,6 +873,64 @@ export interface NativeEditorV2PeerInfo {
     isLocal: boolean;
     state: Record<string, unknown> | null;
     cursor: { anchor: number; head: number } | null;
+}
+
+export interface NativeEditorV2AwarenessTickResult {
+    nextDeadlineMillis: string | null;
+    renewedLocal: boolean;
+    expiredPeers: string[];
+    outboundChanged: boolean;
+    peersChanged: boolean;
+}
+
+export function normalizeNativeEditorV2AwarenessTickValue(
+    value: unknown
+): NativeEditorV2AwarenessTickResult | null {
+    const parsed = parseNativeEditorV2JsonValue(value);
+    if (
+        !isPlainRecord(parsed) ||
+        !hasExactOwnKeys(parsed, [
+            'nextDeadlineMillis',
+            'renewedLocal',
+            'expiredPeers',
+            'outboundChanged',
+            'peersChanged',
+        ])
+    ) {
+        return null;
+    }
+    let nextDeadlineMillis: string | null;
+    if (parsed.nextDeadlineMillis === null) {
+        nextDeadlineMillis = null;
+    } else {
+        const normalizedDeadline = normalizeNativeEditorV2DecimalId(parsed.nextDeadlineMillis);
+        if (normalizedDeadline == null) return null;
+        nextDeadlineMillis = normalizedDeadline;
+    }
+    const renewedLocal = optionalBoolean(parsed.renewedLocal);
+    const outboundChanged = optionalBoolean(parsed.outboundChanged);
+    const peersChanged = optionalBoolean(parsed.peersChanged);
+    if (
+        renewedLocal == null ||
+        !Array.isArray(parsed.expiredPeers) ||
+        outboundChanged == null ||
+        peersChanged == null
+    ) {
+        return null;
+    }
+    const expiredPeers: string[] = [];
+    for (const peerId of parsed.expiredPeers) {
+        const normalizedPeerId = normalizeNativeEditorV2DecimalId(peerId);
+        if (normalizedPeerId == null) return null;
+        expiredPeers.push(normalizedPeerId);
+    }
+    return {
+        nextDeadlineMillis,
+        renewedLocal,
+        expiredPeers,
+        outboundChanged,
+        peersChanged,
+    };
 }
 
 export function normalizeNativeEditorV2PeersValue(value: unknown): NativeEditorV2PeerInfo[] | null {
@@ -2484,6 +2545,34 @@ export class NativeEditorV2Bridge {
         return this.callV2(
             () => invokeNativeEditorV2('editorV2CollaborationPeers', this._editorId),
             normalizeNativeEditorV2PeersValue
+        );
+    }
+
+    collaborationTick(nowMillis: string): NativeEditorV2AwarenessTickResult {
+        this.assertAlive();
+        const acceptedNowMillis = requireV2DecimalId(nowMillis, 'nowMillis');
+        return this.callV2(
+            () =>
+                invokeNativeEditorV2(
+                    'editorV2CollaborationTick',
+                    this._editorId,
+                    acceptedNowMillis
+                ),
+            normalizeNativeEditorV2AwarenessTickValue
+        );
+    }
+
+    collaborationDetach(): void {
+        this.callV2(
+            () => invokeNativeEditorV2('editorV2CollaborationDetach', this._editorId),
+            normalizeNativeEditorV2Unit
+        );
+    }
+
+    collaborationReattach(): void {
+        this.callV2(
+            () => invokeNativeEditorV2('editorV2CollaborationReattach', this._editorId),
+            normalizeNativeEditorV2Unit
         );
     }
 }

@@ -494,7 +494,17 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     }
 
     reconnect(): void {
+        if (this.destroyed) return;
         this.disconnect();
+        try {
+            this.handle.bridge.collaborationDetach();
+            this.handle.bridge.collaborationReattach();
+        } catch (error) {
+            const lifecycleError = asError(error, 'Yjs collaboration reconnect lifecycle failure');
+            this.callbacks.onError?.(lifecycleError);
+            this.renderEngineState({ lastError: lifecycleError });
+            return;
+        }
         this.connect();
     }
 

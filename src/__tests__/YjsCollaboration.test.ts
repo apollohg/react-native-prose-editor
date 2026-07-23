@@ -521,7 +521,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(3);
     });
 
-    it('stops retry scheduling when Rust refuses begin_connect, and Incompatible blocks reconnect until detach/reattach', () => {
+    it('keeps Incompatible parked without a hidden shortcut, then explicitly reconnects through detach/reattach', () => {
         const setup = setupController();
         setup.controller.connect();
         setup.sockets[0].open();
@@ -565,14 +565,49 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         ).toThrow();
         expect(latestStatus(setup)).toBe('incompatible');
 
-        // Detach/reattach means tearing the session down and creating a fresh
-        // one; the fresh room handle admits connect again.
-        setup.controller.destroy();
-        setup.handle.destroy();
-        const reattached = setupController();
-        reattached.controller.connect();
-        expect(reattached.sockets).toHaveLength(1);
-        expect(reattached.controller.state.status).toBe('connecting');
+        expect(runtime.module.editorV2CollaborationDetach).not.toHaveBeenCalled();
+        expect(runtime.module.editorV2CollaborationReattach).not.toHaveBeenCalled();
+
+        // Explicit reconnect is the only escape hatch. It advances the native
+        // generation after detach/reattach, creates one fresh socket, and
+        // leaves the refusal error history untouched.
+        setup.controller.reconnect();
+        expect(runtime.module.editorV2CollaborationDetach).toHaveBeenCalledWith(
+            setup.handle.editorId
+        );
+        expect(runtime.module.editorV2CollaborationReattach).toHaveBeenCalledWith(
+            setup.handle.editorId
+        );
+        expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(3);
+        expect(runtime.session(setup.handle.editorId).liveGeneration).toBe(2);
+        expect(setup.sockets).toHaveLength(2);
+        expect(latestStatus(setup)).toBe('connecting');
+        expect(setup.errors).toHaveLength(errorsBefore + 1);
+    });
+
+    it('reconnect retires the live socket before detach, reattach, and beginConnect', () => {
+        const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
+        setup.controller.connect();
+        openAndSynchronize(setup);
+
+        setup.controller.reconnect();
+
+        const calls = [
+            runtime.module.editorV2CollaborationSocketClose.mock.invocationCallOrder.at(-1),
+            runtime.module.editorV2CollaborationDetach.mock.invocationCallOrder.at(-1),
+            runtime.module.editorV2CollaborationReattach.mock.invocationCallOrder.at(-1),
+            runtime.module.editorV2CollaborationBeginConnect.mock.invocationCallOrder.at(-1),
+        ];
+        expect(calls).toEqual([...calls].sort((left, right) => left - right));
+        expect(runtime.module.editorV2CollaborationSocketClose).toHaveBeenLastCalledWith(
+            setup.handle.editorId,
+            '1',
+            1000,
+            'client disconnect'
+        );
+        expect(runtime.session(setup.handle.editorId).liveGeneration).toBe(2);
+        expect(setup.sockets).toHaveLength(2);
+        expect(latestStatus(setup)).toBe('connecting');
     });
 
     it('treats a policy-violation close code (1008) as incompatible without retry', () => {
