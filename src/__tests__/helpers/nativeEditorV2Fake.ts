@@ -805,6 +805,10 @@ export interface FakeV2SessionHandle {
     editorId: string;
 }
 
+export type FakeAwarenessBroadcastFailureCode =
+    | 'TRANSPORT_REPLY_LIMIT_EXCEEDED'
+    | 'TRANSPORT_RESOURCE_EXHAUSTED';
+
 export interface FakeNativeEditorV2Runtime {
     /** The editorV2* entries, already jest.fn-wrapped for call assertions. */
     module: Record<string, jest.Mock>;
@@ -827,6 +831,11 @@ export interface FakeNativeEditorV2Runtime {
     injectNextApplyLocalApiError(editorId: string, error: FakeErrorRecord): void;
     /** One-shot error injected into applyCommand. */
     injectNextApplyCommandError(editorId: string, error: FakeErrorRecord): void;
+    /** Fail the next local awareness outbox reservation after retaining native state. */
+    injectNextAwarenessBroadcastFailure(
+        editorId: string,
+        code: FakeAwarenessBroadcastFailureCode
+    ): void;
     /** Frames the session has queued, oldest first (protocol then document). */
     queuedFrames(editorId: string): Uint8Array[];
 }
@@ -836,6 +845,7 @@ interface PendingRemote {
     awarenessDeltas: NativeEditorV2PeerInfo[][];
     applyLocalApiErrors: FakeErrorRecord[];
     applyCommandErrors: FakeErrorRecord[];
+    awarenessBroadcastErrors: FakeErrorRecord[];
 }
 
 export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
@@ -853,6 +863,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 awarenessDeltas: [],
                 applyLocalApiErrors: [],
                 applyCommandErrors: [],
+                awarenessBroadcastErrors: [],
             };
             pending.set(editorId, entry);
         }
@@ -968,16 +979,18 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         return null;
     }
 
-    function enqueueLocalAwareness(session: FakeSession): void {
+    function enqueueLocalAwareness(session: FakeSession): FakeErrorRecord | null {
+        const injected = pendingFor(session.editorId).awarenessBroadcastErrors.shift();
+        if (injected) return injected;
         session.protocolQueue.push(awarenessFrame(session.localClock));
         session.lastLocalAwarenessPublishMillis = session.awarenessNowMillis;
+        return null;
     }
 
     function publishLocalAwareness(session: FakeSession): FakeErrorRecord | null {
         const clockError = setLocalAwarenessState(session);
         if (clockError) return clockError;
-        enqueueLocalAwareness(session);
-        return null;
+        return enqueueLocalAwareness(session);
     }
 
     function clearLocalAwareness(session: FakeSession): FakeErrorRecord | null {
@@ -2007,7 +2020,8 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     session.localAwarenessCursor = cursor;
                 }
                 if (awarenessJson.trim() !== 'null' && session.transportState === 'Synchronized') {
-                    enqueueLocalAwareness(session);
+                    const reservationError = enqueueLocalAwareness(session);
+                    if (reservationError) return errRecord(reservationError);
                 }
                 return okRecord(true);
             })
@@ -2256,6 +2270,26 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         },
         injectNextApplyCommandError: (editorId, error) => {
             pendingFor(editorId).applyCommandErrors.push(error);
+        },
+        injectNextAwarenessBroadcastFailure: (editorId, code) => {
+            const error = errorRecord(
+                'transport',
+                code,
+                code === 'TRANSPORT_REPLY_LIMIT_EXCEEDED'
+                    ? 'maxPendingOutboxMessages exceeded while enqueueing an awareness broadcast'
+                    : 'awareness broadcast capacity could not be reserved'
+            );
+            if (code === 'TRANSPORT_REPLY_LIMIT_EXCEEDED') {
+                error.limit = '1';
+                error.actual = '2';
+                error.details = {
+                    action: 'awareness',
+                    field: 'maxPendingOutboxMessages',
+                    limit: 1,
+                    actual: 2,
+                };
+            }
+            pendingFor(editorId).awarenessBroadcastErrors.push(error);
         },
         queuedFrames: (editorId) => {
             const session = getSession(editorId);

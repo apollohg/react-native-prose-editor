@@ -51,6 +51,7 @@ export type YjsRetryInterval = number | ((context: YjsRetryContext) => number | 
 
 const DEFAULT_RETRY_BASE_INTERVAL_MS = 500;
 const DEFAULT_RETRY_MAX_INTERVAL_MS = 30_000;
+const AWARENESS_RECOVERY_RETRY_DELAY_MILLIS = 100;
 const MAX_HOST_TIMER_DELAY_MILLIS = 2_147_483_647;
 const MAX_HOST_TIMER_DELAY_MILLIS_BIGINT = BigInt(MAX_HOST_TIMER_DELAY_MILLIS);
 
@@ -176,7 +177,13 @@ interface AwarenessOperationContext {
     generation: string;
     nowMillis: bigint;
     previousNextDeadlineMillis: string | null;
+    preTickFailedRecoverably: boolean;
 }
+
+type AwarenessTickAttempt =
+    | { kind: 'success'; result: NativeEditorV2AwarenessTickResult }
+    | { kind: 'recoverableFailure' }
+    | { kind: 'terminalFailure' };
 
 const WS_NORMAL_CLOSE_CODE = 1000;
 const WS_PROTOCOL_FAILURE_CLOSE_CODE = 1011;
@@ -204,6 +211,16 @@ function mapTransportState(transport: NativeEditorV2TransportState): YjsTranspor
 function isStaleGenerationError(error: Error): boolean {
     return (
         error instanceof NativeEditorV2TransportError && error.code === 'TRANSPORT_STALE_GENERATION'
+    );
+}
+
+function isRecoverableAwarenessBroadcastError(
+    value: unknown
+): value is NativeEditorV2TransportError {
+    return (
+        value instanceof NativeEditorV2TransportError &&
+        (value.code === 'TRANSPORT_REPLY_LIMIT_EXCEEDED' ||
+            value.code === 'TRANSPORT_RESOURCE_EXHAUSTED')
     );
 }
 
@@ -724,6 +741,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
                 generation,
                 nowMillis: this.monotonicClock.nowMillis(),
                 previousNextDeadlineMillis: null,
+                preTickFailedRecoverably: false,
             },
             true
         );
@@ -742,34 +760,49 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             generation,
             nowMillis: this.monotonicClock.nowMillis(),
             previousNextDeadlineMillis: null,
+            preTickFailedRecoverably: false,
         };
-        const result = this.performAwarenessTick(context, false);
-        if (result == null || !this.isCurrentSocket(socket, generation)) return null;
-        context.previousNextDeadlineMillis = result.nextDeadlineMillis;
+        const attempt = this.performAwarenessTick(context, false);
+        if (attempt.kind === 'terminalFailure' || !this.isCurrentSocket(socket, generation)) {
+            return null;
+        }
+        if (attempt.kind === 'recoverableFailure') {
+            context.preTickFailedRecoverably = true;
+        } else {
+            context.previousNextDeadlineMillis = attempt.result.nextDeadlineMillis;
+        }
         return context;
     }
 
     private completeAwarenessOperation(context: AwarenessOperationContext): void {
         if (!this.isCurrentSocket(context.socket, context.generation)) return;
+        if (context.preTickFailedRecoverably) return;
         this.performAwarenessTick(context, true);
     }
 
     private restoreAwarenessOperation(context: AwarenessOperationContext): void {
         if (!this.isCurrentSocket(context.socket, context.generation)) return;
+        if (context.preTickFailedRecoverably) return;
         this.scheduleAwarenessTick(context.previousNextDeadlineMillis);
     }
 
     private performAwarenessTick(
         context: AwarenessOperationContext,
         scheduleNext: boolean
-    ): NativeEditorV2AwarenessTickResult | null {
-        if (!this.isCurrentSocket(context.socket, context.generation)) return null;
+    ): AwarenessTickAttempt {
+        if (!this.isCurrentSocket(context.socket, context.generation)) {
+            return { kind: 'terminalFailure' };
+        }
         let result: NativeEditorV2AwarenessTickResult;
         try {
             result = this.handle.bridge.collaborationTick(context.nowMillis.toString());
         } catch (error) {
+            if (isRecoverableAwarenessBroadcastError(error)) {
+                this.recoverAwarenessBroadcast(error, context.socket, context.generation);
+                return { kind: 'recoverableFailure' };
+            }
             this.handleTransportCallFailure(error, context.socket, context.generation);
-            return null;
+            return { kind: 'terminalFailure' };
         }
 
         if (result.outboundChanged) {
@@ -781,7 +814,20 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         if (scheduleNext) {
             this.scheduleAwarenessTick(result.nextDeadlineMillis);
         }
-        return result;
+        return { kind: 'success', result };
+    }
+
+    private recoverAwarenessBroadcast(
+        error: NativeEditorV2TransportError,
+        socket: WebSocket,
+        generation: string
+    ): void {
+        this.callbacks.onError?.(error);
+        this.drainOutbound(socket, generation);
+        this.refreshPeers();
+        if (this.isCurrentSocket(socket, generation)) {
+            this.scheduleAwarenessRetry();
+        }
     }
 
     private scheduleAwarenessTick(nextDeadlineMillis: string | null): void {
@@ -800,12 +846,22 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             delayMillis > MAX_HOST_TIMER_DELAY_MILLIS_BIGINT
                 ? MAX_HOST_TIMER_DELAY_MILLIS
                 : Number(delayMillis);
+        this.installAwarenessTimer(hostDelayMillis);
+    }
+
+    private scheduleAwarenessRetry(): void {
+        this.cancelAwarenessTick();
+        if (this.destroyed || !this.hasLiveAwarenessGeneration()) return;
+        this.installAwarenessTimer(AWARENESS_RECOVERY_RETRY_DELAY_MILLIS);
+    }
+
+    private installAwarenessTimer(delayMillis: number): void {
         const timerEpoch = this.awarenessTimerEpoch;
         this.awarenessTimer = this.awarenessTimerHarness.setTimeout(() => {
             if (this.destroyed || this.awarenessTimerEpoch !== timerEpoch) return;
             this.awarenessTimer = null;
             this.tickAwareness();
-        }, hostDelayMillis);
+        }, delayMillis);
     }
 
     private cancelAwarenessTick(): void {
@@ -827,7 +883,20 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         try {
             this.handle.bridge.collaborationSetAwareness(candidate);
         } catch (error) {
-            this.callbacks.onError?.(asError(error, 'Yjs collaboration awareness failure'));
+            const awarenessError = asError(error, 'Yjs collaboration awareness failure');
+            if (
+                awarenessContext != null &&
+                isRecoverableAwarenessBroadcastError(awarenessError)
+            ) {
+                this.desiredAwareness = candidate;
+                this.recoverAwarenessBroadcast(
+                    awarenessError,
+                    awarenessContext.socket,
+                    awarenessContext.generation
+                );
+                return;
+            }
+            this.callbacks.onError?.(awarenessError);
             if (awarenessContext != null) {
                 this.restoreAwarenessOperation(awarenessContext);
             }

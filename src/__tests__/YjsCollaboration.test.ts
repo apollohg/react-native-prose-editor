@@ -1210,6 +1210,109 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         expect(clock.activeTimerCount).toBe(1);
     });
 
+    it('retains a first live awareness candidate and retries a saturated broadcast without closing', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        setup.controller.connect();
+        openAndSynchronize(setup);
+        expect(clock.activeTimerCount).toBe(0);
+        runtime.module.editorV2CollaborationSetAwareness.mockClear();
+
+        runtime.session(setup.handle.editorId).protocolQueue.push(new Uint8Array([0x70, 0x7f]));
+        runtime.injectNextAwarenessBroadcastFailure(
+            setup.handle.editorId,
+            'TRANSPORT_REPLY_LIMIT_EXCEEDED'
+        );
+        setup.controller.updateLocalAwareness({ user: ALICE });
+
+        expect(runtime.session(setup.handle.editorId)).toMatchObject({
+            desiredAwareness: localAwarenessIntent(),
+            lastLocalAwarenessPublishMillis: null,
+            transportState: 'Synchronized',
+            liveGeneration: 1n,
+        });
+        expect(setup.errors.at(-1)).toEqual(
+            expect.objectContaining({
+                code: 'TRANSPORT_REPLY_LIMIT_EXCEEDED',
+            })
+        );
+        expect(setup.sockets[0].close).not.toHaveBeenCalled();
+        expect(sentFrames(setup.sockets[0]).at(-1)).toEqual([0x70, 0x7f]);
+        expect(runtime.queuedFrames(setup.handle.editorId)).toEqual([]);
+        expect(clock.activeTimerCount).toBe(1);
+        const retryDelay = clock.scheduledDelays.at(-1) as number;
+        expect(retryDelay).toBeGreaterThan(0);
+        expect(retryDelay).toBeLessThanOrEqual(MAX_HOST_TIMER_DELAY_MILLIS);
+
+        const retainedSetCalls = runtime.module.editorV2CollaborationSetAwareness.mock.calls.length;
+        setup.controller.updateLocalAwareness({ user: { ...ALICE } });
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(
+            retainedSetCalls
+        );
+
+        clock.advanceBy(BigInt(retryDelay));
+
+        expect(sentFrames(setup.sockets[0]).at(-1)).toEqual([0x61, 2]);
+        expect(runtime.session(setup.handle.editorId).lastLocalAwarenessPublishMillis).toBe(
+            BigInt(retryDelay)
+        );
+        expect(clock.scheduledDelays.at(-1)).toBe(15_000);
+        expect(clock.activeTimerCount).toBe(1);
+        expect(setup.sockets[0].close).not.toHaveBeenCalled();
+    });
+
+    it('retries a saturated renewal without tearing down its live generation or looping', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        setup.controller.connect();
+        openAndSynchronize(setup);
+        runtime.session(setup.handle.editorId).protocolQueue.push(new Uint8Array([0x70, 0x80]));
+        runtime.injectNextAwarenessBroadcastFailure(
+            setup.handle.editorId,
+            'TRANSPORT_RESOURCE_EXHAUSTED'
+        );
+
+        clock.advanceBy(15_000n);
+
+        expect(runtime.session(setup.handle.editorId)).toMatchObject({
+            desiredAwareness: localAwarenessIntent(),
+            lastLocalAwarenessPublishMillis: 0n,
+            transportState: 'Synchronized',
+            liveGeneration: 1n,
+        });
+        expect(setup.errors.at(-1)).toEqual(
+            expect.objectContaining({
+                code: 'TRANSPORT_RESOURCE_EXHAUSTED',
+            })
+        );
+        expect(setup.sockets[0].close).not.toHaveBeenCalled();
+        expect(sentFrames(setup.sockets[0]).at(-1)).toEqual([0x70, 0x80]);
+        expect(runtime.queuedFrames(setup.handle.editorId)).toEqual([]);
+        expect(clock.activeTimerCount).toBe(1);
+        const retryDelay = clock.scheduledDelays.at(-1) as number;
+        expect(retryDelay).toBeGreaterThan(0);
+        expect(retryDelay).toBeLessThanOrEqual(MAX_HOST_TIMER_DELAY_MILLIS);
+
+        clock.advanceBy(BigInt(retryDelay));
+
+        expect(sentFrames(setup.sockets[0]).at(-1)).toEqual([0x61, 4]);
+        expect(runtime.session(setup.handle.editorId).lastLocalAwarenessPublishMillis).toBe(
+            15_000n + BigInt(retryDelay)
+        );
+        expect(clock.scheduledDelays.at(-1)).toBe(15_000);
+        expect(clock.activeTimerCount).toBe(1);
+        expect(setup.sockets[0].close).not.toHaveBeenCalled();
+    });
+
     it('makes detach and reattach idempotent without reopening an incompatible transport early', () => {
         const handle = createRoomHandle({ withSnapshot: true });
         const generation = handle.bridge.collaborationBeginConnect();
