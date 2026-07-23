@@ -20,7 +20,7 @@ use crate::collaboration_runtime::awareness::{
 };
 use crate::collaboration_runtime::protocol::{
     TRANSPORT_AWARENESS_LIMIT_EXCEEDED, TRANSPORT_FRAME_LIMIT_EXCEEDED, TRANSPORT_PROTOCOL_INVALID,
-    TRANSPORT_REPLY_LIMIT_EXCEEDED,
+    TRANSPORT_REPLY_LIMIT_EXCEEDED, TRANSPORT_RESOURCE_EXHAUSTED,
 };
 use crate::collaboration_runtime::CollaborationRuntime;
 use crate::ffi_v2::collaboration as v2_collaboration;
@@ -710,6 +710,181 @@ fn clear_desired_awareness_broadcasts_a_tombstone_and_clears_the_projection() {
     clear_desired_awareness(id, 413).unwrap();
     assert_eq!(drain_protocol_replies(id).len(), 0);
     destroy_session(id);
+}
+
+#[test]
+fn withdrawal_review_fix_saturated_clear_is_one_shot_and_tick_heals_after_drain() {
+    let (id, snapshot) = create_ready_room();
+    let generation = synchronize_ready_room(id, &snapshot);
+    awareness_tick(id, 414, 0).unwrap();
+    let desired = json!({ "name": "saturated withdrawal" });
+    set_desired_awareness(id, 415, &desired.to_string()).unwrap();
+    let local = local_peer(id).unwrap();
+    let local_client = ClientID::new(local.client_id);
+    let mut raw = Awareness::new(Doc::new());
+    for reply in drain_protocol_replies(id) {
+        raw.apply_update(decode_awareness_reply(&reply)).unwrap();
+    }
+    let published_clock = raw.meta(local_client).unwrap().0;
+
+    // Fill the sole shared outbox slot with a real awareness-query reply.
+    bridge::set_outbox_ceilings(id, 1, 10 * 1024 * 1024).unwrap();
+    let outcome = receive_message(id, 416, generation, &query_awareness_message()).unwrap();
+    assert!(outcome.close.is_none(), "{outcome:?}");
+    assert_eq!(outcome.replies_enqueued, 1, "{outcome:?}");
+
+    let error = clear_desired_awareness(id, 417).unwrap_err();
+    assert_eq!(error.code, TRANSPORT_REPLY_LIMIT_EXCEEDED, "{error:?}");
+    assert_eq!(transport_state(id).unwrap(), TransportState::Synchronized);
+    assert_eq!(desired_awareness(id).unwrap(), None);
+    assert!(local_peer(id).is_none(), "withdrawal is locally immediate");
+
+    // Repeating clear cannot recreate a tombstone or advance its clock.
+    clear_desired_awareness(id, 418).unwrap();
+    let before_retry = awareness_tick(id, 419, AWARENESS_RENEWAL_INTERVAL_MILLIS - 1).unwrap();
+    assert!(!before_retry.outbound_changed, "{before_retry:?}");
+    assert_eq!(
+        before_retry.next_deadline_millis,
+        Some(AWARENESS_RENEWAL_INTERVAL_MILLIS),
+        "{before_retry:?}",
+    );
+
+    // Draining the blocker lets the deterministic boundary tick enqueue the
+    // exact already-clocked tombstone.
+    assert!(take_next_protocol_reply(id).unwrap().is_some());
+    let healed = awareness_tick(id, 420, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
+    assert!(!healed.renewed_local, "{healed:?}");
+    assert!(healed.outbound_changed, "{healed:?}");
+    assert_eq!(healed.next_deadline_millis, None, "{healed:?}");
+    let replies = drain_protocol_replies(id);
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    let tombstone = decode_awareness_reply(&replies[0]);
+    assert_eq!(tombstone.clients[&local_client].clock, published_clock + 1);
+    raw.apply_update(tombstone).unwrap();
+    assert_eq!(raw.state::<Value>(local_client), None);
+    assert_eq!(raw.meta(local_client).unwrap().0, published_clock + 1);
+    destroy_session(id);
+}
+
+#[test]
+fn withdrawal_review_fix_allocation_retry_stays_pending_without_closing_generation() {
+    let (id, snapshot) = create_ready_room();
+    let _generation = synchronize_ready_room(id, &snapshot);
+    awareness_tick(id, 421, 0).unwrap();
+    set_desired_awareness(
+        id,
+        422,
+        &json!({ "name": "allocation withdrawal" }).to_string(),
+    )
+    .unwrap();
+    let local = local_peer(id).unwrap();
+    let local_client = ClientID::new(local.client_id);
+    let mut raw = Awareness::new(Doc::new());
+    for reply in drain_protocol_replies(id) {
+        raw.apply_update(decode_awareness_reply(&reply)).unwrap();
+    }
+    let published_clock = raw.meta(local_client).unwrap().0;
+
+    bridge::set_outbox_allocation_failure(true);
+    let clear_result = clear_desired_awareness(id, 423);
+    bridge::set_outbox_allocation_failure(false);
+    let error = clear_result.unwrap_err();
+    assert_eq!(error.code, TRANSPORT_RESOURCE_EXHAUSTED, "{error:?}");
+    assert_eq!(transport_state(id).unwrap(), TransportState::Synchronized);
+    assert_eq!(desired_awareness(id).unwrap(), None);
+    assert!(local_peer(id).is_none());
+
+    bridge::set_outbox_allocation_failure(true);
+    let retry_result = awareness_tick(id, 424, AWARENESS_RENEWAL_INTERVAL_MILLIS);
+    bridge::set_outbox_allocation_failure(false);
+    let error = retry_result.unwrap_err();
+    assert_eq!(error.code, TRANSPORT_RESOURCE_EXHAUSTED, "{error:?}");
+    assert_eq!(transport_state(id).unwrap(), TransportState::Synchronized);
+    assert_eq!(drain_protocol_replies(id).len(), 0);
+
+    // Retry failure preserves the frame but moves the next attempt out by
+    // one interval, so scheduling cannot spin at the failed timestamp.
+    let before_retry = awareness_tick(id, 425, AWARENESS_RENEWAL_INTERVAL_MILLIS * 2 - 1).unwrap();
+    assert!(!before_retry.outbound_changed, "{before_retry:?}");
+    assert_eq!(
+        before_retry.next_deadline_millis,
+        Some(AWARENESS_RENEWAL_INTERVAL_MILLIS * 2),
+        "{before_retry:?}",
+    );
+    let healed = awareness_tick(id, 426, AWARENESS_RENEWAL_INTERVAL_MILLIS * 2).unwrap();
+    assert!(healed.outbound_changed, "{healed:?}");
+    let replies = drain_protocol_replies(id);
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    let tombstone = decode_awareness_reply(&replies[0]);
+    assert_eq!(tombstone.clients[&local_client].clock, published_clock + 1);
+    raw.apply_update(tombstone).unwrap();
+    assert_eq!(raw.state::<Value>(local_client), None);
+    destroy_session(id);
+}
+
+#[test]
+fn withdrawal_review_fix_pending_tombstone_survives_close_detach_and_reconnect() {
+    type LifecycleAction = fn(u64, u64);
+    let scenarios: [(&str, LifecycleAction); 2] = [
+        ("retryable close", |id, generation| {
+            socket_closed(id, 427, generation, CloseDisposition::Retryable).unwrap();
+        }),
+        ("detach and reattach", |id, _generation| {
+            transport_detach(id, 428).unwrap();
+            transport_reattach(id, 429).unwrap();
+        }),
+    ];
+
+    for (label, lifecycle_action) in scenarios {
+        let (id, snapshot) = create_ready_room();
+        let generation = synchronize_ready_room(id, &snapshot);
+        awareness_tick(id, 430, 0).unwrap();
+        set_desired_awareness(id, 431, &json!({ "name": label }).to_string()).unwrap();
+        let local = local_peer(id).unwrap();
+        let local_client = ClientID::new(local.client_id);
+        let mut raw = Awareness::new(Doc::new());
+        for reply in drain_protocol_replies(id) {
+            raw.apply_update(decode_awareness_reply(&reply)).unwrap();
+        }
+        let published_clock = raw.meta(local_client).unwrap().0;
+
+        bridge::set_outbox_ceilings(id, 1, 10 * 1024 * 1024).unwrap();
+        receive_message(id, 432, generation, &query_awareness_message()).unwrap();
+        let error = clear_desired_awareness(id, 433).unwrap_err();
+        assert_eq!(
+            error.code, TRANSPORT_REPLY_LIMIT_EXCEEDED,
+            "{label}: {error:?}"
+        );
+        lifecycle_action(id, generation);
+        assert_eq!(desired_awareness(id).unwrap(), None, "{label}");
+        assert!(local_peer(id).is_none(), "{label}");
+
+        // Drain the pre-close blocker, then reconnect. The pending local
+        // withdrawal is retried by the synchronized timer, not folded into
+        // receive processing where reservation failure would close a peer.
+        assert!(take_next_protocol_reply(id).unwrap().is_some(), "{label}");
+        let _new_generation = synchronize_ready_room(id, &snapshot);
+        assert_eq!(drain_protocol_replies(id).len(), 0, "{label}");
+        let before_retry = awareness_tick(id, 434, AWARENESS_RENEWAL_INTERVAL_MILLIS - 1).unwrap();
+        assert_eq!(
+            before_retry.next_deadline_millis,
+            Some(AWARENESS_RENEWAL_INTERVAL_MILLIS),
+            "{label}: {before_retry:?}",
+        );
+        let healed = awareness_tick(id, 435, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
+        assert!(healed.outbound_changed, "{label}: {healed:?}");
+        let replies = drain_protocol_replies(id);
+        assert_eq!(replies.len(), 1, "{label}: {replies:?}");
+        let tombstone = decode_awareness_reply(&replies[0]);
+        assert_eq!(
+            tombstone.clients[&local_client].clock,
+            published_clock + 1,
+            "{label}",
+        );
+        raw.apply_update(tombstone).unwrap();
+        assert_eq!(raw.state::<Value>(local_client), None, "{label}");
+        destroy_session(id);
+    }
 }
 
 #[test]

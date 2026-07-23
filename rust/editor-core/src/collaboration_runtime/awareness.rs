@@ -109,9 +109,35 @@ pub(crate) struct AwarenessRuntimeState {
     now_millis: u64,
     /// When the desired state was last handed to the outbox for broadcast.
     last_local_publish_millis: Option<u64>,
+    /// One already-clocked local tombstone waiting for a retryable outbox
+    /// reservation. Its framed bytes remain immutable across retries.
+    pending_withdrawal: Option<PendingWithdrawal>,
     /// Remote client -> last observed activity (`now_millis` of the tick
     /// preceding the touching update). Sorted so expiry order is stable.
     peer_activity: BTreeMap<u64, u64>,
+}
+
+struct PendingWithdrawal {
+    frame: Vec<u8>,
+    retry_not_before_millis: Option<u64>,
+}
+
+impl PendingWithdrawal {
+    fn new(frame: Vec<u8>, now_millis: u64) -> Self {
+        Self {
+            frame,
+            retry_not_before_millis: now_millis.checked_add(AWARENESS_RENEWAL_INTERVAL_MILLIS),
+        }
+    }
+
+    fn defer_retry(&mut self, now_millis: u64) {
+        self.retry_not_before_millis = now_millis.checked_add(AWARENESS_RENEWAL_INTERVAL_MILLIS);
+    }
+
+    fn is_due(&self, now_millis: u64) -> bool {
+        self.retry_not_before_millis
+            .is_some_and(|deadline| now_millis >= deadline)
+    }
 }
 
 impl AwarenessRuntimeState {
@@ -120,6 +146,7 @@ impl AwarenessRuntimeState {
             desired_state: None,
             now_millis: 0,
             last_local_publish_millis: None,
+            pending_withdrawal: None,
             peer_activity: BTreeMap::new(),
         }
     }
@@ -140,12 +167,16 @@ impl AwarenessRuntimeState {
     /// expiry deadline. Candidates beyond the representable clock range are
     /// unschedulable and omitted. `None` means no clock work is pending.
     fn next_deadline_millis(&self, transport_state: TransportState) -> Option<u64> {
-        let renewal =
+        let local_publish =
             if transport_state == TransportState::Synchronized && self.desired_state.is_some() {
                 self.last_local_publish_millis.map_or_else(
                     || Some(self.now_millis),
                     |published| published.checked_add(AWARENESS_RENEWAL_INTERVAL_MILLIS),
                 )
+            } else if transport_state == TransportState::Synchronized {
+                self.pending_withdrawal
+                    .as_ref()
+                    .and_then(|pending| pending.retry_not_before_millis)
             } else {
                 None
             };
@@ -154,8 +185,8 @@ impl AwarenessRuntimeState {
             .values()
             .filter_map(|seen| seen.checked_add(AWARENESS_EXPIRY_MILLIS))
             .min();
-        match (renewal, expiry) {
-            (Some(renewal), Some(expiry)) => Some(renewal.min(expiry)),
+        match (local_publish, expiry) {
+            (Some(local_publish), Some(expiry)) => Some(local_publish.min(expiry)),
             (deadline @ Some(_), None) | (None, deadline @ Some(_)) => deadline,
             (None, None) => None,
         }
@@ -394,15 +425,17 @@ impl CollaborationRuntime {
             .set_local_state(&value, &awareness_limits(limits))
             .map_err(|error| engine_error_with_request(error, request_id))?;
         self.awareness.desired_state = Some(value);
+        self.awareness.pending_withdrawal = None;
         if transport_state == TransportState::Synchronized {
             self.broadcast_local_update(request_id, engine)?;
         }
         Ok(())
     }
 
-    /// Withdraws the desired local awareness: the codec tombstones the local
-    /// entry with a bumped clock and the removal is broadcast while
-    /// `Synchronized`. Idempotent — clearing an unpublished state is a no-op.
+    /// Withdraws the desired local awareness: the codec creates one local
+    /// tombstone and the removal is broadcast while `Synchronized`. A
+    /// refused reservation retains the exact framed tombstone for tick
+    /// retry; repeated clears remain no-ops and cannot bump its clock.
     pub(crate) fn clear_desired_awareness(
         &mut self,
         request_id: u64,
@@ -422,14 +455,21 @@ impl CollaborationRuntime {
             .map_err(|error| engine_error_with_request(error, request_id))?;
         self.awareness.desired_state = None;
         self.awareness.last_local_publish_millis = None;
+        let message = frame_awareness_message(
+            &engine
+                .awareness()
+                .encode_local_update_v1()
+                .map_err(|error| engine_error_with_request(error, request_id))?,
+        );
         if transport_state == TransportState::Synchronized {
-            let message = frame_awareness_message(
-                &engine
-                    .awareness()
-                    .encode_local_update_v1()
-                    .map_err(|error| engine_error_with_request(error, request_id))?,
-            );
-            self.enqueue_awareness_broadcast(request_id, message)?;
+            if let Err(error) = self.enqueue_awareness_broadcast(request_id, message.clone()) {
+                self.awareness.pending_withdrawal =
+                    Some(PendingWithdrawal::new(message, self.awareness.now_millis));
+                return Err(error);
+            }
+        } else {
+            self.awareness.pending_withdrawal =
+                Some(PendingWithdrawal::new(message, self.awareness.now_millis));
         }
         Ok(())
     }
@@ -532,8 +572,10 @@ impl CollaborationRuntime {
     /// tombstones, so they leave `peers()` and every query answer), and a
     /// synchronized transport re-publishes the desired state once at least
     /// [`AWARENESS_RENEWAL_INTERVAL_MILLIS`] have elapsed since the last
-    /// broadcast. Expiry is idempotent, so a tick retried after a broadcast
-    /// reservation refusal converges.
+    /// broadcast. An already-clocked withdrawal is retried first when due;
+    /// reservation refusal preserves its exact frame and defers the next
+    /// attempt by one renewal interval to avoid a zero-delay retry loop.
+    /// Expiry is idempotent, so a retried tick converges.
     pub(crate) fn tick(
         &mut self,
         request_id: u64,
@@ -567,8 +609,32 @@ impl CollaborationRuntime {
         }
 
         let mut renewed_local = false;
+        let mut withdrawal_enqueued = false;
         if transport_state == TransportState::Synchronized {
-            if let Some(desired) = self.awareness.desired_state.clone() {
+            let withdrawal_due = self
+                .awareness
+                .pending_withdrawal
+                .as_ref()
+                .is_some_and(|pending| pending.is_due(now_millis));
+            if withdrawal_due {
+                let frame = self
+                    .awareness
+                    .pending_withdrawal
+                    .as_ref()
+                    .expect("a due withdrawal remains pending")
+                    .frame
+                    .clone();
+                if let Err(error) = self.enqueue_awareness_broadcast(request_id, frame) {
+                    self.awareness
+                        .pending_withdrawal
+                        .as_mut()
+                        .expect("a refused withdrawal remains pending")
+                        .defer_retry(now_millis);
+                    return Err(error);
+                }
+                self.awareness.pending_withdrawal = None;
+                withdrawal_enqueued = true;
+            } else if let Some(desired) = self.awareness.desired_state.clone() {
                 let renewal_due =
                     self.awareness
                         .last_local_publish_millis
@@ -589,7 +655,7 @@ impl CollaborationRuntime {
 
         Ok(TickOutcome {
             renewed_local,
-            outbound_changed: renewed_local,
+            outbound_changed: renewed_local || withdrawal_enqueued,
             peers_changed: renewed_local || !expired_peers.is_empty(),
             expired_peers,
             next_deadline_millis: self.awareness.next_deadline_millis(transport_state),
