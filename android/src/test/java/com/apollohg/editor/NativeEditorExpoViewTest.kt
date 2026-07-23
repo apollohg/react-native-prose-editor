@@ -71,6 +71,42 @@ class NativeEditorExpoViewTest {
             NativeEditorViewRegistry.unregister(tokenB, view)
         }
     }
+
+    @Test
+    fun `queued native update from prior A binding is discarded after A to B to A rebind`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        fun registerAdapter(): Pair<EditorV2Adapter, Long> {
+            val editorId = (backend.create("{\"initialization\":{\"type\":\"localEmpty\"}}", null) as EditorV2CallResult.Ok).value
+            val adapter = EditorV2Adapter.attach(backend, JSONObject(editorId).getString("editorId"), roomBound = false)!!
+            return adapter to EditorV2Registry.register(adapter)
+        }
+        val (adapterA, tokenA) = registerAdapter()
+        val (adapterB, tokenB) = registerAdapter()
+        val payloads = mutableListOf<Map<String, Any>>()
+        try {
+            view.onEditorUpdateForTesting = { payloads += it }
+            view.onAddonEventForTesting = {}
+
+            view.setEditorId(tokenA)
+            view.onEditorUpdate(JSONObject(renderUpdateJson("stale A")).put("documentVersion", "7").toString())
+            assertEquals(1, view.pendingEditorUpdateEventCountForTesting())
+
+            view.setEditorId(tokenB)
+            view.setEditorId(tokenA)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+
+            assertTrue(payloads.isEmpty())
+            assertEquals(0, view.pendingEditorUpdateEventCountForTesting())
+        } finally {
+            EditorV2Registry.remove(adapterA.editorId)
+            EditorV2Registry.remove(adapterB.editorId)
+            NativeEditorViewRegistry.unregister(tokenA, view)
+            NativeEditorViewRegistry.unregister(tokenB, view)
+        }
+    }
+
     @Test
     fun `Rust editor destruction precedes registry invalidation even when destruction fails`() {
         val calls = mutableListOf<String>()
@@ -594,41 +630,49 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
-    fun `selection toolbar refresh seeds document version for no update toolbar action`() {
+    fun `toolbar action preflight emits TS-compatible document revision matching atomic update`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
-        val editorId = 667781L
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
         val editText = view.richTextView.editorEditText
         var toolbarActionPayload: Map<String, Any>? = null
 
-        view.richTextView.setEditorIdWhileDetached(editorId)
-        editText.applyUpdateJSON(renderUpdateJson(""), notifyListener = false)
-        editText.setSelection(0)
-        editText.editorId = editorId
-        view.setAttachedToNativeWindowForTesting(true)
-        view.onAddonEventForTesting = {}
-        view.onRefreshToolbarStateFromEditorSelectionForTesting = {
-            JSONObject(renderUpdateJson(""))
-                .put("documentVersion", "7")
-                .toString()
-        }
-        view.onToolbarActionForTesting = { payload ->
-            toolbarActionPayload = payload
-        }
+        try {
+            view.onAddonEventForTesting = {}
+            view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+            view.onEditorReadyForTesting = {}
+            view.onSelectionChangeForTesting = {}
+            view.setAttachedToNativeWindowForTesting(true)
+            view.setEditorId(viewToken)
+            editText.setSelection(0)
+            val inputConnection = editText.onCreateInputConnection(EditorInfo())
+            assertNotNull(inputConnection)
+            assertTrue(inputConnection!!.setComposingText("native", 1))
+            view.onToolbarActionForTesting = { payload ->
+                toolbarActionPayload = payload
+            }
 
-        view.refreshToolbarStateFromEditorSelectionForTesting()
-        view.handleToolbarItemPressForTesting(
-            NativeToolbarItem(
-                type = ToolbarItemKind.action,
-                key = "custom",
-                label = "Custom"
+            view.handleToolbarItemPressForTesting(
+                NativeToolbarItem(
+                    type = ToolbarItemKind.action,
+                    key = "custom",
+                    label = "Custom"
+                )
             )
-        )
 
-        assertEquals("7", view.lastDocumentVersionForTesting())
-        assertEquals("7", toolbarActionPayload?.get("documentVersion"))
-
-        NativeEditorViewRegistry.unregister(editorId, view)
+            assertNotNull(toolbarActionPayload)
+            val payload = toolbarActionPayload!!
+            val updateJson = payload["updateJson"] as String
+            val snapshotRevision = JSONObject(updateJson).getString("documentVersion")
+            assertEquals(snapshotRevision, payload["documentRevision"])
+            assertFalse(payload.containsKey("documentVersion"))
+            assertEquals(adapter.editorId, payload["editorId"])
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
     }
 
     @Test
@@ -1423,7 +1467,7 @@ class NativeEditorExpoViewTest {
 
         assertFalse(view.hasPendingNativeActionForTesting())
         assertEquals("custom", toolbarActionPayload?.get("key"))
-        assertEquals("2", toolbarActionPayload?.get("documentVersion"))
+        assertEquals("2", toolbarActionPayload?.get("documentRevision"))
 
         NativeEditorViewRegistry.unregister(editorId, view)
     }

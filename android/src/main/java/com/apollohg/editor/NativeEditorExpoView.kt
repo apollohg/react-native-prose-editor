@@ -890,6 +890,7 @@ class NativeEditorExpoView(
         val previousEditorId = richTextView.editorId
         if (previousEditorId != id) {
             invalidateAutoGrowContentHeightEmission()
+            clearPendingEditorUpdateDispatchQueue("editorRebind")
         }
         if (previousEditorId == id && richTextView.editorEditText.editorId == id) {
             if (id != 0L && isAttachedToNativeWindow) {
@@ -1817,7 +1818,7 @@ class NativeEditorExpoView(
         if (updateJSON == null) return
         event["updateJson"] = updateJSON
         documentVersionFromUpdateJSON(updateJSON)?.let { version ->
-            event["documentVersion"] = version
+            event["documentRevision"] = version
         }
     }
 
@@ -3379,9 +3380,9 @@ class NativeEditorExpoView(
                     "editorId" to eventEditorId(richTextView.editorId)
                 )
                 addPreflightUpdateToEvent(payload, preflightUpdateJSON)
-                if (!payload.containsKey("documentVersion")) {
+                if (!payload.containsKey("documentRevision")) {
                     lastDocumentVersion?.let { version ->
-                        payload["documentVersion"] = version
+                        payload["documentRevision"] = version
                     }
                 }
                 onToolbarActionForTesting?.invoke(payload) ?: onToolbarAction(payload)
