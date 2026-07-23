@@ -428,6 +428,35 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertEqual(documentText(adapter), "okEXTbase")
     }
 
+    func testForcedRevisionRaceRefreshesOnceWithoutRetryingTheMutation() {
+        let adapter = makeAdapter()
+        _ = adapter.setContentHtml("<p>base</p>")
+
+        let external = editorV2ApplyCommand(
+            editorId: adapter.editorId,
+            requestJson: #"{"version":1,"requestId":"990002","baseDocumentRevision":"\#(adapter.baseDocumentRevision)","command":{"type":"insertText","text":"EXT"}}"#
+        )
+        XCTAssertNil(external.error, "external mutation failed: \(String(describing: external.error))")
+
+        let backendCallsBefore = adapter.backendEnvelopeCallCountForTesting
+        let renderCallsBefore = adapter.renderUpdateCallCountForTesting
+        let update = adapter.insertText("NORETRY", atScalar: 0)
+
+        XCTAssertNotNil(update, "the race resolves into one authoritative refresh")
+        XCTAssertEqual(
+            adapter.backendEnvelopeCallCountForTesting,
+            backendCallsBefore + 1,
+            "the stale mutation must be attempted once and never retried"
+        )
+        XCTAssertEqual(
+            adapter.renderUpdateCallCountForTesting,
+            renderCallsBefore + 1,
+            "a genuine revision race must perform exactly one render refresh"
+        )
+        XCTAssertEqual(documentText(adapter), "EXTbase", "the failed mutation must not be replayed")
+        XCTAssertEqual(renderedText(update), "EXTbase")
+    }
+
     // MARK: - Undo/redo
 
     func testUndoRedoRoundTrip() {
@@ -701,12 +730,16 @@ final class EditorV2AdapterTests: XCTestCase {
     /// mirrored mark selection, and backward-selection doc resolution.
     func testRenderAccessorFixtureMatrixGoldenContent() {
         // Empty doc: one empty block, a one-scalar extent (the empty
-        // paragraph's synthetic placeholder), no selection key.
+        // paragraph's synthetic placeholder), and the authoritative initial
+        // text selection carried by the locked render snapshot.
         let empty = makeFixtureAdapter("")
         let emptyUpdate = parseObject(editorV2RenderUpdate(editorId: empty.editorId, mirrorScalarAnchor: nil, mirrorScalarHead: nil).value)
         XCTAssertNotNil(emptyUpdate["renderBlocks"] as? NSArray)
         XCTAssertEqual((emptyUpdate["scalarLength"] as? NSNumber)?.uint32Value, 1)
-        XCTAssertNil(emptyUpdate["selection"])
+        let emptySelection = emptyUpdate["selection"] as? [String: Any]
+        XCTAssertEqual(emptySelection?["type"] as? String, "text")
+        XCTAssertEqual((emptySelection?["anchor"] as? NSNumber)?.uint32Value, 1)
+        XCTAssertEqual((emptySelection?["head"] as? NSNumber)?.uint32Value, 1)
         XCTAssertNotNil(emptyUpdate["activeState"] as? NSDictionary)
 
         // Emoji: the scalar extent counts every Unicode scalar (a, emoji,

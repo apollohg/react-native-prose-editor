@@ -52,11 +52,19 @@ final class EditorV2Adapter {
 
     /// The document revision the next mutation will be based on.
     private(set) var baseDocumentRevision: UInt64 = 0
+    /// The state revision paired atomically with `baseDocumentRevision` by
+    /// the render accessor. It is intentionally not reconstructed through a
+    /// separate state read.
+    private(set) var stateRevision: UInt64 = 0
     private var nextRequestId: UInt64 = 0
     private(set) var lastRequestIdForTesting: UInt64?
     private(set) var backendEnvelopeCallCountForTesting = 0
+    private(set) var renderUpdateCallCountForTesting = 0
     private var lastSyncedScalarSelection: (anchor: UInt32, head: UInt32)?
+    private var cachedAuthoritativeScalarSelection: (anchor: UInt32, head: UInt32)?
     private var cachedScalarLength: UInt32?
+    private var cachedActiveState: [String: Any]?
+    private var cachedHistoryState: (canUndo: Bool, canRedo: Bool)?
     /// Diagnostics: structured notes for adapter-path failures
     /// (mismatch refreshes, derivation failures) that never surface as
     /// autonomous error events.
@@ -77,19 +85,22 @@ final class EditorV2Adapter {
     /// session (the TS document handle and collaboration controller drive
     /// the same session over the module surface).
     static func attach(editorId: String, roomBound: Bool) -> EditorV2Adapter? {
-        guard isCanonicalDecimalEditorId(editorId),
-              case .success(let stateJson) = normalizeJsonResult(editorV2GetState(editorId: editorId)),
-              let data = stateJson.data(using: .utf8),
-              let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let documentRevision = uint64Field(state, "documentRevision")
-        else {
+        guard isCanonicalDecimalEditorId(editorId) else {
             return nil
         }
-        return EditorV2Adapter(
+        let adapter = EditorV2Adapter(
             editorId: editorId,
             roomBound: roomBound,
-            baseDocumentRevision: documentRevision
+            baseDocumentRevision: 0
         )
+        // Attachment only establishes that the handle is live. It must not
+        // render (a render resolves an otherwise absent selection) or stamp
+        // a state revision; the first actual refresh atomically adopts the
+        // complete render snapshot before input is enabled.
+        guard case .success = normalizeJsonResult(editorV2GetState(editorId: editorId)) else {
+            return nil
+        }
+        return adapter
     }
 
     private static func isCanonicalDecimalEditorId(_ editorId: String) -> Bool {
@@ -212,54 +223,11 @@ final class EditorV2Adapter {
         ["selection": EditorV2PositionBridge.textSelectionEnvelope(anchor: anchor, head: head, affinity: affinity)]
     }
 
-    // MARK: - Structured v2 state reads
-
-    private struct V2State {
-        let documentState: String
-        let transportState: String
-        let renderState: String
-        let documentRevision: UInt64
-        let stateRevision: UInt64
-        let canUndo: Bool
-        let canRedo: Bool
-    }
-
     private static func uint64Field(_ object: [String: Any], _ key: String) -> UInt64? {
         guard let string = object[key] as? String,
               isCanonicalDecimalEditorId(string)
         else { return nil }
         return UInt64(string)
-    }
-
-    private func fetchState() -> V2State? {
-        switch Self.normalizeJsonResult(editorV2GetState(editorId: editorId)) {
-        case .failure(let error):
-            emit(error)
-            return nil
-        case .success(let json):
-            guard let data = json.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let documentState = object["documentState"] as? String,
-                  let transportState = object["transportState"] as? String,
-                  let renderState = object["renderState"] as? String,
-                  let documentRevision = Self.uint64Field(object, "documentRevision"),
-                  let stateRevision = Self.uint64Field(object, "stateRevision"),
-                  let canUndo = object["canUndo"] as? Bool,
-                  let canRedo = object["canRedo"] as? Bool
-            else {
-                emit(contractError("v2 getState value violates the frozen shape"))
-                return nil
-            }
-            return V2State(
-                documentState: documentState,
-                transportState: transportState,
-                renderState: renderState,
-                documentRevision: documentRevision,
-                stateRevision: stateRevision,
-                canUndo: canUndo,
-                canRedo: canRedo
-            )
-        }
     }
 
     private func fetchDocumentJson() -> String? {
@@ -274,30 +242,167 @@ final class EditorV2Adapter {
 
     // MARK: - Render derivation (v2 render accessor)
 
-    /// One derived render update plus the document's scalar extent (the
-    /// lenient `UInt32.max` doc→scalar mapping, used to clamp transient-IME
+    /// One view-facing update plus the document's scalar extent (the lenient
+    /// `UInt32.max` doc→scalar mapping, used to clamp transient-IME
     /// positions the way the legacy engine did).
     private struct EditorV2DerivedUpdate {
         let updateJSON: String
-        let scalarLength: UInt32?
+        let scalarLength: UInt32
     }
 
     private static func uint32Field(_ object: [String: Any], _ key: String) -> UInt32? {
         v2ExactUInt32(object[key] as? NSNumber)
     }
 
-    /// The v2 render accessor: one synthesized update JSON carrying
-    /// full render blocks, the toolbar active state, and (when mirrored) the
-    /// resolved selection — all derived from the live v2 session. History
-    /// state and document version are re-stamped from the same getState read
-    /// that drives revision tracking so one state snapshot is authoritative
-    /// per refresh.
-    private func fetchRenderUpdate(
-        mirrorScalarSelection: (anchor: UInt32, head: UInt32)?,
-        canUndo: Bool,
-        canRedo: Bool,
-        documentVersion: UInt64
-    ) -> EditorV2DerivedUpdate? {
+    private struct AtomicRenderSnapshot {
+        let viewUpdateJSON: String
+        let documentRevision: UInt64
+        let stateRevision: UInt64
+        let scalarLength: UInt32
+        let selection: (anchor: UInt32, head: UInt32)?
+        let activeState: [String: Any]
+        let historyState: (canUndo: Bool, canRedo: Bool)
+    }
+
+    private static let atomicRenderSnapshotKeys: Set<String> = [
+        "renderBlocks",
+        "renderPatch",
+        "selection",
+        "activeState",
+        "historyState",
+        "documentVersion",
+        "stateRevision",
+        "scalarLength",
+    ]
+
+    private static func exactBool(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) == CFBooleanGetTypeID()
+        else {
+            return nil
+        }
+        return number.boolValue
+    }
+
+    private static func scalarSelection(from value: Any) -> (anchor: UInt32, head: UInt32)? {
+        guard let selection = value as? [String: Any],
+              let type = selection["type"] as? String
+        else {
+            return nil
+        }
+        switch type {
+        case "text":
+            guard Set(selection.keys) == ["type", "anchor", "head", "anchorScalar", "headScalar"],
+                  uint32Field(selection, "anchor") != nil,
+                  uint32Field(selection, "head") != nil,
+                  let anchor = uint32Field(selection, "anchorScalar"),
+                  let head = uint32Field(selection, "headScalar")
+            else {
+                return nil
+            }
+            return (anchor, head)
+        case "node":
+            guard Set(selection.keys) == ["type", "pos", "posScalar"],
+                  uint32Field(selection, "pos") != nil,
+                  uint32Field(selection, "posScalar") != nil
+            else {
+                return nil
+            }
+            return nil
+        case "all":
+            return Set(selection.keys) == ["type"] ? nil : nil
+        default:
+            return nil
+        }
+    }
+
+    private static func isValidSelection(_ value: Any) -> Bool {
+        if value is NSNull { return true }
+        guard let selection = value as? [String: Any],
+              let type = selection["type"] as? String
+        else {
+            return false
+        }
+        switch type {
+        case "text":
+            return scalarSelection(from: selection) != nil
+        case "node":
+            return Set(selection.keys) == ["type", "pos", "posScalar"]
+                && uint32Field(selection, "pos") != nil
+                && uint32Field(selection, "posScalar") != nil
+        case "all":
+            return Set(selection.keys) == ["type"]
+        default:
+            return false
+        }
+    }
+
+    private static func parseAtomicRenderSnapshot(_ json: String) -> AtomicRenderSnapshot? {
+        guard let data = json.data(using: .utf8),
+              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(object.keys) == atomicRenderSnapshotKeys,
+              object["renderBlocks"] as? [[[String: Any]]] != nil,
+              object["renderPatch"] is NSNull,
+              let selectionValue = object["selection"],
+              isValidSelection(selectionValue),
+              let activeState = object["activeState"] as? [String: Any],
+              activeState["marks"] as? [String: Any] != nil,
+              activeState["markAttrs"] as? [String: Any] != nil,
+              activeState["nodes"] as? [String: Any] != nil,
+              activeState["commands"] as? [String: Any] != nil,
+              activeState["allowedMarks"] as? [String] != nil,
+              activeState["insertableNodes"] as? [String] != nil,
+              let history = object["historyState"] as? [String: Any],
+              Set(history.keys) == ["canUndo", "canRedo"],
+              let canUndo = exactBool(history["canUndo"]),
+              let canRedo = exactBool(history["canRedo"]),
+              let documentRevision = uint64Field(object, "documentVersion"),
+              let stateRevision = uint64Field(object, "stateRevision"),
+              let scalarLength = uint32Field(object, "scalarLength")
+        else {
+            return nil
+        }
+
+        let selection = scalarSelection(from: selectionValue)
+        object.removeValue(forKey: "scalarLength")
+        guard let viewData = try? JSONSerialization.data(withJSONObject: object),
+              let viewUpdateJSON = String(data: viewData, encoding: .utf8)
+        else {
+            return nil
+        }
+        return AtomicRenderSnapshot(
+            viewUpdateJSON: viewUpdateJSON,
+            documentRevision: documentRevision,
+            stateRevision: stateRevision,
+            scalarLength: scalarLength,
+            selection: selection,
+            activeState: activeState,
+            historyState: (canUndo, canRedo)
+        )
+    }
+
+    private static func viewUpdate(
+        from snapshot: AtomicRenderSnapshot,
+        strippingViewSelection: Bool
+    ) -> String? {
+        guard strippingViewSelection,
+              let data = snapshot.viewUpdateJSON.data(using: .utf8),
+              var update = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return strippingViewSelection ? nil : snapshot.viewUpdateJSON
+        }
+        update.removeValue(forKey: "selection")
+        guard let strippedData = try? JSONSerialization.data(withJSONObject: update) else { return nil }
+        return String(data: strippedData, encoding: .utf8)
+    }
+
+    /// Fetch one complete locked render snapshot. This is deliberately the
+    /// only read in the refresh path: never splice a getState revision onto
+    /// the render payload.
+    private func fetchAtomicRenderSnapshot(
+        mirrorScalarSelection: (anchor: UInt32, head: UInt32)?
+    ) -> AtomicRenderSnapshot? {
+        renderUpdateCallCountForTesting += 1
         let result = editorV2RenderUpdate(
             editorId: editorId,
             mirrorScalarAnchor: mirrorScalarSelection?.anchor,
@@ -308,25 +413,46 @@ final class EditorV2Adapter {
             debugNotes.append("renderUpdate \(error.domain)/\(error.code)")
             return nil
         case .success(let json):
-            guard let data = json.data(using: .utf8),
-                  var update = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let scalarLength = Self.uint32Field(update, "scalarLength")
-            else {
+            guard let snapshot = Self.parseAtomicRenderSnapshot(json) else {
                 debugNotes.append("renderUpdate shape invalid")
                 return nil
             }
-            update["historyState"] = ["canUndo": canUndo, "canRedo": canRedo]
-            update["documentVersion"] = documentVersion.description
-            // The scalar extent feeds the adapter's IME clamp only; the
-            // view-facing update keeps the exact legacy update JSON shape.
-            update.removeValue(forKey: "scalarLength")
-            guard let serialized = try? JSONSerialization.data(withJSONObject: update),
-                  let updateJSON = String(data: serialized, encoding: .utf8)
-            else {
-                return nil
-            }
-            return EditorV2DerivedUpdate(updateJSON: updateJSON, scalarLength: scalarLength)
+            return snapshot
         }
+    }
+
+    @discardableResult
+    private func adopt(_ snapshot: AtomicRenderSnapshot, strippingViewSelection: Bool) -> EditorV2DerivedUpdate? {
+        guard let updateJSON = Self.viewUpdate(
+            from: snapshot,
+            strippingViewSelection: strippingViewSelection
+        ) else {
+            return nil
+        }
+        baseDocumentRevision = snapshot.documentRevision
+        stateRevision = snapshot.stateRevision
+        cachedScalarLength = snapshot.scalarLength
+        cachedActiveState = snapshot.activeState
+        cachedHistoryState = snapshot.historyState
+        // This is the engine's selection from the locked snapshot. Keep it
+        // distinct from a caller-provided mirror: treating it as a mirror on
+        // the next refresh would change the frozen no-mirror render shape.
+        cachedAuthoritativeScalarSelection = snapshot.selection
+        return EditorV2DerivedUpdate(updateJSON: updateJSON, scalarLength: snapshot.scalarLength)
+    }
+
+    /// Atomically parse and adopt a render supplied by JS before the paired
+    /// native view accepts further input. The caller applies the returned
+    /// payload synchronously in the same editor-scoped operation.
+    func adoptExternalRender(_ renderJSON: String) -> String? {
+        guard !destroyed,
+              let snapshot = Self.parseAtomicRenderSnapshot(renderJSON),
+              let adopted = adopt(snapshot, strippingViewSelection: false)
+        else {
+            emit(contractError("v2 atomic render snapshot violates the frozen shape"))
+            return nil
+        }
+        return adopted.updateJSON
     }
 
     /// Re-read the authoritative v2 state and derive one synthesized update
@@ -334,7 +460,10 @@ final class EditorV2Adapter {
     /// and the scalar-extent cache. This is the REVISION_MISMATCH recovery
     /// path: it never re-issues the failed operation.
     @discardableResult
-    private func refreshInternal(mirrorSelection: (anchor: UInt32, head: UInt32)?) -> EditorV2DerivedUpdate? {
+    private func refreshInternal(
+        mirrorSelection: (anchor: UInt32, head: UInt32)?,
+        strippingViewSelection: Bool = false
+    ) -> EditorV2DerivedUpdate? {
         guard !destroyed else {
             emit(
                 FfiError(
@@ -350,17 +479,11 @@ final class EditorV2Adapter {
             )
             return nil
         }
-        guard let state = fetchState() else { return nil }
-        baseDocumentRevision = state.documentRevision
-        let derived = fetchRenderUpdate(
-            mirrorScalarSelection: mirrorSelection,
-            canUndo: state.canUndo,
-            canRedo: state.canRedo,
-            documentVersion: state.documentRevision
-        )
-        cachedScalarLength = derived?.scalarLength
-        if derived == nil {
+        guard let snapshot = fetchAtomicRenderSnapshot(mirrorScalarSelection: mirrorSelection),
+              let derived = adopt(snapshot, strippingViewSelection: strippingViewSelection)
+        else {
             debugNotes.append("deriveUpdateJSON failed")
+            return nil
         }
         return derived
     }
@@ -418,8 +541,9 @@ final class EditorV2Adapter {
 
     /// Engine-owned history flags (module `editorCanUndo/editorCanRedo`).
     func historyFlags() -> (canUndo: Bool, canRedo: Bool)? {
-        guard let state = fetchState() else { return nil }
-        return (state.canUndo, state.canRedo)
+        if let cachedHistoryState { return cachedHistoryState }
+        guard refreshInternal(mirrorSelection: nil) != nil else { return nil }
+        return cachedHistoryState
     }
 
     /// The resolved selection JSON (legacy `editorGetSelection` shape).
@@ -723,7 +847,12 @@ final class EditorV2Adapter {
                 lastSyncedScalarSelection = nil
             }
             guard let update = refreshInternal(
-                mirrorSelection: postSelectionMirror ?? (includeSelectionInUpdate ? preSelection : nil)
+                mirrorSelection: postSelectionMirror ?? (includeSelectionInUpdate ? preSelection : nil),
+                // Paste and composition-preserving paths still derive active
+                // and history state from the authoritative post-operation
+                // selection. Only the view-facing selection is omitted so
+                // UIKit retains its IME-owned caret.
+                strippingViewSelection: postSelectionMirror == nil && !includeSelectionInUpdate
             )?.updateJSON else {
                 return nil
             }

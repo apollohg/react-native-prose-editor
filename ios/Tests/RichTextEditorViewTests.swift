@@ -3095,6 +3095,53 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(view.richTextView.textView.reconciliationCount, 0)
     }
 
+    func testExternalAtomicRenderAdoptionLetsTheFirstKeystrokeCommitAtTheNextRevision() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected the v2 adapter paired to the native editor")
+            return
+        }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>base</p>")
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+
+        let revisionN = adapter.baseDocumentRevision
+        let external = editorV2ApplyCommand(
+            editorId: adapter.editorId,
+            requestJson: #"{"version":1,"requestId":"991001","baseDocumentRevision":"\#(revisionN)","command":{"type":"insertText","text":"EXT"}}"#
+        )
+        XCTAssertNil(external.error, "external mutation failed: \(String(describing: external.error))")
+        let snapshot = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        )
+        guard let externalRender = snapshot.value, snapshot.error == nil else {
+            XCTFail("external render failed: \(String(describing: snapshot.error))")
+            return
+        }
+
+        XCTAssertTrue(view.applyEditorUpdate(externalRender))
+        XCTAssertEqual(adapter.baseDocumentRevision, revisionN + 1)
+
+        view.richTextView.textView.insertText("!")
+
+        XCTAssertEqual(adapter.baseDocumentRevision, revisionN + 2)
+        XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>EXT!base</p>")
+        XCTAssertFalse(
+            adapter.debugNotes.contains(where: { $0.contains("mismatch-refresh") }),
+            "the first keystroke after an adopted external render must not race its own cache"
+        )
+    }
+
     func testInputTraitChangesDrainPendingNativeAutocorrectBeforeReload() {
         assertPendingNativeAutocorrectSurvivesInputTraitChange {
             $0.setAutoCorrect(true)

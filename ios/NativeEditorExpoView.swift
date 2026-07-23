@@ -2685,10 +2685,18 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             scheduleViewCommandUpdateRetry(updateJson)
             return false
         }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: richTextView.editorId),
+              let adoptedUpdateJSON = adapter.adoptExternalRender(updateJson)
+        else {
+            return false
+        }
         isApplyingJSUpdate = true
         defer { isApplyingJSUpdate = false }
         imageLoadOwner.withCurrent {
-            richTextView.textView.applyUpdateJSON(updateJson)
+            // The adapter cache and the payload are paired by the same
+            // editor-scoped call above; do not let the view display a render
+            // whose revision has not already been adopted for native input.
+            richTextView.textView.applyUpdateJSON(adoptedUpdateJSON)
         }
         return true
     }
@@ -2724,8 +2732,19 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             self.pendingViewCommandUpdateJSON = nil
             self.pendingViewCommandUpdateEditorId = nil
             self.pendingViewCommandUpdateRetryScheduled = false
-            let updateJSON = EditorV2Shadow.getCurrentState(id: self.richTextView.editorId)
-            _ = self.applyEditorUpdate(updateJSON)
+            guard let adapter = EditorV2Registry.adapter(forLegacyId: self.richTextView.editorId),
+                  let updateJSON = adapter.refreshFromRustState(mirrorSelection: nil)
+            else {
+                return
+            }
+            // A Rust refresh already adopts adapter state. Apply its
+            // view-facing payload directly so retry cannot split cache and
+            // rendered content.
+            self.isApplyingJSUpdate = true
+            defer { self.isApplyingJSUpdate = false }
+            self.imageLoadOwner.withCurrent {
+                self.richTextView.textView.applyUpdateJSON(updateJSON)
+            }
         }
     }
 
