@@ -1076,16 +1076,16 @@ impl EditorSession {
             }))
     }
 
-    /// Task 10: publish the desired local awareness state (runtime-owned,
-    /// codec-validated). Requires an attached runtime like every other
-    /// runtime-shaped operation.
-    pub(crate) fn set_desired_awareness(
+    /// Test-only raw awareness fixture seam. Production callers must use the
+    /// typed intent path below.
+    #[cfg(test)]
+    pub(crate) fn set_desired_awareness_for_test(
         &mut self,
         request_id: u64,
         state_json: &str,
     ) -> Result<(), SessionError> {
         let (runtime, context) = self.awareness_runtime_and_context()?;
-        runtime.set_desired_awareness(request_id, state_json, context)
+        runtime.set_desired_awareness_for_test(request_id, state_json, context)
     }
 
     /// Production local-awareness intent: Rust validates the closed caller

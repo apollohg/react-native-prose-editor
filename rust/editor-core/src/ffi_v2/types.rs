@@ -227,7 +227,7 @@ mod tests {
         let mut engine = engine();
         let mut runtime = CollaborationRuntime::new(&limits);
         runtime
-            .set_desired_awareness(
+            .set_desired_awareness_for_test(
                 91,
                 r#"{"name":"before"}"#,
                 AwarenessContext {
@@ -241,7 +241,7 @@ mod tests {
             .awareness()
             .set_live_local_clock_for_test(u32::MAX - 1);
         let session_error = runtime
-            .set_desired_awareness(
+            .set_desired_awareness_for_test(
                 92,
                 r#"{"name":"after"}"#,
                 AwarenessContext {

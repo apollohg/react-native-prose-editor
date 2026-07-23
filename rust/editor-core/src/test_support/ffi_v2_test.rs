@@ -1372,6 +1372,42 @@ fn typed_awareness_intent_ffi_and_collaboration_binary_round_trip() {
 }
 
 #[test]
+fn awareness_review_fix_raw_publication_is_test_only() {
+    let session = include_str!("../session.rs");
+    let runtime = include_str!("../collaboration_runtime/awareness.rs");
+    let document_api = include_str!("../document_api.rs");
+
+    assert!(
+        !session.contains("pub(crate) fn set_desired_awareness("),
+        "EditorSession must not expose a production raw awareness setter",
+    );
+    assert!(
+        session.contains("#[cfg(test)]\n    pub(crate) fn set_desired_awareness_for_test("),
+        "legacy raw-state fixtures require a cfg(test)-gated session seam",
+    );
+    assert!(
+        !runtime.contains("pub(crate) fn set_desired_awareness("),
+        "the runtime must not retain a generic raw publication method",
+    );
+    assert!(
+        runtime.contains("#[cfg(test)]\n    pub(crate) fn set_desired_awareness_for_test("),
+        "the runtime raw parser must be cfg(test)-gated",
+    );
+    assert!(
+        !document_api.contains("pub fn set_desired_awareness("),
+        "the document facade must not expose a generic raw awareness setter",
+    );
+    assert!(
+        document_api.contains("pub fn set_desired_awareness_for_test("),
+        "raw document-facade publication must be explicitly test-only",
+    );
+    assert!(
+        document_api.contains("#[cfg(test)]\npub mod session_initialization_test_support"),
+        "the document facade raw helper must remain inside test-only support",
+    );
+}
+
+#[test]
 fn task8_third_remediation_ffi_tick_reports_local_renewal_as_peer_change() {
     let snapshot = snapshot_source();
     let id = create_handle_with_state(

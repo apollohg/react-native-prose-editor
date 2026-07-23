@@ -704,7 +704,8 @@ fn transport_teardown_never_drops_pending_outbox_entries() {
 #[test]
 fn transport_teardown_clears_awareness_peers_and_retains_desired_awareness() {
     use crate::session_initialization_test_support::{
-        awareness_peers, desired_awareness, receive_message, set_desired_awareness,
+        awareness_peers, desired_awareness, receive_message,
+        set_desired_awareness_for_test as set_desired_awareness,
     };
     use yrs::updates::encoder::Encode as _;
 

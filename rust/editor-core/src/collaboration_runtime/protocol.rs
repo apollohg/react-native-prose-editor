@@ -1028,7 +1028,7 @@ mod tests {
         let mut engine = engine();
         let mut runtime = CollaborationRuntime::new(&limits);
         runtime
-            .set_desired_awareness(
+            .set_desired_awareness_for_test(
                 REQUEST_ID,
                 r#"{"name":"before"}"#,
                 AwarenessContext {

@@ -29,10 +29,11 @@ use crate::session::{CollaborationLimits, TransportState as RuntimeTransportStat
 use crate::session_initialization_test_support::{
     awareness_peers, awareness_tick, begin_connect, clear_desired_awareness, create_room_from_json,
     desired_awareness, destroy_session, document_state, receive_message, restore_snapshot,
-    session_audit, set_collaboration_limit_for_test, set_desired_awareness, socket_closed,
-    socket_opened, take_next_protocol_reply, transport_detach, transport_disconnect,
-    transport_reattach, transport_state, AwarenessPeerInfo, CloseDisposition, DocumentState,
-    ReceiveOutcome, SessionAudit, TransportState,
+    session_audit, set_collaboration_limit_for_test,
+    set_desired_awareness_for_test as set_desired_awareness, socket_closed, socket_opened,
+    take_next_protocol_reply, transport_detach, transport_disconnect, transport_reattach,
+    transport_state, AwarenessPeerInfo, CloseDisposition, DocumentState, ReceiveOutcome,
+    SessionAudit, TransportState,
 };
 use crate::tiptap_schema;
 use crate::yrs_engine::{
@@ -780,7 +781,7 @@ fn reconnect_after_cleanup_and_undo_preserves_clock_or_requires_fresh_identity()
             .unwrap();
         let mut runtime = CollaborationRuntime::new(&limits);
         runtime
-            .set_desired_awareness(
+            .set_desired_awareness_for_test(
                 425,
                 r#"{"name":"reconnecting after undo"}"#,
                 crate::collaboration_runtime::awareness::AwarenessContext {
@@ -1048,7 +1049,7 @@ fn remote_cannot_advance_the_local_client_clock() {
     let mut engine = source_engine();
     let mut runtime = CollaborationRuntime::new(&limits);
     runtime
-        .set_desired_awareness(
+        .set_desired_awareness_for_test(
             463,
             r#"{"name":"locally owned"}"#,
             crate::collaboration_runtime::awareness::AwarenessContext {
@@ -1666,6 +1667,44 @@ fn typed_awareness_intent_owns_sticky_cursors_and_survives_or_omits_them_on_rest
     let foreign_snapshot = snapshot_source();
     restore_snapshot(id, 616, &foreign_snapshot).unwrap();
     assert_eq!(local_peer(id).unwrap().cursor, None);
+    destroy_session(id);
+}
+
+#[test]
+fn awareness_review_fix_rejects_explicit_null_selection_atomically() {
+    let (id, snapshot) = create_ready_room();
+    let _generation = synchronize_ready_room(id, &snapshot);
+    let accepted = json!({
+        "state": { "name": "kept" },
+        "focused": true,
+        "selection": { "type": "text", "anchor": 7, "head": 7 },
+    });
+    let result = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        accepted.to_string(),
+    );
+    assert!(result.error.is_none(), "{result:?}");
+    drain_protocol_replies(id);
+
+    let peers_before = awareness_peers(id).unwrap();
+    let desired_before = desired_awareness(id).unwrap();
+    let audit_before = session_audit(id).unwrap();
+    let result = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        json!({
+            "state": { "name": "must not replace kept" },
+            "focused": false,
+            "selection": null,
+        })
+        .to_string(),
+    );
+    assert!(result.value.is_none(), "{result:?}");
+    let error = result.error.expect("explicit null selection must reject");
+    assert_eq!(error.code, "AWARENESS_STATE_INVALID", "{error:?}");
+    assert_eq!(awareness_peers(id).unwrap(), peers_before);
+    assert_eq!(desired_awareness(id).unwrap(), desired_before);
+    assert_eq!(session_audit(id).unwrap(), audit_before);
+    assert!(take_next_protocol_reply(id).unwrap().is_none());
     destroy_session(id);
 }
 

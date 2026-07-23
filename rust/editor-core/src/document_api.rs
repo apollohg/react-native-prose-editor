@@ -614,13 +614,13 @@ pub mod session_initialization_test_support {
     }
 
     /// Task 10: publish the desired local awareness state.
-    pub fn set_desired_awareness(
+    pub fn set_desired_awareness_for_test(
         id: u64,
         request_id: u64,
         state_json: &str,
     ) -> Result<(), TestError> {
         with_live(id, |session| {
-            session.set_desired_awareness(request_id, state_json)
+            session.set_desired_awareness_for_test(request_id, state_json)
         })
     }
 

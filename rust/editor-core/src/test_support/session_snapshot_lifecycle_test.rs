@@ -20,9 +20,9 @@ use crate::session_initialization_test_support::{
     desired_awareness, destroy_session, document_state, encoded_state, export_snapshot, get_json,
     mark_synchronized_for_test, pending_protocol_replies, receive_message,
     remote_dependency_accounting, render_state, restore_snapshot, session_audit,
-    set_desired_awareness, socket_closed, socket_opened, transport_detach, transport_disconnect,
-    transport_state, AwarenessPeerInfo, CloseDisposition, DocumentState, RenderState, SessionAudit,
-    TransportState,
+    set_desired_awareness_for_test as set_desired_awareness, socket_closed, socket_opened,
+    transport_detach, transport_disconnect, transport_state, AwarenessPeerInfo, CloseDisposition,
+    DocumentState, RenderState, SessionAudit, TransportState,
 };
 use crate::tiptap_schema;
 use crate::yrs_engine::{

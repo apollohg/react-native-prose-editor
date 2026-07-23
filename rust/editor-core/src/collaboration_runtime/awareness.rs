@@ -54,13 +54,30 @@ const AWARENESS_ACTION: &str = "awareness";
 struct LocalAwarenessIntent {
     state: Value,
     focused: bool,
-    selection: Option<LocalAwarenessSelection>,
+    #[serde(default)]
+    selection: LocalAwarenessSelectionWire,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 enum LocalAwarenessSelection {
     Text { anchor: u32, head: u32 },
+}
+
+#[derive(Debug, Default)]
+enum LocalAwarenessSelectionWire {
+    #[default]
+    Absent,
+    Present(LocalAwarenessSelection),
+}
+
+impl<'de> Deserialize<'de> for LocalAwarenessSelectionWire {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        LocalAwarenessSelection::deserialize(deserializer).map(Self::Present)
+    }
 }
 
 fn awareness_state_invalid(request_id: u64, message: impl Into<String>) -> SessionError {
@@ -276,13 +293,14 @@ fn broadcast_reservation_error(error: OutboxReservationError, request_id: u64) -
 }
 
 impl CollaborationRuntime {
-    /// Publishes the desired local awareness state: validated JSON, bounded
-    /// by the per-peer and aggregate awareness byte ceilings at set time
+    /// Test-only raw-state fixture seam: validated JSON, bounded by the
+    /// per-peer and aggregate awareness byte ceilings at set time
     /// (atomic rejection through the codec), retained across every transport
     /// teardown, and broadcast immediately while `Synchronized`. A broadcast
     /// reservation refusal keeps the state set — the renewal clock heals the
     /// missed broadcast — and reports the retryable error.
-    pub(crate) fn set_desired_awareness(
+    #[cfg(test)]
+    pub(crate) fn set_desired_awareness_for_test(
         &mut self,
         request_id: u64,
         state_json: &str,
@@ -335,7 +353,10 @@ impl CollaborationRuntime {
             ));
         }
         let cursor = match intent.selection {
-            Some(LocalAwarenessSelection::Text { anchor, head }) => engine
+            LocalAwarenessSelectionWire::Present(LocalAwarenessSelection::Text {
+                anchor,
+                head,
+            }) => engine
                 .awareness_sticky_cursor(anchor, head)
                 .ok_or_else(|| {
                     awareness_state_invalid(
@@ -343,7 +364,7 @@ impl CollaborationRuntime {
                         "local awareness selection is outside the current document",
                     )
                 })?,
-            None => Value::Null,
+            LocalAwarenessSelectionWire::Absent => Value::Null,
         };
         let mut published = Map::new();
         published.insert("state".into(), intent.state);
@@ -860,7 +881,7 @@ mod tests {
         let limits = CollaborationLimits::default();
 
         let error = runtime
-            .set_desired_awareness(
+            .set_desired_awareness_for_test(
                 REQUEST_ID,
                 "{broken",
                 context(&mut engine, TransportState::Disconnected, &limits),
@@ -871,7 +892,7 @@ mod tests {
         assert_eq!(runtime.desired_awareness(), None);
 
         runtime
-            .set_desired_awareness(
+            .set_desired_awareness_for_test(
                 REQUEST_ID,
                 r#"{"name":"kept"}"#,
                 context(&mut engine, TransportState::Disconnected, &limits),
@@ -948,7 +969,7 @@ mod tests {
         let limits = CollaborationLimits::default();
 
         runtime
-            .set_desired_awareness(
+            .set_desired_awareness_for_test(
                 REQUEST_ID,
                 r#"{"name":"renewed"}"#,
                 context(&mut engine, TransportState::Synchronized, &limits),
@@ -999,7 +1020,7 @@ mod tests {
         let mut engine = engine();
         let limits = CollaborationLimits::default();
         runtime
-            .set_desired_awareness(
+            .set_desired_awareness_for_test(
                 REQUEST_ID,
                 r#"{"name":"before"}"#,
                 context(&mut engine, TransportState::Disconnected, &limits),
@@ -1018,7 +1039,7 @@ mod tests {
             let before_replies = runtime.outbox().pending_protocol_reply_count();
 
             let error = runtime
-                .set_desired_awareness(
+                .set_desired_awareness_for_test(
                     REQUEST_ID,
                     r#"{"name":"after"}"#,
                     context(&mut engine, TransportState::Synchronized, &limits),
