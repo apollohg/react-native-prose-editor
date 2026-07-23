@@ -782,30 +782,16 @@ fn apply_input_command_selection_and_local_api_outcome_matrix() {
         "{error:?}",
     );
 
-    // Envelope admission: bad version, forged origin, unknown field, and
-    // empty input text all reject before any engine work.
-    for (label, envelope) in [
-        (
-            "bad version",
-            json!({ "version": 2, "requestId": "603", "baseDocumentRevision": revision_of(&id).to_string(), "text": "x" }),
-        ),
-        (
-            "forged origin",
-            json!({ "version": 1, "requestId": "604", "baseDocumentRevision": revision_of(&id).to_string(), "text": "x", "origin": "remote" }),
-        ),
-        (
-            "empty text",
-            json!({ "version": 1, "requestId": "605", "baseDocumentRevision": revision_of(&id).to_string(), "text": "" }),
-        ),
+    // Envelope admission: bad version, the removed origin field, and empty
+    // input text all reject before any engine work.
+    for envelope in [
+        json!({ "version": 2, "requestId": "603", "baseDocumentRevision": revision_of(&id).to_string(), "text": "x" }),
+        json!({ "version": 1, "requestId": "604", "baseDocumentRevision": revision_of(&id).to_string(), "text": "x", "origin": "remote" }),
+        json!({ "version": 1, "requestId": "605", "baseDocumentRevision": revision_of(&id).to_string(), "text": "" }),
     ] {
-        // Envelope parse rejections (forged origin) carry no request id —
-        // the id is unknown before the envelope parses; post-parse policy
-        // rejections (bad version, empty text) stamp it.
-        let expected_request_id = if label == "forged origin" {
-            None
-        } else {
-            envelope["requestId"].as_str().map(str::to_owned)
-        };
+        // The bounded request-id probe preserves a canonical ID even when a
+        // later exact-envelope parse rejects the removed origin field.
+        let expected_request_id = envelope["requestId"].as_str().map(str::to_owned);
         let error = err_json(&v2::editor_v2_apply_input(id.clone(), envelope.to_string()));
         assert_error(
             &error,
@@ -1534,6 +1520,11 @@ fn collaboration_task8_tick_rejects_regressing_time_without_corrupting_peer_expi
 
 #[test]
 fn collaboration_tick_expires_remote_peers_with_decimal_ids() {
+    // Yrs client IDs occupy the same 53-bit integer domain as Yjs numbers.
+    // Use its maximum valid value so the FFI must preserve the exact decimal
+    // spelling without constructing an out-of-domain ID that aliases in
+    // release builds.
+    const MAX_YRS_CLIENT_ID: u64 = 9_007_199_254_740_991;
     let snapshot = snapshot_source();
     let id = create_handle_with_state(
         room_config(Some(&snapshot)),
@@ -1541,7 +1532,7 @@ fn collaboration_tick_expires_remote_peers_with_decimal_ids() {
     );
     let generation = synchronize_v2(&id, &RawPeer::from_snapshot(&snapshot));
     let clients = [(
-        yrs::ClientID::new(9_007_199_254_740_993),
+        yrs::ClientID::new(MAX_YRS_CLIENT_ID),
         yrs::sync::awareness::AwarenessUpdateEntry {
             clock: 1,
             json: json!({ "name": "expiring remote" }).to_string().into(),
@@ -1568,7 +1559,11 @@ fn collaboration_tick_expires_remote_peers_with_decimal_ids() {
         "30000".into(),
     ));
     assert_eq!(at["nextDeadlineMillis"], Value::Null, "{at:?}");
-    assert_eq!(at["expiredPeers"], json!(["9007199254740993"]), "{at:?}");
+    assert_eq!(
+        at["expiredPeers"],
+        json!([MAX_YRS_CLIENT_ID.to_string()]),
+        "{at:?}"
+    );
     assert_eq!(at["peersChanged"], true, "{at:?}");
     assert_eq!(at["outboundChanged"], false, "{at:?}");
     destroy_handle(&id);

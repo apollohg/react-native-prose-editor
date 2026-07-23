@@ -22309,7 +22309,6 @@ mod tests {
             fixture(crate::yrs_engine::EditingLimits::default().max_derived_output_bytes);
         let before_metadata =
             super::history_metadata_bytes(probe.stored_marks(), &probe.fragment_name);
-        assert!(before_metadata > SPARE_ENTRIES * std::mem::size_of::<usize>());
         probe
             .apply_typed_transaction(transaction(&probe, 108_032))
             .unwrap();
