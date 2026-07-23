@@ -28,6 +28,7 @@ LIB_NAME="libeditor_core.so"
 MIN_SDK_VERSION=24
 
 source "$SCRIPT_DIR/toolchain.sh"
+export CARGO="$RUST_TOOLCHAIN_CARGO"
 TARGET_DIR="${CARGO_TARGET_DIR:-$CRATE_DIR/target}"
 if [[ -n "${RUST_TOOLCHAIN_CARGO_PLUGIN_DIR:-}" ]]; then
     export PATH="$RUST_TOOLCHAIN_CARGO_PLUGIN_DIR:$PATH"

@@ -31,6 +31,9 @@ if [[ "${1:-}" == "--version" ]]; then
   printf '%s 1.95.0 (fixture)\n' "$tool"
   exit 0
 fi
+if [[ "$tool" == "cargo" && "${1:-}" == "ndk" ]]; then
+  exec cargo-ndk "${@:2}"
+fi
 printf '%s:%s\n' "$tool" "$*" >> "${TOOLCHAIN_FIXTURE_LOG:?}"
 SCRIPT
     chmod +x "$toolchain_dir/$tool"
@@ -62,6 +65,48 @@ fi
 SCRIPT
   chmod +x "$bin_dir/rustup"
   printf '%s\n' "$bin_dir"
+}
+
+make_cargo_ndk() {
+  local bin_dir="$1"
+  cat > "$bin_dir/cargo-ndk" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'CARGO=%s\n' "${CARGO:-}" >> "${CARGO_NDK_FIXTURE_LOG:?}"
+
+target=""
+target_dir=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --target)
+      target="$2"
+      shift 2
+      ;;
+    --target-dir)
+      target_dir="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+: "${target:?missing --target}"
+: "${target_dir:?missing --target-dir}"
+mkdir -p "$target_dir/$target/release"
+printf 'fixture\n' > "$target_dir/$target/release/libeditor_core.so"
+SCRIPT
+  chmod +x "$bin_dir/cargo-ndk"
+
+  cat > "$bin_dir/nm" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+for symbol in $(seq 1 29); do
+  printf 'uniffi_editor_core_fn_func_editor_v2_%s\n' "$symbol"
+done
+SCRIPT
+  chmod +x "$bin_dir/nm"
 }
 
 arm64_dir="$(make_toolchain arm64-host)"
@@ -123,23 +168,57 @@ if RUSTUP_FIXTURE_ROOT="$fixture_root" RUSTUP_FIXTURE_TOOLCHAIN=arm64-host RUSTU
 fi
 assert_contains "$(cat "$fixture_root/missing-pinned.out")" 'failed to resolve rustdoc from rustup toolchain 1.95.0'
 
-wrong_dir="$fixture_root/wrong-version/bin"
-mkdir -p "$wrong_dir"
-for tool in cargo rustc rustdoc; do
-  sed 's/1\.95\.0/1.94.0/g' "$arm64_dir/$tool" > "$wrong_dir/$tool"
-  chmod +x "$wrong_dir/$tool"
+wrong_cargo_dir="$fixture_root/wrong-cargo/bin"
+wrong_rustc_dir="$fixture_root/wrong-rustc/bin"
+wrong_rustdoc_dir="$fixture_root/wrong-rustdoc/bin"
+for wrong_dir in "$wrong_cargo_dir" "$wrong_rustc_dir" "$wrong_rustdoc_dir"; do
+  mkdir -p "$wrong_dir"
+  cp "$arm64_dir/cargo" "$wrong_dir/cargo"
+  cp "$arm64_dir/rustc" "$wrong_dir/rustc"
+  cp "$arm64_dir/rustdoc" "$wrong_dir/rustdoc"
 done
-if RUST_TOOLCHAIN_DIR="$wrong_dir" PATH="/usr/bin:/bin" bash -c 'source "$1"' bash "$repo_root/rust/toolchain.sh" >"$fixture_root/wrong-version.out" 2>&1; then
-  fail "accepted a wrong-version override"
+sed 's/1\.95\.0/1.94.0/g' "$arm64_dir/cargo" > "$wrong_cargo_dir/cargo"
+sed 's/1\.95\.0/1.94.0/g' "$arm64_dir/rustc" > "$wrong_rustc_dir/rustc"
+sed 's/1\.95\.0/1.94.0/g' "$arm64_dir/rustdoc" > "$wrong_rustdoc_dir/rustdoc"
+for wrong_dir in "$wrong_cargo_dir" "$wrong_rustc_dir" "$wrong_rustdoc_dir"; do
+  chmod +x "$wrong_dir/cargo" "$wrong_dir/rustc" "$wrong_dir/rustdoc"
+done
+if RUST_TOOLCHAIN_DIR="$wrong_cargo_dir" PATH="/usr/bin:/bin" bash -c 'source "$1"' bash "$repo_root/rust/toolchain.sh" >"$fixture_root/wrong-cargo.out" 2>&1; then
+  fail "accepted a wrong-version cargo override"
 fi
-assert_contains "$(cat "$fixture_root/wrong-version.out")" 'pinned Rust toolchain requires cargo 1.95.0'
+assert_contains "$(cat "$fixture_root/wrong-cargo.out")" 'pinned Rust toolchain requires cargo 1.95.0'
+
+if RUST_TOOLCHAIN_DIR="$wrong_rustc_dir" PATH="/usr/bin:/bin" bash -c 'source "$1"' bash "$repo_root/rust/toolchain.sh" >"$fixture_root/wrong-rustc.out" 2>&1; then
+  fail "accepted a wrong-version rustc override"
+fi
+assert_contains "$(cat "$fixture_root/wrong-rustc.out")" 'pinned Rust toolchain requires rustc 1.95.0'
+
+if RUST_TOOLCHAIN_DIR="$wrong_rustdoc_dir" PATH="/usr/bin:/bin" bash -c 'source "$1"' bash "$repo_root/rust/toolchain.sh" >"$fixture_root/wrong-rustdoc.out" 2>&1; then
+  fail "accepted a wrong-version rustdoc override"
+fi
+assert_contains "$(cat "$fixture_root/wrong-rustdoc.out")" 'pinned Rust toolchain requires rustdoc 1.95.0'
 
 if RUSTUP_FIXTURE_ROOT="$fixture_root" RUSTUP_FIXTURE_TOOLCHAIN=arm64-host RUSTUP_FIXTURE_LOG="$fixture_root/rustup.log" RUSTUP_FIXTURE_SPLIT_TOOL=rustdoc PATH="$fake_bin:/usr/bin:/bin" bash -c 'source "$1"' bash "$repo_root/rust/toolchain.sh" >"$fixture_root/split.out" 2>&1; then
   fail "accepted rustup tools from different directories"
 fi
 assert_contains "$(cat "$fixture_root/split.out")" 'resolved cargo, rustc, and rustdoc must share one directory'
 
-rg -Fq 'CARGO_HOME/bin' "$repo_root/rust/build-android.sh" || \
-  fail "Android must honor an explicit CARGO_HOME for cargo-ndk discovery"
+android_fixture_dir="$fixture_root/android-build"
+mkdir -p "$android_fixture_dir/editor-core"
+cp "$repo_root/rust/build-android.sh" "$android_fixture_dir/build-android.sh"
+cp "$repo_root/rust/toolchain.sh" "$android_fixture_dir/toolchain.sh"
+cargo_home="$fixture_root/cargo-home"
+mkdir -p "$cargo_home/bin"
+make_cargo_ndk "$cargo_home/bin"
+: > "$fixture_root/cargo-ndk.log"
+env -i \
+  PATH="$fake_bin:/usr/bin:/bin" \
+  RUST_TOOLCHAIN_DIR="$arm64_dir" \
+  CARGO_HOME="$cargo_home" \
+  CARGO_NDK_FIXTURE_LOG="$fixture_root/cargo-ndk.log" \
+  bash "$android_fixture_dir/build-android.sh"
+expected_cargo_ndk_log="$(printf 'CARGO=%s\n' "$arm64_dir/cargo" "$arm64_dir/cargo" "$arm64_dir/cargo" "$arm64_dir/cargo")"
+[[ "$(cat "$fixture_root/cargo-ndk.log")" == "$expected_cargo_ndk_log" ]] || \
+  fail "cargo-ndk discovered through CARGO_HOME did not receive the pinned Cargo through CARGO"
 
 echo "Toolchain discovery fixture tests passed."
