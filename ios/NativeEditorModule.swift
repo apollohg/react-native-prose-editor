@@ -68,22 +68,31 @@ private func v2InvalidResultDictionary(_ message: String) -> [String: Any] {
     ["error": v2ContractErrorDictionary(message)]
 }
 
+private func v2ResultDictionary<Value>(
+    value: Value?,
+    error: FfiError?,
+    mapValue: (Value) -> Any
+) -> [String: Any] {
+    switch (value, error) {
+    case let (value?, nil):
+        return ["value": mapValue(value)]
+    case let (nil, error?):
+        return ["error": v2FfiErrorDictionary(error)]
+    default:
+        return v2InvalidResultDictionary("v2 result must carry exactly one of value/error")
+    }
+}
+
 private func v2JsonResultDictionary(_ result: FfiJsonResult) -> [String: Any] {
-    if let value = result.value { return ["value": value] }
-    if let error = result.error { return ["error": v2FfiErrorDictionary(error)] }
-    return v2InvalidResultDictionary("v2 result carries neither value nor error")
+    v2ResultDictionary(value: result.value, error: result.error, mapValue: { $0 })
 }
 
 private func v2BytesResultDictionary(_ result: FfiBytesResult) -> [String: Any] {
-    if let value = result.value { return ["value": value] }
-    if let error = result.error { return ["error": v2FfiErrorDictionary(error)] }
-    return v2InvalidResultDictionary("v2 result carries neither value nor error")
+    v2ResultDictionary(value: result.value, error: result.error, mapValue: { $0 })
 }
 
 private func v2UnitResultDictionary(_ result: FfiUnitResult) -> [String: Any] {
-    if let value = result.value { return ["value": value] }
-    if let error = result.error { return ["error": v2FfiErrorDictionary(error)] }
-    return v2InvalidResultDictionary("v2 result carries neither value nor error")
+    v2ResultDictionary(value: result.value, error: result.error, mapValue: { $0 })
 }
 
 func v2CollaborationTickResultDictionary(
@@ -105,16 +114,12 @@ func v2CollaborationUnitResultDictionary(
 }
 
 private func v2SnapshotExportResultDictionary(_ result: FfiSnapshotExportResult) -> [String: Any] {
-    if let value = result.value {
-        return [
-            "value": [
-                "metadataJson": value.metadataJson,
-                "encodedState": value.encodedState,
-            ]
+    v2ResultDictionary(value: result.value, error: result.error) { value in
+        [
+            "metadataJson": value.metadataJson,
+            "encodedState": value.encodedState,
         ]
     }
-    if let error = result.error { return ["error": v2FfiErrorDictionary(error)] }
-    return v2InvalidResultDictionary("v2 result carries neither value nor error")
 }
 
 /// Canonical decimal u64 values are the only v2 wire representation.

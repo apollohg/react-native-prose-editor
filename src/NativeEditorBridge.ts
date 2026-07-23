@@ -42,10 +42,15 @@ export interface Selection {
  * stays JSON-shaped; Rust alone turns the optional document selection into
  * sticky cursor positions.
  */
+export interface NativeEditorLocalAwarenessSelection {
+    anchor: number;
+    head: number;
+}
+
 export interface NativeEditorLocalAwarenessIntent {
     state: Record<string, unknown>;
     focused: boolean;
-    selection?: Selection;
+    selection?: NativeEditorLocalAwarenessSelection;
 }
 
 export interface ListContext {
@@ -1071,45 +1076,43 @@ function invalidV2RequestError(message: string): NativeEditorV2BoundaryError {
 }
 
 const LOCAL_AWARENESS_INTENT_KEYS = new Set(['state', 'focused', 'selection']);
-const LOCAL_AWARENESS_SELECTION_KEYS = new Set([
-    'type',
-    'anchor',
-    'head',
-    'pos',
-    'anchorScalar',
-    'headScalar',
-    'posScalar',
-]);
+const LOCAL_AWARENESS_SELECTION_KEYS = new Set(['anchor', 'head']);
 
 function invalidLocalAwarenessIntent(message = 'invalid local awareness intent'): never {
     throw invalidV2RequestError(`NativeEditorBridge: ${message}`);
 }
 
-function requireLocalAwarenessU32(value: unknown): void {
-    if (nativeEditorV2U32(value) == null) invalidLocalAwarenessIntent();
+function isLocalAwarenessRecord(value: unknown): value is Record<string, unknown> {
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
 }
 
-function validateLocalAwarenessSelection(selection: unknown): void {
+function localAwarenessOwnDataValue(record: Record<string, unknown>, key: string): unknown {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable !== true) {
+        invalidLocalAwarenessIntent();
+    }
+    return descriptor.value;
+}
+
+function validateLocalAwarenessSelection(selection: unknown): NativeEditorLocalAwarenessSelection {
     if (
-        !isPlainRecord(selection) ||
+        !isLocalAwarenessRecord(selection) ||
         Reflect.ownKeys(selection).some(
             (key) => typeof key !== 'string' || !LOCAL_AWARENESS_SELECTION_KEYS.has(key)
         ) ||
-        !Object.prototype.hasOwnProperty.call(selection, 'type') ||
-        (selection.type !== 'text' && selection.type !== 'node' && selection.type !== 'all')
+        !Object.prototype.hasOwnProperty.call(selection, 'anchor') ||
+        !Object.prototype.hasOwnProperty.call(selection, 'head')
     ) {
         invalidLocalAwarenessIntent();
     }
-    for (const field of ['anchor', 'head', 'pos', 'anchorScalar', 'headScalar', 'posScalar']) {
-        if (selection[field] !== undefined) requireLocalAwarenessU32(selection[field]);
-    }
-    if (
-        (selection.type === 'text' &&
-            (selection.anchor === undefined || selection.head === undefined)) ||
-        (selection.type === 'node' && selection.pos === undefined)
-    ) {
+    const anchor = nativeEditorV2U32(localAwarenessOwnDataValue(selection, 'anchor'));
+    const head = nativeEditorV2U32(localAwarenessOwnDataValue(selection, 'head'));
+    if (anchor == null || head == null) {
         invalidLocalAwarenessIntent();
     }
+    return { anchor, head };
 }
 
 /** Reject caller-owned sticky cursor data before a native call can occur. */
@@ -1130,20 +1133,75 @@ function rejectReservedAwarenessCursor(value: unknown): void {
     }
 }
 
-function validateLocalAwarenessIntent(intent: unknown): asserts intent is NativeEditorLocalAwarenessIntent {
-    if (
-        !isPlainRecord(intent) ||
-        Reflect.ownKeys(intent).some(
-            (key) => typeof key !== 'string' || !LOCAL_AWARENESS_INTENT_KEYS.has(key)
-        ) ||
-        !Object.prototype.hasOwnProperty.call(intent, 'state') ||
-        !isPlainRecord(intent.state) ||
-        typeof intent.focused !== 'boolean'
-    ) {
+function normalizeLocalAwarenessState(value: unknown): Record<string, unknown> {
+    try {
+        const normalized = normalizeV2JsonValue(value, 'local awareness state', {
+            seen: new WeakSet<object>(),
+            work: 0,
+        });
+        if (!isLocalAwarenessRecord(normalized) || Object.getPrototypeOf(normalized) !== null) {
+            invalidLocalAwarenessIntent();
+        }
+        rejectReservedAwarenessCursor(normalized);
+        return normalized;
+    } catch (error) {
+        if (error instanceof NativeEditorV2BoundaryError) throw error;
         invalidLocalAwarenessIntent();
     }
-    if (intent.selection !== undefined) validateLocalAwarenessSelection(intent.selection);
-    rejectReservedAwarenessCursor(intent.state);
+}
+
+interface NativeEditorLocalAwarenessWireIntent {
+    state: Record<string, unknown>;
+    focused: boolean;
+    selection?: { type: 'text'; anchor: number; head: number };
+}
+
+function validateLocalAwarenessIntent(intent: unknown): NativeEditorLocalAwarenessWireIntent {
+    try {
+        if (
+            !isLocalAwarenessRecord(intent) ||
+            Reflect.ownKeys(intent).some(
+                (key) => typeof key !== 'string' || !LOCAL_AWARENESS_INTENT_KEYS.has(key)
+            ) ||
+            !Object.prototype.hasOwnProperty.call(intent, 'state') ||
+            !Object.prototype.hasOwnProperty.call(intent, 'focused')
+        ) {
+            invalidLocalAwarenessIntent();
+        }
+        const state = normalizeLocalAwarenessState(localAwarenessOwnDataValue(intent, 'state'));
+        const focused = localAwarenessOwnDataValue(intent, 'focused');
+        if (typeof focused !== 'boolean') invalidLocalAwarenessIntent();
+
+        const selection = Object.prototype.hasOwnProperty.call(intent, 'selection')
+            ? validateLocalAwarenessSelection(localAwarenessOwnDataValue(intent, 'selection'))
+            : undefined;
+        return {
+            state,
+            focused,
+            ...(selection === undefined ? {} : { selection: { type: 'text', ...selection } }),
+        };
+    } catch (error) {
+        if (error instanceof NativeEditorV2BoundaryError) throw error;
+        invalidLocalAwarenessIntent();
+    }
+}
+
+function serializeLocalAwarenessIntent(intent: NativeEditorLocalAwarenessWireIntent): string {
+    try {
+        const wire = Object.create(null) as Record<string, unknown>;
+        wire.state = intent.state;
+        wire.focused = intent.focused;
+        if (intent.selection !== undefined) {
+            const selection = Object.create(null) as Record<string, unknown>;
+            selection.type = intent.selection.type;
+            selection.anchor = intent.selection.anchor;
+            selection.head = intent.selection.head;
+            wire.selection = selection;
+        }
+        return serializeV2CreateEnvelope(wire);
+    } catch {
+        invalidLocalAwarenessIntent();
+    }
 }
 
 /**
@@ -2319,14 +2377,6 @@ export class NativeEditorV2Bridge {
     /** Destroy the session. Repeated destroy is safe. */
     destroy(): void {
         if (this._destroyed) return;
-        // Terminal semantics (deliberate trade-off): the handle is marked
-        // destroyed and the error listeners are cleared BEFORE the native
-        // call, so a recoverable native destroy failure propagates but
-        // subsequent destroy() calls will not retry the native call; the
-        // session may leak natively in that edge. Callers should treat
-        // destroy errors as terminal.
-        this._destroyed = true;
-        this._errorListeners.clear();
         try {
             unwrapNativeEditorV2Result(
                 invokeNativeEditorV2('editorV2Destroy', this._editorId),
@@ -2339,10 +2389,14 @@ export class NativeEditorV2Bridge {
                 error instanceof NativeEditorV2NonRetryableError &&
                 (error.code === 'ENGINE_DESTROYED' || error.code === 'ENGINE_DESTROYING')
             ) {
-                return;
+                // An already-destroyed native session still commits the
+                // local teardown below.
+            } else {
+                throw error;
             }
-            throw error;
         }
+        this._destroyed = true;
+        this._errorListeners.clear();
     }
 
     /** Subscribe to autonomous native failures; returns the unsubscribe. */
@@ -2616,8 +2670,8 @@ export class NativeEditorV2Bridge {
 
     collaborationSetAwareness(intent: NativeEditorLocalAwarenessIntent | null): void {
         this.assertAlive();
-        if (intent !== null) validateLocalAwarenessIntent(intent);
-        const awarenessJson = intent == null ? 'null' : JSON.stringify(intent);
+        const awarenessJson =
+            intent === null ? 'null' : serializeLocalAwarenessIntent(validateLocalAwarenessIntent(intent));
         this.callV2(
             () =>
                 invokeNativeEditorV2(

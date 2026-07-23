@@ -89,16 +89,23 @@ final class EditorV2Adapter {
     /// (mismatch refreshes, derivation failures) that never surface as
     /// autonomous error events.
     private(set) var debugNotes: [String] = []
+    private let destroySession: (String) -> FfiUnitResult
     private var destroyed = false
 
     var isDestroyed: Bool {
         destroyed
     }
 
-    private init(editorId: String, roomBound: Bool, baseDocumentRevision: UInt64) {
+    private init(
+        editorId: String,
+        roomBound: Bool,
+        baseDocumentRevision: UInt64,
+        destroySession: @escaping (String) -> FfiUnitResult
+    ) {
         self.editorId = editorId
         self.roomBound = roomBound
         self.baseDocumentRevision = baseDocumentRevision
+        self.destroySession = destroySession
     }
 
     // MARK: - Construction
@@ -108,14 +115,19 @@ final class EditorV2Adapter {
     /// adapter routes the bound view's interactions through the shared
     /// session (the TS document handle and collaboration controller drive
     /// the same session over the module surface).
-    static func attach(editorId: String, roomBound: Bool) -> EditorV2Adapter? {
+    static func attach(
+        editorId: String,
+        roomBound: Bool,
+        destroySession: @escaping (String) -> FfiUnitResult = { editorV2Destroy(editorId: $0) }
+    ) -> EditorV2Adapter? {
         guard isCanonicalDecimalEditorId(editorId) else {
             return nil
         }
         let adapter = EditorV2Adapter(
             editorId: editorId,
             roomBound: roomBound,
-            baseDocumentRevision: 0
+            baseDocumentRevision: 0,
+            destroySession: destroySession
         )
         // Attachment only establishes that the handle is live. It must not
         // render (a render resolves an otherwise absent selection) or stamp
@@ -142,15 +154,22 @@ final class EditorV2Adapter {
     @discardableResult
     func destroy() -> FfiError? {
         if destroyed { return nil }
+        let result = destroySession(editorId)
+        switch (result.value, result.error) {
+        case let (value?, nil) where value:
+            break
+        case let (nil, error?) where error.domain == "lifecycle"
+            && (error.code == "ENGINE_DESTROYED" || error.code == "ENGINE_DESTROYING"):
+            // An already-destroyed native session still commits the local
+            // teardown below.
+            break
+        case let (nil, error?):
+            return error
+        default:
+            return contractError("v2 destroy result violates the frozen unit-result shape")
+        }
         clearAutonomousErrorOwner()
         destroyed = true
-        let result = editorV2Destroy(editorId: editorId)
-        if let error = result.error {
-            if error.code == "ENGINE_DESTROYED" || error.code == "ENGINE_DESTROYING" {
-                return nil
-            }
-            return error
-        }
         return nil
     }
 
@@ -1654,14 +1673,15 @@ enum EditorV2Registry {
         return pairings.removeValue(forKey: legacyId)
     }
 
-    /// Destroy the v2 session backing a pairing and drop the pairing.
+    /// Destroy the v2 session backing a pairing and drop the pairing only
+    /// once native destruction has succeeded or the session is already gone.
     @discardableResult
     static func destroyPair(forLegacyId legacyId: UInt64) -> FfiError? {
-        // Views advance their binding generation and clear queued callbacks
-        // before the registry releases the paired adapter/session.
+        guard let adapter = adapter(forLegacyId: legacyId) else { return nil }
+        if let error = adapter.destroy() { return error }
         NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: legacyId)
-        guard let adapter = removePairing(forLegacyId: legacyId) else { return nil }
-        return adapter.destroy()
+        _ = removePairing(forLegacyId: legacyId)
+        return nil
     }
 
 }

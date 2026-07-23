@@ -722,6 +722,158 @@ final class EditorV2AdapterTests: XCTestCase {
         adapter.destroy()
     }
 
+    func testDestroyFailureRetainsThePairAndErrorOwnerUntilRetrySucceeds() {
+        let created = editorV2Create(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            snapshotState: nil
+        )
+        guard let value = created.value,
+              created.error == nil,
+              let handle = createdV2TestEditorHandle(value)
+        else {
+            XCTFail("expected v2 editor creation to succeed")
+            return
+        }
+
+        var destroyAttempts = 0
+        guard let adapter = EditorV2Adapter.attach(
+            editorId: handle.handle,
+            roomBound: false,
+            destroySession: { editorId in
+                destroyAttempts += 1
+                if destroyAttempts == 1 {
+                    return FfiUnitResult(
+                        value: nil,
+                        error: FfiError(
+                            domain: "operation",
+                            code: "OPERATION_INVALID",
+                            message: "temporary destroy failure",
+                            requestId: nil,
+                            operationIndex: nil,
+                            limit: nil,
+                            actual: nil,
+                            detailsJson: nil
+                        )
+                    )
+                }
+                return editorV2Destroy(editorId: editorId)
+            }
+        )
+        else {
+            XCTFail("expected v2 adapter attachment to succeed")
+            return
+        }
+        adapters.append(adapter)
+        EditorV2Registry.register(adapter, forLegacyId: handle.nativeViewId)
+        defer { EditorV2Registry.removePairing(forLegacyId: handle.nativeViewId) }
+
+        let owner = UUID()
+        var deliveredErrors: [FfiError] = []
+        adapter.bindAutonomousErrorOwner(token: owner) { deliveredErrors.append($0) }
+
+        let firstError = EditorV2Registry.destroyPair(forLegacyId: handle.nativeViewId)
+        XCTAssertEqual(firstError?.code, "OPERATION_INVALID")
+        XCTAssertFalse(adapter.isDestroyed)
+        XCTAssertTrue(adapter.isAutonomousErrorOwner(token: owner))
+        XCTAssertTrue(EditorV2Registry.adapter(forLegacyId: handle.nativeViewId) === adapter)
+
+        adapter.rejectExternalRenderEnvelope("pair must remain live after destroy failure")
+        XCTAssertEqual(deliveredErrors.count, 1)
+
+        XCTAssertNil(EditorV2Registry.destroyPair(forLegacyId: handle.nativeViewId))
+        XCTAssertTrue(adapter.isDestroyed)
+        XCTAssertFalse(adapter.isAutonomousErrorOwner(token: owner))
+        XCTAssertNil(EditorV2Registry.adapter(forLegacyId: handle.nativeViewId))
+        XCTAssertEqual(destroyAttempts, 2)
+
+        adapter.rejectExternalRenderEnvelope("destroyed adapter must not deliver again")
+        XCTAssertEqual(deliveredErrors.count, 1)
+    }
+
+    func testDestroyWithNeitherValueNorErrorRetainsThePairUntilRetrySucceeds() {
+        assertMalformedDestroyResultRetainsPairUntilRetry(
+            FfiUnitResult(value: nil, error: nil)
+        )
+    }
+
+    func testDestroyWithBothValueAndErrorRetainsThePairUntilRetrySucceeds() {
+        assertMalformedDestroyResultRetainsPairUntilRetry(
+            FfiUnitResult(
+                value: true,
+                error: FfiError(
+                    domain: "lifecycle",
+                    code: "ENGINE_DESTROYED",
+                    message: "malformed destroy result",
+                    requestId: nil,
+                    operationIndex: nil,
+                    limit: nil,
+                    actual: nil,
+                    detailsJson: nil
+                )
+            )
+        )
+    }
+
+    private func assertMalformedDestroyResultRetainsPairUntilRetry(
+        _ malformedResult: FfiUnitResult,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let created = editorV2Create(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            snapshotState: nil
+        )
+        guard let value = created.value,
+              created.error == nil,
+              let handle = createdV2TestEditorHandle(value)
+        else {
+            XCTFail("expected v2 editor creation to succeed", file: file, line: line)
+            return
+        }
+
+        var destroyAttempts = 0
+        guard let adapter = EditorV2Adapter.attach(
+            editorId: handle.handle,
+            roomBound: false,
+            destroySession: { editorId in
+                destroyAttempts += 1
+                return destroyAttempts == 1
+                    ? malformedResult
+                    : editorV2Destroy(editorId: editorId)
+            }
+        )
+        else {
+            XCTFail("expected v2 adapter attachment to succeed", file: file, line: line)
+            return
+        }
+        adapters.append(adapter)
+        EditorV2Registry.register(adapter, forLegacyId: handle.nativeViewId)
+        defer { EditorV2Registry.removePairing(forLegacyId: handle.nativeViewId) }
+
+        let owner = UUID()
+        adapter.bindAutonomousErrorOwner(token: owner) { _ in }
+
+        let firstError = EditorV2Registry.destroyPair(forLegacyId: handle.nativeViewId)
+        XCTAssertEqual(firstError?.domain, "boundary", file: file, line: line)
+        XCTAssertEqual(firstError?.code, "FFI_RESULT_INVALID", file: file, line: line)
+        XCTAssertFalse(adapter.isDestroyed, file: file, line: line)
+        XCTAssertTrue(adapter.isAutonomousErrorOwner(token: owner), file: file, line: line)
+        XCTAssertTrue(
+            EditorV2Registry.adapter(forLegacyId: handle.nativeViewId) === adapter,
+            file: file,
+            line: line
+        )
+
+        XCTAssertNil(
+            EditorV2Registry.destroyPair(forLegacyId: handle.nativeViewId),
+            file: file,
+            line: line
+        )
+        XCTAssertTrue(adapter.isDestroyed, file: file, line: line)
+        XCTAssertNil(EditorV2Registry.adapter(forLegacyId: handle.nativeViewId), file: file, line: line)
+        XCTAssertEqual(destroyAttempts, 2, file: file, line: line)
+    }
+
     // MARK: - Toolbar / command routing
 
     func testCommandsRouteThroughTypedV2Transactions() {

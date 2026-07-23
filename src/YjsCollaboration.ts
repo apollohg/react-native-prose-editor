@@ -5,6 +5,7 @@ import {
     type DocumentJSON,
     type NativeEditorDocumentHandle,
     type NativeEditorLocalAwarenessIntent,
+    type NativeEditorLocalAwarenessSelection,
     type NativeEditorV2AwarenessTickResult,
     type NativeEditorV2PeerInfo,
     type NativeEditorV2TransportState,
@@ -292,10 +293,12 @@ function peersToRemoteSelections(
     });
 }
 
-function normalizeAwarenessSelection(selection: Selection): Selection | undefined {
+function normalizeAwarenessSelection(
+    selection: Selection
+): NativeEditorLocalAwarenessSelection | undefined {
     if (selection.type !== 'text') return undefined;
+    if (selection.anchor === undefined || selection.head === undefined) return undefined;
     return {
-        type: 'text',
         anchor: selection.anchor,
         head: selection.head,
     };

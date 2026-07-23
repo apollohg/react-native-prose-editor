@@ -23,12 +23,130 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.util.concurrent.atomic.AtomicBoolean
+import uniffi.editor_core.FfiError
 import uniffi.editor_core.FfiJsonResult
 import uniffi.editor_core.FfiUnitResult
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class NativeEditorModuleTest {
+    @Test
+    fun `module destroy retains a pairing after ffi failure and drops it after retry succeeds`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"localEmpty\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            JSONObject(created.value).getString("editorId"),
+            roomBound = false,
+        )!!
+        val viewToken = EditorV2Registry.register(adapter)
+        var destroyAttempts = 0
+
+        try {
+            val first = destroyEditorV2FromModule(adapter.editorId) {
+                destroyAttempts += 1
+                FfiUnitResult(
+                    null,
+                    FfiError(
+                        "operation",
+                        "OPERATION_INVALID",
+                        "temporary destroy failure",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                    ),
+                )
+            }
+
+            assertEquals("OPERATION_INVALID", first.error?.code)
+            assertEquals(viewToken, EditorV2Registry.viewTokenForHandle(adapter.editorId))
+            assertTrue(EditorV2Registry.adapterForViewToken(viewToken) === adapter)
+
+            val second = destroyEditorV2FromModule(adapter.editorId) {
+                destroyAttempts += 1
+                FfiUnitResult(true, null)
+            }
+
+            assertEquals(true, second.value)
+            assertNull(EditorV2Registry.viewTokenForHandle(adapter.editorId))
+            assertNull(EditorV2Registry.adapterForViewToken(viewToken))
+            assertEquals(2, destroyAttempts)
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+        }
+    }
+
+    @Test
+    fun `module destroy with neither value nor error retains pairing until retry succeeds`() {
+        assertMalformedDestroyResultRetainsPairUntilRetry(FfiUnitResult(null, null))
+    }
+
+    @Test
+    fun `module destroy with both value and error retains pairing until retry succeeds`() {
+        assertMalformedDestroyResultRetainsPairUntilRetry(
+            FfiUnitResult(
+                true,
+                FfiError(
+                    "lifecycle",
+                    "ENGINE_DESTROYED",
+                    "malformed destroy result",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                ),
+            ),
+        )
+    }
+
+    private fun assertMalformedDestroyResultRetainsPairUntilRetry(
+        malformedResult: FfiUnitResult,
+    ) {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"localEmpty\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            JSONObject(created.value).getString("editorId"),
+            roomBound = false,
+        )!!
+        val viewToken = EditorV2Registry.register(adapter)
+        var destroyAttempts = 0
+
+        try {
+            val first = destroyEditorV2FromModule(adapter.editorId) {
+                destroyAttempts += 1
+                malformedResult
+            }
+
+            assertNull(first.value)
+            assertEquals("boundary", first.error?.domain)
+            assertEquals("FFI_RESULT_INVALID", first.error?.code)
+            assertEquals(viewToken, EditorV2Registry.viewTokenForHandle(adapter.editorId))
+            assertTrue(EditorV2Registry.adapterForViewToken(viewToken) === adapter)
+
+            val second = destroyEditorV2FromModule(adapter.editorId) {
+                destroyAttempts += 1
+                FfiUnitResult(true, null)
+            }
+
+            assertEquals(true, second.value)
+            assertNull(EditorV2Registry.viewTokenForHandle(adapter.editorId))
+            assertNull(EditorV2Registry.adapterForViewToken(viewToken))
+            assertEquals(2, destroyAttempts)
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+        }
+    }
+
     @Test
     fun `off main module destroy cancels queued adapter error before timeout cleanup drains`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())

@@ -97,6 +97,22 @@ final class RenderBridgeTests: XCTestCase {
         )
     }
 
+    func testCollaborationTickRejectsFfiResultWithBothValueAndError() {
+        let result = v2CollaborationTickResultDictionary(editorId: "editor-1", nowMillis: "1") { _, _ in
+            FfiJsonResult(value: "{}", error: ffiResultError())
+        }
+
+        assertFfiResultContractFailure(result)
+    }
+
+    func testCollaborationTickRejectsFfiResultWithNeitherValueNorError() {
+        let result = v2CollaborationTickResultDictionary(editorId: "editor-1", nowMillis: "1") { _, _ in
+            FfiJsonResult(value: nil, error: nil)
+        }
+
+        assertFfiResultContractFailure(result)
+    }
+
     func testCollaborationDetachAndReattachBridgeRawUnitResults() {
         var invoked = [String]()
 
@@ -117,6 +133,36 @@ final class RenderBridgeTests: XCTestCase {
     }
 
     // MARK: - Test Fixtures
+
+    private func ffiResultError() -> FfiError {
+        FfiError(
+            domain: "engine",
+            code: "FAILED",
+            message: "engine failure",
+            requestId: nil,
+            operationIndex: nil,
+            limit: nil,
+            actual: nil,
+            detailsJson: nil
+        )
+    }
+
+    private func assertFfiResultContractFailure(
+        _ result: [String: Any],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertNil(result["value"], file: file, line: line)
+        let error = result["error"] as? [String: Any]
+        XCTAssertEqual(error?["domain"] as? String, "boundary", file: file, line: line)
+        XCTAssertEqual(error?["code"] as? String, "FFI_RESULT_INVALID", file: file, line: line)
+        XCTAssertEqual(
+            error?["message"] as? String,
+            "v2 result must carry exactly one of value/error",
+            file: file,
+            line: line
+        )
+    }
 
     private let baseFont = UIFont.systemFont(ofSize: 16)
     private let textColor = UIColor.black

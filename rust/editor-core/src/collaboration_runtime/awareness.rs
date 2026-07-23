@@ -86,6 +86,18 @@ fn awareness_state_invalid(request_id: u64, message: impl Into<String>) -> Sessi
     error
 }
 
+fn awareness_peer_bytes_limit_error(
+    request_id: u64,
+    limit: usize,
+    actual: usize,
+) -> SessionError {
+    engine_error_with_request(
+        YrsEngineError::limit("INPUT_LIMIT_EXCEEDED", limit, actual)
+            .with_details(serde_json::json!({ "field": "maxAwarenessPeerBytes" })),
+        request_id,
+    )
+}
+
 fn contains_reserved_cursor(value: &Value) -> bool {
     match value {
         Value::Array(values) => values.iter().any(contains_reserved_cursor),
@@ -365,6 +377,17 @@ impl CollaborationRuntime {
             transport_state,
             limits,
         } = context;
+        // Bound the untrusted serialized envelope before serde_json can
+        // deserialize it or recurse through its state. The codec keeps the
+        // exact check on the final published state payload below, including
+        // any Rust-owned sticky cursor expansion.
+        if intent_json.len() > limits.max_awareness_peer_bytes {
+            return Err(awareness_peer_bytes_limit_error(
+                request_id,
+                limits.max_awareness_peer_bytes,
+                intent_json.len(),
+            ));
+        }
         let intent: LocalAwarenessIntent = serde_json::from_str(intent_json).map_err(|error| {
             awareness_state_invalid(
                 request_id,
@@ -751,6 +774,42 @@ mod tests {
                 max_awareness_bytes: 256,
             },
         );
+    }
+
+    #[test]
+    fn local_intent_peer_byte_ceiling_rejects_before_json_deserialization() {
+        let mut runtime = runtime();
+        let mut engine = engine();
+        let limits = CollaborationLimits {
+            max_awareness_peer_bytes: 64,
+            ..CollaborationLimits::default()
+        };
+        // This is deliberately invalid JSON. If serde_json is reached, the
+        // refusal changes to AWARENESS_STATE_INVALID instead of the frozen
+        // maxAwarenessPeerBytes resource-limit envelope.
+        let oversized_intent = "[".repeat(limits.max_awareness_peer_bytes + 1);
+
+        let error = runtime
+            .set_awareness_intent(
+                REQUEST_ID,
+                &oversized_intent,
+                context(&mut engine, TransportState::Disconnected, &limits),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.domain, ErrorDomain::Boundary, "{error:?}");
+        assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED", "{error:?}");
+        assert_eq!(error.request_id, Some(REQUEST_ID), "{error:?}");
+        assert_eq!(error.limit, Some(64), "{error:?}");
+        assert_eq!(error.actual, Some(65), "{error:?}");
+        assert_eq!(error.message, "input exceeds limit 64: 65", "{error:?}");
+        assert_eq!(
+            error.details.as_ref().unwrap()["field"],
+            "maxAwarenessPeerBytes",
+            "{error:?}",
+        );
+        assert_eq!(runtime.desired_awareness(), None);
+        assert_eq!(runtime.outbox().pending_protocol_reply_count(), 0);
     }
 
     #[test]

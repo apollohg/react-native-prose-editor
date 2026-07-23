@@ -29,8 +29,9 @@ internal fun destroyEditorThenInvalidate(
 
 /**
  * Module-facing destruction boundary for a paired v2 editor. Autonomous
- * callbacks are cancelled before the session or pairing can be released, so
- * an off-main destroy cannot leave a queued error eligible for delivery.
+ * callbacks, view teardown, and pairing release commit only after native
+ * destruction succeeds (or the session is already gone), so a recoverable
+ * failure leaves the paired session available for retry.
  */
 internal fun destroyEditorV2FromModule(
     editorId: String,
@@ -38,25 +39,41 @@ internal fun destroyEditorV2FromModule(
 ): FfiUnitResult {
     val canonicalHandle = canonicalV2U64(editorId) ?: return destroy(editorId)
     val viewToken = EditorV2Registry.viewTokenForHandle(canonicalHandle)
-    EditorV2Registry.cancelAutonomousErrorOwner(canonicalHandle)
-
-    if (viewToken == null || !NativeEditorViewRegistry.beginDestroy(viewToken)) {
-        return try {
-            destroy(canonicalHandle)
-        } finally {
-            EditorV2Registry.dropPair(canonicalHandle)
-        }
+    val result = destroy(canonicalHandle)
+    val error = result.error
+    when {
+        result.value == true && error == null -> Unit
+        result.value == null &&
+            error?.domain == "lifecycle" &&
+            error.code in setOf("ENGINE_DESTROYED", "ENGINE_DESTROYING") -> Unit
+        result.value == null && error != null -> return result
+        else -> return FfiUnitResult(
+            null,
+            FfiError(
+                "boundary",
+                "FFI_RESULT_INVALID",
+                "v2 destroy result violates the frozen unit-result shape",
+                null,
+                null,
+                null,
+                null,
+                null,
+            ),
+        )
     }
 
-    return try {
-        destroy(canonicalHandle)
-    } finally {
+    EditorV2Registry.cancelAutonomousErrorOwner(canonicalHandle)
+
+    if (viewToken != null && NativeEditorViewRegistry.beginDestroy(viewToken)) {
         try {
             NativeEditorViewRegistry.finalizeDestroy(viewToken)
         } finally {
             EditorV2Registry.dropPair(canonicalHandle)
         }
+    } else {
+        EditorV2Registry.dropPair(canonicalHandle)
     }
+    return result
 }
 
 // ── Frozen v2 result-record bridging ─────────────────────────────────────
