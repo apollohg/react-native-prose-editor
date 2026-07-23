@@ -420,7 +420,7 @@ test('package scripts expose the exact editing benchmark commands', () => {
     const packageJson = JSON.parse(readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'));
     assert.equal(
         packageJson.scripts['bench:rust:yrs:editing'],
-        'cargo bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --filter yrs-editing'
+        './rust/toolchain-cargo.sh bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --filter yrs-editing'
     );
     assert.equal(
         packageJson.scripts['bench:rust:yrs:editing:check'],

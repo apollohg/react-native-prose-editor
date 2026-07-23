@@ -92,23 +92,8 @@ elif [[ "$#" != "0" ]]; then
     exit 2
 fi
 
-# The crate pins Rust 1.95; honor an explicit override but default to the
-# pinned toolchain so a different default toolchain cannot slip through.
-RUST_TOOLCHAIN_DIR="${RUST_TOOLCHAIN_DIR:-$HOME/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin}"
-if [[ -x "$RUST_TOOLCHAIN_DIR/cargo" ]]; then
-    export RUSTC="$RUST_TOOLCHAIN_DIR/rustc"
-    export RUSTDOC="$RUST_TOOLCHAIN_DIR/rustdoc"
-    CARGO_CMD=("$RUST_TOOLCHAIN_DIR/cargo")
-elif command -v rustup >/dev/null 2>&1; then
-    CARGO_BIN="$(rustup which cargo)"
-    RUSTC_BIN="$(rustup which rustc)"
-    RUSTDOC_BIN="$(rustup which rustdoc)"
-    export RUSTC="$RUSTC_BIN"
-    export RUSTDOC="$RUSTDOC_BIN"
-    CARGO_CMD=("$CARGO_BIN")
-else
-    CARGO_CMD=(cargo)
-fi
+source "$SCRIPT_DIR/toolchain.sh"
+CARGO_CMD=("$RUST_TOOLCHAIN_CARGO")
 
 # Always rebuild before generating bindings so UniFFI sees the current exported API.
 echo "==> Building editor-core for host target..."

@@ -40,7 +40,7 @@ require_structured_create_symbols() {
   local nm_output="$2"
   local label="$3"
   # Post-16C the v2 ABI is the only surface: the structured editor-create
-  # entry point is editor_v2_create (26 editor_v2_* symbols + version, zero
+  # entry point is editor_v2_create (29 editor_v2_* symbols + version, zero
   # legacy editor_*/collaboration_* symbols — enforced by build-ios.sh and
   # build-android.sh at packaging time).
   grep -Eq '[[:space:]]_?uniffi_editor_core_fn_func_editor_v2_create$' <<< "$nm_output" || \

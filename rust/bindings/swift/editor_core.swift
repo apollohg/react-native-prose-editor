@@ -1193,8 +1193,9 @@ public func editorV2CollaborationReceive(editorId: String, generation: String, m
 })
 }
 /**
- * Publishes the desired local awareness state; the literal JSON `null`
- * withdraws it (standard tombstone broadcast).
+ * Publishes a typed local awareness intent; the literal JSON `null`
+ * withdraws it (standard tombstone broadcast). Rust validates the closed
+ * shape and owns any published sticky cursor representation.
  */
 public func editorV2CollaborationSetAwareness(editorId: String, awarenessJson: String) -> FfiUnitResult  {
     return try!  FfiConverterTypeFfiUnitResult_lift(try! rustCall() {
@@ -1426,7 +1427,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 49592) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness() != 49061) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness() != 59502) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 60112) {

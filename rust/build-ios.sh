@@ -25,10 +25,8 @@ OUT_DIR="$SCRIPT_DIR/ios"
 PKG_IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/ios"
 LIB_NAME="libeditor_core.a"
 
-TC="${RUST_TOOLCHAIN_DIR:-$HOME/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin}"
+source "$SCRIPT_DIR/toolchain.sh"
 TARGET_DIR="${CARGO_TARGET_DIR:-$CRATE_DIR/target}"
-export RUSTC="$TC/rustc"
-export RUSTDOC="$TC/rustdoc"
 
 IOS_TARGETS=(
     "aarch64-apple-ios"
@@ -40,7 +38,7 @@ echo "==> Building editor-core for iOS targets..."
 
 for target in "${IOS_TARGETS[@]}"; do
     echo "  -> $target"
-    "$TC/cargo" build --manifest-path "$CRATE_DIR/Cargo.toml" --release \
+    "$RUST_TOOLCHAIN_CARGO" build --manifest-path "$CRATE_DIR/Cargo.toml" --release \
         --target "$target" --target-dir "$TARGET_DIR"
 done
 

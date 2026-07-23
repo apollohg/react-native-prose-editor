@@ -97,7 +97,7 @@ function runBenchmarkSample() {
         '--filter',
         'yrs-foundation',
     ];
-    const result = spawnSync('cargo', cargoArguments, {
+    const result = spawnSync(path.join(repositoryRoot, 'rust', 'toolchain-cargo.sh'), cargoArguments, {
         cwd: repositoryRoot,
         encoding: 'utf8',
         maxBuffer: 100 * 1024 * 1024,

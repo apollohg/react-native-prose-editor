@@ -27,11 +27,14 @@ OUT_DIR="$SCRIPT_DIR/android"
 LIB_NAME="libeditor_core.so"
 MIN_SDK_VERSION=24
 
-TC="${RUST_TOOLCHAIN_DIR:-$HOME/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin}"
+source "$SCRIPT_DIR/toolchain.sh"
 TARGET_DIR="${CARGO_TARGET_DIR:-$CRATE_DIR/target}"
-CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
-export RUSTC="$TC/rustc"
-export PATH="$TC:$CARGO_HOME_DIR/bin:$PATH"
+if [[ -n "${RUST_TOOLCHAIN_CARGO_PLUGIN_DIR:-}" ]]; then
+    export PATH="$RUST_TOOLCHAIN_CARGO_PLUGIN_DIR:$PATH"
+fi
+if [[ -n "${CARGO_HOME:-}" ]]; then
+    export PATH="$CARGO_HOME/bin:$PATH"
+fi
 
 # Verify cargo-ndk is installed
 if ! command -v cargo-ndk &>/dev/null; then
@@ -58,7 +61,7 @@ for pair in "${TARGET_ABI_PAIRS[@]}"; do
     abi="${pair#* }"
     echo "  -> $target ($abi)"
 
-    "$TC/cargo" ndk \
+    "$RUST_TOOLCHAIN_CARGO" ndk \
         --target "$target" \
         --platform "$MIN_SDK_VERSION" \
         build --release --target-dir "$TARGET_DIR"

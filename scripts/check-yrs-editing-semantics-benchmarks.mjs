@@ -98,7 +98,7 @@ function readJsonFile(filePath, label) {
 
 function runBenchmarkSample() {
     const result = spawnSync(
-        'cargo',
+        path.join(repositoryRoot, 'rust', 'toolchain-cargo.sh'),
         [
             'bench',
             '--manifest-path',

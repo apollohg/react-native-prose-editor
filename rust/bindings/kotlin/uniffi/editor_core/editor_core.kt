@@ -1295,7 +1295,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 49592.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness() != 49061.toShort()) {
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness() != 59502.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 60112.toShort()) {
@@ -2087,8 +2087,9 @@ fun `editorV2CollaborationReceive`(
     )
 
 /**
- * Publishes the desired local awareness state; the literal JSON `null`
- * withdraws it (standard tombstone broadcast).
+ * Publishes a typed local awareness intent; the literal JSON `null`
+ * withdraws it (standard tombstone broadcast). Rust validates the closed
+ * shape and owns any published sticky cursor representation.
  */
 fun `editorV2CollaborationSetAwareness`(
     `editorId`: kotlin.String,

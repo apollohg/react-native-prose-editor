@@ -423,11 +423,11 @@ test('package scripts expose the Yrs benchmark entry points', () => {
 
     assert.equal(
         packageJson.scripts['bench:rust:yrs'],
-        'cargo bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --filter yrs-foundation'
+        './rust/toolchain-cargo.sh bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --filter yrs-foundation'
     );
     assert.equal(
         packageJson.scripts['bench:rust:yrs:quick'],
-        'cargo bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --quick --filter yrs-foundation'
+        './rust/toolchain-cargo.sh bench --manifest-path rust/editor-core/Cargo.toml --bench perf_suite -- --quick --filter yrs-foundation'
     );
     assert.equal(
         packageJson.scripts['bench:rust:yrs:check'],
