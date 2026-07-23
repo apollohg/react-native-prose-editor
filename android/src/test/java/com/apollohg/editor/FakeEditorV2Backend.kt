@@ -429,6 +429,12 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         val paragraphs = text.split('\n')
         paragraphs.forEachIndexed { index, paragraph ->
             val elements = JSONArray()
+            elements.put(
+                JSONObject()
+                    .put("type", "blockStart")
+                    .put("nodeType", "paragraph")
+                    .put("depth", 0)
+            )
             if (paragraph.isNotEmpty()) {
                 elements.put(
                     JSONObject()
@@ -444,6 +450,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
                         .put("marks", JSONArray())
                 )
             }
+            elements.put(JSONObject().put("type", "blockEnd"))
             blocks.put(elements)
         }
         val anchor = mirrorAnchor ?: session.anchor.coerceIn(0, text.length)
@@ -537,7 +544,7 @@ internal class FakeEditorV2Backend : EditorV2Backend {
             docOffset += paragraph.length
             scalar += paragraph.length
             docOffset += 1 // close
-            if (paragraph !== paragraphs.last()) scalar += 0 // '\n' is structural, not a scalar
+            if (paragraph !== paragraphs.last()) scalar += 1 // rendered inter-block newline
         }
         return scalar
     }

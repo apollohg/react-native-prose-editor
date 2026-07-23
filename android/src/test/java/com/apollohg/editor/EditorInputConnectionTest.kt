@@ -1,5 +1,6 @@
 package com.apollohg.editor
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -29,6 +30,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Robolectric
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import java.time.Duration
@@ -1716,6 +1718,44 @@ class EditorInputConnectionTest {
 
         assertFalse(deleteAndSplitCalled)
         assertEquals(0, editText.reconciliationCount)
+    }
+
+    @Test
+    fun `composition replacement return defers one refresh until the split render is applied`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)
+            as EditorV2CallResult.Ok
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            JSONObject(created.value).getString("editorId"),
+            roomBound = false
+        )!!
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            editorId = 1
+            v2Driver = adapter
+        }
+        adapter.setContentHtml("<p>seed</p>")?.let { editText.applyUpdateJSON(it, notifyListener = false) }
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        activity.setContentView(editText)
+        assertTrue(editText.requestFocus())
+        assertTrue(editText.hasFocus())
+        editText.setSelection(1, 3)
+        val inputConnection = editText.onCreateInputConnection(EditorInfo())!!
+        editText.clearImeTraceForTesting()
+
+        assertTrue(inputConnection.setComposingText("ee", 1))
+        assertTrue(inputConnection.commitText("\n", 1))
+        assertTrue(editText.hasDeferredRustUpdateApplicationForTesting())
+
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("s\nd", editText.text.toString())
+        assertEquals(1, editText.imeTraceSnapshotForTesting().count {
+            it.startsWith("lineBoundaryInputRefreshScheduled")
+        })
+        assertEquals(1, editText.imeTraceSnapshotForTesting().count {
+            it.startsWith("restartInput:source=lineBoundary:deleteAndSplit")
+        })
     }
 
     @Test

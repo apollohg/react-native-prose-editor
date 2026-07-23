@@ -1,5 +1,8 @@
 package com.apollohg.editor
 
+import android.app.Activity
+import android.os.Looper
+import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -11,7 +14,9 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Robolectric
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
@@ -156,6 +161,61 @@ class EditorV2StagingViewTest {
     }
 
     @Test
+    fun `successful collapsed and replacement splits refresh the line boundary exactly once each`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        activity.setContentView(editText)
+        assertTrue(editText.requestFocus())
+        assertTrue(editText.hasFocus())
+        editText.setSelection(5)
+        editText.clearImeTraceForTesting()
+
+        editText.handleReturnKey()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("Hello\n", documentText())
+        assertEquals("Hello\n", editText.text.toString())
+        assertEquals(1, imeTraceCount(editText, "lineBoundaryInputRefreshScheduled"))
+        assertEquals(1, imeTraceCount(editText, "restartInput:source=lineBoundary:splitBlock"))
+        val firstEditorInfo = EditorInfo()
+        editText.onCreateInputConnection(firstEditorInfo)
+        assertTrue(firstEditorInfo.initialCapsMode and InputType.TYPE_TEXT_FLAG_CAP_SENTENCES != 0)
+
+        editText.setSelection(1, 4)
+        editText.clearImeTraceForTesting()
+
+        editText.handleReturnKey()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("H\no\n", documentText())
+        assertEquals("H\no\n", editText.text.toString())
+        assertEquals(1, imeTraceCount(editText, "lineBoundaryInputRefreshScheduled"))
+        assertEquals(1, imeTraceCount(editText, "restartInput:source=lineBoundary:deleteAndSplit"))
+    }
+
+    @Test
+    fun `read only split rejection schedules no line boundary refresh`() {
+        val readOnly = attachCreatedEditor(
+            """{"initialization":{"type":"localEmpty"},"policy":{"readOnly":true}}"""
+        )
+        val view = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            editorId = 4343L
+            v2Driver = readOnly
+        }
+        readOnly.setContentHtml("<p>ab</p>")?.let { view.applyUpdateJSON(it, notifyListener = false) }
+        assertTrue(view.requestFocus())
+        view.setSelection(2)
+        view.clearImeTraceForTesting()
+
+        view.handleReturnKey()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("ab", documentTextOf(readOnly))
+        assertEquals("ab", view.text.toString())
+        assertEquals(0, imeTraceCount(view, "lineBoundaryInputRefreshScheduled"))
+        assertEquals(0, imeTraceCount(view, "restartInput:source=lineBoundary:"))
+    }
+
+    @Test
     fun `undo and redo flow through toolbar path`() {
         editText.setSelection(5)
         editText.handleTextCommit("!")
@@ -192,6 +252,9 @@ class EditorV2StagingViewTest {
         val result = backend.getDocumentJson(adapter.editorId) as EditorV2CallResult.Ok
         return FakeEditorV2Backend.documentTextOf(JSONObject(result.value))
     }
+
+    private fun imeTraceCount(editText: EditorEditText, event: String): Int =
+        editText.imeTraceSnapshotForTesting().count { it.startsWith(event) }
 
     @Test
     fun `destroy mid composition is a structured failure without partial commit`() {

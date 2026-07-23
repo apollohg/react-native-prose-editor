@@ -3,6 +3,7 @@ package com.apollohg.editor
 import android.app.Instrumentation
 import android.content.Context
 import android.text.Selection
+import android.text.InputType
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.CompletionInfo
 import android.view.inputmethod.CorrectionInfo
@@ -229,6 +230,65 @@ class NativeDeviceImeRegressionTest {
         assertTraceContains(invalidInferred.trace, "correctionInferredNoop")
     }
 
+    @Test
+    fun pairedCompositionReturnRefreshesImeOnceBeforeTheNextCommit() {
+        val (adapter, editorId) = createPairedV2TestEditor()
+        try {
+            val editText = runOnMainSyncWithResult {
+                EditorEditText(context).apply {
+                    this.editorId = editorId
+                    v2Driver = adapter
+                    adapter.setContentHtml("<p>seed</p>")?.let { applyUpdateJSON(it, notifyListener = false) }
+                    assertTrue(requestFocus())
+                    setSelection(4)
+                    clearImeTraceForTesting()
+                }
+            }
+
+            runOnMainSyncWithResult {
+                val inputConnection = createInputConnection(editText)
+                assertTrue(inputConnection.setComposingText("\n", 1))
+                assertTrue(inputConnection.commitText("\n", 1))
+                inputConnection
+            }
+            instrumentation.waitForIdleSync()
+
+            val afterSplit = runOnMainSyncWithResult {
+                val trace = editText.imeTraceSnapshotForTesting()
+                val editorInfo = EditorInfo()
+                createInputConnection(editText, editorInfo)
+                ImeResult(
+                    selection = editText.selectionStart to editText.selectionEnd,
+                    trace = trace,
+                    ready = editorInfo.initialCapsMode and InputType.TYPE_TEXT_FLAG_CAP_SENTENCES != 0
+                )
+            }
+            assertEquals("seed\n", editText.text.toString())
+            assertEquals(5 to 5, afterSplit.selection)
+            val surroundingText = runOnMainSyncWithResult {
+                val editorInfo = EditorInfo()
+                createInputConnection(editText, editorInfo)
+                editorInfo.getInitialTextBeforeCursor(20, 0).toString()
+            }
+            assertEquals("seed\n", surroundingText)
+            assertEquals(1, afterSplit.trace.count { it.startsWith("lineBoundaryInputRefreshScheduled") })
+            assertEquals(1, afterSplit.trace.count { it.startsWith("restartInput:source=lineBoundary:splitBlock") })
+            assertTrue(afterSplit.ready)
+
+            runOnMainSyncWithResult {
+                val inputConnection = createInputConnection(editText)
+                assertTrue(inputConnection.commitText("x", 1))
+            }
+            instrumentation.waitForIdleSync()
+
+            assertEquals("seed\nx", editText.text.toString())
+            val document = adapter.documentJson()?.let(::JSONObject) ?: error("missing document JSON")
+            assertEquals(2, document.getJSONArray("content").length())
+        } finally {
+            EditorV2Registry.destroyPair(editorId)
+        }
+    }
+
     private fun runCorrectionScenario(
         text: String,
         offset: Int,
@@ -269,8 +329,11 @@ class NativeDeviceImeRegressionTest {
             clearImeTraceForTesting()
         }
 
-    private fun createInputConnection(editText: EditorEditText): EditorInputConnection {
-        val inputConnection = editText.onCreateInputConnection(EditorInfo())
+    private fun createInputConnection(
+        editText: EditorEditText,
+        editorInfo: EditorInfo = EditorInfo()
+    ): EditorInputConnection {
+        val inputConnection = editText.onCreateInputConnection(editorInfo)
         assertTrue(inputConnection is EditorInputConnection)
         return inputConnection as EditorInputConnection
     }

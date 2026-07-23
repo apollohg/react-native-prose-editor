@@ -350,6 +350,7 @@ class EditorEditText @JvmOverloads constructor(
     private var pendingOptimisticRenderText: String? = null
     private var deferredRustUpdateApplicationDepth: Int = 0
     private var deferredRustUpdateJSON: String? = null
+    private var deferredRustUpdateLineBoundaryRefreshSource: String? = null
     private var deferredRustUpdateGeneration: Long = 0L
     private var externalUpdatePreparationCaptureDepth: Int = 0
     private var capturedExternalUpdatePreparationJSON: String? = null
@@ -2828,7 +2829,10 @@ class EditorEditText @JvmOverloads constructor(
         }
     }
 
-    private fun applyRustUpdateJSON(updateJSON: String) {
+    private fun applyRustUpdateJSON(
+        updateJSON: String,
+        lineBoundaryRefreshSource: String? = null
+    ) {
         if (externalUpdatePreparationCaptureDepth > 0) {
             capturedExternalUpdatePreparationJSON = updateJSON
             // Keep the visible IME commit authorized until the external view
@@ -2842,6 +2846,7 @@ class EditorEditText @JvmOverloads constructor(
         }
         if (deferredRustUpdateApplicationDepth > 0) {
             deferredRustUpdateJSON = updateJSON
+            deferredRustUpdateLineBoundaryRefreshSource = lineBoundaryRefreshSource
             recordImeTraceForTesting(
                 "rustUpdateDeferred",
                 "jsonLength=${updateJSON.length} depth=$deferredRustUpdateApplicationDepth"
@@ -2854,7 +2859,9 @@ class EditorEditText @JvmOverloads constructor(
             "rustUpdateApply",
             "mode=immediate jsonLength=${updateJSON.length}"
         )
-        applyUpdateJSON(updateJSON)
+        if (applyUpdateJSON(updateJSON)) {
+            lineBoundaryRefreshSource?.let(::scheduleLineBoundaryInputRefreshForEditor)
+        }
     }
 
     private fun authorizeCurrentVisibleTextForDeferredRustUpdate() {
@@ -2985,6 +2992,7 @@ class EditorEditText @JvmOverloads constructor(
 
     private fun scheduleDeferredRustUpdateApplication() {
         val pendingUpdateJSON = deferredRustUpdateJSON ?: return
+        val pendingLineBoundaryRefreshSource = deferredRustUpdateLineBoundaryRefreshSource
         val generation = ++deferredRustUpdateGeneration
         recordImeTraceForTesting(
             "rustUpdateDeferredScheduled",
@@ -3003,11 +3011,14 @@ class EditorEditText @JvmOverloads constructor(
                 return@post
             }
             deferredRustUpdateJSON = null
+            deferredRustUpdateLineBoundaryRefreshSource = null
             recordImeTraceForTesting(
                 "rustUpdateApply",
                 "mode=deferred generation=$generation jsonLength=${pendingUpdateJSON.length}"
             )
-            applyUpdateJSON(pendingUpdateJSON)
+            if (applyUpdateJSON(pendingUpdateJSON)) {
+                pendingLineBoundaryRefreshSource?.let(::scheduleLineBoundaryInputRefreshForEditor)
+            }
         }
     }
 
@@ -3018,6 +3029,7 @@ class EditorEditText @JvmOverloads constructor(
             "generation=$deferredRustUpdateGeneration"
         )
         deferredRustUpdateJSON = null
+        deferredRustUpdateLineBoundaryRefreshSource = null
         deferredRustUpdateGeneration += 1L
     }
 
@@ -3431,7 +3443,9 @@ class EditorEditText @JvmOverloads constructor(
     private fun splitBlockInRust(atScalarPos: Int) {
         if (!hasLiveEditor()) return
         v2Driver?.let { driver ->
-            driver.splitBlockAt(atScalarPos)?.let { applyRustUpdateJSON(it) }
+            driver.splitBlockAt(atScalarPos)?.let {
+                applyRustUpdateJSON(it, lineBoundaryRefreshSource = "splitBlock")
+            }
         }
     }
 
@@ -3442,7 +3456,9 @@ class EditorEditText @JvmOverloads constructor(
             return
         }
         v2Driver?.let { driver ->
-            driver.deleteAndSplit(scalarFrom, scalarTo)?.let { applyRustUpdateJSON(it) }
+            driver.deleteAndSplit(scalarFrom, scalarTo)?.let {
+                applyRustUpdateJSON(it, lineBoundaryRefreshSource = "deleteAndSplit")
+            }
         }
     }
 
@@ -4037,7 +4053,7 @@ class EditorEditText @JvmOverloads constructor(
         updateJSON: String,
         notifyListener: Boolean = true,
         refreshInputConnectionForExternalUpdate: Boolean = false
-    ) {
+    ): Boolean {
         throwOnNextApplyUpdateForTesting?.let { error ->
             throwOnNextApplyUpdateForTesting = null
             throw error
@@ -4052,7 +4068,7 @@ class EditorEditText @JvmOverloads constructor(
                 "applyUpdateJSONNoop",
                 "reason=parseError jsonLength=${updateJSON.length} error=${error.javaClass.simpleName}"
             )
-            return
+            return false
         }
         cancelDeferredRustUpdateApplication()
         val parseNanos = System.nanoTime() - parseStartedAt
@@ -4117,7 +4133,7 @@ class EditorEditText @JvmOverloads constructor(
                     "applyUpdateJSONNoop",
                     "reason=noRenderPayload jsonLength=${updateJSON.length}"
                 )
-                return
+                return false
             }
             buildRenderNanos = System.nanoTime() - buildStartedAt
             currentRenderBlocksJson = resolvedRenderBlocks?.let(::cloneJsonArray)
@@ -4187,6 +4203,7 @@ class EditorEditText @JvmOverloads constructor(
                 totalNanos = totalNanos
             )
         }
+        return !shouldSkipRender
     }
 
     private fun refreshInputConnectionAfterExternalTextReplacementIfNeeded(
