@@ -37,6 +37,8 @@ pub const TRANSPORT_INCOMPATIBLE: &str = "TRANSPORT_INCOMPATIBLE";
 /// Refusal code for connection-shaped actions on a local-only session that
 /// has no room binding to connect to.
 pub const TRANSPORT_NOT_ROOM_BOUND: &str = "TRANSPORT_NOT_ROOM_BOUND";
+/// Terminal refusal code when no fresh transport generation can be issued.
+pub const TRANSPORT_GENERATION_EXHAUSTED: &str = "TRANSPORT_GENERATION_EXHAUSTED";
 
 /// Generation value before any connection attempt; the first accepted
 /// `begin_connect` issues `INITIAL_TRANSPORT_GENERATION + 1`.
@@ -124,8 +126,20 @@ impl TransportStateMachine {
         }
         match self.state {
             TransportState::Disconnected => {
-                self.last_issued += 1;
-                let generation = TransportGeneration(self.last_issued);
+                let next_generation = self.last_issued.checked_add(1).ok_or_else(|| {
+                    SessionError::new(
+                        ErrorDomain::Transport,
+                        TRANSPORT_GENERATION_EXHAUSTED,
+                        "transport generation space is exhausted",
+                    )
+                    .with_transport_context(
+                        request_id,
+                        "beginConnect",
+                        self.state,
+                    )
+                })?;
+                let generation = TransportGeneration(next_generation);
+                self.last_issued = next_generation;
                 self.live_attempt = Some(generation);
                 self.state = TransportState::Connecting;
                 Ok(generation)
@@ -430,6 +444,28 @@ mod tests {
             .unwrap();
         let second = machine.begin_connect(REQUEST_ID, ROOM_BOUND).unwrap();
         assert_eq!(second.value(), first.value() + 1);
+    }
+
+    #[test]
+    fn task8_third_remediation_generation_exhaustion_is_terminal_and_atomic() {
+        let mut machine = TransportStateMachine {
+            state: TransportState::Disconnected,
+            live_attempt: None,
+            last_issued: u64::MAX,
+        };
+
+        for request_id in [REQUEST_ID, REQUEST_ID + 1] {
+            let error = machine.begin_connect(request_id, ROOM_BOUND).unwrap_err();
+            assert_eq!(error.domain, ErrorDomain::Transport, "{error:?}");
+            assert_eq!(error.code, "TRANSPORT_GENERATION_EXHAUSTED", "{error:?}");
+            assert_eq!(error.request_id, Some(request_id), "{error:?}");
+            let details = error.details.expect("exhaustion carries transport context");
+            assert_eq!(details["action"], "beginConnect");
+            assert_eq!(details["transportState"], "Disconnected");
+            assert_eq!(machine.state, TransportState::Disconnected);
+            assert_eq!(machine.live_attempt, None);
+            assert_eq!(machine.last_issued, u64::MAX);
+        }
     }
 
     #[test]

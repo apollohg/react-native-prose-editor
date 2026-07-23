@@ -149,7 +149,7 @@ pub(crate) struct TickOutcome {
     pub(crate) outbound_changed: bool,
     /// Remote clients expired by this tick, in ascending client order.
     pub(crate) expired_peers: Vec<u64>,
-    /// Whether this tick removed one or more remote peer projections.
+    /// Whether this tick changed a local or remote peer projection.
     pub(crate) peers_changed: bool,
     /// The next renewal/expiry deadline for JavaScript to schedule.
     pub(crate) next_deadline_millis: Option<u64>,
@@ -467,7 +467,7 @@ impl CollaborationRuntime {
         Ok(TickOutcome {
             renewed_local,
             outbound_changed: renewed_local,
-            peers_changed: !expired_peers.is_empty(),
+            peers_changed: renewed_local || !expired_peers.is_empty(),
             expired_peers,
             next_deadline_millis: self.awareness.next_deadline_millis(transport_state),
         })
@@ -764,6 +764,39 @@ mod tests {
             Some(10_000 + AWARENESS_EXPIRY_MILLIS),
         );
         assert_eq!(runtime.peers(&mut engine).len(), 1);
+    }
+
+    #[test]
+    fn task8_third_remediation_runtime_renewal_marks_local_peer_changed() {
+        let mut runtime = runtime();
+        let mut engine = engine();
+        let limits = CollaborationLimits::default();
+
+        runtime
+            .set_desired_awareness(
+                REQUEST_ID,
+                r#"{"name":"renewed"}"#,
+                context(&mut engine, TransportState::Synchronized, &limits),
+            )
+            .unwrap();
+        let before = runtime.peers(&mut engine);
+
+        let outcome = runtime
+            .tick(
+                REQUEST_ID,
+                AWARENESS_RENEWAL_INTERVAL_MILLIS,
+                context(&mut engine, TransportState::Synchronized, &limits),
+            )
+            .unwrap();
+        let after = runtime.peers(&mut engine);
+
+        assert!(outcome.renewed_local, "{outcome:?}");
+        assert!(outcome.outbound_changed, "{outcome:?}");
+        assert!(outcome.expired_peers.is_empty(), "{outcome:?}");
+        assert!(outcome.peers_changed, "{outcome:?}");
+        assert_eq!(before.len(), 1);
+        assert_eq!(after.len(), 1);
+        assert!(after[0].clock > before[0].clock, "{before:?} -> {after:?}");
     }
 
     fn assert_clock_exhausted(error: &SessionError) {

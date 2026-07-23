@@ -1332,7 +1332,7 @@ fn collaboration_binary_round_trip_and_awareness_flow_with_a_raw_peer() {
 }
 
 #[test]
-fn collaboration_task8_tick_uses_canonical_millis_and_reports_deadline_changes() {
+fn task8_third_remediation_ffi_tick_reports_local_renewal_as_peer_change() {
     let snapshot = snapshot_source();
     let id = create_handle_with_state(
         room_config(Some(&snapshot)),
@@ -1379,7 +1379,7 @@ fn collaboration_task8_tick_uses_canonical_millis_and_reports_deadline_changes()
             "renewedLocal": true,
             "expiredPeers": [],
             "outboundChanged": true,
-            "peersChanged": false,
+            "peersChanged": true,
         }),
         "{at:?}"
     );
