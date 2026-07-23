@@ -35,7 +35,8 @@ export const V2_FAKE_MALFORMED_FRAME = new Uint8Array([0xff]);
 export const V2_FAKE_INCOMPATIBLE_FRAME = new Uint8Array([0xfe]);
 
 const V2_FAKE_U64_MAX = 18_446_744_073_709_551_615n;
-const V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK = 0xffff_fffe;
+const V2_FAKE_U32_MAX = 0xffff_ffff;
+const V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK = V2_FAKE_U32_MAX - 1;
 const V2_FAKE_AWARENESS_RENEWAL_INTERVAL_MILLIS = 15_000n;
 const V2_FAKE_AWARENESS_EXPIRY_MILLIS = 30_000n;
 
@@ -609,6 +610,8 @@ export interface FakeNativeEditorV2Runtime {
     pushRemotePeers(editorId: string, peers: NativeEditorV2PeerInfo[]): void;
     /** Seed the exact last-issued u64 generation for boundary tests. */
     seedLastIssuedGeneration(editorId: string, generation: string): void;
+    /** Seed the exact Rust-owned local awareness u32 clock for boundary tests. */
+    seedLocalAwarenessClock(editorId: string, clock: number): void;
     /** Retire the live generation natively without telling TypeScript. */
     retireLiveGeneration(editorId: string): void;
     /** One-shot error injected into the named entry (currently applyLocalApi). */
@@ -705,23 +708,55 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         clearTransportAwareness(session);
     }
 
-    function clearTransportAwareness(session: FakeSession): void {
+    function awarenessClockExhaustedError(): FakeErrorRecord {
+        const error = errorRecord(
+            'transport',
+            'AWARENESS_CLOCK_EXHAUSTED',
+            'local awareness clock exhausted; a fresh editor identity is required'
+        );
+        error.details = {
+            requiresFreshEditorIdentity: true,
+            retryable: false,
+        };
+        return error;
+    }
+
+    function advanceLocalAwarenessClock(
+        session: FakeSession,
+        transition: 'publish' | 'tombstone'
+    ): FakeErrorRecord | null {
+        const nextClock = session.localClock + 1;
+        if (
+            nextClock > V2_FAKE_U32_MAX ||
+            (transition === 'publish' && nextClock === V2_FAKE_U32_MAX)
+        ) {
+            return awarenessClockExhaustedError();
+        }
+        session.localClock = nextClock;
+        return null;
+    }
+
+    function clearTransportAwareness(session: FakeSession): FakeErrorRecord | null {
         if (session.localAwarenessLive) {
-            session.localClock += 1;
+            const clockError = advanceLocalAwarenessClock(session, 'tombstone');
+            if (clockError) return clockError;
             session.localAwarenessLive = false;
         }
         session.remotePeers = [];
         session.remoteAwarenessClocks.clear();
         session.remotePeerActivity.clear();
+        return null;
     }
 
     function checkedAddV2U64(left: bigint, right: bigint): bigint | null {
         return left > V2_FAKE_U64_MAX - right ? null : left + right;
     }
 
-    function setLocalAwarenessState(session: FakeSession): void {
-        session.localClock += 1;
+    function setLocalAwarenessState(session: FakeSession): FakeErrorRecord | null {
+        const clockError = advanceLocalAwarenessClock(session, 'publish');
+        if (clockError) return clockError;
         session.localAwarenessLive = true;
+        return null;
     }
 
     function enqueueLocalAwareness(session: FakeSession): void {
@@ -729,18 +764,22 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         session.lastLocalAwarenessPublishMillis = session.awarenessNowMillis;
     }
 
-    function publishLocalAwareness(session: FakeSession): void {
-        setLocalAwarenessState(session);
+    function publishLocalAwareness(session: FakeSession): FakeErrorRecord | null {
+        const clockError = setLocalAwarenessState(session);
+        if (clockError) return clockError;
         enqueueLocalAwareness(session);
+        return null;
     }
 
-    function clearLocalAwareness(session: FakeSession): void {
-        if (!session.localAwarenessLive) return;
-        session.localClock += 1;
+    function clearLocalAwareness(session: FakeSession): FakeErrorRecord | null {
+        if (!session.localAwarenessLive) return null;
+        const clockError = advanceLocalAwarenessClock(session, 'tombstone');
+        if (clockError) return clockError;
         session.localAwarenessLive = false;
         if (session.transportState === 'Synchronized') {
             session.protocolQueue.push(awarenessFrame(session.localClock));
         }
+        return null;
     }
 
     function nextAwarenessDeadline(session: FakeSession): bigint | null {
@@ -770,7 +809,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
     ): void {
         for (const peer of entries) {
             const clientId = canonicalV2U64(peer.clientId);
-            if (peer.isLocal || clientId == null || clientId === session.localClientId) continue;
+            if (clientId == null || clientId === session.localClientId) continue;
             const currentClock = session.remoteAwarenessClocks.get(clientId);
             const currentPeerIndex = session.remotePeers.findIndex(
                 (candidate) => candidate.clientId === clientId
@@ -815,8 +854,12 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
     ): FakeErrorRecord | null {
         for (const peer of entries) {
             const clientId = canonicalV2U64(peer.clientId);
-            if (peer.isLocal || clientId == null || clientId === session.localClientId) continue;
-            if (peer.clock <= V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK) continue;
+            if (clientId == null) continue;
+            const clockLimit =
+                clientId === session.localClientId
+                    ? session.localClock
+                    : V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK;
+            if (peer.clock <= clockLimit) continue;
 
             const error = errorRecord(
                 'transport',
@@ -827,8 +870,8 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 action: 'receiveMessage',
                 cause: {
                     code: 'INPUT_LIMIT_EXCEEDED',
-                    message: `input exceeds limit ${V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK}: ${peer.clock}`,
-                    limit: V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK,
+                    message: `input exceeds limit ${clockLimit}: ${peer.clock}`,
+                    limit: clockLimit,
                     actual: peer.clock,
                     details: { field: 'awarenessClock' },
                 },
@@ -836,6 +879,25 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             return error;
         }
         return null;
+    }
+
+    function awarenessReceiveError(cause: FakeErrorRecord): FakeErrorRecord {
+        const error = errorRecord(
+            'transport',
+            cause.code,
+            'awareness frame handling failed'
+        );
+        error.details = {
+            action: 'receiveMessage',
+            cause: {
+                code: cause.code,
+                message: cause.message,
+                limit: cause.limit,
+                actual: cause.actual,
+                details: cause.details,
+            },
+        };
+        return error;
     }
 
     function queueDocumentUpdate(session: FakeSession): void {
@@ -927,6 +989,14 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             if (session.transportState !== 'Handshaking') {
                 return outcome({});
             }
+            if (session.desiredAwareness != null) {
+                const clockError = publishLocalAwareness(session);
+                if (clockError) {
+                    const error = awarenessReceiveError(clockError);
+                    retireGeneration(session, 'Incompatible');
+                    return outcome({ close: { disposition: 'incompatible', error } });
+                }
+            }
             let documentPromoted = false;
             if (session.documentState === 'AwaitRemote') {
                 const remote = pendingFor(session.editorId);
@@ -937,9 +1007,6 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 documentPromoted = true;
             }
             session.transportState = 'Synchronized';
-            if (session.desiredAwareness != null) {
-                publishLocalAwareness(session);
-            }
             return outcome({ documentPromoted });
         }
         // Step 2 without a valid configured fragment: unchanged doc, Incompatible.
@@ -1654,7 +1721,8 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 }
                 if (awarenessJson.trim() === 'null') {
                     if (session.desiredAwareness == null) return okRecord(true);
-                    clearLocalAwareness(session);
+                    const clockError = clearLocalAwareness(session);
+                    if (clockError) return errRecord(clockError);
                     session.desiredAwareness = null;
                     session.lastLocalAwarenessPublishMillis = null;
                 } else {
@@ -1668,8 +1736,9 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                             `desired awareness state is not valid JSON: ${message}`
                         );
                     }
+                    const clockError = setLocalAwarenessState(session);
+                    if (clockError) return errRecord(clockError);
                     session.desiredAwareness = desiredAwareness;
-                    setLocalAwarenessState(session);
                 }
                 if (awarenessJson.trim() !== 'null' && session.transportState === 'Synchronized') {
                     enqueueLocalAwareness(session);
@@ -1751,7 +1820,8 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                             session.awarenessNowMillis - session.lastLocalAwarenessPublishMillis >=
                                 V2_FAKE_AWARENESS_RENEWAL_INTERVAL_MILLIS))
                 ) {
-                    publishLocalAwareness(session);
+                    const clockError = publishLocalAwareness(session);
+                    if (clockError) return errRecord(clockError);
                     renewedLocal = true;
                 }
                 const nextDeadline = nextAwarenessDeadline(session);
@@ -1899,6 +1969,13 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             const session = getSession(editorId);
             if (!session) throw new Error(`unknown fake session ${editorId}`);
             session.lastIssuedGeneration = BigInt(canonicalGeneration);
+        },
+        seedLocalAwarenessClock: (editorId, clock) => {
+            const exactClock = exactV2U32(clock);
+            if (exactClock == null) throw new Error('clock must be an exact u32');
+            const session = getSession(editorId);
+            if (!session) throw new Error(`unknown fake session ${editorId}`);
+            session.localClock = exactClock;
         },
         retireLiveGeneration: (editorId) => {
             const session = getSession(editorId);

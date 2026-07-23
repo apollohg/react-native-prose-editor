@@ -103,6 +103,19 @@ const LOCAL_DOC_B = fakeDocForText('local b');
 const LOCAL_DOC_C = fakeDocForText('local c');
 
 const ALICE = { userId: '1', name: 'Alice', color: '#f00' };
+const AWARENESS_CLOCK_EXHAUSTED_ERROR = {
+    domain: 'transport',
+    code: 'AWARENESS_CLOCK_EXHAUSTED',
+    message: 'local awareness clock exhausted; a fresh editor identity is required',
+    requestId: null,
+    operationIndex: null,
+    limit: null,
+    actual: null,
+    details: {
+        requiresFreshEditorIdentity: true,
+        retryable: false,
+    },
+};
 
 function remotePeer(overrides: Partial<NativeEditorV2PeerInfo> = {}): NativeEditorV2PeerInfo {
     return {
@@ -118,6 +131,27 @@ function remotePeer(overrides: Partial<NativeEditorV2PeerInfo> = {}): NativeEdit
 // ─── Setup helpers ──────────────────────────────────────────────
 
 let runtime: FakeNativeEditorV2Runtime;
+
+function fakeAwarenessAudit(editorId: string) {
+    const session = runtime.session(editorId);
+    return {
+        desiredAwareness: JSON.parse(JSON.stringify(session.desiredAwareness)) as unknown,
+        localClock: session.localClock,
+        localAwarenessLive: session.localAwarenessLive,
+        queuedFrames: runtime.queuedFrames(editorId).map((frame) => Array.from(frame)),
+        awarenessNowMillis: session.awarenessNowMillis,
+        lastLocalAwarenessPublishMillis: session.lastLocalAwarenessPublishMillis,
+        peers: handlePeers(editorId),
+        remoteAwarenessClocks: [...session.remoteAwarenessClocks.entries()],
+        remotePeerActivity: [...session.remotePeerActivity.entries()],
+        transportState: session.transportState,
+        liveGeneration: session.liveGeneration,
+    };
+}
+
+function handlePeers(editorId: string): NativeEditorV2PeerInfo[] {
+    return runtime.session(editorId).remotePeers.map((peer) => ({ ...peer }));
+}
 
 function snapshotState(doc: DocumentJSON, revision = 7): Uint8Array {
     return new TextEncoder().encode(JSON.stringify({ doc, revision }));
@@ -980,6 +1014,139 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(after.lastLocalAwarenessPublishMillis).toBe(publishBefore);
     });
 
+    it('reserves local clock headroom and rejects set-awareness atomically in every transport state', () => {
+        for (const transportState of ['Disconnected', 'Handshaking', 'Synchronized'] as const) {
+            const handle = createRoomHandle({
+                documentId: `set-clock-${transportState}`,
+                withSnapshot: true,
+            });
+            handle.bridge.collaborationSetAwareness({ user: ALICE });
+            if (transportState !== 'Disconnected') {
+                const generation = handle.bridge.collaborationBeginConnect();
+                handle.bridge.collaborationSocketOpen(generation);
+                if (transportState === 'Synchronized') {
+                    handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+                }
+            }
+
+            expect(() =>
+                runtime.seedLocalAwarenessClock(handle.editorId, 4_294_967_295.5)
+            ).toThrow('clock must be an exact u32');
+            expect(() =>
+                runtime.seedLocalAwarenessClock(handle.editorId, 4_294_967_296)
+            ).toThrow('clock must be an exact u32');
+            runtime.seedLocalAwarenessClock(handle.editorId, 4_294_967_293);
+            handle.bridge.collaborationSetAwareness({ state: 'last publishable' });
+            expect(runtime.session(handle.editorId).localClock).toBe(4_294_967_294);
+
+            const before = fakeAwarenessAudit(handle.editorId);
+            expect(
+                runtime.module.editorV2CollaborationSetAwareness(
+                    handle.editorId,
+                    JSON.stringify({ state: 'must reject' })
+                )
+            ).toEqual({ value: null, error: AWARENESS_CLOCK_EXHAUSTED_ERROR });
+            expect(fakeAwarenessAudit(handle.editorId)).toEqual(before);
+        }
+    });
+
+    it('uses the final local clock for clear, then rejects an exhausted tombstone atomically', () => {
+        const finalClockHandle = createRoomHandle({ withSnapshot: true });
+        finalClockHandle.bridge.collaborationSetAwareness({ user: ALICE });
+        runtime.seedLocalAwarenessClock(finalClockHandle.editorId, 4_294_967_294);
+        finalClockHandle.bridge.collaborationSetAwareness(null);
+        expect(runtime.session(finalClockHandle.editorId)).toMatchObject({
+            desiredAwareness: null,
+            localClock: 4_294_967_295,
+            localAwarenessLive: false,
+        });
+
+        const exhaustedHandle = createRoomHandle({ withSnapshot: true });
+        exhaustedHandle.bridge.collaborationSetAwareness({ user: ALICE });
+        runtime.seedLocalAwarenessClock(exhaustedHandle.editorId, 4_294_967_295);
+        const before = fakeAwarenessAudit(exhaustedHandle.editorId);
+        expect(
+            runtime.module.editorV2CollaborationSetAwareness(exhaustedHandle.editorId, 'null')
+        ).toEqual({ value: null, error: AWARENESS_CLOCK_EXHAUSTED_ERROR });
+        expect(fakeAwarenessAudit(exhaustedHandle.editorId)).toEqual(before);
+    });
+
+    it('closes incompatible when handshake awareness republish exhausts its clock', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        runtime.seedLocalAwarenessClock(handle.editorId, 4_294_967_294);
+        const generation = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(generation);
+        runtime.pushRemotePeers(handle.editorId, [remotePeer({ clientId: '42', clock: 1 })]);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
+        expect(handle.bridge.collaborationPeers()).toHaveLength(2);
+
+        expect(handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME)).toEqual({
+            framesDecoded: 1,
+            repliesEnqueued: 0,
+            replyBytesEnqueued: 0,
+            remoteCommitApplied: false,
+            documentPromoted: false,
+            transportState: 'Incompatible',
+            close: {
+                disposition: 'incompatible',
+                error: {
+                    domain: 'transport',
+                    code: 'AWARENESS_CLOCK_EXHAUSTED',
+                    message: 'awareness frame handling failed',
+                    requestId: null,
+                    operationIndex: null,
+                    limit: null,
+                    actual: null,
+                    details: {
+                        action: 'receiveMessage',
+                        cause: {
+                            code: 'AWARENESS_CLOCK_EXHAUSTED',
+                            message:
+                                'local awareness clock exhausted; a fresh editor identity is required',
+                            limit: null,
+                            actual: null,
+                            details: {
+                                requiresFreshEditorIdentity: true,
+                                retryable: false,
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        expect(runtime.session(handle.editorId)).toMatchObject({
+            transportState: 'Incompatible',
+            liveGeneration: null,
+            desiredAwareness: { user: ALICE },
+            localClock: 4_294_967_295,
+            localAwarenessLive: false,
+            lastLocalAwarenessPublishMillis: null,
+            remotePeers: [],
+        });
+        expect(runtime.session(handle.editorId).remotePeerActivity.size).toBe(0);
+        expect(runtime.queuedFrames(handle.editorId)).toEqual([]);
+    });
+
+    it('rejects due renewal at exhausted headroom without publishing or changing its deadline', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        const generation = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(generation);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+        runtime.seedLocalAwarenessClock(handle.editorId, 4_294_967_294);
+        const before = fakeAwarenessAudit(handle.editorId);
+
+        expect(runtime.module.editorV2CollaborationTick(handle.editorId, '15000')).toEqual({
+            value: null,
+            error: AWARENESS_CLOCK_EXHAUSTED_ERROR,
+        });
+        expect(fakeAwarenessAudit(handle.editorId)).toEqual({
+            ...before,
+            awarenessNowMillis: 15_000n,
+        });
+    });
+
     it('sorts the combined local and remote awareness projection by numeric client id', () => {
         const handle = createRoomHandle({ withSnapshot: true });
         handle.bridge.collaborationSetAwareness({ user: ALICE });
@@ -1150,6 +1317,101 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(session.remoteAwarenessClocks.size).toBe(0);
         expect(session.remotePeerActivity.size).toBe(0);
         expect(handle.bridge.collaborationPeers()).toEqual([]);
+    });
+
+    it('ignores same and older local-client echoes without refreshing remote activity', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        const generation = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(generation);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+        const session = runtime.session(handle.editorId);
+        const localClientId = session.localClientId;
+        const localBefore = handle.bridge
+            .collaborationPeers()
+            .find((peer) => peer.clientId === localClientId);
+
+        for (const clock of [session.localClock, session.localClock - 1]) {
+            runtime.pushRemotePeers(handle.editorId, [
+                remotePeer({
+                    clientId: localClientId,
+                    clock,
+                    isLocal: false,
+                    state: clock === session.localClock ? null : { remote: 'must be ignored' },
+                    cursor: null,
+                }),
+            ]);
+            expect(
+                handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME).close
+            ).toBeNull();
+        }
+
+        expect(
+            handle.bridge.collaborationPeers().find((peer) => peer.clientId === localClientId)
+        ).toEqual(localBefore);
+        expect(session.remoteAwarenessClocks.has(localClientId)).toBe(false);
+        expect(session.remotePeerActivity.has(localClientId)).toBe(false);
+    });
+
+    it('rejects greater and terminal local-client clocks before applying a mixed delta', () => {
+        for (const incomingClock of [3, 4_294_967_295]) {
+            const handle = createRoomHandle({
+                documentId: `local-echo-${incomingClock}`,
+                withSnapshot: true,
+            });
+            handle.bridge.collaborationSetAwareness({ user: ALICE });
+            const generation = handle.bridge.collaborationBeginConnect();
+            handle.bridge.collaborationSocketOpen(generation);
+            handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+            const session = runtime.session(handle.editorId);
+            expect(session.localClock).toBe(2);
+
+            runtime.pushRemotePeers(handle.editorId, [
+                remotePeer({ clientId: '42', clock: 1 }),
+                remotePeer({
+                    clientId: session.localClientId,
+                    clock: incomingClock,
+                    isLocal: false,
+                    state: null,
+                    cursor: null,
+                }),
+            ]);
+            const outcome = handle.bridge.collaborationReceive(
+                generation,
+                V2_FAKE_AWARENESS_FRAME
+            );
+            expect(outcome).toMatchObject({
+                transportState: 'Incompatible',
+                close: {
+                    disposition: 'incompatible',
+                    error: {
+                        domain: 'transport',
+                        code: 'TRANSPORT_AWARENESS_LIMIT_EXCEEDED',
+                        message: 'awareness frame handling failed',
+                        details: {
+                            action: 'receiveMessage',
+                            cause: {
+                                code: 'INPUT_LIMIT_EXCEEDED',
+                                message: `input exceeds limit 2: ${incomingClock}`,
+                                limit: 2,
+                                actual: incomingClock,
+                                details: { field: 'awarenessClock' },
+                            },
+                        },
+                    },
+                },
+            });
+            expect(runtime.session(handle.editorId)).toMatchObject({
+                transportState: 'Incompatible',
+                liveGeneration: null,
+                desiredAwareness: { user: ALICE },
+                localClock: 3,
+                localAwarenessLive: false,
+                remotePeers: [],
+            });
+            expect(runtime.session(handle.editorId).remoteAwarenessClocks.size).toBe(0);
+            expect(runtime.session(handle.editorId).remotePeerActivity.size).toBe(0);
+        }
     });
 
     // ── Awareness / peers ───────────────────────────────────────
