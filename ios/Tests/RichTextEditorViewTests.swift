@@ -3786,6 +3786,29 @@ final class RichTextEditorViewTests: XCTestCase {
         }
     }
 
+    func testDestroyReservationBlocksAutonomousErrorCallbackEligibility() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected adapter")
+            return
+        }
+
+        let view = NativeEditorExpoView()
+        var events: [[String: Any]] = []
+        view.onEditorErrorForTesting = { events.append($0) }
+        view.setEditorId(editorId)
+
+        XCTAssertTrue(NativeEditorViewRegistry.shared.reserveDestroy(editorId: editorId))
+        defer { NativeEditorViewRegistry.shared.rollbackDestroy(editorId: editorId) }
+
+        adapter.rejectExternalRenderEnvelope("destroy reservation must block autonomous callback delivery")
+        flushMainQueue()
+        flushMainQueue()
+
+        XCTAssertTrue(events.isEmpty)
+    }
+
     func testTask15EqualDistinctAdapterFailuresEachDeliverExactlyOnce() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

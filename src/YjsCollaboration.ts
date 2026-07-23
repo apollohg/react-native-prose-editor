@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import {
     _assertNativeEditorDocumentHandle,
+    createNativeEditorLocalAwarenessSelection,
     type DocumentJSON,
     type NativeEditorDocumentHandle,
     type NativeEditorLocalAwarenessIntent,
@@ -298,10 +299,7 @@ function normalizeAwarenessSelection(
 ): NativeEditorLocalAwarenessSelection | undefined {
     if (selection.type !== 'text') return undefined;
     if (selection.anchor === undefined || selection.head === undefined) return undefined;
-    return {
-        anchor: selection.anchor,
-        head: selection.head,
-    };
+    return createNativeEditorLocalAwarenessSelection(selection.anchor, selection.head);
 }
 
 function mergeAwarenessPartial(

@@ -6,6 +6,20 @@ import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.editor_core.*
 
+private fun destroyAlreadyInProgressResult(): FfiUnitResult = FfiUnitResult(
+    null,
+    FfiError(
+        "operation",
+        "OPERATION_INVALID",
+        "destroy already in progress",
+        null,
+        null,
+        null,
+        null,
+        null,
+    ),
+)
+
 /**
  * Destroy one v2 session through its canonical public handle and invalidate
  * the associated opaque widget token. The token is supplied separately so a
@@ -39,20 +53,21 @@ internal fun destroyEditorV2FromModule(
 ): FfiUnitResult {
     val canonicalHandle = canonicalV2U64(editorId) ?: return destroy(editorId)
     val viewToken = EditorV2Registry.viewTokenForHandle(canonicalHandle)
-    val result = destroy(canonicalHandle)
-    val error = result.error
-    when {
-        result.value == true && error == null -> Unit
-        result.value == null &&
-            error?.domain == "lifecycle" &&
-            error.code in setOf("ENGINE_DESTROYED", "ENGINE_DESTROYING") -> Unit
-        result.value == null && error != null -> return result
-        else -> return FfiUnitResult(
+    val reservation = viewToken?.let(NativeEditorViewRegistry::acquireDestroyReservation)
+        ?: NativeEditorDestroyReservationResult.UNAVAILABLE
+    val reserved = reservation == NativeEditorDestroyReservationResult.RESERVED
+    if (viewToken != null && !reserved) {
+        // A competing destroy owns the reservation. Do not issue a second FFI
+        // destroy; return a retryable operation error while teardown is pending.
+        if (reservation == NativeEditorDestroyReservationResult.ALREADY_IN_PROGRESS) {
+            return destroyAlreadyInProgressResult()
+        }
+        return FfiUnitResult(
             null,
             FfiError(
                 "boundary",
                 "FFI_RESULT_INVALID",
-                "v2 destroy result violates the frozen unit-result shape",
+                "v2 destroy could not reserve its native view",
                 null,
                 null,
                 null,
@@ -61,17 +76,40 @@ internal fun destroyEditorV2FromModule(
             ),
         )
     }
-
-    EditorV2Registry.cancelAutonomousErrorOwner(canonicalHandle)
-
-    if (viewToken != null && NativeEditorViewRegistry.beginDestroy(viewToken)) {
-        try {
-            NativeEditorViewRegistry.finalizeDestroy(viewToken)
-        } finally {
-            EditorV2Registry.dropPair(canonicalHandle)
+    val result = destroy(canonicalHandle)
+    val error = result.error
+    when {
+        result.value == true && error == null -> Unit
+        result.value == null &&
+            error?.domain == "lifecycle" &&
+            error.code in setOf("ENGINE_DESTROYED", "ENGINE_DESTROYING") -> Unit
+        result.value == null && error != null -> {
+            if (reserved) NativeEditorViewRegistry.rollbackDestroy(viewToken!!)
+            return result
         }
-    } else {
-        EditorV2Registry.dropPair(canonicalHandle)
+        else -> {
+            if (reserved) NativeEditorViewRegistry.rollbackDestroy(viewToken!!)
+            return FfiUnitResult(
+                null,
+                FfiError(
+                    "boundary",
+                    "FFI_RESULT_INVALID",
+                    "v2 destroy result violates the frozen unit-result shape",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                ),
+            )
+        }
+    }
+
+    // Remove the pairing and its autonomous-error owner while the destroy
+    // reservation still gates view commands and callback eligibility.
+    EditorV2Registry.dropPair(canonicalHandle)
+    if (reserved) {
+        NativeEditorViewRegistry.finalizeDestroy(viewToken!!)
     }
     return result
 }
@@ -133,6 +171,65 @@ private fun v2BoundaryErrorRecord(message: String): Map<String, Any?> = mapOf(
     ),
 )
 
+private fun v2InvalidFfiResultRecord(message: String): Map<String, Any?> = mapOf(
+    "value" to null,
+    "error" to EditorV2Error(
+        domain = "boundary",
+        code = "FFI_RESULT_INVALID",
+        message = message,
+    ).toJSMap(),
+)
+
+private fun createdV2SessionHandle(value: String, requireExactShape: Boolean): String? {
+    val jsonObject = runCatching { JSONObject(value) }.getOrNull() ?: return null
+    if (requireExactShape && jsonObject.length() != 1) return null
+    val editorId = jsonObject.opt("editorId") as? String ?: return null
+    return canonicalV2U64(editorId)?.takeIf { it != "0" }
+}
+
+private fun cleanupCreatedV2Session(value: String?, destroy: (String) -> FfiUnitResult) {
+    val editorId = value?.let { createdV2SessionHandle(it, requireExactShape = false) } ?: return
+    destroy(editorId)
+}
+
+/**
+ * Create and pair a v2 session only from an exact FFI success with a strict
+ * create value. A malformed-but-extractable result is explicitly destroyed
+ * before returning the boundary failure so it cannot leak in Rust.
+ */
+internal fun createEditorV2FromModule(
+    configJson: String,
+    snapshotState: ByteArray?,
+    create: (String, ByteArray?) -> FfiJsonResult = ::editorV2Create,
+    destroy: (String) -> FfiUnitResult = ::editorV2Destroy,
+): Map<String, Any?> {
+    val result = create(configJson, snapshotState)
+    val value = result.value
+    val error = result.error
+    if (value == null && error != null) return result.toJSMap()
+    if (value == null || error != null) {
+        cleanupCreatedV2Session(value, destroy)
+        return v2InvalidFfiResultRecord("v2 result must carry exactly one of value/error")
+    }
+
+    val editorId = createdV2SessionHandle(value, requireExactShape = true)
+    if (editorId == null) {
+        cleanupCreatedV2Session(value, destroy)
+        return v2InvalidFfiResultRecord("v2 create value carries no native-view editor id")
+    }
+    val roomBound = runCatching {
+        JSONObject(configJson).optJSONObject("initialization")
+            ?.optString("type") == "room"
+    }.getOrDefault(false)
+    val adapter = EditorV2Adapter.attach(UniffiEditorV2Backend, editorId, roomBound)
+    if (adapter == null) {
+        destroy(editorId)
+        return v2InvalidFfiResultRecord("v2 create could not bind its editor handle")
+    }
+    NativeEditorViewRegistry.markEditorCreated(EditorV2Registry.register(adapter))
+    return result.toJSMap()
+}
+
 private fun parseGeneration(generation: String): String? = canonicalV2U64(generation)
 
 internal fun collaborationTickResult(
@@ -157,45 +254,7 @@ class NativeEditorModule : Module() {
         // ── v2 engine surface (the only construction path) ─────────────
 
         Function("editorV2Create") { configJson: String, snapshotState: ByteArray? ->
-            val result = editorV2Create(configJson, snapshotState)
-            var pairingError: Map<String, Any?>? = null
-            result.value?.let { value ->
-                val editorId = runCatching {
-                    JSONObject(value).opt("editorId") as? String
-                }.getOrNull()
-                val canonicalEditorId = canonicalV2U64(editorId)
-                if (canonicalEditorId == null || canonicalEditorId == "0") {
-                    editorId?.let(::editorV2Destroy)
-                    pairingError = mapOf(
-                        "value" to null,
-                        "error" to EditorV2Error(
-                            domain = "boundary",
-                            code = "FFI_RESULT_INVALID",
-                            message = "v2 create value carries no native-view editor id",
-                        ).toJSMap(),
-                    )
-                } else {
-                    val roomBound = runCatching {
-                        JSONObject(configJson).optJSONObject("initialization")
-                            ?.optString("type") == "room"
-                    }.getOrDefault(false)
-                    val adapter = EditorV2Adapter.attach(UniffiEditorV2Backend, canonicalEditorId, roomBound)
-                    if (adapter == null) {
-                        editorV2Destroy(canonicalEditorId)
-                        pairingError = mapOf(
-                            "value" to null,
-                            "error" to EditorV2Error(
-                                domain = "boundary",
-                                code = "FFI_RESULT_INVALID",
-                                message = "v2 create could not bind its editor handle",
-                            ).toJSMap(),
-                        )
-                    } else {
-                        NativeEditorViewRegistry.markEditorCreated(EditorV2Registry.register(adapter))
-                    }
-                }
-            }
-            pairingError ?: result.toJSMap()
+            createEditorV2FromModule(configJson, snapshotState)
         }
         Function("editorV2Destroy") { editorId: String ->
             destroyEditorV2FromModule(editorId).toJSMap()

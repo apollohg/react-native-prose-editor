@@ -25,9 +25,7 @@
 
 import type {
     DocumentJSON,
-    NativeEditorLocalAwarenessIntent,
     NativeEditorV2PeerInfo,
-    Selection,
 } from '../NativeEditorBridge';
 import { normalizeNativeEditorV2U64 } from '../../NativeEditorV2Decimal';
 
@@ -59,6 +57,23 @@ type FakeTransportState =
     | 'Destroyed';
 
 type FakeDocumentState = 'LocalReady' | 'AwaitRemote' | 'RoomReady';
+
+/** The Rust-tagged JSON wire value accepted by the fake native entry. */
+interface FakeNativeEditorLocalAwarenessWireSelection {
+    type: 'text';
+    anchor: number;
+    head: number;
+}
+
+/**
+ * The fake models the Rust wire contract, not the opaque caller intent that
+ * TypeScript validates before native invocation.
+ */
+interface FakeNativeEditorLocalAwarenessWireIntent {
+    state: Record<string, unknown>;
+    focused: boolean;
+    selection?: FakeNativeEditorLocalAwarenessWireSelection;
+}
 
 interface FakeErrorRecord {
     domain: string;
@@ -586,7 +601,7 @@ interface FakeSession {
     lastIssuedGeneration: bigint;
     protocolQueue: Uint8Array[];
     documentQueue: Uint8Array[];
-    desiredAwareness: NativeEditorLocalAwarenessIntent | null;
+    desiredAwareness: FakeNativeEditorLocalAwarenessWireIntent | null;
     localAwarenessCursor: { anchor: number; head: number } | null;
     localClientId: string;
     localClock: number;
@@ -627,27 +642,27 @@ function hasFakeReservedCursor(value: unknown): boolean {
     return false;
 }
 
-function validFakeAwarenessSelection(value: unknown): value is Selection {
+function validFakeAwarenessSelection(
+    value: unknown
+): value is FakeNativeEditorLocalAwarenessWireSelection {
     if (!isFakeRecord(value)) return false;
-    const type = value.type;
-    if (type !== 'text') return false;
-    const fields = ['anchor', 'head', 'pos', 'anchorScalar', 'headScalar', 'posScalar'];
     if (
         Reflect.ownKeys(value).some(
             (key) => typeof key !== 'string' || !FAKE_AWARENESS_SELECTION_KEYS.has(key)
-        )
+        ) ||
+        !Object.prototype.hasOwnProperty.call(value, 'type') ||
+        !Object.prototype.hasOwnProperty.call(value, 'anchor') ||
+        !Object.prototype.hasOwnProperty.call(value, 'head') ||
+        value.type !== 'text'
     ) {
         return false;
-    }
-    for (const field of fields) {
-        if (value[field] !== undefined && exactV2U32(value[field]) == null) return false;
     }
     return exactV2U32(value.anchor) != null && exactV2U32(value.head) != null;
 }
 
 function parseFakeAwarenessIntent(
     awarenessJson: string
-): NativeEditorLocalAwarenessIntent | FakeErrorRecord {
+): FakeNativeEditorLocalAwarenessWireIntent | FakeErrorRecord {
     let parsed: unknown;
     try {
         parsed = JSON.parse(awarenessJson);
@@ -655,14 +670,17 @@ function parseFakeAwarenessIntent(
         const message = error instanceof Error ? error.message : String(error);
         return errorRecord('boundary', 'AWARENESS_STATE_INVALID', `desired awareness state is not valid JSON: ${message}`);
     }
+    if (!isFakeRecord(parsed)) {
+        return errorRecord('boundary', 'AWARENESS_STATE_INVALID', 'invalid local awareness intent');
+    }
+    const { state, focused, selection } = parsed;
     if (
-        !isFakeRecord(parsed) ||
         Reflect.ownKeys(parsed).some(
             (key) => typeof key !== 'string' || !FAKE_AWARENESS_INTENT_KEYS.has(key)
         ) ||
-        !isFakeRecord(parsed.state) ||
-        typeof parsed.focused !== 'boolean' ||
-        (parsed.selection !== undefined && !validFakeAwarenessSelection(parsed.selection))
+        !isFakeRecord(state) ||
+        typeof focused !== 'boolean' ||
+        (selection !== undefined && !validFakeAwarenessSelection(selection))
     ) {
         return errorRecord('boundary', 'AWARENESS_STATE_INVALID', 'invalid local awareness intent');
     }
@@ -673,18 +691,17 @@ function parseFakeAwarenessIntent(
             'reserved cursor key is not allowed in local awareness state'
         );
     }
-    return parsed as NativeEditorLocalAwarenessIntent;
+    return selection === undefined ? { state, focused } : { state, focused, selection };
 }
 
-function fakeCursorForSelection(selection: Selection | undefined): { anchor: number; head: number } | null {
-    if (selection?.type === 'text' && selection.anchor != null && selection.head != null) {
-        return { anchor: selection.anchor, head: selection.head };
-    }
-    return null;
+function fakeCursorForSelection(
+    selection: FakeNativeEditorLocalAwarenessWireSelection | undefined
+): { anchor: number; head: number } | null {
+    return selection === undefined ? null : { anchor: selection.anchor, head: selection.head };
 }
 
 function projectFakeLocalAwareness(
-    intent: NativeEditorLocalAwarenessIntent,
+    intent: FakeNativeEditorLocalAwarenessWireIntent,
     cursor: { anchor: number; head: number } | null
 ): {
     state: Record<string, unknown>;

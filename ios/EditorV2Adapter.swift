@@ -1647,6 +1647,19 @@ final class EditorV2Adapter {
 
 // MARK: - Session pairing registry
 
+func v2DestroyAlreadyInProgressError() -> FfiError {
+    FfiError(
+        domain: "operation",
+        code: "OPERATION_INVALID",
+        message: "destroy already in progress",
+        requestId: nil,
+        operationIndex: nil,
+        limit: nil,
+        actual: nil,
+        detailsJson: nil
+    )
+}
+
 /// Maps the public (module-visible) editor id to the v2 adapter backing it.
 /// The module's create path registers one pairing per editor; views bound
 /// to a paired id route every interaction through the adapter.
@@ -1678,9 +1691,19 @@ enum EditorV2Registry {
     @discardableResult
     static func destroyPair(forLegacyId legacyId: UInt64) -> FfiError? {
         guard let adapter = adapter(forLegacyId: legacyId) else { return nil }
-        if let error = adapter.destroy() { return error }
-        NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: legacyId)
+        let viewRegistry = NativeEditorViewRegistry.shared
+        // Claim the lifecycle slot before invoking Rust. A competing destroy
+        // receives a retryable operation error and views remain gated until
+        // the reservation owner commits or rolls back.
+        guard viewRegistry.reserveDestroy(editorId: legacyId) else {
+            return v2DestroyAlreadyInProgressError()
+        }
+        if let error = adapter.destroy() {
+            viewRegistry.rollbackDestroy(editorId: legacyId)
+            return error
+        }
         _ = removePairing(forLegacyId: legacyId)
+        viewRegistry.finalizeDestroy(editorId: legacyId)
         return nil
     }
 

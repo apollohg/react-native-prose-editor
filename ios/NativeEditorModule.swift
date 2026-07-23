@@ -202,6 +202,7 @@ private struct CreatedV2SessionHandle {
 private func createdV2SessionHandle(_ resultJson: String) -> CreatedV2SessionHandle? {
     guard let data = resultJson.data(using: .utf8),
           let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          result.count == 1,
           let editorIdString = result["editorId"] as? String,
           let editorId = v2UInt64Argument(editorIdString),
           editorId > 0,
@@ -210,6 +211,126 @@ private func createdV2SessionHandle(_ resultJson: String) -> CreatedV2SessionHan
         return nil
     }
     return CreatedV2SessionHandle(handle: editorIdString, nativeViewId: editorId)
+}
+
+/// A malformed create record may still expose a safely canonical handle. It
+/// is not acceptable for pairing, but it is safe to destroy so Rust does not
+/// retain an otherwise unreachable session.
+private func cleanupCreatedV2SessionHandle(_ resultJson: String) -> CreatedV2SessionHandle? {
+    guard let data = resultJson.data(using: .utf8),
+          let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let editorIdString = result["editorId"] as? String,
+          let editorId = v2UInt64Argument(editorIdString),
+          editorId > 0,
+          editorIdString == String(editorId)
+    else {
+        return nil
+    }
+    return CreatedV2SessionHandle(handle: editorIdString, nativeViewId: editorId)
+}
+
+private func cleanupCreatedV2Session(
+    value: String?,
+    destroy: (String) -> FfiUnitResult
+) {
+    guard let value,
+          let handle = cleanupCreatedV2SessionHandle(value)
+    else {
+        return
+    }
+    _ = destroy(handle.handle)
+}
+
+/// Create a public v2 session and register its paired native view adapter
+/// only after the FFI record is exact and the create value parses strictly.
+/// The injected functions keep the exact-result boundary independently testable.
+func createEditorV2SessionFromModule(
+    configJson: String,
+    snapshotState: Data?,
+    create: (String, Data?) -> FfiJsonResult = { configJson, snapshotState in
+        editorV2Create(configJson: configJson, snapshotState: snapshotState)
+    },
+    destroy: (String) -> FfiUnitResult = { editorId in
+        editorV2Destroy(editorId: editorId)
+    }
+) -> [String: Any] {
+    let result = create(configJson, snapshotState)
+    switch (result.value, result.error) {
+    case let (value?, nil):
+        guard let createdHandle = createdV2SessionHandle(value) else {
+            cleanupCreatedV2Session(value: value, destroy: destroy)
+            return v2InvalidResultDictionary("v2 create value carries no canonical editor id")
+        }
+        guard let adapter = EditorV2Adapter.attach(
+            editorId: createdHandle.handle,
+            roomBound: v2ConfigIndicatesRoomBinding(configJson)
+        ) else {
+            _ = destroy(createdHandle.handle)
+            return v2InvalidResultDictionary("v2 create could not bind its editor handle")
+        }
+        EditorV2Registry.register(adapter, forLegacyId: createdHandle.nativeViewId)
+        NativeEditorViewRegistry.shared.markEditorCreated(editorId: createdHandle.nativeViewId)
+        return v2JsonResultDictionary(result)
+    case (nil, _?):
+        return v2JsonResultDictionary(result)
+    default:
+        cleanupCreatedV2Session(value: result.value, destroy: destroy)
+        return v2JsonResultDictionary(result)
+    }
+}
+
+func destroyPairedEditorV2FromModule(nativeViewId: UInt64) -> FfiUnitResult {
+    if let error = EditorV2Registry.destroyPair(forLegacyId: nativeViewId) {
+        return FfiUnitResult(value: nil, error: error)
+    }
+    return FfiUnitResult(value: true, error: nil)
+}
+
+/// Destroy a canonical but unpaired public session. A live native view can
+/// briefly outlast its pairing during teardown, so it receives the same
+/// reversible reservation as the paired path before Rust is called.
+func destroyUnpairedEditorV2FromModule(
+    editorId: String,
+    nativeViewId: UInt64,
+    destroy: (String) -> FfiUnitResult = { editorId in
+        editorV2Destroy(editorId: editorId)
+    }
+) -> FfiUnitResult {
+    let viewRegistry = NativeEditorViewRegistry.shared
+    let reservation = viewRegistry.acquireDestroyReservation(editorId: nativeViewId)
+    if reservation == .alreadyInProgress {
+        return FfiUnitResult(value: nil, error: v2DestroyAlreadyInProgressError())
+    }
+    let reserved = reservation == .reserved
+
+    let result = destroy(editorId)
+    switch (result.value, result.error) {
+    case let (value?, nil) where value:
+        if reserved { viewRegistry.finalizeDestroy(editorId: nativeViewId) }
+        return result
+    case let (nil, error?) where error.domain == "lifecycle"
+        && (error.code == "ENGINE_DESTROYED" || error.code == "ENGINE_DESTROYING"):
+        if reserved { viewRegistry.finalizeDestroy(editorId: nativeViewId) }
+        return result
+    case let (nil, error?):
+        if reserved { viewRegistry.rollbackDestroy(editorId: nativeViewId) }
+        return FfiUnitResult(value: nil, error: error)
+    default:
+        if reserved { viewRegistry.rollbackDestroy(editorId: nativeViewId) }
+        return FfiUnitResult(
+            value: nil,
+            error: FfiError(
+                domain: "boundary",
+                code: "FFI_RESULT_INVALID",
+                message: "v2 destroy result violates the frozen unit-result shape",
+                requestId: nil,
+                operationIndex: nil,
+                limit: nil,
+                actual: nil,
+                detailsJson: nil
+            )
+        )
+    }
 }
 
 /// Whether the JS-facing create config initializes a room-bound session
@@ -232,10 +353,29 @@ private func renderDocumentProbe(
     apply: (EditorV2Adapter) -> String?
 ) -> String {
     let created = editorV2Create(configJson: configJson, snapshotState: nil)
-    if let error = created.error { return v2ErrorJson(error) }
-    guard let value = created.value,
-          let createdHandle = createdV2SessionHandle(value)
-    else {
+    let createdHandle: CreatedV2SessionHandle
+    switch (created.value, created.error) {
+    case let (value?, nil):
+        guard let parsed = createdV2SessionHandle(value) else {
+            cleanupCreatedV2Session(value: value, destroy: editorV2Destroy)
+            return v2ErrorJson(
+                FfiError(
+                    domain: "boundary",
+                    code: "FFI_RESULT_INVALID",
+                    message: "v2 render probe could not bind its created editor",
+                    requestId: nil,
+                    operationIndex: nil,
+                    limit: nil,
+                    actual: nil,
+                    detailsJson: nil
+                )
+            )
+        }
+        createdHandle = parsed
+    case let (nil, error?):
+        return v2ErrorJson(error)
+    default:
+        cleanupCreatedV2Session(value: created.value, destroy: editorV2Destroy)
         return v2ErrorJson(
             FfiError(
                 domain: "boundary",
@@ -291,36 +431,21 @@ public class NativeEditorModule: Module {
         // across the JS boundary; binaries travel as Data.
 
         Function("editorV2Create") { (configJson: String, snapshotState: Data?) -> [String: Any] in
-            let result = editorV2Create(configJson: configJson, snapshotState: snapshotState)
-            // Pair the view-facing adapter with the JS-created session and
-            // mark the public id live so views may bind to it: the Expo view
-            // receives the handle's editorId and routes every interaction
-            // through the shared session.
-            if let value = result.value {
-                guard let createdHandle = createdV2SessionHandle(value) else {
-                    return v2InvalidResultDictionary("v2 create value carries no canonical editor id")
-                }
-                guard let adapter = EditorV2Adapter.attach(
-                    editorId: createdHandle.handle,
-                    roomBound: v2ConfigIndicatesRoomBinding(configJson)
-                ) else {
-                    _ = editorV2Destroy(editorId: createdHandle.handle)
-                    return v2InvalidResultDictionary("v2 create could not bind its editor handle")
-                }
-                EditorV2Registry.register(adapter, forLegacyId: createdHandle.nativeViewId)
-                NativeEditorViewRegistry.shared.markEditorCreated(editorId: createdHandle.nativeViewId)
-            }
-            return v2JsonResultDictionary(result)
+            createEditorV2SessionFromModule(configJson: configJson, snapshotState: snapshotState)
         }
         Function("editorV2Destroy") { (editorId: String) -> [String: Any] in
             if let nativeViewId = v2UInt64Argument(editorId), nativeViewId > 0 {
                 if EditorV2Registry.adapter(forLegacyId: nativeViewId) != nil {
-                    let error = EditorV2Registry.destroyPair(forLegacyId: nativeViewId)
-                    return v2UnitResultDictionary(FfiUnitResult(value: error == nil, error: error))
+                    return v2UnitResultDictionary(
+                        destroyPairedEditorV2FromModule(nativeViewId: nativeViewId)
+                    )
                 }
-                let result = editorV2Destroy(editorId: editorId)
-                NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: nativeViewId)
-                return v2UnitResultDictionary(result)
+                return v2UnitResultDictionary(
+                    destroyUnpairedEditorV2FromModule(
+                        editorId: editorId,
+                        nativeViewId: nativeViewId
+                    )
+                )
             }
             return v2UnitResultDictionary(editorV2Destroy(editorId: editorId))
         }

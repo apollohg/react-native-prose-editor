@@ -113,6 +113,251 @@ final class RenderBridgeTests: XCTestCase {
         assertFfiResultContractFailure(result)
     }
 
+    func testCreateWithBothValueAndErrorCleansExtractableSessionWithoutRegisteringIt() {
+        var cleanupHandles: [String] = []
+        let result = createEditorV2SessionFromModule(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            snapshotState: nil,
+            create: { _, _ in
+                FfiJsonResult(value: #"{"editorId":"900001"}"#, error: self.ffiResultError())
+            },
+            destroy: { editorId in
+                cleanupHandles.append(editorId)
+                return FfiUnitResult(value: true, error: nil)
+            }
+        )
+
+        assertFfiResultContractFailure(result)
+        XCTAssertEqual(cleanupHandles, ["900001"])
+        XCTAssertNil(EditorV2Registry.adapter(forLegacyId: 900001))
+        XCTAssertEqual(
+            commandPreparation(result: NativeEditorViewRegistry.shared.prepareForCommandJSON(editorId: 900001)),
+            "destroyed"
+        )
+    }
+
+    func testCreateWithNeitherValueNorErrorLeavesNoPairingOrCleanupAttempt() {
+        var cleanupHandles: [String] = []
+        let result = createEditorV2SessionFromModule(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            snapshotState: nil,
+            create: { _, _ in FfiJsonResult(value: nil, error: nil) },
+            destroy: { editorId in
+                cleanupHandles.append(editorId)
+                return FfiUnitResult(value: true, error: nil)
+            }
+        )
+
+        assertFfiResultContractFailure(result)
+        XCTAssertTrue(cleanupHandles.isEmpty)
+        XCTAssertNil(EditorV2Registry.adapter(forLegacyId: 900002))
+    }
+
+    func testCreateWithInvalidValueCleansExtractableSessionWithoutRegisteringIt() {
+        var cleanupHandles: [String] = []
+        let result = createEditorV2SessionFromModule(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            snapshotState: nil,
+            create: { _, _ in FfiJsonResult(value: #"{"editorId":"900003","unexpected":true}"#, error: nil) },
+            destroy: { editorId in
+                cleanupHandles.append(editorId)
+                return FfiUnitResult(value: true, error: nil)
+            }
+        )
+
+        XCTAssertEqual(
+            ((result["error"] as? [String: Any])?["code"] as? String),
+            "FFI_RESULT_INVALID"
+        )
+        XCTAssertEqual(cleanupHandles, ["900003"])
+        XCTAssertNil(EditorV2Registry.adapter(forLegacyId: 900003))
+    }
+
+    func testUnpairedDestroyReservesBeforeFfiAndFinalizesLifecycleAlreadyDestroyed() {
+        let editorId: UInt64 = 900004
+        let registry = NativeEditorViewRegistry.shared
+        registry.markEditorCreated(editorId: editorId)
+        defer { registry.invalidateDestroyedEditor(editorId: editorId) }
+
+        let result = destroyUnpairedEditorV2FromModule(
+            editorId: String(editorId),
+            nativeViewId: editorId,
+            destroy: { _ in
+                XCTAssertTrue(registry.isDestroyed(editorId: editorId))
+                XCTAssertTrue(
+                    registry.prepareForCommandJSON(editorId: editorId)
+                        .contains("\"ready\":false")
+                )
+                return FfiUnitResult(
+                    value: nil,
+                    error: FfiError(
+                        domain: "lifecycle",
+                        code: "ENGINE_DESTROYED",
+                        message: "already gone",
+                        requestId: nil,
+                        operationIndex: nil,
+                        limit: nil,
+                        actual: nil,
+                        detailsJson: nil
+                    )
+                )
+            }
+        )
+
+        XCTAssertNil(result.value)
+        XCTAssertEqual(result.error?.code, "ENGINE_DESTROYED")
+        XCTAssertTrue(registry.isDestroyed(editorId: editorId))
+    }
+
+    func testUnpairedDestroyContentionReturnsRetryableErrorThenOwnerSuccessFinalizesOnce() {
+        let editorId: UInt64 = 900005
+        let registry = NativeEditorViewRegistry.shared
+        registry.markEditorCreated(editorId: editorId)
+        defer { registry.invalidateDestroyedEditor(editorId: editorId) }
+
+        let firstFfiEntered = expectation(description: "unpaired destroy ffi entered")
+        let firstDestroyFinished = expectation(description: "unpaired destroy finished")
+        let releaseFirstFfi = DispatchSemaphore(value: 0)
+        let attemptsLock = NSLock()
+        var destroyAttempts = 0
+        let destroy: (String) -> FfiUnitResult = { _ in
+            attemptsLock.lock()
+            destroyAttempts += 1
+            let attempt = destroyAttempts
+            attemptsLock.unlock()
+            if attempt == 1 {
+                firstFfiEntered.fulfill()
+                _ = releaseFirstFfi.wait(timeout: .now() + 1)
+            }
+            return FfiUnitResult(value: true, error: nil)
+        }
+
+        DispatchQueue.global().async {
+            let ownerResult = destroyUnpairedEditorV2FromModule(
+                editorId: String(editorId),
+                nativeViewId: editorId,
+                destroy: destroy
+            )
+            XCTAssertEqual(ownerResult.value, true)
+            XCTAssertNil(ownerResult.error)
+            firstDestroyFinished.fulfill()
+        }
+        wait(for: [firstFfiEntered], timeout: 1)
+
+        let contentionResult = destroyUnpairedEditorV2FromModule(
+            editorId: String(editorId),
+            nativeViewId: editorId,
+            destroy: destroy
+        )
+        XCTAssertNil(contentionResult.value)
+        XCTAssertEqual(contentionResult.error?.domain, "operation")
+        XCTAssertEqual(contentionResult.error?.code, "OPERATION_INVALID")
+        XCTAssertEqual(contentionResult.error?.message, "destroy already in progress")
+        XCTAssertEqual(destroyAttempts, 1)
+
+        releaseFirstFfi.signal()
+        wait(for: [firstDestroyFinished], timeout: 1)
+        XCTAssertEqual(destroyAttempts, 1)
+        XCTAssertTrue(registry.isDestroyed(editorId: editorId))
+    }
+
+    func testUnpairedDestroyContentionAllowsRetryAfterOwnerRollback() {
+        let editorId: UInt64 = 900006
+        let registry = NativeEditorViewRegistry.shared
+        registry.markEditorCreated(editorId: editorId)
+        defer { registry.invalidateDestroyedEditor(editorId: editorId) }
+
+        let firstFfiEntered = expectation(description: "unpaired destroy ffi entered")
+        let firstDestroyFinished = expectation(description: "unpaired destroy rolled back")
+        let releaseFirstFfi = DispatchSemaphore(value: 0)
+        let attemptsLock = NSLock()
+        var destroyAttempts = 0
+        let destroy: (String) -> FfiUnitResult = { _ in
+            attemptsLock.lock()
+            destroyAttempts += 1
+            let attempt = destroyAttempts
+            attemptsLock.unlock()
+            if attempt == 1 {
+                firstFfiEntered.fulfill()
+                _ = releaseFirstFfi.wait(timeout: .now() + 1)
+                return FfiUnitResult(
+                    value: nil,
+                    error: FfiError(
+                        domain: "operation",
+                        code: "OPERATION_INVALID",
+                        message: "owner retryable destroy failure",
+                        requestId: nil,
+                        operationIndex: nil,
+                        limit: nil,
+                        actual: nil,
+                        detailsJson: nil
+                    )
+                )
+            }
+            return FfiUnitResult(value: true, error: nil)
+        }
+
+        DispatchQueue.global().async {
+            let ownerResult = destroyUnpairedEditorV2FromModule(
+                editorId: String(editorId),
+                nativeViewId: editorId,
+                destroy: destroy
+            )
+            XCTAssertEqual(ownerResult.error?.message, "owner retryable destroy failure")
+            firstDestroyFinished.fulfill()
+        }
+        wait(for: [firstFfiEntered], timeout: 1)
+
+        let contentionResult = destroyUnpairedEditorV2FromModule(
+            editorId: String(editorId),
+            nativeViewId: editorId,
+            destroy: destroy
+        )
+        XCTAssertNil(contentionResult.value)
+        XCTAssertEqual(contentionResult.error?.domain, "operation")
+        XCTAssertEqual(contentionResult.error?.code, "OPERATION_INVALID")
+        XCTAssertEqual(contentionResult.error?.message, "destroy already in progress")
+        XCTAssertEqual(destroyAttempts, 1)
+
+        releaseFirstFfi.signal()
+        wait(for: [firstDestroyFinished], timeout: 1)
+        XCTAssertFalse(registry.isDestroyed(editorId: editorId))
+
+        let retryResult = destroyUnpairedEditorV2FromModule(
+            editorId: String(editorId),
+            nativeViewId: editorId,
+            destroy: destroy
+        )
+        XCTAssertEqual(retryResult.value, true)
+        XCTAssertNil(retryResult.error)
+        XCTAssertEqual(destroyAttempts, 2)
+        XCTAssertTrue(registry.isDestroyed(editorId: editorId))
+    }
+
+    func testDestroyReservationAcquisitionClassifiesContentionAtomically() {
+        let editorId: UInt64 = 900007
+        let registry = NativeEditorViewRegistry.shared
+        registry.markEditorCreated(editorId: editorId)
+        defer {
+            registry.rollbackDestroy(editorId: editorId)
+            registry.invalidateDestroyedEditor(editorId: editorId)
+        }
+
+        XCTAssertEqual(
+            registry.acquireDestroyReservation(editorId: editorId),
+            .reserved
+        )
+        XCTAssertEqual(
+            registry.acquireDestroyReservation(editorId: editorId),
+            .alreadyInProgress
+        )
+        registry.rollbackDestroy(editorId: editorId)
+        XCTAssertEqual(
+            registry.acquireDestroyReservation(editorId: editorId),
+            .reserved
+        )
+    }
+
     func testCollaborationDetachAndReattachBridgeRawUnitResults() {
         var invoked = [String]()
 
@@ -162,6 +407,15 @@ final class RenderBridgeTests: XCTestCase {
             file: file,
             line: line
         )
+    }
+
+    private func commandPreparation(result: String) -> String? {
+        guard let data = result.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        return object["blockedReason"] as? String
     }
 
     private let baseFont = UIFont.systemFont(ofSize: 16)

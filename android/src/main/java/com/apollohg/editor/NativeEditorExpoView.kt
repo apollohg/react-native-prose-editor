@@ -60,6 +60,12 @@ private enum class PendingEditorUpdateKind {
     RESET
 }
 
+internal enum class NativeEditorDestroyReservationResult {
+    RESERVED,
+    ALREADY_IN_PROGRESS,
+    UNAVAILABLE,
+}
+
 private class WeakNativeEditorExpoView private constructor(
     val view: WeakReference<NativeEditorExpoView?>
 ) {
@@ -83,13 +89,17 @@ internal object NativeEditorViewRegistry {
     private val inputViewsByEditorId = mutableMapOf<Long, MutableList<WeakReference<EditorEditText>>>()
     private val detachedEditorOwnersByEditorId = mutableMapOf<Long, WeakNativeEditorExpoView>()
     private val destroyingEditorIds = mutableSetOf<Long>()
+    private val destroyReservationWasLive = mutableMapOf<Long, Boolean>()
     private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile
+    internal var onFinalizeDestroyForTesting: ((Long) -> Unit)? = null
 
     @Synchronized
     fun markEditorCreated(editorId: Long) {
         if (editorId == 0L) return
         liveEditorIds.add(editorId)
         destroyingEditorIds.remove(editorId)
+        destroyReservationWasLive.remove(editorId)
     }
 
     @Synchronized
@@ -160,12 +170,29 @@ internal object NativeEditorViewRegistry {
     }
 
     @Synchronized
-    fun beginDestroy(editorId: Long): Boolean {
-        if (editorId == 0L || destroyingEditorIds.contains(editorId)) return false
-        if (!liveEditorIds.contains(editorId) && !rustEditorExists(editorId)) return false
+    fun acquireDestroyReservation(editorId: Long): NativeEditorDestroyReservationResult {
+        if (editorId == 0L) return NativeEditorDestroyReservationResult.UNAVAILABLE
+        if (destroyingEditorIds.contains(editorId)) {
+            return NativeEditorDestroyReservationResult.ALREADY_IN_PROGRESS
+        }
+        if (!liveEditorIds.contains(editorId) && !rustEditorExists(editorId)) {
+            return NativeEditorDestroyReservationResult.UNAVAILABLE
+        }
         destroyingEditorIds.add(editorId)
-        liveEditorIds.remove(editorId)
-        return true
+        destroyReservationWasLive[editorId] = liveEditorIds.remove(editorId)
+        return NativeEditorDestroyReservationResult.RESERVED
+    }
+
+    fun beginDestroy(editorId: Long): Boolean =
+        acquireDestroyReservation(editorId) == NativeEditorDestroyReservationResult.RESERVED
+
+    /** Undo an in-flight reservation after an FFI result that is retryable or malformed. */
+    @Synchronized
+    fun rollbackDestroy(editorId: Long) {
+        if (!destroyingEditorIds.remove(editorId)) return
+        if (destroyReservationWasLive.remove(editorId) == true) {
+            liveEditorIds.add(editorId)
+        }
     }
 
     fun invalidateDestroyedEditor(editorId: Long) {
@@ -189,8 +216,12 @@ internal object NativeEditorViewRegistry {
                 .distinct()
             views to inputViews
         }
+        onFinalizeDestroyForTesting?.invoke(editorId)
         if (affectedViews.first.isEmpty() && affectedViews.second.isEmpty()) {
-            synchronized(this) { destroyingEditorIds.remove(editorId) }
+            synchronized(this) {
+                destroyingEditorIds.remove(editorId)
+                destroyReservationWasLive.remove(editorId)
+            }
             return
         }
         val invalidate = Runnable {
@@ -202,7 +233,10 @@ internal object NativeEditorViewRegistry {
                     view.handleEditorDestroyedFromRegistry(editorId)
                 }
             } finally {
-                synchronized(this) { destroyingEditorIds.remove(editorId) }
+                synchronized(this) {
+                    destroyingEditorIds.remove(editorId)
+                    destroyReservationWasLive.remove(editorId)
+                }
             }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -217,7 +251,10 @@ internal object NativeEditorViewRegistry {
                 }
             }
             if (!posted) {
-                synchronized(this) { destroyingEditorIds.remove(editorId) }
+                synchronized(this) {
+                    destroyingEditorIds.remove(editorId)
+                    destroyReservationWasLive.remove(editorId)
+                }
                 return
             }
             try {

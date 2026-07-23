@@ -38,14 +38,20 @@ export interface Selection {
 }
 
 /**
- * The sole JavaScript-to-native local-awareness contract. Application state
- * stays JSON-shaped; Rust alone turns the optional document selection into
- * sticky cursor positions.
+ * An opaque, factory-created document range for local awareness publication.
+ * Its provenance is verified at runtime before a native call; the type brand
+ * prevents accidental literal construction in TypeScript consumers.
  */
-export interface NativeEditorLocalAwarenessSelection {
-    anchor: number;
-    head: number;
+class NativeEditorLocalAwarenessSelectionValue {
+    private readonly _nativeEditorLocalAwarenessSelectionBrand!: undefined;
+
+    constructor(
+        readonly anchor: number,
+        readonly head: number
+    ) {}
 }
+
+export type NativeEditorLocalAwarenessSelection = NativeEditorLocalAwarenessSelectionValue;
 
 export interface NativeEditorLocalAwarenessIntent {
     state: Record<string, unknown>;
@@ -1076,10 +1082,33 @@ function invalidV2RequestError(message: string): NativeEditorV2BoundaryError {
 }
 
 const LOCAL_AWARENESS_INTENT_KEYS = new Set(['state', 'focused', 'selection']);
-const LOCAL_AWARENESS_SELECTION_KEYS = new Set(['anchor', 'head']);
+const LOCAL_AWARENESS_SELECTION_VALUES = new WeakMap<
+    object,
+    Readonly<{ anchor: number; head: number }>
+>();
 
 function invalidLocalAwarenessIntent(message = 'invalid local awareness intent'): never {
     throw invalidV2RequestError(`NativeEditorBridge: ${message}`);
+}
+
+/**
+ * Create the only caller-owned local-awareness selection accepted at the
+ * JavaScript-to-native boundary. The private WeakMap makes provenance an API
+ * capability instead of a structural object-shape check.
+ */
+export function createNativeEditorLocalAwarenessSelection(
+    anchor: number,
+    head: number
+): NativeEditorLocalAwarenessSelection {
+    const acceptedAnchor = nativeEditorV2U32(anchor);
+    const acceptedHead = nativeEditorV2U32(head);
+    if (acceptedAnchor == null || acceptedHead == null) invalidLocalAwarenessIntent();
+
+    const selection: NativeEditorLocalAwarenessSelection =
+        new NativeEditorLocalAwarenessSelectionValue(acceptedAnchor, acceptedHead);
+    Object.freeze(selection);
+    LOCAL_AWARENESS_SELECTION_VALUES.set(selection, selection);
+    return selection;
 }
 
 function isLocalAwarenessRecord(value: unknown): value is Record<string, unknown> {
@@ -1096,19 +1125,17 @@ function localAwarenessOwnDataValue(record: Record<string, unknown>, key: string
     return descriptor.value;
 }
 
-function validateLocalAwarenessSelection(selection: unknown): NativeEditorLocalAwarenessSelection {
-    if (
-        !isLocalAwarenessRecord(selection) ||
-        Reflect.ownKeys(selection).some(
-            (key) => typeof key !== 'string' || !LOCAL_AWARENESS_SELECTION_KEYS.has(key)
-        ) ||
-        !Object.prototype.hasOwnProperty.call(selection, 'anchor') ||
-        !Object.prototype.hasOwnProperty.call(selection, 'head')
-    ) {
-        invalidLocalAwarenessIntent();
-    }
-    const anchor = nativeEditorV2U32(localAwarenessOwnDataValue(selection, 'anchor'));
-    const head = nativeEditorV2U32(localAwarenessOwnDataValue(selection, 'head'));
+function validateLocalAwarenessSelection(selection: unknown): { anchor: number; head: number } {
+    if (selection == null || typeof selection !== 'object') invalidLocalAwarenessIntent();
+
+    // Do not inspect caller-held values before provenance succeeds: a Proxy
+    // can imitate every structural and own-data check, but it cannot inherit
+    // this module's WeakMap identity.
+    const factoryValue = LOCAL_AWARENESS_SELECTION_VALUES.get(selection);
+    if (factoryValue === undefined) invalidLocalAwarenessIntent();
+
+    const anchor = nativeEditorV2U32(factoryValue.anchor);
+    const head = nativeEditorV2U32(factoryValue.head);
     if (anchor == null || head == null) {
         invalidLocalAwarenessIntent();
     }

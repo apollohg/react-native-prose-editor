@@ -1,12 +1,19 @@
 import ExpoModulesCore
 import UIKit
 
+enum NativeEditorDestroyReservationResult: Equatable {
+    case reserved
+    case alreadyInProgress
+    case unavailable
+}
+
 final class NativeEditorViewRegistry {
     static let shared = NativeEditorViewRegistry()
 
     private var viewsByEditorId: [UInt64: NSHashTable<NativeEditorExpoView>] = [:]
     private var activeEditorIds: Set<UInt64> = []
     private var destroyingEditorIds: Set<UInt64> = []
+    var onFinalizeDestroyForTesting: ((UInt64) -> Void)?
 
     private init() {}
 
@@ -58,29 +65,62 @@ final class NativeEditorViewRegistry {
     }
 
     func invalidateDestroyedEditor(editorId: UInt64) {
+        guard reserveDestroy(editorId: editorId) else { return }
+        finalizeDestroy(editorId: editorId)
+    }
+
+    /// Install the reversible, in-flight destroy gate before crossing the
+    /// FFI boundary. The active view state remains intact until finalization
+    /// so a retryable destroy can roll back without reconstructing bindings.
+    func acquireDestroyReservation(editorId: UInt64) -> NativeEditorDestroyReservationResult {
+        guard editorId != 0 else { return .unavailable }
+        return performOnMain {
+            guard !destroyingEditorIds.contains(editorId) else { return .alreadyInProgress }
+            guard activeEditorIds.contains(editorId)
+                || EditorV2Registry.adapter(forLegacyId: editorId) != nil
+            else {
+                return .unavailable
+            }
+            destroyingEditorIds.insert(editorId)
+            return .reserved
+        }
+    }
+
+    @discardableResult
+    func reserveDestroy(editorId: UInt64) -> Bool {
+        acquireDestroyReservation(editorId: editorId) == .reserved
+    }
+
+    func rollbackDestroy(editorId: UInt64) {
         guard editorId != 0 else { return }
         performOnMain {
-            // A paired adapter can be released inside `destroy`'s operation.
-            // Keep the hard destroy boundary active until that operation
-            // returns so reentrant registration and commands remain blocked.
-            guard !destroyingEditorIds.contains(editorId) else { return }
             destroyingEditorIds.remove(editorId)
+        }
+    }
+
+    func isDestroyReserved(editorId: UInt64) -> Bool {
+        guard editorId != 0 else { return false }
+        return performOnMain {
+            destroyingEditorIds.contains(editorId)
+        }
+    }
+
+    func finalizeDestroy(editorId: UInt64) {
+        guard editorId != 0 else { return }
+        performOnMain {
+            guard destroyingEditorIds.contains(editorId) else { return }
+            onFinalizeDestroyForTesting?(editorId)
             activeEditorIds.remove(editorId)
             let views = viewsByEditorId.removeValue(forKey: editorId)?.allObjects ?? []
             views.forEach { $0.handleEditorDestroyed(editorId) }
+            destroyingEditorIds.remove(editorId)
         }
     }
 
     func destroy(editorId: UInt64, operation: () -> Void) {
-        guard editorId != 0 else { return }
-        performOnMain {
-            guard destroyingEditorIds.insert(editorId).inserted else { return }
-            defer {
-                destroyingEditorIds.remove(editorId)
-                invalidateDestroyedEditor(editorId: editorId)
-            }
-            operation()
-        }
+        guard reserveDestroy(editorId: editorId) else { return }
+        operation()
+        finalizeDestroy(editorId: editorId)
     }
 
     func prepareForCommandJSON(editorId: UInt64) -> String {
@@ -2407,6 +2447,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
               adapter.isAutonomousErrorOwner(token: token),
               !adapter.isDestroyed,
               let nativeEditorId = UInt64(editorId),
+              !NativeEditorViewRegistry.shared.isDestroyed(editorId: nativeEditorId),
               EditorV2Registry.adapter(forLegacyId: nativeEditorId) === adapter
         else { return false }
         return true

@@ -50,6 +50,7 @@ import {
     type YjsRetryContext,
 } from '../YjsCollaboration';
 import {
+    createNativeEditorLocalAwarenessSelection,
     createNativeEditorDocumentHandle,
     type NativeEditorDocumentHandle,
     _resetNativeModuleCache,
@@ -1657,7 +1658,7 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         const intent: NativeEditorLocalAwarenessIntent = {
             state: { user: ALICE, selection: { anchor: 90, head: 91 } },
             focused: true,
-            selection: { type: 'text', anchor: 2, head: 5 },
+            selection: createNativeEditorLocalAwarenessSelection(2, 5),
         };
         handle.bridge.collaborationSetAwareness(intent);
         const before = fakeAwarenessAudit(handle.editorId);
@@ -1689,7 +1690,26 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
             }),
         ]);
 
-        for (const selection of [null, { type: 'node', pos: 2 }, { type: 'all' }]) {
+        const taggedWireSelection = { type: 'text', anchor: 2, head: 5 };
+        expect(
+            runtime.module.editorV2CollaborationSetAwareness(
+                handle.editorId,
+                JSON.stringify({ state: { user: ALICE }, focused: true, selection: taggedWireSelection })
+            )
+        ).toEqual({ value: true, error: null });
+        expect(runtime.session(handle.editorId).desiredAwareness).toEqual({
+            state: { user: ALICE },
+            focused: true,
+            selection: taggedWireSelection,
+        });
+
+        for (const selection of [
+            null,
+            { anchor: 2, head: 5 },
+            { type: 'node', pos: 2 },
+            { type: 'all' },
+            { type: 'text', anchor: 2, head: 5, pos: 2 },
+        ]) {
             const invalidBefore = fakeAwarenessAudit(handle.editorId);
             const invalid = runtime.module.editorV2CollaborationSetAwareness(
                 handle.editorId,
@@ -1708,7 +1728,7 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         handle.bridge.collaborationSetAwareness({
             state: { user: ALICE },
             focused: true,
-            selection: { type: 'text', anchor: 9, head: 9 },
+            selection: createNativeEditorLocalAwarenessSelection(9, 9),
         });
         expect(handle.bridge.collaborationPeers()[0].cursor).toEqual({ anchor: 9, head: 9 });
 

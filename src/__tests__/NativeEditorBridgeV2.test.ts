@@ -214,6 +214,7 @@ jest.mock('expo-modules-core', () => ({
 // ─── Imports ────────────────────────────────────────────────────
 
 import {
+    createNativeEditorLocalAwarenessSelection,
     createNativeEditorDocumentHandle,
     type NativeEditorDocumentHandle,
     type NativeEditorV2CreateConfig,
@@ -2393,26 +2394,42 @@ describe('NativeEditorBridge v2', () => {
             );
         });
 
-        it('serializes the typed text-only awareness intent and the literal null withdrawal', () => {
+        it('creates a frozen local-awareness selection and serializes its tagged wire intent', () => {
             const handle = createHandle();
+            const selection = createNativeEditorLocalAwarenessSelection(2, 5);
             const intent: NativeEditorLocalAwarenessIntent = {
                 state: { user: { name: 'Alice' } },
                 focused: true,
-                selection: { anchor: 2, head: 5 },
+                selection,
             };
+
+            expect(selection).toEqual({ anchor: 2, head: 5 });
+            expect(Object.isFrozen(selection)).toBe(true);
+            expect(() => Object.assign(selection, { anchor: 3 })).toThrow();
+
             handle.bridge.collaborationSetAwareness(intent);
             handle.bridge.collaborationSetAwareness(null);
             const calls = mockNativeModule.editorV2CollaborationSetAwareness.mock.calls;
             expect(JSON.parse(calls[0][1])).toEqual({
-                ...intent,
                 selection: { type: 'text', anchor: 2, head: 5 },
+                state: { user: { name: 'Alice' } },
+                focused: true,
             });
             expect(intent.selection).toEqual({ anchor: 2, head: 5 });
             expect(calls[1][1]).toBe('null');
         });
 
-        it('rejects non-caller local awareness selection variants and own-data tricks before invoking native code', () => {
+        it('rejects literal, cloned, cast, and proxied selections before native invocation', () => {
             const handle = createHandle();
+            const factorySelection = createNativeEditorLocalAwarenessSelection(2, 5);
+            let accessorRead = false;
+            const transparentProxy = new Proxy(factorySelection, {});
+            const accessorProxy = new Proxy(factorySelection, {
+                get: () => {
+                    accessorRead = true;
+                    throw new Error('selection accessor must not be read');
+                },
+            });
             const accessorSelection: Record<string, unknown> = { type: 'text', head: 5 };
             Object.defineProperty(accessorSelection, 'anchor', {
                 enumerable: true,
@@ -2420,23 +2437,11 @@ describe('NativeEditorBridge v2', () => {
                     throw new Error('selection accessor must not be read');
                 },
             });
-            const proxySelection = new Proxy(
-                { type: 'text', head: 5 },
-                {
-                    ownKeys: (target) => [...Reflect.ownKeys(target), 'anchor'],
-                    getOwnPropertyDescriptor: (target, key) =>
-                        key === 'anchor'
-                            ? {
-                                  configurable: true,
-                                  enumerable: true,
-                                  get: () => 2,
-                              }
-                            : Reflect.getOwnPropertyDescriptor(target, key),
-                    get: (target, key, receiver) =>
-                        key === 'anchor' ? 2 : Reflect.get(target, key, receiver),
-                }
-            );
             const invalidSelections: unknown[] = [
+                { anchor: 2, head: 5 },
+                { ...factorySelection },
+                transparentProxy,
+                accessorProxy,
                 { type: 'text', anchor: 2, head: 5 },
                 { type: 'node', pos: 2 },
                 { type: 'all' },
@@ -2450,7 +2455,6 @@ describe('NativeEditorBridge v2', () => {
                 { anchor: 2.5, head: 5 },
                 Object.assign(Object.create({ anchor: 2 }), { type: 'text', head: 5 }),
                 accessorSelection,
-                proxySelection,
             ];
 
             for (const selection of invalidSelections) {
@@ -2461,6 +2465,21 @@ describe('NativeEditorBridge v2', () => {
                         selection,
                     } as unknown as NativeEditorLocalAwarenessIntent)
                 ).toThrow('invalid local awareness intent');
+            }
+            expect(accessorRead).toBe(false);
+            expect(mockNativeModule.editorV2CollaborationSetAwareness).not.toHaveBeenCalled();
+        });
+
+        it('rejects invalid u32 factory coordinates before an intent can reach native code', () => {
+            const invalidCoordinates = [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 0x1_0000_0000];
+
+            for (const coordinate of invalidCoordinates) {
+                expect(() => createNativeEditorLocalAwarenessSelection(coordinate, 1)).toThrow(
+                    'invalid local awareness intent'
+                );
+                expect(() => createNativeEditorLocalAwarenessSelection(1, coordinate)).toThrow(
+                    'invalid local awareness intent'
+                );
             }
             expect(mockNativeModule.editorV2CollaborationSetAwareness).not.toHaveBeenCalled();
         });
@@ -2496,34 +2515,35 @@ describe('NativeEditorBridge v2', () => {
             expect(mockNativeModule.editorV2CollaborationSetAwareness).not.toHaveBeenCalled();
         });
 
-        it('exports only the text-only local awareness selection contract from the public package surface', () => {
+        it('exports only the factory-created opaque local awareness selection contract', () => {
             const diagnostics = compileTypeScriptContractFixture(`
-                import type { NativeEditorLocalAwarenessIntent } from '../index';
+                import {
+                    createNativeEditorLocalAwarenessSelection,
+                    type NativeEditorLocalAwarenessIntent,
+                } from '../index';
 
                 type LocalAwarenessSelection = NonNullable<
                     NativeEditorLocalAwarenessIntent['selection']
                 >;
 
-                const selection: LocalAwarenessSelection = { anchor: 2, head: 5 };
+                const selection: LocalAwarenessSelection =
+                    createNativeEditorLocalAwarenessSelection(2, 5);
                 const intent: NativeEditorLocalAwarenessIntent = {
                     state: { user: { name: 'Alice' } },
                     focused: true,
                     selection,
                 };
 
+                // @ts-expect-error only the factory can create caller-awareness selections.
+                const literal: LocalAwarenessSelection = { anchor: 2, head: 5 };
                 // @ts-expect-error the Rust discriminator is bridge-owned wire data.
                 const tagged: LocalAwarenessSelection = { type: 'text', anchor: 2, head: 5 };
-                // @ts-expect-error node selections are render selections, not local awareness.
-                const node: LocalAwarenessSelection = { type: 'node', pos: 2 };
-                // @ts-expect-error render scalar positions are never caller-owned awareness data.
-                const scalar: LocalAwarenessSelection = { anchor: 2, head: 5, anchorScalar: 2 };
-                // @ts-expect-error both document positions are required.
-                const incomplete: LocalAwarenessSelection = { anchor: 2 };
+                // @ts-expect-error clones do not carry the opaque type brand.
+                const cloned: LocalAwarenessSelection = { ...selection };
                 void intent;
+                void literal;
                 void tagged;
-                void node;
-                void scalar;
-                void incomplete;
+                void cloned;
             `);
 
             expect(diagnostics).toBe('');

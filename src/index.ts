@@ -122,8 +122,10 @@ export type {
 
 export {
     createNativeEditorDocumentHandle,
+    createNativeEditorLocalAwarenessSelection,
     type NativeEditorDocumentHandle,
     type NativeEditorLocalAwarenessIntent,
+    type NativeEditorLocalAwarenessSelection,
     type NativeEditorV2CreateConfig,
     type NativeEditorV2Initialization,
     type NativeEditorV2PeerInfo,
