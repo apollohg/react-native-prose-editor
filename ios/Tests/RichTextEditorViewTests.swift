@@ -502,6 +502,114 @@ final class RichTextEditorViewTests: XCTestCase {
         )
     }
 
+    func testFullAtomicRenderRefreshesShiftedImageDocPosBeforeResizeAction() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let view = RichTextEditorView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        let window = hostEditorView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.editorId = editorId
+        view.setContent(html: """
+        <p>A</p><img src="https://example.com/target.png" width="140" height="80"><img src="https://example.com/control.png" width="90" height="60"><p></p>
+        """)
+        view.layoutIfNeeded()
+
+        guard let originalTargetRange = firstImageRange(in: view.textView),
+              let originalDocPos = (view.textView.textStorage.attributes(
+                  at: originalTargetRange.location,
+                  effectiveRange: nil
+              )[RenderBridgeAttributes.docPos] as? NSNumber)?.uint32Value
+        else {
+            XCTFail("expected the target image and its document position")
+            return
+        }
+
+        let fullAtomicRender = EditorV2Shadow.replaceHtml(
+            id: editorId,
+            html: """
+            <p>Preceding text is now longer</p><img src="https://example.com/target.png" width="140" height="80"><img src="https://example.com/control.png" width="90" height="60"><p></p>
+            """
+        )
+        view.textView.applyUpdateJSON(fullAtomicRender, notifyDelegate: false)
+        view.layoutIfNeeded()
+
+        guard let targetRange = firstImageRange(in: view.textView),
+              let refreshedDocPos = (view.textView.textStorage.attributes(
+                  at: targetRange.location,
+                  effectiveRange: nil
+              )[RenderBridgeAttributes.docPos] as? NSNumber)?.uint32Value
+        else {
+            XCTFail("expected the target image after the atomic render")
+            return
+        }
+
+        XCTAssertNotEqual(
+            refreshedDocPos,
+            originalDocPos,
+            "a preceding extent change must refresh retained atom document positions"
+        )
+
+        XCTAssertTrue(view.textView.becomeFirstResponder())
+        setSelection(in: view.textView, utf16Range: targetRange)
+        flushMainQueue()
+        view.layoutIfNeeded()
+        view.resizeSelectedImageForTesting(width: 200, height: 100)
+        flushMainQueue()
+
+        let html = EditorV2Shadow.getHtml(id: editorId)
+        XCTAssertTrue(
+            html.contains("target.png\" width=\"200\""),
+            "the selected target image must receive the resize action, got: \(html)"
+        )
+        XCTAssertTrue(
+            html.contains("control.png\" width=\"90\""),
+            "resizing the target must not affect the adjacent control image, got: \(html)"
+        )
+    }
+
+    func testPrependingTopLevelChildRefreshesRetainedChildIndexes() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(id: editorId, initialHTML: "<hr><hr>")
+
+        let fullAtomicRender = EditorV2Shadow.replaceHtml(
+            id: editorId,
+            html: "<p>Prelude</p><hr><hr>"
+        )
+        textView.applyUpdateJSON(fullAtomicRender, notifyDelegate: false)
+
+        let horizontalRuleRanges = (0..<textView.textStorage.length).compactMap { index -> NSRange? in
+            let attrs = textView.textStorage.attributes(at: index, effectiveRange: nil)
+            return (attrs[RenderBridgeAttributes.voidNodeType] as? String) == "horizontalRule"
+                ? NSRange(location: index, length: 1)
+                : nil
+        }
+        XCTAssertEqual(horizontalRuleRanges.count, 2)
+        guard horizontalRuleRanges.count == 2 else { return }
+        XCTAssertEqual(
+            (textView.textStorage.attributes(
+                at: horizontalRuleRanges[0].location,
+                effectiveRange: nil
+            )[RenderBridgeAttributes.topLevelChildIndex] as? NSNumber)?.intValue,
+            1,
+            "the first retained atom must receive its shifted top-level child index"
+        )
+        XCTAssertEqual(
+            (textView.textStorage.attributes(
+                at: horizontalRuleRanges[1].location,
+                effectiveRange: nil
+            )[RenderBridgeAttributes.topLevelChildIndex] as? NSNumber)?.intValue,
+            2,
+            "every retained sibling after a prepend must receive its shifted index"
+        )
+    }
+
     func testTypingInsideListItemFallsBackToFullRenderAndPreservesTextOrder() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

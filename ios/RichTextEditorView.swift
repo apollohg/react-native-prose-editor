@@ -4385,20 +4385,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         return true
     }
 
-    /// Void/opaque elements carry an absolute `docPos` that shifts with any
-    /// upstream structural edit. It is render metadata (hit-testing/resize
-    /// geometry), not block content, so block identity ignores it — the
-    /// derived patch's replacement blocks carry the fresh values.
+    /// Void/opaque elements carry an absolute `docPos` used for image
+    /// selection, preview, resizing, and other atom actions. It is
+    /// correctness-significant render metadata: retaining a shifted element
+    /// would leave attributed content targeting the old document position.
     private func renderElementEquals(_ lhs: [String: Any], _ rhs: [String: Any]) -> Bool {
-        if (lhs as NSDictionary).isEqual(to: rhs) { return true }
-        guard lhs.count == rhs.count,
-              lhs["docPos"] != nil || rhs["docPos"] != nil
-        else { return false }
-        var strippedLhs = lhs
-        var strippedRhs = rhs
-        strippedLhs.removeValue(forKey: "docPos")
-        strippedRhs.removeValue(forKey: "docPos")
-        return (strippedLhs as NSDictionary).isEqual(to: strippedRhs)
+        (lhs as NSDictionary).isEqual(to: rhs)
     }
 
     private func deriveRenderPatch(
@@ -4417,7 +4409,11 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
 
         var suffix = 0
+        // `topLevelChildIndex` is rendered from each block's ordinal. Once an
+        // insertion/deletion shifts that ordinal, retained suffix attributes
+        // must be rebuilt rather than left with their former child indexes.
         while suffix < (sharedCount - prefix),
+              current.count - suffix - 1 == updated.count - suffix - 1,
               renderBlockEquals(
                   current[current.count - suffix - 1],
                   updated[updated.count - suffix - 1]
@@ -4776,18 +4772,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         _ lhs: [NSAttributedString.Key: Any],
         _ rhs: [NSAttributedString.Key: Any]
     ) -> Bool {
-        if let lhsValue = lhs[RenderBridgeAttributes.topLevelChildIndex] as? NSNumber,
-           let rhsValue = rhs[RenderBridgeAttributes.topLevelChildIndex] as? NSNumber,
-           lhsValue == rhsValue
-        {
-            return NSDictionary(dictionary: lhs).isEqual(to: rhs)
-        }
-
-        var lhsComparable = lhs
-        var rhsComparable = rhs
-        lhsComparable.removeValue(forKey: RenderBridgeAttributes.topLevelChildIndex)
-        rhsComparable.removeValue(forKey: RenderBridgeAttributes.topLevelChildIndex)
-        return NSDictionary(dictionary: lhsComparable).isEqual(to: rhsComparable)
+        // `docPos` and `topLevelChildIndex` are positional metadata consumed
+        // by atom actions and future patch-range resolution. Trimming across
+        // either change would preserve stale attributed metadata.
+        NSDictionary(dictionary: lhs).isEqual(to: rhs)
     }
 
     private func applyAttributes(from attributedString: NSAttributedString, to destinationRange: NSRange) {
@@ -5437,6 +5425,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
         _ = applyAttributedRender(attrStr, usedPatch: false)
         currentRenderBlocks = nil
+        refreshTopLevelChildMetadata(from: attrStr)
         lastAppliedRenderAppearanceRevision = renderAppearanceRevision
 
         refreshPlaceholderVisibility()
