@@ -255,15 +255,23 @@ class NativeDeviceImeRegressionTest {
                 runOnMainSyncWithResult { assertTrue(editText.requestFocus()) }
                 waitUntil("paired editor should gain focus before split") { editText.hasFocus() }
 
-                lateinit var refreshedInputConnection: EditorInputConnection
+                lateinit var initialInputConnection: EditorInputConnection
                 val initialGeneration = runOnMainSyncWithResult {
                     editText.setSelection(4)
-                    editText.clearImeTraceForTesting()
-                    val inputConnection = createInputConnection(editText)
-                    assertTrue(inputConnection.setComposingText("\n", 1))
-                    assertTrue(inputConnection.commitText("\n", 1))
+                    initialInputConnection = createInputConnection(editText)
                     editText.inputConnectionGenerationForTesting()
                 }
+                // Focus and Android's initial input connection can each produce unrelated
+                // restart/create events. Establish that session first, then make Return the
+                // first event in the trace under test.
+                instrumentation.waitForIdleSync()
+                runOnMainSyncWithResult {
+                    editText.clearImeTraceForTesting()
+                    assertTrue(initialInputConnection.setComposingText("\n", 1))
+                    assertTrue(initialInputConnection.commitText("\n", 1))
+                }
+
+                lateinit var refreshedInputConnection: EditorInputConnection
                 instrumentation.waitForIdleSync()
 
                 val afterSplit = runOnMainSyncWithResult {
@@ -286,14 +294,17 @@ class NativeDeviceImeRegressionTest {
                 assertEquals(5 to 5, afterSplit.imeSelection)
                 assertEquals(initialGeneration, afterSplit.inputConnectionGeneration)
                 assertEquals("seed\n", afterSplit.surroundingText)
-                assertEquals(1, afterSplit.trace.count { it.startsWith("lineBoundaryInputRefreshScheduled") })
-                assertEquals(1, afterSplit.trace.count { it.startsWith("restartInput:source=lineBoundary:splitBlock") })
-                assertEquals(
+                assertTraceEventCount(
+                    afterSplit.trace,
+                    "lineBoundaryInputRefreshScheduled:source=splitBlock",
                     1,
-                    afterSplit.trace.count {
-                        it.startsWith("createInputConnection:boundEditor=$editorId boundGen=$initialGeneration")
-                    }
                 )
+                assertTraceEventCount(
+                    afterSplit.trace,
+                    "restartInput:source=lineBoundary:splitBlock",
+                    1,
+                )
+                assertTrue(refreshedInputConnection !== initialInputConnection)
                 assertTrue(afterSplit.trace.any {
                     it.startsWith("applySelectionFromJSON:doc=") && it.contains("scalar=5..5")
                 })
@@ -370,6 +381,14 @@ class NativeDeviceImeRegressionTest {
         assertTrue(
             "expected IME trace to contain $event but was $trace",
             trace.any { it.startsWith(event) }
+        )
+    }
+
+    private fun assertTraceEventCount(trace: List<String>, event: String, expected: Int) {
+        assertEquals(
+            "expected $expected $event events but IME trace was $trace",
+            expected,
+            trace.count { it.startsWith(event) }
         )
     }
 
