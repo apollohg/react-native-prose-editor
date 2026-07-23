@@ -83,6 +83,7 @@ function isRevisionMismatchError(error: unknown): boolean {
 }
 
 interface V2EngineView {
+    editorId: string;
     ready: boolean;
     documentState: NativeEditorV2DocumentState | null;
     documentRevision: string | null;
@@ -103,6 +104,7 @@ export function useNativeEditorDocument(
     } = options;
 
     _assertNativeEditorDocumentHandle(handle);
+    const editorId = handle.editorId;
 
     const onContentChangeRef = useRef(options.onContentChange);
     onContentChangeRef.current = options.onContentChange;
@@ -114,20 +116,43 @@ export function useNativeEditorDocument(
     onLocalDocumentCommitRef.current = onLocalDocumentCommit;
 
     const [engineView, setEngineView] = useState<V2EngineView>({
+        editorId,
         ready: false,
         documentState: null,
         documentRevision: null,
         historyState: DEFAULT_V2_HISTORY_STATE,
         contentKey: null,
     });
-    const readyRef = useRef(false);
-    const lastEmittedRevisionRef = useRef<string | null>(null);
-    const lastEmittedContentKeyRef = useRef<string | null>(null);
-    const lastEmittedHistoryKeyRef = useRef<string | null>(null);
+    const currentEditorIdRef = useRef(editorId);
+    currentEditorIdRef.current = editorId;
+    const readyRef = useRef({ editorId, ready: false });
+    const emittedRef = useRef({
+        editorId,
+        lastRevision: null as string | null,
+        lastContentKey: null as string | null,
+        lastHistoryKey: null as string | null,
+    });
+    if (readyRef.current.editorId !== editorId) {
+        readyRef.current = { editorId, ready: false };
+    }
+    if (emittedRef.current.editorId !== editorId) {
+        emittedRef.current = {
+            editorId,
+            lastRevision: null,
+            lastContentKey: null,
+            lastHistoryKey: null,
+        };
+    }
 
     const refresh = useCallback(
         (emitContentCallbacks: boolean) => {
-            if (handle.isDestroyed) return;
+            const refreshedEditorId = handle.editorId;
+            if (
+                handle.isDestroyed ||
+                currentEditorIdRef.current !== refreshedEditorId
+            ) {
+                return;
+            }
             const state = handle.bridge.getState();
             const ready = state.documentState !== 'AwaitRemote';
             let contentKey: string | null = null;
@@ -139,12 +164,14 @@ export function useNativeEditorDocument(
                 snapshotJson = snapshot.json;
                 contentKey = JSON.stringify(snapshot.json);
             }
+            if (currentEditorIdRef.current !== refreshedEditorId) return;
             const historyState: HistoryState = {
                 canUndo: state.canUndo,
                 canRedo: state.canRedo,
             };
-            readyRef.current = ready;
+            readyRef.current = { editorId: refreshedEditorId, ready };
             setEngineView({
+                editorId: refreshedEditorId,
                 ready,
                 documentState: state.documentState,
                 documentRevision: state.documentRevision,
@@ -153,18 +180,25 @@ export function useNativeEditorDocument(
             });
 
             const historyKey = `${state.canUndo}/${state.canRedo}`;
-            if (historyKey !== lastEmittedHistoryKeyRef.current) {
-                lastEmittedHistoryKeyRef.current = historyKey;
+            const emitted = emittedRef.current;
+            if (
+                currentEditorIdRef.current !== refreshedEditorId ||
+                emitted.editorId !== refreshedEditorId
+            ) {
+                return;
+            }
+            if (historyKey !== emitted.lastHistoryKey) {
+                emitted.lastHistoryKey = historyKey;
                 onHistoryStateChangeRef.current?.(historyState);
             }
 
             if (ready) {
-                const lastRevision = lastEmittedRevisionRef.current;
+                const lastRevision = emitted.lastRevision;
                 if (
                     emitContentCallbacks &&
                     lastRevision != null &&
                     lastRevision !== state.documentRevision &&
-                    lastEmittedContentKeyRef.current !== contentKey
+                    emitted.lastContentKey !== contentKey
                 ) {
                     if (snapshotHtml != null) {
                         onContentChangeRef.current?.(snapshotHtml);
@@ -173,8 +207,8 @@ export function useNativeEditorDocument(
                         onContentChangeJSONRef.current?.(snapshotJson);
                     }
                 }
-                lastEmittedRevisionRef.current = state.documentRevision;
-                lastEmittedContentKeyRef.current = contentKey;
+                emitted.lastRevision = state.documentRevision;
+                emitted.lastContentKey = contentKey;
             }
         },
         [handle]
@@ -197,22 +231,28 @@ export function useNativeEditorDocument(
     // local-API replacement carrying the rendered engine revision as its
     // base. Content callbacks stay suppressed (controlled sync parity).
     useEffect(() => {
-        if (!engineView.ready || handle.isDestroyed) return;
+        if (engineView.editorId !== editorId || !engineView.ready || handle.isDestroyed) return;
         if (engineView.documentRevision == null) return;
         const wantsHtml = value != null;
         const wantsJson = value == null && serializedControlledJson != null;
         if (!wantsHtml && !wantsJson) return;
 
         const snapshot = handle.bridge.getContentSnapshot();
+        if (
+            currentEditorIdRef.current !== editorId ||
+            emittedRef.current.editorId !== editorId
+        ) {
+            return;
+        }
         const currentJsonKey = JSON.stringify(snapshot.json);
         if (wantsHtml && snapshot.html === value) {
-            lastEmittedRevisionRef.current = engineView.documentRevision;
-            lastEmittedContentKeyRef.current = currentJsonKey;
+            emittedRef.current.lastRevision = engineView.documentRevision;
+            emittedRef.current.lastContentKey = currentJsonKey;
             return;
         }
         if (wantsJson && currentJsonKey === serializedControlledJson) {
-            lastEmittedRevisionRef.current = engineView.documentRevision;
-            lastEmittedContentKeyRef.current = currentJsonKey;
+            emittedRef.current.lastRevision = engineView.documentRevision;
+            emittedRef.current.lastContentKey = currentJsonKey;
             return;
         }
 
@@ -224,6 +264,7 @@ export function useNativeEditorDocument(
                 history: valueJSONUpdateMode === 'reset' ? 'resetAndClear' : 'undoableBoundary',
                 baseDocumentRevision: engineView.documentRevision,
             });
+            if (currentEditorIdRef.current !== editorId) return;
             onLocalDocumentCommitRef.current?.();
             refresh(false);
         } catch (error) {
@@ -240,6 +281,8 @@ export function useNativeEditorDocument(
         value,
         serializedControlledJson,
         valueJSONUpdateMode,
+        editorId,
+        engineView.editorId,
         engineView.ready,
         engineView.documentRevision,
         refresh,
@@ -247,8 +290,9 @@ export function useNativeEditorDocument(
 
     const mutate = useCallback(
         (operation: () => unknown) => {
-            if (handle.isDestroyed) return;
+            if (handle.isDestroyed || currentEditorIdRef.current !== handle.editorId) return;
             operation();
+            if (currentEditorIdRef.current !== handle.editorId) return;
             onLocalDocumentCommitRef.current?.();
             refresh(true);
         },
@@ -291,35 +335,68 @@ export function useNativeEditorDocument(
     }, [handle, mutate]);
 
     const getContent = useCallback((): string => {
-        if (handle.isDestroyed || !readyRef.current) return '';
+        if (
+            handle.isDestroyed ||
+            readyRef.current.editorId !== handle.editorId ||
+            !readyRef.current.ready
+        ) {
+            return '';
+        }
         return handle.bridge.getDocumentHtml();
     }, [handle]);
 
     const getContentJson = useCallback((): DocumentJSON => {
-        if (handle.isDestroyed || !readyRef.current) return {};
+        if (
+            handle.isDestroyed ||
+            readyRef.current.editorId !== handle.editorId ||
+            !readyRef.current.ready
+        ) {
+            return {};
+        }
         return handle.bridge.getDocumentJson();
     }, [handle]);
 
     const getTextContent = useCallback((): string => {
-        if (handle.isDestroyed || !readyRef.current) return '';
+        if (
+            handle.isDestroyed ||
+            readyRef.current.editorId !== handle.editorId ||
+            !readyRef.current.ready
+        ) {
+            return '';
+        }
         return handle.bridge.getDocumentHtml().replace(/<[^>]+>/g, '');
     }, [handle]);
 
     const canUndo = useCallback((): boolean => {
-        if (handle.isDestroyed) return false;
+        if (
+            handle.isDestroyed ||
+            readyRef.current.editorId !== handle.editorId ||
+            !readyRef.current.ready
+        ) {
+            return false;
+        }
         return handle.bridge.getState().canUndo;
     }, [handle]);
 
     const canRedo = useCallback((): boolean => {
-        if (handle.isDestroyed) return false;
+        if (
+            handle.isDestroyed ||
+            readyRef.current.editorId !== handle.editorId ||
+            !readyRef.current.ready
+        ) {
+            return false;
+        }
         return handle.bridge.getState().canRedo;
     }, [handle]);
 
     return {
-        isReady: engineView.ready,
-        documentState: engineView.documentState,
-        documentRevision: engineView.documentRevision,
-        historyState: engineView.historyState,
+        isReady: engineView.editorId === editorId && engineView.ready,
+        documentState: engineView.editorId === editorId ? engineView.documentState : null,
+        documentRevision: engineView.editorId === editorId ? engineView.documentRevision : null,
+        historyState:
+            engineView.editorId === editorId
+                ? engineView.historyState
+                : DEFAULT_V2_HISTORY_STATE,
         refresh: refreshFromEngine,
         getContent,
         getContentJson,
