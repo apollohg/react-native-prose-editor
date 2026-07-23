@@ -610,6 +610,66 @@ final class RichTextEditorViewTests: XCTestCase {
         )
     }
 
+    func testExplicitPrependRenderPatchRefreshesRetainedAtomMetadata() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.captureApplyUpdateTraceForTesting = true
+        textView.bindEditor(id: editorId, initialHTML: "<hr><hr>")
+
+        let finalUpdateJSON = EditorV2Shadow.replaceHtml(
+            id: editorId,
+            html: "<p>Prelude</p><hr><hr>"
+        )
+        var explicitPatchUpdate = parseJSONObject(finalUpdateJSON)
+        let finalRenderBlocks = try XCTUnwrap(
+            explicitPatchUpdate["renderBlocks"] as? [[[String: Any]]]
+        )
+        explicitPatchUpdate["renderPatch"] = [
+            "startIndex": 0,
+            "deleteCount": 0,
+            "renderBlocks": [finalRenderBlocks[0]],
+        ]
+        let explicitPatchData = try JSONSerialization.data(withJSONObject: explicitPatchUpdate)
+        let explicitPatchJSON = try XCTUnwrap(String(data: explicitPatchData, encoding: .utf8))
+
+        textView.applyUpdateJSON(explicitPatchJSON, notifyDelegate: false)
+
+        let expected = RenderBridge.renderBlocks(
+            fromArray: finalRenderBlocks,
+            baseFont: textView.baseFont,
+            textColor: textView.baseTextColor
+        )
+        XCTAssertTrue(
+            try XCTUnwrap(textView.lastApplyUpdateTrace()).attemptedPatch,
+            "the update must exercise the explicit renderPatch path"
+        )
+        XCTAssertEqual(textView.textStorage.string, expected.string, "the prepend must not duplicate content")
+
+        let actualAtomOffsets = (0..<textView.textStorage.length).filter { index in
+            textView.textStorage.attributes(at: index, effectiveRange: nil)[RenderBridgeAttributes.voidNodeType] != nil
+        }
+        let expectedAtomOffsets = (0..<expected.length).filter { index in
+            expected.attributes(at: index, effectiveRange: nil)[RenderBridgeAttributes.voidNodeType] != nil
+        }
+        XCTAssertEqual(actualAtomOffsets.count, 2)
+        XCTAssertEqual(actualAtomOffsets.count, expectedAtomOffsets.count)
+
+        for (actualOffset, expectedOffset) in zip(actualAtomOffsets, expectedAtomOffsets) {
+            let actualAttributes = textView.textStorage.attributes(at: actualOffset, effectiveRange: nil)
+            let expectedAttributes = expected.attributes(at: expectedOffset, effectiveRange: nil)
+            XCTAssertEqual(
+                (actualAttributes[RenderBridgeAttributes.topLevelChildIndex] as? NSNumber)?.intValue,
+                (expectedAttributes[RenderBridgeAttributes.topLevelChildIndex] as? NSNumber)?.intValue
+            )
+            XCTAssertEqual(
+                (actualAttributes[RenderBridgeAttributes.docPos] as? NSNumber)?.uint32Value,
+                (expectedAttributes[RenderBridgeAttributes.docPos] as? NSNumber)?.uint32Value
+            )
+        }
+    }
+
     func testTypingInsideListItemFallsBackToFullRenderAndPreservesTextOrder() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

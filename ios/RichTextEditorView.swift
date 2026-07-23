@@ -4385,6 +4385,16 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         return true
     }
 
+    private func renderPatchEquals(_ lhs: ParsedRenderPatch, _ rhs: ParsedRenderPatch) -> Bool {
+        guard lhs.startIndex == rhs.startIndex,
+              lhs.deleteCount == rhs.deleteCount,
+              lhs.renderBlocks.count == rhs.renderBlocks.count
+        else {
+            return false
+        }
+        return zip(lhs.renderBlocks, rhs.renderBlocks).allSatisfy(renderBlockEquals)
+    }
+
     /// Void/opaque elements carry an absolute `docPos` used for image
     /// selection, preview, resizing, and other atom actions. It is
     /// correctness-significant render metadata: retaining a shifted element
@@ -5243,20 +5253,28 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             DispatchTime.now().uptimeNanoseconds - resolveRenderBlocksStartedAt
 
         let derivedRenderPatch: DerivedRenderPatch? =
-            if explicitRenderPatch == nil,
-               let currentRenderBlocks,
+            if let currentRenderBlocks,
                let resolvedRenderBlocks
             {
                 deriveRenderPatch(from: currentRenderBlocks, to: resolvedRenderBlocks)
             } else {
                 nil
             }
-        let renderPatch = explicitRenderPatch ?? {
-            if case let .patch(patch)? = derivedRenderPatch {
-                return patch
-            }
-            return nil
-        }()
+        let renderPatch: ParsedRenderPatch? = if let explicitRenderPatch,
+                                                case let .patch(derivedPatch)? = derivedRenderPatch,
+                                                !renderPatchEquals(explicitRenderPatch, derivedPatch)
+        {
+            // An explicit patch may omit a retained suffix whose doc positions
+            // or top-level indexes changed. Use the derived wider range so no
+            // consumer can observe stale positional metadata.
+            derivedPatch
+        } else if let explicitRenderPatch {
+            explicitRenderPatch
+        } else if case let .patch(derivedPatch)? = derivedRenderPatch {
+            derivedPatch
+        } else {
+            nil
+        }
         let shouldSkipRender = if case .unchanged? = derivedRenderPatch {
             textStorage.string == lastAuthorizedText
                 && lastAppliedRenderAppearanceRevision == renderAppearanceRevision
