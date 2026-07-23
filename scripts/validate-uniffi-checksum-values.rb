@@ -5,8 +5,29 @@ require "json"
 
 class ChecksumValidationError < StandardError; end
 
+MAX_NATIVE_FILE_BYTES = 128 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 4096
+MAX_ARCHIVE_MEMBER_BYTES = 64 * 1024 * 1024
+MAX_ARCHIVE_MEMBER_NAME_BYTES = 1024
+MAX_MACHO_LOAD_COMMANDS = 4096
+MAX_MACHO_COMMAND_AREA_BYTES = 16 * 1024 * 1024
+MAX_MACHO_SECTIONS = 4096
+MAX_ELF_SECTION_HEADERS = 4096
+MAX_ELF_PROGRAM_HEADERS = 4096
+MAX_SYMBOLS_PER_OBJECT = 1_000_000
+MAX_ARCHIVE_SYMBOL_WORK = 2_000_000
+MAX_STRING_TABLE_BYTES = 64 * 1024 * 1024
+MAX_SYMBOL_NAME_BYTES = 4096
+
 def fail_closed(message)
   raise ChecksumValidationError, message
+end
+
+def read_native_file(path, label)
+  size = File.size(path)
+  fail_closed("#{label} exceeds the #{MAX_NATIVE_FILE_BYTES}-byte native file limit") if size > MAX_NATIVE_FILE_BYTES
+
+  File.binread(path)
 end
 
 def require_range(data, offset, length, label)
@@ -30,10 +51,16 @@ end
 
 def c_string(data, offset, limit, label)
   require_range(data, offset, 1, label)
-  finish = data.index("\0", offset)
-  fail_closed("#{label} has an unterminated string") unless finish && finish < limit
+  fail_closed("#{label} is outside its string table") if offset >= limit
+  maximum_scan = [limit - offset, MAX_SYMBOL_NAME_BYTES + 1].min
+  finish = data.byteslice(offset, maximum_scan).index("\0")
+  if finish.nil?
+    fail_closed("#{label} exceeds the #{MAX_SYMBOL_NAME_BYTES}-byte name limit") if limit - offset > MAX_SYMBOL_NAME_BYTES
 
-  data.byteslice(offset, finish - offset)
+    fail_closed("#{label} has an unterminated string")
+  end
+
+  data.byteslice(offset, finish)
 end
 
 def expected_checksums(manifest_path)
@@ -90,6 +117,8 @@ def elf_sections(data, elf_class, label)
   section_count = u16le(data, elf_class == 1 ? 48 : 60, label)
   expected_size = elf_class == 1 ? 40 : 64
   fail_closed("#{label} has an unsupported ELF section header layout") unless section_entry_size == expected_size && section_count.positive?
+  fail_closed("#{label} has too many ELF section headers: #{section_count} exceeds #{MAX_ELF_SECTION_HEADERS}") if section_count > MAX_ELF_SECTION_HEADERS
+  require_range(data, section_offset, section_count * section_entry_size, label)
 
   section_count.times.map do |index|
     offset = section_offset + index * section_entry_size
@@ -108,12 +137,15 @@ def elf_symbol_values(data, elf_class, sections, expected, label)
   symbols = sections.fetch(symbol_sections.fetch(0))
   expected_entry_size = elf_class == 1 ? 16 : 24
   fail_closed("#{label} has an unsupported ELF dynamic symbol layout") unless symbols[:entry_size] == expected_entry_size && (symbols[:size] % symbols[:entry_size]).zero?
+  symbol_count = symbols[:size] / symbols[:entry_size]
+  fail_closed("#{label} has too many ELF dynamic symbols: #{symbol_count} exceeds #{MAX_SYMBOLS_PER_OBJECT}") if symbol_count > MAX_SYMBOLS_PER_OBJECT
   string_table = sections[symbols[:link]]
   fail_closed("#{label} has no ELF dynamic symbol string table") unless string_table
+  fail_closed("#{label} has an ELF string table larger than #{MAX_STRING_TABLE_BYTES} bytes") if string_table[:size] > MAX_STRING_TABLE_BYTES
   require_range(data, string_table[:offset], string_table[:size], label)
 
   found = Hash.new { |hash, key| hash[key] = [] }
-  (symbols[:size] / symbols[:entry_size]).times do |index|
+  symbol_count.times do |index|
     offset = symbols[:offset] + index * symbols[:entry_size]
     require_range(data, offset, symbols[:entry_size], label)
     name_offset = u32le(data, offset, label)
@@ -148,6 +180,8 @@ def elf_load_segments(data, elf_class, label)
   program_count = u16le(data, elf_class == 1 ? 44 : 56, label)
   expected_size = elf_class == 1 ? 32 : 56
   fail_closed("#{label} has an unsupported ELF program header layout") unless program_entry_size == expected_size && program_count.positive?
+  fail_closed("#{label} has too many ELF program headers: #{program_count} exceeds #{MAX_ELF_PROGRAM_HEADERS}") if program_count > MAX_ELF_PROGRAM_HEADERS
+  require_range(data, program_offset, program_count * program_entry_size, label)
 
   segments = []
   program_count.times do |index|
@@ -171,7 +205,7 @@ def elf_file_offset(segments, address, label, name)
 end
 
 def validate_elf(path, abi, expected, label)
-  data = File.binread(path)
+  data = read_native_file(path, label)
   fail_closed("#{label} is not an ELF file") unless data.start_with?("\x7fELF")
   elf_class = data.getbyte(4)
   fail_closed("#{label} has an unsupported ELF class") unless [1, 2].include?(elf_class)
@@ -181,18 +215,20 @@ def validate_elf(path, abi, expected, label)
   fail_closed("#{label} has the wrong ELF machine type") unless elf_class == expected_machine[0] && machine == expected_machine[1]
 
   sections = elf_sections(data, elf_class, label)
-  values = elf_symbol_values(data, elf_class, sections, expected, label)
   segments = elf_load_segments(data, elf_class, label)
+  values = elf_symbol_values(data, elf_class, sections, expected, label)
   expected.each { |name, checksum| decode_checksum_body(data, elf_file_offset(segments, values.fetch(name) & ~1, label, name), expected_machine[2], label, name, checksum) }
 end
 
-def macho_object_symbols(data, architecture, expected, label)
+def macho_object_symbols(data, architecture, expected, label, remaining_symbol_work)
   fail_closed("#{label} is not a 64-bit little-endian Mach-O object") unless u32le(data, 0, label) == 0xfeedfacf
   cpu_type = u32le(data, 4, label)
   expected_cpu = { "arm64" => 0x0100000c, "x86_64" => 0x01000007 }.fetch(architecture) { fail_closed("unsupported iOS architecture #{architecture}") }
   fail_closed("#{label} has the wrong Mach-O CPU type") unless cpu_type == expected_cpu
   command_count = u32le(data, 16, label)
   command_size = u32le(data, 20, label)
+  fail_closed("#{label} has too many Mach-O load commands: #{command_count} exceeds #{MAX_MACHO_LOAD_COMMANDS}") if command_count > MAX_MACHO_LOAD_COMMANDS
+  fail_closed("#{label} has a Mach-O command area larger than #{MAX_MACHO_COMMAND_AREA_BYTES} bytes") if command_size > MAX_MACHO_COMMAND_AREA_BYTES
   command_offset = 32
   require_range(data, command_offset, command_size, label)
   command_limit = command_offset + command_size
@@ -209,6 +245,7 @@ def macho_object_symbols(data, architecture, expected, label)
       fail_closed("#{label} has an LC_SEGMENT_64 command smaller than 72 bytes") if size < 72
       section_count = u32le(data, command_offset + 64, label)
       fail_closed("#{label} has an invalid LC_SEGMENT_64 section layout") unless size == 72 + section_count * 80
+      fail_closed("#{label} has too many Mach-O sections: #{sections.length + section_count} exceeds #{MAX_MACHO_SECTIONS}") if sections.length + section_count > MAX_MACHO_SECTIONS
       section_count.times do |index|
         offset = command_offset + 72 + index * 80
         sections << { address: u64le(data, offset + 32, label), size: u64le(data, offset + 40, label), offset: u32le(data, offset + 48, label) }
@@ -221,7 +258,10 @@ def macho_object_symbols(data, architecture, expected, label)
     command_offset += size
   end
   fail_closed("#{label} has an incomplete Mach-O load command area") unless command_offset == command_limit
-  return {} unless symbol_table
+  return [{}, 0] unless symbol_table
+  fail_closed("#{label} has too many Mach-O symbols: #{symbol_table[:count]} exceeds #{MAX_SYMBOLS_PER_OBJECT}") if symbol_table[:count] > MAX_SYMBOLS_PER_OBJECT
+  fail_closed("#{label} exceeds the #{MAX_ARCHIVE_SYMBOL_WORK}-symbol archive work limit") if symbol_table[:count] > remaining_symbol_work
+  fail_closed("#{label} has a Mach-O string table larger than #{MAX_STRING_TABLE_BYTES} bytes") if symbol_table[:string_size] > MAX_STRING_TABLE_BYTES
   require_range(data, symbol_table[:offset], symbol_table[:count] * 16, label)
   require_range(data, symbol_table[:strings], symbol_table[:string_size], label)
 
@@ -242,13 +282,16 @@ def macho_object_symbols(data, architecture, expected, label)
     fail_closed("#{label} checksum symbol #{name} is outside its section") if value < section[:address] || value >= section[:address] + section[:size]
     found[name] << section[:offset] + value - section[:address]
   end
-  found
+  [found, symbol_table[:count]]
 end
 
 def validate_macho_members(members, architecture, expected, label)
   found = Hash.new { |hash, key| hash[key] = [] }
+  remaining_symbol_work = MAX_ARCHIVE_SYMBOL_WORK
   members.each do |data, object_label|
-    macho_object_symbols(data, architecture, expected, "#{label} object #{object_label}").each do |name, offsets|
+    symbols, symbol_work = macho_object_symbols(data, architecture, expected, "#{label} object #{object_label}", remaining_symbol_work)
+    remaining_symbol_work -= symbol_work
+    symbols.each do |name, offsets|
       offsets.each { |offset| found[name] << [data, offset] }
     end
   end
@@ -261,7 +304,7 @@ def validate_macho_members(members, architecture, expected, label)
 end
 
 def validate_macho(objects, architecture, expected, label)
-  validate_macho_members(objects.map { |path| [File.binread(path), File.basename(path)] }, architecture, expected, label)
+  validate_macho_members(objects.map { |path| [read_native_file(path, "#{label} object #{File.basename(path)}"), File.basename(path)] }, architecture, expected, label)
 end
 
 def bsd_ar_decimal(field, label)
@@ -280,7 +323,7 @@ def bsd_ar_name(name_bytes, label)
 end
 
 def bsd_ar_members(path, label)
-  data = File.binread(path)
+  data = read_native_file(path, label)
   fail_closed("#{label} is not a BSD ar archive") unless data.start_with?("!<arch>\n")
 
   offset = 8
@@ -288,6 +331,7 @@ def bsd_ar_members(path, label)
   members = []
   while offset < data.bytesize
     member_index += 1
+    fail_closed("#{label} has too many archive members: #{member_index} exceeds #{MAX_ARCHIVE_MEMBERS}") if member_index > MAX_ARCHIVE_MEMBERS
     header_label = "#{label} archive member #{member_index}"
     require_range(data, offset, 60, header_label)
     header = data.byteslice(offset, 60)
@@ -296,7 +340,9 @@ def bsd_ar_members(path, label)
     name_length_field = header.byteslice(0, 16).match(/\A#1\/([0-9]+) *\z/)
     fail_closed("#{header_label} does not use a BSD extended filename") unless name_length_field
     name_length = Integer(name_length_field[1])
+    fail_closed("#{header_label} has a member filename longer than #{MAX_ARCHIVE_MEMBER_NAME_BYTES} bytes") if name_length > MAX_ARCHIVE_MEMBER_NAME_BYTES
     member_size = bsd_ar_decimal(header.byteslice(48, 10), header_label)
+    fail_closed("#{header_label} has a member larger than #{MAX_ARCHIVE_MEMBER_BYTES} bytes") if member_size > MAX_ARCHIVE_MEMBER_BYTES
     fail_closed("#{header_label} filename exceeds its member size") if name_length > member_size
 
     member_offset = offset + 60
