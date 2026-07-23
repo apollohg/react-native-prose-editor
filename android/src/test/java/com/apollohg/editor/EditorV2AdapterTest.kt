@@ -213,6 +213,9 @@ class EditorV2AdapterTest {
 
         val update = adapter.replaceTextRange(0, 3, "the")
         assertEquals("the", renderedText(update))
+        val selection = JSONObject(update).getJSONObject("selection")
+        assertEquals(3, selection.getInt("anchorScalar"))
+        assertEquals(3, selection.getInt("headScalar"))
         assertEquals(revisionBefore + 1uL, adapter.baseDocumentRevision)
         assertEquals(1, backend.calls.count { it == "applyCommand" })
         assertEquals(0, backend.calls.count { it == "applyInput" })
@@ -313,7 +316,7 @@ class EditorV2AdapterTest {
     // MARK: Task 16B render accessor (probe replacement)
 
     @Test
-    fun `render update carries blocks active state and overridden engine facts`() {
+    fun `render update carries blocks active state and native input post caret`() {
         val adapter = makeAdapter()
         adapter.setContentHtml("<p>ab</p>")
         backend.calls.clear()
@@ -329,8 +332,12 @@ class EditorV2AdapterTest {
         val history = update.getJSONObject("historyState")
         assertTrue(history.getBoolean("canUndo"))
         assertFalse(history.getBoolean("canRedo"))
-        // Native-originated edit: no selection key (the view keeps its caret).
-        assertFalse(update.has("selection"))
+        // A full render replacement resets Android's selection. The native input update must
+        // therefore carry the adapter's authoritative post-input scalar caret.
+        val selection = update.getJSONObject("selection")
+        assertEquals("text", selection.getString("type"))
+        assertEquals(3, selection.getInt("anchorScalar"))
+        assertEquals(3, selection.getInt("headScalar"))
         assertTrue(backend.calls.contains("renderUpdate"))
     }
 

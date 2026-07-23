@@ -811,6 +811,7 @@ internal class EditorV2Adapter private constructor(
         return performMutation(
             preSelection = intArrayOf(atScalarPos, atScalarPos),
             postSelectionMirror = intArrayOf(postCaret, postCaret),
+            includeSelectionInUpdate = true,
         ) {
             callWithEnvelope(JSONObject().put("text", text)) { requestJson ->
                 backend.applyInput(editorId, requestJson)
@@ -829,6 +830,7 @@ internal class EditorV2Adapter private constructor(
         return performMutation(
             preSelection = intArrayOf(scalarFrom, scalarTo),
             postSelectionMirror = intArrayOf(postCaret, postCaret),
+            includeSelectionInUpdate = true,
         ) {
             callWithEnvelope(
                 JSONObject().put(
