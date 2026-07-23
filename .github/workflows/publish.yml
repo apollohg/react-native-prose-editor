@@ -12,8 +12,8 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: macos-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -26,11 +26,42 @@ jobs:
           cache: npm
           package-manager-cache: false
 
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios, aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
+
+      - name: Install cargo-ndk
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-ndk --version 4.1.2 --locked
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Setup Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install 'ndk;27.1.12297006'
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.1.12297006" >> "$GITHUB_ENV"
+
       - name: Install root dependencies
         run: npm ci
 
       - name: Install example dependencies
         run: npm --prefix example ci
+
+      - name: Install CocoaPods dependencies
+        run: pod install --no-repo-update
+        working-directory: example/ios
 
       - name: Typecheck package
         run: npm run typecheck
