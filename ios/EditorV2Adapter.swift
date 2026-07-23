@@ -65,6 +65,7 @@ final class EditorV2Adapter {
     private var cachedScalarLength: UInt32?
     private var cachedActiveState: [String: Any]?
     private var cachedHistoryState: (canUndo: Bool, canRedo: Bool)?
+    private var cachedViewUpdateJSON: String?
     /// Diagnostics: structured notes for adapter-path failures
     /// (mismatch refreshes, derivation failures) that never surface as
     /// autonomous error events.
@@ -162,6 +163,15 @@ final class EditorV2Adapter {
     private func emit(_ error: FfiError) {
         debugNotes.append("emit \(error.domain)/\(error.code): \(error.message)")
         onAutonomousError?(error)
+    }
+
+    /// A malformed externally supplied render is a permanent boundary
+    /// rejection. Surface it once through the adapter's autonomous-error
+    /// channel so the paired view can clear/report it, but do not also add a
+    /// diagnostic note: that would expose a second observable emission for
+    /// an otherwise atomic no-op.
+    private func rejectAtomicRenderSnapshot() {
+        onAutonomousError?(Self.contractError("v2 atomic render snapshot violates the frozen shape"))
     }
 
     private func requestIdExhaustedError() -> FfiError {
@@ -275,6 +285,40 @@ final class EditorV2Adapter {
         "scalarLength",
     ]
 
+    private static let activeStateKeys: Set<String> = [
+        "marks",
+        "markAttrs",
+        "nodes",
+        "commands",
+        "allowedMarks",
+        "insertableNodes",
+    ]
+
+    private static let mentionThemeStringKeys: Set<String> = [
+        "textColor",
+        "backgroundColor",
+        "borderColor",
+        "popoverBackgroundColor",
+        "popoverBorderColor",
+        "popoverShadowColor",
+        "optionTextColor",
+        "optionSecondaryTextColor",
+        "optionHighlightedBackgroundColor",
+        "optionHighlightedTextColor",
+    ]
+
+    private static let mentionThemeNumberKeys: Set<String> = [
+        "borderWidth",
+        "borderRadius",
+        "popoverBorderWidth",
+        "popoverBorderRadius",
+    ]
+
+    private static let mentionThemeFontWeights: Set<String> = [
+        "normal", "bold", "100", "200", "300", "400",
+        "500", "600", "700", "800", "900",
+    ]
+
     private static func exactBool(_ value: Any?) -> Bool? {
         guard let number = value as? NSNumber,
               CFGetTypeID(number) == CFBooleanGetTypeID()
@@ -282,6 +326,185 @@ final class EditorV2Adapter {
             return nil
         }
         return number.boolValue
+    }
+
+    private static func finiteNumber(_ value: Any?) -> NSNumber? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite
+        else {
+            return nil
+        }
+        return number
+    }
+
+    private static func hasOnlyKeys(_ object: [String: Any], _ allowed: Set<String>) -> Bool {
+        Set(object.keys).isSubset(of: allowed)
+    }
+
+    private static func isValidJSONValue(_ value: Any) -> Bool {
+        if value is NSNull || value is String || exactBool(value) != nil || finiteNumber(value) != nil {
+            return true
+        }
+        if let array = value as? [Any] {
+            return array.allSatisfy(isValidJSONValue)
+        }
+        if let object = value as? [String: Any] {
+            return object.values.allSatisfy(isValidJSONValue)
+        }
+        return false
+    }
+
+    private static func isValidRenderMark(_ value: Any) -> Bool {
+        if value is String { return true }
+        guard let object = value as? [String: Any],
+              object["type"] is String
+        else {
+            return false
+        }
+        return object.values.allSatisfy(isValidJSONValue)
+    }
+
+    private static func isValidListContext(_ value: Any) -> Bool {
+        guard let object = value as? [String: Any],
+              hasOnlyKeys(
+                object,
+                ["ordered", "index", "total", "start", "isFirst", "isLast", "kind", "checked"]
+              ),
+              exactBool(object["ordered"]) != nil,
+              uint32Field(object, "index") != nil,
+              uint32Field(object, "total") != nil,
+              uint32Field(object, "start") != nil,
+              exactBool(object["isFirst"]) != nil,
+              exactBool(object["isLast"]) != nil
+        else {
+            return false
+        }
+        if let kind = object["kind"], !(kind is NSNull), !(kind is String) { return false }
+        if let checked = object["checked"], !(checked is NSNull), exactBool(checked) == nil { return false }
+        return true
+    }
+
+    private static func isValidMentionTheme(_ value: Any) -> Bool {
+        guard let object = value as? [String: Any] else { return false }
+        let allowed = mentionThemeStringKeys
+            .union(mentionThemeNumberKeys)
+            .union(["fontWeight"])
+        guard hasOnlyKeys(object, allowed) else { return false }
+        for key in mentionThemeStringKeys where object[key] != nil {
+            guard object[key] is String else { return false }
+        }
+        for key in mentionThemeNumberKeys where object[key] != nil {
+            guard finiteNumber(object[key]) != nil else { return false }
+        }
+        if let fontWeight = object["fontWeight"] {
+            guard let fontWeight = fontWeight as? String,
+                  mentionThemeFontWeights.contains(fontWeight)
+            else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func isValidRenderElement(_ value: Any) -> Bool {
+        guard let object = value as? [String: Any],
+              let type = object["type"] as? String
+        else {
+            return false
+        }
+        switch type {
+        case "textRun":
+            guard Set(object.keys) == ["type", "text", "marks"],
+                  object["text"] is String,
+                  let marks = object["marks"] as? [Any]
+            else {
+                return false
+            }
+            return marks.allSatisfy(isValidRenderMark)
+        case "blockStart":
+            guard hasOnlyKeys(object, ["type", "nodeType", "depth", "listContext"]),
+                  object["nodeType"] is String,
+                  uint32Field(object, "depth") != nil
+            else {
+                return false
+            }
+            return object["listContext"].map(isValidListContext) ?? true
+        case "blockEnd":
+            return Set(object.keys) == ["type"]
+        case "voidInline", "voidBlock":
+            guard hasOnlyKeys(object, ["type", "nodeType", "docPos", "attrs"]),
+                  object["nodeType"] is String,
+                  uint32Field(object, "docPos") != nil
+            else {
+                return false
+            }
+            return object["attrs"].map { $0 is [String: Any] } ?? true
+        case "opaqueInlineAtom":
+            guard hasOnlyKeys(object, ["type", "nodeType", "label", "docPos", "mentionTheme"]),
+                  object["nodeType"] is String,
+                  object["label"] is String,
+                  uint32Field(object, "docPos") != nil
+            else {
+                return false
+            }
+            return object["mentionTheme"].map(isValidMentionTheme) ?? true
+        case "opaqueBlockAtom":
+            return Set(object.keys) == ["type", "nodeType", "label", "docPos"]
+                && object["nodeType"] is String
+                && object["label"] is String
+                && uint32Field(object, "docPos") != nil
+        default:
+            return false
+        }
+    }
+
+    private static func isValidRenderBlocks(_ value: Any) -> Bool {
+        guard let blocks = value as? [Any] else { return false }
+        return blocks.allSatisfy { block in
+            guard let elements = block as? [Any] else { return false }
+            return elements.allSatisfy(isValidRenderElement)
+        }
+    }
+
+    private static func isValidRenderPatch(_ value: Any) -> Bool {
+        if value is NSNull { return true }
+        guard let object = value as? [String: Any],
+              Set(object.keys) == ["startIndex", "deleteCount", "renderBlocks"],
+              uint32Field(object, "startIndex") != nil,
+              uint32Field(object, "deleteCount") != nil,
+              let renderBlocks = object["renderBlocks"],
+              isValidRenderBlocks(renderBlocks)
+        else {
+            return false
+        }
+        return true
+    }
+
+    private static func isBooleanRecord(_ value: Any?) -> Bool {
+        guard let object = value as? [String: Any] else { return false }
+        return object.values.allSatisfy { exactBool($0) != nil }
+    }
+
+    private static func isStringArray(_ value: Any?) -> Bool {
+        guard let array = value as? [Any] else { return false }
+        return array.allSatisfy { $0 is String }
+    }
+
+    private static func isValidActiveState(_ value: Any) -> Bool {
+        guard let object = value as? [String: Any],
+              Set(object.keys) == activeStateKeys,
+              isBooleanRecord(object["marks"]),
+              let markAttrs = object["markAttrs"] as? [String: Any],
+              markAttrs.values.allSatisfy({ $0 is [String: Any] }),
+              isBooleanRecord(object["nodes"]),
+              isBooleanRecord(object["commands"]),
+              isStringArray(object["allowedMarks"]),
+              isStringArray(object["insertableNodes"])
+        else {
+            return false
+        }
+        return true
     }
 
     private static func scalarSelection(from value: Any) -> (anchor: UInt32, head: UInt32)? {
@@ -317,7 +540,6 @@ final class EditorV2Adapter {
     }
 
     private static func isValidSelection(_ value: Any) -> Bool {
-        if value is NSNull { return true }
         guard let selection = value as? [String: Any],
               let type = selection["type"] as? String
         else {
@@ -341,17 +563,14 @@ final class EditorV2Adapter {
         guard let data = json.data(using: .utf8),
               var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys) == atomicRenderSnapshotKeys,
-              object["renderBlocks"] as? [[[String: Any]]] != nil,
-              object["renderPatch"] is NSNull,
+              let renderBlocks = object["renderBlocks"],
+              isValidRenderBlocks(renderBlocks),
+              let renderPatch = object["renderPatch"],
+              isValidRenderPatch(renderPatch),
               let selectionValue = object["selection"],
               isValidSelection(selectionValue),
               let activeState = object["activeState"] as? [String: Any],
-              activeState["marks"] as? [String: Any] != nil,
-              activeState["markAttrs"] as? [String: Any] != nil,
-              activeState["nodes"] as? [String: Any] != nil,
-              activeState["commands"] as? [String: Any] != nil,
-              activeState["allowedMarks"] as? [String] != nil,
-              activeState["insertableNodes"] as? [String] != nil,
+              isValidActiveState(activeState),
               let history = object["historyState"] as? [String: Any],
               Set(history.keys) == ["canUndo", "canRedo"],
               let canUndo = exactBool(history["canUndo"]),
@@ -434,6 +653,7 @@ final class EditorV2Adapter {
         cachedScalarLength = snapshot.scalarLength
         cachedActiveState = snapshot.activeState
         cachedHistoryState = snapshot.historyState
+        cachedViewUpdateJSON = updateJSON
         // This is the engine's selection from the locked snapshot. Keep it
         // distinct from a caller-provided mirror: treating it as a mirror on
         // the next refresh would change the frozen no-mirror render shape.
@@ -445,14 +665,45 @@ final class EditorV2Adapter {
     /// native view accepts further input. The caller applies the returned
     /// payload synchronously in the same editor-scoped operation.
     func adoptExternalRender(_ renderJSON: String) -> String? {
-        guard !destroyed,
-              let snapshot = Self.parseAtomicRenderSnapshot(renderJSON),
+        guard !destroyed else { return nil }
+        guard let snapshot = Self.parseAtomicRenderSnapshot(renderJSON),
               let adopted = adopt(snapshot, strippingViewSelection: false)
         else {
-            emit(contractError("v2 atomic render snapshot violates the frozen shape"))
+            rejectAtomicRenderSnapshot()
             return nil
         }
         return adopted.updateJSON
+    }
+
+    var cacheStateForTesting: String {
+        let selection: Any
+        if let cachedAuthoritativeScalarSelection {
+            selection = [
+                "anchor": cachedAuthoritativeScalarSelection.anchor,
+                "head": cachedAuthoritativeScalarSelection.head,
+            ]
+        } else {
+            selection = NSNull()
+        }
+        let history: Any
+        if let cachedHistoryState {
+            history = ["canUndo": cachedHistoryState.canUndo, "canRedo": cachedHistoryState.canRedo]
+        } else {
+            history = NSNull()
+        }
+        let object: [String: Any] = [
+            "documentRevision": String(baseDocumentRevision),
+            "stateRevision": String(stateRevision),
+            "scalarLength": cachedScalarLength.map(NSNumber.init(value:)) ?? NSNull(),
+            "selection": selection,
+            "activeState": cachedActiveState ?? NSNull(),
+            "historyState": history,
+            "viewUpdateJSON": cachedViewUpdateJSON ?? NSNull(),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return ""
+        }
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     /// Re-read the authoritative v2 state and derive one synthesized update

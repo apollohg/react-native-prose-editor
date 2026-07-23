@@ -121,6 +121,23 @@ final class EditorV2AdapterTests: XCTestCase {
         return object
     }
 
+    private func mutatedObjectJSON(
+        _ json: String,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ mutate: (inout [String: Any]) -> Void
+    ) -> String {
+        var object = parseObject(json, file: file, line: line)
+        mutate(&object)
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let result = String(data: data, encoding: .utf8)
+        else {
+            XCTFail("failed to serialize mutated snapshot", file: file, line: line)
+            return "{}"
+        }
+        return result
+    }
+
     /// Concatenated text of every textRun in the update's renderBlocks.
     private func renderedText(_ updateJSON: String?, file: StaticString = #filePath, line: UInt = #line) -> String {
         let update = parseObject(updateJSON, file: file, line: line)
@@ -455,6 +472,195 @@ final class EditorV2AdapterTests: XCTestCase {
         )
         XCTAssertEqual(documentText(adapter), "EXTbase", "the failed mutation must not be replayed")
         XCTAssertEqual(renderedText(update), "EXTbase")
+    }
+
+    func testAtomicRenderValidationAcceptsAValidRenderPatch() {
+        let adapter = makeAdapter()
+        _ = adapter.setContentHtml("<p>base</p>")
+        let raw = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value!
+        let withPatch = mutatedObjectJSON(raw) { object in
+            object["renderPatch"] = [
+                "startIndex": 0,
+                "deleteCount": 0,
+                "renderBlocks": object["renderBlocks"]!,
+            ]
+        }
+
+        XCTAssertNotNil(adapter.adoptExternalRender(withPatch))
+    }
+
+    func testMalformedAtomicRenderNestedVariantsLeaveEveryCacheUnchanged() {
+        let adapter = makeAdapter()
+        let spy = ErrorSpy()
+        adapter.onAutonomousError = spy.record
+        _ = adapter.setContentHtml("<p>base</p>")
+        let raw = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value!
+        XCTAssertNotNil(adapter.adoptExternalRender(raw))
+        let baseline = adapter.cacheStateForTesting
+        let baselineDebugNotes = adapter.debugNotes
+
+        let variants: [(String, (inout [String: Any]) -> Void)] = [
+            ("extra top-level field", { $0["legacyRevision"] = 1 }),
+            ("null selection", { $0["selection"] = NSNull() }),
+            ("selection extra field", { object in
+                var selection = object["selection"] as! [String: Any]
+                selection["legacyAnchor"] = 0
+                object["selection"] = selection
+            }),
+            ("selection scalar above u32", { object in
+                var selection = object["selection"] as! [String: Any]
+                selection["anchorScalar"] = NSNumber(value: UInt64(UInt32.max) + 1)
+                object["selection"] = selection
+            }),
+            ("node selection fractional scalar", {
+                $0["selection"] = ["type": "node", "pos": 1, "posScalar": 0.5]
+            }),
+            ("all selection extra field", {
+                $0["selection"] = ["type": "all", "anchor": 0]
+            }),
+            ("invalid text mark", { object in
+                var blocks = object["renderBlocks"] as! [[[String: Any]]]
+                let index = blocks[0].firstIndex { $0["type"] as? String == "textRun" }!
+                var textRun = blocks[0][index]
+                textRun["marks"] = [["type": 7]]
+                blocks[0][index] = textRun
+                object["renderBlocks"] = blocks
+            }),
+            ("text run extra field", { object in
+                var blocks = object["renderBlocks"] as! [[[String: Any]]]
+                let index = blocks[0].firstIndex { $0["type"] as? String == "textRun" }!
+                blocks[0][index]["legacyText"] = "base"
+                object["renderBlocks"] = blocks
+            }),
+            ("block start list u32 above range", { object in
+                var blocks = object["renderBlocks"] as! [[[String: Any]]]
+                let index = blocks[0].firstIndex { $0["type"] as? String == "blockStart" }!
+                var blockStart = blocks[0][index]
+                blockStart["listContext"] = [
+                    "ordered": false,
+                    "index": NSNumber(value: UInt64(UInt32.max) + 1),
+                    "total": 1,
+                    "start": 1,
+                    "isFirst": true,
+                    "isLast": true,
+                ]
+                blocks[0][index] = blockStart
+                object["renderBlocks"] = blocks
+            }),
+            ("block start invalid list boolean", { object in
+                var blocks = object["renderBlocks"] as! [[[String: Any]]]
+                let index = blocks[0].firstIndex { $0["type"] as? String == "blockStart" }!
+                var blockStart = blocks[0][index]
+                blockStart["listContext"] = [
+                    "ordered": 1,
+                    "index": 1,
+                    "total": 1,
+                    "start": 1,
+                    "isFirst": true,
+                    "isLast": true,
+                ]
+                blocks[0][index] = blockStart
+                object["renderBlocks"] = blocks
+            }),
+            ("block end extra field", {
+                $0["renderBlocks"] = [["type": "blockEnd", "legacy": true]]
+            }),
+            ("void inline array attrs", {
+                $0["renderBlocks"] = [[
+                    "type": "voidInline",
+                    "nodeType": "image",
+                    "docPos": 0,
+                    "attrs": [],
+                ]]
+            }),
+            ("void block fractional doc position", {
+                $0["renderBlocks"] = [[
+                    "type": "voidBlock",
+                    "nodeType": "image",
+                    "docPos": 0.5,
+                ]]
+            }),
+            ("opaque inline invalid mention theme", {
+                $0["renderBlocks"] = [[
+                    "type": "opaqueInlineAtom",
+                    "nodeType": "mention",
+                    "label": "Ada",
+                    "docPos": 0,
+                    "mentionTheme": ["borderWidth": true],
+                ]]
+            }),
+            ("opaque block extra field", {
+                $0["renderBlocks"] = [[
+                    "type": "opaqueBlockAtom",
+                    "nodeType": "unknown",
+                    "label": "Unknown",
+                    "docPos": 0,
+                    "attrs": [:],
+                ]]
+            }),
+            ("render patch invalid nested element", { object in
+                object["renderPatch"] = [
+                    "startIndex": 0,
+                    "deleteCount": 0,
+                    "renderBlocks": [["type": "unknownElement"]],
+                ]
+            }),
+            ("render patch fractional start", { object in
+                object["renderPatch"] = [
+                    "startIndex": 0.5,
+                    "deleteCount": 0,
+                    "renderBlocks": object["renderBlocks"]!,
+                ]
+            }),
+            ("active-state extra field", { object in
+                var active = object["activeState"] as! [String: Any]
+                active["legacy"] = false
+                object["activeState"] = active
+            }),
+            ("active-state non-boolean map value", { object in
+                var active = object["activeState"] as! [String: Any]
+                active["marks"] = ["bold": "yes"]
+                object["activeState"] = active
+            }),
+            ("active-state non-record mark attrs", { object in
+                var active = object["activeState"] as! [String: Any]
+                active["markAttrs"] = ["link": "https://example.com"]
+                object["activeState"] = active
+            }),
+            ("active-state non-string insertion", { object in
+                var active = object["activeState"] as! [String: Any]
+                active["insertableNodes"] = ["image", 1]
+                object["activeState"] = active
+            }),
+            ("history numeric boolean", { object in
+                object["historyState"] = ["canUndo": 1, "canRedo": false]
+            }),
+            ("non-canonical revision", { $0["documentVersion"] = "01" }),
+            ("state revision numeric", { $0["stateRevision"] = 1 }),
+            ("scalar length above u32", {
+                $0["scalarLength"] = NSNumber(value: UInt64(UInt32.max) + 1)
+            }),
+            ("scalar length fractional", { $0["scalarLength"] = 0.5 }),
+        ]
+
+        for (name, mutate) in variants {
+            let errorsBefore = spy.errors.count
+            let malformed = mutatedObjectJSON(raw, mutate)
+            XCTAssertNil(adapter.adoptExternalRender(malformed), name)
+            XCTAssertEqual(adapter.cacheStateForTesting, baseline, name)
+            XCTAssertEqual(adapter.debugNotes, baselineDebugNotes, name)
+            XCTAssertEqual(spy.errors.count, errorsBefore + 1, name)
+            XCTAssertEqual(spy.last?.domain, "boundary", name)
+            XCTAssertEqual(spy.last?.code, "FFI_RESULT_INVALID", name)
+        }
     }
 
     // MARK: - Undo/redo
