@@ -217,6 +217,7 @@ import {
     createNativeEditorDocumentHandle,
     type NativeEditorDocumentHandle,
     type NativeEditorV2CreateConfig,
+    type NativeEditorLocalAwarenessIntent,
     normalizeNativeEditorV2Bytes,
     normalizeNativeEditorV2DecimalId,
     normalizeNativeEditorV2Result,
@@ -2368,13 +2369,49 @@ describe('NativeEditorBridge v2', () => {
             );
         });
 
-        it('serializes awareness state and the literal null withdrawal', () => {
+        it('serializes only the typed awareness intent and the literal null withdrawal', () => {
             const handle = createHandle();
-            handle.bridge.collaborationSetAwareness({ user: { name: 'Alice' } });
+            const intent: NativeEditorLocalAwarenessIntent = {
+                state: { user: { name: 'Alice' } },
+                focused: true,
+                selection: { type: 'text', anchor: 2, head: 5 },
+            };
+            handle.bridge.collaborationSetAwareness(intent);
             handle.bridge.collaborationSetAwareness(null);
             const calls = mockNativeModule.editorV2CollaborationSetAwareness.mock.calls;
-            expect(JSON.parse(calls[0][1])).toEqual({ user: { name: 'Alice' } });
+            expect(JSON.parse(calls[0][1])).toEqual(intent);
             expect(calls[1][1]).toBe('null');
+        });
+
+        it('rejects raw and recursively cursor-authored awareness before invoking native code', () => {
+            const handle = createHandle();
+            const rawState = { user: { name: 'Alice' } };
+            const cursorIntent = {
+                state: {
+                    user: { name: 'Alice' },
+                    metadata: [{ cursor: { sticky: 'caller-authored' } }],
+                },
+                focused: false,
+            };
+
+            expect(() =>
+                handle.bridge.collaborationSetAwareness(
+                    rawState as unknown as NativeEditorLocalAwarenessIntent
+                )
+            ).toThrow('invalid local awareness intent');
+            expect(() =>
+                handle.bridge.collaborationSetAwareness(
+                    cursorIntent as NativeEditorLocalAwarenessIntent
+                )
+            ).toThrow('reserved cursor key');
+            expect(cursorIntent).toEqual({
+                state: {
+                    user: { name: 'Alice' },
+                    metadata: [{ cursor: { sticky: 'caller-authored' } }],
+                },
+                focused: false,
+            });
+            expect(mockNativeModule.editorV2CollaborationSetAwareness).not.toHaveBeenCalled();
         });
     });
 

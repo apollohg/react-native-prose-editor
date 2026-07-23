@@ -23,7 +23,12 @@
 // field): publishing desired awareness while a generation is live enqueues an
 // awareness frame carrying a Rust-side monotonically increasing clock.
 
-import type { DocumentJSON, NativeEditorV2PeerInfo } from '../NativeEditorBridge';
+import type {
+    DocumentJSON,
+    NativeEditorLocalAwarenessIntent,
+    NativeEditorV2PeerInfo,
+    Selection,
+} from '../NativeEditorBridge';
 import { normalizeNativeEditorV2U64 } from '../../NativeEditorV2Decimal';
 
 export const V2_FAKE_STEP1_FRAME = new Uint8Array([0, 0, 1]);
@@ -581,7 +586,7 @@ interface FakeSession {
     lastIssuedGeneration: bigint;
     protocolQueue: Uint8Array[];
     documentQueue: Uint8Array[];
-    desiredAwareness: Record<string, unknown> | null;
+    desiredAwareness: NativeEditorLocalAwarenessIntent | null;
     localClientId: string;
     localClock: number;
     localAwarenessLive: boolean;
@@ -592,6 +597,112 @@ interface FakeSession {
     remotePeerActivity: Map<string, bigint>;
     destroyed: boolean;
     replySequence: number;
+}
+
+function isFakeRecord(value: unknown): value is Record<string, unknown> {
+    return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+const FAKE_AWARENESS_INTENT_KEYS = new Set(['state', 'focused', 'selection']);
+const FAKE_AWARENESS_SELECTION_KEYS = new Set([
+    'type',
+    'anchor',
+    'head',
+    'pos',
+    'anchorScalar',
+    'headScalar',
+    'posScalar',
+]);
+
+function hasFakeReservedCursor(value: unknown): boolean {
+    const pending: unknown[] = [value];
+    const seen = new WeakSet<object>();
+    while (pending.length > 0) {
+        const current = pending.pop();
+        if (current == null || typeof current !== 'object') continue;
+        if (seen.has(current)) continue;
+        seen.add(current);
+        for (const key of Reflect.ownKeys(current)) {
+            if (key === 'cursor') return true;
+            const descriptor = Object.getOwnPropertyDescriptor(current, key);
+            if (descriptor == null || !('value' in descriptor)) return true;
+            pending.push(descriptor.value);
+        }
+    }
+    return false;
+}
+
+function validFakeAwarenessSelection(value: unknown): value is Selection {
+    if (!isFakeRecord(value)) return false;
+    const type = value.type;
+    if (type !== 'text' && type !== 'node' && type !== 'all') return false;
+    const fields = ['anchor', 'head', 'pos', 'anchorScalar', 'headScalar', 'posScalar'];
+    if (
+        Reflect.ownKeys(value).some(
+            (key) => typeof key !== 'string' || !FAKE_AWARENESS_SELECTION_KEYS.has(key)
+        )
+    ) {
+        return false;
+    }
+    for (const field of fields) {
+        if (value[field] !== undefined && exactV2U32(value[field]) == null) return false;
+    }
+    return (
+        (type !== 'text' ||
+            (exactV2U32(value.anchor) != null && exactV2U32(value.head) != null)) &&
+        (type !== 'node' || exactV2U32(value.pos) != null)
+    );
+}
+
+function parseFakeAwarenessIntent(
+    awarenessJson: string
+): NativeEditorLocalAwarenessIntent | FakeErrorRecord {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(awarenessJson);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return errorRecord('boundary', 'AWARENESS_STATE_INVALID', `desired awareness state is not valid JSON: ${message}`);
+    }
+    if (
+        !isFakeRecord(parsed) ||
+        Reflect.ownKeys(parsed).some(
+            (key) => typeof key !== 'string' || !FAKE_AWARENESS_INTENT_KEYS.has(key)
+        ) ||
+        !isFakeRecord(parsed.state) ||
+        typeof parsed.focused !== 'boolean' ||
+        (parsed.selection !== undefined && !validFakeAwarenessSelection(parsed.selection))
+    ) {
+        return errorRecord('boundary', 'AWARENESS_STATE_INVALID', 'invalid local awareness intent');
+    }
+    if (hasFakeReservedCursor(parsed)) {
+        return errorRecord(
+            'boundary',
+            'AWARENESS_STATE_INVALID',
+            'reserved cursor key is not allowed in local awareness state'
+        );
+    }
+    return parsed as NativeEditorLocalAwarenessIntent;
+}
+
+function fakeCursorForSelection(selection: Selection | undefined): { anchor: number; head: number } | null {
+    if (selection?.type === 'text' && selection.anchor != null && selection.head != null) {
+        return { anchor: selection.anchor, head: selection.head };
+    }
+    if (selection?.type === 'node' && selection.pos != null) {
+        return { anchor: selection.pos, head: selection.pos };
+    }
+    return null;
+}
+
+function projectFakeLocalAwareness(intent: NativeEditorLocalAwarenessIntent): {
+    state: Record<string, unknown>;
+    cursor: { anchor: number; head: number } | null;
+} {
+    return {
+        state: { ...intent.state, focused: intent.focused },
+        cursor: fakeCursorForSelection(intent.selection),
+    };
 }
 
 export interface FakeV2SessionHandle {
@@ -1772,16 +1883,8 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     session.desiredAwareness = null;
                     session.lastLocalAwarenessPublishMillis = null;
                 } else {
-                    let desiredAwareness: Record<string, unknown>;
-                    try {
-                        desiredAwareness = JSON.parse(awarenessJson) as Record<string, unknown>;
-                    } catch (error) {
-                        const message = error instanceof Error ? error.message : String(error);
-                        return boundaryError(
-                            'AWARENESS_STATE_INVALID',
-                            `desired awareness state is not valid JSON: ${message}`
-                        );
-                    }
+                    const desiredAwareness = parseFakeAwarenessIntent(awarenessJson);
+                    if ('domain' in desiredAwareness) return errRecord(desiredAwareness);
                     const clockError = setLocalAwarenessState(session);
                     if (clockError) return errRecord(clockError);
                     session.desiredAwareness = desiredAwareness;
@@ -1796,12 +1899,13 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             withSession(editorId, (session) => {
                 const peers: NativeEditorV2PeerInfo[] = [];
                 if (session.localAwarenessLive && session.desiredAwareness != null) {
+                    const local = projectFakeLocalAwareness(session.desiredAwareness);
                     peers.push({
                         clientId: session.localClientId,
                         clock: session.localClock,
                         isLocal: true,
-                        state: session.desiredAwareness,
-                        cursor: null,
+                        state: local.state,
+                        cursor: local.cursor,
                     });
                 }
                 peers.push(...session.remotePeers);

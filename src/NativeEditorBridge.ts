@@ -37,6 +37,17 @@ export interface Selection {
     posScalar?: number;
 }
 
+/**
+ * The sole JavaScript-to-native local-awareness contract. Application state
+ * stays JSON-shaped; Rust alone turns the optional document selection into
+ * sticky cursor positions.
+ */
+export interface NativeEditorLocalAwarenessIntent {
+    state: Record<string, unknown>;
+    focused: boolean;
+    selection?: Selection;
+}
+
 export interface ListContext {
     ordered: boolean;
     index: number;
@@ -1057,6 +1068,82 @@ function invalidV2RequestError(message: string): NativeEditorV2BoundaryError {
         actual: null,
         details: null,
     });
+}
+
+const LOCAL_AWARENESS_INTENT_KEYS = new Set(['state', 'focused', 'selection']);
+const LOCAL_AWARENESS_SELECTION_KEYS = new Set([
+    'type',
+    'anchor',
+    'head',
+    'pos',
+    'anchorScalar',
+    'headScalar',
+    'posScalar',
+]);
+
+function invalidLocalAwarenessIntent(message = 'invalid local awareness intent'): never {
+    throw invalidV2RequestError(`NativeEditorBridge: ${message}`);
+}
+
+function requireLocalAwarenessU32(value: unknown): void {
+    if (nativeEditorV2U32(value) == null) invalidLocalAwarenessIntent();
+}
+
+function validateLocalAwarenessSelection(selection: unknown): void {
+    if (
+        !isPlainRecord(selection) ||
+        Reflect.ownKeys(selection).some(
+            (key) => typeof key !== 'string' || !LOCAL_AWARENESS_SELECTION_KEYS.has(key)
+        ) ||
+        !Object.prototype.hasOwnProperty.call(selection, 'type') ||
+        (selection.type !== 'text' && selection.type !== 'node' && selection.type !== 'all')
+    ) {
+        invalidLocalAwarenessIntent();
+    }
+    for (const field of ['anchor', 'head', 'pos', 'anchorScalar', 'headScalar', 'posScalar']) {
+        if (selection[field] !== undefined) requireLocalAwarenessU32(selection[field]);
+    }
+    if (
+        (selection.type === 'text' &&
+            (selection.anchor === undefined || selection.head === undefined)) ||
+        (selection.type === 'node' && selection.pos === undefined)
+    ) {
+        invalidLocalAwarenessIntent();
+    }
+}
+
+/** Reject caller-owned sticky cursor data before a native call can occur. */
+function rejectReservedAwarenessCursor(value: unknown): void {
+    const pending: unknown[] = [value];
+    const seen = new WeakSet<object>();
+    while (pending.length > 0) {
+        const current = pending.pop();
+        if (current == null || typeof current !== 'object') continue;
+        if (seen.has(current)) continue;
+        seen.add(current);
+        for (const key of Reflect.ownKeys(current)) {
+            if (key === 'cursor') invalidLocalAwarenessIntent('reserved cursor key is not allowed');
+            const descriptor = Object.getOwnPropertyDescriptor(current, key);
+            if (descriptor == null || !('value' in descriptor)) invalidLocalAwarenessIntent();
+            pending.push(descriptor.value);
+        }
+    }
+}
+
+function validateLocalAwarenessIntent(intent: unknown): asserts intent is NativeEditorLocalAwarenessIntent {
+    if (
+        !isPlainRecord(intent) ||
+        Reflect.ownKeys(intent).some(
+            (key) => typeof key !== 'string' || !LOCAL_AWARENESS_INTENT_KEYS.has(key)
+        ) ||
+        !Object.prototype.hasOwnProperty.call(intent, 'state') ||
+        !isPlainRecord(intent.state) ||
+        typeof intent.focused !== 'boolean'
+    ) {
+        invalidLocalAwarenessIntent();
+    }
+    if (intent.selection !== undefined) validateLocalAwarenessSelection(intent.selection);
+    rejectReservedAwarenessCursor(intent.state);
 }
 
 /**
@@ -2527,9 +2614,10 @@ export class NativeEditorV2Bridge {
         );
     }
 
-    collaborationSetAwareness(state: Record<string, unknown> | null): void {
+    collaborationSetAwareness(intent: NativeEditorLocalAwarenessIntent | null): void {
         this.assertAlive();
-        const awarenessJson = state == null ? 'null' : JSON.stringify(state);
+        if (intent !== null) validateLocalAwarenessIntent(intent);
+        const awarenessJson = intent == null ? 'null' : JSON.stringify(intent);
         this.callV2(
             () =>
                 invokeNativeEditorV2(

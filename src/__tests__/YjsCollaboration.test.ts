@@ -54,6 +54,7 @@ import {
     type NativeEditorDocumentHandle,
     _resetNativeModuleCache,
     type DocumentJSON,
+    type NativeEditorLocalAwarenessIntent,
     type NativeEditorV2PeerInfo,
 } from '../NativeEditorBridge';
 import { NativeEditorV2TransportError } from '../NativeEditorBoundaryError';
@@ -128,6 +129,13 @@ function remotePeer(overrides: Partial<NativeEditorV2PeerInfo> = {}): NativeEdit
         cursor: { anchor: 4, head: 9 },
         ...overrides,
     };
+}
+
+function localAwarenessIntent(
+    state: Record<string, unknown> = { user: ALICE },
+    focused = false
+): NativeEditorLocalAwarenessIntent {
+    return { state, focused };
 }
 
 // ─── Setup helpers ──────────────────────────────────────────────
@@ -816,7 +824,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
 
     it('models the deterministic awareness renewal, expiry, flags, and next deadline', () => {
         const handle = createRoomHandle({ withSnapshot: true });
-        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        handle.bridge.collaborationSetAwareness(localAwarenessIntent());
         const generation = handle.bridge.collaborationBeginConnect();
         handle.bridge.collaborationSocketOpen(generation);
         handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
@@ -876,7 +884,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         handle.bridge.collaborationTick('18446744073709521615');
         runtime.pushRemotePeers(handle.editorId, [remotePeer({ clientId: '7', clock: 1 })]);
         handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
-        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        handle.bridge.collaborationSetAwareness(localAwarenessIntent());
 
         expect(handle.bridge.collaborationTick('18446744073709541615')).toEqual({
             nextDeadlineMillis: '18446744073709551615',
@@ -914,21 +922,25 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
 
     it('mutates local awareness offline and handshaking, then republishes and tombstones it', () => {
         const handle = createRoomHandle({ withSnapshot: true });
-        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        handle.bridge.collaborationSetAwareness(localAwarenessIntent());
         expect(handle.bridge.collaborationPeers()).toEqual([
-            expect.objectContaining({ isLocal: true, clock: 1, state: { user: ALICE } }),
+            expect.objectContaining({
+                isLocal: true,
+                clock: 1,
+                state: { user: ALICE, focused: false },
+            }),
         ]);
         expect(runtime.queuedFrames(handle.editorId)).toEqual([]);
 
         const firstGeneration = handle.bridge.collaborationBeginConnect();
         handle.bridge.collaborationSocketOpen(firstGeneration);
         const updatedLocal = { ...ALICE, name: 'Alice II' };
-        handle.bridge.collaborationSetAwareness({ user: updatedLocal });
+        handle.bridge.collaborationSetAwareness(localAwarenessIntent({ user: updatedLocal }));
         expect(handle.bridge.collaborationPeers()).toEqual([
             expect.objectContaining({
                 isLocal: true,
                 clock: 2,
-                state: { user: updatedLocal },
+                state: { user: updatedLocal, focused: false },
             }),
         ]);
         expect(runtime.queuedFrames(handle.editorId)).toEqual([]);
@@ -938,7 +950,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             expect.objectContaining({
                 isLocal: true,
                 clock: 3,
-                state: { user: updatedLocal },
+                state: { user: updatedLocal, focused: false },
             }),
         ]);
         expect(runtime.queuedFrames(handle.editorId).map((frame) => Array.from(frame))).toEqual([
@@ -946,7 +958,9 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         ]);
 
         handle.bridge.collaborationDetach();
-        expect(runtime.session(handle.editorId).desiredAwareness).toEqual({ user: updatedLocal });
+        expect(runtime.session(handle.editorId).desiredAwareness).toEqual(
+            localAwarenessIntent({ user: updatedLocal })
+        );
         expect(handle.bridge.collaborationPeers()).toEqual([]);
         handle.bridge.collaborationReattach();
         expect(handle.bridge.collaborationPeers()).toEqual([]);
@@ -958,7 +972,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             expect.objectContaining({
                 isLocal: true,
                 clock: 5,
-                state: { user: updatedLocal },
+                state: { user: updatedLocal, focused: false },
             }),
         ]);
 
@@ -974,7 +988,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         handle.bridge.collaborationSocketOpen(generation);
         handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
         handle.bridge.collaborationTick('12000');
-        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        handle.bridge.collaborationSetAwareness(localAwarenessIntent());
 
         const before = runtime.session(handle.editorId);
         const desiredBefore = JSON.parse(JSON.stringify(before.desiredAwareness)) as Record<
@@ -1016,13 +1030,47 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(after.lastLocalAwarenessPublishMillis).toBe(publishBefore);
     });
 
+    it('fake validates typed intents atomically and projects its owned cursor separately from state', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        const intent: NativeEditorLocalAwarenessIntent = {
+            state: { user: ALICE, selection: { anchor: 90, head: 91 } },
+            focused: true,
+            selection: { type: 'text', anchor: 2, head: 5 },
+        };
+        handle.bridge.collaborationSetAwareness(intent);
+        const before = fakeAwarenessAudit(handle.editorId);
+
+        const raw = runtime.module.editorV2CollaborationSetAwareness(
+            handle.editorId,
+            JSON.stringify({
+                state: { user: ALICE, nested: { cursor: { forged: true } } },
+                focused: false,
+            })
+        );
+        expect(raw).toMatchObject({
+            value: null,
+            error: {
+                domain: 'boundary',
+                code: 'AWARENESS_STATE_INVALID',
+                message: expect.stringContaining('reserved cursor key'),
+            },
+        });
+        expect(fakeAwarenessAudit(handle.editorId)).toEqual(before);
+        expect(handle.bridge.collaborationPeers()).toEqual([
+            expect.objectContaining({
+                state: { user: ALICE, selection: { anchor: 90, head: 91 }, focused: true },
+                cursor: { anchor: 2, head: 5 },
+            }),
+        ]);
+    });
+
     it('reserves local clock headroom and rejects set-awareness atomically in every transport state', () => {
         for (const transportState of ['Disconnected', 'Handshaking', 'Synchronized'] as const) {
             const handle = createRoomHandle({
                 documentId: `set-clock-${transportState}`,
                 withSnapshot: true,
             });
-            handle.bridge.collaborationSetAwareness({ user: ALICE });
+            handle.bridge.collaborationSetAwareness(localAwarenessIntent());
             if (transportState !== 'Disconnected') {
                 const generation = handle.bridge.collaborationBeginConnect();
                 handle.bridge.collaborationSocketOpen(generation);
@@ -1038,7 +1086,9 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
                 runtime.seedLocalAwarenessClock(handle.editorId, 4_294_967_296)
             ).toThrow('clock must be an exact u32');
             runtime.seedLocalAwarenessClock(handle.editorId, 4_294_967_293);
-            handle.bridge.collaborationSetAwareness({ state: 'last publishable' });
+            handle.bridge.collaborationSetAwareness(
+                localAwarenessIntent({ state: 'last publishable' })
+            );
             expect(runtime.session(handle.editorId).localClock).toBe(4_294_967_294);
 
             const before = fakeAwarenessAudit(handle.editorId);
@@ -1054,7 +1104,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
 
     it('uses the final local clock for clear, then rejects an exhausted tombstone atomically', () => {
         const finalClockHandle = createRoomHandle({ withSnapshot: true });
-        finalClockHandle.bridge.collaborationSetAwareness({ user: ALICE });
+        finalClockHandle.bridge.collaborationSetAwareness(localAwarenessIntent());
         runtime.seedLocalAwarenessClock(finalClockHandle.editorId, 4_294_967_294);
         finalClockHandle.bridge.collaborationSetAwareness(null);
         expect(runtime.session(finalClockHandle.editorId)).toMatchObject({
@@ -1064,7 +1114,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         });
 
         const exhaustedHandle = createRoomHandle({ withSnapshot: true });
-        exhaustedHandle.bridge.collaborationSetAwareness({ user: ALICE });
+        exhaustedHandle.bridge.collaborationSetAwareness(localAwarenessIntent());
         runtime.seedLocalAwarenessClock(exhaustedHandle.editorId, 4_294_967_295);
         const before = fakeAwarenessAudit(exhaustedHandle.editorId);
         expect(
@@ -1075,7 +1125,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
 
     it('closes incompatible when handshake awareness republish exhausts its clock', () => {
         const handle = createRoomHandle({ withSnapshot: true });
-        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        handle.bridge.collaborationSetAwareness(localAwarenessIntent());
         runtime.seedLocalAwarenessClock(handle.editorId, 4_294_967_294);
         const generation = handle.bridge.collaborationBeginConnect();
         handle.bridge.collaborationSocketOpen(generation);
@@ -1120,7 +1170,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(runtime.session(handle.editorId)).toMatchObject({
             transportState: 'Incompatible',
             liveGeneration: null,
-            desiredAwareness: { user: ALICE },
+            desiredAwareness: localAwarenessIntent(),
             localClock: 4_294_967_295,
             localAwarenessLive: false,
             lastLocalAwarenessPublishMillis: null,
@@ -1132,7 +1182,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
 
     it('rejects due renewal at exhausted headroom without publishing or changing its deadline', () => {
         const handle = createRoomHandle({ withSnapshot: true });
-        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        handle.bridge.collaborationSetAwareness(localAwarenessIntent());
         const generation = handle.bridge.collaborationBeginConnect();
         handle.bridge.collaborationSocketOpen(generation);
         handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
@@ -1151,7 +1201,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
 
     it('sorts the combined local and remote awareness projection by numeric client id', () => {
         const handle = createRoomHandle({ withSnapshot: true });
-        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        handle.bridge.collaborationSetAwareness(localAwarenessIntent());
         const generation = handle.bridge.collaborationBeginConnect();
         handle.bridge.collaborationSocketOpen(generation);
         handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
@@ -1398,7 +1448,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
                 documentId: `sorted-admission-${reverse}`,
                 withSnapshot: true,
             });
-            handle.bridge.collaborationSetAwareness({ user: ALICE });
+            handle.bridge.collaborationSetAwareness(localAwarenessIntent());
             const generation = handle.bridge.collaborationBeginConnect();
             handle.bridge.collaborationSocketOpen(generation);
             handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
@@ -1452,7 +1502,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
 
     it('ignores same and older local-client echoes without refreshing remote activity', () => {
         const handle = createRoomHandle({ withSnapshot: true });
-        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        handle.bridge.collaborationSetAwareness(localAwarenessIntent());
         const generation = handle.bridge.collaborationBeginConnect();
         handle.bridge.collaborationSocketOpen(generation);
         handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
@@ -1490,7 +1540,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
                 documentId: `local-echo-${incomingClock}`,
                 withSnapshot: true,
             });
-            handle.bridge.collaborationSetAwareness({ user: ALICE });
+            handle.bridge.collaborationSetAwareness(localAwarenessIntent());
             const generation = handle.bridge.collaborationBeginConnect();
             handle.bridge.collaborationSocketOpen(generation);
             handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
@@ -1535,7 +1585,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             expect(runtime.session(handle.editorId)).toMatchObject({
                 transportState: 'Incompatible',
                 liveGeneration: null,
-                desiredAwareness: { user: ALICE },
+                desiredAwareness: localAwarenessIntent(),
                 localClock: 3,
                 localAwarenessLive: false,
                 remotePeers: [],
@@ -1557,7 +1607,10 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         const initialPayload = runtime.module.editorV2CollaborationSetAwareness.mock
             .calls[0][1] as string;
         expect(initialPayload).not.toContain('"clock"');
-        expect(JSON.parse(initialPayload)).toEqual({ user: ALICE, focused: false });
+        expect(JSON.parse(initialPayload)).toEqual({
+            state: { user: ALICE },
+            focused: false,
+        });
 
         setup.controller.connect();
         setup.sockets[0].open();
@@ -1595,7 +1648,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(sentFrames(setup.sockets[0]).slice(2)).toEqual([[0x61, 3]]);
     });
 
-    it('merges selection and focus into the desired local awareness state', () => {
+    it('composes application state, focus, and document selection into the local intent', () => {
         const setup = setupController({
             handle: createRoomHandle({ withSnapshot: true }),
             localAwareness: ALICE,
@@ -1605,9 +1658,9 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             runtime.module.editorV2CollaborationSetAwareness.mock.calls[1][1] as string
         );
         expect(selectionPayload).toEqual({
-            user: ALICE,
+            state: { user: ALICE },
             focused: true,
-            selection: { anchor: 2, head: 5 },
+            selection: { type: 'text', anchor: 2, head: 5 },
         });
 
         setup.controller.handleFocusChange(false);
@@ -1615,9 +1668,9 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             runtime.module.editorV2CollaborationSetAwareness.mock.calls[2][1] as string
         );
         expect(focusPayload).toEqual({
-            user: ALICE,
+            state: { user: ALICE },
             focused: false,
-            selection: { anchor: 2, head: 5 },
+            selection: { type: 'text', anchor: 2, head: 5 },
         });
     });
 
@@ -1639,7 +1692,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         const payload = JSON.parse(
             runtime.module.editorV2CollaborationSetAwareness.mock.calls[1][1] as string
         );
-        expect(payload).toEqual({ user: ALICE, focused: true });
+        expect(payload).toEqual({ state: { user: ALICE }, focused: true });
     });
 
     // ── Error separation ────────────────────────────────────────
@@ -1762,7 +1815,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(result.current.editorBindings.documentRevision).not.toBeNull();
     });
 
-    it('maps Rust peer projections to editor remote-selection decorations via the hook', () => {
+    it('renders only Rust-resolved peer cursors and ignores scalar state selections', () => {
         const handle = createRoomHandle({ withSnapshot: true });
         const sockets: MockWebSocket[] = [];
         const { result } = renderHook(() =>
@@ -1787,8 +1840,22 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         });
         act(() => {
             runtime.pushRemotePeers(handle.editorId, [
-                remotePeer(),
-                remotePeer({ clientId: '43', cursor: null, state: null }),
+                remotePeer({
+                    state: {
+                        user: { userId: '2', name: 'Bob', color: '#00f' },
+                        focused: true,
+                        selection: { anchor: 90, head: 91 },
+                    },
+                    cursor: { anchor: 4, head: 9 },
+                }),
+                remotePeer({
+                    clientId: '43',
+                    cursor: null,
+                    state: {
+                        user: { userId: '3', name: 'Carol', color: '#0a0' },
+                        selection: { anchor: 40, head: 41 },
+                    },
+                }),
             ]);
             sockets[0].receive(V2_FAKE_AWARENESS_FRAME);
         });
@@ -1855,7 +1922,10 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         const payload = JSON.parse(
             runtime.module.editorV2CollaborationSetAwareness.mock.calls[1][1] as string
         );
-        expect(payload).toEqual({ user: { ...ALICE, name: 'Alice II' }, focused: false });
+        expect(payload).toEqual({
+            state: { user: { ...ALICE, name: 'Alice II' } },
+            focused: false,
+        });
     });
 
     // ── Removal proofs ──────────────────────────────────────────
