@@ -15,6 +15,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.Window
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
@@ -35,6 +36,7 @@ import java.util.concurrent.atomic.AtomicReference
 import uniffi.editor_core.editorV2GetState
 
 private const val DESTROY_INVALIDATION_AWAIT_TIMEOUT_MS = 250L
+private const val OUTSIDE_TAP_GESTURE_CONFIRM_DELAY_MS = 150L
 private val nextNativeEditorErrorCallbackToken = AtomicLong(0)
 
 internal enum class NativeEditorOutsideTapDecision {
@@ -354,65 +356,84 @@ internal object NativeEditorViewRegistry {
 }
 
 private object NativeEditorOutsideTapDispatcher {
-    private val dispatchers = WeakHashMap<Window, OutsideTapWindowCallback>()
+    private val dispatchers = WeakHashMap<Window, OutsideTapTouchDispatcher>()
 
     fun register(window: Window, view: NativeEditorExpoView): Boolean {
-        val currentCallback = window.callback ?: run {
-            view.traceOutsideTap("register skipped missing window callback")
+        val host = contentRootFor(window)
+        if (host == null) {
+            view.traceOutsideTap("register skipped missing content root")
             return false
         }
         val previousDispatcher = dispatchers[window]
-        val dispatcher = if (currentCallback is OutsideTapWindowCallback) {
+        val dispatcher = if (previousDispatcher?.host === host) {
             previousDispatcher
-                ?.takeIf { it !== currentCallback }
-                ?.transferViewsTo(currentCallback)
-            currentCallback
         } else {
-            OutsideTapWindowCallback(window, currentCallback).also { nextDispatcher ->
+            OutsideTapTouchDispatcher(host).also { nextDispatcher ->
                 previousDispatcher?.transferViewsTo(nextDispatcher)
-                window.callback = nextDispatcher
+                previousDispatcher?.detach()
                 dispatchers[window] = nextDispatcher
             }
         }
         dispatchers[window] = dispatcher
         dispatcher.add(view)
         view.traceOutsideTap(
-            "register callbackAttached=${window.callback === dispatcher} " +
+            "register observerAttached=${dispatcher.isAttached()} " +
+                "host=${host.javaClass.name} " +
                 "activeViews=${dispatcher.liveViews().size}"
         )
-        return window.callback === dispatcher
+        return dispatcher.isAttached()
     }
 
     fun unregister(window: Window, view: NativeEditorExpoView) {
         val dispatcher = dispatchers[window] ?: return
         if (!dispatcher.remove(view)) return
         dispatchers.remove(window)
-        if (window.callback === dispatcher) {
-            window.callback = dispatcher.baseCallback
-        }
+        dispatcher.detach()
     }
 
     internal fun dispatchForTesting(window: Window, event: MotionEvent): Boolean =
-        dispatchers[window]?.dispatchTouchEvent(event) ?: false
+        dispatchers[window]?.dispatchForTesting(event) ?: false
 
-    private class OutsideTapWindowCallback(
-        private val window: Window,
-        val baseCallback: Window.Callback
-    ) : Window.Callback by baseCallback {
+    private fun contentRootFor(window: Window): ViewGroup? {
+        val decorView = window.decorView
+        return decorView.findViewById<View>(android.R.id.content) as? ViewGroup
+            ?: decorView as? ViewGroup
+    }
+
+    private class OutsideTapTouchDispatcher(
+        val host: ViewGroup
+    ) : View.OnTouchListener {
         private data class OutsideTapCandidate(
             val view: WeakReference<NativeEditorExpoView>,
             val downRawX: Float,
             val downRawY: Float,
-            val editorRectOnDown: Rect?
+            val editorRectOnDown: Rect?,
+            val confirm: Runnable
         )
 
         private val views = mutableListOf<WeakReference<NativeEditorExpoView>>()
         private val pendingOutsideTapCandidates = mutableListOf<OutsideTapCandidate>()
-        private val touchSlopPx = ViewConfiguration.get(window.context).scaledTouchSlop
-        private var disabled = false
+        private val touchSlopPx = ViewConfiguration.get(host.context).scaledTouchSlop
+        private val scrollChangedListener = ViewTreeObserver.OnScrollChangedListener {
+            cancelPendingOutsideTapCandidates("scroll")
+        }
+        private var scrollListenerTreeObserver: ViewTreeObserver? = null
+        private var attachmentGeneration = 0
+        private val observerView = View(host.context).apply {
+            isClickable = false
+            isFocusable = false
+            isFocusableInTouchMode = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+
+        init {
+            observerView.setOnTouchListener(this)
+            attach()
+        }
 
         fun add(view: NativeEditorExpoView) {
             prune()
+            attach()
             if (views.any { it.get() === view }) return
             views.add(WeakReference(view))
         }
@@ -422,11 +443,10 @@ private object NativeEditorOutsideTapDispatcher {
             return views.mapNotNull { it.get() }
         }
 
-        fun transferViewsTo(target: OutsideTapWindowCallback) {
+        fun transferViewsTo(target: OutsideTapTouchDispatcher) {
             liveViews().forEach { target.add(it) }
             views.clear()
             cancelPendingOutsideTapCandidates("transfer")
-            disabled = true
         }
 
         fun remove(view: NativeEditorExpoView): Boolean {
@@ -435,44 +455,36 @@ private object NativeEditorOutsideTapDispatcher {
             return views.isEmpty()
         }
 
-        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-            if (disabled) {
-                return baseCallback.dispatchTouchEvent(event)
-            }
+        override fun onTouch(view: View, event: MotionEvent): Boolean {
             val activeViews = liveViews()
             if (activeViews.isEmpty()) {
-                return baseCallback.dispatchTouchEvent(event)
+                return false
             }
 
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     handleActionDown(activeViews, event)
-                    return baseCallback.dispatchTouchEvent(event)
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val result = baseCallback.dispatchTouchEvent(event)
                     if (hasMovedBeyondTapSlop(event)) {
                         cancelPendingOutsideTapCandidates("move")
                     }
-                    return result
                 }
                 MotionEvent.ACTION_UP -> {
-                    val result = baseCallback.dispatchTouchEvent(event)
                     if (hasMovedBeyondTapSlop(event)) {
                         cancelPendingOutsideTapCandidates("up moved")
                     } else {
                         confirmPendingOutsideTapCandidates("up")
                     }
-                    return result
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    val result = baseCallback.dispatchTouchEvent(event)
                     cancelPendingOutsideTapCandidates("cancel")
-                    return result
                 }
             }
-            return baseCallback.dispatchTouchEvent(event)
+            return false
         }
+
+        fun dispatchForTesting(event: MotionEvent): Boolean = onTouch(observerView, event)
 
         private fun handleActionDown(activeViews: List<NativeEditorExpoView>, event: MotionEvent) {
             cancelPendingOutsideTapCandidates("new down")
@@ -481,7 +493,7 @@ private object NativeEditorOutsideTapDispatcher {
             }
             decisions.forEach { (view, decision) ->
                 view.traceOutsideTap(
-                    "dispatch callback action=${event.action} raw=${event.rawX.toInt()},${event.rawY.toInt()} decision=$decision"
+                    "dispatch observer action=${event.action} raw=${event.rawX.toInt()},${event.rawY.toInt()} decision=$decision"
                 )
                 if (decision == NativeEditorOutsideTapDecision.OUTSIDE_EDITOR) {
                     scheduleOutsideTapCandidate(view, event)
@@ -501,14 +513,22 @@ private object NativeEditorOutsideTapDispatcher {
             } else {
                 null
             }
-            val candidate = OutsideTapCandidate(
-                view = WeakReference(view),
+            val viewRef = WeakReference(view)
+            lateinit var candidate: OutsideTapCandidate
+            val confirm = Runnable {
+                confirmOutsideTapCandidate(candidate, "delay")
+            }
+            candidate = OutsideTapCandidate(
+                view = viewRef,
                 downRawX = event.rawX,
                 downRawY = event.rawY,
-                editorRectOnDown = editorRectOnDown
+                editorRectOnDown = editorRectOnDown,
+                confirm = confirm
             )
             pendingOutsideTapCandidates.add(candidate)
+            ensureScrollListener()
             view.traceOutsideTap("candidate outside tap")
+            observerView.postDelayed(confirm, OUTSIDE_TAP_GESTURE_CONFIRM_DELAY_MS)
         }
 
         private fun confirmPendingOutsideTapCandidates(reason: String) {
@@ -520,6 +540,8 @@ private object NativeEditorOutsideTapDispatcher {
 
         private fun confirmOutsideTapCandidate(candidate: OutsideTapCandidate, reason: String) {
             if (!pendingOutsideTapCandidates.remove(candidate)) return
+            removeScrollListenerIfIdle()
+            observerView.removeCallbacks(candidate.confirm)
             val view = candidate.view.get() ?: return
             if (editorMovedBeyondTapSlop(view, candidate)) {
                 view.traceOutsideTap("cancel outside tap candidate reason=$reason moved")
@@ -555,27 +577,96 @@ private object NativeEditorOutsideTapDispatcher {
             candidates.forEach { candidate ->
                 if (candidate.view.get() === view) {
                     pendingOutsideTapCandidates.remove(candidate)
+                    observerView.removeCallbacks(candidate.confirm)
                     view.traceOutsideTap("cancel outside tap candidate reason=$reason")
                 }
             }
+            removeScrollListenerIfIdle()
         }
 
         private fun cancelPendingOutsideTapCandidates(reason: String) {
             val candidates = pendingOutsideTapCandidates.toList()
             pendingOutsideTapCandidates.clear()
+            removeScrollListener()
             candidates.forEach { candidate ->
+                observerView.removeCallbacks(candidate.confirm)
                 candidate.view.get()?.traceOutsideTap("cancel outside tap candidate reason=$reason")
+            }
+        }
+
+        private fun ensureScrollListener() {
+            val activeObserver = scrollListenerTreeObserver
+            if (activeObserver?.isAlive == true && activeObserver === host.viewTreeObserver) {
+                return
+            }
+            removeScrollListener()
+            val nextObserver = host.viewTreeObserver
+            if (nextObserver.isAlive) {
+                nextObserver.addOnScrollChangedListener(scrollChangedListener)
+                scrollListenerTreeObserver = nextObserver
+            }
+        }
+
+        private fun removeScrollListenerIfIdle() {
+            if (pendingOutsideTapCandidates.isEmpty()) {
+                removeScrollListener()
+            }
+        }
+
+        private fun removeScrollListener() {
+            val observer = scrollListenerTreeObserver
+            if (observer?.isAlive == true) {
+                observer.removeOnScrollChangedListener(scrollChangedListener)
+            }
+            scrollListenerTreeObserver = null
+        }
+
+        fun isAttached(): Boolean = observerView.parent === host
+
+        fun detach() {
+            attachmentGeneration += 1
+            val generation = attachmentGeneration
+            cancelPendingOutsideTapCandidates("detach")
+            val parent = observerView.parent as? ViewGroup ?: return
+            observerView.visibility = View.GONE
+            parent.post {
+                if (generation != attachmentGeneration) return@post
+                if (observerView.parent === parent) {
+                    parent.removeView(observerView)
+                }
+            }
+        }
+
+        private fun attach() {
+            attachmentGeneration += 1
+            observerView.visibility = View.VISIBLE
+            val parent = observerView.parent as? ViewGroup
+            if (parent !== host) {
+                if (parent != null) {
+                    parent.removeView(observerView)
+                }
+                host.addView(
+                    observerView,
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
+                return
+            }
+            if (host.indexOfChild(observerView) != host.childCount - 1) {
+                val generation = attachmentGeneration
+                host.post {
+                    if (generation != attachmentGeneration) return@post
+                    if (observerView.parent === host && host.indexOfChild(observerView) != host.childCount - 1) {
+                        observerView.bringToFront()
+                    }
+                }
             }
         }
 
         private fun prune() {
             views.removeAll { it.get() == null }
-            if (views.isEmpty() && window.callback === this) {
-                window.callback = baseCallback
-                if (dispatchers[window] === this) {
-                    dispatchers.remove(window)
-                }
-            }
         }
     }
 }

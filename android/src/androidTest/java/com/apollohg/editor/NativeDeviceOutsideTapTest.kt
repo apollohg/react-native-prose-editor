@@ -57,6 +57,7 @@ class NativeDeviceOutsideTapTest {
                     val editor = NativeEditorExpoView(expoContext.context, expoContext.appContext).apply {
                         clipToPadding = false
                         setShowToolbar(false)
+                        richTextView.editorEditText.showSoftInputOnFocus = false
                     }
 
                     editor.onFocusChangeForTesting = {}
@@ -160,6 +161,7 @@ class NativeDeviceOutsideTapTest {
                     val editor = NativeEditorExpoView(expoContext.context, expoContext.appContext).apply {
                         clipToPadding = false
                         setShowToolbar(false)
+                        richTextView.editorEditText.showSoftInputOnFocus = false
                     }
 
                     editor.onFocusChangeForTesting = {}
@@ -268,6 +270,7 @@ class NativeDeviceOutsideTapTest {
                     val editor = NativeEditorExpoView(expoContext.context, expoContext.appContext).apply {
                         clipToPadding = false
                         setShowToolbar(false)
+                        richTextView.editorEditText.showSoftInputOnFocus = false
                     }
                     val outsideTarget = View(activity).apply {
                         setBackgroundColor(Color.rgb(238, 238, 238))
@@ -438,6 +441,7 @@ class NativeDeviceOutsideTapTest {
                         clipToPadding = false
                         setShowToolbar(false)
                         setBackgroundColor(Color.WHITE)
+                        richTextView.editorEditText.showSoftInputOnFocus = false
                     }
 
                     editor.onFocusChangeForTesting = {}
