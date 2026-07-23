@@ -39,6 +39,8 @@ const V2_FAKE_U32_MAX = 0xffff_ffff;
 const V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK = V2_FAKE_U32_MAX - 1;
 const V2_FAKE_AWARENESS_RENEWAL_INTERVAL_MILLIS = 15_000n;
 const V2_FAKE_AWARENESS_EXPIRY_MILLIS = 30_000n;
+const V2_FAKE_MALFORMED_AWARENESS_MESSAGE =
+    'awareness update cannot decode: fake entry requires canonical u64 clientId and exact u32 clock';
 
 const EMPTY_DOC: DocumentJSON = { type: 'doc', content: [{ type: 'paragraph' }] };
 
@@ -881,6 +883,43 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         return null;
     }
 
+    function validateAndSortAwarenessDelta(
+        entries: NativeEditorV2PeerInfo[]
+    ): NativeEditorV2PeerInfo[] | null {
+        const validated: NativeEditorV2PeerInfo[] = [];
+        for (const peer of entries) {
+            const clientId = canonicalV2U64(peer.clientId);
+            const clock = exactV2U32(peer.clock);
+            if (clientId == null || clock == null) return null;
+            validated.push({ ...peer, clientId, clock });
+        }
+        validated.sort((left, right) => {
+            const leftId = BigInt(left.clientId);
+            const rightId = BigInt(right.clientId);
+            return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+        });
+        return validated;
+    }
+
+    function malformedAwarenessReceiveError(): FakeErrorRecord {
+        const error = errorRecord(
+            'transport',
+            'TRANSPORT_PROTOCOL_INVALID',
+            'awareness frame handling failed'
+        );
+        error.details = {
+            action: 'receiveMessage',
+            cause: {
+                code: 'COLLABORATION_DECODE_FAILED',
+                message: V2_FAKE_MALFORMED_AWARENESS_MESSAGE,
+                limit: null,
+                actual: null,
+                details: null,
+            },
+        };
+        return error;
+    }
+
     function awarenessReceiveError(cause: FakeErrorRecord): FakeErrorRecord {
         const error = errorRecord(
             'transport',
@@ -1048,7 +1087,14 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         // Remote awareness state.
         if (tag === 0x02) {
             const remote = pendingFor(session.editorId);
-            const entries = remote.awarenessDeltas.shift() ?? [];
+            const entries = validateAndSortAwarenessDelta(
+                remote.awarenessDeltas.shift() ?? []
+            );
+            if (entries == null) {
+                const error = malformedAwarenessReceiveError();
+                retireGeneration(session, 'Disconnected');
+                return outcome({ close: { disposition: 'retryable', error } });
+            }
             const clockLimitError = remoteAwarenessClockLimitError(session, entries);
             if (clockLimitError) {
                 retireGeneration(session, 'Incompatible');

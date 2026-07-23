@@ -116,6 +116,8 @@ const AWARENESS_CLOCK_EXHAUSTED_ERROR = {
         retryable: false,
     },
 };
+const MALFORMED_FAKE_AWARENESS_MESSAGE =
+    'awareness update cannot decode: fake entry requires canonical u64 clientId and exact u32 clock';
 
 function remotePeer(overrides: Partial<NativeEditorV2PeerInfo> = {}): NativeEditorV2PeerInfo {
     return {
@@ -1317,6 +1319,135 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(session.remoteAwarenessClocks.size).toBe(0);
         expect(session.remotePeerActivity.size).toBe(0);
         expect(handle.bridge.collaborationPeers()).toEqual([]);
+    });
+
+    it('closes retryably and atomically for malformed fake-wire client ids and clocks', () => {
+        const malformedEntries: Array<{
+            label: string;
+            peer: NativeEditorV2PeerInfo;
+        }> = [
+            {
+                label: 'noncanonical client id',
+                peer: remotePeer({ clientId: '01', clock: 1 }),
+            },
+            {
+                label: 'negative clock',
+                peer: remotePeer({ clientId: '51', clock: -1 }),
+            },
+            {
+                label: 'fractional clock',
+                peer: remotePeer({ clientId: '51', clock: 1.5 }),
+            },
+            {
+                label: 'clock above u32',
+                peer: remotePeer({ clientId: '51', clock: 4_294_967_296 }),
+            },
+        ];
+
+        for (const { label, peer } of malformedEntries) {
+            const handle = createRoomHandle({ documentId: `malformed-${label}`, withSnapshot: true });
+            const generation = handle.bridge.collaborationBeginConnect();
+            handle.bridge.collaborationSocketOpen(generation);
+            handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+            runtime.pushRemotePeers(handle.editorId, [
+                remotePeer({ clientId: '40', clock: 1 }),
+                peer,
+            ]);
+
+            expect(
+                handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME)
+            ).toEqual({
+                framesDecoded: 1,
+                repliesEnqueued: 0,
+                replyBytesEnqueued: 0,
+                remoteCommitApplied: false,
+                documentPromoted: false,
+                transportState: 'Disconnected',
+                close: {
+                    disposition: 'retryable',
+                    error: {
+                        domain: 'transport',
+                        code: 'TRANSPORT_PROTOCOL_INVALID',
+                        message: 'awareness frame handling failed',
+                        requestId: null,
+                        operationIndex: null,
+                        limit: null,
+                        actual: null,
+                        details: {
+                            action: 'receiveMessage',
+                            cause: {
+                                code: 'COLLABORATION_DECODE_FAILED',
+                                message: MALFORMED_FAKE_AWARENESS_MESSAGE,
+                                limit: null,
+                                actual: null,
+                                details: null,
+                            },
+                        },
+                    },
+                },
+            });
+            expect(runtime.session(handle.editorId).remotePeers).toEqual([]);
+            expect(runtime.session(handle.editorId).remoteAwarenessClocks.size).toBe(0);
+            expect(runtime.session(handle.editorId).remotePeerActivity.size).toBe(0);
+        }
+    });
+
+    it('sorts validated awareness entries numerically before choosing an admission error', () => {
+        for (const reverse of [false, true]) {
+            const handle = createRoomHandle({
+                documentId: `sorted-admission-${reverse}`,
+                withSnapshot: true,
+            });
+            handle.bridge.collaborationSetAwareness({ user: ALICE });
+            const generation = handle.bridge.collaborationBeginConnect();
+            handle.bridge.collaborationSocketOpen(generation);
+            handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+            const session = runtime.session(handle.editorId);
+            expect(session.localClock).toBe(2);
+
+            const localViolation = remotePeer({
+                clientId: session.localClientId,
+                clock: 3,
+                isLocal: false,
+                state: null,
+                cursor: null,
+            });
+            const lowerClientTerminalViolation = remotePeer({
+                clientId: '2',
+                clock: 4_294_967_295,
+            });
+            runtime.pushRemotePeers(
+                handle.editorId,
+                reverse
+                    ? [lowerClientTerminalViolation, localViolation]
+                    : [localViolation, lowerClientTerminalViolation]
+            );
+
+            expect(
+                handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME)
+            ).toMatchObject({
+                transportState: 'Incompatible',
+                close: {
+                    disposition: 'incompatible',
+                    error: {
+                        code: 'TRANSPORT_AWARENESS_LIMIT_EXCEEDED',
+                        details: {
+                            action: 'receiveMessage',
+                            cause: {
+                                code: 'INPUT_LIMIT_EXCEEDED',
+                                message: 'input exceeds limit 4294967294: 4294967295',
+                                limit: 4_294_967_294,
+                                actual: 4_294_967_295,
+                                details: { field: 'awarenessClock' },
+                            },
+                        },
+                    },
+                },
+            });
+            expect(runtime.session(handle.editorId).remotePeers).toEqual([]);
+            expect(runtime.session(handle.editorId).remoteAwarenessClocks.size).toBe(0);
+            expect(runtime.session(handle.editorId).remotePeerActivity.size).toBe(0);
+        }
     });
 
     it('ignores same and older local-client echoes without refreshing remote activity', () => {
