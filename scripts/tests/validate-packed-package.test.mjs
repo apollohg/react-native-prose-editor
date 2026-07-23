@@ -267,112 +267,113 @@ try {
     const baseline = makeFixture("baseline");
     expectPass("baseline ABI", run("--validate-abi-root", baseline));
     expectPass("baseline copied artifacts", run("--validate-copies", repoRoot, baseline));
+    runNativeParserBoundsFixtures();
 
-  const missingFunction = makeFixture("missing-function");
-  replace(
-    join(missingFunction, "ios/editor_coreFFI/editor_coreFFI.h"),
-    "uniffi_editor_core_fn_func_editor_v2_undo",
-    "uniffi_editor_core_fn_func_editor_v2_undo_removed",
-  );
-  expectFailure(
-    "missing v2 function",
-    run("--validate-abi-root", missingFunction),
-    /missing expected function symbol: editor_v2_undo/,
-  );
+    const missingFunction = makeFixture("missing-function");
+    replace(
+      join(missingFunction, "ios/editor_coreFFI/editor_coreFFI.h"),
+      "uniffi_editor_core_fn_func_editor_v2_undo",
+      "uniffi_editor_core_fn_func_editor_v2_undo_removed",
+    );
+    expectFailure(
+      "missing v2 function",
+      run("--validate-abi-root", missingFunction),
+      /missing expected function symbol: editor_v2_undo/,
+    );
 
-  const legacyFunction = makeFixture("legacy-function");
-  writeFileSync(
-    join(legacyFunction, "ios/editor_coreFFI/editor_coreFFI.h"),
-    "\nRustBuffer uniffi_editor_core_fn_func_editor_create(RustCallStatus *_Nonnull out_status);\n",
-    { flag: "a" },
-  );
-  expectFailure(
-    "legacy function",
-    run("--validate-abi-root", legacyFunction),
-    /legacy UniFFI function symbol: editor_create/,
-  );
+    const legacyFunction = makeFixture("legacy-function");
+    writeFileSync(
+      join(legacyFunction, "ios/editor_coreFFI/editor_coreFFI.h"),
+      "\nRustBuffer uniffi_editor_core_fn_func_editor_create(RustCallStatus *_Nonnull out_status);\n",
+      { flag: "a" },
+    );
+    expectFailure(
+      "legacy function",
+      run("--validate-abi-root", legacyFunction),
+      /legacy UniFFI function symbol: editor_create/,
+    );
 
-  const wrongChecksum = makeFixture("wrong-checksum");
-  replace(
-    join(wrongChecksum, "ios/Generated_editor_core.swift"),
-    "uniffi_editor_core_checksum_func_editor_v2_apply_command() != 14484",
-    "uniffi_editor_core_checksum_func_editor_v2_apply_command() != 1",
-  );
-  expectFailure(
-    "wrong Swift checksum",
-    run("--validate-abi-root", wrongChecksum),
-    /Swift checksum mismatch for editor_v2_apply_command/,
-  );
+    const wrongChecksum = makeFixture("wrong-checksum");
+    replace(
+      join(wrongChecksum, "ios/Generated_editor_core.swift"),
+      "uniffi_editor_core_checksum_func_editor_v2_apply_command() != 14484",
+      "uniffi_editor_core_checksum_func_editor_v2_apply_command() != 1",
+    );
+    expectFailure(
+      "wrong Swift checksum",
+      run("--validate-abi-root", wrongChecksum),
+      /Swift checksum mismatch for editor_v2_apply_command/,
+    );
 
-  const staleSwift = makeFixture("stale-swift");
-  replace(join(staleSwift, "ios/Generated_editor_core.swift"), "editorV2Create", "editorV2CreateStale");
-  expectFailure(
-    "stale Swift binding",
-    run("--validate-copies", repoRoot, staleSwift),
-    /copy mismatch: ios\/Generated_editor_core\.swift/,
-  );
+    const staleSwift = makeFixture("stale-swift");
+    replace(join(staleSwift, "ios/Generated_editor_core.swift"), "editorV2Create", "editorV2CreateStale");
+    expectFailure(
+      "stale Swift binding",
+      run("--validate-copies", repoRoot, staleSwift),
+      /copy mismatch: ios\/Generated_editor_core\.swift/,
+    );
 
-  const staleKotlin = makeFixture("stale-kotlin");
-  replace(
-    join(staleKotlin, "rust/bindings/kotlin/uniffi/editor_core/editor_core.kt"),
-    "fun `editorV2Create`(",
-    "fun `editorV2CreateStale`(",
-  );
-  expectFailure(
-    "stale Kotlin binding",
-    run("--validate-copies", repoRoot, staleKotlin),
-    /copy mismatch: rust\/bindings\/kotlin\/uniffi\/editor_core\/editor_core\.kt/,
-  );
+    const staleKotlin = makeFixture("stale-kotlin");
+    replace(
+      join(staleKotlin, "rust/bindings/kotlin/uniffi/editor_core/editor_core.kt"),
+      "fun `editorV2Create`(",
+      "fun `editorV2CreateStale`(",
+    );
+    expectFailure(
+      "stale Kotlin binding",
+      run("--validate-copies", repoRoot, staleKotlin),
+      /copy mismatch: rust\/bindings\/kotlin\/uniffi\/editor_core\/editor_core\.kt/,
+    );
 
-  const staleIosBinary = makeFixture("stale-ios-binary");
-  writeFileSync(
-    join(staleIosBinary, "ios/EditorCore.xcframework/ios-arm64/libeditor_core.a"),
-    Buffer.from([0]),
-    { flag: "a" },
-  );
-  expectFailure(
-    "stale iOS binary",
-    run("--validate-copies", repoRoot, staleIosBinary),
-    /copy mismatch: ios\/EditorCore\.xcframework\/ios-arm64\/libeditor_core\.a/,
-  );
+    const staleIosBinary = makeFixture("stale-ios-binary");
+    writeFileSync(
+      join(staleIosBinary, "ios/EditorCore.xcframework/ios-arm64/libeditor_core.a"),
+      Buffer.from([0]),
+      { flag: "a" },
+    );
+    expectFailure(
+      "stale iOS binary",
+      run("--validate-copies", repoRoot, staleIosBinary),
+      /copy mismatch: ios\/EditorCore\.xcframework\/ios-arm64\/libeditor_core\.a/,
+    );
 
-  const staleAndroidBinary = makeFixture("stale-android-binary");
-  writeFileSync(
-    join(staleAndroidBinary, "rust/android/arm64-v8a/libeditor_core.so"),
-    Buffer.from([0]),
-    { flag: "a" },
-  );
-  expectFailure(
-    "stale Android binary",
-    run("--validate-copies", repoRoot, staleAndroidBinary),
-    /copy mismatch: rust\/android\/arm64-v8a\/libeditor_core\.so/,
-  );
+    const staleAndroidBinary = makeFixture("stale-android-binary");
+    writeFileSync(
+      join(staleAndroidBinary, "rust/android/arm64-v8a/libeditor_core.so"),
+      Buffer.from([0]),
+      { flag: "a" },
+    );
+    expectFailure(
+      "stale Android binary",
+      run("--validate-copies", repoRoot, staleAndroidBinary),
+      /copy mismatch: rust\/android\/arm64-v8a\/libeditor_core\.so/,
+    );
 
-  const linklessPod = makeFixture("linkless-pod");
-  replace(
-    join(linklessPod, "ios/ReactNativeProseEditor.podspec"),
-    "s.vendored_frameworks = 'EditorCore.xcframework'",
-    "# fixture intentionally omits the linked EditorCore.xcframework",
-  );
-  expectFailure(
-    "CocoaPods installs but cannot link",
-    run("--validate-ios-consumer", linklessPod),
-    /iOS consumer xcodebuild failed/,
-  );
+    const linklessPod = makeFixture("linkless-pod");
+    replace(
+      join(linklessPod, "ios/ReactNativeProseEditor.podspec"),
+      "s.vendored_frameworks = 'EditorCore.xcframework'",
+      "# fixture intentionally omits the linked EditorCore.xcframework",
+    );
+    expectFailure(
+      "CocoaPods installs but cannot link",
+      run("--validate-ios-consumer", linklessPod),
+      /iOS consumer xcodebuild failed/,
+    );
 
-  const unpackagedAndroid = makeFixture("unpackaged-android");
-  replace(
-    join(unpackagedAndroid, "android/build.gradle"),
-    '"${project.projectDir}/../rust/android"',
-    '"${project.projectDir}/../rust/android-disabled"',
-  );
-  expectFailure(
-    "Gradle compiles Kotlin but omits native packaging",
-    run("--validate-android-consumer", unpackagedAndroid),
-    /Android consumer package is missing libeditor_core\.so for arm64-v8a/,
-  );
-  runWrongNativeChecksumFixture();
-  runDuplicateIosChecksumFixture();
+    const unpackagedAndroid = makeFixture("unpackaged-android");
+    replace(
+      join(unpackagedAndroid, "android/build.gradle"),
+      '"${project.projectDir}/../rust/android"',
+      '"${project.projectDir}/../rust/android-disabled"',
+    );
+    expectFailure(
+      "Gradle compiles Kotlin but omits native packaging",
+      run("--validate-android-consumer", unpackagedAndroid),
+      /Android consumer package is missing libeditor_core\.so for arm64-v8a/,
+    );
+    runWrongNativeChecksumFixture();
+    runDuplicateIosChecksumFixture();
   }
 } finally {
   rmSync(workDir, { recursive: true, force: true });
