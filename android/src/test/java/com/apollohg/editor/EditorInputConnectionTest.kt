@@ -1796,6 +1796,8 @@ class EditorInputConnectionTest {
         val refreshedConnection = editText.onCreateInputConnection(refreshedEditorInfo)!!
         assertTrue(refreshedConnection !== initialConnection)
         assertEquals(initialGeneration, editText.inputConnectionGenerationForTesting())
+        assertEquals(5, refreshedEditorInfo.initialSelStart)
+        assertEquals(5, refreshedEditorInfo.initialSelEnd)
         assertEquals("seed\n", refreshedEditorInfo.getInitialTextBeforeCursor(20, 0).toString())
         assertTrue(refreshedEditorInfo.initialCapsMode hasInputFlag InputType.TYPE_TEXT_FLAG_CAP_SENTENCES)
         assertEquals(1, editText.imeTraceSnapshotForTesting().count {
@@ -1815,6 +1817,8 @@ class EditorInputConnectionTest {
         shadowOf(Looper.getMainLooper()).idle()
 
         assertEquals("seed\nx", editText.text.toString())
+        assertEquals(6, editText.selectionStart)
+        assertEquals(6, editText.selectionEnd)
         val document = adapter.documentJson()?.let(::JSONObject) ?: error("missing document JSON")
         assertEquals(2, document.getJSONArray("content").length())
     }

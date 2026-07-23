@@ -262,13 +262,16 @@ class NativeDeviceImeRegressionTest {
                     trace = editText.imeTraceSnapshotForTesting(),
                     ready = editorInfo.initialCapsMode and InputType.TYPE_TEXT_FLAG_CAP_SENTENCES != 0,
                     surroundingText = editorInfo.getInitialTextBeforeCursor(20, 0).toString(),
+                    imeSelection = editorInfo.initialSelStart to editorInfo.initialSelEnd,
                     inputConnectionGeneration = editText.inputConnectionGenerationForTesting()
                 )
             }
             // The empty trailing block owns a zero-width render placeholder. Android is
-            // given the sanitized value through EditorInfo, asserted below.
+            // given the sanitized value through EditorInfo, asserted below. The rendered
+            // Editable's raw caret sits after that placeholder.
             assertEquals("seed\n\u200B", editText.text.toString())
-            assertEquals(5 to 5, afterSplit.selection)
+            assertEquals(6 to 6, afterSplit.selection)
+            assertEquals(5 to 5, afterSplit.imeSelection)
             assertEquals(initialGeneration, afterSplit.inputConnectionGeneration)
             assertEquals("seed\n", afterSplit.surroundingText)
             assertEquals(1, afterSplit.trace.count { it.startsWith("lineBoundaryInputRefreshScheduled") })
@@ -290,6 +293,10 @@ class NativeDeviceImeRegressionTest {
             instrumentation.waitForIdleSync()
 
             assertEquals("seed\nx", editText.text.toString())
+            assertEquals(
+                6 to 6,
+                runOnMainSyncWithResult { editText.selectionStart to editText.selectionEnd }
+            )
             val document = adapter.documentJson()?.let(::JSONObject) ?: error("missing document JSON")
             assertEquals(2, document.getJSONArray("content").length())
         } finally {
@@ -409,6 +416,7 @@ class NativeDeviceImeRegressionTest {
         val trace: List<String> = emptyList(),
         val ready: Boolean = false,
         val surroundingText: String = "",
+        val imeSelection: Pair<Int, Int> = 0 to 0,
         val inputConnectionGeneration: Long = 0L
     )
 }
