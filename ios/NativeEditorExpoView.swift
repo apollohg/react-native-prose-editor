@@ -60,6 +60,10 @@ final class NativeEditorViewRegistry {
     func invalidateDestroyedEditor(editorId: UInt64) {
         guard editorId != 0 else { return }
         performOnMain {
+            // A paired adapter can be released inside `destroy`'s operation.
+            // Keep the hard destroy boundary active until that operation
+            // returns so reentrant registration and commands remain blocked.
+            guard !destroyingEditorIds.contains(editorId) else { return }
             destroyingEditorIds.remove(editorId)
             activeEditorIds.remove(editorId)
             let views = viewsByEditorId.removeValue(forKey: editorId)?.allObjects ?? []
@@ -71,7 +75,10 @@ final class NativeEditorViewRegistry {
         guard editorId != 0 else { return }
         performOnMain {
             guard destroyingEditorIds.insert(editorId).inserted else { return }
-            defer { invalidateDestroyedEditor(editorId: editorId) }
+            defer {
+                destroyingEditorIds.remove(editorId)
+                invalidateDestroyedEditor(editorId: editorId)
+            }
             operation()
         }
     }
@@ -2251,10 +2258,6 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             clearPendingAccessoryRetry()
             clearPendingMentionSuggestionRetry()
         }
-        // Fetch and adopt one atomic snapshot before the host's bind path
-        // asks `currentStateJSON()`. The adapter hands that exact payload to
-        // the bind, avoiding an independent cache-adopting render.
-        imageLoadOwner.withCurrent { richTextView.editorId = id }
         var initialBindUpdateJSON: String?
         if id != 0 {
             guard NativeEditorViewRegistry.shared.register(editorId: id, view: self) else {
@@ -2263,6 +2266,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             }
             bindAutonomousError(adapter: EditorV2Registry.adapter(forLegacyId: id), editorId: id)
             initialBindUpdateJSON = EditorV2Registry.adapter(forLegacyId: id)?.initialUpdateJSON()
+        }
+        // Bind the editor with the same adopted snapshot used for toolbar
+        // state. The text view must not perform an independent state read.
+        imageLoadOwner.withCurrent {
+            richTextView.bindEditor(id: id, initialUpdateJSON: initialBindUpdateJSON)
         }
         if id != 0 {
             if let initialBindUpdateJSON,

@@ -7111,10 +7111,14 @@ final class RichTextEditorViewTests: XCTestCase {
         let view = NativeEditorExpoView()
         view.setEditorId(editorId)
         _ = EditorV2Shadow.setHtml(id: editorId, html: "<ul><li><p>Hello @al</p></li></ul>")
-        view.richTextView.textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        let currentState = EditorV2Shadow.getCurrentState(id: editorId)
+        view.richTextView.textView.applyUpdateJSON(currentState, notifyDelegate: false)
 
         let text = view.richTextView.textView.text ?? ""
-        let utf16Offset = (text as NSString).range(of: "@al").location + 3
+        let mentionRange = (text as NSString).range(of: "@al")
+        XCTAssertNotEqual(mentionRange.location, NSNotFound, "rendered list text should contain the mention query, got: \(text), state: \(currentState)")
+        guard mentionRange.location != NSNotFound else { return }
+        let utf16Offset = mentionRange.location + 3
         setCollapsedSelection(in: view.richTextView.textView, utf16Offset: utf16Offset)
 
         let queryState = view.currentMentionQueryStateForTesting(trigger: "@")
@@ -7129,10 +7133,14 @@ final class RichTextEditorViewTests: XCTestCase {
         let view = NativeEditorExpoView()
         view.setEditorId(editorId)
         _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>First paragraph</p><p>@al</p>")
-        view.richTextView.textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+        let currentState = EditorV2Shadow.getCurrentState(id: editorId)
+        view.richTextView.textView.applyUpdateJSON(currentState, notifyDelegate: false)
 
         let text = view.richTextView.textView.text ?? ""
-        let utf16Offset = (text as NSString).range(of: "@al").location + 3
+        let mentionRange = (text as NSString).range(of: "@al")
+        XCTAssertNotEqual(mentionRange.location, NSNotFound, "rendered final paragraph should contain the mention query, got: \(text), state: \(currentState)")
+        guard mentionRange.location != NSNotFound else { return }
+        let utf16Offset = mentionRange.location + 3
         setCollapsedSelection(in: view.richTextView.textView, utf16Offset: utf16Offset)
 
         let queryState = view.currentMentionQueryStateForTesting(trigger: "@")

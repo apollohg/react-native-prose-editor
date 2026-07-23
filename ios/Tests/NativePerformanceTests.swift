@@ -163,7 +163,10 @@ final class NativePerformanceTests: XCTestCase {
                     traceSamples.append(trace)
                 }
                 XCTAssertGreaterThan(session.textView.attributedText.length, session.initialTextLength)
-                XCTAssertTrue(session.textView.lastRenderAppliedPatch())
+                XCTAssertTrue(
+                    session.textView.lastRenderAppliedPatch(),
+                    "paragraph split must use the render patch path; trace: \(String(describing: session.textView.lastApplyUpdateTrace()))"
+                )
                 XCTAssertNotNil(session.textView.selectedTextRange)
             }
         }
@@ -207,7 +210,10 @@ final class NativePerformanceTests: XCTestCase {
                     traceSamples.append(trace)
                 }
                 XCTAssertGreaterThan(session.textView.attributedText.length, session.initialTextLength)
-                XCTAssertTrue(session.textView.lastRenderAppliedPatch())
+                XCTAssertTrue(
+                    session.textView.lastRenderAppliedPatch(),
+                    "auto-grow paragraph split must use the render patch path; trace: \(String(describing: session.textView.lastApplyUpdateTrace()))"
+                )
                 XCTAssertNotNil(session.textView.selectedTextRange)
             }
         }
@@ -260,7 +266,10 @@ final class NativePerformanceTests: XCTestCase {
                 }
                 hostedLayoutTraceSamples.append(session.view.lastHostedLayoutTraceForTesting())
                 XCTAssertGreaterThan(session.view.textView.attributedText.length, session.initialTextLength)
-                XCTAssertTrue(session.view.textView.lastRenderAppliedPatch())
+                XCTAssertTrue(
+                    session.view.textView.lastRenderAppliedPatch(),
+                    "hosted auto-grow paragraph split must use the render patch path; trace: \(String(describing: session.view.textView.lastApplyUpdateTrace()))"
+                )
                 XCTAssertGreaterThan(measuredHeight, 0)
             }
         }

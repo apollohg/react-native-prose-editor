@@ -826,6 +826,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
     struct ApplyUpdateTrace {
         let attemptedPatch: Bool
+        let patchStartIndex: Int?
+        let patchDeleteCount: Int?
+        let patchRenderBlockCount: Int?
         let usedPatch: Bool
         let usedSmallPatchTextMutation: Bool
         let applyRenderReplaceUtf16Length: Int
@@ -2007,7 +2010,11 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     /// - Parameters:
     ///   - id: The editor ID from `editor_create()`.
     ///   - initialHTML: Optional HTML to set as initial content.
-    func bindEditor(id: UInt64, initialHTML: String? = nil) {
+    func bindEditor(
+        id: UInt64,
+        initialHTML: String? = nil,
+        initialUpdateJSON: String? = nil
+    ) {
         ensureInternalTextViewDelegate()
         if editorId == id, initialHTML == nil {
             return
@@ -2017,7 +2024,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
         editorId = id
 
-        if let html = initialHTML, !html.isEmpty {
+        if let initialUpdateJSON {
+            applyUpdateJSON(initialUpdateJSON, notifyDelegate: false)
+        } else if let html = initialHTML, !html.isEmpty {
             _ = EditorV2Shadow.setHtml(id: editorId, html: html)
             let stateJSON = EditorV2Shadow.getCurrentState(id: editorId)
             applyUpdateJSON(stateJSON, notifyDelegate: false)
@@ -4385,22 +4394,83 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         return true
     }
 
-    private func renderPatchEquals(_ lhs: ParsedRenderPatch, _ rhs: ParsedRenderPatch) -> Bool {
-        guard lhs.startIndex == rhs.startIndex,
-              lhs.deleteCount == rhs.deleteCount,
-              lhs.renderBlocks.count == rhs.renderBlocks.count
+    private func voidNodeMetadata(in renderBlock: [[String: Any]]) -> [(type: String, docPos: NSNumber)]? {
+        let nodes = renderBlock.compactMap { element -> (type: String, docPos: NSNumber)? in
+            guard let elementType = element["type"] as? String,
+                  elementType == "voidInline" || elementType == "voidBlock",
+                  let nodeType = element["nodeType"] as? String,
+                  let docPos = RenderBridge.jsonUInt32(element["docPos"])
+            else {
+                return nil
+            }
+            return (nodeType, NSNumber(value: docPos))
+        }
+        return nodes
+    }
+
+    private func refreshRetainedPositionalMetadata(
+        startingAt retainedStart: Int,
+        updatedRenderBlocks: [[[String: Any]]]
+    ) -> Bool {
+        guard let currentTopLevelChildMetadata,
+              currentTopLevelChildMetadata.count == updatedRenderBlocks.count,
+              retainedStart >= 0,
+              retainedStart <= currentTopLevelChildMetadata.count
         else {
             return false
         }
-        return zip(lhs.renderBlocks, rhs.renderBlocks).allSatisfy(renderBlockEquals)
+
+        for index in retainedStart..<currentTopLevelChildMetadata.count {
+            let start = currentTopLevelChildMetadata[index].startOffset
+            let end = index + 1 < currentTopLevelChildMetadata.count
+                ? currentTopLevelChildMetadata[index + 1].startOffset
+                : textStorage.length
+            guard start >= 0, end >= start, end <= textStorage.length else { return false }
+            let range = NSRange(location: start, length: end - start)
+            textStorage.addAttribute(
+                RenderBridgeAttributes.topLevelChildIndex,
+                value: NSNumber(value: index),
+                range: range
+            )
+
+            guard let expectedVoidNodes = voidNodeMetadata(in: updatedRenderBlocks[index]) else {
+                return false
+            }
+            var actualVoidNodes: [(type: String, range: NSRange)] = []
+            textStorage.enumerateAttribute(
+                RenderBridgeAttributes.voidNodeType,
+                in: range,
+                options: [.longestEffectiveRangeNotRequired]
+            ) { value, nodeRange, _ in
+                if let type = value as? String {
+                    actualVoidNodes.append((type, nodeRange))
+                }
+            }
+            guard actualVoidNodes.count == expectedVoidNodes.count,
+                  zip(actualVoidNodes, expectedVoidNodes).allSatisfy({ $0.type == $1.type })
+            else {
+                return false
+            }
+            for (actual, expected) in zip(actualVoidNodes, expectedVoidNodes) {
+                textStorage.addAttribute(
+                    RenderBridgeAttributes.docPos,
+                    value: expected.docPos,
+                    range: actual.range
+                )
+            }
+        }
+        return true
     }
 
-    /// Void/opaque elements carry an absolute `docPos` used for image
-    /// selection, preview, resizing, and other atom actions. It is
-    /// correctness-significant render metadata: retaining a shifted element
-    /// would leave attributed content targeting the old document position.
     private func renderElementEquals(_ lhs: [String: Any], _ rhs: [String: Any]) -> Bool {
-        (lhs as NSDictionary).isEqual(to: rhs)
+        if (lhs as NSDictionary).isEqual(to: rhs) { return true }
+        var comparableLhs = lhs
+        var comparableRhs = rhs
+        comparableLhs.removeValue(forKey: "docPos")
+        comparableRhs.removeValue(forKey: "docPos")
+        comparableLhs.removeValue(forKey: "topLevelChildIndex")
+        comparableRhs.removeValue(forKey: "topLevelChildIndex")
+        return (comparableLhs as NSDictionary).isEqual(to: comparableRhs)
     }
 
     private func deriveRenderPatch(
@@ -4419,11 +4489,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         }
 
         var suffix = 0
-        // `topLevelChildIndex` is rendered from each block's ordinal. Once an
-        // insertion/deletion shifts that ordinal, retained suffix attributes
-        // must be rebuilt rather than left with their former child indexes.
         while suffix < (sharedCount - prefix),
-              current.count - suffix - 1 == updated.count - suffix - 1,
               renderBlockEquals(
                   current[current.count - suffix - 1],
                   updated[updated.count - suffix - 1]
@@ -5260,15 +5326,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             } else {
                 nil
             }
-        let renderPatch: ParsedRenderPatch? = if let explicitRenderPatch,
-                                                case let .patch(derivedPatch)? = derivedRenderPatch,
-                                                !renderPatchEquals(explicitRenderPatch, derivedPatch)
-        {
-            // An explicit patch may omit a retained suffix whose doc positions
-            // or top-level indexes changed. Use the derived wider range so no
-            // consumer can observe stale positional metadata.
-            derivedPatch
-        } else if let explicitRenderPatch {
+        let renderPatch: ParsedRenderPatch? = if let explicitRenderPatch {
             explicitRenderPatch
         } else if case let .patch(derivedPatch)? = derivedRenderPatch {
             derivedPatch
@@ -5352,6 +5410,19 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             currentRenderBlocks = resolvedRenderBlocks
             lastAppliedRenderAppearanceRevision = renderAppearanceRevision
         }
+        if appliedPatch,
+           let renderPatch,
+           let resolvedRenderBlocks,
+           !refreshRetainedPositionalMetadata(
+               startingAt: renderPatch.startIndex + renderPatch.renderBlocks.count,
+               updatedRenderBlocks: resolvedRenderBlocks
+           )
+        {
+            // The preflight is deliberately conservative: a partial metadata
+            // refresh must never leave a retained atom targeting stale state.
+            // The next update will take the full safe path after cache reset.
+            currentTopLevelChildMetadata = nil
+        }
 
         refreshPlaceholderVisibility()
         Self.updateLog.debug(
@@ -5376,6 +5447,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         if captureApplyUpdateTraceForTesting {
             lastApplyUpdateTraceForTesting = ApplyUpdateTrace(
                 attemptedPatch: renderPatch != nil,
+                patchStartIndex: renderPatch?.startIndex,
+                patchDeleteCount: renderPatch?.deleteCount,
+                patchRenderBlockCount: renderPatch?.renderBlocks.count,
                 usedPatch: appliedPatch,
                 usedSmallPatchTextMutation: usedSmallPatchTextMutation,
                 applyRenderReplaceUtf16Length: applyRenderReplaceUtf16Length,
@@ -5769,6 +5843,7 @@ final class RichTextEditorView: UIView {
     private var lastAutoGrowWidth: CGFloat = 0
     private var cachedAutoGrowMeasuredHeight: CGFloat = 0
     private var remoteSelections: [RemoteSelectionDecoration] = []
+    private var initialUpdateJSONForNextEditorBind: String?
     private var overlayRefreshScheduled = false
     var captureHostedLayoutTraceForTesting = false
     private var hostedLayoutTraceNanos = (
@@ -5830,8 +5905,11 @@ final class RichTextEditorView: UIView {
             guard oldValue != editorId else { return }
             textView.discardTransientNativeInputForEditorRebind()
             if editorId != 0 {
-                textView.bindEditor(id: editorId)
+                let initialUpdateJSON = initialUpdateJSONForNextEditorBind
+                initialUpdateJSONForNextEditorBind = nil
+                textView.bindEditor(id: editorId, initialUpdateJSON: initialUpdateJSON)
             } else {
+                initialUpdateJSONForNextEditorBind = nil
                 textView.unbindEditor()
             }
             remoteSelectionOverlayView.update(
@@ -5841,6 +5919,12 @@ final class RichTextEditorView: UIView {
             imageTapOverlayView.isHidden = editorId == 0 || !allowImageResizing
             imageResizeOverlayView.refresh()
         }
+    }
+
+    func bindEditor(id: UInt64, initialUpdateJSON: String?) {
+        guard editorId != id else { return }
+        initialUpdateJSONForNextEditorBind = initialUpdateJSON
+        editorId = id
     }
 
     // MARK: - Initialization
