@@ -88,6 +88,7 @@ interface NativeEditorViewProps {
     editorUpdateEditorId?: string;
     editorUpdateRevision?: number;
     onEditorUpdate: (event: NativeSyntheticEvent<NativeUpdateEvent>) => void;
+    onEditorError: (event: NativeSyntheticEvent<NativeErrorEvent>) => void;
     onSelectionChange: (event: NativeSyntheticEvent<NativeSelectionEvent>) => void;
     onFocusChange: (event: NativeSyntheticEvent<NativeFocusEvent>) => void;
     onContentHeightChange: (event: NativeSyntheticEvent<NativeContentHeightEvent>) => void;
@@ -103,6 +104,11 @@ interface NativeUpdateEvent {
     updateJson: string;
     editorId: string;
     documentRevision: string;
+}
+
+interface NativeErrorEvent {
+    editorId: string;
+    error: unknown;
 }
 
 interface NativeSelectionEvent {
@@ -134,6 +140,13 @@ interface NativeToolbarActionEvent {
 interface NativeAddonEvent {
     eventJson: string;
     editorId: string;
+}
+
+interface NativeEditorErrorBinding {
+    readonly handle: NativeEditorDocumentHandle;
+    readonly editorId: string;
+    readonly generation: number;
+    readonly mounted: boolean;
 }
 
 const LINK_TOOLBAR_ACTION_KEY = '__native-editor-link__';
@@ -714,6 +727,32 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
 
         const bridge = documentHandle.bridge;
         const editorId = documentHandle.editorId;
+        const nativeErrorBindingRef = useRef<NativeEditorErrorBinding>({
+            handle: documentHandle,
+            editorId,
+            generation: 0,
+            mounted: true,
+        });
+        if (nativeErrorBindingRef.current.handle !== documentHandle) {
+            nativeErrorBindingRef.current = {
+                handle: documentHandle,
+                editorId,
+                generation: nativeErrorBindingRef.current.generation + 1,
+                mounted: true,
+            };
+        }
+        const nativeErrorBinding = nativeErrorBindingRef.current;
+        useEffect(
+            () => () => {
+                if (nativeErrorBindingRef.current !== nativeErrorBinding) return;
+                nativeErrorBindingRef.current = {
+                    ...nativeErrorBinding,
+                    generation: nativeErrorBinding.generation + 1,
+                    mounted: false,
+                };
+            },
+            [nativeErrorBinding]
+        );
 
         // ── Prop refs ───────────────────────────────────────────────
         const onSelectionChangeRef = useRef(onSelectionChange);
@@ -1177,6 +1216,34 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             [applyTypedUpdateState, document, documentHandle]
         );
 
+        const handleEditorError = useCallback(
+            (event: NativeSyntheticEvent<NativeErrorEvent>) => {
+                const payload = event?.nativeEvent;
+                if (!isRecord(payload)) return;
+                const currentBinding = nativeErrorBindingRef.current;
+                if (
+                    currentBinding !== nativeErrorBinding ||
+                    !currentBinding.mounted ||
+                    currentBinding.generation !== nativeErrorBinding.generation ||
+                    currentBinding.handle !== nativeErrorBinding.handle ||
+                    currentBinding.editorId !== nativeErrorBinding.editorId ||
+                    nativeErrorBinding.handle.isDestroyed
+                ) {
+                    return;
+                }
+                const presentedEditorId = payload.editorId;
+                if (
+                    typeof presentedEditorId !== 'string' ||
+                    normalizeNativeEditorV2DecimalId(presentedEditorId) !== presentedEditorId ||
+                    presentedEditorId !== nativeErrorBinding.editorId
+                ) {
+                    return;
+                }
+                nativeErrorBinding.handle.bridge._emitAutonomousError(payload.error);
+            },
+            [nativeErrorBinding]
+        );
+
         const handleSelectionChange = useCallback(
             (event: NativeSyntheticEvent<NativeSelectionEvent>) => {
                 if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
@@ -1377,6 +1444,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     editorUpdateEditorId={currentPushedUpdate?.editorId}
                     editorUpdateRevision={currentPushedUpdate?.revision ?? 0}
                     onEditorUpdate={handleEditorUpdate}
+                    onEditorError={handleEditorError}
                     onSelectionChange={handleSelectionChange}
                     onFocusChange={handleFocusChange}
                     onContentHeightChange={handleContentHeightChange}
