@@ -573,8 +573,8 @@ interface FakeSession {
     hasStoredMarks: boolean;
     hasStoredNodes: boolean;
     selection: { anchor: number; head: number };
-    liveGeneration: number | null;
-    lastIssuedGeneration: number;
+    liveGeneration: bigint | null;
+    lastIssuedGeneration: bigint;
     protocolQueue: Uint8Array[];
     documentQueue: Uint8Array[];
     desiredAwareness: Record<string, unknown> | null;
@@ -606,6 +606,8 @@ export interface FakeNativeEditorV2Runtime {
     pushRemoteDoc(editorId: string, doc: DocumentJSON): void;
     /** Queue the clocked per-client delta the next inbound awareness frame applies. */
     pushRemotePeers(editorId: string, peers: NativeEditorV2PeerInfo[]): void;
+    /** Seed the exact last-issued u64 generation for boundary tests. */
+    seedLastIssuedGeneration(editorId: string, generation: string): void;
     /** Retire the live generation natively without telling TypeScript. */
     retireLiveGeneration(editorId: string): void;
     /** One-shot error injected into the named entry (currently applyLocalApi). */
@@ -712,8 +714,8 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         session.remotePeerActivity.clear();
     }
 
-    function saturatingAddV2U64(left: bigint, right: bigint): bigint {
-        return left > V2_FAKE_U64_MAX - right ? V2_FAKE_U64_MAX : left + right;
+    function checkedAddV2U64(left: bigint, right: bigint): bigint | null {
+        return left > V2_FAKE_U64_MAX - right ? null : left + right;
     }
 
     function setLocalAwarenessState(session: FakeSession): void {
@@ -745,14 +747,15 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             session.transportState === 'Synchronized' && session.desiredAwareness != null
                 ? session.lastLocalAwarenessPublishMillis == null
                     ? session.awarenessNowMillis
-                    : saturatingAddV2U64(
+                    : checkedAddV2U64(
                           session.lastLocalAwarenessPublishMillis,
                           V2_FAKE_AWARENESS_RENEWAL_INTERVAL_MILLIS
                       )
                 : null;
         let remoteExpiry: bigint | null = null;
         for (const seenAt of session.remotePeerActivity.values()) {
-            const deadline = saturatingAddV2U64(seenAt, V2_FAKE_AWARENESS_EXPIRY_MILLIS);
+            const deadline = checkedAddV2U64(seenAt, V2_FAKE_AWARENESS_EXPIRY_MILLIS);
+            if (deadline == null) continue;
             if (remoteExpiry == null || deadline < remoteExpiry) remoteExpiry = deadline;
         }
         if (localRenewal == null) return remoteExpiry;
@@ -1012,7 +1015,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 hasStoredNodes: false,
                 selection: { anchor: 1, head: 1 },
                 liveGeneration: null,
-                lastIssuedGeneration: 0,
+                lastIssuedGeneration: 0n,
                 protocolQueue: [],
                 documentQueue: [],
                 desiredAwareness: null,
@@ -1524,8 +1527,19 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                         `begin_connect is only admitted from Disconnected (found ${session.transportState})`
                     );
                 }
-                session.lastIssuedGeneration += 1;
-                session.liveGeneration = session.lastIssuedGeneration;
+                if (session.lastIssuedGeneration === V2_FAKE_U64_MAX) {
+                    return transportError(
+                        'TRANSPORT_GENERATION_EXHAUSTED',
+                        'transport generation space is exhausted',
+                        {
+                            action: 'beginConnect',
+                            transportState: session.transportState,
+                        }
+                    );
+                }
+                const nextGeneration = session.lastIssuedGeneration + 1n;
+                session.lastIssuedGeneration = nextGeneration;
+                session.liveGeneration = nextGeneration;
                 session.transportState = 'Connecting';
                 return okRecord(JSON.stringify({ generation: String(session.liveGeneration) }));
             })
@@ -1831,6 +1845,15 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         },
         pushRemotePeers: (editorId, peers) => {
             pendingFor(editorId).awarenessDeltas.push(peers);
+        },
+        seedLastIssuedGeneration: (editorId, generation) => {
+            const canonicalGeneration = canonicalV2U64(generation);
+            if (canonicalGeneration == null) {
+                throw new Error('generation must be canonical decimal u64 text');
+            }
+            const session = getSession(editorId);
+            if (!session) throw new Error(`unknown fake session ${editorId}`);
+            session.lastIssuedGeneration = BigInt(canonicalGeneration);
         },
         retireLiveGeneration: (editorId) => {
             const session = getSession(editorId);

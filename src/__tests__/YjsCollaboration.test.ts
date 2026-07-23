@@ -394,6 +394,43 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
 
     // ── Generations ─────────────────────────────────────────────
 
+    it('issues u64 generations exactly and refuses exhaustion atomically', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        const u64Max = '18446744073709551615';
+        runtime.seedLastIssuedGeneration(handle.editorId, '18446744073709551614');
+
+        expect(handle.bridge.collaborationBeginConnect()).toBe(u64Max);
+        expect(runtime.session(handle.editorId).liveGeneration).toBe(18_446_744_073_709_551_615n);
+        expect(runtime.session(handle.editorId).lastIssuedGeneration).toBe(
+            18_446_744_073_709_551_615n
+        );
+        handle.bridge.collaborationSocketClose(u64Max, 1000, 'seeded max closed');
+
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            let exhaustion: unknown;
+            try {
+                handle.bridge.collaborationBeginConnect();
+            } catch (error) {
+                exhaustion = error;
+            }
+            expect(exhaustion).toBeInstanceOf(NativeEditorV2TransportError);
+            expect(exhaustion).toMatchObject({
+                domain: 'transport',
+                code: 'TRANSPORT_GENERATION_EXHAUSTED',
+                message: 'transport generation space is exhausted',
+                details: {
+                    action: 'beginConnect',
+                    transportState: 'Disconnected',
+                },
+            });
+            expect(handle.bridge.getState().transportState).toBe('Disconnected');
+            expect(runtime.session(handle.editorId).liveGeneration).toBeNull();
+            expect(runtime.session(handle.editorId).lastIssuedGeneration).toBe(
+                18_446_744_073_709_551_615n
+            );
+        }
+    });
+
     it('ignores superseded socket events and routes native stale-generation errors to the autonomous listener, not state', () => {
         const setup = setupController({ handle: createRoomHandle({ withSnapshot: true }) });
         setup.controller.connect();
@@ -579,7 +616,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             setup.handle.editorId
         );
         expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(3);
-        expect(runtime.session(setup.handle.editorId).liveGeneration).toBe(2);
+        expect(runtime.session(setup.handle.editorId).liveGeneration).toBe(2n);
         expect(setup.sockets).toHaveLength(2);
         expect(latestStatus(setup)).toBe('connecting');
         expect(setup.errors).toHaveLength(errorsBefore + 1);
@@ -605,7 +642,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             1000,
             'client disconnect'
         );
-        expect(runtime.session(setup.handle.editorId).liveGeneration).toBe(2);
+        expect(runtime.session(setup.handle.editorId).liveGeneration).toBe(2n);
         expect(setup.sockets).toHaveLength(2);
         expect(latestStatus(setup)).toBe('connecting');
     });
@@ -792,6 +829,33 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(handle.bridge.collaborationPeers()).toEqual([
             expect.objectContaining({ isLocal: true, clock: 4 }),
         ]);
+    });
+
+    it('omits overflowing awareness deadlines while retaining representable candidates', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        const generation = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(generation);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+
+        handle.bridge.collaborationTick('18446744073709521615');
+        runtime.pushRemotePeers(handle.editorId, [remotePeer({ clientId: '7', clock: 1 })]);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
+        handle.bridge.collaborationSetAwareness({ user: ALICE });
+
+        expect(handle.bridge.collaborationTick('18446744073709541615')).toEqual({
+            nextDeadlineMillis: '18446744073709551615',
+            renewedLocal: true,
+            expiredPeers: [],
+            outboundChanged: true,
+            peersChanged: true,
+        });
+        expect(handle.bridge.collaborationTick('18446744073709551615')).toEqual({
+            nextDeadlineMillis: null,
+            renewedLocal: false,
+            expiredPeers: ['7'],
+            outboundChanged: false,
+            peersChanged: true,
+        });
     });
 
     it('makes detach and reattach idempotent without reopening an incompatible transport early', () => {
