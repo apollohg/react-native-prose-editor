@@ -62,6 +62,27 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertEqual(documentText(adapter), "max")
     }
 
+    func testTask15AutonomousErrorOwnerTokensProtectNewerOwnersFromStaleClears() {
+        let adapter = makeAdapter()
+        let firstOwner = UUID()
+        let secondOwner = UUID()
+        var firstErrors: [FfiError] = []
+        var secondErrors: [FfiError] = []
+
+        adapter.bindAutonomousErrorOwner(token: firstOwner) { firstErrors.append($0) }
+        adapter.bindAutonomousErrorOwner(token: secondOwner) { secondErrors.append($0) }
+        adapter.clearAutonomousErrorOwner(token: firstOwner)
+        adapter.rejectExternalRenderEnvelope("first real adapter failure")
+
+        XCTAssertTrue(firstErrors.isEmpty)
+        XCTAssertEqual(secondErrors.count, 1)
+        XCTAssertTrue(adapter.isAutonomousErrorOwner(token: secondOwner))
+
+        adapter.clearAutonomousErrorOwner(token: secondOwner)
+        adapter.rejectExternalRenderEnvelope("cleared owner must not receive failures")
+        XCTAssertEqual(secondErrors.count, 1)
+    }
+
     func testAdapterEmitsCanonicalDecimalDocumentVersion() {
         let adapter = makeAdapter()
         let update = parseObject(adapter.currentStateJSON())

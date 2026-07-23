@@ -308,12 +308,16 @@ public class NativeEditorModule: Module {
             return v2JsonResultDictionary(result)
         }
         Function("editorV2Destroy") { (editorId: String) -> [String: Any] in
-            let result = editorV2Destroy(editorId: editorId)
             if let nativeViewId = v2UInt64Argument(editorId), nativeViewId > 0 {
+                if EditorV2Registry.adapter(forLegacyId: nativeViewId) != nil {
+                    let error = EditorV2Registry.destroyPair(forLegacyId: nativeViewId)
+                    return v2UnitResultDictionary(FfiUnitResult(value: error == nil, error: error))
+                }
+                let result = editorV2Destroy(editorId: editorId)
                 NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: nativeViewId)
-                EditorV2Registry.destroyPair(forLegacyId: nativeViewId)
+                return v2UnitResultDictionary(result)
             }
-            return v2UnitResultDictionary(result)
+            return v2UnitResultDictionary(editorV2Destroy(editorId: editorId))
         }
         Function("editorV2GetState") { (editorId: String) -> [String: Any] in
             v2JsonResultDictionary(editorV2GetState(editorId: editorId))
@@ -466,7 +470,8 @@ public class NativeEditorModule: Module {
                 "onFocusChange",
                 "onContentHeightChange",
                 "onToolbarAction",
-                "onAddonEvent"
+                "onAddonEvent",
+                "onEditorError"
             )
 
             Prop("editorId") { (view: NativeEditorExpoView, id: String) in

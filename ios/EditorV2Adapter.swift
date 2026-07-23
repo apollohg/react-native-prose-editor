@@ -41,7 +41,26 @@ final class EditorV2Adapter {
 
     /// Autonomous structured failures (input/accessibility/lifecycle), one
     /// event per failure, mirroring the v2 error-listener contract.
-    var onAutonomousError: ((FfiError) -> Void)?
+    private let autonomousErrorLock = NSLock()
+    private var autonomousErrorCallback: ((FfiError) -> Void)?
+    private var autonomousErrorOwnerToken: UUID?
+
+    /// Compatibility callback for adapter-focused tests and non-view owners.
+    /// View bindings use the tokened owner API below so an old view cannot
+    /// clear a callback claimed by a newer view.
+    var onAutonomousError: ((FfiError) -> Void)? {
+        get {
+            autonomousErrorLock.lock()
+            defer { autonomousErrorLock.unlock() }
+            return autonomousErrorCallback
+        }
+        set {
+            autonomousErrorLock.lock()
+            autonomousErrorOwnerToken = nil
+            autonomousErrorCallback = newValue
+            autonomousErrorLock.unlock()
+        }
+    }
     /// Sink for drained outbound collaboration frames; the socket owner
     /// (JS/TS in production, spies in tests) receives one frame per call.
     var outboundFrameSink: ((Data) -> Void)?
@@ -127,6 +146,7 @@ final class EditorV2Adapter {
     @discardableResult
     func destroy() -> FfiError? {
         if destroyed { return nil }
+        clearAutonomousErrorOwner()
         destroyed = true
         let result = editorV2Destroy(editorId: editorId)
         if let error = result.error {
@@ -170,7 +190,7 @@ final class EditorV2Adapter {
 
     private func emit(_ error: FfiError) {
         debugNotes.append("emit \(error.domain)/\(error.code): \(error.message)")
-        onAutonomousError?(error)
+        dispatchAutonomousError(error)
     }
 
     /// A malformed externally supplied render is a permanent boundary
@@ -179,14 +199,55 @@ final class EditorV2Adapter {
     /// diagnostic note: that would expose a second observable emission for
     /// an otherwise atomic no-op.
     private func rejectAtomicRenderSnapshot() {
-        onAutonomousError?(Self.contractError("v2 atomic render snapshot violates the frozen shape"))
+        dispatchAutonomousError(Self.contractError("v2 atomic render snapshot violates the frozen shape"))
     }
 
     /// View-side envelope failures (missing/mismatched source ids) have no
     /// engine call to classify. Route them through the same boundary error
     /// channel as a rejected external snapshot, once per discarded envelope.
     func rejectExternalRenderEnvelope(_ message: String) {
-        onAutonomousError?(Self.contractError(message))
+        dispatchAutonomousError(Self.contractError(message))
+    }
+
+    // MARK: - Exclusive autonomous-error owner
+
+    /// A later claim replaces the earlier owner. Clearing is conditional on
+    /// the same token, so stale views cannot erase a newer binding.
+    func bindAutonomousErrorOwner(token: UUID, _ callback: @escaping (FfiError) -> Void) {
+        autonomousErrorLock.lock()
+        autonomousErrorOwnerToken = token
+        autonomousErrorCallback = callback
+        autonomousErrorLock.unlock()
+    }
+
+    func clearAutonomousErrorOwner(token: UUID) {
+        autonomousErrorLock.lock()
+        defer { autonomousErrorLock.unlock() }
+        guard autonomousErrorOwnerToken == token else { return }
+        autonomousErrorOwnerToken = nil
+        autonomousErrorCallback = nil
+    }
+
+    func clearAutonomousErrorOwner() {
+        autonomousErrorLock.lock()
+        if autonomousErrorOwnerToken != nil {
+            autonomousErrorOwnerToken = nil
+            autonomousErrorCallback = nil
+        }
+        autonomousErrorLock.unlock()
+    }
+
+    func isAutonomousErrorOwner(token: UUID) -> Bool {
+        autonomousErrorLock.lock()
+        defer { autonomousErrorLock.unlock() }
+        return autonomousErrorOwnerToken == token
+    }
+
+    private func dispatchAutonomousError(_ error: FfiError) {
+        autonomousErrorLock.lock()
+        let callback = autonomousErrorCallback
+        autonomousErrorLock.unlock()
+        callback?(error)
     }
 
     private func requestIdExhaustedError() -> FfiError {
@@ -1602,8 +1663,13 @@ enum EditorV2Registry {
     }
 
     /// Destroy the v2 session backing a pairing and drop the pairing.
-    static func destroyPair(forLegacyId legacyId: UInt64) {
-        removePairing(forLegacyId: legacyId)?.destroy()
+    @discardableResult
+    static func destroyPair(forLegacyId legacyId: UInt64) -> FfiError? {
+        // Views advance their binding generation and clear queued callbacks
+        // before the registry releases the paired adapter/session.
+        NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: legacyId)
+        guard let adapter = removePairing(forLegacyId: legacyId) else { return nil }
+        return adapter.destroy()
     }
 
 }

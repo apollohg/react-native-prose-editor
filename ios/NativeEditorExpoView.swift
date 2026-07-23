@@ -2065,6 +2065,15 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     let onContentHeightChange = EventDispatcher()
     let onToolbarAction = EventDispatcher()
     let onAddonEvent = EventDispatcher()
+    let onEditorError = EventDispatcher()
+    /// Native integration tests capture the exact payload production sends to
+    /// Expo without assigning adapter callbacks directly.
+    var onEditorErrorForTesting: (([String: Any]) -> Void)?
+    private var autonomousErrorBindingAdapter: EditorV2Adapter?
+    private var autonomousErrorBindingEditorId: String?
+    private var autonomousErrorBindingToken: UUID?
+    private var autonomousErrorBindingGeneration: UInt64 = 0
+    private var pendingAutonomousErrors: [UUID: PendingAutonomousError] = [:]
     private var lastEmittedContentHeight: CGFloat = 0
     private var cachedAutoGrowContentHeight: CGFloat = 0
     private var lastAddonEventJSONForTestingValue: String?
@@ -2091,6 +2100,14 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         let head: UInt32
         let documentVersion: String?
         let textSnapshot: String
+    }
+
+    private struct PendingAutonomousError {
+        let adapter: EditorV2Adapter
+        let editorId: String
+        let token: UUID
+        let generation: UInt64
+        let error: FfiError
     }
 
     private struct MentionRetryTextDiff {
@@ -2132,6 +2149,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     deinit {
+        clearAutonomousErrorBinding()
         NativeEditorViewRegistry.shared.unregister(editorId: richTextView.editorId, view: self)
         imageLoadOwner.cancelAll()
         NotificationCenter.default.removeObserver(self)
@@ -2163,6 +2181,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        if window == nil {
+            clearAutonomousErrorBinding()
+        } else {
+            ensureAutonomousErrorBinding()
+        }
         if richTextView.textView.isFirstResponder {
             installOutsideTapRecognizerIfNeeded()
         } else {
@@ -2179,6 +2202,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             return
         }
 
+        clearAutonomousErrorBinding()
         NativeEditorViewRegistry.shared.unregister(editorId: editorId, view: self)
         clearPendingEditorUpdateRetries()
         clearPendingViewCommandUpdateRetry()
@@ -2211,11 +2235,14 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             if id != 0 {
                 if !NativeEditorViewRegistry.shared.register(editorId: id, view: self) {
                     handleEditorDestroyed(id)
+                } else {
+                    ensureAutonomousErrorBinding()
                 }
             }
             return
         }
         if previousEditorId != id {
+            clearAutonomousErrorBinding()
             NativeEditorViewRegistry.shared.unregister(editorId: previousEditorId, view: self)
             clearPendingEditorUpdateRetries()
             clearPendingViewCommandUpdateRetry()
@@ -2227,15 +2254,15 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         // Fetch and adopt one atomic snapshot before the host's bind path
         // asks `currentStateJSON()`. The adapter hands that exact payload to
         // the bind, avoiding an independent cache-adopting render.
-        let initialBindUpdateJSON = id == 0
-            ? nil
-            : EditorV2Registry.adapter(forLegacyId: id)?.initialUpdateJSON()
         imageLoadOwner.withCurrent { richTextView.editorId = id }
+        var initialBindUpdateJSON: String?
         if id != 0 {
             guard NativeEditorViewRegistry.shared.register(editorId: id, view: self) else {
                 handleEditorDestroyed(id)
                 return
             }
+            bindAutonomousError(adapter: EditorV2Registry.adapter(forLegacyId: id), editorId: id)
+            initialBindUpdateJSON = EditorV2Registry.adapter(forLegacyId: id)?.initialUpdateJSON()
         }
         if id != 0 {
             if let initialBindUpdateJSON,
@@ -2256,6 +2283,143 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         }
         refreshSystemAssistantToolbarIfNeeded()
         refreshMentionQuery()
+    }
+
+    // MARK: - Autonomous adapter errors
+
+    private func ensureAutonomousErrorBinding() {
+        let editorId = richTextView.editorId
+        guard editorId != 0,
+              let adapter = EditorV2Registry.adapter(forLegacyId: editorId)
+        else { return }
+        guard autonomousErrorBindingAdapter !== adapter
+            || autonomousErrorBindingEditorId != adapter.editorId
+            || autonomousErrorBindingToken.map({ adapter.isAutonomousErrorOwner(token: $0) }) != true
+        else { return }
+        clearAutonomousErrorBinding()
+        bindAutonomousError(adapter: adapter, editorId: editorId)
+    }
+
+    private func bindAutonomousError(adapter: EditorV2Adapter?, editorId: UInt64) {
+        guard let adapter,
+              let canonicalEditorId = v2CanonicalUInt64String(adapter.editorId),
+              canonicalEditorId == String(editorId),
+              !adapter.isDestroyed
+        else { return }
+        let token = UUID()
+        let generation = autonomousErrorBindingGeneration
+        autonomousErrorBindingAdapter = adapter
+        autonomousErrorBindingEditorId = canonicalEditorId
+        autonomousErrorBindingToken = token
+        adapter.bindAutonomousErrorOwner(token: token) { [weak self, weak adapter] error in
+            DispatchQueue.main.async {
+                guard let self, let adapter else { return }
+                self.enqueueAutonomousError(
+                    error,
+                    from: adapter,
+                    editorId: canonicalEditorId,
+                    token: token,
+                    generation: generation
+                )
+            }
+        }
+    }
+
+    private func clearAutonomousErrorBinding() {
+        autonomousErrorBindingGeneration &+= 1
+        pendingAutonomousErrors.removeAll()
+        if let adapter = autonomousErrorBindingAdapter,
+           let token = autonomousErrorBindingToken
+        {
+            adapter.clearAutonomousErrorOwner(token: token)
+        }
+        autonomousErrorBindingAdapter = nil
+        autonomousErrorBindingEditorId = nil
+        autonomousErrorBindingToken = nil
+    }
+
+    private func enqueueAutonomousError(
+        _ error: FfiError,
+        from adapter: EditorV2Adapter,
+        editorId: String,
+        token: UUID,
+        generation: UInt64
+    ) {
+        guard isLiveAutonomousErrorBinding(
+            adapter: adapter,
+            editorId: editorId,
+            token: token,
+            generation: generation
+        ) else { return }
+        let dispatchId = UUID()
+        pendingAutonomousErrors[dispatchId] = PendingAutonomousError(
+            adapter: adapter,
+            editorId: editorId,
+            token: token,
+            generation: generation,
+            error: error
+        )
+        DispatchQueue.main.async { [weak self] in
+            self?.dispatchAutonomousError(id: dispatchId)
+        }
+    }
+
+    private func dispatchAutonomousError(id: UUID) {
+        // Remove before invoking Expo/test code. Reentrant state changes or a
+        // duplicate callback cannot deliver this particular failure twice.
+        guard let pending = pendingAutonomousErrors.removeValue(forKey: id),
+              isLiveAutonomousErrorBinding(
+                adapter: pending.adapter,
+                editorId: pending.editorId,
+                token: pending.token,
+                generation: pending.generation
+              )
+        else { return }
+        let payload = NativeEditorExpoView.autonomousErrorEventPayload(
+            editorId: pending.editorId,
+            error: pending.error
+        )
+        if let onEditorErrorForTesting {
+            onEditorErrorForTesting(payload)
+        } else {
+            onEditorError(payload)
+        }
+    }
+
+    private func isLiveAutonomousErrorBinding(
+        adapter: EditorV2Adapter,
+        editorId: String,
+        token: UUID,
+        generation: UInt64
+    ) -> Bool {
+        guard autonomousErrorBindingGeneration == generation,
+              autonomousErrorBindingAdapter === adapter,
+              autonomousErrorBindingEditorId == editorId,
+              autonomousErrorBindingToken == token,
+              adapter.isAutonomousErrorOwner(token: token),
+              !adapter.isDestroyed,
+              let nativeEditorId = UInt64(editorId),
+              EditorV2Registry.adapter(forLegacyId: nativeEditorId) === adapter
+        else { return false }
+        return true
+    }
+
+    private static func autonomousErrorEventPayload(editorId: String, error: FfiError) -> [String: Any] {
+        let errorRecord: [String: Any] = [
+            "domain": error.domain,
+            "code": error.code,
+            "message": error.message,
+            "requestId": error.requestId ?? NSNull(),
+            "operationIndex": error.operationIndex ?? NSNull(),
+            "limit": error.limit ?? NSNull(),
+            "actual": error.actual ?? NSNull(),
+            "detailsJson": error.detailsJson ?? NSNull(),
+        ]
+        let payload: [String: Any] = [
+            "editorId": editorId,
+            "error": errorRecord,
+        ]
+        return payload
     }
 
     func setThemeJson(_ themeJson: String?) {
