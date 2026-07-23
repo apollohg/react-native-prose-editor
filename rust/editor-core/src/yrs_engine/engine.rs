@@ -14,8 +14,8 @@ use yrs::{
 };
 
 use crate::boundary::{
-    document_json_container_depth_limit, parse_json_value_stack_safe, BoundedInput, InputKind,
-    ResourceLimits,
+    document_json_container_depth_limit, parse_json_value_stack_safe,
+    with_document_stack_for_json_container_depth, BoundedInput, InputKind, ResourceLimits,
 };
 use crate::model::Document;
 use crate::position::update::UpdateMode;
@@ -5959,21 +5959,22 @@ impl YrsDocumentEngine {
         input: &str,
         origin: TransactionOrigin,
     ) -> YrsEngineResult<EngineCommit> {
-        crate::boundary::with_document_stack(|| self.import_json_inner(input, origin))
+        let input = BoundedInput::new(input, InputKind::DocumentJson, &self.resource_limits)?;
+        let input_len = input.as_str().len();
+        let value = self.parse_document_json(input.as_str())?;
+        with_document_stack_for_json_container_depth(value.container_depth(), || {
+            self.import_json_inner(value.as_value(), input_len, origin)
+        })
     }
 
     fn import_json_inner(
         &mut self,
-        input: &str,
+        value: &serde_json::Value,
+        input_len: usize,
         origin: TransactionOrigin,
     ) -> YrsEngineResult<EngineCommit> {
-        let input = BoundedInput::new(input, InputKind::DocumentJson, &self.resource_limits)?;
-        let value = self.parse_document_json(input.as_str())?;
         if let Some(state) = &self.derived_state {
-            if crate::boundary::json_values_equal_stack_safe(
-                state.canonical_artifact.value(),
-                value.as_value(),
-            ) {
+            if crate::boundary::json_values_equal_stack_safe(state.canonical_artifact.value(), value) {
                 self.quarantined_remote_update = None;
                 self.reset_history_binding();
                 return Ok(EngineCommit {
@@ -5982,7 +5983,7 @@ impl YrsDocumentEngine {
                 });
             }
         }
-        let source = self.admit_validated_json_document(value.as_value(), input.as_str().len())?;
+        let source = self.admit_validated_json_document(value, input_len)?;
         let candidate = self.build_candidate_from_document(source, origin)?;
         self.commit_candidate(candidate, origin)
     }

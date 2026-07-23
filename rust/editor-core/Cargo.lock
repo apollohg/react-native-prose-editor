@@ -380,6 +380,7 @@ name = "editor-core"
 version = "0.5.25"
 dependencies = [
  "ego-tree",
+ "memchr",
  "proptest",
  "regex",
  "scraper",

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use memchr::memchr2;
 
 pub(crate) const HARD_MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const HARD_MAX_DOCUMENT_DEPTH: usize = 1_024;
@@ -8,6 +9,11 @@ pub(crate) const HARD_MAX_DOCUMENT_DEPTH: usize = 1_024;
 // larger than the generic import/read paths covered by the original 8 MiB
 // segment, so reserve the next fixed tier at the FFI lifecycle boundary.
 const DOCUMENT_STACK_SEGMENT_BYTES: usize = 16 * 1024 * 1024;
+// A valid ProseMirror document uses an object, a content array, and a child
+// object per semantic level. Keeping only five container levels on the caller
+// stack leaves the deep-document path on the fixed segmented stack while
+// avoiding an allocation for ordinary shallow documents.
+const CALLER_STACK_JSON_CONTAINER_DEPTH: usize = 16;
 
 std::thread_local! {
     static DOCUMENT_STACK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -43,6 +49,8 @@ impl Drop for DocumentStackScope {
 #[cfg(test)]
 std::thread_local! {
     static DOCUMENT_STACK_SEGMENT_GROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static JSON_CONTAINER_DEPTH_PREFLIGHTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static JSON_CONTAINER_DEPTH_PREFLIGHT_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -60,6 +68,36 @@ fn document_stack_segment_grows_for_test() -> usize {
     DOCUMENT_STACK_SEGMENT_GROWS.with(|count| count.get())
 }
 
+#[cfg(test)]
+fn record_json_container_depth_preflight_for_test() {
+    JSON_CONTAINER_DEPTH_PREFLIGHTS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+fn reset_json_container_depth_preflights_for_test() {
+    JSON_CONTAINER_DEPTH_PREFLIGHTS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn json_container_depth_preflights_for_test() -> usize {
+    JSON_CONTAINER_DEPTH_PREFLIGHTS.with(|count| count.get())
+}
+
+#[cfg(test)]
+fn record_json_container_depth_preflight_byte_for_test() {
+    JSON_CONTAINER_DEPTH_PREFLIGHT_BYTES.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+fn reset_json_container_depth_preflight_bytes_for_test() {
+    JSON_CONTAINER_DEPTH_PREFLIGHT_BYTES.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn json_container_depth_preflight_bytes_for_test() -> usize {
+    JSON_CONTAINER_DEPTH_PREFLIGHT_BYTES.with(|count| count.get())
+}
+
 /// Run every bounded document lifecycle operation on a segmented stack sized
 /// for admitted depth 1024.
 pub(crate) fn with_document_stack<T>(operation: impl FnOnce() -> T) -> T {
@@ -70,6 +108,20 @@ pub(crate) fn with_document_stack<T>(operation: impl FnOnce() -> T) -> T {
         stacker::grow(DOCUMENT_STACK_SEGMENT_BYTES, operation)
     } else {
         operation()
+    }
+}
+
+/// Run shallow JSON document work on the caller stack, reserving the fixed
+/// segmented stack for inputs whose lexical container depth can exercise the
+/// deep-document lifecycle.
+pub(crate) fn with_document_stack_for_json_container_depth<T>(
+    container_depth: usize,
+    operation: impl FnOnce() -> T,
+) -> T {
+    if container_depth <= CALLER_STACK_JSON_CONTAINER_DEPTH {
+        operation()
+    } else {
+        with_document_stack(operation)
     }
 }
 
@@ -86,15 +138,29 @@ pub type BoundaryResult<T> = Result<T, BoundaryError>;
 /// A deeply nested JSON value whose destructor drains child containers
 /// iteratively. `serde_json::Value` otherwise drops through the container
 /// tree recursively, which can overflow after an admitted deep parse.
-pub(crate) struct StackSafeJsonValue(serde_json::Value);
+pub(crate) struct StackSafeJsonValue {
+    value: serde_json::Value,
+    container_depth: usize,
+}
 
 impl StackSafeJsonValue {
     pub(crate) fn new(value: serde_json::Value) -> Self {
-        Self(value)
+        Self::with_container_depth(value, 0)
+    }
+
+    fn with_container_depth(value: serde_json::Value, container_depth: usize) -> Self {
+        Self {
+            value,
+            container_depth,
+        }
     }
 
     pub(crate) fn as_value(&self) -> &serde_json::Value {
-        &self.0
+        &self.value
+    }
+
+    pub(crate) fn container_depth(&self) -> usize {
+        self.container_depth
     }
 }
 
@@ -106,19 +172,22 @@ impl std::fmt::Debug for StackSafeJsonValue {
 
 impl Clone for StackSafeJsonValue {
     fn clone(&self) -> Self {
-        Self(clone_json_value_stack_safe(&self.0))
+        Self::with_container_depth(
+            clone_json_value_stack_safe(&self.value),
+            self.container_depth,
+        )
     }
 }
 
 impl PartialEq for StackSafeJsonValue {
     fn eq(&self, other: &Self) -> bool {
-        json_values_equal_stack_safe(&self.0, &other.0)
+        json_values_equal_stack_safe(&self.value, &other.value)
     }
 }
 
 impl PartialEq<serde_json::Value> for StackSafeJsonValue {
     fn eq(&self, other: &serde_json::Value) -> bool {
-        json_values_equal_stack_safe(&self.0, other)
+        json_values_equal_stack_safe(&self.value, other)
     }
 }
 
@@ -126,7 +195,7 @@ impl Eq for StackSafeJsonValue {}
 
 impl Drop for StackSafeJsonValue {
     fn drop(&mut self) {
-        let mut pending = vec![std::mem::take(&mut self.0)];
+        let mut pending = vec![std::mem::take(&mut self.value)];
         while let Some(mut value) = pending.pop() {
             match &mut value {
                 serde_json::Value::Array(values) => pending.append(values),
@@ -290,6 +359,76 @@ mod tests {
         with_document_stack(|| {});
         assert_eq!(document_stack_segment_grows_for_test(), 4);
     }
+
+    #[test]
+    fn shallow_json_document_work_skips_the_segmented_stack() {
+        reset_document_stack_segment_grows_for_test();
+
+        with_document_stack_for_json_container_depth(3, || {});
+
+        assert_eq!(document_stack_segment_grows_for_test(), 0);
+    }
+
+    #[test]
+    fn deep_json_document_work_keeps_the_segmented_stack() {
+        reset_document_stack_segment_grows_for_test();
+
+        with_document_stack_for_json_container_depth(CALLER_STACK_JSON_CONTAINER_DEPTH + 1, || {});
+
+        assert_eq!(document_stack_segment_grows_for_test(), 1);
+    }
+
+    #[test]
+    fn shallow_large_json_uses_the_depth_preflight() {
+        reset_json_container_depth_preflights_for_test();
+        let input = serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "benchmarkOpaqueBlock",
+                "attrs": { "payload": "x".repeat(256 * 1024) },
+            }],
+        })
+        .to_string();
+
+        let value = parse_json_value_stack_safe(
+            &input,
+            64,
+            64,
+            "DOCUMENT_LIMIT_EXCEEDED",
+            "DOCUMENT_INVALID",
+        )
+        .expect("shallow opaque JSON should parse");
+
+        assert_eq!(value.container_depth(), 4);
+        assert_eq!(json_container_depth_preflights_for_test(), 1);
+    }
+
+    #[test]
+    fn shallow_large_json_preflight_skips_opaque_string_bodies() {
+        reset_json_container_depth_preflight_bytes_for_test();
+        let input = serde_json::json!({
+            "type": "doc",
+            "content": [{
+                "type": "benchmarkOpaqueBlock",
+                "attrs": { "payload": "x".repeat(256 * 1024) },
+            }],
+        })
+        .to_string();
+
+        parse_json_value_stack_safe(
+            &input,
+            64,
+            64,
+            "DOCUMENT_LIMIT_EXCEEDED",
+            "DOCUMENT_INVALID",
+        )
+        .expect("shallow opaque JSON should parse");
+
+        assert!(
+            json_container_depth_preflight_bytes_for_test() < 128,
+            "the preflight must skip opaque string bodies"
+        );
+    }
 }
 
 pub(crate) fn json_objects_equal_stack_safe(
@@ -388,13 +527,13 @@ pub(crate) fn parse_json_value_stack_safe(
     limit_code: &'static str,
     parse_code: &'static str,
 ) -> BoundaryResult<StackSafeJsonValue> {
-    admit_json_container_depth(input, max_container_depth)
+    let container_depth = admit_json_container_depth(input, max_container_depth)
         .map_err(|actual| BoundaryError::limit(limit_code, reported_limit, actual))?;
 
     let mut deserializer = serde_json::Deserializer::from_str(input);
     deserializer.disable_recursion_limit();
     let value = serde_json::Value::deserialize(serde_stacker::Deserializer::new(&mut deserializer))
-        .map(StackSafeJsonValue::new)
+        .map(|value| StackSafeJsonValue::with_container_depth(value, container_depth))
         .map_err(|error| BoundaryError::parse(parse_code, error))?;
     deserializer
         .end()
@@ -402,44 +541,65 @@ pub(crate) fn parse_json_value_stack_safe(
     Ok(value)
 }
 
-fn admit_json_container_depth(input: &str, limit: usize) -> Result<(), usize> {
+fn admit_json_container_depth(input: &str, limit: usize) -> Result<usize, usize> {
+    #[cfg(test)]
+    record_json_container_depth_preflight_for_test();
+    let bytes = input.as_bytes();
     let mut containers = Vec::with_capacity(limit.min(64));
-    let mut in_string = false;
-    let mut escaped = false;
-    for byte in input.bytes() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                in_string = false;
+    let mut maximum_depth = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        #[cfg(test)]
+        record_json_container_depth_preflight_byte_for_test();
+        match bytes[index] {
+            b'"' => {
+                index += 1;
+                loop {
+                    let Some(next) = memchr2(b'"', b'\\', &bytes[index..]) else {
+                        index = bytes.len();
+                        break;
+                    };
+                    index += next;
+                    #[cfg(test)]
+                    record_json_container_depth_preflight_byte_for_test();
+                    if bytes[index] == b'"' {
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                    if index == bytes.len() {
+                        break;
+                    }
+                    #[cfg(test)]
+                    record_json_container_depth_preflight_byte_for_test();
+                    index += 1;
+                }
+                continue;
             }
-            continue;
-        }
-        match byte {
-            b'"' => in_string = true,
             b'{' => {
                 containers.push(b'}');
                 if containers.len() > limit {
                     return Err(containers.len());
                 }
+                maximum_depth = maximum_depth.max(containers.len());
             }
             b'[' => {
                 containers.push(b']');
                 if containers.len() > limit {
                     return Err(containers.len());
                 }
+                maximum_depth = maximum_depth.max(containers.len());
             }
             b'}' | b']' => {
-                if containers.pop() != Some(byte) {
-                    return Ok(());
+                if containers.pop() != Some(bytes[index]) {
+                    return Ok(maximum_depth);
                 }
             }
             _ => {}
         }
+        index += 1;
     }
-    Ok(())
+    Ok(maximum_depth)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
