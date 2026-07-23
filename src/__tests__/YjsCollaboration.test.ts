@@ -1245,8 +1245,7 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         expect(runtime.queuedFrames(setup.handle.editorId)).toEqual([]);
         expect(clock.activeTimerCount).toBe(1);
         const retryDelay = clock.scheduledDelays.at(-1) as number;
-        expect(retryDelay).toBeGreaterThan(0);
-        expect(retryDelay).toBeLessThanOrEqual(MAX_HOST_TIMER_DELAY_MILLIS);
+        expect(retryDelay).toBe(100);
 
         const retainedSetCalls = runtime.module.editorV2CollaborationSetAwareness.mock.calls.length;
         setup.controller.updateLocalAwareness({ user: { ...ALICE } });
@@ -1299,8 +1298,7 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         expect(runtime.queuedFrames(setup.handle.editorId)).toEqual([]);
         expect(clock.activeTimerCount).toBe(1);
         const retryDelay = clock.scheduledDelays.at(-1) as number;
-        expect(retryDelay).toBeGreaterThan(0);
-        expect(retryDelay).toBeLessThanOrEqual(MAX_HOST_TIMER_DELAY_MILLIS);
+        expect(retryDelay).toBe(100);
 
         clock.advanceBy(BigInt(retryDelay));
 
@@ -1573,6 +1571,89 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         ).toEqual({ value: null, error: AWARENESS_CLOCK_EXHAUSTED_ERROR });
         expect(fakeAwarenessAudit(exhaustedHandle.editorId)).toEqual(before);
     });
+
+    it.each([
+        'TRANSPORT_REPLY_LIMIT_EXCEEDED',
+        'TRANSPORT_RESOURCE_EXHAUSTED',
+    ] as const)(
+        'closes handshake awareness reservation failure %s retryably without committing Step 2',
+        (code) => {
+            const handle = createRoomHandle({
+                documentId: `handshake-reservation-${code}`,
+            });
+            handle.bridge.collaborationSetAwareness(localAwarenessIntent());
+            const generation = handle.bridge.collaborationBeginConnect();
+            handle.bridge.collaborationSocketOpen(generation);
+            runtime.pushRemotePeers(handle.editorId, [
+                remotePeer({ clientId: '42', clock: 1 }),
+            ]);
+            handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
+            expect(handle.bridge.collaborationPeers()).toHaveLength(2);
+
+            runtime.pushRemoteDoc(handle.editorId, SERVER_DOC);
+            const queuedBeforeFailure = new Uint8Array([0x70, 0x44]);
+            runtime.session(handle.editorId).protocolQueue.push(queuedBeforeFailure);
+            runtime.injectNextAwarenessBroadcastFailure(handle.editorId, code);
+
+            const outcome = handle.bridge.collaborationReceive(
+                generation,
+                V2_FAKE_STEP2_FRAME
+            );
+
+            expect(outcome).toMatchObject({
+                repliesEnqueued: 0,
+                replyBytesEnqueued: 0,
+                remoteCommitApplied: false,
+                documentPromoted: false,
+                transportState: 'Disconnected',
+                close: {
+                    disposition: 'retryable',
+                    error: {
+                        domain: 'transport',
+                        code,
+                    },
+                },
+            });
+            expect(outcome.close?.error).toMatchObject(
+                code === 'TRANSPORT_REPLY_LIMIT_EXCEEDED'
+                    ? {
+                          message:
+                              'maxPendingOutboxMessages exceeded while receiving a protocol message',
+                          limit: '1',
+                          actual: '2',
+                          details: {
+                              action: 'receiveMessage',
+                              field: 'maxPendingOutboxMessages',
+                              limit: 1,
+                              actual: 2,
+                          },
+                      }
+                    : {
+                          message: 'protocol reply capacity could not be reserved',
+                          details: {
+                              action: 'receiveMessage',
+                              reason: 'replyReservation',
+                          },
+                      }
+            );
+            expect(handle.bridge.getState()).toMatchObject({
+                documentState: 'AwaitRemote',
+                transportState: 'Disconnected',
+            });
+            expect(runtime.session(handle.editorId)).toMatchObject({
+                desiredAwareness: localAwarenessIntent(),
+                localClock: 3,
+                localAwarenessLive: false,
+                lastLocalAwarenessPublishMillis: null,
+                liveGeneration: null,
+            });
+            expect(handle.bridge.collaborationPeers()).toEqual([]);
+            expect(runtime.queuedFrames(handle.editorId)).toEqual([queuedBeforeFailure]);
+            expect(() =>
+                handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME)
+            ).toThrow(expect.objectContaining({ code: 'TRANSPORT_STALE_GENERATION' }));
+        }
+    );
 
     it('closes incompatible when handshake awareness republish exhausts its clock', () => {
         const handle = createRoomHandle({ withSnapshot: true });

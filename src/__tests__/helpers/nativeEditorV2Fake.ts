@@ -1159,6 +1159,46 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         return error;
     }
 
+    function isAwarenessReservationFailure(cause: FakeErrorRecord): boolean {
+        return (
+            cause.code === 'TRANSPORT_REPLY_LIMIT_EXCEEDED' ||
+            cause.code === 'TRANSPORT_RESOURCE_EXHAUSTED'
+        );
+    }
+
+    function handshakeReservationReceiveError(cause: FakeErrorRecord): FakeErrorRecord {
+        if (cause.code === 'TRANSPORT_REPLY_LIMIT_EXCEEDED') {
+            const field =
+                typeof cause.details?.field === 'string'
+                    ? cause.details.field
+                    : 'maxPendingOutboxMessages';
+            const error = errorRecord(
+                'transport',
+                cause.code,
+                `${field} exceeded while receiving a protocol message`
+            );
+            error.limit = cause.limit;
+            error.actual = cause.actual;
+            error.details = {
+                action: 'receiveMessage',
+                field,
+                limit: Number(cause.limit),
+                actual: Number(cause.actual),
+            };
+            return error;
+        }
+        const error = errorRecord(
+            'transport',
+            cause.code,
+            'protocol reply capacity could not be reserved'
+        );
+        error.details = {
+            action: 'receiveMessage',
+            reason: 'replyReservation',
+        };
+        return error;
+    }
+
     function queueDocumentUpdate(session: FakeSession): void {
         if (!session.roomBound) return;
         session.documentQueue.push(documentFrame(session.documentRevision));
@@ -1251,6 +1291,11 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             if (session.desiredAwareness != null) {
                 const clockError = publishLocalAwareness(session);
                 if (clockError) {
+                    if (isAwarenessReservationFailure(clockError)) {
+                        const error = handshakeReservationReceiveError(clockError);
+                        retireGeneration(session, 'Disconnected');
+                        return outcome({ close: { disposition: 'retryable', error } });
+                    }
                     const error = awarenessReceiveError(clockError);
                     retireGeneration(session, 'Incompatible');
                     return outcome({ close: { disposition: 'incompatible', error } });
