@@ -102,15 +102,36 @@ function bsdArchiveMember(name, contents) {
   return memberSize % 2 === 0 ? member : Buffer.concat([member, Buffer.from("\n")]);
 }
 
-function elfHeader({ sectionCount, programCount }) {
+function elfHeader({ sectionCount, programCount, elfClass = 2, type = 3, headerSize = elfClass === 1 ? 52 : 64, machine = elfClass === 1 ? 40 : 183 }) {
   const contents = Buffer.alloc(256);
-  Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1]).copy(contents);
-  contents.writeUInt16LE(183, 18);
-  contents.writeBigUInt64LE(64n, 40);
-  contents.writeUInt16LE(56, 54);
-  contents.writeUInt16LE(programCount, 56);
-  contents.writeUInt16LE(64, 58);
-  contents.writeUInt16LE(sectionCount, 60);
+  Buffer.from([0x7f, 0x45, 0x4c, 0x46, elfClass, 1, 1]).copy(contents);
+  contents.writeUInt16LE(type, 16);
+  contents.writeUInt16LE(machine, 18);
+  contents.writeUInt32LE(1, 20);
+  if (elfClass === 1) {
+    contents.writeUInt32LE(64, 32);
+    contents.writeUInt16LE(headerSize, 40);
+    contents.writeUInt16LE(32, 42);
+    contents.writeUInt16LE(programCount, 44);
+    contents.writeUInt16LE(40, 46);
+    contents.writeUInt16LE(sectionCount, 48);
+  } else {
+    contents.writeBigUInt64LE(64n, 40);
+    contents.writeUInt16LE(headerSize, 52);
+    contents.writeUInt16LE(56, 54);
+    contents.writeUInt16LE(programCount, 56);
+    contents.writeUInt16LE(64, 58);
+    contents.writeUInt16LE(sectionCount, 60);
+  }
+  return contents;
+}
+
+function machoObject({ fileType = 1, commandCount = 0 }) {
+  const contents = Buffer.alloc(32);
+  contents.writeUInt32LE(0xfeedfacf, 0);
+  contents.writeUInt32LE(0x0100000c, 4);
+  contents.writeUInt32LE(fileType, 12);
+  contents.writeUInt32LE(commandCount, 16);
   return contents;
 }
 
@@ -141,6 +162,32 @@ function runNativeParserBoundsFixtures() {
     /native parser bounds fixture has too many ELF program headers: 4097 exceeds 4096/,
   );
 
+  const elfTypePath = join(workDir, "wrong-elf-type.so");
+  writeFileSync(elfTypePath, elfHeader({ sectionCount: 1, programCount: 1, type: 2 }));
+  expectFailure(
+    "ELF type identity",
+    runNativeChecksumValidator("--elf", "arm64-v8a", elfTypePath),
+    /native parser bounds fixture has the wrong ELF file type/,
+  );
+
+  const elfHeaderSizePath = join(workDir, "wrong-elf-header-size.so");
+  writeFileSync(elfHeaderSizePath, elfHeader({ sectionCount: 1, programCount: 1, headerSize: 52 }));
+  expectFailure(
+    "ELF header size identity",
+    runNativeChecksumValidator("--elf", "arm64-v8a", elfHeaderSizePath),
+    /native parser bounds fixture has the wrong ELF header size/,
+  );
+
+  const elf32HeaderSizePath = join(workDir, "wrong-elf32-header-size.so");
+  const elf32Header = elfHeader({ sectionCount: 1, programCount: 1, elfClass: 1, headerSize: 64 });
+  elf32Header.writeUInt16LE(52, 52);
+  writeFileSync(elf32HeaderSizePath, elf32Header);
+  expectFailure(
+    "ELF32 header size identity",
+    runNativeChecksumValidator("--elf", "armeabi-v7a", elf32HeaderSizePath),
+    /native parser bounds fixture has the wrong ELF header size/,
+  );
+
   const elfDynamicSymbolsPath = join(workDir, "too-many-elf-dynamic-symbols.so");
   const elfDynamicSymbols = elfHeader({ sectionCount: 3, programCount: 1 });
   elfDynamicSymbols.writeUInt32LE(11, 128 + 4);
@@ -155,15 +202,19 @@ function runNativeParserBoundsFixtures() {
   );
 
   const machoCommandCountPath = join(workDir, "too-many-macho-commands.a");
-  const machoObject = Buffer.alloc(32);
-  machoObject.writeUInt32LE(0xfeedfacf, 0);
-  machoObject.writeUInt32LE(0x0100000c, 4);
-  machoObject.writeUInt32LE(4097, 16);
-  writeFileSync(machoCommandCountPath, Buffer.concat([Buffer.from("!<arch>\n"), bsdArchiveMember("bounds.o", machoObject)]));
+  writeFileSync(machoCommandCountPath, Buffer.concat([Buffer.from("!<arch>\n"), bsdArchiveMember("bounds.o", machoObject({ commandCount: 4097 }))]));
   expectFailure(
     "Mach-O load command count bound",
     runNativeChecksumValidator("--macho-archive", "arm64", machoCommandCountPath),
     /native parser bounds fixture object bounds\.o \(member 1\) has too many Mach-O load commands: 4097 exceeds 4096/,
+  );
+
+  const machoFileTypePath = join(workDir, "wrong-macho-filetype.a");
+  writeFileSync(machoFileTypePath, Buffer.concat([Buffer.from("!<arch>\n"), bsdArchiveMember("bounds.o", machoObject({ fileType: 2 }))]));
+  expectFailure(
+    "Mach-O file type identity",
+    runNativeChecksumValidator("--macho-archive", "arm64", machoFileTypePath),
+    /native parser bounds fixture object bounds\.o \(member 1\) has the wrong Mach-O file type/,
   );
 }
 

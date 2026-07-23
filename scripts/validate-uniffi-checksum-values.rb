@@ -210,6 +210,12 @@ def validate_elf(path, abi, expected, label)
   elf_class = data.getbyte(4)
   fail_closed("#{label} has an unsupported ELF class") unless [1, 2].include?(elf_class)
   fail_closed("#{label} is not little-endian ELF") unless data.getbyte(5) == 1
+  fail_closed("#{label} has the wrong ELF identification version") unless data.getbyte(6) == 1
+  fail_closed("#{label} has the wrong ELF file type") unless u16le(data, 16, label) == 3
+  fail_closed("#{label} has the wrong ELF version") unless u32le(data, 20, label) == 1
+  header_size_offset = elf_class == 1 ? 40 : 52
+  expected_header_size = elf_class == 1 ? 52 : 64
+  fail_closed("#{label} has the wrong ELF header size") unless u16le(data, header_size_offset, label) == expected_header_size
   machine = u16le(data, 18, label)
   expected_machine = { "arm64-v8a" => [2, 183, "arm64"], "armeabi-v7a" => [1, 40, "armv7"], "x86" => [1, 3, "x86"], "x86_64" => [2, 62, "x86_64"] }.fetch(abi) { fail_closed("unknown Android ABI #{abi}") }
   fail_closed("#{label} has the wrong ELF machine type") unless elf_class == expected_machine[0] && machine == expected_machine[1]
@@ -225,6 +231,7 @@ def macho_object_symbols(data, architecture, expected, label, remaining_symbol_w
   cpu_type = u32le(data, 4, label)
   expected_cpu = { "arm64" => 0x0100000c, "x86_64" => 0x01000007 }.fetch(architecture) { fail_closed("unsupported iOS architecture #{architecture}") }
   fail_closed("#{label} has the wrong Mach-O CPU type") unless cpu_type == expected_cpu
+  fail_closed("#{label} has the wrong Mach-O file type") unless u32le(data, 12, label) == 1
   command_count = u32le(data, 16, label)
   command_size = u32le(data, 20, label)
   fail_closed("#{label} has too many Mach-O load commands: #{command_count} exceeds #{MAX_MACHO_LOAD_COMMANDS}") if command_count > MAX_MACHO_LOAD_COMMANDS
