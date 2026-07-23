@@ -2,12 +2,14 @@ package com.apollohg.editor
 
 import android.app.Instrumentation
 import android.content.Context
+import android.os.SystemClock
 import android.text.Selection
 import android.text.InputType
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.CompletionInfo
 import android.view.inputmethod.CorrectionInfo
 import android.view.inputmethod.EditorInfo
+import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
@@ -234,71 +236,82 @@ class NativeDeviceImeRegressionTest {
     fun pairedCompositionReturnRefreshesImeOnceBeforeTheNextCommit() {
         val (adapter, editorId) = createPairedV2TestEditor()
         try {
-            lateinit var refreshedInputConnection: EditorInputConnection
-            val editText = runOnMainSyncWithResult {
-                EditorEditText(context).apply {
-                    this.editorId = editorId
-                    v2Driver = adapter
-                    adapter.setContentHtml("<p>seed</p>")?.let { applyUpdateJSON(it, notifyListener = false) }
-                    assertTrue(requestFocus())
-                    setSelection(4)
-                    clearImeTraceForTesting()
+            ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
+                lateinit var editText: EditorEditText
+                scenario.onActivity { activity ->
+                    editText = EditorEditText(activity).apply {
+                        this.editorId = editorId
+                        v2Driver = adapter
+                        adapter.setContentHtml("<p>seed</p>")?.let {
+                            applyUpdateJSON(it, notifyListener = false)
+                        }
+                    }
+                    activity.setContentView(editText)
                 }
-            }
 
-            val initialGeneration = runOnMainSyncWithResult {
-                val inputConnection = createInputConnection(editText)
-                assertTrue(inputConnection.setComposingText("\n", 1))
-                assertTrue(inputConnection.commitText("\n", 1))
-                editText.inputConnectionGenerationForTesting()
-            }
-            instrumentation.waitForIdleSync()
+                waitUntil("paired editor should attach to the activity window") {
+                    editText.isAttachedToWindow && editText.windowToken != null
+                }
+                runOnMainSyncWithResult { assertTrue(editText.requestFocus()) }
+                waitUntil("paired editor should gain focus before split") { editText.hasFocus() }
 
-            val afterSplit = runOnMainSyncWithResult {
-                val editorInfo = EditorInfo()
-                refreshedInputConnection = createInputConnection(editText, editorInfo)
-                ImeResult(
-                    selection = editText.selectionStart to editText.selectionEnd,
-                    trace = editText.imeTraceSnapshotForTesting(),
-                    ready = editorInfo.initialCapsMode and InputType.TYPE_TEXT_FLAG_CAP_SENTENCES != 0,
-                    surroundingText = editorInfo.getInitialTextBeforeCursor(20, 0).toString(),
-                    imeSelection = editorInfo.initialSelStart to editorInfo.initialSelEnd,
-                    inputConnectionGeneration = editText.inputConnectionGenerationForTesting()
+                lateinit var refreshedInputConnection: EditorInputConnection
+                val initialGeneration = runOnMainSyncWithResult {
+                    editText.setSelection(4)
+                    editText.clearImeTraceForTesting()
+                    val inputConnection = createInputConnection(editText)
+                    assertTrue(inputConnection.setComposingText("\n", 1))
+                    assertTrue(inputConnection.commitText("\n", 1))
+                    editText.inputConnectionGenerationForTesting()
+                }
+                instrumentation.waitForIdleSync()
+
+                val afterSplit = runOnMainSyncWithResult {
+                    val editorInfo = EditorInfo()
+                    refreshedInputConnection = createInputConnection(editText, editorInfo)
+                    ImeResult(
+                        selection = editText.selectionStart to editText.selectionEnd,
+                        trace = editText.imeTraceSnapshotForTesting(),
+                        ready = editorInfo.initialCapsMode and InputType.TYPE_TEXT_FLAG_CAP_SENTENCES != 0,
+                        surroundingText = editorInfo.getInitialTextBeforeCursor(20, 0).toString(),
+                        imeSelection = editorInfo.initialSelStart to editorInfo.initialSelEnd,
+                        inputConnectionGeneration = editText.inputConnectionGenerationForTesting()
+                    )
+                }
+                // The empty trailing block owns a zero-width render placeholder. Android is
+                // given the sanitized value through EditorInfo, asserted below. The rendered
+                // Editable's raw caret sits after that placeholder.
+                assertEquals("seed\n\u200B", editText.text.toString())
+                assertEquals(6 to 6, afterSplit.selection)
+                assertEquals(5 to 5, afterSplit.imeSelection)
+                assertEquals(initialGeneration, afterSplit.inputConnectionGeneration)
+                assertEquals("seed\n", afterSplit.surroundingText)
+                assertEquals(1, afterSplit.trace.count { it.startsWith("lineBoundaryInputRefreshScheduled") })
+                assertEquals(1, afterSplit.trace.count { it.startsWith("restartInput:source=lineBoundary:splitBlock") })
+                assertEquals(
+                    1,
+                    afterSplit.trace.count {
+                        it.startsWith("createInputConnection:boundEditor=$editorId boundGen=$initialGeneration")
+                    }
                 )
-            }
-            // The empty trailing block owns a zero-width render placeholder. Android is
-            // given the sanitized value through EditorInfo, asserted below. The rendered
-            // Editable's raw caret sits after that placeholder.
-            assertEquals("seed\n\u200B", editText.text.toString())
-            assertEquals(6 to 6, afterSplit.selection)
-            assertEquals(5 to 5, afterSplit.imeSelection)
-            assertEquals(initialGeneration, afterSplit.inputConnectionGeneration)
-            assertEquals("seed\n", afterSplit.surroundingText)
-            assertEquals(1, afterSplit.trace.count { it.startsWith("lineBoundaryInputRefreshScheduled") })
-            assertEquals(1, afterSplit.trace.count { it.startsWith("restartInput:source=lineBoundary:splitBlock") })
-            assertEquals(
-                1,
-                afterSplit.trace.count {
-                    it.startsWith("createInputConnection:boundEditor=$editorId boundGen=$initialGeneration")
+                assertTrue(afterSplit.trace.any {
+                    it.startsWith("applySelectionFromJSON:doc=") && it.contains("scalar=5..5")
+                })
+                assertTrue(afterSplit.ready)
+
+                runOnMainSyncWithResult {
+                    assertTrue(refreshedInputConnection.commitText("x", 1))
                 }
-            )
-            assertTrue(afterSplit.trace.any {
-                it.startsWith("applySelectionFromJSON:doc=") && it.contains("scalar=5..5")
-            })
-            assertTrue(afterSplit.ready)
+                instrumentation.waitForIdleSync()
 
-            runOnMainSyncWithResult {
-                assertTrue(refreshedInputConnection.commitText("x", 1))
+                assertEquals("seed\nx", editText.text.toString())
+                assertEquals(
+                    6 to 6,
+                    runOnMainSyncWithResult { editText.selectionStart to editText.selectionEnd }
+                )
+                val document = adapter.documentJson()?.let(::JSONObject) ?: error("missing document JSON")
+                assertEquals(2, document.getJSONArray("content").length())
             }
-            instrumentation.waitForIdleSync()
-
-            assertEquals("seed\nx", editText.text.toString())
-            assertEquals(
-                6 to 6,
-                runOnMainSyncWithResult { editText.selectionStart to editText.selectionEnd }
-            )
-            val document = adapter.documentJson()?.let(::JSONObject) ?: error("missing document JSON")
-            assertEquals(2, document.getJSONArray("content").length())
         } finally {
             releasePairedV2TestEditor(editorId)
         }
@@ -358,6 +371,20 @@ class NativeDeviceImeRegressionTest {
             "expected IME trace to contain $event but was $trace",
             trace.any { it.startsWith(event) }
         )
+    }
+
+    private fun waitUntil(
+        description: String,
+        timeoutMs: Long = 3_000L,
+        predicate: () -> Boolean
+    ) {
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        while (SystemClock.uptimeMillis() < deadline) {
+            instrumentation.waitForIdleSync()
+            if (predicate()) return
+            SystemClock.sleep(50)
+        }
+        assertTrue(description, predicate())
     }
 
     private fun renderUpdateJson(text: String): String =
