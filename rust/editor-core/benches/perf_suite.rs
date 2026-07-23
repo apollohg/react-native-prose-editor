@@ -890,7 +890,7 @@ fn main() {
             profile.warmup_iterations,
             1,
             || yrs_engine_with_document(article_json()),
-            |engine| black_box(engine.document_json()),
+            |engine| black_box(engine.document_json_string()),
         ),
     );
 
@@ -924,7 +924,7 @@ fn main() {
             profile.warmup_iterations,
             1,
             || yrs_engine_with_document(article_json_2x()),
-            |engine| black_box(engine.document_json()),
+            |engine| black_box(engine.document_json_string()),
         ),
     );
 
