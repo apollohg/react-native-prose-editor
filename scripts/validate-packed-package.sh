@@ -448,7 +448,7 @@ validate_android_consumer() {
   local android_consumer="$work_dir/android-consumer"
   local example_android_dir="$repo_root/example/android"
   local example_node_modules="$repo_root/example/node_modules"
-  local apk
+  local apk apk_entries
   root="$(cd "$root" && pwd -P)"
   require_command unzip
   [[ -x "$example_android_dir/gradlew" ]] || fail "local example Gradle wrapper is missing"
@@ -456,6 +456,14 @@ validate_android_consumer() {
 
   mkdir -p "$android_consumer"
   cp -R "$example_android_dir" "$android_consumer/android"
+  # The example checkout may contain Gradle transforms and CMake state for the
+  # source package. A packed-consumer validation must start without those
+  # artifacts so its only editor dependency is the extracted project below.
+  rm -rf "$android_consumer/android/.gradle" \
+    "$android_consumer/android/.idea" \
+    "$android_consumer/android/build" \
+    "$android_consumer/android/app/.cxx" \
+    "$android_consumer/android/app/build"
   # Do not inherit the example app manifest: it declares this checkout via
   # file:.., which Expo autolinking would load alongside the extracted module
   # below and produce duplicate Kotlin classes. The symlink still supplies the
@@ -508,8 +516,10 @@ KOTLIN
   ) || fail "Android consumer assembleDebug failed"
   apk="$android_consumer/android/app/build/outputs/apk/debug/app-debug.apk"
   [[ -s "$apk" ]] || fail "Android consumer did not produce app-debug.apk"
+  apk_entries="$work_dir/android-consumer-apk-entries.txt"
+  unzip -Z1 "$apk" > "$apk_entries" || fail "Android consumer APK entries cannot be read"
   for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-    unzip -Z1 "$apk" | grep -Fxq "lib/$abi/libeditor_core.so" || fail "Android consumer package is missing libeditor_core.so for $abi"
+    grep -Fxq "lib/$abi/libeditor_core.so" "$apk_entries" || fail "Android consumer package is missing libeditor_core.so for $abi"
   done
 }
 
