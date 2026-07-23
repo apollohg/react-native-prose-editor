@@ -456,7 +456,21 @@ validate_android_consumer() {
 
   mkdir -p "$android_consumer"
   cp -R "$example_android_dir" "$android_consumer/android"
-  cp "$repo_root/example/package.json" "$android_consumer/package.json"
+  # Do not inherit the example app manifest: it declares this checkout via
+  # file:.., which Expo autolinking would load alongside the extracted module
+  # below and produce duplicate Kotlin classes. The symlink still supplies the
+  # compatible Expo/RN tooling; only the packed Android project is included.
+  cat > "$android_consumer/package.json" <<'JSON'
+{
+  "name": "packed-tarball-android-consumer",
+  "private": true,
+  "dependencies": {
+    "expo": "~54.0.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5"
+  }
+}
+JSON
   ln -s "$example_node_modules" "$android_consumer/node_modules"
   cat >> "$android_consumer/android/settings.gradle" <<'GRADLE'
 

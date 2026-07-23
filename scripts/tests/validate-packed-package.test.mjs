@@ -45,6 +45,7 @@ function run(...args) {
   const result = spawnSync("bash", [validator, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env, NODE_COMPILE_CACHE: join(workDir, "node-compile-cache") },
   });
   return { status: result.status, output: `${result.stdout}\n${result.stderr}` };
