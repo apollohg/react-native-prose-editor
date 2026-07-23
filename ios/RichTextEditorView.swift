@@ -5177,8 +5177,13 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                 fromArray: patch.renderBlocks,
                 startIndex: patch.startIndex,
                 includeLeadingInterBlockSeparator: patch.startIndex > 0,
-                includeTrailingInterBlockSeparator: patch.startIndex + patch.deleteCount
-                    < (currentTopLevelChildMetadata?.count ?? 0),
+                // Replacement ranges already extend to the following child
+                // boundary, whose separator is rendered by that retained
+                // child. A trailing separator is therefore needed only when
+                // inserting before the first existing child.
+                includeTrailingInterBlockSeparator: patch.startIndex == 0
+                    && patch.deleteCount == 0
+                    && !(currentTopLevelChildMetadata?.isEmpty ?? true),
                 baseFont: baseFont,
                 textColor: baseTextColor,
                 theme: theme
