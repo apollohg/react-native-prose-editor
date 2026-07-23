@@ -943,9 +943,14 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     }
 
     private enum NativeTextMutationCommitResult {
-        case committed
+        case committed(adoptedUpdateJSON: String)
         case deferred
         case rejected
+    }
+
+    private struct NativeTextMutationDrainResult {
+        let ready: Bool
+        let adoptedUpdateJSON: String?
     }
 
     private enum PositionCacheUpdate {
@@ -2054,7 +2059,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         if markedTextReplacementScalarRange != nil || markedTextRange != nil {
             let replacementRange = trackedMarkedTextReplacementRange()
             finishTransientMarkedTextMutation()
-            commitMarkedText(text, replacementRange: replacementRange)
+            _ = commitMarkedText(text, replacementRange: replacementRange)
             return
         }
 
@@ -2351,7 +2356,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         if markedTextReplacementScalarRange != nil || markedTextRange != nil {
             let replacementRange = trackedMarkedTextReplacementRange()
             finishTransientMarkedTextMutation()
-            commitMarkedText(text, replacementRange: replacementRange)
+            _ = commitMarkedText(text, replacementRange: replacementRange)
             return
         }
 
@@ -2401,7 +2406,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             }
             clearMarkedTextTracking()
             if shouldCommitMarkedText(composedText, replacementRange: replacementRange) {
-                commitMarkedText(composedText ?? "", replacementRange: replacementRange)
+                _ = commitMarkedText(composedText ?? "", replacementRange: replacementRange)
             } else {
                 restoreAuthorizedTextAfterCancelledCompositionIfNeeded()
             }
@@ -2431,9 +2436,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             Self.inputLog.debug(
                 "[unmarkText] composed=\(self.preview(composed), privacy: .public) replacement=\(self.previewMarkedTextReplacementRange(replacementRange), privacy: .public) selection=\(self.selectionSummary(), privacy: .public)"
             )
-            commitMarkedText(composed, replacementRange: replacementRange)
+            _ = commitMarkedText(composed, replacementRange: replacementRange)
         } else if shouldCommitMarkedText(composedText, replacementRange: replacementRange) {
-            commitMarkedText(composedText ?? "", replacementRange: replacementRange)
+            _ = commitMarkedText(composedText ?? "", replacementRange: replacementRange)
         } else {
             restoreAuthorizedTextAfterCancelledCompositionIfNeeded()
         }
@@ -2571,26 +2576,34 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     private func commitMarkedText(
         _ text: String,
         replacementRange: (from: UInt32, to: UInt32)?
-    ) {
-        guard editorId != 0 else { return }
-        guard let replacementRange else {
-            performInterceptedInput(flushPendingNativeTextMutation: false) {
-                insertTextInRust(text, at: PositionBridge.cursorScalarOffset(in: self))
-            }
-            return
+    ) -> String? {
+        guard editorId != 0,
+              let adapter = EditorV2Registry.adapter(forLegacyId: editorId)
+        else {
+            return nil
         }
-
+        var adoptedUpdateJSON: String?
         performInterceptedInput(flushPendingNativeTextMutation: false) {
-            if replacementRange.from == replacementRange.to {
-                insertTextInRust(text, at: replacementRange.from)
+            if let replacementRange {
+                if replacementRange.from == replacementRange.to {
+                    adoptedUpdateJSON = adapter.insertText(text, atScalar: replacementRange.from)
+                } else {
+                    adoptedUpdateJSON = adapter.replaceTextRange(
+                        from: replacementRange.from,
+                        to: replacementRange.to,
+                        with: text
+                    )
+                }
             } else {
-                replaceTextRangeInRust(
-                    from: replacementRange.from,
-                    to: replacementRange.to,
-                    with: text
+                adoptedUpdateJSON = adapter.insertText(
+                    text,
+                    atScalar: PositionBridge.cursorScalarOffset(in: self)
                 )
             }
+            guard let adoptedUpdateJSON else { return }
+            applyUpdateJSON(adoptedUpdateJSON)
         }
+        return adoptedUpdateJSON
     }
 
     private func shouldCommitMarkedText(
@@ -3828,12 +3841,20 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         drainPendingNativeTextMutation(
             allowAfterBlur: false,
             allowWhileIntercepting: true
-        )
+        ).ready
     }
 
     struct ExternalEditorUpdatePreparation {
         let ready: Bool
-        let committedRustState: Bool
+        /// When preflight committed local UIKit state, the adapter already
+        /// rendered and adopted this current atomic update. Reuse it instead
+        /// of reading Rust again for the same external update operation.
+        let adoptedUpdateJSON: String?
+    }
+
+    private struct ActiveCompositionPreparation {
+        let ready: Bool
+        let adoptedUpdateJSON: String?
     }
 
     @discardableResult
@@ -3842,20 +3863,17 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     }
 
     func prepareForExternalEditorUpdateResult() -> ExternalEditorUpdatePreparation {
-        let committedMutationGeneration = EditorV2Registry.adapter(forLegacyId: editorId)?
-            .committedMutationGeneration
-        guard prepareActiveCompositionForExternalMutation() else {
-            return ExternalEditorUpdatePreparation(ready: false, committedRustState: false)
+        let composition = prepareActiveCompositionForExternalMutation()
+        guard composition.ready else {
+            return ExternalEditorUpdatePreparation(ready: false, adoptedUpdateJSON: nil)
         }
-        let ready = drainPendingNativeTextMutation(
+        let nativeMutation = drainPendingNativeTextMutation(
             allowAfterBlur: true,
             allowWhileIntercepting: true
         )
-        let committedRustState = EditorV2Registry.adapter(forLegacyId: editorId)?
-            .committedMutationGeneration != committedMutationGeneration
         return ExternalEditorUpdatePreparation(
-            ready: ready,
-            committedRustState: ready && committedRustState
+            ready: nativeMutation.ready,
+            adoptedUpdateJSON: composition.adoptedUpdateJSON ?? nativeMutation.adoptedUpdateJSON
         )
     }
 
@@ -3880,8 +3898,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         return (true, currentStateJSON, nil)
     }
 
-    private func prepareActiveCompositionForExternalMutation() -> Bool {
-        guard isComposing else { return true }
+    private func prepareActiveCompositionForExternalMutation() -> ActiveCompositionPreparation {
+        guard isComposing else {
+            return ActiveCompositionPreparation(ready: true, adoptedUpdateJSON: nil)
+        }
 
         let composedText = validatedTrackedMarkedTextForCommit()
         let replacementRange = trackedMarkedTextReplacementRange()
@@ -3889,23 +3909,25 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
         guard shouldCommitMarkedText(composedText, replacementRange: replacementRange) else {
             restoreAuthorizedTextAfterCancelledCompositionIfNeeded()
-            return false
+            return ActiveCompositionPreparation(ready: false, adoptedUpdateJSON: nil)
         }
 
-        commitMarkedText(composedText ?? "", replacementRange: replacementRange)
-        return true
+        return ActiveCompositionPreparation(
+            ready: true,
+            adoptedUpdateJSON: commitMarkedText(composedText ?? "", replacementRange: replacementRange)
+        )
     }
 
     @discardableResult
     private func drainPendingNativeTextMutation(
         allowAfterBlur: Bool,
         allowWhileIntercepting: Bool
-    ) -> Bool {
+    ) -> NativeTextMutationDrainResult {
         guard nativeTextMutationCommitScheduled
                 || pendingNativeTextMutation != nil
                 || (!isComposing && markedTextRange == nil && textStorage.string != lastAuthorizedText)
         else {
-            return true
+            return NativeTextMutationDrainResult(ready: true, adoptedUpdateJSON: nil)
         }
 
         nativeTextMutationCommitScheduled = false
@@ -3922,7 +3944,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
 
         guard let mutation else {
             pendingNativeTextMutation = nil
-            return true
+            return NativeTextMutationDrainResult(ready: true, adoptedUpdateJSON: nil)
         }
 
         switch commitNativeTextMutationIfPossible(
@@ -3930,12 +3952,15 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             allowAfterBlur: allowAfterBlur,
             allowWhileIntercepting: allowWhileIntercepting
         ) {
-        case .committed, .rejected:
+        case .committed(let adoptedUpdateJSON):
             pendingNativeTextMutation = nil
-            return true
+            return NativeTextMutationDrainResult(ready: true, adoptedUpdateJSON: adoptedUpdateJSON)
+        case .rejected:
+            pendingNativeTextMutation = nil
+            return NativeTextMutationDrainResult(ready: true, adoptedUpdateJSON: nil)
         case .deferred:
             pendingNativeTextMutation = mutation
-            return false
+            return NativeTextMutationDrainResult(ready: false, adoptedUpdateJSON: nil)
         }
     }
 
@@ -3999,25 +4024,30 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             return .rejected
         }
 
+        var adoptedUpdateJSON: String?
         performInterceptedInput(flushPendingNativeTextMutation: false) {
+            guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else { return }
             if mutation.from == mutation.to {
                 guard !mutation.replacementText.isEmpty else { return }
-                insertTextInRust(mutation.replacementText, at: mutation.from)
+                adoptedUpdateJSON = adapter.insertText(mutation.replacementText, atScalar: mutation.from)
             } else if mutation.replacementText.isEmpty {
-                deleteScalarRangeInRust(from: mutation.from, to: mutation.to)
+                adoptedUpdateJSON = adapter.deleteScalarRange(from: mutation.from, to: mutation.to)
             } else {
-                replaceTextRangeInRust(
+                adoptedUpdateJSON = adapter.replaceTextRange(
                     from: mutation.from,
                     to: mutation.to,
                     with: mutation.replacementText
                 )
             }
+            guard let adoptedUpdateJSON else { return }
+            applyUpdateJSON(adoptedUpdateJSON)
             restoreNativeTextMutationSelectionIfNeeded(mutation)
         }
+        guard let adoptedUpdateJSON else { return .rejected }
         if mutation.capturedAfterBlur {
             clearNativeTextMutationAfterBlurWindow()
         }
-        return .committed
+        return .committed(adoptedUpdateJSON: adoptedUpdateJSON)
     }
 
     private func restoreNativeTextMutationSelectionIfNeeded(_ mutation: NativeTextMutation) {

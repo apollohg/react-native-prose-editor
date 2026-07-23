@@ -60,10 +60,6 @@ final class EditorV2Adapter {
     private(set) var lastRequestIdForTesting: UInt64?
     private(set) var backendEnvelopeCallCountForTesting = 0
     private(set) var renderUpdateCallCountForTesting = 0
-    /// Increments only when a typed local mutation reports that it changed
-    /// Rust document state. Preflight uses this to distinguish an accepted
-    /// native commit from a mismatch refresh, which must not be retried.
-    private(set) var committedMutationGeneration: UInt64 = 0
     private var lastSyncedScalarSelection: (anchor: UInt32, head: UInt32)?
     private var cachedAuthoritativeScalarSelection: (anchor: UInt32, head: UInt32)?
     private var cachedScalarLength: UInt32?
@@ -1126,11 +1122,8 @@ final class EditorV2Adapter {
                 return nil
             }
             switch outcome.kind {
-            case .transaction(let changed, let revision):
+            case .transaction(_, let revision):
                 baseDocumentRevision = revision
-                if changed {
-                    committedMutationGeneration &+= 1
-                }
                 if let postSelectionMirror {
                     lastSyncedScalarSelection = postSelectionMirror
                 }
@@ -1138,11 +1131,8 @@ final class EditorV2Adapter {
                 // Nothing applicable: no commit happened; surface the current
                 // state (legacy no-op command parity) and skip the drain.
                 return refreshInternal(mirrorSelection: postSelectionMirror ?? preSelection)?.updateJSON
-            case .replacement(let changed, let revision):
+            case .replacement(_, let revision):
                 baseDocumentRevision = revision
-                if changed {
-                    committedMutationGeneration &+= 1
-                }
                 // Whole-root replacement resets the engine-side selection;
                 // the cached sync point is no longer valid.
                 lastSyncedScalarSelection = nil

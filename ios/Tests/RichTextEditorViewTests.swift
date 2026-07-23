@@ -3175,9 +3175,15 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.richTextView.textView.setMarkedText("IME", selectedRange: NSRange(location: 3, length: 0))
 
+        let renderCallsBeforePreflight = adapter.renderUpdateCallCountForTesting
         XCTAssertTrue(view.applyEditorUpdate(externalRenderAtN))
         XCTAssertEqual(adapter.baseDocumentRevision, revisionN + 1)
         XCTAssertEqual(EditorV2Shadow.getHtml(id: editorId), "<p>baseIME</p>")
+        XCTAssertEqual(
+            adapter.renderUpdateCallCountForTesting,
+            renderCallsBeforePreflight + 1,
+            "the composition preflight commit must supply its already-adopted atomic render without a second refresh"
+        )
 
         view.richTextView.textView.insertText("!")
 
@@ -3377,6 +3383,43 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(errors.count, 1)
         XCTAssertEqual(adapter.debugNotes, debugNotesBefore)
         XCTAssertEqual(internalEditorUpdateRejections(in: view), [])
+        assertNoPendingEditorUpdate(in: view)
+    }
+
+    func testMalformedPendingEditorUpdateDuringCompositionRejectsOnceWithoutRetry() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected adapter")
+            return
+        }
+        var errors: [FfiError] = []
+        adapter.onAutonomousError = { errors.append($0) }
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>First</p>")
+
+        let view = NativeEditorExpoView()
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+        setCollapsedSelection(in: view.richTextView.textView, utf16Offset: 0)
+        view.richTextView.textView.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
+
+        view.setPendingEditorUpdateJson("{malformed")
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+
+        XCTAssertEqual(errors.count, 1, "malformed snapshots must not enter the composition retry path")
+        XCTAssertEqual(errors.first?.code, "FFI_RESULT_INVALID")
+        assertNoPendingEditorUpdate(in: view)
+
+        flushMainQueue()
+        flushMainQueue()
+        XCTAssertEqual(errors.count, 1)
         assertNoPendingEditorUpdate(in: view)
     }
 
