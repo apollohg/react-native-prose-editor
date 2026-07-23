@@ -3444,8 +3444,11 @@ class EditorEditText @JvmOverloads constructor(
     private fun splitBlockInRust(atScalarPos: Int) {
         if (!hasLiveEditor()) return
         v2Driver?.let { driver ->
-            driver.splitBlockAt(atScalarPos)?.let {
-                applyRustUpdateJSON(it, lineBoundaryRefreshSource = "splitBlock")
+            driver.splitBlockAt(atScalarPos)?.let { result ->
+                applyRustUpdateJSON(
+                    result.updateJson,
+                    lineBoundaryRefreshSource = if (result.committed) "splitBlock" else null,
+                )
             }
         }
     }
@@ -3457,8 +3460,11 @@ class EditorEditText @JvmOverloads constructor(
             return
         }
         v2Driver?.let { driver ->
-            driver.deleteAndSplit(scalarFrom, scalarTo)?.let {
-                applyRustUpdateJSON(it, lineBoundaryRefreshSource = "deleteAndSplit")
+            driver.deleteAndSplit(scalarFrom, scalarTo)?.let { result ->
+                applyRustUpdateJSON(
+                    result.updateJson,
+                    lineBoundaryRefreshSource = if (result.committed) "deleteAndSplit" else null,
+                )
             }
         }
     }

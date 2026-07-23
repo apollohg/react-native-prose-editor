@@ -1,6 +1,15 @@
 package com.apollohg.editor
 
 /**
+ * Render returned by a block-split request. A refresh-only render keeps the
+ * native view coherent but must not be treated as a locally committed split.
+ */
+internal data class EditorV2SplitRender(
+    val updateJson: String,
+    val committed: Boolean,
+)
+
+/**
  * The v2 driver: the ONLY engine path for views.
  *
  * The views call this interface for every engine interaction; the legacy
@@ -14,8 +23,8 @@ internal interface EditorV2Driver {
     fun replaceTextRange(scalarFrom: Int, scalarTo: Int, text: String): String?
     fun deleteScalarRange(scalarFrom: Int, scalarTo: Int): String?
     fun deleteBackwardAtSelection(anchor: Int, head: Int): String?
-    fun splitBlockAt(scalarPos: Int): String?
-    fun deleteAndSplit(scalarFrom: Int, scalarTo: Int): String?
+    fun splitBlockAt(scalarPos: Int): EditorV2SplitRender?
+    fun deleteAndSplit(scalarFrom: Int, scalarTo: Int): EditorV2SplitRender?
 
     // ── Structural commands at the synced selection ──
     fun insertNode(nodeType: String, anchor: Int, head: Int): String?

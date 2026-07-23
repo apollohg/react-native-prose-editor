@@ -246,11 +246,14 @@ class EditorV2AdapterTest {
 
         val split = adapter.splitBlockAt(1)
         assertNotNull(split)
-        assertEquals("a\n", renderedText(split))
+        assertTrue(split!!.committed)
+        assertEquals("a\n", renderedText(split.updateJson))
 
         adapter.setContentHtml("<p>abcd</p>")
         val update = adapter.deleteAndSplit(1, 3)
-        assertEquals("a\nd", renderedText(update))
+        assertNotNull(update)
+        assertTrue(update!!.committed)
+        assertEquals("a\nd", renderedText(update.updateJson))
     }
 
     @Test
@@ -398,8 +401,8 @@ class EditorV2AdapterTest {
             "replaceTextRange" to { adapter.replaceTextRange(0, 1, "x") },
             "deleteBackward" to { adapter.deleteBackwardAtSelection(1, 1) },
             "deleteScalarRange" to { adapter.deleteScalarRange(0, 1) },
-            "splitBlock" to { adapter.splitBlockAt(1) },
-            "deleteAndSplit" to { adapter.deleteAndSplit(0, 1) },
+            "splitBlock" to { adapter.splitBlockAt(1)?.updateJson },
+            "deleteAndSplit" to { adapter.deleteAndSplit(0, 1)?.updateJson },
             "insertNode" to { adapter.insertNode("hardBreak", 1, 1) },
             "insertContentHtml" to { adapter.insertContentHtmlAtSelection("<p>x</p>", 1, 1) },
             "insertContentJson" to { adapter.insertContentJsonAtSelection("{\"type\":\"paragraph\"}", 1, 1) },
@@ -465,6 +468,37 @@ class EditorV2AdapterTest {
 
         val recovered = adapter.insertText("ok", 0)
         assertEquals("okEXTbase", renderedText(recovered))
+    }
+
+    @Test
+    fun `split renders identify stale and not applicable refreshes as uncommitted`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>base</p>")
+        adapter.syncSelection(0, 0)
+        val session = sessionOf(adapter)
+        session.text.insert(0, "REMOTE ")
+        session.revision += 1u
+
+        backend.calls.clear()
+        val stale = adapter.splitBlockAt(0)
+
+        assertNotNull(stale)
+        assertFalse(stale!!.committed)
+        assertEquals("REMOTE base", renderedText(stale.updateJson))
+        assertEquals(1, backend.calls.count { it == "applyCommand" })
+        assertEquals(1, backend.calls.count { it == "renderUpdate" })
+
+        adapter.setContentHtml("<p>next</p>")
+        adapter.syncSelection(0, 1)
+        backend.forceNextSplitCommandNotApplicableWithRemoteText("REMOTE")
+        backend.calls.clear()
+        val notApplicable = adapter.deleteAndSplit(0, 1)
+
+        assertNotNull(notApplicable)
+        assertFalse(notApplicable!!.committed)
+        assertEquals("REMOTE", renderedText(notApplicable.updateJson))
+        assertEquals(1, backend.calls.count { it == "applyCommand" })
+        assertEquals(1, backend.calls.count { it == "renderUpdate" })
     }
 
     @Test

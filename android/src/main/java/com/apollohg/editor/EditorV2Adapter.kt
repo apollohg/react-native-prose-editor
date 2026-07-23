@@ -749,6 +749,60 @@ internal class EditorV2Adapter private constructor(
         }
     }
 
+    /**
+     * Split commands need to distinguish a locally committed transaction from
+     * a refresh recovered after a stale revision or a no-op outcome. Both
+     * paths return a render, but only the former warrants IME-boundary work.
+     */
+    private fun performSplitMutation(
+        preSelection: IntArray,
+        postSelectionMirror: IntArray,
+        call: () -> EditorV2CallResult<String>,
+    ): EditorV2SplitRender? {
+        if (destroyed) {
+            emit(destroyedError())
+            return null
+        }
+        when (val sync = ensureSelection(preSelection[0], preSelection[1])) {
+            is SelectionSyncOutcome.Ok -> Unit
+            is SelectionSyncOutcome.Refreshed -> return EditorV2SplitRender(sync.updateJson, committed = false)
+            is SelectionSyncOutcome.Failed -> return null
+        }
+        return when (val result = call()) {
+            is EditorV2CallResult.Err ->
+                handleMutationError(result.error, postSelectionMirror)
+                    ?.let { EditorV2SplitRender(it, committed = false) }
+            is EditorV2CallResult.Ok -> {
+                val outcome = parseMutationOutcome(result.value)
+                if (outcome == null) {
+                    emit(contractError("v2 mutation outcome violates the frozen shape"))
+                    return null
+                }
+                when (outcome) {
+                    is MutationOutcome.NotApplicable ->
+                        refreshInternal(postSelectionMirror)
+                            ?.let { EditorV2SplitRender(it, committed = false) }
+                    is MutationOutcome.Transaction -> {
+                        baseDocumentRevision = outcome.revision
+                        lastSyncedScalarSelection = postSelectionMirror
+                        invalidateCachedAtomicState(postSelectionMirror)
+                        val update = refreshInternal(postSelectionMirror) ?: return null
+                        if (outcome.changed) drainOutboundIfNeeded()
+                        EditorV2SplitRender(update, committed = outcome.changed)
+                    }
+                    is MutationOutcome.Replacement -> {
+                        baseDocumentRevision = outcome.revision
+                        lastSyncedScalarSelection = null
+                        invalidateCachedAtomicState(null)
+                        val update = refreshInternal(postSelectionMirror) ?: return null
+                        if (outcome.changed) drainOutboundIfNeeded()
+                        EditorV2SplitRender(update, committed = outcome.changed)
+                    }
+                }
+            }
+        }
+    }
+
     private fun performHistoryMutation(call: (String) -> EditorV2CallResult<String>): String? {
         if (destroyed) {
             emit(destroyedError())
@@ -878,22 +932,20 @@ internal class EditorV2Adapter private constructor(
         }
     }
 
-    override fun splitBlockAt(scalarPos: Int): String? =
-        performMutation(
+    override fun splitBlockAt(scalarPos: Int): EditorV2SplitRender? =
+        performSplitMutation(
             preSelection = intArrayOf(scalarPos, scalarPos),
             postSelectionMirror = intArrayOf(scalarPos + 1, scalarPos + 1),
-            includeSelectionInUpdate = true,
         ) {
             callWithEnvelope(JSONObject().put("command", JSONObject().put("type", "splitBlock"))) { requestJson ->
                 backend.applyCommand(editorId, requestJson)
             }
         }
 
-    override fun deleteAndSplit(scalarFrom: Int, scalarTo: Int): String? =
-        performMutation(
+    override fun deleteAndSplit(scalarFrom: Int, scalarTo: Int): EditorV2SplitRender? =
+        performSplitMutation(
             preSelection = intArrayOf(scalarFrom, scalarTo),
             postSelectionMirror = intArrayOf(scalarFrom + 1, scalarFrom + 1),
-            includeSelectionInUpdate = true,
         ) {
             callWithEnvelope(JSONObject().put("command", JSONObject().put("type", "deleteAndSplit"))) { requestJson ->
                 backend.applyCommand(editorId, requestJson)

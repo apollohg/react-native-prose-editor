@@ -32,9 +32,19 @@ internal class FakeEditorV2Backend : EditorV2Backend {
 
     val sessions = LinkedHashMap<String, FakeSession>()
     private var nextId = 0uL
+    private var nextSplitCommandNotApplicableRemoteText: String? = null
 
     /** Backend call log ("applyInput", "getState", ...), for traffic assertions. */
     val calls = mutableListOf<String>()
+
+    /**
+     * Makes the next split command return `notApplicable` after a remote peer
+     * has advanced the session. The returned render must be adopted, but this
+     * is not a local split commit.
+     */
+    fun forceNextSplitCommandNotApplicableWithRemoteText(text: String) {
+        nextSplitCommandNotApplicableRemoteText = text
+    }
 
     private fun liveSession(editorId: String): FakeSession? =
         sessions[editorId]?.takeUnless { it.destroyed }
@@ -219,6 +229,16 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         val session = admittedSession!!
         val command = request.getJSONObject("command")
         session.commands.add(command)
+        if (command.getString("type") in setOf("splitBlock", "deleteAndSplit")) {
+            nextSplitCommandNotApplicableRemoteText?.let { remoteText ->
+                nextSplitCommandNotApplicableRemoteText = null
+                session.text = StringBuilder(remoteText)
+                session.anchor = remoteText.length
+                session.head = remoteText.length
+                session.revision += 1u
+                return EditorV2CallResult.Ok(JSONObject().put("type", "notApplicable").toString())
+            }
+        }
         when (command.getString("type")) {
             "insertText" -> insertAtSelection(session, command.getString("text"))
             "replaceSelectionText" -> insertAtSelection(session, command.getString("text"))

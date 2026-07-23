@@ -1759,6 +1759,44 @@ class EditorInputConnectionTest {
     }
 
     @Test
+    fun `stale composition return applies remote refresh without line boundary restart`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)
+            as EditorV2CallResult.Ok
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            JSONObject(created.value).getString("editorId"),
+            roomBound = false
+        )!!
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            editorId = 1
+            v2Driver = adapter
+        }
+        adapter.setContentHtml("<p>seed</p>")?.let { editText.applyUpdateJSON(it, notifyListener = false) }
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        activity.setContentView(editText)
+        assertTrue(editText.requestFocus())
+        editText.setSelection(4)
+        val inputConnection = editText.onCreateInputConnection(EditorInfo())!!
+        val session = backend.sessions.getValue(adapter.editorId)
+        session.text.append(" REMOTE")
+        session.revision += 1u
+        editText.clearImeTraceForTesting()
+
+        assertTrue(inputConnection.setComposingText("\n", 1))
+        assertTrue(inputConnection.commitText("\n", 1))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("seed REMOTE", editText.text.toString())
+        assertEquals(0, editText.imeTraceSnapshotForTesting().count {
+            it.startsWith("lineBoundaryInputRefreshScheduled")
+        })
+        assertEquals(0, editText.imeTraceSnapshotForTesting().count {
+            it.startsWith("restartInput:source=lineBoundary:")
+        })
+    }
+
+    @Test
     fun `refreshed input connection commits after composition return split`() {
         val backend = FakeEditorV2Backend()
         val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)

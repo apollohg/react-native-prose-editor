@@ -216,6 +216,44 @@ class EditorV2StagingViewTest {
     }
 
     @Test
+    fun `revision mismatch split applies remote refresh without line boundary restart`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        activity.setContentView(editText)
+        assertTrue(editText.requestFocus())
+        editText.setSelection(5)
+        val session = backend.sessions.getValue(adapter.editorId)
+        session.text.append(" REMOTE")
+        session.revision += 1u
+        editText.clearImeTraceForTesting()
+
+        editText.handleReturnKey()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("Hello REMOTE", documentText())
+        assertEquals("Hello REMOTE", editText.text.toString())
+        assertEquals(0, imeTraceCount(editText, "lineBoundaryInputRefreshScheduled"))
+        assertEquals(0, imeTraceCount(editText, "restartInput:source=lineBoundary:"))
+    }
+
+    @Test
+    fun `not applicable split applies remote refresh without line boundary restart`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        activity.setContentView(editText)
+        assertTrue(editText.requestFocus())
+        editText.setSelection(5)
+        backend.forceNextSplitCommandNotApplicableWithRemoteText("REMOTE")
+        editText.clearImeTraceForTesting()
+
+        editText.handleReturnKey()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("REMOTE", documentText())
+        assertEquals("REMOTE", editText.text.toString())
+        assertEquals(0, imeTraceCount(editText, "lineBoundaryInputRefreshScheduled"))
+        assertEquals(0, imeTraceCount(editText, "restartInput:source=lineBoundary:"))
+    }
+
+    @Test
     fun `undo and redo flow through toolbar path`() {
         editText.setSelection(5)
         editText.handleTextCommit("!")
