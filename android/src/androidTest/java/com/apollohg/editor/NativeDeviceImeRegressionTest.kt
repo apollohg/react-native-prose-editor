@@ -234,6 +234,7 @@ class NativeDeviceImeRegressionTest {
     fun pairedCompositionReturnRefreshesImeOnceBeforeTheNextCommit() {
         val (adapter, editorId) = createPairedV2TestEditor()
         try {
+            lateinit var refreshedInputConnection: EditorInputConnection
             val editText = runOnMainSyncWithResult {
                 EditorEditText(context).apply {
                     this.editorId = editorId
@@ -245,39 +246,46 @@ class NativeDeviceImeRegressionTest {
                 }
             }
 
-            runOnMainSyncWithResult {
+            val initialGeneration = runOnMainSyncWithResult {
                 val inputConnection = createInputConnection(editText)
                 assertTrue(inputConnection.setComposingText("\n", 1))
                 assertTrue(inputConnection.commitText("\n", 1))
-                inputConnection
+                editText.inputConnectionGenerationForTesting()
             }
             instrumentation.waitForIdleSync()
 
             val afterSplit = runOnMainSyncWithResult {
-                val trace = editText.imeTraceSnapshotForTesting()
                 val editorInfo = EditorInfo()
-                createInputConnection(editText, editorInfo)
+                refreshedInputConnection = createInputConnection(editText, editorInfo)
                 ImeResult(
                     selection = editText.selectionStart to editText.selectionEnd,
-                    trace = trace,
-                    ready = editorInfo.initialCapsMode and InputType.TYPE_TEXT_FLAG_CAP_SENTENCES != 0
+                    trace = editText.imeTraceSnapshotForTesting(),
+                    ready = editorInfo.initialCapsMode and InputType.TYPE_TEXT_FLAG_CAP_SENTENCES != 0,
+                    surroundingText = editorInfo.getInitialTextBeforeCursor(20, 0).toString(),
+                    inputConnectionGeneration = editText.inputConnectionGenerationForTesting()
                 )
             }
-            assertEquals("seed\n", editText.text.toString())
+            // The empty trailing block owns a zero-width render placeholder. Android is
+            // given the sanitized value through EditorInfo, asserted below.
+            assertEquals("seed\n\u200B", editText.text.toString())
             assertEquals(5 to 5, afterSplit.selection)
-            val surroundingText = runOnMainSyncWithResult {
-                val editorInfo = EditorInfo()
-                createInputConnection(editText, editorInfo)
-                editorInfo.getInitialTextBeforeCursor(20, 0).toString()
-            }
-            assertEquals("seed\n", surroundingText)
+            assertEquals(initialGeneration, afterSplit.inputConnectionGeneration)
+            assertEquals("seed\n", afterSplit.surroundingText)
             assertEquals(1, afterSplit.trace.count { it.startsWith("lineBoundaryInputRefreshScheduled") })
             assertEquals(1, afterSplit.trace.count { it.startsWith("restartInput:source=lineBoundary:splitBlock") })
+            assertEquals(
+                1,
+                afterSplit.trace.count {
+                    it.startsWith("createInputConnection:boundEditor=$editorId boundGen=$initialGeneration")
+                }
+            )
+            assertTrue(afterSplit.trace.any {
+                it.startsWith("applySelectionFromJSON:doc=") && it.contains("scalar=5..5")
+            })
             assertTrue(afterSplit.ready)
 
             runOnMainSyncWithResult {
-                val inputConnection = createInputConnection(editText)
-                assertTrue(inputConnection.commitText("x", 1))
+                assertTrue(refreshedInputConnection.commitText("x", 1))
             }
             instrumentation.waitForIdleSync()
 
@@ -399,6 +407,8 @@ class NativeDeviceImeRegressionTest {
         val inserted: Inserted? = null,
         val selection: Pair<Int, Int> = 0 to 0,
         val trace: List<String> = emptyList(),
-        val ready: Boolean = false
+        val ready: Boolean = false,
+        val surroundingText: String = "",
+        val inputConnectionGeneration: Long = 0L
     )
 }

@@ -1759,6 +1759,67 @@ class EditorInputConnectionTest {
     }
 
     @Test
+    fun `refreshed input connection commits after composition return split`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create("""{"initialization":{"type":"localEmpty"}}""", null)
+            as EditorV2CallResult.Ok
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            JSONObject(created.value).getString("editorId"),
+            roomBound = false
+        )!!
+        val editText = EditorEditText(RuntimeEnvironment.getApplication()).apply {
+            editorId = 1
+            v2Driver = adapter
+        }
+        adapter.setContentHtml("<p>seed</p>")?.let { editText.applyUpdateJSON(it, notifyListener = false) }
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        activity.setContentView(editText)
+        assertTrue(editText.requestFocus())
+        editText.setSelection(4)
+
+        val initialConnection = editText.onCreateInputConnection(EditorInfo())!!
+        val initialGeneration = editText.inputConnectionGenerationForTesting()
+        editText.clearImeTraceForTesting()
+
+        assertTrue(initialConnection.setComposingText("\n", 1))
+        assertTrue(initialConnection.commitText("\n", 1))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        // The fake backend models the trailing empty paragraph as a terminal newline. The
+        // device test covers Rust's trailing-hard-break placeholder representation.
+        assertEquals("seed\n", editText.text.toString())
+        assertEquals(5, editText.selectionStart)
+        assertEquals(initialGeneration, editText.inputConnectionGenerationForTesting())
+
+        val refreshedEditorInfo = EditorInfo()
+        val refreshedConnection = editText.onCreateInputConnection(refreshedEditorInfo)!!
+        assertTrue(refreshedConnection !== initialConnection)
+        assertEquals(initialGeneration, editText.inputConnectionGenerationForTesting())
+        assertEquals("seed\n", refreshedEditorInfo.getInitialTextBeforeCursor(20, 0).toString())
+        assertTrue(refreshedEditorInfo.initialCapsMode hasInputFlag InputType.TYPE_TEXT_FLAG_CAP_SENTENCES)
+        assertEquals(1, editText.imeTraceSnapshotForTesting().count {
+            it.startsWith("lineBoundaryInputRefreshScheduled")
+        })
+        assertEquals(1, editText.imeTraceSnapshotForTesting().count {
+            it.startsWith("restartInput:source=lineBoundary:splitBlock")
+        })
+        assertEquals(1, editText.imeTraceSnapshotForTesting().count {
+            it.startsWith("createInputConnection:boundEditor=1 boundGen=$initialGeneration")
+        })
+        assertTrue(editText.imeTraceSnapshotForTesting().any {
+            it.startsWith("applySelectionFromJSON:doc=") && it.contains("scalar=5..5")
+        })
+
+        assertTrue(refreshedConnection.commitText("x", 1))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals("seed\nx", editText.text.toString())
+        val document = adapter.documentJson()?.let(::JSONObject) ?: error("missing document JSON")
+        assertEquals(2, document.getJSONArray("content").length())
+    }
+
+    @Test
     fun `commit text after composing region replaces original authorized range`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
         editText.applyUpdateJSON(renderUpdateJson("teh "), notifyListener = false)

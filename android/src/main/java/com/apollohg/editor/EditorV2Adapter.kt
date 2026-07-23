@@ -879,7 +879,8 @@ internal class EditorV2Adapter private constructor(
     override fun splitBlockAt(scalarPos: Int): String? =
         performMutation(
             preSelection = intArrayOf(scalarPos, scalarPos),
-            postSelectionMirror = intArrayOf(scalarPos, scalarPos),
+            postSelectionMirror = intArrayOf(scalarPos + 1, scalarPos + 1),
+            includeSelectionInUpdate = true,
         ) {
             callWithEnvelope(JSONObject().put("command", JSONObject().put("type", "splitBlock"))) { requestJson ->
                 backend.applyCommand(editorId, requestJson)
@@ -889,7 +890,8 @@ internal class EditorV2Adapter private constructor(
     override fun deleteAndSplit(scalarFrom: Int, scalarTo: Int): String? =
         performMutation(
             preSelection = intArrayOf(scalarFrom, scalarTo),
-            postSelectionMirror = intArrayOf(scalarFrom, scalarFrom),
+            postSelectionMirror = intArrayOf(scalarFrom + 1, scalarFrom + 1),
+            includeSelectionInUpdate = true,
         ) {
             callWithEnvelope(JSONObject().put("command", JSONObject().put("type", "deleteAndSplit"))) { requestJson ->
                 backend.applyCommand(editorId, requestJson)

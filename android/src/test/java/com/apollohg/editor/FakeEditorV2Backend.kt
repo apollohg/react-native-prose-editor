@@ -592,11 +592,17 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         fun docPositionForText(text: String, scalar: Int): Int {
             var remaining = scalar
             var docOffset = 0
-            for (line in text.split('\n')) {
+            val lines = text.split('\n')
+            lines.forEachIndexed { index, line ->
                 docOffset += 1
                 if (remaining <= line.length) return docOffset + remaining
                 docOffset += line.length + 1
-                remaining -= line.length
+                // The fake's scalar model includes each rendered inter-block newline,
+                // matching scalarForDocPosition above. Advance past that scalar as well
+                // before entering the next block.
+                if (index < lines.lastIndex) {
+                    remaining -= line.length + 1
+                }
             }
             return docOffset
         }

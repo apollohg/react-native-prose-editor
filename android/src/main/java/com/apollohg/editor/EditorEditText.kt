@@ -380,6 +380,7 @@ class EditorEditText @JvmOverloads constructor(
     fun lastRenderAppliedPatch(): Boolean = lastRenderAppliedPatchForTesting
     fun lastApplyUpdateTrace(): ApplyUpdateTrace? = lastApplyUpdateTraceForTesting
     internal fun hasDeferredRustUpdateApplicationForTesting(): Boolean = deferredRustUpdateJSON != null
+    internal fun inputConnectionGenerationForTesting(): Long = inputConnectionGeneration
 
     internal fun applyRustUpdateJSONForTesting(updateJSON: String) {
         applyRustUpdateJSON(updateJSON)
@@ -4746,7 +4747,10 @@ class EditorEditText @JvmOverloads constructor(
      */
     private fun applySelectionFromJSON(selection: org.json.JSONObject) {
         val type = selection.optString("type", "") ?: return
-        if (isEditorDestroyedForInput()) return
+        if (isEditorDestroyedForInput()) {
+            recordImeTraceForTesting("applySelectionFromJSONSkipped", "reason=destroyed type=$type")
+            return
+        }
 
         isApplyingRustState = true
         try {
@@ -4755,13 +4759,24 @@ class EditorEditText @JvmOverloads constructor(
                 "text" -> {
                     val docAnchor = exactV2ScalarInt(selection.opt("anchor") as? Number) ?: return
                     val docHead = exactV2ScalarInt(selection.opt("head") as? Number) ?: return
-                    // Convert doc positions to scalar offsets.
+                    // The frozen v2 update includes exact scalar positions alongside its
+                    // structural document positions. Prefer those values: a cursor inside
+                    // an empty trailing block sits at a document boundary that cannot be
+                    // reconstructed from rendered structural tokens alone.
                     val selectionDriver = v2Driver ?: return
-                    val scalarAnchor = selectionDriver.scalarPositionForDoc(docAnchor) ?: docAnchor
-                    val scalarHead = selectionDriver.scalarPositionForDoc(docHead) ?: docHead
+                    val scalarAnchor = exactV2ScalarInt(selection.opt("anchorScalar") as? Number)
+                        ?: selectionDriver.scalarPositionForDoc(docAnchor)
+                        ?: docAnchor
+                    val scalarHead = exactV2ScalarInt(selection.opt("headScalar") as? Number)
+                        ?: selectionDriver.scalarPositionForDoc(docHead)
+                        ?: docHead
                     val anchorUtf16 = PositionBridge.scalarToUtf16(scalarAnchor, currentText)
                     val headUtf16 = PositionBridge.scalarToUtf16(scalarHead, currentText)
                     val len = text?.length ?: 0
+                    recordImeTraceForTesting(
+                        "applySelectionFromJSON",
+                        "doc=$docAnchor..$docHead scalar=$scalarAnchor..$scalarHead utf16=$anchorUtf16..$headUtf16 len=$len"
+                    )
                     setSelection(
                         anchorUtf16.coerceIn(0, len),
                         headUtf16.coerceIn(0, len)
