@@ -812,6 +812,129 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(handle.bridge.collaborationBeginConnect()).toBe('2');
     });
 
+    it('tombstones the live local peer on detach while retaining and republishing desired awareness', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        const firstGeneration = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(firstGeneration);
+        handle.bridge.collaborationReceive(firstGeneration, V2_FAKE_STEP2_FRAME);
+        expect(handle.bridge.collaborationPeers()).toEqual([
+            expect.objectContaining({ isLocal: true, clock: 1, state: { user: ALICE } }),
+        ]);
+
+        handle.bridge.collaborationDetach();
+        expect(runtime.session(handle.editorId).desiredAwareness).toEqual({ user: ALICE });
+        expect(handle.bridge.collaborationPeers()).toEqual([]);
+        handle.bridge.collaborationReattach();
+        expect(handle.bridge.collaborationPeers()).toEqual([]);
+
+        const secondGeneration = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(secondGeneration);
+        handle.bridge.collaborationReceive(secondGeneration, V2_FAKE_STEP2_FRAME);
+        expect(handle.bridge.collaborationPeers()).toEqual([
+            expect.objectContaining({ isLocal: true, clock: 3, state: { user: ALICE } }),
+        ]);
+
+        handle.bridge.collaborationSetAwareness(null);
+        expect(runtime.session(handle.editorId).desiredAwareness).toBeNull();
+        expect(runtime.session(handle.editorId).localClock).toBe(4);
+        expect(handle.bridge.collaborationPeers()).toEqual([]);
+    });
+
+    it('merges clocked awareness deltas and only refreshes activity for admitted updates', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        const generation = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(generation);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+        handle.bridge.collaborationTick('10000');
+
+        const peer42Clock1 = remotePeer({ clientId: '42', clock: 1 });
+        const peer43Clock5 = remotePeer({
+            clientId: '43',
+            clock: 5,
+            cursor: null,
+            state: { user: { userId: '3', name: 'Carol', color: '#0f0' } },
+        });
+        runtime.pushRemotePeers(handle.editorId, [peer43Clock5, peer42Clock1]);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
+        expect(handle.bridge.collaborationPeers()).toEqual([peer42Clock1, peer43Clock5]);
+
+        handle.bridge.collaborationTick('20000');
+        const peer42Clock2 = remotePeer({
+            clientId: '42',
+            clock: 2,
+            state: { user: { userId: '2', name: 'Bob II', color: '#00f' } },
+        });
+        runtime.pushRemotePeers(handle.editorId, [peer42Clock2]);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
+        expect(handle.bridge.collaborationPeers()).toEqual([peer42Clock2, peer43Clock5]);
+
+        handle.bridge.collaborationTick('25000');
+        runtime.pushRemotePeers(handle.editorId, [
+            remotePeer({
+                clientId: '43',
+                clock: 5,
+                cursor: null,
+                state: { user: { userId: '3', name: 'equal ignored', color: '#0f0' } },
+            }),
+        ]);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
+        runtime.pushRemotePeers(handle.editorId, [
+            remotePeer({
+                clientId: '43',
+                clock: 4,
+                cursor: null,
+                state: { user: { userId: '3', name: 'stale ignored', color: '#0f0' } },
+            }),
+        ]);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
+        expect(handle.bridge.collaborationPeers()).toEqual([peer42Clock2, peer43Clock5]);
+
+        handle.bridge.collaborationTick('30000');
+        const peer42Clock3 = remotePeer({
+            clientId: '42',
+            clock: 3,
+            state: { user: { userId: '2', name: 'Bob III', color: '#00f' } },
+        });
+        runtime.pushRemotePeers(handle.editorId, [peer42Clock3]);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
+        expect(handle.bridge.collaborationTick('39999')).toEqual({
+            nextDeadlineMillis: '40000',
+            renewedLocal: false,
+            expiredPeers: [],
+            outboundChanged: false,
+            peersChanged: false,
+        });
+        expect(handle.bridge.collaborationTick('40000')).toEqual({
+            nextDeadlineMillis: '60000',
+            renewedLocal: false,
+            expiredPeers: ['43'],
+            outboundChanged: false,
+            peersChanged: true,
+        });
+        expect(handle.bridge.collaborationPeers()).toEqual([peer42Clock3]);
+        expect(handle.bridge.collaborationTick('59999')).toEqual({
+            nextDeadlineMillis: '60000',
+            renewedLocal: false,
+            expiredPeers: [],
+            outboundChanged: false,
+            peersChanged: false,
+        });
+
+        runtime.pushRemotePeers(handle.editorId, [
+            remotePeer({ clientId: '42', clock: 4, state: null, cursor: null }),
+        ]);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
+        expect(handle.bridge.collaborationPeers()).toEqual([]);
+        expect(handle.bridge.collaborationTick('60000')).toEqual({
+            nextDeadlineMillis: null,
+            renewedLocal: false,
+            expiredPeers: [],
+            outboundChanged: false,
+            peersChanged: false,
+        });
+    });
+
     // ── Awareness / peers ───────────────────────────────────────
 
     it('publishes desired awareness through Rust with no TypeScript clock bookkeeping, and renders peers', () => {

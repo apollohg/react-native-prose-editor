@@ -580,7 +580,9 @@ interface FakeSession {
     desiredAwareness: Record<string, unknown> | null;
     localClientId: string;
     localClock: number;
+    localAwarenessLive: boolean;
     remotePeers: NativeEditorV2PeerInfo[];
+    remoteAwarenessClocks: Map<string, number>;
     awarenessNowMillis: bigint;
     lastLocalAwarenessPublishMillis: bigint | null;
     remotePeerActivity: Map<string, bigint>;
@@ -602,7 +604,7 @@ export interface FakeNativeEditorV2Runtime {
     liveEditorIds(): string[];
     /** Queue the document the next accepted server Step 2 / update installs. */
     pushRemoteDoc(editorId: string, doc: DocumentJSON): void;
-    /** Queue the peer set the next inbound awareness frame installs. */
+    /** Queue the clocked per-client delta the next inbound awareness frame applies. */
     pushRemotePeers(editorId: string, peers: NativeEditorV2PeerInfo[]): void;
     /** Retire the live generation natively without telling TypeScript. */
     retireLiveGeneration(editorId: string): void;
@@ -616,7 +618,7 @@ export interface FakeNativeEditorV2Runtime {
 
 interface PendingRemote {
     docs: DocumentJSON[];
-    peerSets: NativeEditorV2PeerInfo[][];
+    awarenessDeltas: NativeEditorV2PeerInfo[][];
     applyLocalApiErrors: FakeErrorRecord[];
     applyCommandErrors: FakeErrorRecord[];
 }
@@ -631,7 +633,12 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
     function pendingFor(editorId: string): PendingRemote {
         let entry = pending.get(editorId);
         if (!entry) {
-            entry = { docs: [], peerSets: [], applyLocalApiErrors: [], applyCommandErrors: [] };
+            entry = {
+                docs: [],
+                awarenessDeltas: [],
+                applyLocalApiErrors: [],
+                applyCommandErrors: [],
+            };
             pending.set(editorId, entry);
         }
         return entry;
@@ -692,7 +699,16 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
     function retireGeneration(session: FakeSession, next: FakeTransportState): void {
         session.liveGeneration = null;
         session.transportState = next;
+        clearTransportAwareness(session);
+    }
+
+    function clearTransportAwareness(session: FakeSession): void {
+        if (session.localAwarenessLive) {
+            session.localClock += 1;
+            session.localAwarenessLive = false;
+        }
         session.remotePeers = [];
+        session.remoteAwarenessClocks.clear();
         session.remotePeerActivity.clear();
     }
 
@@ -702,8 +718,18 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
 
     function publishLocalAwareness(session: FakeSession): void {
         session.localClock += 1;
+        session.localAwarenessLive = true;
         session.protocolQueue.push(awarenessFrame(session.localClock));
         session.lastLocalAwarenessPublishMillis = session.awarenessNowMillis;
+    }
+
+    function clearLocalAwareness(session: FakeSession): void {
+        if (!session.localAwarenessLive) return;
+        session.localClock += 1;
+        session.localAwarenessLive = false;
+        if (session.transportState === 'Synchronized') {
+            session.protocolQueue.push(awarenessFrame(session.localClock));
+        }
     }
 
     function nextAwarenessDeadline(session: FakeSession): bigint | null {
@@ -726,16 +752,49 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         return localRenewal < remoteExpiry ? localRenewal : remoteExpiry;
     }
 
-    function replaceRemotePeers(session: FakeSession, peers: NativeEditorV2PeerInfo[]): void {
-        const peerActivity = new Map<string, bigint>();
-        for (const peer of peers) {
+    function applyRemoteAwarenessDelta(
+        session: FakeSession,
+        entries: NativeEditorV2PeerInfo[]
+    ): void {
+        for (const peer of entries) {
             const clientId = canonicalV2U64(peer.clientId);
-            if (!peer.isLocal && clientId != null) {
-                peerActivity.set(clientId, session.awarenessNowMillis);
+            if (peer.isLocal || clientId == null || clientId === session.localClientId) continue;
+            const currentClock = session.remoteAwarenessClocks.get(clientId);
+            const currentPeerIndex = session.remotePeers.findIndex(
+                (candidate) => candidate.clientId === clientId
+            );
+            const isTombstone = peer.state == null;
+            const removesEqualClockLivePeer =
+                isTombstone && currentPeerIndex >= 0 && currentClock === peer.clock;
+            if (
+                currentClock != null &&
+                peer.clock <= currentClock &&
+                !removesEqualClockLivePeer
+            ) {
+                continue;
             }
+            if (currentClock == null && isTombstone) continue;
+
+            session.remoteAwarenessClocks.set(clientId, peer.clock);
+            if (isTombstone) {
+                if (currentPeerIndex >= 0) session.remotePeers.splice(currentPeerIndex, 1);
+                session.remotePeerActivity.delete(clientId);
+                continue;
+            }
+
+            const admittedPeer = { ...peer, clientId, isLocal: false };
+            if (currentPeerIndex >= 0) {
+                session.remotePeers[currentPeerIndex] = admittedPeer;
+            } else {
+                session.remotePeers.push(admittedPeer);
+            }
+            session.remotePeerActivity.set(clientId, session.awarenessNowMillis);
         }
-        session.remotePeers = peers;
-        session.remotePeerActivity = peerActivity;
+        session.remotePeers.sort((left, right) => {
+            const leftId = BigInt(left.clientId);
+            const rightId = BigInt(right.clientId);
+            return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+        });
     }
 
     function queueDocumentUpdate(session: FakeSession): void {
@@ -881,7 +940,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         // Remote awareness state.
         if (tag === 0x02) {
             const remote = pendingFor(session.editorId);
-            replaceRemotePeers(session, remote.peerSets.shift() ?? []);
+            applyRemoteAwarenessDelta(session, remote.awarenessDeltas.shift() ?? []);
             return outcome({});
         }
         if (tag === 0xff) {
@@ -951,7 +1010,9 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 desiredAwareness: null,
                 localClientId: String((clientIdCounter += 1)),
                 localClock: 0,
+                localAwarenessLive: false,
                 remotePeers: [],
+                remoteAwarenessClocks: new Map(),
                 awarenessNowMillis: 0n,
                 lastLocalAwarenessPublishMillis: null,
                 remotePeerActivity: new Map(),
@@ -998,7 +1059,9 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 session.destroyed = true;
                 session.transportState = 'Destroyed';
                 session.liveGeneration = null;
+                session.localAwarenessLive = false;
                 session.remotePeers = [];
+                session.remoteAwarenessClocks.clear();
                 session.remotePeerActivity.clear();
                 liveIds.delete(editorId);
                 return okRecord(true);
@@ -1530,9 +1593,8 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     );
                 }
                 if (awarenessJson.trim() === 'null') {
-                    if (session.desiredAwareness != null && session.transportState === 'Synchronized') {
-                        publishLocalAwareness(session);
-                    }
+                    if (session.desiredAwareness == null) return okRecord(true);
+                    clearLocalAwareness(session);
                     session.desiredAwareness = null;
                     session.lastLocalAwarenessPublishMillis = null;
                 } else {
@@ -1550,7 +1612,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         editorV2CollaborationPeers: jest.fn((editorId: string) =>
             withSession(editorId, (session) => {
                 const peers: NativeEditorV2PeerInfo[] = [];
-                if (session.desiredAwareness != null) {
+                if (session.localAwarenessLive && session.desiredAwareness != null) {
                     peers.push({
                         clientId: session.localClientId,
                         clock: session.localClock,
@@ -1597,6 +1659,8 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     .map(([clientId]) => clientId)
                     .sort((left, right) => (BigInt(left) < BigInt(right) ? -1 : 1));
                 for (const clientId of expiredPeers) {
+                    const clock = session.remoteAwarenessClocks.get(clientId);
+                    if (clock != null) session.remoteAwarenessClocks.set(clientId, clock + 1);
                     session.remotePeerActivity.delete(clientId);
                 }
                 if (expiredPeers.length > 0) {
@@ -1632,12 +1696,12 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         editorV2CollaborationDetach: jest.fn((editorId: string) =>
             withSession(editorId, (session) => {
                 if (session.transportState === 'Detached') {
+                    clearTransportAwareness(session);
                     return okRecord(true);
                 }
                 session.liveGeneration = null;
                 session.transportState = 'Detached';
-                session.remotePeers = [];
-                session.remotePeerActivity.clear();
+                clearTransportAwareness(session);
                 return okRecord(true);
             })
         ),
@@ -1651,6 +1715,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 }
                 if (session.transportState !== 'Detached') {
                     if (session.transportState === 'Disconnected') {
+                        clearTransportAwareness(session);
                         return okRecord(true);
                     }
                     return transportError(
@@ -1659,8 +1724,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     );
                 }
                 session.transportState = 'Disconnected';
-                session.remotePeers = [];
-                session.remotePeerActivity.clear();
+                clearTransportAwareness(session);
                 return okRecord(true);
             })
         ),
@@ -1721,7 +1785,9 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     session.transportState = 'Disconnected';
                     session.liveGeneration = null;
                     session.protocolQueue = [];
+                    session.localAwarenessLive = false;
                     session.remotePeers = [];
+                    session.remoteAwarenessClocks.clear();
                     session.remotePeerActivity.clear();
                     session.lastLocalAwarenessPublishMillis = null;
                     session.undoStack = [];
@@ -1750,7 +1816,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             pendingFor(editorId).docs.push(cloneDoc(doc));
         },
         pushRemotePeers: (editorId, peers) => {
-            pendingFor(editorId).peerSets.push(peers);
+            pendingFor(editorId).awarenessDeltas.push(peers);
         },
         retireLiveGeneration: (editorId) => {
             const session = getSession(editorId);
