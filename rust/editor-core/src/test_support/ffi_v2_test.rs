@@ -1332,6 +1332,145 @@ fn collaboration_binary_round_trip_and_awareness_flow_with_a_raw_peer() {
 }
 
 #[test]
+fn collaboration_tick_uses_canonical_millis_and_reports_deadline_changes() {
+    let snapshot = snapshot_source();
+    let id = create_handle_with_state(
+        room_config(Some(&snapshot)),
+        Some(snapshot.encoded_state.clone()),
+    );
+    let generation = synchronize_v2(&id, &RawPeer::from_snapshot(&snapshot));
+
+    for malformed in ["+1", "01", " 1", "1 ", "1e3"] {
+        let error = err_json(&v2_collab::editor_v2_collaboration_tick(
+            id.clone(),
+            malformed.into(),
+        ));
+        assert_error(&error, "boundary", "CONFIG_INVALID", None);
+    }
+
+    ok_unit(&v2_collab::editor_v2_collaboration_set_awareness(
+        id.clone(),
+        json!({ "name": "tick local" }).to_string(),
+    ));
+    let before = ok_json(&v2_collab::editor_v2_collaboration_tick(
+        id.clone(),
+        "14999".into(),
+    ));
+    assert_eq!(
+        before,
+        json!({
+            "nextDeadlineMillis": "15000",
+            "renewedLocal": false,
+            "expiredPeers": [],
+            "outboundChanged": false,
+            "peersChanged": false,
+        }),
+        "{before:?}"
+    );
+
+    let at = ok_json(&v2_collab::editor_v2_collaboration_tick(
+        id.clone(),
+        "15000".into(),
+    ));
+    assert_eq!(
+        at,
+        json!({
+            "nextDeadlineMillis": "30000",
+            "renewedLocal": true,
+            "expiredPeers": [],
+            "outboundChanged": true,
+            "peersChanged": false,
+        }),
+        "{at:?}"
+    );
+    assert!(
+        !ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
+            id.clone(),
+            generation
+        ))
+        .is_empty(),
+        "renewal enqueues an outbound awareness frame"
+    );
+    destroy_handle(&id);
+}
+
+#[test]
+fn collaboration_tick_expires_remote_peers_with_decimal_ids() {
+    let snapshot = snapshot_source();
+    let id = create_handle_with_state(
+        room_config(Some(&snapshot)),
+        Some(snapshot.encoded_state.clone()),
+    );
+    let generation = synchronize_v2(&id, &RawPeer::from_snapshot(&snapshot));
+    let clients = [(
+        yrs::ClientID::new(9_007_199_254_740_993),
+        yrs::sync::awareness::AwarenessUpdateEntry {
+            clock: 1,
+            json: json!({ "name": "expiring remote" }).to_string().into(),
+        },
+    )]
+    .into_iter()
+    .collect();
+    let receive = ok_json(&v2_collab::editor_v2_collaboration_receive(
+        id.clone(),
+        generation,
+        Message::Awareness(yrs::sync::awareness::AwarenessUpdate { clients }).encode_v1(),
+    ));
+    assert_eq!(receive["close"], Value::Null, "{receive:?}");
+
+    let before = ok_json(&v2_collab::editor_v2_collaboration_tick(
+        id.clone(),
+        "29999".into(),
+    ));
+    assert_eq!(before["expiredPeers"], json!([]), "{before:?}");
+    assert_eq!(before["peersChanged"], false, "{before:?}");
+
+    let at = ok_json(&v2_collab::editor_v2_collaboration_tick(
+        id.clone(),
+        "30000".into(),
+    ));
+    assert_eq!(at["nextDeadlineMillis"], Value::Null, "{at:?}");
+    assert_eq!(at["expiredPeers"], json!(["9007199254740993"]), "{at:?}");
+    assert_eq!(at["peersChanged"], true, "{at:?}");
+    assert_eq!(at["outboundChanged"], false, "{at:?}");
+    destroy_handle(&id);
+}
+
+#[test]
+fn collaboration_detach_and_reattach_escape_incompatible_with_next_generation() {
+    let snapshot = snapshot_source();
+    let id = create_handle_with_state(
+        room_config(Some(&snapshot)),
+        Some(snapshot.encoded_state.clone()),
+    );
+    let first_generation = synchronize_v2(&id, &RawPeer::from_snapshot(&snapshot));
+    let close = ok_json(&v2_collab::editor_v2_collaboration_socket_close(
+        id.clone(),
+        first_generation,
+        Some(1008),
+        Some("policy violation".into()),
+    ));
+    assert_eq!(close["transportState"], "Incompatible", "{close:?}");
+    let error = err_json(&v2_collab::editor_v2_collaboration_begin_connect(
+        id.clone(),
+    ));
+    assert_error(&error, "transport", "TRANSPORT_INCOMPATIBLE", None);
+
+    ok_unit(&v2_collab::editor_v2_collaboration_detach(id.clone()));
+    assert_eq!(state_of(&id)["transportState"], "Detached");
+    let error = err_unit(&v2_collab::editor_v2_collaboration_detach(id.clone()));
+    assert_error(&error, "transport", "TRANSPORT_INVALID_TRANSITION", None);
+    ok_unit(&v2_collab::editor_v2_collaboration_reattach(id.clone()));
+    assert_eq!(state_of(&id)["transportState"], "Disconnected");
+
+    let next = ok_json(&v2_collab::editor_v2_collaboration_begin_connect(
+        id.clone(),
+    ));
+    assert_eq!(next["generation"], "2", "{next:?}");
+    destroy_handle(&id);
+}
+
+#[test]
 fn take_outbound_drains_protocol_replies_before_document_updates() {
     let snapshot = snapshot_source();
     let id = create_handle_with_state(

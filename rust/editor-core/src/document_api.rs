@@ -607,7 +607,9 @@ pub mod session_initialization_test_support {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct AwarenessTickInfo {
         pub renewed_local: bool,
+        pub outbound_changed: bool,
         pub expired_peers: Vec<u64>,
+        pub peers_changed: bool,
         pub next_deadline_millis: Option<u64>,
     }
 
@@ -661,7 +663,9 @@ pub mod session_initialization_test_support {
             let outcome = session.awareness_tick(request_id, now_millis)?;
             Ok(AwarenessTickInfo {
                 renewed_local: outcome.renewed_local,
+                outbound_changed: outcome.outbound_changed,
                 expired_peers: outcome.expired_peers,
+                peers_changed: outcome.peers_changed,
                 next_deadline_millis: outcome.next_deadline_millis,
             })
         })

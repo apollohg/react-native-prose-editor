@@ -143,8 +143,12 @@ pub(crate) struct AwarenessCursorProjection {
 pub(crate) struct TickOutcome {
     /// The desired local state was re-published with a fresh clock.
     pub(crate) renewed_local: bool,
+    /// Whether this tick queued an outbound awareness update.
+    pub(crate) outbound_changed: bool,
     /// Remote clients expired by this tick, in ascending client order.
     pub(crate) expired_peers: Vec<u64>,
+    /// Whether this tick removed one or more remote peer projections.
+    pub(crate) peers_changed: bool,
     /// The next renewal/expiry deadline for JavaScript to schedule.
     pub(crate) next_deadline_millis: Option<u64>,
 }
@@ -439,6 +443,8 @@ impl CollaborationRuntime {
 
         Ok(TickOutcome {
             renewed_local,
+            outbound_changed: renewed_local,
+            peers_changed: !expired_peers.is_empty(),
             expired_peers,
             next_deadline_millis: self.awareness.next_deadline_millis(transport_state),
         })

@@ -36,6 +36,16 @@ fn parse_generation(generation: &str) -> Result<u64, FfiError> {
     })
 }
 
+fn parse_now_millis(now_millis: &str) -> Result<u64, FfiError> {
+    parse_canonical_u64(now_millis).ok_or_else(|| {
+        FfiError::new(
+            crate::session::ErrorDomain::Boundary,
+            "CONFIG_INVALID",
+            format!("malformed awareness nowMillis: {now_millis:?}"),
+        )
+    })
+}
+
 fn bytes_result(result: Result<Vec<u8>, super::types::FfiError>) -> FfiBytesResult {
     match result {
         Ok(value) => FfiBytesResult::ok(value),
@@ -204,5 +214,44 @@ pub fn editor_v2_collaboration_peers(editor_id: String) -> FfiJsonResult {
             })
             .collect::<Vec<_>>();
         Ok(serde_json::json!({ "peers": peers }).to_string())
+    }))
+}
+
+/// Performs deterministic awareness renewal and expiry work. `now_millis`
+/// must be a canonical decimal u64 because JavaScript cannot safely carry
+/// the full clock range as a number.
+#[uniffi::export]
+pub fn editor_v2_collaboration_tick(editor_id: String, now_millis: String) -> FfiJsonResult {
+    let now_millis = match parse_now_millis(&now_millis) {
+        Ok(now_millis) => now_millis,
+        Err(error) => return FfiJsonResult::err(error),
+    };
+    json_result(with_editor(&editor_id, |session| {
+        let outcome = session.awareness_tick(INTERNAL_UNCORRELATED_REQUEST_ID, now_millis)?;
+        Ok(serde_json::json!({
+            "nextDeadlineMillis": outcome.next_deadline_millis.map(decimal_u64),
+            "renewedLocal": outcome.renewed_local,
+            "expiredPeers": outcome.expired_peers.into_iter().map(decimal_u64).collect::<Vec<_>>(),
+            "outboundChanged": outcome.outbound_changed,
+            "peersChanged": outcome.peers_changed,
+        })
+        .to_string())
+    }))
+}
+
+/// Tears down transport state while retaining the editor, document, desired
+/// awareness state, and pending outbox entries.
+#[uniffi::export]
+pub fn editor_v2_collaboration_detach(editor_id: String) -> FfiUnitResult {
+    unit_result(with_editor(&editor_id, |session| {
+        session.detach(INTERNAL_UNCORRELATED_REQUEST_ID)
+    }))
+}
+
+/// Reopens the transport lifecycle after an explicit detach.
+#[uniffi::export]
+pub fn editor_v2_collaboration_reattach(editor_id: String) -> FfiUnitResult {
+    unit_result(with_editor(&editor_id, |session| {
+        session.reattach(INTERNAL_UNCORRELATED_REQUEST_ID)
     }))
 }
