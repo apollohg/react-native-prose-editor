@@ -2679,6 +2679,10 @@ class NativeEditorExpoView(
     }
 
     private fun releaseEditorErrorBinding(binding: EditorErrorBinding) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { releaseEditorErrorBinding(binding) }
+            return
+        }
         if (editorErrorBinding != binding) return
         editorErrorBinding = null
         nextEditorErrorBindingGeneration += 1
@@ -2739,6 +2743,7 @@ class NativeEditorExpoView(
     private fun isLiveEditorErrorBinding(event: PendingEditorErrorEvent): Boolean {
         val binding = editorErrorBinding ?: return false
         return isAttachedToNativeWindow &&
+            !NativeEditorViewRegistry.isDestroyed(event.viewToken) &&
             binding.adapter === event.adapter &&
             binding.editorId == event.editorId &&
             binding.viewToken == event.viewToken &&
@@ -2747,7 +2752,8 @@ class NativeEditorExpoView(
             richTextView.editorId == event.viewToken &&
             richTextView.editorEditText.editorId == event.viewToken &&
             publicHandleForViewToken(event.viewToken) == event.editorId &&
-            EditorV2Registry.adapterForViewToken(event.viewToken) === event.adapter
+            EditorV2Registry.adapterForViewToken(event.viewToken) === event.adapter &&
+            event.adapter.ownsAutonomousErrorOwner(event.callbackToken)
     }
 
     private fun clearPendingEditorErrorDispatchQueue(reason: String) {

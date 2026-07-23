@@ -27,6 +27,38 @@ internal fun destroyEditorThenInvalidate(
     }
 }
 
+/**
+ * Module-facing destruction boundary for a paired v2 editor. Autonomous
+ * callbacks are cancelled before the session or pairing can be released, so
+ * an off-main destroy cannot leave a queued error eligible for delivery.
+ */
+internal fun destroyEditorV2FromModule(
+    editorId: String,
+    destroy: (String) -> FfiUnitResult = ::editorV2Destroy,
+): FfiUnitResult {
+    val canonicalHandle = canonicalV2U64(editorId) ?: return destroy(editorId)
+    val viewToken = EditorV2Registry.viewTokenForHandle(canonicalHandle)
+    EditorV2Registry.cancelAutonomousErrorOwner(canonicalHandle)
+
+    if (viewToken == null || !NativeEditorViewRegistry.beginDestroy(viewToken)) {
+        return try {
+            destroy(canonicalHandle)
+        } finally {
+            EditorV2Registry.dropPair(canonicalHandle)
+        }
+    }
+
+    return try {
+        destroy(canonicalHandle)
+    } finally {
+        try {
+            NativeEditorViewRegistry.finalizeDestroy(viewToken)
+        } finally {
+            EditorV2Registry.dropPair(canonicalHandle)
+        }
+    }
+}
+
 // ── Frozen v2 result-record bridging ─────────────────────────────────────
 // Every editorV2* module entry returns the raw UniFFI result record as a
 // plain map ({ value, error } with exactly one side set); the JS bridge
@@ -149,14 +181,7 @@ class NativeEditorModule : Module() {
             pairingError ?: result.toJSMap()
         }
         Function("editorV2Destroy") { editorId: String ->
-            val result = editorV2Destroy(editorId)
-            canonicalV2U64(editorId)?.let { canonicalEditorId ->
-                EditorV2Registry.viewTokenForHandle(canonicalEditorId)?.let(
-                    NativeEditorViewRegistry::invalidateDestroyedEditor,
-                )
-                EditorV2Registry.dropPair(canonicalEditorId)
-            }
-            result.toJSMap()
+            destroyEditorV2FromModule(editorId).toJSMap()
         }
         Function("editorV2GetState") { editorId: String ->
             editorV2GetState(editorId).toJSMap()

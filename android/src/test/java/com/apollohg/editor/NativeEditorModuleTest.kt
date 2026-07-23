@@ -1,22 +1,95 @@
 package com.apollohg.editor
 
+import android.os.Looper
+import android.content.Context
+import android.view.inputmethod.EditorInfo
 import java.math.BigDecimal
+import java.lang.ref.WeakReference
+import expo.modules.core.ModuleRegistry
+import expo.modules.kotlin.AppContext
+import expo.modules.kotlin.ModulesProvider
+import expo.modules.kotlin.modules.Module
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import java.util.concurrent.atomic.AtomicBoolean
 import uniffi.editor_core.FfiJsonResult
 import uniffi.editor_core.FfiUnitResult
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class NativeEditorModuleTest {
+    @Test
+    fun `off main module destroy cancels queued adapter error before timeout cleanup drains`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"localEmpty\"},\"policy\":{\"readOnly\":true}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            JSONObject(created.value).getString("editorId"),
+            roomBound = false,
+        )!!
+        val viewToken = EditorV2Registry.register(adapter)
+        val errors = mutableListOf<Map<String, Any>>()
+        val completed = AtomicBoolean(false)
+
+        try {
+            NativeEditorViewRegistry.markEditorCreated(viewToken)
+            view.onEditorErrorForTesting = { errors += it }
+            view.onAddonEventForTesting = {}
+            view.onEditorReadyForTesting = {}
+            view.onSelectionChangeForTesting = {}
+            view.setAttachedToNativeWindowForTesting(true)
+            view.setEditorId(viewToken)
+
+            val inputConnection = view.richTextView.editorEditText
+                .onCreateInputConnection(EditorInfo())
+            assertNotNull(inputConnection)
+            assertTrue(inputConnection!!.commitText("x", 1))
+            assertEquals(1, view.pendingEditorErrorEventCountForTesting())
+
+            val worker = Thread {
+                val result = destroyEditorV2FromModule(adapter.editorId) { editorId ->
+                    assertEquals(adapter.editorId, editorId)
+                    adapter.destroy()
+                    FfiUnitResult(true, null)
+                }
+                assertEquals(true, result.value)
+                completed.set(true)
+            }
+            worker.start()
+            worker.join(1_000)
+
+            assertFalse("module destroy must not deadlock waiting for main", worker.isAlive)
+            assertTrue(completed.get())
+            assertNotNull("owner release must defer view cleanup to main", view.editorErrorCallbackTokenForTesting())
+            assertEquals(1, view.pendingEditorErrorEventCountForTesting())
+
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertTrue(errors.isEmpty())
+            assertEquals(0, view.pendingEditorErrorEventCountForTesting())
+            assertEquals(0L, view.richTextView.editorId)
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
     @Test
     fun `generation parser rejects every non-canonical decimal spelling`() {
         val parser = Class.forName("com.apollohg.editor.NativeEditorModuleKt")
@@ -147,5 +220,29 @@ class NativeEditorModuleTest {
         val parsed = JSONObject(renderElementsJsonFromUpdate("not json"))
 
         assertTrue(parsed.getJSONObject("error").getString("message").isNotEmpty())
+    }
+
+    private data class TestExpoContext(
+        val context: Context,
+        val appContext: AppContext,
+    )
+
+    private fun testExpoContext(context: Context): TestExpoContext {
+        val reactContext = Class
+            .forName("com.facebook.react.bridge.BridgeReactContext")
+            .getConstructor(Context::class.java)
+            .newInstance(context) as Context
+        val modulesProvider = object : ModulesProvider {
+            override fun getModulesList(): List<Class<out Module>> = emptyList()
+        }
+        val constructor = AppContext::class.java.constructors.first { candidate ->
+            candidate.parameterTypes.size == 3
+        }
+        val appContext = constructor.newInstance(
+            modulesProvider,
+            ModuleRegistry(emptyList(), emptyList()),
+            WeakReference(reactContext),
+        ) as AppContext
+        return TestExpoContext(reactContext, appContext)
     }
 }

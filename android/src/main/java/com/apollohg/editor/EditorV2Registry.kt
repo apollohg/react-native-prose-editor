@@ -34,6 +34,11 @@ internal object EditorV2Registry {
 
     fun handleForViewToken(viewToken: Long): String? = pairingsByViewToken[viewToken]?.handle
 
+    /** Cancel view-owned callbacks without releasing the pairing itself. */
+    fun cancelAutonomousErrorOwner(handle: String) {
+        pairingsByHandle[handle]?.adapter?.releaseAutonomousErrorOwner()
+    }
+
     fun remove(handle: String): EditorV2Adapter? {
         val pairing = pairingsByHandle.remove(handle) ?: return null
         pairingsByViewToken.remove(pairing.viewToken)

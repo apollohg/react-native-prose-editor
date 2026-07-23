@@ -199,6 +199,10 @@ internal class EditorV2Adapter private constructor(
         released?.onReleased?.invoke()
     }
 
+    internal fun ownsAutonomousErrorOwner(token: Long): Boolean = synchronized(this) {
+        autonomousErrorOwner?.token == token
+    }
+
     private fun emit(error: EditorV2Error) {
         debugNotes.add("emit ${error.domain}/${error.code}: ${error.message}")
         val callback = synchronized(this) {
