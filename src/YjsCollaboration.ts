@@ -362,6 +362,11 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
                 state: { user: { ...options.localAwareness } },
                 focused: false,
             });
+        } else {
+            // The handle is shared and may retain desired awareness from a
+            // controller that no longer exists. Always submit the idempotent
+            // native clear for a fresh controller with no explicit identity.
+            this.clearLocalAwareness(true);
         }
         this._state = this.readEngineState();
         if (options.connect !== false) {
@@ -925,8 +930,8 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         }
     }
 
-    private clearLocalAwareness(): void {
-        if (this.destroyed || this.desiredAwareness == null) return;
+    private clearLocalAwareness(forceNative = false): void {
+        if (this.destroyed || (!forceNative && this.desiredAwareness == null)) return;
         const socket = this.socket;
         const generation = this.generation;
         const wasLive = socket != null && generation != null && this.hasLiveAwarenessGeneration();
@@ -935,19 +940,35 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
                 ? this.beginAwarenessOperation(socket, generation)
                 : null;
         if (wasLive && awarenessContext == null) return;
+        const previousDesiredAwareness = this.desiredAwareness;
+        // Withdrawal is authoritative before the native call: Rust may have
+        // applied the tombstone and retained it for retry even when outbox
+        // reservation reports a recoverable error.
+        this.desiredAwareness = null;
         try {
             // Null is a first-class native operation: it clears Rust's whole
             // desired intent and emits one tombstone for a live generation.
             this.handle.bridge.collaborationSetAwareness(null);
         } catch (error) {
             const awarenessError = asError(error, 'Yjs collaboration awareness clear failure');
+            if (
+                awarenessContext != null &&
+                isRecoverableAwarenessBroadcastError(awarenessError)
+            ) {
+                this.recoverAwarenessBroadcast(
+                    awarenessError,
+                    awarenessContext.socket,
+                    awarenessContext.generation
+                );
+                return;
+            }
+            this.desiredAwareness = previousDesiredAwareness;
             this.callbacks.onError?.(awarenessError);
             if (awarenessContext != null) {
                 this.restoreAwarenessOperation(awarenessContext);
             }
             return;
         }
-        this.desiredAwareness = null;
         if (socket && generation && socket.readyState === WebSocket.OPEN) {
             this.drainOutbound(socket, generation);
         }

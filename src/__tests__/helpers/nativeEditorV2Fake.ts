@@ -591,6 +591,8 @@ interface FakeSession {
     localClientId: string;
     localClock: number;
     localAwarenessLive: boolean;
+    pendingLocalAwarenessTombstone: Uint8Array | null;
+    pendingLocalAwarenessTombstoneRetryMillis: bigint | null;
     remotePeers: NativeEditorV2PeerInfo[];
     remoteAwarenessClocks: Map<string, number>;
     awarenessNowMillis: bigint;
@@ -993,14 +995,39 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         return enqueueLocalAwareness(session);
     }
 
-    function clearLocalAwareness(session: FakeSession): FakeErrorRecord | null {
-        if (!session.localAwarenessLive) return null;
-        const clockError = advanceLocalAwarenessClock(session, 'tombstone');
-        if (clockError) return clockError;
-        session.localAwarenessLive = false;
-        if (session.transportState === 'Synchronized') {
-            session.protocolQueue.push(awarenessFrame(session.localClock));
+    function withdrawLocalAwareness(session: FakeSession): FakeErrorRecord | null {
+        if (session.localAwarenessLive) {
+            const clockError = advanceLocalAwarenessClock(session, 'tombstone');
+            if (clockError) return clockError;
+            session.localAwarenessLive = false;
         }
+        // A transport close may already have clocked the local tombstone.
+        // Explicit withdrawal retains that exact frame for the next live
+        // generation instead of advancing the clock again.
+        session.pendingLocalAwarenessTombstone = awarenessFrame(session.localClock);
+        session.pendingLocalAwarenessTombstoneRetryMillis = checkedAddV2U64(
+            session.awarenessNowMillis,
+            V2_FAKE_AWARENESS_RENEWAL_INTERVAL_MILLIS
+        );
+        return null;
+    }
+
+    function enqueuePendingLocalAwarenessTombstone(
+        session: FakeSession
+    ): FakeErrorRecord | null {
+        const tombstone = session.pendingLocalAwarenessTombstone;
+        if (tombstone == null) return null;
+        const injected = pendingFor(session.editorId).awarenessBroadcastErrors.shift();
+        if (injected) {
+            session.pendingLocalAwarenessTombstoneRetryMillis = checkedAddV2U64(
+                session.awarenessNowMillis,
+                V2_FAKE_AWARENESS_RENEWAL_INTERVAL_MILLIS
+            );
+            return injected;
+        }
+        session.protocolQueue.push(tombstone);
+        session.pendingLocalAwarenessTombstone = null;
+        session.pendingLocalAwarenessTombstoneRetryMillis = null;
         return null;
     }
 
@@ -1014,15 +1041,25 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                           V2_FAKE_AWARENESS_RENEWAL_INTERVAL_MILLIS
                       )
                 : null;
+        const tombstoneRetry =
+            session.transportState === 'Synchronized' &&
+            session.pendingLocalAwarenessTombstone != null
+                ? session.pendingLocalAwarenessTombstoneRetryMillis
+                : null;
         let remoteExpiry: bigint | null = null;
         for (const seenAt of session.remotePeerActivity.values()) {
             const deadline = checkedAddV2U64(seenAt, V2_FAKE_AWARENESS_EXPIRY_MILLIS);
             if (deadline == null) continue;
             if (remoteExpiry == null || deadline < remoteExpiry) remoteExpiry = deadline;
         }
-        if (localRenewal == null) return remoteExpiry;
-        if (remoteExpiry == null) return localRenewal;
-        return localRenewal < remoteExpiry ? localRenewal : remoteExpiry;
+        const deadlines = [localRenewal, tombstoneRetry, remoteExpiry].filter(
+            (deadline): deadline is bigint => deadline != null
+        );
+        return deadlines.reduce<bigint | null>(
+            (earliest, deadline) =>
+                earliest == null || deadline < earliest ? deadline : earliest,
+            null
+        );
     }
 
     function applyRemoteAwarenessDelta(
@@ -1439,6 +1476,8 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 localClientId: String((clientIdCounter += 1)),
                 localClock: 0,
                 localAwarenessLive: false,
+                pendingLocalAwarenessTombstone: null,
+                pendingLocalAwarenessTombstoneRetryMillis: null,
                 remotePeers: [],
                 remoteAwarenessClocks: new Map(),
                 awarenessNowMillis: 0n,
@@ -2038,11 +2077,15 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 }
                 if (awarenessJson.trim() === 'null') {
                     if (session.desiredAwareness == null) return okRecord(true);
-                    const clockError = clearLocalAwareness(session);
+                    const clockError = withdrawLocalAwareness(session);
                     if (clockError) return errRecord(clockError);
                     session.desiredAwareness = null;
                     session.localAwarenessCursor = null;
                     session.lastLocalAwarenessPublishMillis = null;
+                    if (session.transportState === 'Synchronized') {
+                        const reservationError = enqueuePendingLocalAwarenessTombstone(session);
+                        if (reservationError) return errRecord(reservationError);
+                    }
                 } else {
                     const desiredAwareness = parseFakeAwarenessIntent(awarenessJson);
                     if ('domain' in desiredAwareness) return errRecord(desiredAwareness);
@@ -2061,6 +2104,8 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     }
                     const clockError = setLocalAwarenessState(session);
                     if (clockError) return errRecord(clockError);
+                    session.pendingLocalAwarenessTombstone = null;
+                    session.pendingLocalAwarenessTombstoneRetryMillis = null;
                     session.desiredAwareness = desiredAwareness;
                     session.localAwarenessCursor = cursor;
                 }
@@ -2140,6 +2185,18 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                         (peer) => !expired.has(canonicalV2U64(peer.clientId) ?? peer.clientId)
                     );
                 }
+                let tombstoneBroadcast = false;
+                if (
+                    session.transportState === 'Synchronized' &&
+                    session.pendingLocalAwarenessTombstone != null &&
+                    session.pendingLocalAwarenessTombstoneRetryMillis != null &&
+                    session.awarenessNowMillis >=
+                        session.pendingLocalAwarenessTombstoneRetryMillis
+                ) {
+                    const reservationError = enqueuePendingLocalAwarenessTombstone(session);
+                    if (reservationError) return errRecord(reservationError);
+                    tombstoneBroadcast = true;
+                }
                 let renewedLocal = false;
                 if (
                     session.transportState === 'Synchronized' &&
@@ -2159,7 +2216,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                         nextDeadlineMillis: nextDeadline == null ? null : String(nextDeadline),
                         renewedLocal,
                         expiredPeers,
-                        outboundChanged: renewedLocal,
+                        outboundChanged: tombstoneBroadcast || renewedLocal,
                         peersChanged: renewedLocal || expiredPeers.length > 0,
                     })
                 );

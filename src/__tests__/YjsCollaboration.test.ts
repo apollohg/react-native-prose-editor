@@ -258,6 +258,15 @@ function handlePeers(editorId: string): NativeEditorV2PeerInfo[] {
     return runtime.session(editorId).remotePeers.map((peer) => ({ ...peer }));
 }
 
+function pendingAwarenessTombstone(editorId: string): number[] | null {
+    const pending = (
+        runtime.session(editorId) as unknown as {
+            pendingLocalAwarenessTombstone?: Uint8Array | null;
+        }
+    ).pendingLocalAwarenessTombstone;
+    return pending == null ? null : Array.from(pending);
+}
+
 function snapshotState(doc: DocumentJSON, revision = 7): Uint8Array {
     return new TextEncoder().encode(JSON.stringify({ doc, revision }));
 }
@@ -473,7 +482,11 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         const setup = setupController({ handle: createLocalHandle() });
         setup.controller.connect();
         expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
-        expect(setup.errors).toHaveLength(1);
+        expect(setup.errors).toHaveLength(2);
+        expect(setup.errors[0]).toMatchObject({
+            domain: 'boundary',
+            code: 'CONFIG_INVALID',
+        });
         expect(setup.sockets).toHaveLength(0);
         // Detached transport maps to idle; nothing is scheduled.
         expect(setup.controller.state.status).toBe('idle');
@@ -485,8 +498,8 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
     it('pins the local-session begin_connect refusal to the real Rust code/domain pair', () => {
         const setup = setupController({ handle: createLocalHandle() });
         setup.controller.connect();
-        expect(setup.errors).toHaveLength(1);
-        const refusal = setup.errors[0] as NativeEditorV2TransportError;
+        expect(setup.errors).toHaveLength(2);
+        const refusal = setup.errors.at(-1) as NativeEditorV2TransportError;
         // rust/editor-core/src/collaboration_runtime/state.rs not_room_bound():
         // ErrorDomain::Transport + TRANSPORT_NOT_ROOM_BOUND.
         expect(refusal).toBeInstanceOf(NativeEditorV2TransportError);
@@ -1309,6 +1322,206 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         expect(clock.scheduledDelays.at(-1)).toBe(15_000);
         expect(clock.activeTimerCount).toBe(1);
         expect(setup.sockets[0].close).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        'TRANSPORT_REPLY_LIMIT_EXCEEDED',
+        'TRANSPORT_RESOURCE_EXHAUSTED',
+    ] as const)(
+        'withdraws through %s, keeps hooks inert, and retries one tombstone on the one timer',
+        (code) => {
+            const clock = new FakeMonotonicClockTimer();
+            const handle = createRoomHandle({
+                documentId: `withdrawal-recovery-${code}`,
+                withSnapshot: true,
+            });
+            const sockets: MockWebSocket[] = [];
+            const errors: Error[] = [];
+            let localAwareness: typeof ALICE | undefined = ALICE;
+            const { result, rerender, unmount } = renderHook(() =>
+                useYjsCollaboration({
+                    documentId: `withdrawal-recovery-${code}`,
+                    handle,
+                    connect: true,
+                    localAwareness,
+                    monotonicClock: clock,
+                    awarenessTimer: clock,
+                    createWebSocket: () => {
+                        const socket = new MockWebSocket();
+                        sockets.push(socket);
+                        return socket as unknown as WebSocket;
+                    },
+                    onError: (error) => errors.push(error),
+                })
+            );
+            act(() => {
+                sockets[0].open();
+                sockets[0].receive(V2_FAKE_STEP2_FRAME);
+            });
+            const awarenessFramesBeforeClear = sentFrames(sockets[0]).filter(
+                ([type]) => type === 0x61
+            ).length;
+            const clockBeforeClear = runtime.session(handle.editorId).localClock;
+            runtime.session(handle.editorId).protocolQueue.push(new Uint8Array([0x70, 0x91]));
+            runtime.injectNextAwarenessBroadcastFailure(handle.editorId, code);
+
+            localAwareness = undefined;
+            rerender();
+
+            expect(errors.at(-1)).toMatchObject(
+                code === 'TRANSPORT_REPLY_LIMIT_EXCEEDED'
+                    ? {
+                          domain: 'transport',
+                          code,
+                          message:
+                              'maxPendingOutboxMessages exceeded while enqueueing an awareness broadcast',
+                          limit: '1',
+                          actual: '2',
+                          details: {
+                              action: 'awareness',
+                              field: 'maxPendingOutboxMessages',
+                              limit: 1,
+                              actual: 2,
+                          },
+                      }
+                    : {
+                          domain: 'transport',
+                          code,
+                          message: 'awareness broadcast capacity could not be reserved',
+                          limit: null,
+                          actual: null,
+                          details: null,
+                      }
+            );
+            expect(runtime.session(handle.editorId)).toMatchObject({
+                desiredAwareness: null,
+                localAwarenessLive: false,
+                localClock: clockBeforeClear + 1,
+                lastLocalAwarenessPublishMillis: null,
+                transportState: 'Synchronized',
+                liveGeneration: 1n,
+            });
+            expect(pendingAwarenessTombstone(handle.editorId)).toEqual([
+                0x61,
+                (clockBeforeClear + 1) & 0xff,
+            ]);
+            expect(sentFrames(sockets[0]).at(-1)).toEqual([0x70, 0x91]);
+            expect(sentFrames(sockets[0]).filter(([type]) => type === 0x61)).toHaveLength(
+                awarenessFramesBeforeClear
+            );
+            expect(sockets[0].close).not.toHaveBeenCalled();
+            expect(clock.scheduledDelays.at(-1)).toBe(100);
+            expect(clock.activeTimerCount).toBe(1);
+
+            const setCallsAfterClear =
+                runtime.module.editorV2CollaborationSetAwareness.mock.calls.length;
+            act(() => {
+                result.current.editorBindings.onFocus();
+                result.current.editorBindings.onSelectionChange({
+                    type: 'text',
+                    anchor: 1,
+                    head: 3,
+                });
+                result.current.editorBindings.onBlur();
+            });
+            expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(
+                setCallsAfterClear
+            );
+
+            handle.bridge.collaborationSetAwareness(null);
+            expect(runtime.session(handle.editorId).localClock).toBe(clockBeforeClear + 1);
+            expect(pendingAwarenessTombstone(handle.editorId)).toEqual([
+                0x61,
+                (clockBeforeClear + 1) & 0xff,
+            ]);
+
+            const tickCallsBeforeRetry = runtime.module.editorV2CollaborationTick.mock.calls.length;
+            clock.advanceBy(100n);
+
+            expect(runtime.module.editorV2CollaborationTick).toHaveBeenCalledTimes(
+                tickCallsBeforeRetry + 1
+            );
+            expect(pendingAwarenessTombstone(handle.editorId)).toEqual([
+                0x61,
+                (clockBeforeClear + 1) & 0xff,
+            ]);
+            expect(sentFrames(sockets[0]).filter(([type]) => type === 0x61)).toHaveLength(
+                awarenessFramesBeforeClear
+            );
+            expect(clock.scheduledDelays.at(-1)).toBe(14_900);
+            expect(clock.activeTimerCount).toBe(1);
+
+            clock.advanceBy(14_900n);
+            expect(runtime.module.editorV2CollaborationTick).toHaveBeenCalledTimes(
+                tickCallsBeforeRetry + 2
+            );
+            expect(pendingAwarenessTombstone(handle.editorId)).toBeNull();
+            expect(sentFrames(sockets[0]).filter(([type]) => type === 0x61)).toHaveLength(
+                awarenessFramesBeforeClear + 1
+            );
+            expect(sentFrames(sockets[0]).at(-1)).toEqual([
+                0x61,
+                (clockBeforeClear + 1) & 0xff,
+            ]);
+            expect(clock.activeTimerCount).toBe(0);
+
+            act(() => {
+                result.current.reconnect();
+                sockets[1].open();
+                sockets[1].receive(V2_FAKE_STEP2_FRAME);
+            });
+            expect(sentFrames(sockets[1]).filter(([type]) => type === 0x61)).toEqual([]);
+            expect(runtime.session(handle.editorId).desiredAwareness).toBeNull();
+            unmount();
+            expect(clock.activeTimerCount).toBe(0);
+            expect(sockets[1].close).toHaveBeenCalledTimes(1);
+        }
+    );
+
+    it('rolls back the JS withdrawal after a non-recoverable native clear refusal', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const handle = createRoomHandle({ withSnapshot: true });
+        const sockets: MockWebSocket[] = [];
+        const errors: Error[] = [];
+        let localAwareness: typeof ALICE | undefined = ALICE;
+        const { result, rerender } = renderHook(() =>
+            useYjsCollaboration({
+                documentId: 'non-recoverable-withdrawal',
+                handle,
+                connect: true,
+                localAwareness,
+                monotonicClock: clock,
+                awarenessTimer: clock,
+                createWebSocket: () => {
+                    const socket = new MockWebSocket();
+                    sockets.push(socket);
+                    return socket as unknown as WebSocket;
+                },
+                onError: (error) => errors.push(error),
+            })
+        );
+        act(() => {
+            sockets[0].open();
+            sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        });
+        runtime.seedLocalAwarenessClock(handle.editorId, 4_294_967_295);
+
+        localAwareness = undefined;
+        rerender();
+        expect(errors.at(-1)).toMatchObject({ code: 'AWARENESS_CLOCK_EXHAUSTED' });
+        expect(runtime.session(handle.editorId).desiredAwareness).toEqual(
+            localAwarenessIntent()
+        );
+        expect(sockets[0].close).not.toHaveBeenCalled();
+
+        const setCallsAfterRefusal =
+            runtime.module.editorV2CollaborationSetAwareness.mock.calls.length;
+        act(() => result.current.editorBindings.onFocus());
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(
+            setCallsAfterRefusal + 1
+        );
+        expect(errors.at(-1)).toMatchObject({ code: 'AWARENESS_CLOCK_EXHAUSTED' });
+        expect(sockets[0].close).not.toHaveBeenCalled();
     });
 
     it('makes detach and reattach idempotent without reopening an incompatible transport early', () => {
@@ -2477,6 +2690,68 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         setup.controller.connect();
         expect(runtime.module.editorV2CollaborationBeginConnect).toHaveBeenCalledTimes(1);
         expect(setup.sockets).toHaveLength(1);
+    });
+
+    it('clears retained native awareness when a fresh controller omits localAwareness', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const handle = createRoomHandle({ withSnapshot: true });
+        const first = setupController({
+            handle,
+            localAwareness: ALICE,
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        first.controller.connect();
+        openAndSynchronize(first);
+        first.controller.destroy();
+        expect(runtime.session(handle.editorId)).toMatchObject({
+            desiredAwareness: localAwarenessIntent(),
+            localAwarenessLive: false,
+        });
+        const clockAfterDestroy = runtime.session(handle.editorId).localClock;
+        runtime.module.editorV2CollaborationSetAwareness.mockClear();
+
+        const second = setupController({
+            handle,
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(1);
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenLastCalledWith(
+            handle.editorId,
+            'null'
+        );
+        expect(runtime.session(handle.editorId)).toMatchObject({
+            desiredAwareness: null,
+            localAwarenessLive: false,
+            localClock: clockAfterDestroy,
+        });
+
+        handle.bridge.collaborationSetAwareness(null);
+        expect(runtime.session(handle.editorId).localClock).toBe(clockAfterDestroy);
+        expect(runtime.queuedFrames(handle.editorId)).toEqual([]);
+        expect(pendingAwarenessTombstone(handle.editorId)).toEqual([
+            0x61,
+            clockAfterDestroy & 0xff,
+        ]);
+
+        second.controller.reconnect();
+        expect(second.sockets).toHaveLength(1);
+        second.sockets[0].open();
+        second.sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        expect(sentFrames(second.sockets[0])).toEqual([Array.from(V2_FAKE_STEP1_FRAME)]);
+        expect(runtime.session(handle.editorId).desiredAwareness).toBeNull();
+        expect(clock.activeTimerCount).toBe(1);
+        expect(clock.scheduledDelays.at(-1)).toBe(15_000);
+
+        clock.advanceBy(15_000n);
+        expect(sentFrames(second.sockets[0])).toEqual([
+            Array.from(V2_FAKE_STEP1_FRAME),
+            [0x61, clockAfterDestroy & 0xff],
+        ]);
+        expect(pendingAwarenessTombstone(handle.editorId)).toBeNull();
+        expect(clock.activeTimerCount).toBe(0);
+        second.controller.destroy();
     });
 
     it('repeated connect while a socket is live never asks Rust for a second generation', () => {
