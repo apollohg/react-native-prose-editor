@@ -2395,6 +2395,35 @@ impl YrsDocumentEngine {
         super::position::sticky_index_to_doc_pos(&txn, &fragment, &sticky, &self.schema)
     }
 
+    /// Sealed awareness surface: materialize two valid document positions as
+    /// sticky Yrs indices in this engine's current document context. Callers
+    /// receive only the wire JSON; neither the document nor its transaction
+    /// crosses the engine boundary.
+    pub(crate) fn awareness_sticky_cursor(
+        &self,
+        anchor: u32,
+        head: u32,
+    ) -> Option<serde_json::Value> {
+        let txn = self.doc.transact();
+        let fragment = txn.get_xml_fragment(self.fragment_name.as_str())?;
+        let collapsed = anchor == head;
+        let anchor = super::cursor_sticky_index_from_doc_pos(
+            &txn,
+            &fragment,
+            anchor,
+            collapsed,
+            &self.schema,
+        )?;
+        let head = super::cursor_sticky_index_from_doc_pos(
+            &txn,
+            &fragment,
+            head,
+            collapsed,
+            &self.schema,
+        )?;
+        Some(serde_json::json!({ "anchor": anchor, "head": head }))
+    }
+
     fn apply_history_pop(
         &mut self,
         request_id: u64,

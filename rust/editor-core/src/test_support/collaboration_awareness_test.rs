@@ -23,15 +23,16 @@ use crate::collaboration_runtime::protocol::{
     TRANSPORT_REPLY_LIMIT_EXCEEDED,
 };
 use crate::collaboration_runtime::CollaborationRuntime;
+use crate::ffi_v2::collaboration as v2_collaboration;
 use crate::native_bridge_test_support as bridge;
 use crate::session::{CollaborationLimits, TransportState as RuntimeTransportState};
 use crate::session_initialization_test_support::{
     awareness_peers, awareness_tick, begin_connect, clear_desired_awareness, create_room_from_json,
-    desired_awareness, destroy_session, document_state, receive_message, session_audit,
-    set_collaboration_limit_for_test, set_desired_awareness, socket_closed, socket_opened,
-    take_next_protocol_reply, transport_detach, transport_disconnect, transport_reattach,
-    transport_state, AwarenessPeerInfo, CloseDisposition, DocumentState, ReceiveOutcome,
-    SessionAudit, TransportState,
+    desired_awareness, destroy_session, document_state, receive_message, restore_snapshot,
+    session_audit, set_collaboration_limit_for_test, set_desired_awareness, socket_closed,
+    socket_opened, take_next_protocol_reply, transport_detach, transport_disconnect,
+    transport_reattach, transport_state, AwarenessPeerInfo, CloseDisposition, DocumentState,
+    ReceiveOutcome, SessionAudit, TransportState,
 };
 use crate::tiptap_schema;
 use crate::yrs_engine::{
@@ -1548,6 +1549,123 @@ fn cursor_projections_resolve_and_recompute_after_every_document_revision() {
         Some((11, 11)),
         "a remote edit before the cursor shifts the projection: {peers:?}",
     );
+    destroy_session(id);
+}
+
+#[test]
+fn typed_awareness_intent_owns_sticky_cursors_and_survives_or_omits_them_on_restore() {
+    let (id, snapshot) = create_ready_room();
+    let generation = synchronize_ready_room(id, &snapshot);
+    let intent = json!({
+        "state": { "name": "local author", "color": "#204060" },
+        "focused": true,
+        "selection": { "type": "text", "anchor": 7, "head": 7 },
+    });
+
+    let result =
+        v2_collaboration::editor_v2_collaboration_set_awareness(id.to_string(), intent.to_string());
+    assert!(result.error.is_none(), "{result:?}");
+    let local = local_peer(id).expect("intent publishes a local peer");
+    assert_eq!(local.state["state"], intent["state"]);
+    assert_eq!(local.state["focused"], true);
+    assert!(local.state["cursor"].is_object(), "{local:?}");
+    assert_eq!(local.cursor, Some((7, 7)), "{local:?}");
+    drain_protocol_replies(id);
+
+    // Every invalid caller payload rejects before awareness, clocks, the
+    // outbox, peer projections, or the document can move.
+    let peers_before = awareness_peers(id).unwrap();
+    let audit_before = session_audit(id).unwrap();
+    for invalid in [
+        json!({
+            "state": { "name": "bad" },
+            "focused": true,
+            "cursor": { "anchor": 1, "head": 1 },
+        }),
+        json!({
+            "state": { "nested": [{ "cursor": "forbidden" }] },
+            "focused": true,
+        }),
+        json!({ "state": { "name": "missing focus" } }),
+        json!({
+            "state": { "name": "missing head" },
+            "focused": true,
+            "selection": { "type": "text", "anchor": 7 },
+        }),
+        json!({
+            "state": { "name": "outside document" },
+            "focused": true,
+            "selection": { "type": "text", "anchor": 999, "head": 999 },
+        }),
+    ] {
+        let result = v2_collaboration::editor_v2_collaboration_set_awareness(
+            id.to_string(),
+            invalid.to_string(),
+        );
+        assert!(result.value.is_none(), "{invalid}: {result:?}");
+        let error = result.error.expect("invalid intent is structured");
+        assert_eq!(
+            error.code, "AWARENESS_STATE_INVALID",
+            "{invalid}: {error:?}"
+        );
+        assert_eq!(awareness_peers(id).unwrap(), peers_before, "{invalid}");
+        assert_eq!(session_audit(id).unwrap(), audit_before, "{invalid}");
+        assert!(
+            take_next_protocol_reply(id).unwrap().is_none(),
+            "{invalid} must not enqueue an awareness update",
+        );
+    }
+
+    // The stored sticky cursor follows a local edit without re-submitting
+    // awareness, then resolves against a restored surviving document.
+    let revision = bridge::session_audit(id).unwrap().document_revision;
+    bridge::submit_selection(
+        id,
+        &json!({
+            "version": 1,
+            "requestId": "612",
+            "baseDocumentRevision": revision.to_string(),
+            "selection": {
+                "type": "text",
+                "anchor": { "offset": 0, "kind": "scalar" },
+                "head": { "offset": 0, "kind": "scalar" },
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let revision = bridge::session_audit(id).unwrap().document_revision;
+    bridge::submit_input(
+        id,
+        &json!({
+            "version": 1,
+            "requestId": "613",
+            "baseDocumentRevision": revision.to_string(),
+            "text": "xx",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(local_peer(id).unwrap().cursor, Some((9, 9)));
+
+    // Snapshot restore deliberately refuses pending document updates, so
+    // deliver the local edit before moving to the disconnected restore row.
+    let frame = v2_collaboration::editor_v2_collaboration_take_outbound(
+        id.to_string(),
+        generation.to_string(),
+    );
+    assert!(frame.error.is_none(), "{frame:?}");
+    assert!(!frame.value.unwrap_or_default().is_empty());
+
+    socket_closed(id, 614, generation, CloseDisposition::Retryable).unwrap();
+    restore_snapshot(id, 615, &snapshot).unwrap();
+    assert_eq!(local_peer(id).unwrap().cursor, Some((7, 7)));
+
+    // A same-scope snapshot minted by a different Yrs client cannot resolve
+    // the old sticky targets. The peer remains, but its cursor is omitted.
+    let foreign_snapshot = snapshot_source();
+    restore_snapshot(id, 616, &foreign_snapshot).unwrap();
+    assert_eq!(local_peer(id).unwrap().cursor, None);
     destroy_session(id);
 }
 

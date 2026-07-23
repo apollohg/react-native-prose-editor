@@ -1088,6 +1088,17 @@ impl EditorSession {
         runtime.set_desired_awareness(request_id, state_json, context)
     }
 
+    /// Production local-awareness intent: Rust validates the closed caller
+    /// shape and installs an engine-owned sticky cursor before publication.
+    pub(crate) fn set_awareness_intent(
+        &mut self,
+        request_id: u64,
+        intent_json: &str,
+    ) -> Result<(), SessionError> {
+        let (runtime, context) = self.awareness_runtime_and_context()?;
+        runtime.set_awareness_intent(request_id, intent_json, context)
+    }
+
     /// Task 10: withdraw the desired local awareness state.
     pub(crate) fn clear_desired_awareness(&mut self, request_id: u64) -> Result<(), SessionError> {
         let (runtime, context) = self.awareness_runtime_and_context()?;

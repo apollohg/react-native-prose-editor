@@ -1229,7 +1229,7 @@ fn collaboration_generation_flow_with_stale_and_disposition_refusals() {
 }
 
 #[test]
-fn collaboration_binary_round_trip_and_awareness_flow_with_a_raw_peer() {
+fn typed_awareness_intent_ffi_and_collaboration_binary_round_trip() {
     let snapshot = snapshot_source();
     let id = create_handle_with_state(
         room_config(Some(&snapshot)),
@@ -1260,11 +1260,16 @@ fn collaboration_binary_round_trip_and_awareness_flow_with_a_raw_peer() {
         server.fragment_string(),
     );
 
-    // Awareness: set publishes a broadcast frame a raw awareness peer
-    // applies; peers() projects the local entry with a decimal client id.
+    // Awareness takes exactly a typed intent and Rust publishes the
+    // application state/focus beside its engine-owned cursor.
     ok_unit(&v2_collab::editor_v2_collaboration_set_awareness(
         id.clone(),
-        json!({ "name": "ffi peer" }).to_string(),
+        json!({
+            "state": { "name": "ffi peer" },
+            "focused": true,
+            "selection": { "type": "text", "anchor": 4, "head": 6 },
+        })
+        .to_string(),
     ));
     let peers = ok_json(&v2_collab::editor_v2_collaboration_peers(id.clone()));
     let local = peers["peers"]
@@ -1273,7 +1278,17 @@ fn collaboration_binary_round_trip_and_awareness_flow_with_a_raw_peer() {
         .iter()
         .find(|peer| peer["isLocal"] == true)
         .expect("a local peer");
-    assert_eq!(local["state"], json!({ "name": "ffi peer" }), "{local:?}");
+    assert_eq!(
+        local["state"]["state"],
+        json!({ "name": "ffi peer" }),
+        "{local:?}"
+    );
+    assert_eq!(local["state"]["focused"], true, "{local:?}");
+    assert_eq!(
+        local["cursor"],
+        json!({ "anchor": 4, "head": 6 }),
+        "{local:?}"
+    );
     assert!(
         local["clientId"]
             .as_str()
@@ -1296,6 +1311,31 @@ fn collaboration_binary_round_trip_and_awareness_flow_with_a_raw_peer() {
         generation.clone(),
     ));
     assert!(frame.is_empty(), "queues fully drained");
+
+    // Omitting selection deliberately removes the engine-owned cursor while
+    // retaining the application state and focus flag.
+    ok_unit(&v2_collab::editor_v2_collaboration_set_awareness(
+        id.clone(),
+        json!({ "state": { "name": "cursorless" }, "focused": false }).to_string(),
+    ));
+    let peers = ok_json(&v2_collab::editor_v2_collaboration_peers(id.clone()));
+    let local = peers["peers"]
+        .as_array()
+        .expect("peers array")
+        .iter()
+        .find(|peer| peer["isLocal"] == true)
+        .expect("a local peer");
+    assert_eq!(local["state"]["state"], json!({ "name": "cursorless" }));
+    assert_eq!(local["state"]["focused"], false);
+    assert_eq!(local["cursor"], Value::Null, "{local:?}");
+    let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
+        id.clone(),
+        generation.clone(),
+    ));
+    match Message::decode_v1(&frame).expect("cursorless awareness frame must decode") {
+        Message::Awareness(update) => raw_awareness.apply_update(update).unwrap(),
+        other => panic!("expected cursorless awareness frame, got {other:?}"),
+    }
 
     // "null" withdraws the desired state with a tombstone broadcast.
     ok_unit(&v2_collab::editor_v2_collaboration_set_awareness(
@@ -1350,7 +1390,7 @@ fn task8_third_remediation_ffi_tick_reports_local_renewal_as_peer_change() {
 
     ok_unit(&v2_collab::editor_v2_collaboration_set_awareness(
         id.clone(),
-        json!({ "name": "tick local" }).to_string(),
+        json!({ "state": { "name": "tick local" }, "focused": false }).to_string(),
     ));
     let before = ok_json(&v2_collab::editor_v2_collaboration_tick(
         id.clone(),
@@ -1559,7 +1599,7 @@ fn take_outbound_drains_protocol_replies_before_document_updates() {
     // is a pending document update.
     ok_unit(&v2_collab::editor_v2_collaboration_set_awareness(
         id.clone(),
-        json!({ "name": "ordering peer" }).to_string(),
+        json!({ "state": { "name": "ordering peer" }, "focused": false }).to_string(),
     ));
     let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
         id.clone(),

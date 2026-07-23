@@ -176,8 +176,9 @@ pub fn editor_v2_collaboration_take_outbound(
     }))
 }
 
-/// Publishes the desired local awareness state; the literal JSON `null`
-/// withdraws it (standard tombstone broadcast).
+/// Publishes a typed local awareness intent; the literal JSON `null`
+/// withdraws it (standard tombstone broadcast). Rust validates the closed
+/// shape and owns any published sticky cursor representation.
 #[uniffi::export]
 pub fn editor_v2_collaboration_set_awareness(
     editor_id: String,
@@ -187,7 +188,7 @@ pub fn editor_v2_collaboration_set_awareness(
         if awareness_json.trim() == "null" {
             session.clear_desired_awareness(INTERNAL_UNCORRELATED_REQUEST_ID)
         } else {
-            session.set_desired_awareness(INTERNAL_UNCORRELATED_REQUEST_ID, &awareness_json)
+            session.set_awareness_intent(INTERNAL_UNCORRELATED_REQUEST_ID, &awareness_json)
         }
     }))
 }

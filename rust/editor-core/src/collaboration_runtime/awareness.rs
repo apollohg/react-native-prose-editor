@@ -18,7 +18,8 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
+use serde::Deserialize;
+use serde_json::{Map, Value};
 
 use crate::ffi_v2::types::{decimal_u64, AWARENESS_CLOCK_EXHAUSTED};
 use crate::session::{CollaborationLimits, ErrorDomain, SessionError, TransportState};
@@ -44,6 +45,39 @@ pub const AWARENESS_TIME_REGRESSION: &str = "AWARENESS_TIME_REGRESSION";
 
 /// Wire action reported by awareness-shaped refusals.
 const AWARENESS_ACTION: &str = "awareness";
+
+/// The only caller-controlled shape accepted by the production awareness
+/// ABI. Its published value is assembled by Rust, so `cursor` can only ever
+/// be the sticky engine representation.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalAwarenessIntent {
+    state: Value,
+    focused: bool,
+    selection: Option<LocalAwarenessSelection>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+enum LocalAwarenessSelection {
+    Text { anchor: u32, head: u32 },
+}
+
+fn awareness_state_invalid(request_id: u64, message: impl Into<String>) -> SessionError {
+    let mut error = SessionError::new(ErrorDomain::Boundary, AWARENESS_STATE_INVALID, message);
+    error.request_id = Some(request_id);
+    error
+}
+
+fn contains_reserved_cursor(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(contains_reserved_cursor),
+        Value::Object(entries) => entries
+            .iter()
+            .any(|(key, value)| key == "cursor" || contains_reserved_cursor(value)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
+}
 
 /// Runtime-owned awareness bookkeeping: exactly the three things the design
 /// assigns to this layer — desired-state JSON, deadlines, and the inputs of
@@ -260,14 +294,80 @@ impl CollaborationRuntime {
             limits,
         } = context;
         let value: Value = serde_json::from_str(state_json).map_err(|error| {
-            let mut session_error = SessionError::new(
-                ErrorDomain::Boundary,
-                AWARENESS_STATE_INVALID,
+            awareness_state_invalid(
+                request_id,
                 format!("desired awareness state is not valid JSON: {error}"),
-            );
-            session_error.request_id = Some(request_id);
-            session_error
+            )
         })?;
+        self.set_desired_awareness_value(request_id, value, engine, transport_state, limits)
+    }
+
+    /// Validates a closed caller intent before building the Rust-owned
+    /// published state. Every fallible operation happens before the codec,
+    /// runtime desired state, and outbox can be mutated.
+    pub(crate) fn set_awareness_intent(
+        &mut self,
+        request_id: u64,
+        intent_json: &str,
+        context: AwarenessContext<'_>,
+    ) -> Result<(), SessionError> {
+        let AwarenessContext {
+            engine,
+            transport_state,
+            limits,
+        } = context;
+        let intent: LocalAwarenessIntent = serde_json::from_str(intent_json).map_err(|error| {
+            awareness_state_invalid(
+                request_id,
+                format!("local awareness intent is invalid: {error}"),
+            )
+        })?;
+        if !intent.state.is_object() {
+            return Err(awareness_state_invalid(
+                request_id,
+                "local awareness intent state must be an object",
+            ));
+        }
+        if contains_reserved_cursor(&intent.state) {
+            return Err(awareness_state_invalid(
+                request_id,
+                "local awareness intent must not contain the reserved cursor key",
+            ));
+        }
+        let cursor = match intent.selection {
+            Some(LocalAwarenessSelection::Text { anchor, head }) => engine
+                .awareness_sticky_cursor(anchor, head)
+                .ok_or_else(|| {
+                    awareness_state_invalid(
+                        request_id,
+                        "local awareness selection is outside the current document",
+                    )
+                })?,
+            None => Value::Null,
+        };
+        let mut published = Map::new();
+        published.insert("state".into(), intent.state);
+        published.insert("focused".into(), Value::Bool(intent.focused));
+        if !cursor.is_null() {
+            published.insert("cursor".into(), cursor);
+        }
+        self.set_desired_awareness_value(
+            request_id,
+            Value::Object(published),
+            engine,
+            transport_state,
+            limits,
+        )
+    }
+
+    fn set_desired_awareness_value(
+        &mut self,
+        request_id: u64,
+        value: Value,
+        engine: &mut YrsDocumentEngine,
+        transport_state: TransportState,
+        limits: &CollaborationLimits,
+    ) -> Result<(), SessionError> {
         engine
             .awareness()
             .set_local_state(&value, &awareness_limits(limits))
