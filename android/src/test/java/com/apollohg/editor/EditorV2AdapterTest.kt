@@ -588,6 +588,23 @@ class EditorV2AdapterTest {
         adapter.destroy()
     }
 
+    @Test
+    fun `stale autonomous error owner cannot clear newer owner`() {
+        val adapter = makeAdapter()
+        val firstErrors = mutableListOf<EditorV2Error>()
+        val secondErrors = mutableListOf<EditorV2Error>()
+
+        adapter.bindAutonomousErrorOwner(101L, { firstErrors += it }) {}
+        adapter.bindAutonomousErrorOwner(202L, { secondErrors += it }) {}
+        adapter.clearAutonomousErrorOwner(101L)
+        adapter.destroy()
+
+        assertNull(adapter.insertText("x", 0))
+        assertTrue(firstErrors.isEmpty())
+        assertEquals(1, secondErrors.size)
+        assertEquals("ENGINE_DESTROYED", secondErrors.single().code)
+    }
+
     // MARK: drain ping
 
     @Test

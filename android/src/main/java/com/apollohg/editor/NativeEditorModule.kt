@@ -43,7 +43,7 @@ private fun FfiError.toJSMap(): Map<String, Any?> = mapOf(
     "detailsJson" to detailsJson,
 )
 
-private fun EditorV2Error.toJSMap(): Map<String, Any?> = mapOf(
+internal fun EditorV2Error.toJSMap(): Map<String, Any?> = mapOf(
     "domain" to domain,
     "code" to code,
     "message" to message,
@@ -287,6 +287,7 @@ class NativeEditorModule : Module() {
         View(NativeEditorExpoView::class) {
             Events(
                 "onEditorUpdate",
+                "onEditorError",
                 "onSelectionChange",
                 "onFocusChange",
                 "onContentHeightChange",

@@ -31,11 +31,13 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.WeakHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import uniffi.editor_core.editorV2GetState
 
 private const val DESTROY_INVALIDATION_AWAIT_TIMEOUT_MS = 250L
 private const val OUTSIDE_TAP_GESTURE_CONFIRM_DELAY_MS = 150L
+private val nextNativeEditorErrorCallbackToken = AtomicLong(0)
 
 internal enum class NativeEditorOutsideTapDecision {
     IGNORE,
@@ -707,6 +709,24 @@ class NativeEditorExpoView(
         val updateJSON: String
     )
 
+    private data class EditorErrorBinding(
+        val adapter: EditorV2Adapter,
+        val editorId: String,
+        val viewToken: Long,
+        val callbackToken: Long,
+        val generation: Long,
+    )
+
+    private data class PendingEditorErrorEvent(
+        /** Capture every identity at callback time; never derive it after a rebind. */
+        val adapter: EditorV2Adapter,
+        val editorId: String,
+        val viewToken: Long,
+        val callbackToken: Long,
+        val bindingGeneration: Long,
+        val error: EditorV2Error,
+    )
+
     private data class PreflightUpdateEvent(
         val updateJSON: String,
         val documentRevision: String
@@ -717,6 +737,7 @@ class NativeEditorExpoView(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val onEditorUpdate by EventDispatcher<Map<String, Any>>()
+    private val onEditorError by EventDispatcher<Map<String, Any>>()
     private val onSelectionChange by EventDispatcher<Map<String, Any>>()
     private val onFocusChange by EventDispatcher<Map<String, Any>>()
     private val onContentHeightChange by EventDispatcher<Map<String, Any>>()
@@ -736,6 +757,7 @@ class NativeEditorExpoView(
     internal var onFocusChangeForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onContentHeightChangeForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onEditorUpdateForTesting: ((Map<String, Any>) -> Unit)? = null
+    internal var onEditorErrorForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onEditorReadyForTesting: ((Map<String, Any>) -> Unit)? = null
     internal var onOutsideTapTraceForTesting: ((String) -> Unit)? = null
     internal var onRefreshToolbarStateFromEditorSelectionForTesting: (() -> String?)? = null
@@ -824,6 +846,11 @@ class NativeEditorExpoView(
     private val pendingEditorUpdateEvents = java.util.ArrayDeque<PendingEditorUpdateEvent>()
     private var pendingEditorUpdateDispatchGeneration = 0
     private var pendingEditorUpdateDispatchScheduled = false
+    private val pendingEditorErrorEvents = java.util.ArrayDeque<PendingEditorErrorEvent>()
+    private var pendingEditorErrorDispatchGeneration = 0
+    private var pendingEditorErrorDispatchScheduled = false
+    private var editorErrorBinding: EditorErrorBinding? = null
+    private var nextEditorErrorBindingGeneration = 0L
 
     /** Public v2 handles are decimal strings; [RichTextEditorView] uses an opaque local token. */
     private fun publicHandleForViewToken(viewToken: Long): String? =
@@ -896,6 +923,7 @@ class NativeEditorExpoView(
         if (previousEditorId != id) {
             invalidateAutoGrowContentHeightEmission()
             clearPendingEditorUpdateDispatchQueue("editorRebind")
+            clearEditorErrorBinding("editorRebind")
         }
         if (previousEditorId == id && richTextView.editorEditText.editorId == id) {
             if (id != 0L && isAttachedToNativeWindow) {
@@ -903,6 +931,7 @@ class NativeEditorExpoView(
                     handleEditorDestroyed(id)
                     return
                 }
+                bindEditorErrorCallbackIfLive(id)
                 applyPendingEditorResetUpdateIfNeeded()
                 applyPendingEditorUpdateIfNeeded()
                 applyPendingThemeIfNeeded()
@@ -970,6 +999,7 @@ class NativeEditorExpoView(
                 handleEditorDestroyed(id)
                 return
             }
+            bindEditorErrorCallbackIfLive(id)
         } else {
             toolbarState = NativeToolbarState.empty
             keyboardToolbarView.applyState(toolbarState)
@@ -2025,6 +2055,7 @@ class NativeEditorExpoView(
         if (richTextView.editorId != editorId && richTextView.editorEditText.editorId != editorId) {
             return
         }
+        clearEditorErrorBinding("registryInvalidation")
         cancelPendingEditorUpdateRetry()
         clearPendingViewCommandUpdateRetry()
         cancelPendingThemeRetry()
@@ -2074,6 +2105,7 @@ class NativeEditorExpoView(
     }
 
     private fun handleAttachedToWindow() {
+        clearEditorErrorBinding("attachRebind")
         isAttachedToNativeWindow = true
         cancelPendingDetachPreflightRetry()
         richTextView.clearDeferredEditorUnbind()
@@ -2087,6 +2119,7 @@ class NativeEditorExpoView(
             handleEditorDestroyed(editorId)
             return
         }
+        bindEditorErrorCallbackIfLive(editorId)
         richTextView.rebindEditorIfNeeded(
             notifyListener = !hasPendingEditorResetUpdateForEditor(editorId) &&
                 !hasPendingEditorUpdateForEditor(editorId)
@@ -2181,6 +2214,7 @@ class NativeEditorExpoView(
 
     private fun handleDetachedFromWindow() {
         isAttachedToNativeWindow = false
+        clearEditorErrorBinding("detach")
         NativeEditorViewRegistry.unregister(
             richTextView.editorId,
             this,
@@ -2617,6 +2651,121 @@ class NativeEditorExpoView(
             "emitToJS=$emitToJS jsonLength=${updateJSON.length} noteUs=${nanosToMicros(noteNanos)} toolbarUs=${nanosToMicros(toolbarNanos)} mentionUs=${nanosToMicros(mentionNanos)} retryUs=${nanosToMicros(retryNanos)} emitUs=${nanosToMicros(System.nanoTime() - emitStartedAt)} totalUs=${nanosToMicros(totalNanos)}"
         )
     }
+
+    private fun bindEditorErrorCallbackIfLive(viewToken: Long) {
+        if (!isAttachedToNativeWindow || richTextView.editorId != viewToken ||
+            richTextView.editorEditText.editorId != viewToken
+        ) return
+        val adapter = EditorV2Registry.adapterForViewToken(viewToken) ?: return
+        val editorId = publicHandleForViewToken(viewToken) ?: return
+        val existing = editorErrorBinding
+        if (existing?.adapter === adapter && existing.viewToken == viewToken &&
+            existing.editorId == editorId
+        ) return
+        clearEditorErrorBinding("claim")
+        val binding = EditorErrorBinding(
+            adapter = adapter,
+            editorId = editorId,
+            viewToken = viewToken,
+            callbackToken = nextNativeEditorErrorCallbackToken.incrementAndGet(),
+            generation = ++nextEditorErrorBindingGeneration,
+        )
+        editorErrorBinding = binding
+        adapter.bindAutonomousErrorOwner(
+            binding.callbackToken,
+            callback = { error -> queueEditorError(binding, error) },
+            onReleased = { releaseEditorErrorBinding(binding) },
+        )
+    }
+
+    private fun releaseEditorErrorBinding(binding: EditorErrorBinding) {
+        if (editorErrorBinding != binding) return
+        editorErrorBinding = null
+        nextEditorErrorBindingGeneration += 1
+        clearPendingEditorErrorDispatchQueue("ownerReleased")
+    }
+
+    private fun clearEditorErrorBinding(reason: String) {
+        val binding = editorErrorBinding
+        editorErrorBinding = null
+        nextEditorErrorBindingGeneration += 1
+        binding?.adapter?.clearAutonomousErrorOwner(binding.callbackToken)
+        clearPendingEditorErrorDispatchQueue(reason)
+    }
+
+    private fun queueEditorError(binding: EditorErrorBinding, error: EditorV2Error) {
+        val event = PendingEditorErrorEvent(
+            adapter = binding.adapter,
+            editorId = binding.editorId,
+            viewToken = binding.viewToken,
+            callbackToken = binding.callbackToken,
+            bindingGeneration = binding.generation,
+            error = error,
+        )
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            enqueueEditorError(event)
+        } else {
+            mainHandler.post { enqueueEditorError(event) }
+        }
+    }
+
+    private fun enqueueEditorError(event: PendingEditorErrorEvent) {
+        if (!isLiveEditorErrorBinding(event)) return
+        pendingEditorErrorEvents.addLast(event)
+        if (!pendingEditorErrorDispatchScheduled) {
+            pendingEditorErrorDispatchScheduled = true
+            val generation = ++pendingEditorErrorDispatchGeneration
+            mainHandler.post {
+                if (generation != pendingEditorErrorDispatchGeneration) return@post
+                pendingEditorErrorDispatchScheduled = false
+                drainPendingEditorErrorEvents()
+            }
+        }
+    }
+
+    private fun drainPendingEditorErrorEvents() {
+        while (pendingEditorErrorEvents.isNotEmpty()) {
+            // Remove before dispatch so a reentrant lifecycle transition cannot deliver it twice.
+            val event = pendingEditorErrorEvents.removeFirst()
+            if (!isLiveEditorErrorBinding(event)) continue
+            val payload = mapOf<String, Any>(
+                "editorId" to event.editorId,
+                "error" to event.error.toJSMap(),
+            )
+            onEditorErrorForTesting?.invoke(payload) ?: onEditorError(payload)
+        }
+    }
+
+    private fun isLiveEditorErrorBinding(event: PendingEditorErrorEvent): Boolean {
+        val binding = editorErrorBinding ?: return false
+        return isAttachedToNativeWindow &&
+            binding.adapter === event.adapter &&
+            binding.editorId == event.editorId &&
+            binding.viewToken == event.viewToken &&
+            binding.callbackToken == event.callbackToken &&
+            binding.generation == event.bindingGeneration &&
+            richTextView.editorId == event.viewToken &&
+            richTextView.editorEditText.editorId == event.viewToken &&
+            publicHandleForViewToken(event.viewToken) == event.editorId &&
+            EditorV2Registry.adapterForViewToken(event.viewToken) === event.adapter
+    }
+
+    private fun clearPendingEditorErrorDispatchQueue(reason: String) {
+        val clearedCount = pendingEditorErrorEvents.size
+        pendingEditorErrorEvents.clear()
+        pendingEditorErrorDispatchScheduled = false
+        pendingEditorErrorDispatchGeneration += 1
+        if (clearedCount > 0) {
+            richTextView.editorEditText.recordImeTraceForTesting(
+                "nativeViewEditorErrorQueueCleared",
+                "reason=$reason count=$clearedCount"
+            )
+        }
+    }
+
+    internal fun pendingEditorErrorEventCountForTesting(): Int = pendingEditorErrorEvents.size
+
+    internal fun editorErrorCallbackTokenForTesting(): Long? = editorErrorBinding?.callbackToken
 
     private fun installOutsideTapBlurHandlerIfNeeded() {
         val window = resolveActivity(context)?.window ?: return

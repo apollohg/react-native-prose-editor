@@ -37,6 +37,200 @@ import java.util.concurrent.atomic.AtomicReference
 @Config(sdk = [34])
 class NativeEditorExpoViewTest {
     @Test
+    fun `bound adapter failure emits one complete Expo error record`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(
+            backend,
+            "{\"initialization\":{\"type\":\"localEmpty\"},\"policy\":{\"readOnly\":true}}"
+        )
+        val viewToken = EditorV2Registry.register(adapter)
+        val errors = mutableListOf<Map<String, Any>>()
+        try {
+            view.onEditorErrorForTesting = { errors += it }
+            view.onAddonEventForTesting = {}
+            view.onEditorReadyForTesting = {}
+            view.onSelectionChangeForTesting = {}
+            view.setAttachedToNativeWindowForTesting(true)
+            view.setEditorId(viewToken)
+
+            assertTrue(commitBoundText(view, "x"))
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertEquals(1, errors.size)
+            val payload = errors.single()
+            assertEquals(adapter.editorId, payload["editorId"])
+            @Suppress("UNCHECKED_CAST")
+            val error = payload["error"] as Map<String, Any?>
+            assertEquals(
+                setOf("domain", "code", "message", "requestId", "operationIndex", "limit", "actual", "detailsJson"),
+                error.keys
+            )
+            assertEquals("boundary", error["domain"])
+            assertEquals("MUTATION_REJECTED", error["code"])
+            assertTrue((error["message"] as String).isNotEmpty())
+            assertNotNull(error["requestId"])
+            assertNull(error["operationIndex"])
+            assertNull(error["limit"])
+            assertNull(error["actual"])
+            assertNull(error["detailsJson"])
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `equal bound adapter failures each route once`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val errors = mutableListOf<Map<String, Any>>()
+        try {
+            view.onEditorErrorForTesting = { errors += it }
+            view.onAddonEventForTesting = {}
+            view.onEditorReadyForTesting = {}
+            view.onSelectionChangeForTesting = {}
+            view.setAttachedToNativeWindowForTesting(true)
+            view.setEditorId(viewToken)
+            adapter.destroy()
+
+            assertTrue(commitBoundText(view, "x"))
+            assertTrue(commitBoundText(view, "y"))
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertEquals(2, errors.size)
+            assertEquals(errors[0]["error"], errors[1]["error"])
+            @Suppress("UNCHECKED_CAST")
+            val error = errors.first()["error"] as Map<String, Any?>
+            assertEquals("ENGINE_DESTROYED", error["code"])
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `queued bound adapter error drops across A to B to A rebind`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapterA = attachAdapterForViewTest(
+            backend,
+            "{\"initialization\":{\"type\":\"localEmpty\"},\"policy\":{\"readOnly\":true}}"
+        )
+        val adapterB = attachAdapterForViewTest(backend)
+        val tokenA = EditorV2Registry.register(adapterA)
+        val tokenB = EditorV2Registry.register(adapterB)
+        val errors = mutableListOf<Map<String, Any>>()
+        try {
+            view.onEditorErrorForTesting = { errors += it }
+            view.onAddonEventForTesting = {}
+            view.onEditorReadyForTesting = {}
+            view.onSelectionChangeForTesting = {}
+            view.setAttachedToNativeWindowForTesting(true)
+            view.setEditorId(tokenA)
+
+            assertTrue(commitBoundText(view, "x"))
+            assertEquals(1, view.pendingEditorErrorEventCountForTesting())
+            view.setEditorId(tokenB)
+            view.setEditorId(tokenA)
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertTrue(errors.isEmpty())
+            assertEquals(0, view.pendingEditorErrorEventCountForTesting())
+        } finally {
+            EditorV2Registry.remove(adapterA.editorId)
+            EditorV2Registry.remove(adapterB.editorId)
+            NativeEditorViewRegistry.unregister(tokenA, view)
+            NativeEditorViewRegistry.unregister(tokenB, view)
+        }
+    }
+
+    @Test
+    fun `detached or destroyed view drops queued bound adapter errors`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(
+            backend,
+            "{\"initialization\":{\"type\":\"localEmpty\"},\"policy\":{\"readOnly\":true}}"
+        )
+        val viewToken = EditorV2Registry.register(adapter)
+        val errors = mutableListOf<Map<String, Any>>()
+        try {
+            view.onEditorErrorForTesting = { errors += it }
+            view.onAddonEventForTesting = {}
+            view.onEditorReadyForTesting = {}
+            view.onSelectionChangeForTesting = {}
+            view.setAttachedToNativeWindowForTesting(true)
+            view.setEditorId(viewToken)
+
+            assertTrue(commitBoundText(view, "x"))
+            assertEquals(1, view.pendingEditorErrorEventCountForTesting())
+            view.handleDetachedFromWindowForTesting()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(errors.isEmpty())
+
+            view.setAttachedToNativeWindowForTesting(true)
+            view.handleAttachedToWindowForTesting()
+            assertTrue(commitBoundText(view, "y"))
+            assertEquals(1, view.pendingEditorErrorEventCountForTesting())
+            NativeEditorViewRegistry.invalidateDestroyedEditor(viewToken)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(errors.isEmpty())
+            assertEquals(0, view.pendingEditorErrorEventCountForTesting())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `newest bound view exclusively owns adapter error delivery`() {
+        val firstExpoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val secondExpoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val firstView = NativeEditorExpoView(firstExpoContext.context, firstExpoContext.appContext)
+        val secondView = NativeEditorExpoView(secondExpoContext.context, secondExpoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val firstErrors = mutableListOf<Map<String, Any>>()
+        val secondErrors = mutableListOf<Map<String, Any>>()
+        try {
+            firstView.onEditorErrorForTesting = { firstErrors += it }
+            secondView.onEditorErrorForTesting = { secondErrors += it }
+            listOf(firstView, secondView).forEach { view ->
+                view.onAddonEventForTesting = {}
+                view.onEditorReadyForTesting = {}
+                view.onSelectionChangeForTesting = {}
+                view.setAttachedToNativeWindowForTesting(true)
+                view.setEditorId(viewToken)
+            }
+            assertTrue(
+                firstView.editorErrorCallbackTokenForTesting() !=
+                    secondView.editorErrorCallbackTokenForTesting()
+            )
+            firstView.setEditorId(0L)
+            adapter.destroy()
+
+            assertTrue(commitBoundText(secondView, "x"))
+            shadowOf(Looper.getMainLooper()).idle()
+
+            assertTrue(firstErrors.isEmpty())
+            assertEquals(1, secondErrors.size)
+            assertEquals(adapter.editorId, secondErrors.single()["editorId"])
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, firstView)
+            NativeEditorViewRegistry.unregister(viewToken, secondView)
+        }
+    }
+
+    @Test
     fun `delayed editor update keeps captured source identity and canonical revision after rebind`() {
         val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
@@ -3132,8 +3326,18 @@ class NativeEditorExpoViewTest {
             .put("scalarLength", text.length)
             .toString()
 
-    private fun attachAdapterForViewTest(backend: FakeEditorV2Backend): EditorV2Adapter {
-        val created = backend.create("{\"initialization\":{\"type\":\"localEmpty\"}}", null)
+    private fun commitBoundText(view: NativeEditorExpoView, text: String): Boolean {
+        val editText = view.richTextView.editorEditText
+        editText.setSelection(editText.selectionStart.coerceAtLeast(0))
+        val inputConnection = editText.onCreateInputConnection(EditorInfo()) ?: return false
+        return inputConnection.commitText(text, 1)
+    }
+
+    private fun attachAdapterForViewTest(
+        backend: FakeEditorV2Backend,
+        configJson: String = "{\"initialization\":{\"type\":\"localEmpty\"}}"
+    ): EditorV2Adapter {
+        val created = backend.create(configJson, null)
             as EditorV2CallResult.Ok
         return EditorV2Adapter.attach(
             backend,

@@ -37,6 +37,7 @@ internal object EditorV2Registry {
     fun remove(handle: String): EditorV2Adapter? {
         val pairing = pairingsByHandle.remove(handle) ?: return null
         pairingsByViewToken.remove(pairing.viewToken)
+        pairing.adapter.releaseAutonomousErrorOwner()
         return pairing.adapter
     }
 

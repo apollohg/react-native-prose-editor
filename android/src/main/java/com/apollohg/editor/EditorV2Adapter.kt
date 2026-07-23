@@ -31,6 +31,15 @@ internal class EditorV2Adapter private constructor(
     var outboundFrameSink: ((ByteArray) -> Unit)? = null
     var collaborationGeneration: String? = null
 
+    private data class AutonomousErrorOwner(
+        val token: Long,
+        val callback: (EditorV2Error) -> Unit,
+        val onReleased: () -> Unit,
+    )
+
+    /** One live native-view binding exclusively owns autonomous errors. */
+    private var autonomousErrorOwner: AutonomousErrorOwner? = null
+
     var baseDocumentRevision: ULong = 0uL
         private set
     /** Paired with [baseDocumentRevision] by the same locked render read. */
@@ -160,9 +169,42 @@ internal class EditorV2Adapter private constructor(
 
     // ── Structured reads ──
 
+    internal fun bindAutonomousErrorOwner(
+        token: Long,
+        callback: (EditorV2Error) -> Unit,
+        onReleased: () -> Unit,
+    ) {
+        val displaced = synchronized(this) {
+            autonomousErrorOwner.also {
+                autonomousErrorOwner = AutonomousErrorOwner(token, callback, onReleased)
+            }
+        }
+        displaced?.onReleased?.invoke()
+    }
+
+    /** A stale view may clear only its own binding generation. */
+    internal fun clearAutonomousErrorOwner(token: Long) {
+        synchronized(this) {
+            if (autonomousErrorOwner?.token == token) {
+                autonomousErrorOwner = null
+            }
+        }
+    }
+
+    /** Pair release invalidates the final owner even when no view remains registered. */
+    internal fun releaseAutonomousErrorOwner() {
+        val released = synchronized(this) {
+            autonomousErrorOwner.also { autonomousErrorOwner = null }
+        }
+        released?.onReleased?.invoke()
+    }
+
     private fun emit(error: EditorV2Error) {
         debugNotes.add("emit ${error.domain}/${error.code}: ${error.message}")
-        onAutonomousError?.invoke(error)
+        val callback = synchronized(this) {
+            autonomousErrorOwner?.callback ?: onAutonomousError
+        }
+        callback?.invoke(error)
     }
 
     private fun ulongField(object_: JSONObject, key: String): ULong? =
