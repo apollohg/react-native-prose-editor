@@ -6,6 +6,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import {
     createNativeEditorDocumentHandle,
     DEFAULT_EDITOR_RESOURCE_LIMITS,
+    NativeRichTextEditor,
     tiptapSchema,
     useYjsCollaboration,
     withMentionsSchema,
@@ -27,13 +28,13 @@ import {
 } from './themePresets';
 
 import { EXAMPLE_MENTION_SUGGESTIONS, INITIAL_CONTENT, type ToolbarColorKey } from './constants';
+import { sharedStyles } from './sharedStyles';
 
 import { ThemePresetPicker } from './components/ThemePresetPicker';
 import { OutputCard } from './components/OutputCard';
 import { CollapsibleSection } from './components/CollapsibleSection';
 import { ThemeSettingsCard } from './components/ThemeSettingsCard';
 import { CollaborationPanel } from './components/CollaborationPanel';
-import { EditorDemoCard } from './components/EditorDemoCard';
 
 const DEFAULT_COLLABORATION_ENDPOINT = 'ws://localhost:1234/collaboration';
 const DEFAULT_COLLABORATION_ROOM_ID = 'example-room';
@@ -268,11 +269,13 @@ function AppScreen() {
         handle: documentHandle,
         connect: collaborationEnabled,
         createWebSocket: createCollaborationWebSocket,
-        localAwareness: {
-            userId: `${Platform.OS}-demo-user`,
-            name: collaborationDisplayName,
-            color: collaborationColor,
-        },
+        localAwareness: collaborationEnabled
+            ? {
+                  userId: `${Platform.OS}-demo-user`,
+                  name: collaborationDisplayName,
+                  color: collaborationColor,
+              }
+            : undefined,
     });
     const remotePeers = useMemo(
         () => collaboration.peers.filter((peer) => !peer.isLocal),
@@ -461,22 +464,33 @@ function AppScreen() {
                         appChrome={appChrome}
                     />
 
-                    <EditorDemoCard
-                        editorRef={editorRef}
-                        documentHandle={collaboration.editorBindings.documentHandle}
-                        documentRevision={collaboration.editorBindings.documentRevision}
-                        onLocalDocumentCommit={collaboration.editorBindings.onLocalDocumentCommit}
-                        theme={theme}
-                        addons={addons}
-                        onContentChange={handleContentChange}
-                        onContentChangeJSON={handleContentChangeJSON}
-                        remoteSelections={
-                            collaborationEnabled
-                                ? collaboration.editorBindings.remoteSelections
-                                : undefined
-                        }
-                        appChrome={appChrome}
-                    />
+                    <View
+                        style={[
+                            styles.editorCard,
+                            { backgroundColor: appChrome.cardSecondaryBackgroundColor },
+                        ]}>
+                        <Text style={[sharedStyles.sectionLabel, { color: appChrome.sectionLabelColor }]}>
+                            Editor
+                        </Text>
+                        <NativeRichTextEditor
+                            ref={editorRef}
+                            documentHandle={collaboration.editorBindings.documentHandle}
+                            documentRevision={collaboration.editorBindings.documentRevision}
+                            onLocalDocumentCommit={
+                                collaboration.editorBindings.onLocalDocumentCommit
+                            }
+                            remoteSelections={collaboration.editorBindings.remoteSelections}
+                            onSelectionChange={collaboration.editorBindings.onSelectionChange}
+                            onFocus={collaboration.editorBindings.onFocus}
+                            onBlur={collaboration.editorBindings.onBlur}
+                            theme={theme}
+                            addons={addons}
+                            placeholder='Start typing...'
+                            onContentChange={handleContentChange}
+                            onContentChangeJSON={handleContentChangeJSON}
+                            style={styles.editor}
+                        />
+                    </View>
 
                     <OutputCard
                         html={html}
@@ -538,5 +552,15 @@ const styles = StyleSheet.create({
     collapsibleCard: {
         padding: 16,
         borderRadius: 18,
+    },
+    editorCard: {
+        borderRadius: 24,
+        padding: 14,
+        gap: 10,
+    },
+    editor: {
+        borderRadius: 16,
+        minHeight: 200,
+        maxHeight: 300,
     },
 });

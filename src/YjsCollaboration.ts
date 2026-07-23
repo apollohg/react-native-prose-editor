@@ -590,6 +590,10 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
 
     updateLocalAwareness(partial: Partial<LocalAwarenessState>): void {
         if (this.destroyed) return;
+        // An explicit user identity is the only way to establish presence.
+        // This keeps partial callers from reviving anonymous awareness after
+        // the localAwareness option has withdrawn it.
+        if (this.desiredAwareness == null && partial.user == null) return;
         const next = mergeAwarenessPartial(
             this.desiredAwareness ?? { state: {}, focused: false },
             partial
@@ -597,6 +601,15 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         const nextKey = JSON.stringify(next);
         if (nextKey === JSON.stringify(this.desiredAwareness)) return;
         this.publishAwarenessCandidate(next);
+    }
+
+    /** Applies the hook's declarative identity option without exposing a second public API. */
+    applyLocalAwarenessOption(user: LocalAwarenessUser | undefined): void {
+        if (user == null) {
+            this.clearLocalAwareness();
+            return;
+        }
+        this.updateLocalAwareness({ user });
     }
 
     handleSelectionChange(selection: Selection): void {
@@ -912,6 +925,38 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         }
     }
 
+    private clearLocalAwareness(): void {
+        if (this.destroyed || this.desiredAwareness == null) return;
+        const socket = this.socket;
+        const generation = this.generation;
+        const wasLive = socket != null && generation != null && this.hasLiveAwarenessGeneration();
+        const awarenessContext =
+            wasLive && socket != null && generation != null
+                ? this.beginAwarenessOperation(socket, generation)
+                : null;
+        if (wasLive && awarenessContext == null) return;
+        try {
+            // Null is a first-class native operation: it clears Rust's whole
+            // desired intent and emits one tombstone for a live generation.
+            this.handle.bridge.collaborationSetAwareness(null);
+        } catch (error) {
+            const awarenessError = asError(error, 'Yjs collaboration awareness clear failure');
+            this.callbacks.onError?.(awarenessError);
+            if (awarenessContext != null) {
+                this.restoreAwarenessOperation(awarenessContext);
+            }
+            return;
+        }
+        this.desiredAwareness = null;
+        if (socket && generation && socket.readyState === WebSocket.OPEN) {
+            this.drainOutbound(socket, generation);
+        }
+        this.refreshPeers();
+        if (awarenessContext != null) {
+            this.completeAwarenessOperation(awarenessContext);
+        }
+    }
+
     private readEngineState(): YjsCollaborationState {
         const engineState = this.handle.bridge.getState();
         const awaitingRemote = engineState.documentState === 'AwaitRemote';
@@ -1120,8 +1165,7 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
     }, [options.documentId, options.handle]);
 
     useEffect(() => {
-        if (options.localAwareness == null) return;
-        controllerRef.current?.updateLocalAwareness({ user: options.localAwareness });
+        controllerRef.current?.applyLocalAwarenessOption(options.localAwareness);
     }, [localAwarenessKey, options.localAwareness]);
 
     useEffect(() => {

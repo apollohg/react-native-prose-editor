@@ -244,6 +244,9 @@ export function CollaborativeEditor({ documentId }: { documentId: string }) {
       documentRevision={collaboration.editorBindings.documentRevision}
       onLocalDocumentCommit={collaboration.editorBindings.onLocalDocumentCommit}
       remoteSelections={collaboration.editorBindings.remoteSelections}
+      onSelectionChange={collaboration.editorBindings.onSelectionChange}
+      onFocus={collaboration.editorBindings.onFocus}
+      onBlur={collaboration.editorBindings.onBlur}
     />
   );
 }
@@ -253,8 +256,8 @@ export function CollaborativeEditor({ documentId }: { documentId: string }) {
 document JSON/revision, last error) and `peers` (`NativeEditorV2PeerInfo[]` —
 note `clientId` is a decimal **string**) for presence UI, and accepts
 `connect`, `retryIntervalMs`, `onPeersChange`, `onStateChange`, and `onError`
-options. `editorBindings.onSelectionChange` / `onFocus` / `onBlur` are the
-awareness inputs the interactive editor props will call once they land.
+options. Bind every `editorBindings` callback above so selection and focus
+changes compose with the explicit local awareness identity.
 
 ### Offline snapshot restore
 

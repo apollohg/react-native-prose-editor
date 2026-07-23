@@ -73,7 +73,7 @@ import {
     NativeEditorV2OperationError,
 } from '../NativeEditorBoundaryError';
 import * as EditorUpdateRevision from '../EditorUpdateRevision';
-import { createYjsCollaborationController } from '../YjsCollaboration';
+import { createYjsCollaborationController, useYjsCollaboration } from '../YjsCollaboration';
 import {
     createFakeNativeEditorV2Runtime,
     fakeDocForText,
@@ -998,7 +998,9 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             });
         });
         expect(onSelectionChange).toHaveBeenCalledTimes(1);
-        expect(onSelectionChange).toHaveBeenCalledWith({ type: 'text', anchor: 1, head: 3 });
+        // The native mirror offsets are scalar coordinates; the render
+        // payload resolves them to the engine's document coordinates.
+        expect(onSelectionChange).toHaveBeenCalledWith({ type: 'text', anchor: 2, head: 4 });
 
         // Without a state payload the raw scalar range is forwarded.
         act(() => {
@@ -1027,6 +1029,58 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             });
         });
         expect(onBlur).toHaveBeenCalledTimes(1);
+        handle.destroy();
+    });
+
+    it('keeps editor-bound awareness hooks inert after localAwareness is removed', () => {
+        const handle = createV2RoomHandle({ withSnapshot: true });
+        const sockets: V2MockWebSocket[] = [];
+        let localAwareness: { userId: string; name: string; color: string } | undefined = {
+            userId: '1',
+            name: 'Alice',
+            color: '#f00',
+        };
+        let collaboration: ReturnType<typeof useYjsCollaboration> | null = null;
+
+        function CollaborationBoundEditor() {
+            collaboration = useYjsCollaboration({
+                documentId: 'doc-1',
+                handle,
+                localAwareness,
+                createWebSocket: () => {
+                    const socket = new V2MockWebSocket();
+                    sockets.push(socket);
+                    return socket as unknown as WebSocket;
+                },
+            });
+            return <NativeRichTextEditor {...collaboration.editorBindings} />;
+        }
+
+        const { getByTestId, rerender } = render(<CollaborationBoundEditor />);
+        act(() => {
+            sockets[0].open();
+            sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        });
+        localAwareness = undefined;
+        rerender(<CollaborationBoundEditor />);
+
+        expect(v2Runtime.session(handle.editorId).desiredAwareness).toBeNull();
+        const awarenessCallsAfterClear =
+            mockNativeModule.editorV2CollaborationSetAwareness.mock.calls.length;
+        act(() => {
+            getByTestId('native-editor-view').props.onSelectionChange({
+                nativeEvent: { anchor: 1, head: 3, editorId: handle.editorId },
+            });
+            getByTestId('native-editor-view').props.onFocusChange({
+                nativeEvent: { isFocused: true, editorId: handle.editorId },
+            });
+        });
+
+        expect(mockNativeModule.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(
+            awarenessCallsAfterClear
+        );
+        expect(v2Runtime.session(handle.editorId).desiredAwareness).toBeNull();
+        expect(collaboration).not.toBeNull();
         handle.destroy();
     });
 

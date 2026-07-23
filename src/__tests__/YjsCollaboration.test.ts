@@ -2626,21 +2626,30 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         expect(result.current.state.status).toBe('connecting');
     });
 
-    it('re-publishes the desired awareness when the localAwareness prop updates', () => {
+    it('clears live prop awareness once, keeps hooks inert, and lets an explicit user restore it', () => {
         const handle = createRoomHandle({ withSnapshot: true });
+        const sockets: MockWebSocket[] = [];
         let localAwareness: typeof ALICE | undefined = ALICE;
-        const { rerender } = renderHook(() =>
+        const { result, rerender } = renderHook(() =>
             useYjsCollaboration({
                 documentId: 'doc-1',
                 handle,
-                connect: false,
+                connect: true,
                 localAwareness,
-                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+                createWebSocket: () => {
+                    const socket = new MockWebSocket();
+                    sockets.push(socket);
+                    return socket as unknown as WebSocket;
+                },
             })
         );
         // The constructor publishes once; the mount-time prop effect merges
         // the identical user and dedups to a no-op.
         expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(1);
+        act(() => {
+            sockets[0].open();
+            sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        });
 
         localAwareness = { ...ALICE, name: 'Alice II' };
         rerender();
@@ -2653,10 +2662,102 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
             focused: false,
         });
 
+        const awarenessFramesBeforeClear = sentFrames(sockets[0]).filter(
+            ([type]) => type === 0x61
+        ).length;
+        localAwareness = undefined;
+        rerender();
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(3);
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenLastCalledWith(
+            handle.editorId,
+            'null'
+        );
+        expect(runtime.session(handle.editorId)).toMatchObject({
+            desiredAwareness: null,
+            localAwarenessLive: false,
+        });
+        expect(sentFrames(sockets[0]).filter(([type]) => type === 0x61)).toHaveLength(
+            awarenessFramesBeforeClear + 1
+        );
+
+        act(() => {
+            result.current.editorBindings.onFocus();
+            result.current.editorBindings.onSelectionChange({ type: 'text', anchor: 1, head: 3 });
+            result.current.editorBindings.onBlur();
+        });
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(3);
+
+        act(() => {
+            result.current.updateLocalAwareness({ user: ALICE });
+            result.current.editorBindings.onSelectionChange({ type: 'text', anchor: 1, head: 3 });
+            result.current.editorBindings.onBlur();
+        });
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(6);
+        expect(
+            JSON.parse(
+                runtime.module.editorV2CollaborationSetAwareness.mock.calls.at(-1)?.[1] as string
+            )
+        ).toEqual({
+            state: { user: ALICE },
+            focused: false,
+            selection: { type: 'text', anchor: 1, head: 3 },
+        });
+
+        localAwareness = ALICE;
+        rerender();
+        localAwareness = undefined;
+        rerender();
+        act(() => {
+            result.current.reconnect();
+            sockets[1].open();
+            sockets[1].receive(V2_FAKE_STEP2_FRAME);
+        });
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(7);
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenLastCalledWith(
+            handle.editorId,
+            'null'
+        );
+        expect(sentFrames(sockets[1]).filter(([type]) => type === 0x61)).toEqual([]);
+        expect(runtime.session(handle.editorId).desiredAwareness).toBeNull();
+    });
+
+    it('clears disconnected prop awareness so reconnect cannot republish it', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        const sockets: MockWebSocket[] = [];
+        let localAwareness: typeof ALICE | undefined = ALICE;
+        const { result, rerender } = renderHook(() =>
+            useYjsCollaboration({
+                documentId: 'doc-1',
+                handle,
+                connect: false,
+                localAwareness,
+                createWebSocket: () => {
+                    const socket = new MockWebSocket();
+                    sockets.push(socket);
+                    return socket as unknown as WebSocket;
+                },
+            })
+        );
+
         localAwareness = undefined;
         rerender();
         expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(2);
-        expect(runtime.session(handle.editorId).desiredAwareness).not.toBeNull();
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenLastCalledWith(
+            handle.editorId,
+            'null'
+        );
+        expect(runtime.session(handle.editorId)).toMatchObject({
+            desiredAwareness: null,
+            localAwarenessLive: false,
+        });
+
+        act(() => {
+            result.current.connect();
+            sockets[0].open();
+            sockets[0].receive(V2_FAKE_STEP2_FRAME);
+        });
+        expect(sentFrames(sockets[0]).filter(([type]) => type === 0x61)).toEqual([]);
+        expect(runtime.session(handle.editorId).desiredAwareness).toBeNull();
     });
 
     // ── Removal proofs ──────────────────────────────────────────
