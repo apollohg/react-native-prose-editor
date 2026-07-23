@@ -1176,6 +1176,61 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handleB.destroy();
     });
 
+    it('treats B revisions as new observations after rebinding from A', () => {
+        const handleA = createV2LocalHandle(V2_INITIAL_DOC);
+        const handleB = createV2LocalHandle(V2_DOC_B);
+        const ref = createRef<NativeRichTextEditorRef>();
+        const { getByTestId, rerender } = render(
+            <NativeRichTextEditor ref={ref} documentHandle={handleA} />
+        );
+
+        const nativeCommit = JSON.stringify({
+            version: 1,
+            requestId: '1',
+            baseDocumentRevision: handleA.bridge.getState().documentRevision,
+            text: '!',
+        });
+        act(() => {
+            v2Runtime.module.editorV2ApplyInput(handleA.editorId, nativeCommit);
+            getByTestId('native-editor-view').props.onEditorUpdate({
+                nativeEvent: {
+                    editorId: handleA.editorId,
+                    updateJson: renderUpdateValue(handleA.editorId),
+                    documentVersion: handleA.bridge.getState().documentRevision,
+                },
+            });
+        });
+        const nativeRevision = handleA.bridge.getState().documentRevision;
+
+        rerender(<NativeRichTextEditor ref={ref} documentHandle={handleB} />);
+
+        // B's initial revision is pulled natively, rather than being treated
+        // as an external update under A's observation state.
+        expect(getByTestId('native-editor-view').props.editorUpdateJson).toBeUndefined();
+
+        act(() => {
+            handleB.bridge.replaceDocument({ setJson: V2_DOC_C, history: 'undoableBoundary' });
+        });
+        const externalRevision = handleB.bridge.getState().documentRevision;
+        expect(externalRevision).toBe(nativeRevision);
+
+        rerender(
+            <NativeRichTextEditor
+                ref={ref}
+                documentHandle={handleB}
+                documentRevision={externalRevision}
+            />
+        );
+
+        const view = getByTestId('native-editor-view');
+        expect(view.props.editorUpdateEditorId).toBe(handleB.editorId);
+        expect(JSON.parse(view.props.editorUpdateJson as string)).toMatchObject({
+            documentVersion: externalRevision,
+        });
+        handleA.destroy();
+        handleB.destroy();
+    });
+
     it('drops an A snapshot that completes after the same editor component rebinds to B', () => {
         const handleA = createV2LocalHandle(V2_INITIAL_DOC);
         const handleB = createV2LocalHandle(V2_DOC_B);

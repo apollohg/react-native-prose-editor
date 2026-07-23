@@ -749,6 +749,14 @@ export const NativeRichTextEditor = forwardRef<
     const lastPushedEngineRevisionRef = useRef<string | null>(null);
     const lastNativeDrivenRevisionRef = useRef<string | null>(null);
     const didObserveInitialRevisionRef = useRef(false);
+    const revisionScopeEditorIdRef = useRef(editorId);
+    const didRebindRevisionScope = revisionScopeEditorIdRef.current !== editorId;
+    if (didRebindRevisionScope) {
+        revisionScopeEditorIdRef.current = editorId;
+        lastPushedEngineRevisionRef.current = null;
+        lastNativeDrivenRevisionRef.current = null;
+        didObserveInitialRevisionRef.current = false;
+    }
 
     const pushEngineUpdateToView = useCallback(() => {
         if (documentHandle.isDestroyed) return;
@@ -774,9 +782,7 @@ export const NativeRichTextEditor = forwardRef<
     // Drop it when this component rebinds, so no old session state reaches
     // the next native view binding.
     useEffect(() => {
-        setPushedUpdate((current) =>
-            current?.editorId === editorId ? current : null
-        );
+        setPushedUpdate((current) => (current?.editorId === editorId ? current : null));
     }, [editorId]);
 
     // After a JS-driven engine change (controlled apply, remote commit,
@@ -785,6 +791,10 @@ export const NativeRichTextEditor = forwardRef<
     // through the adapter and are never echoed back. The first observed
     // revision is skipped: the view pulls the initial state natively on bind.
     useEffect(() => {
+        // The document hook refreshes its state after the rebind commit. Its
+        // first render can therefore still contain A's revision; do not let
+        // that stale snapshot establish B's initial-observation state.
+        if (didRebindRevisionScope) return;
         if (!document.isReady || document.documentRevision == null) return;
         const revision = document.documentRevision;
         if (!didObserveInitialRevisionRef.current) {
@@ -798,7 +808,12 @@ export const NativeRichTextEditor = forwardRef<
             return;
         }
         pushEngineUpdateToView();
-    }, [document.isReady, document.documentRevision, pushEngineUpdateToView]);
+    }, [
+        didRebindRevisionScope,
+        document.isReady,
+        document.documentRevision,
+        pushEngineUpdateToView,
+    ]);
 
     // ── Engine mutation path (ref commands + toolbar requests) ──
     const afterLocalEngineMutation = useCallback(() => {
