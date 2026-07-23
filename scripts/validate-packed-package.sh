@@ -183,7 +183,7 @@ validate_archive_architectures() {
   local expected_architectures="$2"
   local label="$3"
   local architecture_info actual_architectures normalized_architectures architecture thin_archive
-  local archive_members extracted_objects_dir unexpected_members
+  local extracted_objects_dir
   local architecture_nm_output architecture_nm_status unexpected_nm_lines
 
   [[ -s "$archive_path" ]] || fail "$label archive is missing or empty"
@@ -200,10 +200,10 @@ validate_archive_architectures() {
       cp "$archive_path" "$thin_archive"
     fi
     file "$thin_archive" | grep -Fq 'current ar archive' || fail "$label $architecture slice is not a static archive"
-    archive_members="$(ar -t "$thin_archive" 2>&1)" || fail "$label $architecture static archive is corrupt: $archive_members"
-    [[ -n "$archive_members" ]] || fail "$label $architecture static archive contains no members"
-    unexpected_members="$(printf '%s\n' "$archive_members" | sed -e '/^__.SYMDEF/d' -e '/\.o$/d')"
-    [[ -z "$unexpected_members" ]] || fail "$label $architecture static archive contains unexpected members: $unexpected_members"
+    ruby "$repo_root/scripts/validate-uniffi-checksum-values.rb" \
+      --manifest "$manifest_path" \
+      --label "$label $architecture archive" \
+      --macho-archive "$architecture" "$thin_archive" || fail "$label $architecture archive native checksum value validation failed"
     extracted_objects_dir="$work_dir/${label//[^[:alnum:]]/_}-$architecture-objects"
     mkdir -p "$extracted_objects_dir"
     (
@@ -224,10 +224,6 @@ validate_archive_architectures() {
       [[ -z "$unexpected_nm_lines" ]] || fail "$label $architecture archive symbols cannot be read: $architecture_nm_output"
     fi
     validate_symbol_text "$label $architecture archive" "$architecture_nm_output"
-    ruby "$repo_root/scripts/validate-uniffi-checksum-values.rb" \
-      --manifest "$manifest_path" \
-      --label "$label $architecture archive" \
-      --macho "$architecture" "$extracted_objects_dir"/*.o || fail "$label $architecture archive native checksum value validation failed"
   done
 }
 

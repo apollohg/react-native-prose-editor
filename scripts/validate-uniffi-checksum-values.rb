@@ -245,11 +245,10 @@ def macho_object_symbols(data, architecture, expected, label)
   found
 end
 
-def validate_macho(objects, architecture, expected, label)
+def validate_macho_members(members, architecture, expected, label)
   found = Hash.new { |hash, key| hash[key] = [] }
-  objects.each do |path|
-    data = File.binread(path)
-    macho_object_symbols(data, architecture, expected, "#{label} object #{File.basename(path)}").each do |name, offsets|
+  members.each do |data, object_label|
+    macho_object_symbols(data, architecture, expected, "#{label} object #{object_label}").each do |name, offsets|
       offsets.each { |offset| found[name] << [data, offset] }
     end
   end
@@ -261,8 +260,74 @@ def validate_macho(objects, architecture, expected, label)
   end
 end
 
+def validate_macho(objects, architecture, expected, label)
+  validate_macho_members(objects.map { |path| [File.binread(path), File.basename(path)] }, architecture, expected, label)
+end
+
+def bsd_ar_decimal(field, label)
+  fail_closed("#{label} has a non-decimal member size") unless field.match?(/\A[0-9]+ *\z/)
+
+  Integer(field)
+end
+
+def bsd_ar_name(name_bytes, label)
+  name, padding = name_bytes.split("\0", 2)
+  fail_closed("#{label} has an empty member filename") if name.empty?
+  fail_closed("#{label} has non-NUL filename padding") if padding && !padding.bytes.all?(&:zero?)
+  fail_closed("#{label} has a non-UTF-8 member filename") unless name.force_encoding(Encoding::UTF_8).valid_encoding?
+
+  name
+end
+
+def bsd_ar_members(path, label)
+  data = File.binread(path)
+  fail_closed("#{label} is not a BSD ar archive") unless data.start_with?("!<arch>\n")
+
+  offset = 8
+  member_index = 0
+  members = []
+  while offset < data.bytesize
+    member_index += 1
+    header_label = "#{label} archive member #{member_index}"
+    require_range(data, offset, 60, header_label)
+    header = data.byteslice(offset, 60)
+    fail_closed("#{header_label} has an invalid ar header trailer") unless header.byteslice(58, 2) == "`\n"
+
+    name_length_field = header.byteslice(0, 16).match(/\A#1\/([0-9]+) *\z/)
+    fail_closed("#{header_label} does not use a BSD extended filename") unless name_length_field
+    name_length = Integer(name_length_field[1])
+    member_size = bsd_ar_decimal(header.byteslice(48, 10), header_label)
+    fail_closed("#{header_label} filename exceeds its member size") if name_length > member_size
+
+    member_offset = offset + 60
+    require_range(data, member_offset, member_size, header_label)
+    member = data.byteslice(member_offset, member_size)
+    name = bsd_ar_name(member.byteslice(0, name_length), header_label)
+    object = member.byteslice(name_length, member_size - name_length)
+    unless name == "__.SYMDEF"
+      fail_closed("#{header_label} has an unexpected member #{name}") unless name.end_with?(".o")
+      members << [object, "#{name} (member #{member_index})"]
+    end
+
+    offset = member_offset + member_size
+    if member_size.odd?
+      require_range(data, offset, 1, header_label)
+      fail_closed("#{header_label} has an invalid ar alignment byte") unless data.byteslice(offset, 1) == "\n"
+      offset += 1
+    end
+  end
+  fail_closed("#{label} archive contains no object members") if members.empty?
+  fail_closed("#{label} archive has trailing bytes") unless offset == data.bytesize
+
+  members
+end
+
+def validate_macho_archive(path, architecture, expected, label)
+  validate_macho_members(bsd_ar_members(path, label), architecture, expected, label)
+end
+
 def parse_arguments(argv)
-  fail_closed("usage: validate-uniffi-checksum-values.rb --manifest PATH --label LABEL (--elf ABI PATH | --macho ARCH OBJECT...)") unless argv.length >= 6
+  fail_closed("usage: validate-uniffi-checksum-values.rb --manifest PATH --label LABEL (--elf ABI PATH | --macho ARCH OBJECT... | --macho-archive ARCH ARCHIVE)") unless argv.length >= 6
   manifest = argv.shift
   manifest_path = argv.shift
   label = argv.shift
@@ -283,6 +348,9 @@ begin
     validate_elf(paths.fetch(0), architecture, expected, label)
   when "--macho"
     validate_macho(paths, architecture, expected, label)
+  when "--macho-archive"
+    fail_closed("Mach-O archive validation accepts exactly one archive") unless paths.length == 1
+    validate_macho_archive(paths.fetch(0), architecture, expected, label)
   else
     fail_closed("unknown native checksum format #{format}")
   end

@@ -109,11 +109,10 @@ function runDuplicateIosChecksumFixture() {
   });
   assert.ok(checksumObject, "fixture setup could not find the iOS checksum-defining object");
 
-  const duplicateObject = join(extractedObjects, "foreign-checksum-provider.o");
-  cpSync(join(extractedObjects, checksumObject), duplicateObject);
-  runFixtureCommand("ar", ["-rcs", archive, duplicateObject]);
+  runFixtureCommand("ar", ["-q", archive, join(extractedObjects, checksumObject)]);
+  runFixtureCommand("ranlib", [archive]);
   expectFailure(
-    "duplicate iOS checksum under a non-editor_core member name",
+    "duplicate iOS checksum under the original member name",
     run("--validate-xcframework", join(duplicateIosChecksum, "ios/EditorCore.xcframework")),
     /iOS device arm64 archive has duplicate checksum symbol editor_v2_apply_command/,
   );
