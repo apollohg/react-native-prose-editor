@@ -773,14 +773,14 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             renewedLocal: true,
             expiredPeers: [],
             outboundChanged: true,
-            peersChanged: false,
+            peersChanged: true,
         });
         expect(handle.bridge.collaborationTick('44998')).toEqual({
             nextDeadlineMillis: '44999',
             renewedLocal: true,
             expiredPeers: [],
             outboundChanged: true,
-            peersChanged: false,
+            peersChanged: true,
         });
         expect(handle.bridge.collaborationTick('44999')).toEqual({
             nextDeadlineMillis: '59998',
@@ -790,7 +790,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             peersChanged: true,
         });
         expect(handle.bridge.collaborationPeers()).toEqual([
-            expect.objectContaining({ isLocal: true, clock: 3 }),
+            expect.objectContaining({ isLocal: true, clock: 4 }),
         ]);
     });
 
@@ -812,18 +812,41 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(handle.bridge.collaborationBeginConnect()).toBe('2');
     });
 
-    it('tombstones the live local peer on detach while retaining and republishing desired awareness', () => {
+    it('mutates local awareness offline and handshaking, then republishes and tombstones it', () => {
         const handle = createRoomHandle({ withSnapshot: true });
         handle.bridge.collaborationSetAwareness({ user: ALICE });
-        const firstGeneration = handle.bridge.collaborationBeginConnect();
-        handle.bridge.collaborationSocketOpen(firstGeneration);
-        handle.bridge.collaborationReceive(firstGeneration, V2_FAKE_STEP2_FRAME);
         expect(handle.bridge.collaborationPeers()).toEqual([
             expect.objectContaining({ isLocal: true, clock: 1, state: { user: ALICE } }),
         ]);
+        expect(runtime.queuedFrames(handle.editorId)).toEqual([]);
+
+        const firstGeneration = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(firstGeneration);
+        const updatedLocal = { ...ALICE, name: 'Alice II' };
+        handle.bridge.collaborationSetAwareness({ user: updatedLocal });
+        expect(handle.bridge.collaborationPeers()).toEqual([
+            expect.objectContaining({
+                isLocal: true,
+                clock: 2,
+                state: { user: updatedLocal },
+            }),
+        ]);
+        expect(runtime.queuedFrames(handle.editorId)).toEqual([]);
+
+        handle.bridge.collaborationReceive(firstGeneration, V2_FAKE_STEP2_FRAME);
+        expect(handle.bridge.collaborationPeers()).toEqual([
+            expect.objectContaining({
+                isLocal: true,
+                clock: 3,
+                state: { user: updatedLocal },
+            }),
+        ]);
+        expect(runtime.queuedFrames(handle.editorId).map((frame) => Array.from(frame))).toEqual([
+            [0x61, 3],
+        ]);
 
         handle.bridge.collaborationDetach();
-        expect(runtime.session(handle.editorId).desiredAwareness).toEqual({ user: ALICE });
+        expect(runtime.session(handle.editorId).desiredAwareness).toEqual({ user: updatedLocal });
         expect(handle.bridge.collaborationPeers()).toEqual([]);
         handle.bridge.collaborationReattach();
         expect(handle.bridge.collaborationPeers()).toEqual([]);
@@ -832,13 +855,38 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         handle.bridge.collaborationSocketOpen(secondGeneration);
         handle.bridge.collaborationReceive(secondGeneration, V2_FAKE_STEP2_FRAME);
         expect(handle.bridge.collaborationPeers()).toEqual([
-            expect.objectContaining({ isLocal: true, clock: 3, state: { user: ALICE } }),
+            expect.objectContaining({
+                isLocal: true,
+                clock: 5,
+                state: { user: updatedLocal },
+            }),
         ]);
 
         handle.bridge.collaborationSetAwareness(null);
         expect(runtime.session(handle.editorId).desiredAwareness).toBeNull();
-        expect(runtime.session(handle.editorId).localClock).toBe(4);
+        expect(runtime.session(handle.editorId).localClock).toBe(6);
         expect(handle.bridge.collaborationPeers()).toEqual([]);
+    });
+
+    it('sorts the combined local and remote awareness projection by numeric client id', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        handle.bridge.collaborationSetAwareness({ user: ALICE });
+        const generation = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(generation);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+        const localClientId = runtime.session(handle.editorId).localClientId;
+
+        runtime.pushRemotePeers(handle.editorId, [
+            remotePeer({ clientId: '2000', clock: 1 }),
+            remotePeer({ clientId: '2', clock: 1 }),
+        ]);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME);
+
+        expect(handle.bridge.collaborationPeers().map((peer) => peer.clientId)).toEqual([
+            '2',
+            localClientId,
+            '2000',
+        ]);
     });
 
     it('merges clocked awareness deltas and only refreshes activity for admitted updates', () => {
@@ -952,18 +1000,18 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         setup.controller.connect();
         setup.sockets[0].open();
         setup.sockets[0].receive(V2_FAKE_STEP2_FRAME);
-        // Rust re-published the retained desired awareness on synchronization:
-        // the drained awareness frame carries the Rust-owned clock (1).
+        // The disconnected set owns clock 1; synchronization re-publishes
+        // the retained desired state with clock 2.
         expect(sentFrames(setup.sockets[0])).toEqual([
             Array.from(V2_FAKE_STEP1_FRAME),
-            [0x61, 1],
+            [0x61, 2],
         ]);
 
         // The local peer projection comes from Rust (with its clock).
         expect(setup.controller.peers).toEqual([
             {
                 clientId: expect.any(String),
-                clock: 1,
+                clock: 2,
                 isLocal: true,
                 state: { user: ALICE, focused: false },
                 cursor: null,
@@ -974,16 +1022,15 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         runtime.pushRemotePeers(setup.handle.editorId, [remotePeer()]);
         setup.sockets[0].receive(V2_FAKE_AWARENESS_FRAME);
         expect(setup.controller.peers).toHaveLength(2);
-        expect(setup.controller.peers[1]).toEqual(remotePeer());
+        expect(setup.controller.peers[0]).toEqual(remotePeer());
         expect(setup.peersLog.length).toBeGreaterThanOrEqual(1);
 
-        // Updating local awareness goes through Rust again; the clock advances
-        // natively (2) without TypeScript ever seeing it.
+        // Updating local awareness mutates clock 3 and publishes that entry.
         setup.controller.updateLocalAwareness({ user: { ...ALICE, name: 'Alice II' } });
         const updatePayload = runtime.module.editorV2CollaborationSetAwareness.mock
             .calls[1][1] as string;
         expect(updatePayload).not.toContain('"clock"');
-        expect(sentFrames(setup.sockets[0]).slice(2)).toEqual([[0x61, 2]]);
+        expect(sentFrames(setup.sockets[0]).slice(2)).toEqual([[0x61, 3]]);
     });
 
     it('merges selection and focus into the desired local awareness state', () => {

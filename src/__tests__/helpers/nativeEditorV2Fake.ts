@@ -716,11 +716,19 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         return left > V2_FAKE_U64_MAX - right ? V2_FAKE_U64_MAX : left + right;
     }
 
-    function publishLocalAwareness(session: FakeSession): void {
+    function setLocalAwarenessState(session: FakeSession): void {
         session.localClock += 1;
         session.localAwarenessLive = true;
+    }
+
+    function enqueueLocalAwareness(session: FakeSession): void {
         session.protocolQueue.push(awarenessFrame(session.localClock));
         session.lastLocalAwarenessPublishMillis = session.awarenessNowMillis;
+    }
+
+    function publishLocalAwareness(session: FakeSession): void {
+        setLocalAwarenessState(session);
+        enqueueLocalAwareness(session);
     }
 
     function clearLocalAwareness(session: FakeSession): void {
@@ -1602,9 +1610,10 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                         string,
                         unknown
                     >;
+                    setLocalAwarenessState(session);
                 }
                 if (awarenessJson.trim() !== 'null' && session.transportState === 'Synchronized') {
-                    publishLocalAwareness(session);
+                    enqueueLocalAwareness(session);
                 }
                 return okRecord(true);
             })
@@ -1622,6 +1631,11 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     });
                 }
                 peers.push(...session.remotePeers);
+                peers.sort((left, right) => {
+                    const leftId = BigInt(left.clientId);
+                    const rightId = BigInt(right.clientId);
+                    return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+                });
                 return okRecord(JSON.stringify({ peers }));
             })
         ),
@@ -1688,7 +1702,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                         renewedLocal,
                         expiredPeers,
                         outboundChanged: renewedLocal,
-                        peersChanged: expiredPeers.length > 0,
+                        peersChanged: renewedLocal || expiredPeers.length > 0,
                     })
                 );
             })
