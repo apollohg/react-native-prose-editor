@@ -1,5 +1,6 @@
 package com.apollohg.editor
 
+import android.accessibilityservice.AccessibilityService
 import android.app.Activity
 import android.app.Instrumentation
 import android.content.Context
@@ -8,6 +9,7 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -21,7 +23,10 @@ import expo.modules.kotlin.ModulesProvider
 import expo.modules.kotlin.modules.Module
 import java.lang.ref.WeakReference
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
@@ -37,14 +42,16 @@ class NativeDeviceOutsideTapTest {
 
     @Test
     fun tappingOutsideFocusedEditorBlursEditor() {
-        ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
+        launchOutsideTapActivity().use { scenario ->
             val editorRef = AtomicReference<NativeEditorExpoView>()
             val outsideTargetRef = AtomicReference<View>()
+            val outsideTargetPressed = AtomicBoolean(false)
             val outsideTapTrace = Collections.synchronizedList(mutableListOf<String>())
             val editorId = createV2EditorId()
 
             try {
                 scenario.onActivity { activity ->
+                    suppressImeForOutsideTapFixture(activity)
                     val root = FrameLayout(activity).apply {
                         setBackgroundColor(Color.WHITE)
                         isFocusable = true
@@ -52,6 +59,8 @@ class NativeDeviceOutsideTapTest {
                     }
                     val outsideTarget = View(activity).apply {
                         setBackgroundColor(Color.rgb(238, 238, 238))
+                        isClickable = true
+                        setOnClickListener { outsideTargetPressed.set(true) }
                     }
                     val expoContext = testExpoContext(activity)
                     val editor = NativeEditorExpoView(expoContext.context, expoContext.appContext).apply {
@@ -89,7 +98,7 @@ class NativeDeviceOutsideTapTest {
                             rightMargin = dp(activity, 16)
                         }
                     )
-                    activity.setContentView(root)
+                    setFixtureContent(activity, root)
 
                     editor.setEditorId(editorId)
                     editor.richTextView.editorEditText.applyUpdateJSON(
@@ -105,7 +114,10 @@ class NativeDeviceOutsideTapTest {
                 instrumentation.waitForIdleSync()
 
                 scenario.onActivity { activity ->
-                    editorRef.get().focus()
+                    assertTrue(
+                        "fixture editor should gain focus without requesting IME",
+                        editorRef.get().richTextView.editorEditText.requestFocus()
+                    )
                     activity.window.decorView.post {
                         editorRef.get().installOutsideTapBlurHandlerForTesting()
                     }
@@ -114,9 +126,14 @@ class NativeDeviceOutsideTapTest {
                 waitUntil("editor should gain focus") {
                     editorRef.get().richTextView.editorEditText.hasFocus()
                 }
+                awaitVisibleFixtureFrame("outside target", outsideTargetRef.get())
 
-                tapCenterOnScreen(outsideTargetRef.get())
+                tapCenterOnScreen(outsideTargetRef.get(), "outside", outsideTapTrace)
                 instrumentation.waitForIdleSync()
+
+                waitUntil("outside target should receive the actual tap") {
+                    outsideTargetPressed.get()
+                }
 
                 waitUntil(
                     "editor should lose focus after outside tap",
@@ -141,14 +158,16 @@ class NativeDeviceOutsideTapTest {
 
     @Test
     fun tappingInlineToolbarFramePreservesEditorFocus() {
-        ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
+        launchOutsideTapActivity().use { scenario ->
             val editorRef = AtomicReference<NativeEditorExpoView>()
             val toolbarTargetRef = AtomicReference<View>()
+            val toolbarTargetPressed = AtomicBoolean(false)
             val outsideTapTrace = Collections.synchronizedList(mutableListOf<String>())
             val editorId = createV2EditorId()
 
             try {
                 scenario.onActivity { activity ->
+                    suppressImeForOutsideTapFixture(activity)
                     val root = FrameLayout(activity).apply {
                         setBackgroundColor(Color.WHITE)
                         isFocusable = true
@@ -156,6 +175,8 @@ class NativeDeviceOutsideTapTest {
                     }
                     val toolbarTarget = View(activity).apply {
                         setBackgroundColor(Color.rgb(238, 238, 238))
+                        isClickable = true
+                        setOnClickListener { toolbarTargetPressed.set(true) }
                     }
                     val expoContext = testExpoContext(activity)
                     val editor = NativeEditorExpoView(expoContext.context, expoContext.appContext).apply {
@@ -193,7 +214,7 @@ class NativeDeviceOutsideTapTest {
                             rightMargin = dp(activity, 16)
                         }
                     )
-                    activity.setContentView(root)
+                    setFixtureContent(activity, root)
 
                     editor.setEditorId(editorId)
                     editor.richTextView.editorEditText.applyUpdateJSON(
@@ -210,7 +231,10 @@ class NativeDeviceOutsideTapTest {
 
                 scenario.onActivity { activity ->
                     applyToolbarFrameFromView(activity, editorRef.get(), toolbarTargetRef.get())
-                    editorRef.get().focus()
+                    assertTrue(
+                        "fixture editor should gain focus without requesting IME",
+                        editorRef.get().richTextView.editorEditText.requestFocus()
+                    )
                     activity.window.decorView.post {
                         editorRef.get().installOutsideTapBlurHandlerForTesting()
                     }
@@ -219,12 +243,17 @@ class NativeDeviceOutsideTapTest {
                 waitUntil("editor should gain focus") {
                     editorRef.get().richTextView.editorEditText.hasFocus()
                 }
+                awaitVisibleFixtureFrame("toolbar target", toolbarTargetRef.get())
 
                 scenario.onActivity { activity ->
                     recordTapGeometry(activity, "toolbar", toolbarTargetRef.get(), outsideTapTrace)
                 }
                 tapCenterOnScreen(toolbarTargetRef.get(), "toolbar", outsideTapTrace)
                 instrumentation.waitForIdleSync()
+
+                waitUntil("toolbar target should receive the actual tap") {
+                    toolbarTargetPressed.get()
+                }
 
                 assertTrue(
                     outsideTapTrace.joinToString(separator = "\n"),
@@ -246,16 +275,18 @@ class NativeDeviceOutsideTapTest {
 
     @Test
     fun swipingOutsideFocusedEditorInScrollViewKeepsEditorFocused() {
-        ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
+        launchOutsideTapActivity().use { scenario ->
             val editorRef = AtomicReference<NativeEditorExpoView>()
             val scrollViewRef = AtomicReference<ScrollView>()
             val outsideTargetRef = AtomicReference<View>()
             val initialScrollY = AtomicInteger()
+            val outsideTargetTouchCount = AtomicInteger()
             val outsideTapTrace = Collections.synchronizedList(mutableListOf<String>())
             val editorId = createV2EditorId()
 
             try {
                 scenario.onActivity { activity ->
+                    suppressImeForOutsideTapFixture(activity)
                     val scrollView = ScrollView(activity).apply {
                         setBackgroundColor(Color.WHITE)
                         isFillViewport = true
@@ -272,9 +303,7 @@ class NativeDeviceOutsideTapTest {
                         setShowToolbar(false)
                         richTextView.editorEditText.showSoftInputOnFocus = false
                     }
-                    val outsideTarget = View(activity).apply {
-                        setBackgroundColor(Color.rgb(238, 238, 238))
-                    }
+                    val outsideTarget = TouchRecordingView(activity, outsideTargetTouchCount)
 
                     editor.onFocusChangeForTesting = {}
                     editor.onAddonEventForTesting = {}
@@ -325,7 +354,7 @@ class NativeDeviceOutsideTapTest {
                             dp(activity, 1760)
                         )
                     )
-                    activity.setContentView(scrollView)
+                    setFixtureContent(activity, scrollView)
 
                     editor.setEditorId(editorId)
                     editor.richTextView.editorEditText.applyUpdateJSON(
@@ -342,7 +371,10 @@ class NativeDeviceOutsideTapTest {
                 instrumentation.waitForIdleSync()
 
                 scenario.onActivity { activity ->
-                    editorRef.get().focus()
+                    assertTrue(
+                        "fixture editor should gain focus without requesting IME",
+                        editorRef.get().richTextView.editorEditText.requestFocus()
+                    )
                     activity.window.decorView.post {
                         editorRef.get().installOutsideTapBlurHandlerForTesting()
                     }
@@ -351,9 +383,11 @@ class NativeDeviceOutsideTapTest {
                 waitUntil("editor should gain focus") {
                     editorRef.get().richTextView.editorEditText.hasFocus()
                 }
-                waitUntil("outside target should have a visible swipe region") {
-                    hasVisibleSwipeRegion(outsideTargetRef.get())
-                }
+                awaitVisibleFixtureFrame(
+                    "outside target swipe region",
+                    outsideTargetRef.get(),
+                    minimumVisibleHeightPx = dp(outsideTargetRef.get().context, 48)
+                )
 
                 scenario.onActivity {
                     initialScrollY.set(scrollViewRef.get().scrollY)
@@ -378,6 +412,7 @@ class NativeDeviceOutsideTapTest {
                 ) {
                     scrollViewRef.get().scrollY > initialScrollY.get()
                 }
+                assertTrue("outside target should receive the swipe down", outsideTargetTouchCount.get() > 0)
 
                 instrumentation.waitForIdleSync()
                 scenario.onActivity {
@@ -410,16 +445,18 @@ class NativeDeviceOutsideTapTest {
 
     @Test
     fun swipingChatListBehindStickyComposerKeepsEditorFocused() {
-        ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
+        launchOutsideTapActivity().use { scenario ->
             val editorRef = AtomicReference<NativeEditorExpoView>()
             val scrollViewRef = AtomicReference<ScrollView>()
             val outsideTargetRef = AtomicReference<View>()
             val initialScrollY = AtomicInteger()
+            val outsideTargetTouchCount = AtomicInteger()
             val outsideTapTrace = Collections.synchronizedList(mutableListOf<String>())
             val editorId = createV2EditorId()
 
             try {
                 scenario.onActivity { activity ->
+                    suppressImeForOutsideTapFixture(activity)
                     val root = FrameLayout(activity).apply {
                         setBackgroundColor(Color.WHITE)
                     }
@@ -433,9 +470,7 @@ class NativeDeviceOutsideTapTest {
                         isFocusable = true
                         isFocusableInTouchMode = true
                     }
-                    val outsideTarget = View(activity).apply {
-                        setBackgroundColor(Color.rgb(238, 238, 238))
-                    }
+                    val outsideTarget = TouchRecordingView(activity, outsideTargetTouchCount)
                     val expoContext = testExpoContext(activity)
                     val editor = NativeEditorExpoView(expoContext.context, expoContext.appContext).apply {
                         clipToPadding = false
@@ -502,7 +537,7 @@ class NativeDeviceOutsideTapTest {
                             bottomMargin = dp(activity, 16)
                         }
                     )
-                    activity.setContentView(root)
+                    setFixtureContent(activity, root)
 
                     editor.setEditorId(editorId)
                     editor.richTextView.editorEditText.applyUpdateJSON(
@@ -519,7 +554,10 @@ class NativeDeviceOutsideTapTest {
                 instrumentation.waitForIdleSync()
 
                 scenario.onActivity { activity ->
-                    editorRef.get().focus()
+                    assertTrue(
+                        "fixture editor should gain focus without requesting IME",
+                        editorRef.get().richTextView.editorEditText.requestFocus()
+                    )
                     activity.window.decorView.post {
                         editorRef.get().installOutsideTapBlurHandlerForTesting()
                     }
@@ -528,9 +566,11 @@ class NativeDeviceOutsideTapTest {
                 waitUntil("editor should gain focus") {
                     editorRef.get().richTextView.editorEditText.hasFocus()
                 }
-                waitUntil("outside target should have a visible swipe region") {
-                    hasVisibleSwipeRegion(outsideTargetRef.get())
-                }
+                awaitVisibleFixtureFrame(
+                    "chat list swipe region",
+                    outsideTargetRef.get(),
+                    minimumVisibleHeightPx = dp(outsideTargetRef.get().context, 48)
+                )
 
                 scenario.onActivity {
                     initialScrollY.set(scrollViewRef.get().scrollY)
@@ -555,6 +595,7 @@ class NativeDeviceOutsideTapTest {
                 ) {
                     scrollViewRef.get().scrollY > initialScrollY.get()
                 }
+                assertTrue("outside target should receive the swipe down", outsideTargetTouchCount.get() > 0)
 
                 instrumentation.waitForIdleSync()
                 scenario.onActivity {
@@ -587,19 +628,92 @@ class NativeDeviceOutsideTapTest {
 
     private fun createV2EditorId(): Long = createPairedV2TestEditor().second
 
+    private fun launchOutsideTapActivity(): ActivityScenario<NativeEditorOutsideTapActivity> {
+        val scenario = ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java)
+        instrumentation.uiAutomation.performGlobalAction(
+            AccessibilityService.GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE
+        )
+        instrumentation.waitForIdleSync()
+        return scenario
+    }
+
+    private fun setFixtureContent(activity: Activity, content: View) {
+        activity.setContentView(
+            content,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+    }
+
+    private fun suppressImeForOutsideTapFixture(activity: Activity) {
+        activity.window.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN or
+                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+        )
+    }
+
+    private fun awaitVisibleFixtureFrame(
+        description: String,
+        view: View,
+        minimumVisibleHeightPx: Int = 1
+    ) {
+        val frameReady = CountDownLatch(1)
+        val listener = object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (isVisibleTarget(view, minimumVisibleHeightPx) && view.rootView.hasWindowFocus()) {
+                    frameReady.countDown()
+                }
+                return true
+            }
+        }
+
+        instrumentation.runOnMainSync {
+            val observer = view.viewTreeObserver
+            if (isVisibleTarget(view, minimumVisibleHeightPx) && view.rootView.hasWindowFocus()) {
+                frameReady.countDown()
+            } else if (observer.isAlive) {
+                observer.addOnPreDrawListener(listener)
+            }
+        }
+        instrumentation.waitForIdleSync()
+        val visible = frameReady.await(3, TimeUnit.SECONDS)
+        instrumentation.runOnMainSync {
+            val observer = view.viewTreeObserver
+            if (observer.isAlive) {
+                observer.removeOnPreDrawListener(listener)
+            }
+        }
+        assertTrue(
+            "$description must be globally visible in the focused activity window",
+            visible
+        )
+    }
+
+    private fun isVisibleTarget(view: View, minimumVisibleHeightPx: Int = 1): Boolean {
+        val visibleBounds = android.graphics.Rect()
+        return view.getGlobalVisibleRect(visibleBounds) &&
+            visibleBounds.width() > 0 &&
+            visibleBounds.height() >= minimumVisibleHeightPx
+    }
+
     private fun tapCenterOnScreen(
         view: View,
         label: String? = null,
         trace: MutableList<String>? = null
     ) {
-        val location = IntArray(2)
-        view.getLocationOnScreen(location)
-        val x = location[0] + view.width / 2f
-        val y = location[1] + view.height / 2f
+        val visibleBounds = android.graphics.Rect()
+        assertTrue(
+            "tap target must be visible",
+            view.getGlobalVisibleRect(visibleBounds) && !visibleBounds.isEmpty
+        )
+        val x = visibleBounds.exactCenterX()
+        val y = visibleBounds.exactCenterY()
         if (label != null && trace != null) {
             trace.add(
                 "$label tap center=${x.toInt()},${y.toInt()} " +
-                    "loc=${location[0]},${location[1]} size=${view.width}x${view.height} shown=${view.isShown}"
+                    "visible=${visibleBounds.flattenToString()} shown=${view.isShown}"
             )
         }
         val downTime = SystemClock.uptimeMillis()
@@ -611,11 +725,23 @@ class NativeDeviceOutsideTapTest {
         up.recycle()
     }
 
+    private class TouchRecordingView(
+        context: Context,
+        private val touchCount: AtomicInteger
+    ) : View(context) {
+        init {
+            isClickable = true
+            setBackgroundColor(Color.rgb(238, 238, 238))
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            touchCount.incrementAndGet()
+            return super.onTouchEvent(event)
+        }
+    }
+
     private fun hasVisibleSwipeRegion(view: View): Boolean {
-        val visibleBounds = android.graphics.Rect()
-        return view.getGlobalVisibleRect(visibleBounds) &&
-            visibleBounds.width() > 0 &&
-            visibleBounds.height() >= dp(view.context, 48)
+        return isVisibleTarget(view, dp(view.context, 48))
     }
 
     private fun swipeUpFromVisibleRegion(

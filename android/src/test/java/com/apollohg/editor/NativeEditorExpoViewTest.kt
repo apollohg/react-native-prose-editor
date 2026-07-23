@@ -6,6 +6,7 @@ import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
+import android.view.Window
 import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
 import expo.modules.core.ModuleRegistry
@@ -2721,7 +2722,7 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
-    fun `outside tap observer is shared per window and removed after last view`() {
+    fun `outside tap route is shared per window and restores the latest foreign callback`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val host = activity.findViewById<FrameLayout>(android.R.id.content)
         val firstExpoContext = testExpoContext(activity)
@@ -2729,37 +2730,50 @@ class NativeEditorExpoViewTest {
         val firstView = NativeEditorExpoView(firstExpoContext.context, firstExpoContext.appContext)
         val secondView = NativeEditorExpoView(secondExpoContext.context, secondExpoContext.appContext)
         val originalChildCount = host.childCount
+        val originalCallback = activity.window.callback
+        val firstForeignCallback = object : Window.Callback by originalCallback {}
+        val latestForeignCallback = object : Window.Callback by originalCallback {}
+        activity.window.callback = firstForeignCallback
 
         firstView.installOutsideTapBlurHandlerForTesting()
-        val observer = host.getChildAt(host.childCount - 1)
-        assertEquals(originalChildCount + 1, host.childCount)
-        assertFalse(observer.isClickable)
-        assertFalse(observer.isFocusable)
-        assertFalse(observer.isFocusableInTouchMode)
+        val firstRoute = activity.window.callback
+        assertEquals(originalChildCount, host.childCount)
+        assertFalse(firstRoute === firstForeignCallback)
 
         secondView.installOutsideTapBlurHandlerForTesting()
 
-        assertEquals(originalChildCount + 1, host.childCount)
-        assertSame(observer, host.getChildAt(host.childCount - 1))
+        assertEquals(originalChildCount, host.childCount)
+        assertSame(firstRoute, activity.window.callback)
 
         firstView.uninstallOutsideTapBlurHandlerForTesting()
 
-        assertEquals(originalChildCount + 1, host.childCount)
-        assertSame(observer, host.getChildAt(host.childCount - 1))
+        assertSame(firstRoute, activity.window.callback)
+
+        activity.window.callback = latestForeignCallback
+        secondView.installOutsideTapBlurHandlerForTesting()
+        assertFalse(activity.window.callback === latestForeignCallback)
 
         secondView.uninstallOutsideTapBlurHandlerForTesting()
-        shadowOf(Looper.getMainLooper()).idle()
 
-        assertEquals(originalChildCount, host.childCount)
+        assertSame(latestForeignCallback, activity.window.callback)
     }
 
     @Test
-    fun `outside tap observer does not consume a classified outside down`() {
+    fun `outside tap route forwards the exact foreign result and confirms a real tap on up`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val host = activity.findViewById<FrameLayout>(android.R.id.content)
         val expoContext = testExpoContext(activity)
         val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
         val trace = mutableListOf<String>()
+        val originalCallback = activity.window.callback
+        var foreignDispatchCount = 0
+        val foreignCallback = object : Window.Callback by originalCallback {
+            override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                foreignDispatchCount += 1
+                return true
+            }
+        }
+        activity.window.callback = foreignCallback
         host.addView(view, FrameLayout.LayoutParams(200, 200))
         host.layout(0, 0, 1000, 1000)
         view.layout(0, 0, 200, 200)
@@ -2772,16 +2786,16 @@ class NativeEditorExpoViewTest {
         view.onOutsideTapTraceForTesting = { event -> trace.add(event) }
 
         view.installOutsideTapBlurHandlerForTesting()
-        val observer = host.getChildAt(host.childCount - 1)
         val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, 9999f, 9999f, 0)
-        val handled = observer.dispatchTouchEvent(down)
+        val up = MotionEvent.obtain(100L, 116L, MotionEvent.ACTION_UP, 9999f, 9999f, 0)
+        val downHandled = view.dispatchOutsideTapWindowEventForTesting(down)
+        val upHandled = view.dispatchOutsideTapWindowEventForTesting(up)
         down.recycle()
+        up.recycle()
 
-        assertFalse(handled)
-        assertFalse(view.hasPendingOutsideTapBlurForTesting())
-
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(151))
-
+        assertTrue(downHandled)
+        assertTrue(upHandled)
+        assertEquals(2, foreignDispatchCount)
         assertTrue(trace.joinToString(separator = "\n"), view.hasPendingOutsideTapBlurForTesting())
 
         view.cancelOutsideTapBlurFromWindowDispatcher()
@@ -2789,7 +2803,159 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
-    fun `outside tap observer cancels an outside blur candidate when the host scrolls`() {
+    fun `outside tap route observes once through a foreign wrapper around an old route`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val host = activity.findViewById<FrameLayout>(android.R.id.content)
+        val expoContext = testExpoContext(activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val trace = mutableListOf<String>()
+        val originalCallback = activity.window.callback
+        var baseDispatchCount = 0
+        val baseCallback = object : Window.Callback by originalCallback {
+            override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                baseDispatchCount += 1
+                return false
+            }
+        }
+        activity.window.callback = baseCallback
+        host.addView(view, FrameLayout.LayoutParams(200, 200))
+        host.layout(0, 0, 1000, 1000)
+        view.layout(0, 0, 200, 200)
+        view.richTextView.layout(0, 0, 200, 200)
+        view.richTextView.editorEditText.layout(0, 0, 200, 200)
+        view.setAttachedToNativeWindowForTesting(true)
+        view.setEditorFocusedForOutsideTapDecisionForTesting(true)
+        view.onAddonEventForTesting = {}
+        view.onFocusChangeForTesting = {}
+        view.onOutsideTapTraceForTesting = { event -> trace.add(event) }
+
+        view.installOutsideTapBlurHandlerForTesting()
+        val oldRoute = activity.window.callback
+        var foreignDispatchCount = 0
+        val foreignCallback = object : Window.Callback by oldRoute {
+            override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                foreignDispatchCount += 1
+                return oldRoute.dispatchTouchEvent(event)
+            }
+        }
+        activity.window.callback = foreignCallback
+        view.installOutsideTapBlurHandlerForTesting()
+
+        val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, 9999f, 9999f, 0)
+        val handled = view.dispatchOutsideTapWindowEventForTesting(down)
+        down.recycle()
+
+        assertFalse(handled)
+        assertEquals(1, foreignDispatchCount)
+        assertEquals(1, baseDispatchCount)
+        assertEquals(
+            trace.joinToString(separator = "\n"),
+            1,
+            trace.count { it.startsWith("dispatch callback action=") }
+        )
+
+        view.cancelOutsideTapBlurFromWindowDispatcher()
+        view.uninstallOutsideTapBlurHandlerForTesting()
+
+        assertSame(foreignCallback, activity.window.callback)
+    }
+
+    @Test
+    fun `outside tap route breaks dynamic foreign callback re-entry once`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val host = activity.findViewById<FrameLayout>(android.R.id.content)
+        val expoContext = testExpoContext(activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val trace = mutableListOf<String>()
+        val originalCallback = activity.window.callback
+        var baseDispatchCount = 0
+        val baseCallback = object : Window.Callback by originalCallback {
+            override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                baseDispatchCount += 1
+                return false
+            }
+        }
+        activity.window.callback = baseCallback
+        host.addView(view, FrameLayout.LayoutParams(200, 200))
+        host.layout(0, 0, 1000, 1000)
+        view.layout(0, 0, 200, 200)
+        view.richTextView.layout(0, 0, 200, 200)
+        view.richTextView.editorEditText.layout(0, 0, 200, 200)
+        view.setAttachedToNativeWindowForTesting(true)
+        view.setEditorFocusedForOutsideTapDecisionForTesting(true)
+        view.onAddonEventForTesting = {}
+        view.onFocusChangeForTesting = {}
+        view.onOutsideTapTraceForTesting = { event -> trace.add(event) }
+
+        view.installOutsideTapBlurHandlerForTesting()
+        val oldRoute = activity.window.callback
+        var foreignDispatchCount = 0
+        var foreignInnerResult: Boolean? = null
+        val foreignCallback = object : Window.Callback by oldRoute {
+            override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                foreignDispatchCount += 1
+                return activity.window.callback.dispatchTouchEvent(event).also { result ->
+                    foreignInnerResult = result
+                }.not()
+            }
+        }
+        activity.window.callback = foreignCallback
+        view.installOutsideTapBlurHandlerForTesting()
+        var cycleBreakDispatchCount = 0
+        assertTrue(
+            view.setOutsideTapCycleBreakDispatcherForTesting {
+                cycleBreakDispatchCount += 1
+                true
+            }
+        )
+
+        val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, 9999f, 9999f, 0)
+        val handled = view.dispatchOutsideTapWindowEventForTesting(down)
+        down.recycle()
+
+        assertTrue(requireNotNull(foreignInnerResult))
+        assertFalse(handled)
+        assertEquals(1, foreignDispatchCount)
+        assertEquals(1, cycleBreakDispatchCount)
+        assertEquals(0, baseDispatchCount)
+        assertEquals(
+            trace.joinToString(separator = "\n"),
+            1,
+            trace.count { it.startsWith("dispatch callback action=") }
+        )
+
+        view.cancelOutsideTapBlurFromWindowDispatcher()
+        view.uninstallOutsideTapBlurHandlerForTesting()
+
+        assertSame(foreignCallback, activity.window.callback)
+    }
+
+    @Test
+    fun `outside tap route clears a pruned final weak view and restores the latest foreign callback`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val expoContext = testExpoContext(activity)
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val originalCallback = activity.window.callback
+        val firstForeignCallback = object : Window.Callback by originalCallback {}
+        activity.window.callback = firstForeignCallback
+
+        view.installOutsideTapBlurHandlerForTesting()
+        val oldRoute = activity.window.callback
+        val latestForeignCallback = object : Window.Callback by oldRoute {}
+        activity.window.callback = latestForeignCallback
+        view.installOutsideTapBlurHandlerForTesting()
+
+        val cleanup = view.clearOutsideTapRouteViewReferenceAndReconcileForTesting()
+
+        assertFalse(cleanup.isRegistered)
+        assertFalse(cleanup.hasCallbackReconciler)
+        assertSame(latestForeignCallback, activity.window.callback)
+
+        view.uninstallOutsideTapBlurHandlerForTesting()
+    }
+
+    @Test
+    fun `outside tap route cancels an outside blur candidate when a gesture moves like scroll`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val host = activity.findViewById<FrameLayout>(android.R.id.content)
         val expoContext = testExpoContext(activity)
@@ -2805,13 +2971,12 @@ class NativeEditorExpoViewTest {
         view.onFocusChangeForTesting = {}
 
         view.installOutsideTapBlurHandlerForTesting()
-        val observer = host.getChildAt(host.childCount - 1)
         val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, 9999f, 9999f, 0)
-        observer.dispatchTouchEvent(down)
+        val move = MotionEvent.obtain(100L, 116L, MotionEvent.ACTION_MOVE, 9999f, 10099f, 0)
+        view.dispatchOutsideTapWindowEventForTesting(down)
+        view.dispatchOutsideTapWindowEventForTesting(move)
         down.recycle()
-
-        host.scrollTo(0, 100)
-        shadowOf(Looper.getMainLooper()).idle()
+        move.recycle()
 
         assertFalse(view.hasPendingOutsideTapBlurForTesting())
 
@@ -2819,7 +2984,7 @@ class NativeEditorExpoViewTest {
     }
 
     @Test
-    fun `outside tap handler reinstall does not duplicate observer for the same view`() {
+    fun `outside tap handler reinstall does not duplicate route for the same view`() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val host = activity.findViewById<FrameLayout>(android.R.id.content)
         val expoContext = testExpoContext(activity)
@@ -2832,14 +2997,12 @@ class NativeEditorExpoViewTest {
         view.onFocusChangeForTesting = {}
 
         view.installOutsideTapBlurHandlerForTesting()
-        val childCount = host.childCount
-        val observer = host.getChildAt(host.childCount - 1)
+        val route = activity.window.callback
 
         view.installOutsideTapBlurHandlerForTesting()
 
         assertTrue(view.isOutsideTapBlurHandlerInstalledForTesting())
-        assertEquals(childCount, host.childCount)
-        assertSame(observer, host.getChildAt(host.childCount - 1))
+        assertSame(route, activity.window.callback)
 
         val event = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, 9999f, 9999f, 0)
         assertEquals(
