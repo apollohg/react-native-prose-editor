@@ -108,6 +108,12 @@ class EditorEditText @JvmOverloads constructor(
         val updateJSON: String?
     )
 
+    data class ExternalEditorUpdatePreparation(
+        val ready: Boolean,
+        /** A preflight mutation's already-adopted render snapshot, if one occurred. */
+        val adoptedUpdateJSON: String?
+    )
+
     private data class HardwareKeyEventSignature(
         val keyCode: Int,
         val downTime: Long,
@@ -345,6 +351,8 @@ class EditorEditText @JvmOverloads constructor(
     private var deferredRustUpdateApplicationDepth: Int = 0
     private var deferredRustUpdateJSON: String? = null
     private var deferredRustUpdateGeneration: Long = 0L
+    private var externalUpdatePreparationCaptureDepth: Int = 0
+    private var capturedExternalUpdatePreparationJSON: String? = null
     private var lineBoundaryInputRefreshGeneration: Long = 0L
     private var restartInputSelectionUpdateGeneration: Long = 0L
     internal var onDeleteRangeInRustForTesting: ((Int, Int) -> Unit)? = null
@@ -358,6 +366,7 @@ class EditorEditText @JvmOverloads constructor(
     internal var onInsertContentJsonAtSelectionScalarForTesting: ((Int, Int, String) -> Unit)? = null
     internal var blockExternalEditorUpdatePreparationForTesting = false
     internal var blockExternalEditorCommandPreparationForTesting = false
+    internal var throwOnNextApplyUpdateForTesting: Throwable? = null
 
     /**
      * The v2 driver for this editor session: when an adapter is attached,
@@ -1750,16 +1759,50 @@ class EditorEditText @JvmOverloads constructor(
         discardTransientNativeInputForExternalRecovery()
     }
 
-    fun prepareForExternalEditorUpdate(): Boolean {
-        if (blockExternalEditorUpdatePreparationForTesting) return false
-        if (discardTransientInputForDestroyedEditorIfNeeded()) return false
+    fun prepareForExternalEditorUpdate(): Boolean =
+        prepareForExternalEditorUpdateInternal().ready
+
+    /**
+     * Performs external-update preflight while retaining a mutation snapshot
+     * for the caller that will apply it. This prevents a second state render
+     * after a composing commit has already produced and adopted one.
+     */
+    fun prepareForExternalEditorUpdateWithResult(): ExternalEditorUpdatePreparation {
+        externalUpdatePreparationCaptureDepth += 1
+        if (externalUpdatePreparationCaptureDepth == 1) {
+            capturedExternalUpdatePreparationJSON = null
+        }
+        return try {
+            val preparation = prepareForExternalEditorUpdateInternal()
+            ExternalEditorUpdatePreparation(
+                ready = preparation.ready,
+                adoptedUpdateJSON = capturedExternalUpdatePreparationJSON
+            )
+        } finally {
+            externalUpdatePreparationCaptureDepth -= 1
+            if (externalUpdatePreparationCaptureDepth == 0) {
+                capturedExternalUpdatePreparationJSON = null
+            }
+        }
+    }
+
+    private fun prepareForExternalEditorUpdateInternal(): ExternalEditorUpdatePreparation {
+        if (blockExternalEditorUpdatePreparationForTesting) {
+            return ExternalEditorUpdatePreparation(ready = false, adoptedUpdateJSON = null)
+        }
+        if (discardTransientInputForDestroyedEditorIfNeeded()) {
+            return ExternalEditorUpdatePreparation(ready = false, adoptedUpdateJSON = null)
+        }
         val inputConnection = activeInputConnection
         if (inputConnection?.flushPendingCompositionForExternalMutation() == false) {
-            return false
+            return ExternalEditorUpdatePreparation(ready = false, adoptedUpdateJSON = null)
         }
-        return drainNativeTextMutationIfNeeded(
-            allowAfterBlur = true,
-            preserveInputConnectionForExternalUpdate = true
+        return ExternalEditorUpdatePreparation(
+            ready = drainNativeTextMutationIfNeeded(
+                allowAfterBlur = true,
+                preserveInputConnectionForExternalUpdate = true
+            ),
+            adoptedUpdateJSON = null
         )
     }
 
@@ -1768,8 +1811,12 @@ class EditorEditText @JvmOverloads constructor(
             return CommandPreparation(ready = false, updateJSON = null)
         }
         val previousAuthorizedText = lastAuthorizedText
-        if (!prepareForExternalEditorUpdate()) {
+        val preflight = prepareForExternalEditorUpdateWithResult()
+        if (!preflight.ready) {
             return CommandPreparation(ready = false, updateJSON = null)
+        }
+        if (preflight.adoptedUpdateJSON != null) {
+            return CommandPreparation(ready = true, updateJSON = preflight.adoptedUpdateJSON)
         }
         if (!hasLiveEditor() || lastAuthorizedText == previousAuthorizedText) {
             return CommandPreparation(ready = true, updateJSON = null)
@@ -2782,6 +2829,17 @@ class EditorEditText @JvmOverloads constructor(
     }
 
     private fun applyRustUpdateJSON(updateJSON: String) {
+        if (externalUpdatePreparationCaptureDepth > 0) {
+            capturedExternalUpdatePreparationJSON = updateJSON
+            // Keep the visible IME commit authorized until the external view
+            // consumes this exact adapter-adopted snapshot below.
+            authorizeCurrentVisibleTextForDeferredRustUpdate()
+            recordImeTraceForTesting(
+                "rustUpdateCapturedForExternalPreflight",
+                "jsonLength=${updateJSON.length} depth=$externalUpdatePreparationCaptureDepth"
+            )
+            return
+        }
         if (deferredRustUpdateApplicationDepth > 0) {
             deferredRustUpdateJSON = updateJSON
             recordImeTraceForTesting(
@@ -3980,6 +4038,10 @@ class EditorEditText @JvmOverloads constructor(
         notifyListener: Boolean = true,
         refreshInputConnectionForExternalUpdate: Boolean = false
     ) {
+        throwOnNextApplyUpdateForTesting?.let { error ->
+            throwOnNextApplyUpdateForTesting = null
+            throw error
+        }
         val totalStartedAt = System.nanoTime()
         val previousVisibleText = text?.toString().orEmpty()
         val parseStartedAt = totalStartedAt

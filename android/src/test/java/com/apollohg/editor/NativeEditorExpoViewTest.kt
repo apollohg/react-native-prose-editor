@@ -561,6 +561,7 @@ class NativeEditorExpoViewTest {
             readyPayloads.add(payload)
         }
         view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+        view.onSelectionChangeForTesting = {}
         view.onAddonEventForTesting = {}
         view.setAppliedEditorUpdateRevisionForTesting(1)
 
@@ -823,6 +824,8 @@ class NativeEditorExpoViewTest {
             readyPayloads.add(payload)
         }
         view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+        view.onSelectionChangeForTesting = {}
+        view.onAddonEventForTesting = {}
         view.setPendingEditorUpdateJson(updateJson)
         view.setPendingEditorUpdateEditorId(editorId)
         view.setPendingEditorUpdateRevision(9)
@@ -871,6 +874,133 @@ class NativeEditorExpoViewTest {
             assertEquals("FFI_RESULT_INVALID", errors.single().code)
             assertNull(view.pendingEditorUpdateJsonForTesting())
             assertEquals(0, view.pendingEditorUpdateRevisionForTesting())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `identical malformed pending editor prop redelivery is consumed once`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val errors = mutableListOf<EditorV2Error>()
+        val malformedUpdateJson = renderUpdateJson("malformed")
+        try {
+            adapter.onAutonomousError = { errors += it }
+            view.onAddonEventForTesting = {}
+            view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+            view.onEditorReadyForTesting = {}
+            view.richTextView.setEditorIdWhileDetached(viewToken)
+            view.richTextView.editorEditText.editorId = viewToken
+            view.setAttachedToNativeWindowForTesting(true)
+
+            view.setPendingEditorUpdateJson(malformedUpdateJson)
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(41)
+            view.applyPendingEditorUpdateIfNeeded()
+
+            view.setPendingEditorUpdateJson(malformedUpdateJson)
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(41)
+            view.applyPendingEditorUpdateIfNeeded()
+
+            assertEquals(1, errors.size)
+            assertNull(view.pendingEditorUpdateJsonForTesting())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `new malformed pending editor revision is classified independently`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val errors = mutableListOf<EditorV2Error>()
+        val malformedUpdateJson = renderUpdateJson("malformed")
+        try {
+            adapter.onAutonomousError = { errors += it }
+            view.onAddonEventForTesting = {}
+            view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+            view.onEditorReadyForTesting = {}
+            view.richTextView.setEditorIdWhileDetached(viewToken)
+            view.richTextView.editorEditText.editorId = viewToken
+            view.setAttachedToNativeWindowForTesting(true)
+
+            view.setPendingEditorUpdateJson(malformedUpdateJson)
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(42)
+            view.applyPendingEditorUpdateIfNeeded()
+
+            view.setPendingEditorUpdateJson(malformedUpdateJson)
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(43)
+            view.applyPendingEditorUpdateIfNeeded()
+
+            assertEquals(2, errors.size)
+            assertNull(view.pendingEditorUpdateJsonForTesting())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `renderer exception permanently consumes pending editor prop without retry`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        try {
+            view.onAddonEventForTesting = {}
+            view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+            view.onEditorReadyForTesting = {}
+            view.richTextView.setEditorIdWhileDetached(viewToken)
+            view.richTextView.editorEditText.editorId = viewToken
+            view.setAttachedToNativeWindowForTesting(true)
+            view.richTextView.editorEditText.throwOnNextApplyUpdateForTesting = IllegalStateException("renderer")
+            view.setPendingEditorUpdateJson(atomicRenderUpdateJson("controlled", "0"))
+            view.setPendingEditorUpdateEditorId(viewToken)
+            view.setPendingEditorUpdateRevision(44)
+
+            view.applyPendingEditorUpdateIfNeeded()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
+
+            assertNull(view.pendingEditorUpdateJsonForTesting())
+            assertEquals(0, view.pendingEditorUpdateRevisionForTesting())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `renderer exception does not schedule a view command retry`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        try {
+            view.onAddonEventForTesting = {}
+            view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+            view.onEditorReadyForTesting = {}
+            view.richTextView.setEditorIdWhileDetached(viewToken)
+            view.richTextView.editorEditText.editorId = viewToken
+            view.setAttachedToNativeWindowForTesting(true)
+            view.richTextView.editorEditText.throwOnNextApplyUpdateForTesting = IllegalStateException("renderer")
+
+            assertFalse(view.applyEditorUpdate(atomicRenderUpdateJson("controlled", "0")))
+            assertNull(view.pendingViewCommandUpdateJsonForTesting())
+            assertEquals(0, view.pendingViewCommandUpdateRetryAttemptsForTesting())
         } finally {
             EditorV2Registry.remove(adapter.editorId)
             NativeEditorViewRegistry.unregister(viewToken, view)
@@ -1042,6 +1172,42 @@ class NativeEditorExpoViewTest {
             assertEquals(0, view.pendingEditorResetUpdateRevisionForTesting())
             assertEquals(ordinaryUpdateJson, view.pendingEditorUpdateJsonForTesting())
             assertEquals(31, view.pendingEditorUpdateRevisionForTesting())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
+    }
+
+    @Test
+    fun `identical malformed pending reset prop redelivery is consumed once`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val errors = mutableListOf<EditorV2Error>()
+        val malformedUpdateJson = renderUpdateJson("malformed reset")
+        try {
+            adapter.onAutonomousError = { errors += it }
+            view.onAddonEventForTesting = {}
+            view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+            view.onEditorReadyForTesting = {}
+            view.richTextView.setEditorIdWhileDetached(viewToken)
+            view.richTextView.editorEditText.editorId = viewToken
+            view.setAttachedToNativeWindowForTesting(true)
+
+            view.setPendingEditorResetUpdateJson(malformedUpdateJson)
+            view.setPendingEditorResetUpdateEditorId(viewToken)
+            view.setPendingEditorResetUpdateRevision(51)
+            view.applyPendingEditorResetUpdateIfNeeded()
+
+            view.setPendingEditorResetUpdateJson(malformedUpdateJson)
+            view.setPendingEditorResetUpdateEditorId(viewToken)
+            view.setPendingEditorResetUpdateRevision(51)
+            view.applyPendingEditorResetUpdateIfNeeded()
+
+            assertEquals(1, errors.size)
+            assertNull(view.pendingEditorResetUpdateJsonForTesting())
         } finally {
             EditorV2Registry.remove(adapter.editorId)
             NativeEditorViewRegistry.unregister(viewToken, view)
@@ -2722,6 +2888,43 @@ class NativeEditorExpoViewTest {
 
         NativeEditorViewRegistry.unregister(editorId, view)
         NativeEditorViewRegistry.invalidateDestroyedEditor(editorId)
+    }
+
+    @Test
+    fun `mutating controlled update preflight renders once and preserves next input`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        val adapter = attachAdapterForViewTest(backend)
+        val viewToken = EditorV2Registry.register(adapter)
+        val editText = view.richTextView.editorEditText
+        try {
+            view.onAddonEventForTesting = {}
+            view.onRefreshToolbarStateFromEditorSelectionForTesting = { null }
+            view.onEditorReadyForTesting = {}
+            view.onSelectionChangeForTesting = {}
+            view.setAttachedToNativeWindowForTesting(true)
+            view.setEditorId(viewToken)
+            editText.setSelection(0)
+            val inputConnection = editText.onCreateInputConnection(EditorInfo())
+            assertNotNull(inputConnection)
+            assertTrue(inputConnection!!.setComposingText("native", 1))
+            val renderCallsBeforeControlledUpdate = adapter.renderUpdateCallCountForTesting
+
+            assertTrue(view.applyEditorUpdate(atomicRenderUpdateJson("controlled", "0")))
+
+            assertEquals(renderCallsBeforeControlledUpdate + 1, adapter.renderUpdateCallCountForTesting)
+            assertEquals("native", editText.text?.toString())
+
+            editText.setSelection(editText.text?.length ?: 0)
+            val nextInputConnection = editText.onCreateInputConnection(EditorInfo())
+            assertNotNull(nextInputConnection)
+            assertTrue(nextInputConnection!!.commitText("!", 1))
+            assertEquals("native!", editText.text?.toString())
+        } finally {
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.unregister(viewToken, view)
+        }
     }
 
     private fun renderUpdateJson(text: String): String =
