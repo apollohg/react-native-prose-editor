@@ -1152,12 +1152,33 @@ public func editorV2CollaborationBeginConnect(editorId: String) -> FfiJsonResult
 })
 }
 /**
+ * Tears down transport state while retaining the editor, document, desired
+ * awareness state, and pending outbox entries.
+ */
+public func editorV2CollaborationDetach(editorId: String) -> FfiUnitResult  {
+    return try!  FfiConverterTypeFfiUnitResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_detach(
+        FfiConverterString.lower(editorId),$0
+    )
+})
+}
+/**
  * Live awareness peer projections; client ids are decimal strings so full
  * u64 ids survive the JSON round-trip.
  */
 public func editorV2CollaborationPeers(editorId: String) -> FfiJsonResult  {
     return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_v2_collaboration_peers(
+        FfiConverterString.lower(editorId),$0
+    )
+})
+}
+/**
+ * Reopens the transport lifecycle after an explicit detach.
+ */
+public func editorV2CollaborationReattach(editorId: String) -> FfiUnitResult  {
+    return try!  FfiConverterTypeFfiUnitResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_reattach(
         FfiConverterString.lower(editorId),$0
     )
 })
@@ -1221,6 +1242,19 @@ public func editorV2CollaborationTakeOutbound(editorId: String, generation: Stri
     uniffi_editor_core_fn_func_editor_v2_collaboration_take_outbound(
         FfiConverterString.lower(editorId),
         FfiConverterString.lower(generation),$0
+    )
+})
+}
+/**
+ * Performs deterministic awareness renewal and expiry work. `now_millis`
+ * must be a canonical decimal u64 because JavaScript cannot safely carry
+ * the full clock range as a number.
+ */
+public func editorV2CollaborationTick(editorId: String, nowMillis: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_tick(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(nowMillis),$0
     )
 })
 }
@@ -1380,7 +1414,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_begin_connect() != 53071) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_detach() != 25325) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_peers() != 754) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_reattach() != 44291) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 49592) {
@@ -1396,6 +1436,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_take_outbound() != 44572) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_tick() != 11479) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_create() != 9333) {

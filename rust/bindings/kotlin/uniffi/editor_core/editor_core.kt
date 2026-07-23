@@ -775,7 +775,11 @@ internal interface IntegrityCheckingUniffiLib : Library {
 
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_begin_connect(): Short
 
+    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_detach(): Short
+
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_peers(): Short
+
+    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_reattach(): Short
 
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_receive(): Short
 
@@ -786,6 +790,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open(): Short
 
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_take_outbound(): Short
+
+    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_tick(): Short
 
     fun uniffi_editor_core_checksum_func_editor_v2_create(): Short
 
@@ -886,7 +892,17 @@ internal interface UniffiLib : Library {
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
+    fun uniffi_editor_core_fn_func_editor_v2_collaboration_detach(
+        `editorId`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
     fun uniffi_editor_core_fn_func_editor_v2_collaboration_peers(
+        `editorId`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_func_editor_v2_collaboration_reattach(
         `editorId`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
@@ -921,6 +937,12 @@ internal interface UniffiLib : Library {
     fun uniffi_editor_core_fn_func_editor_v2_collaboration_take_outbound(
         `editorId`: RustBuffer.ByValue,
         `generation`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_func_editor_v2_collaboration_tick(
+        `editorId`: RustBuffer.ByValue,
+        `nowMillis`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
@@ -1261,7 +1283,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_begin_connect() != 53071.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_detach() != 25325.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_peers() != 754.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_reattach() != 44291.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 49592.toShort()) {
@@ -1277,6 +1305,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_take_outbound() != 44572.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_tick() != 11479.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_create() != 9333.toShort()) {
@@ -2008,6 +2039,17 @@ fun `editorV2CollaborationBeginConnect`(`editorId`: kotlin.String): FfiJsonResul
     )
 
 /**
+ * Tears down transport state while retaining the editor, document, desired
+ * awareness state, and pending outbox entries.
+ */
+fun `editorV2CollaborationDetach`(`editorId`: kotlin.String): FfiUnitResult =
+    FfiConverterTypeFfiUnitResult.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_detach(FfiConverterString.lower(`editorId`), _status)
+        },
+    )
+
+/**
  * Live awareness peer projections; client ids are decimal strings so full
  * u64 ids survive the JSON round-trip.
  */
@@ -2015,6 +2057,16 @@ fun `editorV2CollaborationPeers`(`editorId`: kotlin.String): FfiJsonResult =
     FfiConverterTypeFfiJsonResult.lift(
         uniffiRustCall { _status ->
             UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_peers(FfiConverterString.lower(`editorId`), _status)
+        },
+    )
+
+/**
+ * Reopens the transport lifecycle after an explicit detach.
+ */
+fun `editorV2CollaborationReattach`(`editorId`: kotlin.String): FfiUnitResult =
+    FfiConverterTypeFfiUnitResult.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_reattach(FfiConverterString.lower(`editorId`), _status)
         },
     )
 
@@ -2108,6 +2160,25 @@ fun `editorV2CollaborationTakeOutbound`(
             UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_take_outbound(
                 FfiConverterString.lower(`editorId`),
                 FfiConverterString.lower(`generation`),
+                _status,
+            )
+        },
+    )
+
+/**
+ * Performs deterministic awareness renewal and expiry work. `now_millis`
+ * must be a canonical decimal u64 because JavaScript cannot safely carry
+ * the full clock range as a number.
+ */
+fun `editorV2CollaborationTick`(
+    `editorId`: kotlin.String,
+    `nowMillis`: kotlin.String,
+): FfiJsonResult =
+    FfiConverterTypeFfiJsonResult.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_tick(
+                FfiConverterString.lower(`editorId`),
+                FfiConverterString.lower(`nowMillis`),
                 _status,
             )
         },

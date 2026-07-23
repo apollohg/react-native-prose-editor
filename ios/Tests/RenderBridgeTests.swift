@@ -62,6 +62,60 @@ final class RenderBridgeTests: XCTestCase {
         }
     }
 
+    func testCollaborationTickForwardsCanonicalMaximumAndRawJsonResult() {
+        var forwardedEditorId: String?
+        var forwardedNowMillis: String?
+        let rawValue = #"{\"nextDeadlineMillis\":null,\"renewedLocal\":false,\"expiredPeers\":[],\"outboundChanged\":false,\"peersChanged\":false}"#
+
+        let result = v2CollaborationTickResultDictionary(
+            editorId: "editor-1",
+            nowMillis: "18446744073709551615"
+        ) { editorId, nowMillis in
+            forwardedEditorId = editorId
+            forwardedNowMillis = nowMillis
+            return FfiJsonResult(value: rawValue, error: nil)
+        }
+
+        XCTAssertEqual(forwardedEditorId, "editor-1")
+        XCTAssertEqual(forwardedNowMillis, "18446744073709551615")
+        XCTAssertEqual(result["value"] as? String, rawValue)
+        XCTAssertNil(result["error"])
+    }
+
+    func testCollaborationTickRejectsMalformedNowMillisBeforeBackend() {
+        var called = false
+
+        let result = v2CollaborationTickResultDictionary(editorId: "editor-1", nowMillis: "01") { _, _ in
+            called = true
+            return FfiJsonResult(value: "{}", error: nil)
+        }
+
+        XCTAssertFalse(called)
+        XCTAssertEqual(
+            (result["error"] as? [String: Any])?["code"] as? String,
+            "FFI_RESULT_INVALID"
+        )
+    }
+
+    func testCollaborationDetachAndReattachBridgeRawUnitResults() {
+        var invoked = [String]()
+
+        let detach = v2CollaborationUnitResultDictionary(editorId: "editor-1") { editorId in
+            invoked.append("detach:\(editorId)")
+            return FfiUnitResult(value: true, error: nil)
+        }
+        let reattach = v2CollaborationUnitResultDictionary(editorId: "editor-1") { editorId in
+            invoked.append("reattach:\(editorId)")
+            return FfiUnitResult(value: true, error: nil)
+        }
+
+        XCTAssertEqual(invoked, ["detach:editor-1", "reattach:editor-1"])
+        XCTAssertEqual(detach["value"] as? Bool, true)
+        XCTAssertNil(detach["error"])
+        XCTAssertEqual(reattach["value"] as? Bool, true)
+        XCTAssertNil(reattach["error"])
+    }
+
     // MARK: - Test Fixtures
 
     private let baseFont = UIFont.systemFont(ofSize: 16)

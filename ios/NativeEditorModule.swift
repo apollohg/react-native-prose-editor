@@ -86,6 +86,24 @@ private func v2UnitResultDictionary(_ result: FfiUnitResult) -> [String: Any] {
     return v2InvalidResultDictionary("v2 result carries neither value nor error")
 }
 
+func v2CollaborationTickResultDictionary(
+    editorId: String,
+    nowMillis: String,
+    tick: (String, String) -> FfiJsonResult
+) -> [String: Any] {
+    guard let canonicalNowMillis = v2CanonicalUInt64String(nowMillis) else {
+        return v2InvalidResultDictionary("invalid nowMillis")
+    }
+    return v2JsonResultDictionary(tick(editorId, canonicalNowMillis))
+}
+
+func v2CollaborationUnitResultDictionary(
+    editorId: String,
+    operation: (String) -> FfiUnitResult
+) -> [String: Any] {
+    v2UnitResultDictionary(operation(editorId))
+}
+
 private func v2SnapshotExportResultDictionary(_ result: FfiSnapshotExportResult) -> [String: Any] {
     if let value = result.value {
         return [
@@ -398,6 +416,21 @@ public class NativeEditorModule: Module {
         }
         Function("editorV2CollaborationPeers") { (editorId: String) -> [String: Any] in
             v2JsonResultDictionary(editorV2CollaborationPeers(editorId: editorId))
+        }
+        Function("editorV2CollaborationTick") { (editorId: String, nowMillis: String) -> [String: Any] in
+            v2CollaborationTickResultDictionary(editorId: editorId, nowMillis: nowMillis) { editorId, nowMillis in
+                editorV2CollaborationTick(editorId: editorId, nowMillis: nowMillis)
+            }
+        }
+        Function("editorV2CollaborationDetach") { (editorId: String) -> [String: Any] in
+            v2CollaborationUnitResultDictionary(editorId: editorId) { editorId in
+                editorV2CollaborationDetach(editorId: editorId)
+            }
+        }
+        Function("editorV2CollaborationReattach") { (editorId: String) -> [String: Any] in
+            v2CollaborationUnitResultDictionary(editorId: editorId) { editorId in
+                editorV2CollaborationReattach(editorId: editorId)
+            }
         }
         Function("editorV2SnapshotExport") { (editorId: String) -> [String: Any] in
             v2SnapshotExportResultDictionary(editorV2SnapshotExport(editorId: editorId))

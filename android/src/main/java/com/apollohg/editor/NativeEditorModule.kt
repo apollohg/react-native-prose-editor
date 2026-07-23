@@ -86,6 +86,21 @@ private fun v2BoundaryErrorRecord(message: String): Map<String, Any?> = mapOf(
 
 private fun parseGeneration(generation: String): String? = canonicalV2U64(generation)
 
+internal fun collaborationTickResult(
+    editorId: String,
+    nowMillis: String,
+    tick: (String, String) -> FfiJsonResult,
+): Map<String, Any?> {
+    val canonicalNowMillis = canonicalV2U64(nowMillis)
+        ?: return v2BoundaryErrorRecord("invalid nowMillis")
+    return tick(editorId, canonicalNowMillis).toJSMap()
+}
+
+internal fun collaborationUnitResult(
+    editorId: String,
+    operation: (String) -> FfiUnitResult,
+): Map<String, Any?> = operation(editorId).toJSMap()
+
 class NativeEditorModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("NativeEditor")
@@ -226,6 +241,17 @@ class NativeEditorModule : Module() {
         }
         Function("editorV2CollaborationPeers") { editorId: String ->
             editorV2CollaborationPeers(editorId).toJSMap()
+        }
+        Function("editorV2CollaborationTick") { editorId: String, nowMillis: String ->
+            collaborationTickResult(editorId, nowMillis) { id, canonicalNowMillis ->
+                editorV2CollaborationTick(id, canonicalNowMillis)
+            }
+        }
+        Function("editorV2CollaborationDetach") { editorId: String ->
+            collaborationUnitResult(editorId) { id -> editorV2CollaborationDetach(id) }
+        }
+        Function("editorV2CollaborationReattach") { editorId: String ->
+            collaborationUnitResult(editorId) { id -> editorV2CollaborationReattach(id) }
         }
 
         // ── v2 snapshots ───────────────────────────────────────────────

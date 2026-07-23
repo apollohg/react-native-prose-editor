@@ -4,12 +4,15 @@ import java.math.BigDecimal
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import uniffi.editor_core.FfiJsonResult
+import uniffi.editor_core.FfiUnitResult
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -24,6 +27,57 @@ class NativeEditorModuleTest {
         for (value in listOf("+1", "01", " 1", "1 ", "1e3")) {
             assertNull("generation $value must be rejected", parser.invoke(null, value))
         }
+    }
+
+    @Test
+    fun `collaboration tick forwards canonical maximum and raw json result`() {
+        var forwardedEditorId: String? = null
+        var forwardedNowMillis: String? = null
+        val rawValue = """{"nextDeadlineMillis":null,"renewedLocal":false,"expiredPeers":[],"outboundChanged":false,"peersChanged":false}"""
+
+        val result = collaborationTickResult("editor-1", ULong.MAX_VALUE.toString()) { editorId, nowMillis ->
+            forwardedEditorId = editorId
+            forwardedNowMillis = nowMillis
+            FfiJsonResult(rawValue, null)
+        }
+
+        assertEquals("editor-1", forwardedEditorId)
+        assertEquals(ULong.MAX_VALUE.toString(), forwardedNowMillis)
+        assertEquals(rawValue, result["value"])
+        assertNull(result["error"])
+    }
+
+    @Test
+    fun `collaboration tick rejects malformed nowMillis before backend`() {
+        var called = false
+
+        val result = collaborationTickResult("editor-1", "01") { _, _ ->
+            called = true
+            FfiJsonResult("{}", null)
+        }
+
+        assertFalse(called)
+        val error = result["error"] as Map<*, *>
+        assertEquals("CONFIG_INVALID", error["code"])
+    }
+
+    @Test
+    fun `collaboration detach and reattach bridge raw unit results`() {
+        val invoked = mutableListOf<String>()
+        val detach = collaborationUnitResult("editor-1") { editorId ->
+            invoked += "detach:$editorId"
+            FfiUnitResult(true, null)
+        }
+        val reattach = collaborationUnitResult("editor-1") { editorId ->
+            invoked += "reattach:$editorId"
+            FfiUnitResult(true, null)
+        }
+
+        assertEquals(listOf("detach:editor-1", "reattach:editor-1"), invoked)
+        assertEquals(true, detach["value"])
+        assertNull(detach["error"])
+        assertEquals(true, reattach["value"])
+        assertNull(reattach["error"])
     }
 
     @Test
