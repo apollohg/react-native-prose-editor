@@ -5,6 +5,7 @@ import {
     type DocumentJSON,
     type NativeEditorDocumentHandle,
     type NativeEditorLocalAwarenessIntent,
+    type NativeEditorV2AwarenessTickResult,
     type NativeEditorV2PeerInfo,
     type NativeEditorV2TransportState,
     type Selection,
@@ -168,6 +169,13 @@ interface MutableCallbacks {
     onStateChange?: (state: YjsCollaborationState) => void;
     onPeersChange?: (peers: NativeEditorV2PeerInfo[]) => void;
     onError?: (error: Error) => void;
+}
+
+interface AwarenessOperationContext {
+    socket: WebSocket;
+    generation: string;
+    nowMillis: bigint;
+    previousNextDeadlineMillis: string | null;
 }
 
 const WS_NORMAL_CLOSE_CODE = 1000;
@@ -424,11 +432,14 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             if (!this.isCurrentSocket(socket, generation)) return;
             const bytes = normalizeFrameBytes(event.data);
             if (!bytes) return;
+            const awarenessContext = this.beginAwarenessOperation(socket, generation);
+            if (awarenessContext == null) return;
             let outcome;
             try {
                 outcome = this.handle.bridge.collaborationReceive(generation, bytes);
             } catch (error) {
                 this.handleTransportCallFailure(error, socket, generation);
+                this.restoreAwarenessOperation(awarenessContext);
                 return;
             }
             if (outcome.close) {
@@ -456,7 +467,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             }
             this.drainOutbound(socket, generation);
             this.refreshPeers();
-            this.tickAwareness();
+            this.completeAwarenessOperation(awarenessContext);
         };
 
         socket.onerror = () => {
@@ -707,21 +718,70 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         const generation = this.generation;
         if (socket == null || generation == null) return;
 
-        let result;
+        this.performAwarenessTick(
+            {
+                socket,
+                generation,
+                nowMillis: this.monotonicClock.nowMillis(),
+                previousNextDeadlineMillis: null,
+            },
+            true
+        );
+    }
+
+    private beginAwarenessOperation(
+        socket: WebSocket,
+        generation: string
+    ): AwarenessOperationContext | null {
+        if (!this.isCurrentSocket(socket, generation) || socket.readyState !== WebSocket.OPEN) {
+            return null;
+        }
+        this.cancelAwarenessTick();
+        const context: AwarenessOperationContext = {
+            socket,
+            generation,
+            nowMillis: this.monotonicClock.nowMillis(),
+            previousNextDeadlineMillis: null,
+        };
+        const result = this.performAwarenessTick(context, false);
+        if (result == null || !this.isCurrentSocket(socket, generation)) return null;
+        context.previousNextDeadlineMillis = result.nextDeadlineMillis;
+        return context;
+    }
+
+    private completeAwarenessOperation(context: AwarenessOperationContext): void {
+        if (!this.isCurrentSocket(context.socket, context.generation)) return;
+        this.performAwarenessTick(context, true);
+    }
+
+    private restoreAwarenessOperation(context: AwarenessOperationContext): void {
+        if (!this.isCurrentSocket(context.socket, context.generation)) return;
+        this.scheduleAwarenessTick(context.previousNextDeadlineMillis);
+    }
+
+    private performAwarenessTick(
+        context: AwarenessOperationContext,
+        scheduleNext: boolean
+    ): NativeEditorV2AwarenessTickResult | null {
+        if (!this.isCurrentSocket(context.socket, context.generation)) return null;
+        let result: NativeEditorV2AwarenessTickResult;
         try {
-            result = this.handle.bridge.collaborationTick(this.monotonicClock.nowMillis().toString());
+            result = this.handle.bridge.collaborationTick(context.nowMillis.toString());
         } catch (error) {
-            this.handleTransportCallFailure(error, socket, generation);
-            return;
+            this.handleTransportCallFailure(error, context.socket, context.generation);
+            return null;
         }
 
         if (result.outboundChanged) {
-            this.drainOutbound(socket, generation);
+            this.drainOutbound(context.socket, context.generation);
         }
         if (result.peersChanged) {
             this.refreshPeers();
         }
-        this.scheduleAwarenessTick(result.nextDeadlineMillis);
+        if (scheduleNext) {
+            this.scheduleAwarenessTick(result.nextDeadlineMillis);
+        }
+        return result;
     }
 
     private scheduleAwarenessTick(nextDeadlineMillis: string | null): void {
@@ -756,20 +816,31 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     }
 
     private publishAwarenessCandidate(candidate: NativeEditorLocalAwarenessIntent): void {
+        const socket = this.socket;
+        const generation = this.generation;
+        const wasLive = socket != null && generation != null && this.hasLiveAwarenessGeneration();
+        const awarenessContext =
+            wasLive && socket != null && generation != null
+                ? this.beginAwarenessOperation(socket, generation)
+                : null;
+        if (wasLive && awarenessContext == null) return;
         try {
             this.handle.bridge.collaborationSetAwareness(candidate);
         } catch (error) {
             this.callbacks.onError?.(asError(error, 'Yjs collaboration awareness failure'));
+            if (awarenessContext != null) {
+                this.restoreAwarenessOperation(awarenessContext);
+            }
             return;
         }
         this.desiredAwareness = candidate;
-        const socket = this.socket;
-        const generation = this.generation;
         if (socket && generation && socket.readyState === WebSocket.OPEN) {
             this.drainOutbound(socket, generation);
         }
         this.refreshPeers();
-        this.tickAwareness();
+        if (awarenessContext != null) {
+            this.completeAwarenessOperation(awarenessContext);
+        }
     }
 
     private readEngineState(): YjsCollaborationState {

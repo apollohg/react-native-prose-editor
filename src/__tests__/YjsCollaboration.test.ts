@@ -1,7 +1,7 @@
 // ─── YjsCollaboration (Task 10 awareness scheduling) Tests ─────
 // The legacy collaboration controller owned session creation, retry
 // decisions, awareness clocks, valueJSON reset sync, and raw encoded-state
-// APIs. All of that is removed. The Task 14 controller is a thin shell over
+// APIs. All of that is removed. The current controller is a thin shell over
 // a SHARED NativeEditorDocumentHandle: it owns only WebSocket objects and
 // retry-timer scheduling; Rust owns lifecycle state, generations, retry
 // eligibility, protocol, and awareness clocks. These tests drive it through
@@ -179,6 +179,11 @@ class FakeMonotonicClockTimer {
         return this.timers.size;
     }
 
+    elapseWithoutFiringTimers(millis: bigint): void {
+        if (millis < 0n) throw new Error('fake monotonic time cannot move backwards');
+        this._nowMillis += millis;
+    }
+
     advanceBy(millis: bigint): void {
         if (millis < 0n) throw new Error('fake monotonic time cannot move backwards');
         this._nowMillis += millis;
@@ -341,7 +346,7 @@ function openAndSynchronize(setup: ControllerSetup, socketIndex = 0): void {
 
 // ─── Test setup ─────────────────────────────────────────────────
 
-describe('YjsCollaboration (Task 14 thin controller)', () => {
+describe('YjsCollaboration (Task 10 awareness controller)', () => {
     const OriginalWebSocket = global.WebSocket;
 
     beforeEach(() => {
@@ -1013,7 +1018,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(clock.scheduledDelays).toEqual([15_000]);
 
         clock.advanceBy(14_999n);
-        expect(runtime.module.editorV2CollaborationTick).toHaveBeenCalledTimes(1);
+        expect(runtime.module.editorV2CollaborationTick).toHaveBeenCalledTimes(2);
         expect(sentFrames(setup.sockets[0]).at(-1)).toEqual([0x61, 2]);
 
         clock.advanceBy(1n);
@@ -1022,6 +1027,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             '15000'
         );
         expect(sentFrames(setup.sockets[0]).at(-1)).toEqual([0x61, 3]);
+        expect(runtime.module.editorV2CollaborationTick).toHaveBeenCalledTimes(3);
         expect(clock.activeTimerCount).toBe(1);
         expect(clock.scheduledDelays).toEqual([15_000, 15_000]);
     });
@@ -1095,7 +1101,7 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             .spyOn(setup.handle.bridge, 'collaborationTick')
             .mockImplementation((nowMillis) => ({
                 nextDeadlineMillis:
-                    tick.mock.calls.length === 1
+                    tick.mock.calls.length <= 2
                         ? '9007199254740993'
                         : (BigInt(nowMillis) + 5n).toString(),
                 renewedLocal: false,
@@ -1106,15 +1112,101 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
 
         setup.controller.connect();
         openAndSynchronize(setup);
+        expect(tick).toHaveBeenCalledTimes(2);
         expect(clock.scheduledDelays).toEqual([MAX_HOST_TIMER_DELAY_MILLIS]);
         expect(clock.activeTimerCount).toBe(1);
 
         clock.advanceBy(BigInt(MAX_HOST_TIMER_DELAY_MILLIS) + 9n);
-        expect(tick).toHaveBeenCalledTimes(2);
+        expect(tick).toHaveBeenCalledTimes(3);
         expect(tick).toHaveBeenLastCalledWith(
             (BigInt(MAX_HOST_TIMER_DELAY_MILLIS) + 9n).toString()
         );
         expect(clock.scheduledDelays).toEqual([MAX_HOST_TIMER_DELAY_MILLIS, 5]);
+        expect(clock.activeTimerCount).toBe(1);
+    });
+
+    it('stamps remote awareness at the current time after a long idle before scheduling its 30-second expiry', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        setup.controller.connect();
+        openAndSynchronize(setup);
+        runtime.module.editorV2CollaborationTick.mockClear();
+
+        clock.elapseWithoutFiringTimers(60_000n);
+        runtime.pushRemotePeers(setup.handle.editorId, [remotePeer({ clientId: '7' })]);
+        setup.sockets[0].receive(V2_FAKE_AWARENESS_FRAME);
+
+        expect(runtime.module.editorV2CollaborationTick).toHaveBeenCalledTimes(2);
+        expect(runtime.session(setup.handle.editorId).remotePeerActivity.get('7')).toBe(60_000n);
+        expect(setup.controller.peers).toEqual([remotePeer({ clientId: '7' })]);
+        expect(clock.scheduledDelays.at(-1)).toBe(30_000);
+        expect(clock.activeTimerCount).toBe(1);
+    });
+
+    it('stamps retained awareness republished by a handshake at current time without immediate renewal', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            localAwareness: ALICE,
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        setup.controller.connect();
+        setup.sockets[0].open();
+        runtime.module.editorV2CollaborationTick.mockClear();
+
+        clock.elapseWithoutFiringTimers(60_000n);
+        setup.sockets[0].receive(V2_FAKE_STEP2_FRAME);
+
+        expect(runtime.module.editorV2CollaborationTick).toHaveBeenCalledTimes(2);
+        expect(runtime.session(setup.handle.editorId)).toMatchObject({
+            awarenessNowMillis: 60_000n,
+            lastLocalAwarenessPublishMillis: 60_000n,
+            localClock: 2,
+        });
+        expect(sentFrames(setup.sockets[0])).toEqual([
+            Array.from(V2_FAKE_STEP1_FRAME),
+            [0x61, 2],
+        ]);
+        expect(clock.scheduledDelays.at(-1)).toBe(15_000);
+        expect(clock.activeTimerCount).toBe(1);
+    });
+
+    it('brackets local awareness publication after a long idle and schedules renewal 15 seconds later', () => {
+        const clock = new FakeMonotonicClockTimer();
+        const setup = setupController({
+            handle: createRoomHandle({ withSnapshot: true }),
+            monotonicClock: clock,
+            awarenessTimer: clock,
+        });
+        setup.controller.connect();
+        openAndSynchronize(setup);
+        runtime.module.editorV2CollaborationTick.mockClear();
+
+        clock.elapseWithoutFiringTimers(60_000n);
+        setup.controller.updateLocalAwareness({ user: ALICE });
+
+        expect(runtime.module.editorV2CollaborationTick).toHaveBeenCalledTimes(2);
+        const [preTickOrder, postTickOrder] =
+            runtime.module.editorV2CollaborationTick.mock.invocationCallOrder;
+        const setOrder =
+            runtime.module.editorV2CollaborationSetAwareness.mock.invocationCallOrder.at(-1);
+        expect(preTickOrder).toBeLessThan(setOrder as number);
+        expect(setOrder).toBeLessThan(postTickOrder as number);
+        expect(runtime.session(setup.handle.editorId)).toMatchObject({
+            awarenessNowMillis: 60_000n,
+            lastLocalAwarenessPublishMillis: 60_000n,
+            localClock: 1,
+        });
+        expect(sentFrames(setup.sockets[0])).toEqual([
+            Array.from(V2_FAKE_STEP1_FRAME),
+            [0x61, 1],
+        ]);
+        expect(clock.scheduledDelays.at(-1)).toBe(15_000);
         expect(clock.activeTimerCount).toBe(1);
     });
 
