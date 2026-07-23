@@ -689,7 +689,10 @@ class NativeEditorExpoView(
     )
 
     private data class PendingEditorUpdateEvent(
-        val editorId: Long,
+        /** Captured public source identity; never derive this after a rebind. */
+        val editorId: String,
+        /** Captured canonical document revision used by TS echo suppression. */
+        val documentRevision: String,
         val updateJSON: String
     )
 
@@ -2218,10 +2221,12 @@ class NativeEditorExpoView(
         }
         clearPendingEditorUpdateState(resetAppliedRevision = false)
         clearPendingViewCommandUpdateRetry()
+        val adapter = EditorV2Registry.adapterForViewToken(richTextView.editorId)
+        val adoptedUpdateJson = if (adapter == null) updateJson else adapter.adoptExternalRender(updateJson) ?: return false
         isApplyingJSUpdate = true
         val applied = try {
             richTextView.editorEditText.applyUpdateJSON(
-                updateJson,
+                adoptedUpdateJson,
                 refreshInputConnectionForExternalUpdate = true
             )
             clearPendingEditorUpdateDispatchQueue("jsResetUpdate")
@@ -2271,6 +2276,8 @@ class NativeEditorExpoView(
             }
             return false
         }
+        val adapter = EditorV2Registry.adapterForViewToken(richTextView.editorId)
+        val revisionBeforePreflight = adapter?.baseDocumentRevision
         if (
             blockEditorUpdatePreflightForTesting ||
             !richTextView.editorEditText.prepareForExternalEditorUpdate()
@@ -2280,10 +2287,21 @@ class NativeEditorExpoView(
             }
             return false
         }
+        // A composition preflight may have committed native state. Validate
+        // the supplied snapshot but never install its now-stale revision;
+        // adopt one current atomic render instead, without retrying mutation.
+        val adoptedUpdateJson = if (adapter == null) {
+            updateJson
+        } else if (adapter.baseDocumentRevision != revisionBeforePreflight) {
+            if (!adapter.validateExternalRender(updateJson)) return false
+            adapter.refreshFromRustState(null) ?: return false
+        } else {
+            adapter.adoptExternalRender(updateJson) ?: return false
+        }
         isApplyingJSUpdate = true
         return try {
             richTextView.editorEditText.applyUpdateJSON(
-                updateJson,
+                adoptedUpdateJson,
                 refreshInputConnectionForExternalUpdate = true
             )
             clearPendingEditorUpdateDispatchQueue("jsUpdate")
@@ -2362,10 +2380,20 @@ class NativeEditorExpoView(
     }
 
     override fun onEditorUpdate(updateJSON: String) {
+        val documentRevision = documentVersionFromUpdateJSON(updateJSON)
+        if (documentRevision == null) {
+            richTextView.editorEditText.recordImeTraceForTesting(
+                "nativeViewEditorUpdateSkipped",
+                "reason=invalidDocumentRevision jsonLength=${updateJSON.length}"
+            )
+            return
+        }
+        val sourceEditorId = eventEditorId(richTextView.editorId)
         if (isApplyingJSUpdate) {
             dispatchEditorUpdate(
                 PendingEditorUpdateEvent(
-                    editorId = richTextView.editorId,
+                    editorId = sourceEditorId,
+                    documentRevision = documentRevision,
                     updateJSON = updateJSON
                 ),
                 emitToJS = false
@@ -2374,7 +2402,8 @@ class NativeEditorExpoView(
         }
         pendingEditorUpdateEvents.addLast(
             PendingEditorUpdateEvent(
-                editorId = richTextView.editorId,
+                editorId = sourceEditorId,
+                documentRevision = documentRevision,
                 updateJSON = updateJSON
             )
         )
@@ -2404,10 +2433,10 @@ class NativeEditorExpoView(
         var drainedCount = 0
         while (pendingEditorUpdateEvents.isNotEmpty()) {
             val event = pendingEditorUpdateEvents.removeFirst()
-            if (event.editorId != richTextView.editorId) {
+            if (event.editorId != eventEditorId(richTextView.editorId)) {
                 richTextView.editorEditText.recordImeTraceForTesting(
                     "nativeViewEditorUpdateSkipped",
-                    "reason=staleEditor queuedEditor=${event.editorId} currentEditor=${richTextView.editorId}"
+                    "reason=staleEditor queuedEditor=${event.editorId} currentEditor=${eventEditorId(richTextView.editorId)}"
                 )
                 continue
             }
@@ -2461,7 +2490,8 @@ class NativeEditorExpoView(
         if (emitToJS) {
             val payload = mapOf<String, Any>(
                 "updateJson" to updateJSON,
-                "editorId" to eventEditorId(event.editorId)
+                "editorId" to event.editorId,
+                "documentRevision" to event.documentRevision,
             )
             onEditorUpdateForTesting?.invoke(payload) ?: onEditorUpdate(payload)
         }

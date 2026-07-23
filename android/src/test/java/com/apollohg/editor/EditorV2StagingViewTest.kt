@@ -54,6 +54,38 @@ class EditorV2StagingViewTest {
         return FakeEditorV2Backend.documentTextOf(JSONObject(result.value))
     }
 
+    private fun adoptExternalRender(adapter: EditorV2Adapter, snapshot: String): String? =
+        adapter.adoptExternalRender(snapshot)
+
+    private fun atomicRenderSnapshot(text: String, revision: String): String =
+        JSONObject()
+            .put(
+                "renderBlocks",
+                org.json.JSONArray().put(
+                    org.json.JSONArray()
+                        .put(JSONObject().put("type", "blockStart").put("nodeType", "paragraph").put("depth", 0))
+                        .put(JSONObject().put("type", "textRun").put("text", text).put("marks", org.json.JSONArray()))
+                        .put(JSONObject().put("type", "blockEnd"))
+                )
+            )
+            .put("renderPatch", JSONObject.NULL)
+            .put("selection", JSONObject().put("type", "text").put("anchor", 1).put("head", 1).put("anchorScalar", 0).put("headScalar", 0))
+            .put(
+                "activeState",
+                JSONObject()
+                    .put("marks", JSONObject())
+                    .put("markAttrs", JSONObject())
+                    .put("nodes", JSONObject().put("paragraph", true))
+                    .put("commands", JSONObject())
+                    .put("allowedMarks", org.json.JSONArray().put("bold"))
+                    .put("insertableNodes", org.json.JSONArray().put("hardBreak"))
+            )
+            .put("historyState", JSONObject().put("canUndo", true).put("canRedo", false))
+            .put("documentVersion", revision)
+            .put("stateRevision", revision)
+            .put("scalarLength", text.length)
+            .toString()
+
     @Test
     fun `view mutations route through the v2 adapter`() {
         backend.calls.clear()
@@ -62,6 +94,22 @@ class EditorV2StagingViewTest {
         assertEquals("HelloX", documentText())
         assertEquals("HelloX", editText.text.toString())
         assertEquals(1, backend.calls.count { it == "applyInput" })
+    }
+
+    @Test
+    fun `external N plus one render reaches the view before its first native key commits N plus two`() {
+        val session = backend.sessions.getValue(adapter.editorId)
+        session.text.insert(0, "EXT")
+        session.revision += 1u
+        val adopted = adoptExternalRender(adapter, atomicRenderSnapshot("EXTHello", session.revision.toString()))
+        assertNotNull(adopted)
+        editText.applyUpdateJSON(adopted!!, notifyListener = false)
+        editText.setSelection(0)
+
+        editText.handleTextCommit("K")
+
+        assertEquals("KEXTHello", documentText())
+        assertEquals(3uL, adapter.baseDocumentRevision)
     }
 
     @Test

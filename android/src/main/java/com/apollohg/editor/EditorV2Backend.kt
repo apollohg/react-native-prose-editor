@@ -41,10 +41,10 @@ internal interface EditorV2Backend {
 
     /**
      * The v2 render accessor: from the LIVE v2 session produce the
-     * update JSON (render blocks, toolbar active state, the document's
-     * scalar extent, and the resolved selection when a scalar mirror is
-     * supplied). The adapter overrides history state and document version
-     * from the v2 engine.
+     * complete locked atomic snapshot: render blocks/patch, selection,
+     * active/history state, canonical document/state revisions, and scalar
+     * extent. The adapter must parse and adopt this one result as-is; it
+     * must never stitch it to a separate `getState` response.
      */
     fun renderUpdate(editorId: String, mirrorAnchor: Int?, mirrorHead: Int?): EditorV2CallResult<String>
 

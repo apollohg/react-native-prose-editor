@@ -110,6 +110,49 @@ class EditorV2AdapterTest {
     private fun sessionOf(adapter: EditorV2Adapter): FakeEditorV2Backend.FakeSession =
         backend.sessions.getValue(adapter.editorId)
 
+    /** A frozen v2 atomic render snapshot, deliberately independent of the fake's legacy payload. */
+    private fun atomicRenderSnapshot(text: String, revision: String, selectionScalar: Int = 0): String =
+        JSONObject()
+            .put(
+                "renderBlocks",
+                org.json.JSONArray().put(
+                    org.json.JSONArray().put(
+                        JSONObject()
+                            .put("type", "textRun")
+                            .put("text", text)
+                            .put("marks", org.json.JSONArray())
+                    )
+                )
+            )
+            .put("renderPatch", JSONObject.NULL)
+            .put(
+                "selection",
+                JSONObject()
+                    .put("type", "text")
+                    .put("anchor", selectionScalar)
+                    .put("head", selectionScalar)
+                    .put("anchorScalar", selectionScalar)
+                    .put("headScalar", selectionScalar)
+            )
+            .put(
+                "activeState",
+                JSONObject()
+                    .put("marks", JSONObject().put("bold", selectionScalar > 0))
+                    .put("markAttrs", JSONObject())
+                    .put("nodes", JSONObject().put("paragraph", true))
+                    .put("commands", JSONObject().put("toggleBold", true))
+                    .put("allowedMarks", org.json.JSONArray().put("bold"))
+                    .put("insertableNodes", org.json.JSONArray().put("hardBreak"))
+            )
+            .put("historyState", JSONObject().put("canUndo", true).put("canRedo", false))
+            .put("documentVersion", revision)
+            .put("stateRevision", revision)
+            .put("scalarLength", text.codePointCount(0, text.length))
+            .toString()
+
+    private fun adoptExternalRender(adapter: EditorV2Adapter, snapshot: String): String? =
+        adapter.adoptExternalRender(snapshot)
+
     // MARK: construction
 
     @Test
@@ -408,12 +451,58 @@ class EditorV2AdapterTest {
         val update = adapter.insertText("NORETRY", 0)
         assertNotNull("a stale op resolves into a refresh update", update)
         assertEquals("the stale op must not be retried", 1L, backend.calls.count { it == "applyInput" }.toLong())
-        assertTrue(backend.calls.contains("getState"))
+        assertEquals("a race refreshes exclusively through one atomic render", 0, backend.calls.count { it == "getState" })
+        assertEquals("a race performs exactly one atomic render", 1, backend.calls.count { it == "renderUpdate" })
         assertEquals("EXTbase", renderedText(update))
         assertEquals("EXTbase", documentText(adapter))
 
         val recovered = adapter.insertText("ok", 0)
         assertEquals("okEXTbase", renderedText(recovered))
+    }
+
+    @Test
+    fun `adopting external N plus one snapshot commits first native key at N plus two`() {
+        val adapter = makeAdapter()
+        adapter.setContentHtml("<p>base</p>")
+        val session = sessionOf(adapter)
+        session.text.insert(0, "EXT")
+        session.revision += 1u
+        val snapshot = atomicRenderSnapshot("EXTbase", session.revision.toString(), selectionScalar = 0)
+
+        backend.calls.clear()
+        val adopted = adoptExternalRender(adapter, snapshot)
+        assertEquals("EXTbase", renderedText(adopted))
+        assertEquals(2uL, adapter.baseDocumentRevision)
+
+        val committed = adapter.insertText("K", 0)
+        assertEquals("KEXTbase", renderedText(committed))
+        assertEquals(3uL, adapter.baseDocumentRevision)
+        assertEquals("KEXTbase", documentText(adapter))
+        assertEquals(0, backend.calls.count { it == "getState" })
+    }
+
+    @Test
+    fun `atomic external snapshot rejects non canonical revision without changing adopted state`() {
+        val adapter = makeAdapter()
+        val valid = atomicRenderSnapshot("base", "7", selectionScalar = 1)
+        assertNotNull(adoptExternalRender(adapter, valid))
+        val revisionBefore = adapter.baseDocumentRevision
+        val errors = mutableListOf<EditorV2Error>()
+        adapter.onAutonomousError = { errors += it }
+
+        val malformed = JSONObject(valid).put("documentVersion", "07").toString()
+        assertNull(adoptExternalRender(adapter, malformed))
+        assertEquals(revisionBefore, adapter.baseDocumentRevision)
+        assertEquals("FFI_RESULT_INVALID", errors.single().code)
+    }
+
+    @Test
+    fun `external snapshot keeps active state derived from its authoritative selection`() {
+        val adapter = makeAdapter()
+        val adopted = JSONObject(adoptExternalRender(adapter, atomicRenderSnapshot("ab", "4", selectionScalar = 1)))
+
+        assertTrue(adopted.getJSONObject("activeState").getJSONObject("marks").getBoolean("bold"))
+        assertEquals(4uL, adapter.baseDocumentRevision)
     }
 
     // MARK: undo/redo

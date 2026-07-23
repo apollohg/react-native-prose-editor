@@ -435,7 +435,6 @@ internal class FakeEditorV2Backend : EditorV2Backend {
                         .put("type", "textRun")
                         .put("text", paragraph)
                         .put("marks", JSONArray())
-                        .put("topLevelChildIndex", index)
                 )
             } else {
                 elements.put(
@@ -443,37 +442,41 @@ internal class FakeEditorV2Backend : EditorV2Backend {
                         .put("type", "textRun")
                         .put("text", "")
                         .put("marks", JSONArray())
-                        .put("topLevelChildIndex", index)
                 )
             }
             blocks.put(elements)
         }
-        val update = JSONObject().put("renderBlocks", blocks)
-        if (mirrorAnchor != null && mirrorHead != null) {
-            update.put(
+        val anchor = mirrorAnchor ?: session.anchor.coerceIn(0, text.length)
+        val head = mirrorHead ?: session.head.coerceIn(0, text.length)
+        val update = JSONObject()
+            .put("renderBlocks", blocks)
+            .put("renderPatch", JSONObject.NULL)
+            .put(
                 "selection",
                 JSONObject()
                     .put("type", "text")
-                    .put("anchor", docPositionForText(text, mirrorAnchor))
-                    .put("head", docPositionForText(text, mirrorHead))
-                    .put("anchorScalar", mirrorAnchor)
-                    .put("headScalar", mirrorHead)
+                    .put("anchor", docPositionForText(text, anchor))
+                    .put("head", docPositionForText(text, head))
+                    .put("anchorScalar", anchor)
+                    .put("headScalar", head)
             )
-        }
-        update.put(
-            "activeState",
-            JSONObject()
-                .put("marks", JSONArray())
-                .put("nodes", JSONArray().put("paragraph"))
-                .put("commands", JSONArray())
-                .put("allowedMarks", JSONArray().put("bold"))
-                .put("insertableNodes", JSONArray().put("hardBreak"))
-        )
-        // Deliberately wrong sentinel values: the adapter MUST override both
-        // from the authoritative v2 outcome.
-        update.put("historyState", JSONObject().put("canUndo", false).put("canRedo", true))
-        update.put("documentVersion", "424242")
-        update.put("scalarLength", text.length)
+            .put(
+                "activeState",
+                JSONObject()
+                    .put("marks", JSONObject())
+                    .put("markAttrs", JSONObject())
+                    .put("nodes", JSONObject().put("paragraph", true))
+                    .put("commands", JSONObject())
+                    .put("allowedMarks", JSONArray().put("bold"))
+                    .put("insertableNodes", JSONArray().put("hardBreak"))
+            )
+            .put(
+                "historyState",
+                JSONObject().put("canUndo", session.undoStack.isNotEmpty()).put("canRedo", session.redoStack.isNotEmpty())
+            )
+            .put("documentVersion", session.revision.toString())
+            .put("stateRevision", session.revision.toString())
+            .put("scalarLength", text.codePointCount(0, text.length))
         return EditorV2CallResult.Ok(update.toString())
     }
 

@@ -1,6 +1,7 @@
 package com.apollohg.editor
 
 import org.json.JSONObject
+import org.json.JSONArray
 
 /**
  * The v2 adapter.
@@ -32,13 +33,22 @@ internal class EditorV2Adapter private constructor(
 
     var baseDocumentRevision: ULong = 0uL
         private set
+    /** Paired with [baseDocumentRevision] by the same locked render read. */
+    var stateRevision: ULong = 0uL
+        private set
     private var nextRequestId: ULong = 0uL
     internal var lastRequestIdForTesting: ULong? = null
         private set
     internal var backendEnvelopeCallCountForTesting = 0
         private set
     private var lastSyncedScalarSelection: IntArray? = null
+    private var cachedAuthoritativeScalarSelection: IntArray? = null
     private var cachedScalarLength: Int? = null
+    private var cachedActiveState: JSONObject? = null
+    private var cachedHistoryState: JSONObject? = null
+    private var cachedViewUpdateJson: String? = null
+    internal var renderUpdateCallCountForTesting = 0
+        private set
     private var destroyed = false
 
     /** Diagnostics for handled paths that never surface as error events. */
@@ -54,14 +64,11 @@ internal class EditorV2Adapter private constructor(
          */
         fun attach(backend: EditorV2Backend, editorId: String, roomBound: Boolean): EditorV2Adapter? {
             if (!isCanonicalDecimalEditorId(editorId)) return null
-            val state = backend.getState(editorId) as? EditorV2CallResult.Ok ?: return null
-            val documentRevision = try {
-                canonicalV2U64(JSONObject(state.value).opt("documentRevision") as? String)
-                    ?.toULong()
-            } catch (_: Exception) { null } ?: return null
-            return EditorV2Adapter(backend, editorId, roomBound).also {
-                it.baseDocumentRevision = documentRevision
-            }
+            // Attachment establishes only that the handle is live. The first
+            // render adopts the revision, scalar extent, selection, active,
+            // and history caches as one locked snapshot before input resumes.
+            if (backend.getState(editorId) !is EditorV2CallResult.Ok) return null
+            return EditorV2Adapter(backend, editorId, roomBound)
         }
 
         private fun isCanonicalDecimalEditorId(editorId: String): Boolean =
@@ -170,6 +177,208 @@ internal class EditorV2Adapter private constructor(
     private fun scalarField(object_: JSONObject, key: String): Int? =
         exactV2ScalarInt(object_.opt(key) as? Number)
 
+    private fun exactBool(value: Any?): Boolean? = value as? Boolean
+
+    private fun exactKeys(object_: JSONObject, keys: Set<String>): Boolean {
+        val actual = mutableSetOf<String>()
+        val iterator = object_.keys()
+        while (iterator.hasNext()) actual += iterator.next()
+        return actual == keys
+    }
+
+    private fun onlyKeys(object_: JSONObject, keys: Set<String>): Boolean {
+        val iterator = object_.keys()
+        while (iterator.hasNext()) if (iterator.next() !in keys) return false
+        return true
+    }
+
+    private fun validJsonValue(value: Any?): Boolean = when (value) {
+        null, JSONObject.NULL, is String, is Boolean -> true
+        is Number -> value.toDouble().isFinite()
+        is JSONArray -> (0 until value.length()).all { validJsonValue(value.opt(it)) }
+        is JSONObject -> {
+            val iterator = value.keys()
+            var valid = true
+            while (iterator.hasNext()) {
+                if (!validJsonValue(value.opt(iterator.next()))) valid = false
+            }
+            valid
+        }
+        else -> false
+    }
+
+    private fun validRenderMark(value: Any?): Boolean = when (value) {
+        is String -> true
+        is JSONObject -> value.opt("type") is String && validJsonValue(value)
+        else -> false
+    }
+
+    private fun validListContext(value: Any?): Boolean {
+        val object_ = value as? JSONObject ?: return false
+        if (!onlyKeys(object_, setOf("ordered", "index", "total", "start", "isFirst", "isLast", "kind", "checked"))) return false
+        if (exactBool(object_.opt("ordered")) == null || scalarField(object_, "index") == null ||
+            scalarField(object_, "total") == null || scalarField(object_, "start") == null ||
+            exactBool(object_.opt("isFirst")) == null || exactBool(object_.opt("isLast")) == null
+        ) return false
+        val kind = object_.opt("kind")
+        if (kind != null && kind !== JSONObject.NULL && kind !is String) return false
+        val checked = object_.opt("checked")
+        return checked == null || checked === JSONObject.NULL || exactBool(checked) != null
+    }
+
+    private fun validMentionTheme(value: Any?): Boolean {
+        val object_ = value as? JSONObject ?: return false
+        val stringKeys = setOf("textColor", "backgroundColor", "borderColor", "popoverBackgroundColor", "popoverBorderColor", "popoverShadowColor", "optionTextColor", "optionSecondaryTextColor", "optionHighlightedBackgroundColor", "optionHighlightedTextColor")
+        val numberKeys = setOf("borderWidth", "borderRadius", "popoverBorderWidth", "popoverBorderRadius")
+        if (!onlyKeys(object_, stringKeys + numberKeys + "fontWeight")) return false
+        if (stringKeys.any { object_.has(it) && object_.opt(it) !is String }) return false
+        if (numberKeys.any { object_.has(it) && (object_.opt(it) !is Number || !(object_.opt(it) as Number).toDouble().isFinite()) }) return false
+        val weight = object_.opt("fontWeight")
+        return weight == null || weight in setOf("normal", "bold", "100", "200", "300", "400", "500", "600", "700", "800", "900")
+    }
+
+    private fun validRenderElement(value: Any?): Boolean {
+        val object_ = value as? JSONObject ?: return false
+        return when (object_.opt("type") as? String) {
+            "textRun" -> exactKeys(object_, setOf("type", "text", "marks")) && object_.opt("text") is String &&
+                (object_.opt("marks") as? JSONArray)?.let { marks -> (0 until marks.length()).all { validRenderMark(marks.opt(it)) } } == true
+            "blockStart" -> onlyKeys(object_, setOf("type", "nodeType", "depth", "listContext")) && object_.opt("nodeType") is String &&
+                scalarField(object_, "depth") != null && (!object_.has("listContext") || validListContext(object_.opt("listContext")))
+            "blockEnd" -> exactKeys(object_, setOf("type"))
+            "voidInline", "voidBlock" -> onlyKeys(object_, setOf("type", "nodeType", "docPos", "attrs")) && object_.opt("nodeType") is String &&
+                scalarField(object_, "docPos") != null && (!object_.has("attrs") || object_.opt("attrs") is JSONObject)
+            "opaqueInlineAtom" -> onlyKeys(object_, setOf("type", "nodeType", "label", "docPos", "mentionTheme")) &&
+                object_.opt("nodeType") is String && object_.opt("label") is String && scalarField(object_, "docPos") != null &&
+                (!object_.has("mentionTheme") || validMentionTheme(object_.opt("mentionTheme")))
+            "opaqueBlockAtom" -> exactKeys(object_, setOf("type", "nodeType", "label", "docPos")) &&
+                object_.opt("nodeType") is String && object_.opt("label") is String && scalarField(object_, "docPos") != null
+            else -> false
+        }
+    }
+
+    private fun validRenderBlocks(value: Any?): Boolean {
+        val blocks = value as? JSONArray ?: return false
+        return (0 until blocks.length()).all { blockIndex ->
+            val block = blocks.opt(blockIndex) as? JSONArray ?: return@all false
+            (0 until block.length()).all { validRenderElement(block.opt(it)) }
+        }
+    }
+
+    private fun validRenderPatch(value: Any?): Boolean {
+        if (value === JSONObject.NULL) return true
+        val patch = value as? JSONObject ?: return false
+        return exactKeys(patch, setOf("startIndex", "deleteCount", "renderBlocks")) &&
+            scalarField(patch, "startIndex") != null && scalarField(patch, "deleteCount") != null &&
+            validRenderBlocks(patch.opt("renderBlocks"))
+    }
+
+    private fun validBooleanRecord(value: Any?): Boolean {
+        val object_ = value as? JSONObject ?: return false
+        val iterator = object_.keys()
+        while (iterator.hasNext()) if (exactBool(object_.opt(iterator.next())) == null) return false
+        return true
+    }
+
+    private fun validStringArray(value: Any?): Boolean {
+        val array = value as? JSONArray ?: return false
+        return (0 until array.length()).all { array.opt(it) is String }
+    }
+
+    private fun validActiveState(value: Any?): Boolean {
+        val object_ = value as? JSONObject ?: return false
+        if (!exactKeys(object_, setOf("marks", "markAttrs", "nodes", "commands", "allowedMarks", "insertableNodes"))) return false
+        val attrs = object_.opt("markAttrs") as? JSONObject ?: return false
+        val attrsIterator = attrs.keys()
+        while (attrsIterator.hasNext()) if (attrs.opt(attrsIterator.next()) !is JSONObject) return false
+        return validBooleanRecord(object_.opt("marks")) && validBooleanRecord(object_.opt("nodes")) &&
+            validBooleanRecord(object_.opt("commands")) && validStringArray(object_.opt("allowedMarks")) &&
+            validStringArray(object_.opt("insertableNodes"))
+    }
+
+    private fun scalarSelection(value: Any?): IntArray? {
+        val selection = value as? JSONObject ?: return null
+        if (selection.opt("type") != "text" || !exactKeys(selection, setOf("type", "anchor", "head", "anchorScalar", "headScalar"))) return null
+        if (scalarField(selection, "anchor") == null || scalarField(selection, "head") == null) return null
+        return intArrayOf(scalarField(selection, "anchorScalar") ?: return null, scalarField(selection, "headScalar") ?: return null)
+    }
+
+    private fun validSelection(value: Any?): Boolean {
+        val selection = value as? JSONObject ?: return false
+        return when (selection.opt("type") as? String) {
+            "text" -> scalarSelection(selection) != null
+            "node" -> exactKeys(selection, setOf("type", "pos", "posScalar")) && scalarField(selection, "pos") != null && scalarField(selection, "posScalar") != null
+            "all" -> exactKeys(selection, setOf("type"))
+            else -> false
+        }
+    }
+
+    private data class AtomicRenderSnapshot(
+        val viewUpdateJson: String,
+        val documentRevision: ULong,
+        val stateRevision: ULong,
+        val scalarLength: Int,
+        val scalarSelection: IntArray?,
+        val activeState: JSONObject,
+        val historyState: JSONObject,
+    )
+
+    private fun parseAtomicRenderSnapshot(json: String): AtomicRenderSnapshot? {
+        return try {
+            val object_ = JSONObject(json)
+            if (!exactKeys(object_, setOf("renderBlocks", "renderPatch", "selection", "activeState", "historyState", "documentVersion", "stateRevision", "scalarLength")) ||
+                !validRenderBlocks(object_.opt("renderBlocks")) || !validRenderPatch(object_.opt("renderPatch")) ||
+                !validSelection(object_.opt("selection")) || !validActiveState(object_.opt("activeState"))
+            ) return null
+            val history = object_.opt("historyState") as? JSONObject ?: return null
+            if (!exactKeys(history, setOf("canUndo", "canRedo")) || exactBool(history.opt("canUndo")) == null || exactBool(history.opt("canRedo")) == null) return null
+            val revision = ulongField(object_, "documentVersion") ?: return null
+            val state = ulongField(object_, "stateRevision") ?: return null
+            val scalarLength = scalarField(object_, "scalarLength") ?: return null
+            val scalarSelection = scalarSelection(object_.opt("selection"))
+            object_.remove("scalarLength")
+            AtomicRenderSnapshot(object_.toString(), revision, state, scalarLength, scalarSelection, JSONObject(object_.getJSONObject("activeState").toString()), JSONObject(history.toString()))
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun adopt(snapshot: AtomicRenderSnapshot, stripViewSelection: Boolean): String {
+        val update = JSONObject(snapshot.viewUpdateJson)
+        if (stripViewSelection) update.remove("selection")
+        val updateJson = update.toString()
+        baseDocumentRevision = snapshot.documentRevision
+        stateRevision = snapshot.stateRevision
+        cachedScalarLength = snapshot.scalarLength
+        cachedAuthoritativeScalarSelection = snapshot.scalarSelection
+        cachedActiveState = snapshot.activeState
+        cachedHistoryState = snapshot.historyState
+        cachedViewUpdateJson = updateJson
+        return updateJson
+    }
+
+    internal fun adoptExternalRender(renderJson: String): String? {
+        if (destroyed) {
+            emit(destroyedError())
+            return null
+        }
+        val snapshot = parseAtomicRenderSnapshot(renderJson)
+        if (snapshot == null) {
+            emit(contractError("v2 atomic render snapshot violates the frozen shape"))
+            return null
+        }
+        return adopt(snapshot, stripViewSelection = false)
+    }
+
+    internal fun validateExternalRender(renderJson: String): Boolean {
+        if (destroyed) {
+            emit(destroyedError())
+            return false
+        }
+        if (parseAtomicRenderSnapshot(renderJson) != null) return true
+        emit(contractError("v2 atomic render snapshot violates the frozen shape"))
+        return false
+    }
+
     private fun fetchState(): V2State? {
         return when (val result = backend.getState(editorId)) {
             is EditorV2CallResult.Err -> {
@@ -215,8 +424,6 @@ internal class EditorV2Adapter private constructor(
             emit(destroyedError())
             return null
         }
-        val state = fetchState() ?: return null
-        baseDocumentRevision = state.documentRevision
         val derived = when (
             val result = backend.renderUpdate(
                 editorId,
@@ -230,28 +437,15 @@ internal class EditorV2Adapter private constructor(
             }
             is EditorV2CallResult.Ok -> result.value
         }
-        return try {
-            val update = JSONObject(derived)
-            cachedScalarLength = scalarField(update, "scalarLength")
-                ?: return null
-            // The scalar extent feeds the adapter's IME clamp only; the
-            // view-facing update keeps the exact legacy update JSON shape.
-            update.remove("scalarLength")
-            // History and version are v2-engine facts, re-stamped from the
-            // same getState read that drives revision tracking.
-            update.put(
-                "historyState",
-                JSONObject().put("canUndo", state.canUndo).put("canRedo", state.canRedo),
-            )
-            update.put("documentVersion", state.documentRevision.toString())
-            if (mirrorSelection == null) {
-                // Native-originated edits keep the native caret.
-                update.remove("selection")
-            }
-            update.toString()
-        } catch (error: Exception) {
+        renderUpdateCallCountForTesting += 1
+        val snapshot = parseAtomicRenderSnapshot(derived)
+        return if (snapshot == null) {
             debugNotes.add("renderUpdate parse failed")
             null
+        } else {
+            // Preserve an IME-owned caret only after authoritative active and
+            // history state has been adopted from the post-operation snapshot.
+            adopt(snapshot, stripViewSelection = mirrorSelection == null)
         }
     }
 

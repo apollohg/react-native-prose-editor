@@ -37,6 +37,41 @@ import java.util.concurrent.atomic.AtomicReference
 @Config(sdk = [34])
 class NativeEditorExpoViewTest {
     @Test
+    fun `delayed editor update keeps captured source identity and canonical revision after rebind`() {
+        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
+        val view = NativeEditorExpoView(expoContext.context, expoContext.appContext)
+        val backend = FakeEditorV2Backend()
+        fun registerAdapter(): Pair<EditorV2Adapter, Long> {
+            val editorId = (backend.create("{\"initialization\":{\"type\":\"localEmpty\"}}", null) as EditorV2CallResult.Ok).value
+            val adapter = EditorV2Adapter.attach(backend, JSONObject(editorId).getString("editorId"), roomBound = false)!!
+            return adapter to EditorV2Registry.register(adapter)
+        }
+        val (adapterA, tokenA) = registerAdapter()
+        val (adapterB, tokenB) = registerAdapter()
+        val payloads = mutableListOf<Map<String, Any>>()
+        try {
+            view.onEditorUpdateForTesting = { payloads += it }
+            view.onAddonEventForTesting = {}
+
+            view.setEditorId(tokenA)
+            view.onEditorUpdate(JSONObject(renderUpdateJson("A")).put("documentVersion", "7").toString())
+            view.setEditorId(tokenB)
+            view.onEditorUpdate(JSONObject(renderUpdateJson("B")).put("documentVersion", "8").toString())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+
+            assertEquals(1, payloads.size)
+            assertEquals(adapterB.editorId, payloads.single()["editorId"])
+            assertEquals("8", payloads.single()["documentRevision"])
+            assertEquals("B", JSONObject(payloads.single()["updateJson"] as String)
+                .getJSONArray("renderBlocks").getJSONArray(0).getJSONObject(1).getString("text"))
+        } finally {
+            EditorV2Registry.remove(adapterA.editorId)
+            EditorV2Registry.remove(adapterB.editorId)
+            NativeEditorViewRegistry.unregister(tokenA, view)
+            NativeEditorViewRegistry.unregister(tokenB, view)
+        }
+    }
+    @Test
     fun `Rust editor destruction precedes registry invalidation even when destruction fails`() {
         val calls = mutableListOf<String>()
 
@@ -2639,6 +2674,7 @@ class NativeEditorExpoViewTest {
                         .put(JSONObject().put("type", "blockEnd"))
                 )
             )
+            .put("documentVersion", "1")
             .toString()
 
     private data class TestExpoContext(
