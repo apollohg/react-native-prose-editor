@@ -362,20 +362,26 @@ impl AwarenessCodec {
     /// the exact `yrs` application rule over a projection of the current
     /// states, so admission can never diverge from what `apply_update` would
     /// install.
+    ///
+    /// Admission priority is observable because clock/limit refusals close a
+    /// transport as incompatible while malformed JSON is retryable. To keep
+    /// that disposition deterministic, entries are sorted by numeric client
+    /// ID and validation completes in strict phases: ownership/terminal
+    /// clocks, live peer bytes, live JSON, then projected aggregate ceilings.
     fn admit_update(
         &self,
         update: &AwarenessUpdate,
         limits: &AwarenessLimits,
     ) -> YrsEngineResult<()> {
         let local_client = self.awareness.client_id();
-        let mut projected: HashMap<ClientID, (u32, Option<usize>)> = self
-            .awareness
-            .iter()
-            .map(|(client, state)| (client, (state.clock, state.data.map(|data| data.len()))))
-            .collect();
-        for (client_id, entry) in &update.clients {
+        let local_clock = self.local_clock();
+        let mut entries: Vec<_> = update.clients.iter().collect();
+        entries.sort_unstable_by_key(|(client_id, _)| client_id.get());
+
+        // Phase 1: clock ownership and terminal remote clocks decide the
+        // highest-priority, incompatible close disposition.
+        for &(client_id, entry) in &entries {
             if *client_id == local_client {
-                let local_clock = self.local_clock();
                 if entry.clock > local_clock {
                     return Err(awareness_limit_error(
                         AWARENESS_CLOCK_FIELD,
@@ -393,21 +399,42 @@ impl AwarenessCodec {
                     entry.clock as usize,
                 ));
             }
-            let incoming_alive = entry.json.as_ref() != AWARENESS_TOMBSTONE_JSON;
-            if incoming_alive {
-                if entry.json.len() > limits.max_awareness_peer_bytes {
-                    return Err(awareness_limit_error(
-                        "maxAwarenessPeerBytes",
-                        limits.max_awareness_peer_bytes,
-                        entry.json.len(),
-                    ));
-                }
-                if serde_json::from_str::<serde::de::IgnoredAny>(entry.json.as_ref()).is_err() {
-                    return Err(awareness_decode_error(format!(
-                        "awareness state for client {client_id} is not valid JSON"
-                    )));
-                }
+        }
+
+        // Phase 2: every live payload must fit the per-peer byte ceiling.
+        for &(_, entry) in &entries {
+            if entry.json.as_ref() != AWARENESS_TOMBSTONE_JSON
+                && entry.json.len() > limits.max_awareness_peer_bytes
+            {
+                return Err(awareness_limit_error(
+                    "maxAwarenessPeerBytes",
+                    limits.max_awareness_peer_bytes,
+                    entry.json.len(),
+                ));
             }
+        }
+
+        // Phase 3: JSON syntax is lower priority than every deterministic
+        // clock and byte limit refusal.
+        for &(client_id, entry) in &entries {
+            if entry.json.as_ref() != AWARENESS_TOMBSTONE_JSON
+                && serde_json::from_str::<serde::de::IgnoredAny>(entry.json.as_ref()).is_err()
+            {
+                return Err(awareness_decode_error(format!(
+                    "awareness state for client {client_id} is not valid JSON"
+                )));
+            }
+        }
+
+        // Phase 4: project in the same client order before checking aggregate
+        // peer and byte ceilings.
+        let mut projected: HashMap<ClientID, (u32, Option<usize>)> = self
+            .awareness
+            .iter()
+            .map(|(client, state)| (client, (state.clock, state.data.map(|data| data.len()))))
+            .collect();
+        for &(client_id, entry) in &entries {
+            let incoming_alive = entry.json.as_ref() != AWARENESS_TOMBSTONE_JSON;
             if *client_id == local_client {
                 // Current/older local-client records are valid protocol
                 // echoes, but only this codec may advance or replace the
@@ -584,6 +611,8 @@ impl AwarenessCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yrs::encoding::write::Write as _;
+    use yrs::updates::encoder::{Encoder, EncoderV1};
     use yrs::Options;
 
     fn limits() -> AwarenessLimits {
@@ -610,6 +639,133 @@ mod tests {
             },
         );
         AwarenessUpdate { clients }.encode_v1()
+    }
+
+    fn ordered_remote_update(entries: &[(u64, u32, &str)]) -> Vec<u8> {
+        let mut encoder = EncoderV1::new();
+        encoder.write_var(entries.len());
+        for (client_id, clock, json) in entries {
+            encoder.write_var(*client_id);
+            encoder.write_var(*clock);
+            encoder.write_string(json);
+        }
+        encoder.to_vec()
+    }
+
+    fn assert_empty_after_refusal(codec: &AwarenessCodec) {
+        assert!(codec.peer_snapshot().is_empty());
+        assert_eq!(codec.stored_entry_count(), 0);
+    }
+
+    #[test]
+    fn task8_seventh_remediation_terminal_clock_precedes_bytes_and_json_across_wire_orders() {
+        let limits = AwarenessLimits {
+            max_awareness_peer_bytes: 8,
+            ..limits()
+        };
+        let forward = [
+            (300, u32::MAX, r#"{"terminal":true}"#),
+            (100, 1, r#"{"oversize":true}"#),
+            (200, 1, "{"),
+        ];
+        let reverse = [forward[2], forward[1], forward[0]];
+
+        for entries in [&forward[..], &reverse[..]] {
+            let bytes = ordered_remote_update(entries);
+            for _ in 0..16 {
+                let mut codec = codec();
+                let error = codec.apply_remote_update_v1(&bytes, &limits).unwrap_err();
+                assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED", "{error:?}");
+                assert_eq!(error.limit, Some((u32::MAX - 1) as usize));
+                assert_eq!(error.actual, Some(u32::MAX as usize));
+                assert_eq!(
+                    error.message,
+                    format!("input exceeds limit {}: {}", u32::MAX - 1, u32::MAX)
+                );
+                assert_eq!(error.details.as_ref().unwrap()["field"], "awarenessClock");
+                assert_empty_after_refusal(&codec);
+            }
+        }
+    }
+
+    #[test]
+    fn task8_seventh_remediation_peer_bytes_precede_json_across_wire_orders() {
+        let limits = AwarenessLimits {
+            max_awareness_peer_bytes: 8,
+            ..limits()
+        };
+        let forward = [(200, 1, r#"{"oversize":true}"#), (100, 1, "{")];
+        let reverse = [forward[1], forward[0]];
+
+        for entries in [&forward[..], &reverse[..]] {
+            let bytes = ordered_remote_update(entries);
+            for _ in 0..16 {
+                let mut codec = codec();
+                let error = codec.apply_remote_update_v1(&bytes, &limits).unwrap_err();
+                assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED", "{error:?}");
+                assert_eq!(error.limit, Some(8));
+                assert_eq!(error.actual, Some(r#"{"oversize":true}"#.len()));
+                assert_eq!(
+                    error.message,
+                    format!("input exceeds limit 8: {}", r#"{"oversize":true}"#.len())
+                );
+                assert_eq!(
+                    error.details.as_ref().unwrap()["field"],
+                    "maxAwarenessPeerBytes",
+                );
+                assert_empty_after_refusal(&codec);
+            }
+        }
+    }
+
+    #[test]
+    fn task8_seventh_remediation_peer_byte_phase_chooses_lowest_client() {
+        let limits = AwarenessLimits {
+            max_awareness_peer_bytes: 4,
+            ..limits()
+        };
+        let forward = [(200, 1, "123456789"), (100, 1, "12345")];
+        let reverse = [forward[1], forward[0]];
+
+        for entries in [&forward[..], &reverse[..]] {
+            let bytes = ordered_remote_update(entries);
+            for _ in 0..16 {
+                let mut codec = codec();
+                let error = codec.apply_remote_update_v1(&bytes, &limits).unwrap_err();
+                assert_eq!(error.code, "INPUT_LIMIT_EXCEEDED", "{error:?}");
+                assert_eq!(error.limit, Some(4));
+                assert_eq!(error.actual, Some(5));
+                assert_eq!(error.message, "input exceeds limit 4: 5");
+                assert_eq!(
+                    error.details.as_ref().unwrap()["field"],
+                    "maxAwarenessPeerBytes",
+                );
+                assert_empty_after_refusal(&codec);
+            }
+        }
+    }
+
+    #[test]
+    fn task8_seventh_remediation_json_phase_chooses_lowest_client() {
+        let forward = [(400, 1, "[high"), (300, 1, "{low")];
+        let reverse = [forward[1], forward[0]];
+
+        for entries in [&forward[..], &reverse[..]] {
+            let bytes = ordered_remote_update(entries);
+            for _ in 0..16 {
+                let mut codec = codec();
+                let error = codec.apply_remote_update_v1(&bytes, &limits()).unwrap_err();
+                assert_eq!(error.code, "COLLABORATION_DECODE_FAILED", "{error:?}");
+                assert_eq!(
+                    error.message,
+                    "awareness state for client 300 is not valid JSON",
+                );
+                assert_eq!(error.limit, None);
+                assert_eq!(error.actual, None);
+                assert_eq!(error.details, None);
+                assert_empty_after_refusal(&codec);
+            }
+        }
     }
 
     #[test]
