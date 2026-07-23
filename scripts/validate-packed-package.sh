@@ -178,7 +178,9 @@ validate_archive_architectures() {
   local archive_path="$1"
   local expected_architectures="$2"
   local label="$3"
-  local architecture_info actual_architectures normalized_architectures architecture thin_archive nm_output
+  local architecture_info actual_architectures normalized_architectures architecture thin_archive
+  local archive_members extracted_objects_dir unexpected_members
+  local architecture_nm_output architecture_nm_status unexpected_nm_lines
 
   [[ -s "$archive_path" ]] || fail "$label archive is missing or empty"
   architecture_info="$(lipo -info "$archive_path" 2>&1)" || fail "$label is not a valid Mach-O archive: $architecture_info"
@@ -194,8 +196,30 @@ validate_archive_architectures() {
       cp "$archive_path" "$thin_archive"
     fi
     file "$thin_archive" | grep -Fq 'current ar archive' || fail "$label $architecture slice is not a static archive"
-    nm_output="$(nm -gU "$thin_archive" 2>&1)" || true
-    validate_symbol_text "$label $architecture archive" "$nm_output"
+    archive_members="$(ar -t "$thin_archive" 2>&1)" || fail "$label $architecture static archive is corrupt: $archive_members"
+    [[ -n "$archive_members" ]] || fail "$label $architecture static archive contains no members"
+    unexpected_members="$(printf '%s\n' "$archive_members" | sed -e '/^__.SYMDEF/d' -e '/\.o$/d')"
+    [[ -z "$unexpected_members" ]] || fail "$label $architecture static archive contains unexpected members: $unexpected_members"
+    extracted_objects_dir="$work_dir/${label//[^[:alnum:]]/_}-$architecture-objects"
+    mkdir -p "$extracted_objects_dir"
+    (
+      cd "$extracted_objects_dir"
+      ar -x "$thin_archive"
+      # Apple nm can reject Rust objects whose embedded bitcode is newer than
+      # its LLVM reader. otool still proves each member has a Mach-O header.
+      for object in ./*.o; do
+        otool -hv "$object" 2>&1 | grep -q "Mach header" || exit 1
+      done
+    ) || fail "$label $architecture archive contains an unreadable Mach-O object member"
+    architecture_nm_status=0
+    architecture_nm_output="$(nm -gU "$thin_archive" 2>&1)" || architecture_nm_status=$?
+    if [[ "$architecture_nm_status" -ne 0 ]]; then
+      # Tolerate only the documented producer/reader skew and no-symbol notes;
+      # all other Apple nm errors invalidate the archive.
+      unexpected_nm_lines="$(printf '%s\n' "$architecture_nm_output" | grep -E '(nm: error: |: no symbols$)' | grep -v 'Unknown attribute kind' | grep -v ': no symbols$' || true)"
+      [[ -z "$unexpected_nm_lines" ]] || fail "$label $architecture archive symbols cannot be read: $architecture_nm_output"
+    fi
+    validate_symbol_text "$label $architecture archive" "$architecture_nm_output"
   done
 }
 
@@ -226,27 +250,83 @@ require_declaration_symbol() {
 validate_ios_consumer() {
   local root="$1"
   local ios_consumer="$work_dir/ios-consumer"
+  local ios_project="$ios_consumer/ios"
   local react_native_dir="$repo_root/example/node_modules/react-native"
-  local expo_modules_core_dir="$repo_root/example/node_modules/expo-modules-core"
-  local example_project_dir="$repo_root/example/ios/NativeEditorExample.xcodeproj"
+  local expo_dir="$repo_root/example/node_modules/expo"
+  local react_native_dependencies_archive="$repo_root/example/ios/Pods/ReactNativeDependencies-artifacts/reactnative-dependencies-0.81.5-debug.tar.gz"
+  local react_native_core_archive="$repo_root/example/ios/Pods/ReactNativeCore-artifacts/reactnative-core-0.81.5-debug.tar.gz"
+  local hermes_archive="$repo_root/example/ios/Pods/hermes-engine-artifacts/hermes-ios-0.81.5-debug.tar.gz"
   local workspace_path
   root="$(cd "$root" && pwd -P)"
   require_command pod
   require_command xcodebuild
   [[ -f "$react_native_dir/scripts/react_native_pods.rb" ]] || fail "local example React Native dependencies are missing; run npm install in example/"
-  [[ -f "$expo_modules_core_dir/ExpoModulesCore.podspec" ]] || fail "local example ExpoModulesCore dependency is missing; run npm install in example/"
-  [[ -d "$example_project_dir" ]] || fail "local example Xcode project is missing"
+  [[ -f "$expo_dir/scripts/autolinking.rb" ]] || fail "local example Expo autolinking dependency is missing; run npm install in example/"
+  [[ -s "$react_native_dependencies_archive" ]] || fail "local ReactNativeDependencies artifact is missing from example/ios/Pods"
+  [[ -s "$react_native_core_archive" ]] || fail "local ReactNativeCore artifact is missing from example/ios/Pods"
+  [[ -s "$hermes_archive" ]] || fail "local Hermes artifact is missing from example/ios/Pods"
 
   mkdir -p "$ios_consumer"
-  cp -R "$example_project_dir" "$ios_consumer/NativeEditorExample.xcodeproj"
+  # Expo autolinking resolves dependencies through the temporary consumer's
+  # node_modules. Point it to the known local install without declaring this
+  # package itself, so ReactNativeProseEditor can only enter through its
+  # explicit extracted-pod path below.
+  ln -s "$repo_root/example/node_modules" "$ios_consumer/node_modules"
+  # This is intentionally a fresh UIKit target. Reusing the Expo example
+  # project pulls app-only bundle and Hermes build phases into this package
+  # consumer instead of proving the pod's own integration boundary.
+  mkdir -p "$ios_project/PackedConsumer.xcodeproj"
+  mkdir -p "$ios_project/PackedConsumer.xcodeproj/project.xcworkspace"
+  cat > "$ios_project/PackedConsumer.xcodeproj/project.xcworkspace/contents.xcworkspacedata" <<'WORKSPACE'
+<?xml version="1.0" encoding="UTF-8"?>
+<Workspace version = "1.0">
+  <FileRef location = "self:"></FileRef>
+</Workspace>
+WORKSPACE
+  # Keep this project deliberately self-contained: the system Ruby available
+  # on macOS does not necessarily include CocoaPods' xcodeproj gem.
+  cat > "$ios_project/PackedConsumer.xcodeproj/project.pbxproj" <<'PBXPROJ'
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+		A00000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000011 /* AppDelegate.swift */; };
+		A00000000000000000000002 /* Probe.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000012 /* Probe.swift */; };
+		A00000000000000000000011 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		A00000000000000000000012 /* Probe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Probe.swift; sourceTree = "<group>"; };
+		A00000000000000000000013 /* PackedConsumer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PackedConsumer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000020 /* PackedConsumer */ = {isa = PBXGroup; children = (A00000000000000000000011 /* AppDelegate.swift */, A00000000000000000000012 /* Probe.swift */,); path = PackedConsumer; sourceTree = "<group>"; };
+		A00000000000000000000021 = {isa = PBXGroup; children = (A00000000000000000000020 /* PackedConsumer */, A00000000000000000000022 /* Products */,); sourceTree = "<group>"; };
+		A00000000000000000000022 /* Products */ = {isa = PBXGroup; children = (A00000000000000000000013 /* PackedConsumer.app */,); name = Products; sourceTree = "<group>"; };
+		A00000000000000000000030 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000031 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000032 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001 /* AppDelegate.swift in Sources */, A00000000000000000000002 /* Probe.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000040 /* PackedConsumer */ = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000050 /* Build configuration list for PBXNativeTarget \"PackedConsumer\" */; buildPhases = (A00000000000000000000032 /* Sources */, A00000000000000000000030 /* Frameworks */, A00000000000000000000031 /* Resources */,); buildRules = (); dependencies = (); name = PackedConsumer; productName = PackedConsumer; productReference = A00000000000000000000013 /* PackedConsumer.app */; productType = "com.apple.product-type.application"; };
+		A00000000000000000000041 /* Project object */ = {isa = PBXProject; attributes = { LastUpgradeCheck = 1700; }; buildConfigurationList = A00000000000000000000051 /* Build configuration list for PBXProject \"PackedConsumer\" */; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base,); mainGroup = A00000000000000000000021; productRefGroup = A00000000000000000000022 /* Products */; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000040 /* PackedConsumer */,); };
+		A00000000000000000000060 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.1; SDKROOT = iphoneos; SWIFT_ENABLE_EXPLICIT_MODULES = NO; }; name = Debug; };
+		A00000000000000000000061 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.1; SDKROOT = iphoneos; SWIFT_ENABLE_EXPLICIT_MODULES = NO; }; name = Release; };
+		A00000000000000000000062 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.1; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); PRODUCT_BUNDLE_IDENTIFIER = dev.nativeeditor.packedconsumer; PRODUCT_NAME = PackedConsumer; SWIFT_ENABLE_EXPLICIT_MODULES = NO; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+		A00000000000000000000063 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_EXPLICIT_MODULES = NO; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.1; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); PRODUCT_BUNDLE_IDENTIFIER = dev.nativeeditor.packedconsumer; PRODUCT_NAME = PackedConsumer; SWIFT_ENABLE_EXPLICIT_MODULES = NO; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+		A00000000000000000000050 /* Build configuration list for PBXNativeTarget \"PackedConsumer\" */ = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000062 /* Debug */, A00000000000000000000063 /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A00000000000000000000051 /* Build configuration list for PBXProject \"PackedConsumer\" */ = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000060 /* Debug */, A00000000000000000000061 /* Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+	};
+	rootObject = A00000000000000000000041 /* Project object */;
+}
+PBXPROJ
   cat > "$ios_consumer/package.json" <<'JSON'
 {
   "name": "packed-tarball-ios-consumer",
-  "private": true
+  "private": true,
+  "dependencies": {
+    "expo": "~54.0.0",
+    "react-native": "0.81.5"
+  }
 }
 JSON
-  mkdir -p "$ios_consumer/NativeEditorExample"
-  cat > "$ios_consumer/NativeEditorExample/AppDelegate.swift" <<'SWIFT'
+  mkdir -p "$ios_project/PackedConsumer"
+  cat > "$ios_project/PackedConsumer/AppDelegate.swift" <<'SWIFT'
 import UIKit
 
 @main
@@ -254,7 +334,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
   var window: UIWindow?
 }
 SWIFT
-  cat > "$ios_consumer/Probe.swift" <<'SWIFT'
+  cat > "$ios_project/PackedConsumer/Probe.swift" <<'SWIFT'
 import ReactNativeProseEditor
 
 func packedEditorCoreLinkProbe() {
@@ -265,54 +345,101 @@ func packedEditorCoreLinkProbe() {
   _ = editorV2CollaborationReattach(editorId: "1")
 }
 SWIFT
-  ruby -e '
-    path = ARGV.fetch(0)
-    project = File.read(path)
-    project.sub!("/* End PBXBuildFile section */", "\t\tA19C00000000000000000002 /* Probe.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19C000000000000000000001 /* Probe.swift */; };\n/* End PBXBuildFile section */")
-    project.sub!("/* End PBXFileReference section */", "\t\tA19C000000000000000000001 /* Probe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Probe.swift; sourceTree = \"<group>\"; };\n/* End PBXFileReference section */")
-    project.sub!("F11748412D0307B40044C1D9 /* AppDelegate.swift */,", "F11748412D0307B40044C1D9 /* AppDelegate.swift */,\n\t\t\t\tA19C000000000000000000001 /* Probe.swift */,")
-    project.sub!("F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */,", "F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */,\n\t\t\t\tA19C00000000000000000002 /* Probe.swift in Sources */,")
-    project.gsub!("\t\t\t\tE8503B04C124877981CF4A94 /* [Expo] Configure project */,\n", "")
-    project.gsub!("\t\t\t\t00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,\n", "")
-    abort "could not add the Swift link probe to the consumer project" unless project.include?("Probe.swift in Sources")
-    File.write(path, project)
-  ' "$ios_consumer/NativeEditorExample.xcodeproj/project.pbxproj"
-  cat > "$ios_consumer/Podfile" <<'RUBY'
+  cp "$react_native_dependencies_archive" "$ios_project/react-native-dependencies.tar.gz"
+  cp "$react_native_core_archive" "$ios_project/react-native-core.tar.gz"
+  cp "$hermes_archive" "$ios_project/hermes-ios-debug.tar.gz"
+  cat > "$ios_project/Podfile" <<'RUBY'
+require 'json'
 require 'pathname'
-require File.join(ENV.fetch('PACKED_REACT_NATIVE_DIR'), 'scripts', 'react_native_pods')
+require File.join(File.dirname(`node --print "require.resolve('expo/package.json')"`), 'scripts', 'autolinking')
+require File.join(File.dirname(`node --print "require.resolve('react-native/package.json')"`), 'scripts', 'react_native_pods')
 
-react_native_path = Pathname.new(ENV.fetch('PACKED_REACT_NATIVE_DIR')).relative_path_from(Pathname.new(__dir__)).to_s
+react_native_root = ENV.fetch('PACKED_REACT_NATIVE_DIR')
+ENV['RCT_USE_RN_DEP'] ||= '1'
+ENV['RCT_USE_PREBUILT_RNCORE'] ||= '1'
 platform :ios, '15.1'
+project File.join(__dir__, 'PackedConsumer.xcodeproj')
 prepare_react_native_project!
-project File.join(__dir__, 'NativeEditorExample.xcodeproj')
 
-target 'NativeEditorExample' do
-  pod 'ExpoModulesCore', :path => ENV.fetch('PACKED_EXPO_MODULES_CORE_DIR')
+target 'PackedConsumer' do
+  use_expo_modules!
+
+  config_command = [
+    'node',
+    '--no-warnings',
+    '--eval',
+    'require(\'expo/bin/autolinking\')',
+    'expo-modules-autolinking',
+    'react-native-config',
+    '--json',
+    '--platform',
+    'ios'
+  ]
+  config = use_native_modules!(config_command)
+
   pod 'ReactNativeProseEditor', :path => ENV.fetch('PACKED_EDITOR_IOS_DIR')
+
+  # Use Expo's supported autolinking configuration for the complete RN and
+  # Expo pod graph. The target remains a fresh UIKit app and does not inherit
+  # the example's app phases.
   use_react_native!(
-    :path => react_native_path,
-    :app_path => __dir__,
-    :hermes_enabled => false,
-    :fabric_enabled => false,
+    :path => config[:reactNativePath],
+    :app_path => "#{Pod::Config.instance.installation_root}/..",
+    :hermes_enabled => true,
   )
+
+  post_install do |installer|
+    # Keep RN's standard post-install adjustments for the supported pod graph.
+    react_native_post_install(installer, config[:reactNativePath], :mac_catalyst_enabled => false)
+    # Xcode evaluates this setting from the Pods project while precompiling
+    # imported Swift modules, so set it at that project scope as well as each
+    # generated target. This matches the known-good example configuration.
+    installer.pods_project.build_configurations.each do |configuration|
+      configuration.build_settings['CLANG_ENABLE_EXPLICIT_MODULES'] = 'NO'
+      configuration.build_settings['SWIFT_ENABLE_EXPLICIT_MODULES'] = 'NO'
+    end
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |configuration|
+        # Pod build phases execute from Pods/, whereas use_react_native! receives
+        # a path relative to the consumer root. Give those phases the absolute
+        # source checkout so RN's generated-spec integrity checks resolve it.
+        configuration.build_settings['REACT_NATIVE_PATH'] = react_native_root
+        # Match the example's Xcode 26 setting without relaxing Clang diagnostics.
+        configuration.build_settings['CLANG_ENABLE_EXPLICIT_MODULES'] = 'NO'
+        configuration.build_settings['SWIFT_ENABLE_EXPLICIT_MODULES'] = 'NO'
+        # RCT_REMOTE_PROFILE is present in Debug's React Core headers. Every pod
+        # target that imports one of those headers must see the corresponding
+        # inspector definition; a definition on ReactCodegen alone does not
+        # propagate to ExpoModulesCore's separate Clang module importer.
+        if configuration.name == 'Debug'
+          definitions = Array(configuration.build_settings['GCC_PREPROCESSOR_DEFINITIONS'])
+          definitions << '$(inherited)' unless definitions.include?('$(inherited)')
+          definitions << 'RCT_ENABLE_INSPECTOR=1' unless definitions.include?('RCT_ENABLE_INSPECTOR=1')
+          configuration.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] = definitions
+        end
+      end
+    end
+  end
 end
 RUBY
   (
-    cd "$ios_consumer"
+    cd "$ios_project"
       PACKED_EDITOR_IOS_DIR="$root/ios" \
-      PACKED_EXPO_MODULES_CORE_DIR="$expo_modules_core_dir" \
       PACKED_REACT_NATIVE_DIR="$react_native_dir" \
+      RCT_USE_LOCAL_RN_DEP="$ios_project/react-native-dependencies.tar.gz" \
+      RCT_TESTONLY_RNCORE_TARBALL_PATH="$ios_project/react-native-core.tar.gz" \
+      HERMES_ENGINE_TARBALL_PATH="$ios_project/hermes-ios-debug.tar.gz" \
       CP_CACHE_DIR="$cocoapods_cache_dir" \
       CP_HOME_DIR="$cocoapods_home_dir" \
       pod install --no-repo-update
   ) || fail "iOS consumer pod install failed"
-  [[ -f "$ios_consumer/Podfile.lock" ]] || fail "CocoaPods did not produce Podfile.lock"
-  workspace_path="$ios_consumer/NativeEditorExample.xcworkspace"
-  rm -rf "$workspace_path"
-  cp -R "$repo_root/example/ios/NativeEditorExample.xcworkspace" "$workspace_path"
+  [[ -f "$ios_project/Podfile.lock" ]] || fail "CocoaPods did not produce Podfile.lock"
+  workspace_path="$ios_project/PackedConsumer.xcworkspace"
+  [[ -f "$workspace_path/contents.xcworkspacedata" ]] || \
+    fail "CocoaPods did not generate a valid iOS consumer workspace"
   (
-    cd "$ios_consumer"
-    xcodebuild -workspace NativeEditorExample.xcworkspace -scheme NativeEditorExample -configuration Debug -sdk iphonesimulator -derivedDataPath "$work_dir/ios-derived-data" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+    cd "$ios_project"
+    xcodebuild -workspace PackedConsumer.xcworkspace -scheme PackedConsumer -configuration Debug -sdk iphonesimulator -derivedDataPath "$work_dir/ios-derived-data" -jobs 1 CLANG_ENABLE_EXPLICIT_MODULES=NO SWIFT_ENABLE_EXPLICIT_MODULES=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
   ) || fail "iOS consumer xcodebuild failed"
 }
 
