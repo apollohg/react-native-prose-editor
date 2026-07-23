@@ -7110,7 +7110,8 @@ final class RichTextEditorViewTests: XCTestCase {
 
         let view = NativeEditorExpoView()
         view.setEditorId(editorId)
-        _ = EditorV2Shadow.setHtml(id: editorId, html: "<ul><li><p>Hello @al</p></li></ul>")
+        let setHtmlUpdate = EditorV2Shadow.setHtml(id: editorId, html: "<ul><li><p>Hello @al</p></li></ul>")
+        XCTAssertTrue(setHtmlUpdate.contains("@al"), "setHtml must return the updated list snapshot, got: \(setHtmlUpdate)")
         let currentState = EditorV2Shadow.getCurrentState(id: editorId)
         view.richTextView.textView.applyUpdateJSON(currentState, notifyDelegate: false)
 
@@ -7132,7 +7133,8 @@ final class RichTextEditorViewTests: XCTestCase {
 
         let view = NativeEditorExpoView()
         view.setEditorId(editorId)
-        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>First paragraph</p><p>@al</p>")
+        let setHtmlUpdate = EditorV2Shadow.setHtml(id: editorId, html: "<p>First paragraph</p><p>@al</p>")
+        XCTAssertTrue(setHtmlUpdate.contains("@al"), "setHtml must return the updated paragraph snapshot, got: \(setHtmlUpdate)")
         let currentState = EditorV2Shadow.getCurrentState(id: editorId)
         view.richTextView.textView.applyUpdateJSON(currentState, notifyDelegate: false)
 
