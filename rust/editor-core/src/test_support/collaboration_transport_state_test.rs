@@ -220,7 +220,7 @@ fn expected(doc: Doc, state: TransportState, action: Action) -> Expected {
         },
         Action::Reattach => match (doc, state) {
             (Doc::Local, _) => Expected::Refused(TRANSPORT_NOT_ROOM_BOUND),
-            (_, Detached) => Expected::Accepted(Disconnected),
+            (_, Detached | Disconnected) => Expected::Accepted(Disconnected),
             _ => Expected::Refused(TRANSPORT_INVALID_TRANSITION),
         },
         Action::SocketOpenedCurrent => {
@@ -257,13 +257,7 @@ fn expected(doc: Doc, state: TransportState, action: Action) -> Expected {
                 Expected::Refused(TRANSPORT_INVALID_TRANSITION)
             }
         }
-        Action::Detach => {
-            if state == Detached {
-                Expected::Refused(TRANSPORT_INVALID_TRANSITION)
-            } else {
-                Expected::Accepted(Detached)
-            }
-        }
+        Action::Detach => Expected::Accepted(Detached),
         Action::MarkSynchronizedCurrent => {
             if !live_attempt {
                 Expected::Refused(TRANSPORT_STALE_GENERATION)
@@ -448,17 +442,17 @@ fn run_matrix(doc: Doc) {
 }
 
 #[test]
-fn local_ready_matrix_has_an_explicit_outcome_for_every_cell() {
+fn task8_lifecycle_contract_local_ready_matrix_has_an_explicit_outcome_for_every_cell() {
     run_matrix(Doc::Local);
 }
 
 #[test]
-fn await_remote_matrix_has_an_explicit_outcome_for_every_cell() {
+fn task8_lifecycle_contract_await_remote_matrix_has_an_explicit_outcome_for_every_cell() {
     run_matrix(Doc::AwaitRemote);
 }
 
 #[test]
-fn room_ready_matrix_has_an_explicit_outcome_for_every_cell() {
+fn task8_lifecycle_contract_room_ready_matrix_has_an_explicit_outcome_for_every_cell() {
     run_matrix(Doc::RoomReady);
 }
 

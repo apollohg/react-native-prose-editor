@@ -550,22 +550,22 @@ mod tests {
     }
 
     #[test]
-    fn detach_and_reattach_form_the_incompatible_escape_hatch() {
+    fn task8_lifecycle_contract_direct_state_idempotence_and_refusals() {
         let (mut machine, generation) = connected_machine();
         machine
             .socket_closed(REQUEST_ID, generation, SocketCloseDisposition::Incompatible)
             .unwrap();
         machine.detach(REQUEST_ID).unwrap();
         assert_eq!(machine.state(), TransportState::Detached);
-        let error = machine.detach(REQUEST_ID).unwrap_err();
-        assert_eq!(error.code, TRANSPORT_INVALID_TRANSITION, "{error:?}");
+        machine.detach(REQUEST_ID).unwrap();
+        assert_eq!(machine.state(), TransportState::Detached);
 
         let error = machine.reattach(REQUEST_ID, LOCAL_ONLY).unwrap_err();
         assert_eq!(error.code, TRANSPORT_NOT_ROOM_BOUND, "{error:?}");
         machine.reattach(REQUEST_ID, ROOM_BOUND).unwrap();
         assert_eq!(machine.state(), TransportState::Disconnected);
-        let error = machine.reattach(REQUEST_ID, ROOM_BOUND).unwrap_err();
-        assert_eq!(error.code, TRANSPORT_INVALID_TRANSITION, "{error:?}");
+        machine.reattach(REQUEST_ID, ROOM_BOUND).unwrap();
+        assert_eq!(machine.state(), TransportState::Disconnected);
 
         let next = machine.begin_connect(REQUEST_ID, ROOM_BOUND).unwrap();
         assert_eq!(next.value(), generation.value() + 1);
