@@ -372,7 +372,8 @@ class EditorV2AdapterTest {
         val adapter = makeAdapter()
         adapter.setContentHtml("<p>ab</p><p>cd</p>")
         backend.calls.clear()
-        assertEquals(2, adapter.scalarPositionForDoc(5))
+        // The structural separator between rendered blocks occupies one scalar.
+        assertEquals(3, adapter.scalarPositionForDoc(5))
         assertEquals(3, adapter.docPositionForScalar(2))
         assertTrue(backend.calls.contains("docToScalar"))
         assertTrue(backend.calls.contains("scalarToDoc"))
