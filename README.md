@@ -103,6 +103,7 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import {
   createNativeEditorDocumentHandle,
   NativeRichTextEditor,
+  prosemirrorSchema,
   type NativeRichTextEditorRef,
 } from '@apollohg/react-native-prose-editor';
 
@@ -112,7 +113,45 @@ export function EditorScreen() {
   const documentHandle = useMemo(
     () =>
       createNativeEditorDocumentHandle({
+        // The frozen document contract: configure it here, never on the view.
+        schema: prosemirrorSchema,
+        fragmentName: 'prosemirror',
         initialization: { type: 'localHtml', html: '<p>Hello world</p>' },
+        policy: {
+          maxLength: 100_000,
+          readOnly: false,
+          inputFilter: '.*',
+          allowBase64Images: false,
+        },
+        limits: {
+          resource: {
+            maxInputBytes: 20 * 1024 * 1024,
+            maxDocumentNodes: 100_000,
+            maxDocumentDepth: 256,
+            maxSchemaNodes: 1_024,
+            maxSchemaExpressionBytes: 64 * 1024,
+            maxCollaborationMessageBytes: 10 * 1024 * 1024,
+            maxEncodedStateBytes: 50 * 1024 * 1024,
+          },
+          editing: {
+            maxOperationsPerTransaction: 1_024,
+            maxUndoGroups: 200,
+            maxUndoRetainedUnits: 1_000_000,
+            maxDerivedOutputBytes: 20 * 1024 * 1024,
+          },
+          collaboration: {
+            maxFramesPerMessage: 128,
+            maxFrameBytes: 10 * 1024 * 1024,
+            maxAggregateResponseBytes: 20 * 1024 * 1024,
+            maxAwarenessPeers: 200,
+            maxAwarenessPeerBytes: 64 * 1024,
+            maxAwarenessBytes: 2 * 1024 * 1024,
+            maxPendingOutboxMessages: 256,
+            maxPendingOutboxBytes: 10 * 1024 * 1024,
+            maxPendingDependencyUpdateBytes: 10 * 1024 * 1024,
+            maxPendingDependencyUpdateWork: 1_000_000,
+          },
+        },
       }),
     []
   );
@@ -131,10 +170,12 @@ export function EditorScreen() {
 }
 ```
 
-`NativeEditorV2CreateConfig` accepts `schema`, `fragmentName`, a required
-`initialization`, grouped `policy` (`maxLength`, `readOnly`, `inputFilter`,
-`allowBase64Images`), and grouped `limits` (`resource`, `editing`,
-`collaboration`):
+`createNativeEditorDocumentHandle` is the only document-construction boundary.
+Its frozen `NativeEditorV2CreateConfig` accepts `schema`, `fragmentName`, a
+required `initialization`, grouped `policy`, and all three grouped `limits`.
+The component receives only `documentHandle` plus view-facing props such as
+`placeholder`, `editable`, theme, toolbar, and event callbacks. Always destroy
+the handle in effect cleanup, as shown above; it owns the native session.
 
 - `{ type: 'localEmpty' }` — an empty local document
 - `{ type: 'localJson', json }` — a local document seeded from ProseMirror JSON
@@ -166,19 +207,15 @@ commands at the engine selection and throw typed v2 errors — including
 `WHOLE_DOCUMENT_REPLACEMENT_CONNECTED` while a collaboration transport is
 connected, as enforced by the engine.
 
-Props restored for the interactive contract: `editable` (default true),
+View-facing props include `editable` (default true),
 `autoFocus`, `autoCapitalize`, `autoCorrect`, `keyboardType`,
 `heightBehavior`, `showToolbar` (default true), `toolbarPlacement`,
 `toolbarItems`, `onToolbarAction`, `onRequestLink`, `onRequestImage`,
 `allowImageResizing`, `imageLoadingPolicy`, `onSelectionChange`,
-`onActiveStateChange`, `onFocus`, and `onBlur`. Props that intentionally did
-not return: `initialContent` / `initialJSON`, `schema`, `fragmentName`,
-`resourceLimits`, `maxLength`, engine-enforced `allowBase64Images`,
-`readOnly`, and `inputFilter` (all belong to the handle's creation config),
-and `autoDetectLinks`,
-`preserveSelectionOnValueJSONReset`, `selectionOnValueJSONReset` (removed
-with the legacy bridge; no v2 equivalent). `editable` only gates interaction
-in this mounted view; it never changes the handle's `policy.readOnly`.
+`onActiveStateChange`, `onFocus`, and `onBlur`. `editable` only gates
+interaction in this mounted view; it never changes the handle's
+`policy.readOnly`. See the 1.0.0 migration table in the
+[CHANGELOG](./CHANGELOG.md) for pre-cutover names and replacements.
 
 ## Customization
 
@@ -204,9 +241,8 @@ collaboration controller share one `NativeEditorDocumentHandle`; the controller
 never creates or destroys sessions. Rooms are **server-initialized**: the
 server speaks the y-sync protocol and sends the document during the handshake
 (the editor renders nothing until the server document is promoted). There are
-no client-side seeding or encoded-state APIs — see the migration table in the
-[CHANGELOG](./CHANGELOG.md) for how to move off `initialDocumentJson` /
-`initialEncodedState`.
+no client-side seeding or raw encoded-state APIs; see the 1.0.0 migration table
+in the [CHANGELOG](./CHANGELOG.md) for historical API names.
 
 ```tsx
 import React, { useEffect, useMemo } from 'react';
@@ -228,8 +264,6 @@ export function CollaborativeEditor({ documentId }: { documentId: string }) {
       }),
     [documentId]
   );
-  useEffect(() => () => documentHandle.destroy(), [documentHandle]);
-
   const collaboration = useYjsCollaboration({
     documentId,
     handle: documentHandle,
@@ -237,6 +271,7 @@ export function CollaborativeEditor({ documentId }: { documentId: string }) {
       new WebSocket(`wss://example.com/collaboration?documentId=${documentId}`),
     localAwareness: { userId: 'u-1', name: 'Ada', color: '#0A84FF' },
   });
+  useEffect(() => () => documentHandle.destroy(), [documentHandle]);
 
   return (
     <NativeRichTextEditor
@@ -256,8 +291,28 @@ export function CollaborativeEditor({ documentId }: { documentId: string }) {
 document JSON/revision, last error) and `peers` (`NativeEditorV2PeerInfo[]` —
 note `clientId` is a decimal **string**) for presence UI, and accepts
 `connect`, `retryIntervalMs`, `onPeersChange`, `onStateChange`, and `onError`
-options. Bind every `editorBindings` callback above so selection and focus
-changes compose with the explicit local awareness identity.
+options. Bind the complete `editorBindings` set above — `documentHandle`,
+`documentRevision`, `remoteSelections`, `onSelectionChange`, `onFocus`,
+`onBlur`, and `onLocalDocumentCommit` — so document rendering, local commits,
+and awareness stay on the one shared handle.
+
+### Reconnect recovery
+
+For an explicit recovery attempt (including a transport parked as
+incompatible), call `collaboration.reconnect()`; do not recreate the document
+handle or construct a second controller. It retires the live socket, then
+performs **detach → reattach → begin-connect** against the same native session
+before opening the fresh WebSocket:
+
+```tsx
+function recoverCollaboration() {
+  collaboration.reconnect();
+}
+```
+
+The hook cleans up its controller and socket on unmount. The owning component
+must still destroy `documentHandle` in its cleanup effect, after the hook has
+been declared, so the controller can detach before the session is destroyed.
 
 ### Offline snapshot restore
 
@@ -285,8 +340,10 @@ For more on collaboration wiring and source-of-truth rules, see the [Collaborati
 
 Custom schema content expressions support ProseMirror-style sequences,
 parentheses, alternation, `?`, `*`, `+`, and bounded/unbounded ranges such as
-`{2}`, `{1,3}`, and `{1,}`. Invalid, unresolved, or non-constructible schemas
-fall back to the default schema during native editor creation.
+`{2}`, `{1,3}`, and `{1,}`. The frozen creation contract rejects invalid,
+unknown, unresolved, or non-constructible schemas, as well as unknown
+configuration keys and invalid configuration values; it never falls back to a
+default schema during native editor creation.
 
 Image loading is bounded on both native platforms. Override the defaults on a
 prose viewer when needed:
@@ -313,17 +370,8 @@ All document, schema, collaboration, and image inputs are admitted through confi
 ```tsx
 const documentHandle = createNativeEditorDocumentHandle({
   initialization: { type: 'localEmpty' },
-  limits: {
-    resource: {
-      maxInputBytes: 20 * 1024 * 1024,
-      maxDocumentNodes: 100_000,
-      maxDocumentDepth: 256,
-      maxSchemaNodes: 1_024,
-      maxSchemaExpressionBytes: 64 * 1024,
-      maxCollaborationMessageBytes: 10 * 1024 * 1024,
-      maxEncodedStateBytes: 50 * 1024 * 1024,
-    },
-  },
+  // See Basic Usage for every resource, editing, and collaboration field.
+  limits: { resource: { maxInputBytes: 20 * 1024 * 1024 } },
 });
 ```
 
