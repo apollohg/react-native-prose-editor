@@ -2600,6 +2600,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     private func emitContentHeightIfNeeded(force: Bool = false, measuredHeight: CGFloat? = nil) {
+        let originatingEditorId = richTextView.editorId
         guard heightBehavior == .autoGrow else { return }
         let resolvedHeight = measuredHeight
             ?? (cachedAutoGrowContentHeight > 0 ? cachedAutoGrowContentHeight : richTextView.intrinsicContentSize.height)
@@ -2608,7 +2609,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         guard force || abs(contentHeight - lastEmittedContentHeight) > 0.5 else { return }
         cachedAutoGrowContentHeight = contentHeight
         lastEmittedContentHeight = contentHeight
-        onContentHeightChange(["contentHeight": contentHeight])
+        guard let event = Self.editorScopedEventPayload(
+            ["contentHeight": contentHeight],
+            originatingEditorId: originatingEditorId
+        ) else { return }
+        onContentHeightChange(event)
     }
 
     func setToolbarButtonsJson(_ toolbarButtonsJson: String?) {
@@ -2923,13 +2928,19 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     // MARK: - Focus Notifications
 
     @objc private func textViewDidBeginEditing(_ notification: Notification) {
+        let originatingEditorId = richTextView.textView.editorId
         installOutsideTapRecognizerIfNeeded()
         richTextView.textView.refreshSelectionVisualState()
         refreshMentionQuery()
-        onFocusChange(["isFocused": true])
+        guard let event = Self.editorScopedEventPayload(
+            ["isFocused": true],
+            originatingEditorId: originatingEditorId
+        ) else { return }
+        onFocusChange(event)
     }
 
     @objc private func textViewDidEndEditing(_ notification: Notification) {
+        let originatingEditorId = richTextView.textView.editorId
         if consumeToolbarFocusPreservationForBlur() {
             DispatchQueue.main.async { [weak self] in
                 _ = self?.richTextView.textView.becomeFirstResponder()
@@ -2940,7 +2951,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         uninstallOutsideTapRecognizer()
         richTextView.textView.refreshSelectionVisualState()
         clearMentionQueryStateAndHidePopover()
-        onFocusChange(["isFocused": false])
+        guard let event = Self.editorScopedEventPayload(
+            ["isFocused": false],
+            originatingEditorId: originatingEditorId
+        ) else { return }
+        onFocusChange(event)
     }
 
     @objc private func handleOutsideTap(_ recognizer: UITapGestureRecognizer) {
@@ -3046,6 +3061,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     // MARK: - EditorTextViewDelegate
 
     func editorTextView(_ textView: EditorTextView, selectionDidChange anchor: UInt32, head: UInt32) {
+        let originatingEditorId = textView.editorId
         let stateJSON = refreshToolbarStateFromEditorSelection()
         refreshSystemAssistantToolbarIfNeeded()
         refreshMentionQuery()
@@ -3054,7 +3070,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         if let stateJSON {
             event["stateJson"] = stateJSON
         }
-        onSelectionChange(event)
+        guard let scopedEvent = Self.editorScopedEventPayload(
+            event,
+            originatingEditorId: originatingEditorId
+        ) else { return }
+        onSelectionChange(scopedEvent)
     }
 
     func editorTextView(_ textView: EditorTextView, didReceiveUpdate updateJSON: String) {
@@ -3098,6 +3118,22 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             "documentRevision": documentRevision,
             "updateJson": updateJSON,
         ]
+    }
+
+    /// Every non-commit view event is labelled with the editor that produced
+    /// it, captured before refresh/rebind work can change the view binding.
+    static func editorScopedEventPayload(
+        _ payload: [String: Any],
+        originatingEditorId: UInt64
+    ) -> [String: Any]? {
+        guard originatingEditorId != 0,
+              let editorId = v2CanonicalUInt64String(String(originatingEditorId))
+        else {
+            return nil
+        }
+        var scopedPayload = payload
+        scopedPayload["editorId"] = editorId
+        return scopedPayload
     }
 
     @discardableResult
@@ -3268,8 +3304,13 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     private func dispatchAddonEvent(_ json: String) {
+        let originatingEditorId = richTextView.editorId
         lastAddonEventJSONForTestingValue = json
-        onAddonEvent(["eventJson": json])
+        guard let event = Self.editorScopedEventPayload(
+            ["eventJson": json],
+            originatingEditorId: originatingEditorId
+        ) else { return }
+        onAddonEvent(event)
     }
 
     private func documentVersion(fromUpdateJSON updateJSON: String?) -> String? {
@@ -3766,6 +3807,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     private func handleToolbarItemPress(_ item: NativeToolbarItem) {
+        let originatingEditorId = richTextView.editorId
         switch item.type {
         case .mark:
             guard let mark = item.mark else { return }
@@ -3796,7 +3838,11 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             richTextView.textView.performToolbarInsertNode(nodeType)
         case .action:
             guard let key = item.key else { return }
-            onToolbarAction(["key": key])
+            guard let event = Self.editorScopedEventPayload(
+                ["key": key],
+                originatingEditorId: originatingEditorId
+            ) else { return }
+            onToolbarAction(event)
         case .group:
             break
         case .separator:

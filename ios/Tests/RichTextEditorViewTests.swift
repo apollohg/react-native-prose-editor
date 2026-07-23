@@ -21,6 +21,25 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(event["updateJson"] as? String, updateJSON)
     }
 
+    func testEditorScopedNonCommitEventPayloadCapturesOnlyCanonicalOriginatingEditorIds() throws {
+        let event = try XCTUnwrap(
+            NativeEditorExpoView.editorScopedEventPayload(
+                ["anchor": 2, "head": 4],
+                originatingEditorId: 42
+            )
+        )
+
+        XCTAssertEqual(event["editorId"] as? String, "42")
+        XCTAssertEqual(event["anchor"] as? Int, 2)
+        XCTAssertEqual(event["head"] as? Int, 4)
+        XCTAssertNil(
+            NativeEditorExpoView.editorScopedEventPayload(
+                ["isFocused": true],
+                originatingEditorId: 0
+            )
+        )
+    }
+
     func testNonTextSelectionApplicationsClearBackwardTextDirection() throws {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

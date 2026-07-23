@@ -109,23 +109,23 @@ interface NativeSelectionEvent {
     anchor: number;
     head: number;
     stateJson?: string;
-    editorId?: string;
+    editorId: string;
     documentVersion?: string;
 }
 
 interface NativeFocusEvent {
     isFocused: boolean;
-    editorId?: string;
+    editorId: string;
 }
 
 interface NativeContentHeightEvent {
     contentHeight: number;
-    editorId?: string;
+    editorId: string;
 }
 
 interface NativeToolbarActionEvent {
     key: string;
-    editorId?: string;
+    editorId: string;
     updateJson?: string;
     stateJson?: string;
     documentRevision?: string;
@@ -133,7 +133,7 @@ interface NativeToolbarActionEvent {
 
 interface NativeAddonEvent {
     eventJson: string;
-    editorId?: string;
+    editorId: string;
 }
 
 const LINK_TOOLBAR_ACTION_KEY = '__native-editor-link__';
@@ -169,7 +169,9 @@ function parseSelectionFromUpdate(value: unknown): Selection | null {
 }
 
 function stringArray(value: unknown): string[] {
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+    return Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === 'string')
+        : [];
 }
 
 function booleanMap(value: unknown): Record<string, boolean> {
@@ -196,9 +198,7 @@ function parseActiveStateFromUpdate(value: unknown): ActiveState | null {
 }
 
 function isRevisionMismatchError(error: unknown): boolean {
-    return (
-        error instanceof NativeEditorV2OperationError && error.code === 'REVISION_MISMATCH'
-    );
+    return error instanceof NativeEditorV2OperationError && error.code === 'REVISION_MISMATCH';
 }
 
 interface NativeCommitPayload {
@@ -291,7 +291,13 @@ function mapToolbarItemsForNative(
             return {
                 ...item,
                 items: item.items.map((child) =>
-                    mapToolbarChildForNative(child, activeState, editable, onRequestLink, onRequestImage)
+                    mapToolbarChildForNative(
+                        child,
+                        activeState,
+                        editable,
+                        onRequestLink,
+                        onRequestImage
+                    )
                 ),
             };
         }
@@ -636,770 +642,797 @@ export interface NativeRichTextEditorCaretRect {
  * after every JS-driven change. A room document awaiting the server renders
  * nothing (loading), never an unshared fallback paragraph.
  */
-export const NativeRichTextEditor = forwardRef<
-    NativeRichTextEditorRef,
-    NativeRichTextEditorProps
->(function NativeRichTextEditor(
-    {
-        documentHandle,
-        documentRevision,
-        value,
-        valueJSON,
-        valueJSONRevision,
-        valueJSONUpdateMode = 'replace',
-        placeholder,
-        editable = true,
-        autoFocus = false,
-        autoCapitalize,
-        autoCorrect,
-        keyboardType,
-        heightBehavior = 'autoGrow',
-        showToolbar = true,
-        toolbarPlacement = 'keyboard',
-        toolbarItems = DEFAULT_EDITOR_TOOLBAR_ITEMS,
-        onToolbarAction,
-        onRequestLink,
-        onRequestImage,
-        imageLoadingPolicy,
-        accessibilityLabel,
-        accessibilityHint,
-        style,
-        containerStyle,
-        theme,
-        addons,
-        remoteSelections,
-        allowImageResizing = true,
-        onContentChange,
-        onContentChangeJSON,
-        onSelectionChange,
-        onActiveStateChange,
-        onHistoryStateChange,
-        onFocus,
-        onBlur,
-        onLocalDocumentCommit,
-    },
-    ref
-) {
-    _assertNativeEditorDocumentHandle(documentHandle);
-    const documentDescriptor = _getNativeEditorDocumentHandleDescriptor(documentHandle);
-
-    const serializedValueJson = useSerializedValue(
-        valueJSON,
-        (doc) => stringifyCachedJson(normalizeDocumentJson(doc, documentDescriptor)),
-        valueJSONRevision
-    );
-    const controlledValueJSON = useMemo(
-        () =>
-            serializedValueJson == null
-                ? undefined
-                : (JSON.parse(serializedValueJson) as DocumentJSON),
-        [serializedValueJson]
-    );
-
-    const document = useNativeEditorDocument({
-        handle: documentHandle,
-        value,
-        valueJSON: controlledValueJSON,
-        valueJSONUpdateMode,
-        revisionSignal: documentRevision ?? null,
-        onContentChange,
-        onContentChangeJSON,
-        onHistoryStateChange,
-        onLocalDocumentCommit,
-    });
-
-    const bridge = documentHandle.bridge;
-    const editorId = documentHandle.editorId;
-
-    // ── Prop refs ───────────────────────────────────────────────
-    const onSelectionChangeRef = useRef(onSelectionChange);
-    onSelectionChangeRef.current = onSelectionChange;
-    const onActiveStateChangeRef = useRef(onActiveStateChange);
-    onActiveStateChangeRef.current = onActiveStateChange;
-    const onFocusRef = useRef(onFocus);
-    onFocusRef.current = onFocus;
-    const onBlurRef = useRef(onBlur);
-    onBlurRef.current = onBlur;
-    const onToolbarActionRef = useRef(onToolbarAction);
-    onToolbarActionRef.current = onToolbarAction;
-    const onRequestLinkRef = useRef(onRequestLink);
-    onRequestLinkRef.current = onRequestLink;
-    const onRequestImageRef = useRef(onRequestImage);
-    onRequestImageRef.current = onRequestImage;
-    const onLocalDocumentCommitRef = useRef(onLocalDocumentCommit);
-    onLocalDocumentCommitRef.current = onLocalDocumentCommit;
-
-    // ── Engine-observed interactive state ───────────────────────
-    const [activeState, setActiveState] = useState<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
-    const [pushedUpdate, setPushedUpdate] = useState<{
-        json: string;
-        revision: number;
-        editorId: string;
-    } | null>(null);
-    const [autoGrowHeight, setAutoGrowHeight] = useState<number | null>(null);
-    const activeStateRef = useRef<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
-    const activeStateKeyRef = useRef<string | null>(null);
-    const selectionRef = useRef<Selection>({ type: 'text', anchor: 0, head: 0 });
-    const isFocusedRef = useRef(false);
-    const latestRevisionRef = useRef<string | null>(null);
-    const currentPushedUpdateEditorIdRef = useRef(editorId);
-    currentPushedUpdateEditorIdRef.current = editorId;
-    const pushRevisionRef = useRef(0);
-    const lastPushedEngineRevisionRef = useRef<string | null>(null);
-    const lastNativeDrivenRevisionRef = useRef<string | null>(null);
-    const lastAcceptedNativeCommitRevisionRef = useRef<string | null>(null);
-    const didObserveInitialRevisionRef = useRef(false);
-    const toolbarItemsSerializationCacheRef = useRef<{
-        toolbarItems: readonly EditorToolbarItem[];
-        editable: boolean;
-        isLinkActive: boolean;
-        allowsLink: boolean;
-        canRequestLink: boolean;
-        canRequestImage: boolean;
-        canInsertImage: boolean;
-        serialized: string;
-    } | null>(null);
-    const revisionScopeEditorIdRef = useRef(editorId);
-    const latestRevisionScopeEditorIdRef = useRef<string | null>(editorId);
-    const didRebindRevisionScope = revisionScopeEditorIdRef.current !== editorId;
-    if (didRebindRevisionScope) {
-        revisionScopeEditorIdRef.current = editorId;
-        latestRevisionScopeEditorIdRef.current = null;
-        latestRevisionRef.current = null;
-        selectionRef.current = { type: 'text', anchor: 0, head: 0 };
-        activeStateRef.current = EMPTY_ACTIVE_STATE;
-        activeStateKeyRef.current = null;
-        isFocusedRef.current = false;
-        toolbarItemsSerializationCacheRef.current = null;
-        setActiveState(EMPTY_ACTIVE_STATE);
-        setPushedUpdate(null);
-        setAutoGrowHeight(null);
-        pushRevisionRef.current = 0;
-        lastPushedEngineRevisionRef.current = null;
-        lastNativeDrivenRevisionRef.current = null;
-        lastAcceptedNativeCommitRevisionRef.current = null;
-        didObserveInitialRevisionRef.current = false;
-    } else if (latestRevisionScopeEditorIdRef.current === editorId) {
-        latestRevisionRef.current = document.documentRevision;
-    }
-
-    // A changed handle initially shares the previous hook render. Do not
-    // trust that render's revision: establish the new mutation base only by
-    // reading the currently bound handle after the rebind commits.
-    useEffect(() => {
-        if (
-            latestRevisionScopeEditorIdRef.current === editorId ||
-            documentHandle.isDestroyed
-        ) {
-            return;
-        }
-        latestRevisionRef.current = documentHandle.bridge.getState().documentRevision;
-        latestRevisionScopeEditorIdRef.current = editorId;
-    }, [documentHandle, editorId]);
-
-    const applyTypedUpdateState = useCallback(
-        (update: Pick<NativeEditorV2AtomicRenderSnapshot, 'selection' | 'activeState'>) => {
-            selectionRef.current = update.selection;
-            const nextActiveState = update.activeState;
-            activeStateRef.current = nextActiveState;
-            setActiveState(nextActiveState);
-            const key = stringifyCachedJson(nextActiveState);
-            if (key !== activeStateKeyRef.current) {
-                activeStateKeyRef.current = key;
-                onActiveStateChangeRef.current?.(nextActiveState);
-            }
+export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRichTextEditorProps>(
+    function NativeRichTextEditor(
+        {
+            documentHandle,
+            documentRevision,
+            value,
+            valueJSON,
+            valueJSONRevision,
+            valueJSONUpdateMode = 'replace',
+            placeholder,
+            editable = true,
+            autoFocus = false,
+            autoCapitalize,
+            autoCorrect,
+            keyboardType,
+            heightBehavior = 'autoGrow',
+            showToolbar = true,
+            toolbarPlacement = 'keyboard',
+            toolbarItems = DEFAULT_EDITOR_TOOLBAR_ITEMS,
+            onToolbarAction,
+            onRequestLink,
+            onRequestImage,
+            imageLoadingPolicy,
+            accessibilityLabel,
+            accessibilityHint,
+            style,
+            containerStyle,
+            theme,
+            addons,
+            remoteSelections,
+            allowImageResizing = true,
+            onContentChange,
+            onContentChangeJSON,
+            onSelectionChange,
+            onActiveStateChange,
+            onHistoryStateChange,
+            onFocus,
+            onBlur,
+            onLocalDocumentCommit,
         },
-        []
-    );
+        ref
+    ) {
+        _assertNativeEditorDocumentHandle(documentHandle);
+        const documentDescriptor = _getNativeEditorDocumentHandleDescriptor(documentHandle);
 
-    const applyUpdateState = useCallback((updateJson: string | null | undefined) => {
-        if (typeof updateJson !== 'string' || updateJson.length === 0) return null;
-        let parsed: Record<string, unknown>;
-        try {
-            const candidate = JSON.parse(updateJson) as unknown;
-            if (!isRecord(candidate)) return null;
-            parsed = candidate;
-        } catch {
-            return null;
-        }
-        const nextSelection = parseSelectionFromUpdate(parsed.selection);
-        const nextActiveState = parseActiveStateFromUpdate(parsed.activeState);
-        if (nextSelection && nextActiveState) {
-            applyTypedUpdateState({ selection: nextSelection, activeState: nextActiveState });
-        } else if (nextSelection) {
-            selectionRef.current = nextSelection;
-        } else if (nextActiveState) {
-            activeStateRef.current = nextActiveState;
-            setActiveState(nextActiveState);
-            const key = stringifyCachedJson(nextActiveState);
-            if (key !== activeStateKeyRef.current) {
-                activeStateKeyRef.current = key;
-                onActiveStateChangeRef.current?.(nextActiveState);
-            }
-        }
-        return parsed;
-    }, [applyTypedUpdateState]);
-
-    // ── View update pushes (JS-driven engine changes only) ──────
-
-    const pushEngineUpdateToView = useCallback(() => {
-        if (documentHandle.isDestroyed) return;
-        const sourceEditorId = documentHandle.editorId;
-        const allocation = allocateEditorUpdateRevision(pushRevisionRef.current);
-        if ('error' in allocation) {
-            bridge._emitAutonomousError(allocation.error);
-            return;
-        }
-        const snapshot = bridge.renderUpdate();
-        applyTypedUpdateState(snapshot);
-        lastPushedEngineRevisionRef.current = snapshot.documentVersion;
-        const updateJson = JSON.stringify(snapshot);
-        pushRevisionRef.current = allocation.revision;
-        setPushedUpdate(
-            sourceEditorId === currentPushedUpdateEditorIdRef.current
-                ? { json: updateJson, revision: allocation.revision, editorId: sourceEditorId }
-                : null
+        const serializedValueJson = useSerializedValue(
+            valueJSON,
+            (doc) => stringifyCachedJson(normalizeDocumentJson(doc, documentDescriptor)),
+            valueJSONRevision
         );
-    }, [applyTypedUpdateState, bridge, documentHandle]);
+        const controlledValueJSON = useMemo(
+            () =>
+                serializedValueJson == null
+                    ? undefined
+                    : (JSON.parse(serializedValueJson) as DocumentJSON),
+            [serializedValueJson]
+        );
 
-    // A pending update is owned by the handle that produced its snapshot.
-    // Drop it when this component rebinds, so no old session state reaches
-    // the next native view binding.
-    useEffect(() => {
-        setPushedUpdate((current) => (current?.editorId === editorId ? current : null));
-    }, [editorId]);
+        const document = useNativeEditorDocument({
+            handle: documentHandle,
+            value,
+            valueJSON: controlledValueJSON,
+            valueJSONUpdateMode,
+            revisionSignal: documentRevision ?? null,
+            onContentChange,
+            onContentChangeJSON,
+            onHistoryStateChange,
+            onLocalDocumentCommit,
+        });
 
-    // After a JS-driven engine change (controlled apply, remote commit,
-    // document-API mutation) the view learns the new state here. Native-
-    // driven commits (typing, native toolbar) already updated the view
-    // through the adapter and are never echoed back. The first observed
-    // revision is skipped: the view pulls the initial state natively on bind.
-    useEffect(() => {
-        // The document hook refreshes its state after the rebind commit. Its
-        // first render can therefore still contain A's revision; do not let
-        // that stale snapshot establish B's initial-observation state.
-        if (didRebindRevisionScope) return;
-        if (!document.isReady || document.documentRevision == null) return;
-        const revision = document.documentRevision;
-        if (!didObserveInitialRevisionRef.current) {
-            didObserveInitialRevisionRef.current = true;
-            lastPushedEngineRevisionRef.current = revision;
-            return;
+        const bridge = documentHandle.bridge;
+        const editorId = documentHandle.editorId;
+
+        // ── Prop refs ───────────────────────────────────────────────
+        const onSelectionChangeRef = useRef(onSelectionChange);
+        onSelectionChangeRef.current = onSelectionChange;
+        const onActiveStateChangeRef = useRef(onActiveStateChange);
+        onActiveStateChangeRef.current = onActiveStateChange;
+        const onFocusRef = useRef(onFocus);
+        onFocusRef.current = onFocus;
+        const onBlurRef = useRef(onBlur);
+        onBlurRef.current = onBlur;
+        const onToolbarActionRef = useRef(onToolbarAction);
+        onToolbarActionRef.current = onToolbarAction;
+        const onRequestLinkRef = useRef(onRequestLink);
+        onRequestLinkRef.current = onRequestLink;
+        const onRequestImageRef = useRef(onRequestImage);
+        onRequestImageRef.current = onRequestImage;
+        const onLocalDocumentCommitRef = useRef(onLocalDocumentCommit);
+        onLocalDocumentCommitRef.current = onLocalDocumentCommit;
+
+        // ── Engine-observed interactive state ───────────────────────
+        const [activeState, setActiveState] = useState<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
+        const [pushedUpdate, setPushedUpdate] = useState<{
+            json: string;
+            revision: number;
+            editorId: string;
+        } | null>(null);
+        const [autoGrowHeight, setAutoGrowHeight] = useState<number | null>(null);
+        const activeStateRef = useRef<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
+        const activeStateKeyRef = useRef<string | null>(null);
+        const selectionRef = useRef<Selection>({ type: 'text', anchor: 0, head: 0 });
+        const isFocusedRef = useRef(false);
+        const latestRevisionRef = useRef<string | null>(null);
+        const currentPushedUpdateEditorIdRef = useRef(editorId);
+        currentPushedUpdateEditorIdRef.current = editorId;
+        const pushedUpdateBindingGenerationRef = useRef(0);
+        const pushRevisionRef = useRef(0);
+        const lastPushedEngineRevisionRef = useRef<string | null>(null);
+        const lastNativeDrivenRevisionRef = useRef<string | null>(null);
+        const lastAcceptedNativeCommitRevisionRef = useRef<string | null>(null);
+        const didObserveInitialRevisionRef = useRef(false);
+        const toolbarItemsSerializationCacheRef = useRef<{
+            toolbarItems: readonly EditorToolbarItem[];
+            editable: boolean;
+            isLinkActive: boolean;
+            allowsLink: boolean;
+            canRequestLink: boolean;
+            canRequestImage: boolean;
+            canInsertImage: boolean;
+            serialized: string;
+        } | null>(null);
+        const revisionScopeEditorIdRef = useRef(editorId);
+        const latestRevisionScopeEditorIdRef = useRef<string | null>(editorId);
+        const didRebindRevisionScope = revisionScopeEditorIdRef.current !== editorId;
+        if (didRebindRevisionScope) {
+            pushedUpdateBindingGenerationRef.current += 1;
+            revisionScopeEditorIdRef.current = editorId;
+            latestRevisionScopeEditorIdRef.current = null;
+            latestRevisionRef.current = null;
+            selectionRef.current = { type: 'text', anchor: 0, head: 0 };
+            activeStateRef.current = EMPTY_ACTIVE_STATE;
+            activeStateKeyRef.current = null;
+            isFocusedRef.current = false;
+            toolbarItemsSerializationCacheRef.current = null;
+            setActiveState(EMPTY_ACTIVE_STATE);
+            setPushedUpdate(null);
+            setAutoGrowHeight(null);
+            pushRevisionRef.current = 0;
+            lastPushedEngineRevisionRef.current = null;
+            lastNativeDrivenRevisionRef.current = null;
+            lastAcceptedNativeCommitRevisionRef.current = null;
+            didObserveInitialRevisionRef.current = false;
+        } else if (latestRevisionScopeEditorIdRef.current === editorId) {
+            latestRevisionRef.current = document.documentRevision;
         }
-        if (revision === lastPushedEngineRevisionRef.current) return;
-        if (revision === lastNativeDrivenRevisionRef.current) {
-            lastPushedEngineRevisionRef.current = revision;
-            return;
-        }
-        // This is an external revision, not the one native just committed.
-        // Consume the one-shot token before pushing so native N can never
-        // suppress a later external N+1.
-        lastNativeDrivenRevisionRef.current = null;
-        pushEngineUpdateToView();
-    }, [
-        didRebindRevisionScope,
-        document.isReady,
-        document.documentRevision,
-        pushEngineUpdateToView,
-    ]);
 
-    // ── Engine mutation path (ref commands + toolbar requests) ──
-    const afterLocalEngineMutation = useCallback(() => {
-        onLocalDocumentCommitRef.current?.();
-        document.refresh();
-        pushEngineUpdateToView();
-    }, [document, pushEngineUpdateToView]);
-
-    const editableRef = useRef(editable);
-    editableRef.current = editable;
-
-    const runEngineMutation = useCallback(
-        (invoke: (baseDocumentRevision: string) => unknown) => {
-            if (!editableRef.current) {
-                throw new NativeEditorV2OperationError({
-                    domain: 'operation',
-                    code: 'MUTATION_REJECTED',
-                    message:
-                        'NativeRichTextEditor: mutation rejected while editable is false',
-                    requestId: null,
-                    operationIndex: null,
-                    limit: null,
-                    actual: null,
-                    details: null,
-                });
-            }
-            const baseRevision = latestRevisionRef.current;
-            if (baseRevision == null) {
-                // Engine not ready (room awaiting the server document).
+        // A changed handle initially shares the previous hook render. Do not
+        // trust that render's revision: establish the new mutation base only by
+        // reading the currently bound handle after the rebind commits.
+        useEffect(() => {
+            if (latestRevisionScopeEditorIdRef.current === editorId || documentHandle.isDestroyed) {
                 return;
             }
-            try {
-                invoke(baseRevision);
-            } catch (error) {
-                if (isRevisionMismatchError(error)) {
-                    // Refresh from the engine; NEVER retry against guessed
-                    // positions (native adapter parity).
-                    document.refresh();
+            latestRevisionRef.current = documentHandle.bridge.getState().documentRevision;
+            latestRevisionScopeEditorIdRef.current = editorId;
+        }, [documentHandle, editorId]);
+
+        const applyTypedUpdateState = useCallback(
+            (
+                update: Pick<NativeEditorV2AtomicRenderSnapshot, 'selection' | 'activeState'>,
+                isCurrent: () => boolean = () => true
+            ) => {
+                if (!isCurrent()) return false;
+                selectionRef.current = update.selection;
+                if (!isCurrent()) return false;
+                const nextActiveState = update.activeState;
+                activeStateRef.current = nextActiveState;
+                if (!isCurrent()) return false;
+                setActiveState(nextActiveState);
+                if (!isCurrent()) return false;
+                const key = stringifyCachedJson(nextActiveState);
+                if (key !== activeStateKeyRef.current) {
+                    if (!isCurrent()) return false;
+                    activeStateKeyRef.current = key;
+                    if (!isCurrent()) return false;
+                    onActiveStateChangeRef.current?.(nextActiveState);
+                }
+                return isCurrent();
+            },
+            []
+        );
+
+        const applyUpdateState = useCallback(
+            (updateJson: string | null | undefined) => {
+                if (typeof updateJson !== 'string' || updateJson.length === 0) return null;
+                let parsed: Record<string, unknown>;
+                try {
+                    const candidate = JSON.parse(updateJson) as unknown;
+                    if (!isRecord(candidate)) return null;
+                    parsed = candidate;
+                } catch {
+                    return null;
+                }
+                const nextSelection = parseSelectionFromUpdate(parsed.selection);
+                const nextActiveState = parseActiveStateFromUpdate(parsed.activeState);
+                if (nextSelection && nextActiveState) {
+                    applyTypedUpdateState({
+                        selection: nextSelection,
+                        activeState: nextActiveState,
+                    });
+                } else if (nextSelection) {
+                    selectionRef.current = nextSelection;
+                } else if (nextActiveState) {
+                    activeStateRef.current = nextActiveState;
+                    setActiveState(nextActiveState);
+                    const key = stringifyCachedJson(nextActiveState);
+                    if (key !== activeStateKeyRef.current) {
+                        activeStateKeyRef.current = key;
+                        onActiveStateChangeRef.current?.(nextActiveState);
+                    }
+                }
+                return parsed;
+            },
+            [applyTypedUpdateState]
+        );
+
+        // ── View update pushes (JS-driven engine changes only) ──────
+
+        const pushEngineUpdateToView = useCallback(() => {
+            if (documentHandle.isDestroyed) return;
+            const sourceEditorId = documentHandle.editorId;
+            const sourceBindingGeneration = pushedUpdateBindingGenerationRef.current;
+            const isCurrentSource = () =>
+                sourceEditorId === currentPushedUpdateEditorIdRef.current &&
+                sourceBindingGeneration === pushedUpdateBindingGenerationRef.current;
+            const allocation = allocateEditorUpdateRevision(pushRevisionRef.current);
+            if ('error' in allocation) {
+                bridge._emitAutonomousError(allocation.error);
+                return;
+            }
+            const snapshot = bridge.renderUpdate();
+            // renderUpdate can synchronously re-enter React and bind this
+            // component to another handle. Do not let any side effect from A
+            // reach B once that happens.
+            if (!isCurrentSource()) return;
+            const updateJson = JSON.stringify(snapshot);
+            if (!isCurrentSource()) return;
+            if (!applyTypedUpdateState(snapshot, isCurrentSource)) return;
+            if (!isCurrentSource()) return;
+            lastPushedEngineRevisionRef.current = snapshot.documentVersion;
+            if (!isCurrentSource()) return;
+            pushRevisionRef.current = allocation.revision;
+            if (!isCurrentSource()) return;
+            setPushedUpdate({
+                json: updateJson,
+                revision: allocation.revision,
+                editorId: sourceEditorId,
+            });
+        }, [applyTypedUpdateState, bridge, documentHandle]);
+
+        // A pending update is owned by the handle that produced its snapshot.
+        // Drop it when this component rebinds, so no old session state reaches
+        // the next native view binding.
+        useEffect(() => {
+            setPushedUpdate((current) => (current?.editorId === editorId ? current : null));
+        }, [editorId]);
+
+        // After a JS-driven engine change (controlled apply, remote commit,
+        // document-API mutation) the view learns the new state here. Native-
+        // driven commits (typing, native toolbar) already updated the view
+        // through the adapter and are never echoed back. The first observed
+        // revision is skipped: the view pulls the initial state natively on bind.
+        useEffect(() => {
+            // The document hook refreshes its state after the rebind commit. Its
+            // first render can therefore still contain A's revision; do not let
+            // that stale snapshot establish B's initial-observation state.
+            if (didRebindRevisionScope) return;
+            if (!document.isReady || document.documentRevision == null) return;
+            const revision = document.documentRevision;
+            if (!didObserveInitialRevisionRef.current) {
+                didObserveInitialRevisionRef.current = true;
+                lastPushedEngineRevisionRef.current = revision;
+                return;
+            }
+            if (revision === lastPushedEngineRevisionRef.current) return;
+            if (revision === lastNativeDrivenRevisionRef.current) {
+                lastPushedEngineRevisionRef.current = revision;
+                return;
+            }
+            // This is an external revision, not the one native just committed.
+            // Consume the one-shot token before pushing so native N can never
+            // suppress a later external N+1.
+            lastNativeDrivenRevisionRef.current = null;
+            pushEngineUpdateToView();
+        }, [
+            didRebindRevisionScope,
+            document.isReady,
+            document.documentRevision,
+            pushEngineUpdateToView,
+        ]);
+
+        // ── Engine mutation path (ref commands + toolbar requests) ──
+        const afterLocalEngineMutation = useCallback(() => {
+            onLocalDocumentCommitRef.current?.();
+            document.refresh();
+            pushEngineUpdateToView();
+        }, [document, pushEngineUpdateToView]);
+
+        const editableRef = useRef(editable);
+        editableRef.current = editable;
+
+        const runEngineMutation = useCallback(
+            (invoke: (baseDocumentRevision: string) => unknown) => {
+                if (!editableRef.current) {
+                    throw new NativeEditorV2OperationError({
+                        domain: 'operation',
+                        code: 'MUTATION_REJECTED',
+                        message: 'NativeRichTextEditor: mutation rejected while editable is false',
+                        requestId: null,
+                        operationIndex: null,
+                        limit: null,
+                        actual: null,
+                        details: null,
+                    });
+                }
+                const baseRevision = latestRevisionRef.current;
+                if (baseRevision == null) {
+                    // Engine not ready (room awaiting the server document).
                     return;
                 }
-                throw error;
-            }
-            afterLocalEngineMutation();
-        },
-        [afterLocalEngineMutation, document]
-    );
-
-    const applyEngineCommand = useCallback(
-        (command: Record<string, unknown>) => {
-            runEngineMutation((baseDocumentRevision) =>
-                bridge.applyCommand({ command, baseDocumentRevision })
-            );
-        },
-        [bridge, runEngineMutation]
-    );
-
-    const commandToggleMark = useCallback(
-        (markType: string) => applyEngineCommand({ type: 'toggleMark', markType }),
-        [applyEngineCommand]
-    );
-    const commandSetLink = useCallback(
-        (href: string) => {
-            const trimmedHref = href.trim();
-            if (!trimmedHref) return;
-            applyEngineCommand({
-                type: 'setMark',
-                markType: 'link',
-                attrs: { href: trimmedHref },
-            });
-        },
-        [applyEngineCommand]
-    );
-    const commandUnsetLink = useCallback(
-        () => applyEngineCommand({ type: 'unsetMark', markType: 'link' }),
-        [applyEngineCommand]
-    );
-    const commandToggleBlockquote = useCallback(
-        () => applyEngineCommand({ type: 'toggleBlockquote' }),
-        [applyEngineCommand]
-    );
-    const commandToggleHeading = useCallback(
-        (level: EditorToolbarHeadingLevel) =>
-            applyEngineCommand({ type: 'toggleHeading', level }),
-        [applyEngineCommand]
-    );
-    const commandToggleList = useCallback(
-        (listType: string) => {
-            if (activeStateRef.current.nodes[listType] === true) {
-                applyEngineCommand({ type: 'unwrapFromList' });
-                return;
-            }
-            applyEngineCommand({
-                type: 'wrapInList',
-                listType,
-                itemType: listType === 'taskList' ? 'taskItem' : 'listItem',
-            });
-        },
-        [applyEngineCommand]
-    );
-    const commandIndentListItem = useCallback(
-        () => applyEngineCommand({ type: 'indentListItem' }),
-        [applyEngineCommand]
-    );
-    const commandOutdentListItem = useCallback(
-        () => applyEngineCommand({ type: 'outdentListItem' }),
-        [applyEngineCommand]
-    );
-    const commandInsertNode = useCallback(
-        (nodeType: string) => applyEngineCommand({ type: 'insertNode', nodeType }),
-        [applyEngineCommand]
-    );
-    const commandInsertImage = useCallback(
-        (src: string, attrs?: Omit<ImageNodeAttributes, 'src'>) => {
-            applyEngineCommand({
-                type: 'insertContentJson',
-                json: buildImageFragmentJson({ src, ...attrs }, documentDescriptor),
-            });
-        },
-        [applyEngineCommand, documentDescriptor]
-    );
-    const commandInsertText = useCallback(
-        (text: string) => {
-            if (!text) return;
-            runEngineMutation((baseDocumentRevision) =>
-                bridge.applyInput({ text, baseDocumentRevision })
-            );
-        },
-        [bridge, runEngineMutation]
-    );
-    const commandInsertContentHtml = useCallback(
-        (html: string) => applyEngineCommand({ type: 'insertContentHtml', html }),
-        [applyEngineCommand]
-    );
-    const commandInsertContentJson = useCallback(
-        (doc: DocumentJSON) => applyEngineCommand({ type: 'insertContentJson', json: doc }),
-        [applyEngineCommand]
-    );
-
-    // ── Link / image request flows ──────────────────────────────
-    const openLinkRequest = useCallback(() => {
-        const linkAttrs = activeStateRef.current.markAttrs?.link;
-        onRequestLinkRef.current?.({
-            href: typeof linkAttrs?.href === 'string' ? linkAttrs.href : undefined,
-            isActive: activeStateRef.current.marks.link === true,
-            selection: selectionRef.current,
-            setLink: commandSetLink,
-            unsetLink: commandUnsetLink,
-        });
-    }, [commandSetLink, commandUnsetLink]);
-
-    const openImageRequest = useCallback(() => {
-        onRequestImageRef.current?.({
-            selection: selectionRef.current,
-            insertImage: commandInsertImage,
-        });
-    }, [commandInsertImage]);
-
-    // ── Ref surface ─────────────────────────────────────────────
-    const nativeViewRef = useRef<NativeEditorViewHandle | null>(null);
-    useImperativeHandle(
-        ref,
-        (): NativeRichTextEditorRef => ({
-            focus() {
-                nativeViewRef.current?.focus?.();
+                try {
+                    invoke(baseRevision);
+                } catch (error) {
+                    if (isRevisionMismatchError(error)) {
+                        // Refresh from the engine; NEVER retry against guessed
+                        // positions (native adapter parity).
+                        document.refresh();
+                        return;
+                    }
+                    throw error;
+                }
+                afterLocalEngineMutation();
             },
-            blur() {
-                nativeViewRef.current?.blur?.();
+            [afterLocalEngineMutation, document]
+        );
+
+        const applyEngineCommand = useCallback(
+            (command: Record<string, unknown>) => {
+                runEngineMutation((baseDocumentRevision) =>
+                    bridge.applyCommand({ command, baseDocumentRevision })
+                );
             },
-            toggleMark: commandToggleMark,
-            setLink: commandSetLink,
-            unsetLink: commandUnsetLink,
-            toggleBlockquote: commandToggleBlockquote,
-            toggleHeading: commandToggleHeading,
-            toggleList: commandToggleList,
-            indentListItem: commandIndentListItem,
-            outdentListItem: commandOutdentListItem,
-            insertNode: commandInsertNode,
-            insertImage: commandInsertImage,
-            insertText: commandInsertText,
-            insertContentHtml: commandInsertContentHtml,
-            insertContentJson: commandInsertContentJson,
-            setContent: document.setContent,
-            setContentJson: document.setContentJson,
-            clearContent: document.clearContent,
-            getContent: document.getContent,
-            getContentJson: document.getContentJson,
-            getTextContent: document.getTextContent,
-            async getCaretRect(): Promise<NativeRichTextEditorCaretRect | null> {
-                const nativeView = nativeViewRef.current;
-                if (!nativeView?.getCaretRect) return null;
-                const raw = await Promise.resolve(nativeView.getCaretRect());
-                return parseCaretRectJson(raw);
+            [bridge, runEngineMutation]
+        );
+
+        const commandToggleMark = useCallback(
+            (markType: string) => applyEngineCommand({ type: 'toggleMark', markType }),
+            [applyEngineCommand]
+        );
+        const commandSetLink = useCallback(
+            (href: string) => {
+                const trimmedHref = href.trim();
+                if (!trimmedHref) return;
+                applyEngineCommand({
+                    type: 'setMark',
+                    markType: 'link',
+                    attrs: { href: trimmedHref },
+                });
             },
-            undo: document.undo,
-            redo: document.redo,
-            canUndo: document.canUndo,
-            canRedo: document.canRedo,
-        }),
-        [
-            document,
-            commandToggleMark,
-            commandSetLink,
-            commandUnsetLink,
-            commandToggleBlockquote,
-            commandToggleHeading,
-            commandToggleList,
-            commandIndentListItem,
-            commandOutdentListItem,
-            commandInsertNode,
-            commandInsertImage,
-            commandInsertText,
-            commandInsertContentHtml,
-            commandInsertContentJson,
-        ]
-    );
+            [applyEngineCommand]
+        );
+        const commandUnsetLink = useCallback(
+            () => applyEngineCommand({ type: 'unsetMark', markType: 'link' }),
+            [applyEngineCommand]
+        );
+        const commandToggleBlockquote = useCallback(
+            () => applyEngineCommand({ type: 'toggleBlockquote' }),
+            [applyEngineCommand]
+        );
+        const commandToggleHeading = useCallback(
+            (level: EditorToolbarHeadingLevel) =>
+                applyEngineCommand({ type: 'toggleHeading', level }),
+            [applyEngineCommand]
+        );
+        const commandToggleList = useCallback(
+            (listType: string) => {
+                if (activeStateRef.current.nodes[listType] === true) {
+                    applyEngineCommand({ type: 'unwrapFromList' });
+                    return;
+                }
+                applyEngineCommand({
+                    type: 'wrapInList',
+                    listType,
+                    itemType: listType === 'taskList' ? 'taskItem' : 'listItem',
+                });
+            },
+            [applyEngineCommand]
+        );
+        const commandIndentListItem = useCallback(
+            () => applyEngineCommand({ type: 'indentListItem' }),
+            [applyEngineCommand]
+        );
+        const commandOutdentListItem = useCallback(
+            () => applyEngineCommand({ type: 'outdentListItem' }),
+            [applyEngineCommand]
+        );
+        const commandInsertNode = useCallback(
+            (nodeType: string) => applyEngineCommand({ type: 'insertNode', nodeType }),
+            [applyEngineCommand]
+        );
+        const commandInsertImage = useCallback(
+            (src: string, attrs?: Omit<ImageNodeAttributes, 'src'>) => {
+                applyEngineCommand({
+                    type: 'insertContentJson',
+                    json: buildImageFragmentJson({ src, ...attrs }, documentDescriptor),
+                });
+            },
+            [applyEngineCommand, documentDescriptor]
+        );
+        const commandInsertText = useCallback(
+            (text: string) => {
+                if (!text) return;
+                runEngineMutation((baseDocumentRevision) =>
+                    bridge.applyInput({ text, baseDocumentRevision })
+                );
+            },
+            [bridge, runEngineMutation]
+        );
+        const commandInsertContentHtml = useCallback(
+            (html: string) => applyEngineCommand({ type: 'insertContentHtml', html }),
+            [applyEngineCommand]
+        );
+        const commandInsertContentJson = useCallback(
+            (doc: DocumentJSON) => applyEngineCommand({ type: 'insertContentJson', json: doc }),
+            [applyEngineCommand]
+        );
 
-    // ── Native event handlers ───────────────────────────────────
-    const isForThisEditor = useCallback(
-        (payload: { editorId?: string }) => payload.editorId == null || payload.editorId === editorId,
-        [editorId]
-    );
+        // ── Link / image request flows ──────────────────────────────
+        const openLinkRequest = useCallback(() => {
+            const linkAttrs = activeStateRef.current.markAttrs?.link;
+            onRequestLinkRef.current?.({
+                href: typeof linkAttrs?.href === 'string' ? linkAttrs.href : undefined,
+                isActive: activeStateRef.current.marks.link === true,
+                selection: selectionRef.current,
+                setLink: commandSetLink,
+                unsetLink: commandUnsetLink,
+            });
+        }, [commandSetLink, commandUnsetLink]);
 
-    const handleEditorUpdate = useCallback(
-        (event: NativeSyntheticEvent<NativeUpdateEvent>) => {
-            if (documentHandle.isDestroyed) return;
-            const accepted = acceptNativeCommitPayload(
-                event.nativeEvent,
-                documentHandle.editorId,
-                lastAcceptedNativeCommitRevisionRef.current
-            );
-            if (accepted == null) return;
-            // Record both native-scoped revisions before any observable
-            // state/callback/refresh work. This makes duplicate delivery and
-            // the handle's same-revision signal deterministic.
-            lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
-            lastNativeDrivenRevisionRef.current = accepted.documentRevision;
-            applyTypedUpdateState(accepted.snapshot);
-            // The adapter already committed; re-read for content callbacks
-            // and let collaboration flush the outbound frame.
-            document.refresh();
-            onLocalDocumentCommitRef.current?.();
-        },
-        [applyTypedUpdateState, document, documentHandle]
-    );
+        const openImageRequest = useCallback(() => {
+            onRequestImageRef.current?.({
+                selection: selectionRef.current,
+                insertImage: commandInsertImage,
+            });
+        }, [commandInsertImage]);
 
-    const handleSelectionChange = useCallback(
-        (event: NativeSyntheticEvent<NativeSelectionEvent>) => {
-            if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
-            const { anchor, head, stateJson } = event.nativeEvent;
-            let selection: Selection = { type: 'text', anchor, head };
-            const parsed = applyUpdateState(stateJson);
-            const parsedSelection = parseSelectionFromUpdate(parsed?.selection);
-            if (parsedSelection) {
-                selection = parsedSelection;
-            }
-            selectionRef.current = selection;
-            onSelectionChangeRef.current?.(selection);
-        },
-        [applyUpdateState, documentHandle, isForThisEditor]
-    );
+        // ── Ref surface ─────────────────────────────────────────────
+        const nativeViewRef = useRef<NativeEditorViewHandle | null>(null);
+        useImperativeHandle(
+            ref,
+            (): NativeRichTextEditorRef => ({
+                focus() {
+                    nativeViewRef.current?.focus?.();
+                },
+                blur() {
+                    nativeViewRef.current?.blur?.();
+                },
+                toggleMark: commandToggleMark,
+                setLink: commandSetLink,
+                unsetLink: commandUnsetLink,
+                toggleBlockquote: commandToggleBlockquote,
+                toggleHeading: commandToggleHeading,
+                toggleList: commandToggleList,
+                indentListItem: commandIndentListItem,
+                outdentListItem: commandOutdentListItem,
+                insertNode: commandInsertNode,
+                insertImage: commandInsertImage,
+                insertText: commandInsertText,
+                insertContentHtml: commandInsertContentHtml,
+                insertContentJson: commandInsertContentJson,
+                setContent: document.setContent,
+                setContentJson: document.setContentJson,
+                clearContent: document.clearContent,
+                getContent: document.getContent,
+                getContentJson: document.getContentJson,
+                getTextContent: document.getTextContent,
+                async getCaretRect(): Promise<NativeRichTextEditorCaretRect | null> {
+                    const nativeView = nativeViewRef.current;
+                    if (!nativeView?.getCaretRect) return null;
+                    const raw = await Promise.resolve(nativeView.getCaretRect());
+                    return parseCaretRectJson(raw);
+                },
+                undo: document.undo,
+                redo: document.redo,
+                canUndo: document.canUndo,
+                canRedo: document.canRedo,
+            }),
+            [
+                document,
+                commandToggleMark,
+                commandSetLink,
+                commandUnsetLink,
+                commandToggleBlockquote,
+                commandToggleHeading,
+                commandToggleList,
+                commandIndentListItem,
+                commandOutdentListItem,
+                commandInsertNode,
+                commandInsertImage,
+                commandInsertText,
+                commandInsertContentHtml,
+                commandInsertContentJson,
+            ]
+        );
 
-    const handleFocusChange = useCallback(
-        (event: NativeSyntheticEvent<NativeFocusEvent>) => {
-            if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
-            const focused = event.nativeEvent.isFocused;
-            const wasFocused = isFocusedRef.current;
-            isFocusedRef.current = focused;
-            if (focused && !wasFocused) {
-                onFocusRef.current?.();
-            } else if (!focused && wasFocused) {
-                onBlurRef.current?.();
-            }
-        },
-        [documentHandle, isForThisEditor]
-    );
+        // ── Native event handlers ───────────────────────────────────
+        const isForThisEditor = useCallback(
+            (payload: { editorId: string }) => payload.editorId === editorId,
+            [editorId]
+        );
 
-    const handleContentHeightChange = useCallback(
-        (event: NativeSyntheticEvent<NativeContentHeightEvent>) => {
-            if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
-            if (heightBehavior !== 'autoGrow') return;
-            const density = Platform.OS === 'android' ? PixelRatio.get() : 1;
-            const nextHeight = Math.ceil(event.nativeEvent.contentHeight / density);
-            if (!(nextHeight > 0)) return;
-            setAutoGrowHeight((prev) => (prev === nextHeight ? prev : nextHeight));
-        },
-        [documentHandle, heightBehavior, isForThisEditor]
-    );
-
-    const handleToolbarAction = useCallback(
-        (event: NativeSyntheticEvent<NativeToolbarActionEvent>) => {
-            if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
-            const { key, updateJson, stateJson, documentRevision } = event.nativeEvent;
-            // A toolbar event carrying update data is a native commit. It
-            // must satisfy the same atomic admission path as typing; a pure
-            // action (link/image/custom key) has no commit to refresh.
-            if (updateJson != null || documentRevision != null) {
-                if (typeof updateJson !== 'string' || typeof documentRevision !== 'string') return;
+        const handleEditorUpdate = useCallback(
+            (event: NativeSyntheticEvent<NativeUpdateEvent>) => {
+                if (documentHandle.isDestroyed) return;
                 const accepted = acceptNativeCommitPayload(
-                    {
-                        editorId: event.nativeEvent.editorId ?? '',
-                        documentRevision,
-                        updateJson,
-                    },
+                    event.nativeEvent,
                     documentHandle.editorId,
                     lastAcceptedNativeCommitRevisionRef.current
                 );
                 if (accepted == null) return;
+                // Record both native-scoped revisions before any observable
+                // state/callback/refresh work. This makes duplicate delivery and
+                // the handle's same-revision signal deterministic.
                 lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
                 lastNativeDrivenRevisionRef.current = accepted.documentRevision;
                 applyTypedUpdateState(accepted.snapshot);
+                // The adapter already committed; re-read for content callbacks
+                // and let collaboration flush the outbound frame.
                 document.refresh();
                 onLocalDocumentCommitRef.current?.();
-            } else if (typeof stateJson === 'string') {
-                applyUpdateState(stateJson);
-            }
-            if (key === LINK_TOOLBAR_ACTION_KEY) {
-                openLinkRequest();
-                return;
-            }
-            if (key === IMAGE_TOOLBAR_ACTION_KEY) {
-                openImageRequest();
-                return;
-            }
-            onToolbarActionRef.current?.(key);
-        },
-        [
-            applyTypedUpdateState,
-            applyUpdateState,
-            document,
-            documentHandle,
-            isForThisEditor,
-            openImageRequest,
-            openLinkRequest,
-        ]
-    );
-
-    const handleAddonEvent = useCallback(
-        (_event: NativeSyntheticEvent<NativeAddonEvent>) => {
-            // Addon (mention) queries are served natively in v2; there is no
-            // JS suggestion feed on the document-handle surface.
-        },
-        []
-    );
-
-    // ── Serialized view props ───────────────────────────────────
-    const themeJson = useSerializedValue(theme, serializeEditorTheme);
-    const addonsJson = useSerializedValue(addons, (value) => serializeEditorAddons(value));
-    const imageLoadingPolicyJson = useSerializedValue(imageLoadingPolicy, (value) =>
-        serializeEditorImageLoadingPolicy(value)
-    );
-    const remoteSelectionsJson = useSerializedValue(remoteSelections, (selections) =>
-        serializeRemoteSelections(selections)
-    );
-
-    const isLinkActive = activeState.marks.link === true;
-    const allowsLink = activeState.allowedMarks.includes('link');
-    const canInsertImage = activeState.insertableNodes.includes(IMAGE_NODE_NAME);
-    const canRequestLink = typeof onRequestLink === 'function';
-    const canRequestImage = typeof onRequestImage === 'function';
-    const cachedToolbarItems = toolbarItemsSerializationCacheRef.current;
-    let toolbarItemsJson: string;
-    if (
-        cachedToolbarItems &&
-        cachedToolbarItems.toolbarItems === toolbarItems &&
-        cachedToolbarItems.editable === editable &&
-        cachedToolbarItems.isLinkActive === isLinkActive &&
-        cachedToolbarItems.allowsLink === allowsLink &&
-        cachedToolbarItems.canRequestLink === canRequestLink &&
-        cachedToolbarItems.canRequestImage === canRequestImage &&
-        cachedToolbarItems.canInsertImage === canInsertImage
-    ) {
-        toolbarItemsJson = cachedToolbarItems.serialized;
-    } else {
-        const mappedItems = mapToolbarItemsForNative(
-            toolbarItems,
-            activeState,
-            editable,
-            onRequestLink,
-            onRequestImage
+            },
+            [applyTypedUpdateState, document, documentHandle]
         );
-        toolbarItemsJson = stringifyCachedJson(mappedItems);
-        toolbarItemsSerializationCacheRef.current = {
-            toolbarItems,
-            editable,
-            isLinkActive,
-            allowsLink,
-            canRequestLink,
-            canRequestImage,
-            canInsertImage,
-            serialized: toolbarItemsJson,
-        };
-    }
 
-    // A room document awaiting the server renders nothing (loading), never an
-    // unshared fallback paragraph.
-    if (!document.isReady) return null;
+        const handleSelectionChange = useCallback(
+            (event: NativeSyntheticEvent<NativeSelectionEvent>) => {
+                if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
+                const { anchor, head, stateJson } = event.nativeEvent;
+                let selection: Selection = { type: 'text', anchor, head };
+                const parsed = applyUpdateState(stateJson);
+                const parsedSelection = parseSelectionFromUpdate(parsed?.selection);
+                if (parsedSelection) {
+                    selection = parsedSelection;
+                }
+                selectionRef.current = selection;
+                onSelectionChangeRef.current?.(selection);
+            },
+            [applyUpdateState, documentHandle, isForThisEditor]
+        );
 
-    const usesNativeKeyboardToolbar =
-        toolbarPlacement === 'keyboard' && (Platform.OS === 'ios' || Platform.OS === 'android');
-    const shouldRenderJsToolbar = showToolbar && !usesNativeKeyboardToolbar && editable;
-    const inlineToolbarMarginTop = theme?.toolbar?.marginTop ?? 8;
-    const containerMinHeight = StyleSheet.flatten(containerStyle)?.minHeight;
-    const nativeViewStyleParts: StyleProp<ViewStyle>[] = [];
-    if (containerMinHeight != null) {
-        nativeViewStyleParts.push({ minHeight: containerMinHeight });
-    }
-    if (style != null) {
-        nativeViewStyleParts.push(style);
-    }
-    if (heightBehavior === 'autoGrow' && autoGrowHeight != null) {
-        nativeViewStyleParts.push({ height: autoGrowHeight });
-    }
-    const nativeViewStyle =
-        nativeViewStyleParts.length <= 1 ? nativeViewStyleParts[0] : nativeViewStyleParts;
-    const currentPushedUpdate = pushedUpdate?.editorId === editorId ? pushedUpdate : null;
+        const handleFocusChange = useCallback(
+            (event: NativeSyntheticEvent<NativeFocusEvent>) => {
+                if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
+                const focused = event.nativeEvent.isFocused;
+                const wasFocused = isFocusedRef.current;
+                isFocusedRef.current = focused;
+                if (focused && !wasFocused) {
+                    onFocusRef.current?.();
+                } else if (!focused && wasFocused) {
+                    onBlurRef.current?.();
+                }
+            },
+            [documentHandle, isForThisEditor]
+        );
 
-    return (
-        <View style={[styles.container, containerStyle]}>
-            <NativeEditorView
-                ref={nativeViewRef}
-                style={nativeViewStyle}
-                accessibilityLabel={accessibilityLabel}
-                accessibilityHint={accessibilityHint}
-                editorId={editorId}
-                placeholder={placeholder}
-                editable={editable}
-                autoFocus={autoFocus}
-                autoCapitalize={autoCapitalize}
-                autoCorrect={autoCorrect}
-                keyboardType={keyboardType}
-                showToolbar={showToolbar}
-                toolbarPlacement={toolbarPlacement}
-                heightBehavior={heightBehavior}
-                allowImageResizing={allowImageResizing}
-                imageLoadingPolicyJson={imageLoadingPolicyJson}
-                themeJson={themeJson}
-                addonsJson={addonsJson}
-                toolbarItemsJson={toolbarItemsJson}
-                remoteSelectionsJson={remoteSelectionsJson}
-                editorUpdateJson={currentPushedUpdate?.json}
-                editorUpdateEditorId={currentPushedUpdate?.editorId}
-                editorUpdateRevision={currentPushedUpdate?.revision ?? 0}
-                onEditorUpdate={handleEditorUpdate}
-                onSelectionChange={handleSelectionChange}
-                onFocusChange={handleFocusChange}
-                onContentHeightChange={handleContentHeightChange}
-                onToolbarAction={handleToolbarAction}
-                onAddonEvent={handleAddonEvent}
-            />
-            {shouldRenderJsToolbar ? (
-                <View
-                    testID='native-editor-js-toolbar'
-                    style={[styles.inlineToolbar, { marginTop: inlineToolbarMarginTop }]}>
-                    <EditorToolbar
-                        activeState={activeState}
-                        historyState={document.historyState}
-                        toolbarItems={toolbarItems}
-                        theme={theme?.toolbar}
-                        showTopBorder={theme?.toolbar?.showTopBorder ?? false}
-                        preserveEditorFocus={false}
-                        onToggleMark={commandToggleMark}
-                        onToggleListType={(listType: EditorToolbarListType) =>
-                            commandToggleList(listType)
-                        }
-                        onToggleHeading={commandToggleHeading}
-                        onToggleBlockquote={commandToggleBlockquote}
-                        onInsertNodeType={commandInsertNode}
-                        onRunCommand={(command: EditorToolbarCommand) => {
-                            switch (command) {
-                                case 'indentList':
-                                    commandIndentListItem();
-                                    break;
-                                case 'outdentList':
-                                    commandOutdentListItem();
-                                    break;
-                                case 'undo':
-                                    document.undo();
-                                    break;
-                                case 'redo':
-                                    document.redo();
-                                    break;
+        const handleContentHeightChange = useCallback(
+            (event: NativeSyntheticEvent<NativeContentHeightEvent>) => {
+                if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
+                if (heightBehavior !== 'autoGrow') return;
+                const density = Platform.OS === 'android' ? PixelRatio.get() : 1;
+                const nextHeight = Math.ceil(event.nativeEvent.contentHeight / density);
+                if (!(nextHeight > 0)) return;
+                setAutoGrowHeight((prev) => (prev === nextHeight ? prev : nextHeight));
+            },
+            [documentHandle, heightBehavior, isForThisEditor]
+        );
+
+        const handleToolbarAction = useCallback(
+            (event: NativeSyntheticEvent<NativeToolbarActionEvent>) => {
+                if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
+                const { key, updateJson, stateJson, documentRevision } = event.nativeEvent;
+                // A toolbar event carrying update data is a native commit. It
+                // must satisfy the same atomic admission path as typing; a pure
+                // action (link/image/custom key) has no commit to refresh.
+                if (updateJson != null || documentRevision != null) {
+                    if (typeof updateJson !== 'string' || typeof documentRevision !== 'string')
+                        return;
+                    const accepted = acceptNativeCommitPayload(
+                        {
+                            editorId: event.nativeEvent.editorId,
+                            documentRevision,
+                            updateJson,
+                        },
+                        documentHandle.editorId,
+                        lastAcceptedNativeCommitRevisionRef.current
+                    );
+                    if (accepted == null) return;
+                    lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
+                    lastNativeDrivenRevisionRef.current = accepted.documentRevision;
+                    applyTypedUpdateState(accepted.snapshot);
+                    document.refresh();
+                    onLocalDocumentCommitRef.current?.();
+                } else if (typeof stateJson === 'string') {
+                    applyUpdateState(stateJson);
+                }
+                if (key === LINK_TOOLBAR_ACTION_KEY) {
+                    openLinkRequest();
+                    return;
+                }
+                if (key === IMAGE_TOOLBAR_ACTION_KEY) {
+                    openImageRequest();
+                    return;
+                }
+                onToolbarActionRef.current?.(key);
+            },
+            [
+                applyTypedUpdateState,
+                applyUpdateState,
+                document,
+                documentHandle,
+                isForThisEditor,
+                openImageRequest,
+                openLinkRequest,
+            ]
+        );
+
+        const handleAddonEvent = useCallback(
+            (event: NativeSyntheticEvent<NativeAddonEvent>) => {
+                if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
+                // Addon (mention) queries are served natively in v2; there is no
+                // JS suggestion feed on the document-handle surface.
+            },
+            [documentHandle, isForThisEditor]
+        );
+
+        // ── Serialized view props ───────────────────────────────────
+        const themeJson = useSerializedValue(theme, serializeEditorTheme);
+        const addonsJson = useSerializedValue(addons, (value) => serializeEditorAddons(value));
+        const imageLoadingPolicyJson = useSerializedValue(imageLoadingPolicy, (value) =>
+            serializeEditorImageLoadingPolicy(value)
+        );
+        const remoteSelectionsJson = useSerializedValue(remoteSelections, (selections) =>
+            serializeRemoteSelections(selections)
+        );
+
+        const isLinkActive = activeState.marks.link === true;
+        const allowsLink = activeState.allowedMarks.includes('link');
+        const canInsertImage = activeState.insertableNodes.includes(IMAGE_NODE_NAME);
+        const canRequestLink = typeof onRequestLink === 'function';
+        const canRequestImage = typeof onRequestImage === 'function';
+        const cachedToolbarItems = toolbarItemsSerializationCacheRef.current;
+        let toolbarItemsJson: string;
+        if (
+            cachedToolbarItems &&
+            cachedToolbarItems.toolbarItems === toolbarItems &&
+            cachedToolbarItems.editable === editable &&
+            cachedToolbarItems.isLinkActive === isLinkActive &&
+            cachedToolbarItems.allowsLink === allowsLink &&
+            cachedToolbarItems.canRequestLink === canRequestLink &&
+            cachedToolbarItems.canRequestImage === canRequestImage &&
+            cachedToolbarItems.canInsertImage === canInsertImage
+        ) {
+            toolbarItemsJson = cachedToolbarItems.serialized;
+        } else {
+            const mappedItems = mapToolbarItemsForNative(
+                toolbarItems,
+                activeState,
+                editable,
+                onRequestLink,
+                onRequestImage
+            );
+            toolbarItemsJson = stringifyCachedJson(mappedItems);
+            toolbarItemsSerializationCacheRef.current = {
+                toolbarItems,
+                editable,
+                isLinkActive,
+                allowsLink,
+                canRequestLink,
+                canRequestImage,
+                canInsertImage,
+                serialized: toolbarItemsJson,
+            };
+        }
+
+        // A room document awaiting the server renders nothing (loading), never an
+        // unshared fallback paragraph.
+        if (!document.isReady) return null;
+
+        const usesNativeKeyboardToolbar =
+            toolbarPlacement === 'keyboard' && (Platform.OS === 'ios' || Platform.OS === 'android');
+        const shouldRenderJsToolbar = showToolbar && !usesNativeKeyboardToolbar && editable;
+        const inlineToolbarMarginTop = theme?.toolbar?.marginTop ?? 8;
+        const containerMinHeight = StyleSheet.flatten(containerStyle)?.minHeight;
+        const nativeViewStyleParts: StyleProp<ViewStyle>[] = [];
+        if (containerMinHeight != null) {
+            nativeViewStyleParts.push({ minHeight: containerMinHeight });
+        }
+        if (style != null) {
+            nativeViewStyleParts.push(style);
+        }
+        if (heightBehavior === 'autoGrow' && autoGrowHeight != null) {
+            nativeViewStyleParts.push({ height: autoGrowHeight });
+        }
+        const nativeViewStyle =
+            nativeViewStyleParts.length <= 1 ? nativeViewStyleParts[0] : nativeViewStyleParts;
+        const currentPushedUpdate = pushedUpdate?.editorId === editorId ? pushedUpdate : null;
+
+        return (
+            <View style={[styles.container, containerStyle]}>
+                <NativeEditorView
+                    ref={nativeViewRef}
+                    style={nativeViewStyle}
+                    accessibilityLabel={accessibilityLabel}
+                    accessibilityHint={accessibilityHint}
+                    editorId={editorId}
+                    placeholder={placeholder}
+                    editable={editable}
+                    autoFocus={autoFocus}
+                    autoCapitalize={autoCapitalize}
+                    autoCorrect={autoCorrect}
+                    keyboardType={keyboardType}
+                    showToolbar={showToolbar}
+                    toolbarPlacement={toolbarPlacement}
+                    heightBehavior={heightBehavior}
+                    allowImageResizing={allowImageResizing}
+                    imageLoadingPolicyJson={imageLoadingPolicyJson}
+                    themeJson={themeJson}
+                    addonsJson={addonsJson}
+                    toolbarItemsJson={toolbarItemsJson}
+                    remoteSelectionsJson={remoteSelectionsJson}
+                    editorUpdateJson={currentPushedUpdate?.json}
+                    editorUpdateEditorId={currentPushedUpdate?.editorId}
+                    editorUpdateRevision={currentPushedUpdate?.revision ?? 0}
+                    onEditorUpdate={handleEditorUpdate}
+                    onSelectionChange={handleSelectionChange}
+                    onFocusChange={handleFocusChange}
+                    onContentHeightChange={handleContentHeightChange}
+                    onToolbarAction={handleToolbarAction}
+                    onAddonEvent={handleAddonEvent}
+                />
+                {shouldRenderJsToolbar ? (
+                    <View
+                        testID='native-editor-js-toolbar'
+                        style={[styles.inlineToolbar, { marginTop: inlineToolbarMarginTop }]}>
+                        <EditorToolbar
+                            activeState={activeState}
+                            historyState={document.historyState}
+                            toolbarItems={toolbarItems}
+                            theme={theme?.toolbar}
+                            showTopBorder={theme?.toolbar?.showTopBorder ?? false}
+                            preserveEditorFocus={false}
+                            onToggleMark={commandToggleMark}
+                            onToggleListType={(listType: EditorToolbarListType) =>
+                                commandToggleList(listType)
                             }
-                        }}
-                        onRequestLink={onRequestLink ? openLinkRequest : undefined}
-                        onRequestImage={onRequestImage ? openImageRequest : undefined}
-                        onToolbarAction={onToolbarAction}
-                        onToggleBold={() => commandToggleMark('bold')}
-                        onToggleItalic={() => commandToggleMark('italic')}
-                        onToggleUnderline={() => commandToggleMark('underline')}
-                        onToggleStrike={() => commandToggleMark('strike')}
-                        onUndo={document.undo}
-                        onRedo={document.redo}
-                    />
-                </View>
-            ) : null}
-        </View>
-    );
-});
+                            onToggleHeading={commandToggleHeading}
+                            onToggleBlockquote={commandToggleBlockquote}
+                            onInsertNodeType={commandInsertNode}
+                            onRunCommand={(command: EditorToolbarCommand) => {
+                                switch (command) {
+                                    case 'indentList':
+                                        commandIndentListItem();
+                                        break;
+                                    case 'outdentList':
+                                        commandOutdentListItem();
+                                        break;
+                                    case 'undo':
+                                        document.undo();
+                                        break;
+                                    case 'redo':
+                                        document.redo();
+                                        break;
+                                }
+                            }}
+                            onRequestLink={onRequestLink ? openLinkRequest : undefined}
+                            onRequestImage={onRequestImage ? openImageRequest : undefined}
+                            onToolbarAction={onToolbarAction}
+                            onToggleBold={() => commandToggleMark('bold')}
+                            onToggleItalic={() => commandToggleMark('italic')}
+                            onToggleUnderline={() => commandToggleMark('underline')}
+                            onToggleStrike={() => commandToggleMark('strike')}
+                            onUndo={document.undo}
+                            onRedo={document.redo}
+                        />
+                    </View>
+                ) : null}
+            </View>
+        );
+    }
+);
 
 const styles = StyleSheet.create({
     container: {

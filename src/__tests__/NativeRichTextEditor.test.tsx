@@ -84,8 +84,7 @@ import {
 } from './helpers/nativeEditorV2Fake';
 import type { SchemaDefinition } from '../schemas';
 
-const mockResolveDocumentDescriptor = require('../schemas')
-    .resolveDocumentDescriptor as jest.Mock;
+const mockResolveDocumentDescriptor = require('../schemas').resolveDocumentDescriptor as jest.Mock;
 
 const HANDLE_OWNED_ARTICLE_SCHEMA: SchemaDefinition = {
     nodes: [
@@ -508,11 +507,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         // Release the controlled prop first — a controlled value always
         // re-drives the document, so undo is observable uncontrolled.
         rerender(
-            <NativeRichTextEditor
-                ref={ref}
-                documentHandle={handle}
-                valueJSONUpdateMode='replace'
-            />
+            <NativeRichTextEditor ref={ref} documentHandle={handle} valueJSONUpdateMode='replace' />
         );
         act(() => {
             ref.current!.undo();
@@ -796,10 +791,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             },
         ];
         const { getByTestId } = render(
-            <NativeRichTextEditor
-                documentHandle={handle}
-                remoteSelections={remoteSelections}
-            />
+            <NativeRichTextEditor documentHandle={handle} remoteSelections={remoteSelections} />
         );
         expect(getByTestId('native-editor-view').props.remoteSelectionsJson).toBe(
             JSON.stringify(remoteSelections)
@@ -837,7 +829,14 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         await act(async () => {
             rect = await ref.current!.getCaretRect();
         });
-        expect(rect).toEqual({ x: 1, y: 2, width: 3, height: 4, editorWidth: 100, editorHeight: 50 });
+        expect(rect).toEqual({
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4,
+            editorWidth: 100,
+            editorHeight: 50,
+        });
 
         mockNativeGetCaretRect.mockReturnValue(null);
         await act(async () => {
@@ -940,10 +939,9 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         });
         let commitOutcome: { value: string } | undefined;
         act(() => {
-            commitOutcome = v2Runtime.module.editorV2ApplyInput(
-                handle.editorId,
-                commitRequest
-            ) as { value: string };
+            commitOutcome = v2Runtime.module.editorV2ApplyInput(handle.editorId, commitRequest) as {
+                value: string;
+            };
         });
         expect(JSON.parse(commitOutcome!.value)).toMatchObject({ type: 'transaction' });
 
@@ -1138,6 +1136,89 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
+    it('ignores missing and late editor-scoped interaction events after rebinding to B', () => {
+        const handleA = createV2LocalHandle(V2_INITIAL_DOC);
+        const handleB = createV2LocalHandle(V2_DOC_B);
+        const onSelectionChange = jest.fn();
+        const onFocus = jest.fn();
+        const onBlur = jest.fn();
+        const onToolbarAction = jest.fn();
+        const { getByTestId, rerender } = render(
+            <NativeRichTextEditor
+                documentHandle={handleA}
+                heightBehavior='autoGrow'
+                onSelectionChange={onSelectionChange}
+                onFocus={onFocus}
+                onBlur={onBlur}
+                onToolbarAction={onToolbarAction}
+            />
+        );
+
+        rerender(
+            <NativeRichTextEditor
+                documentHandle={handleB}
+                heightBehavior='autoGrow'
+                onSelectionChange={onSelectionChange}
+                onFocus={onFocus}
+                onBlur={onBlur}
+                onToolbarAction={onToolbarAction}
+            />
+        );
+        const view = getByTestId('native-editor-view');
+
+        act(() => {
+            view.props.onSelectionChange({ nativeEvent: { anchor: 9, head: 9 } });
+            view.props.onFocusChange({ nativeEvent: { isFocused: true } });
+            view.props.onContentHeightChange({ nativeEvent: { contentHeight: 240 } });
+            view.props.onToolbarAction({ nativeEvent: { key: 'late-action' } });
+            view.props.onSelectionChange({
+                nativeEvent: { anchor: 9, head: 9, editorId: handleA.editorId },
+            });
+            view.props.onFocusChange({
+                nativeEvent: { isFocused: true, editorId: handleA.editorId },
+            });
+            view.props.onFocusChange({
+                nativeEvent: { isFocused: false, editorId: handleA.editorId },
+            });
+            view.props.onContentHeightChange({
+                nativeEvent: { contentHeight: 240, editorId: handleA.editorId },
+            });
+            view.props.onToolbarAction({
+                nativeEvent: { key: 'late-action', editorId: handleA.editorId },
+            });
+        });
+
+        expect(onSelectionChange).not.toHaveBeenCalled();
+        expect(onFocus).not.toHaveBeenCalled();
+        expect(onBlur).not.toHaveBeenCalled();
+        expect(onToolbarAction).not.toHaveBeenCalled();
+        expect(view.props.style).not.toEqual(expect.objectContaining({ height: 240 }));
+
+        act(() => {
+            view.props.onSelectionChange({
+                nativeEvent: { anchor: 2, head: 2, editorId: handleB.editorId },
+            });
+            view.props.onFocusChange({
+                nativeEvent: { isFocused: true, editorId: handleB.editorId },
+            });
+            view.props.onContentHeightChange({
+                nativeEvent: { contentHeight: 240, editorId: handleB.editorId },
+            });
+            view.props.onToolbarAction({
+                nativeEvent: { key: 'B-action', editorId: handleB.editorId },
+            });
+        });
+
+        expect(onSelectionChange).toHaveBeenCalledWith({ type: 'text', anchor: 2, head: 2 });
+        expect(onFocus).toHaveBeenCalledTimes(1);
+        expect(onToolbarAction).toHaveBeenCalledWith('B-action');
+        expect(getByTestId('native-editor-view').props.style).toEqual(
+            expect.objectContaining({ height: 240 })
+        );
+        handleA.destroy();
+        handleB.destroy();
+    });
+
     it('keeps editor-bound awareness hooks inert after localAwareness is removed', () => {
         const handle = createV2RoomHandle({ withSnapshot: true });
         const sockets: V2MockWebSocket[] = [];
@@ -1223,8 +1304,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         expect(view.props.editorUpdateEditorId).toBe(handle.editorId);
         expect(onActiveStateChange).toHaveBeenCalled();
         expect(
-            (onActiveStateChange.mock.calls.at(-1)![0] as { marks: Record<string, boolean> })
-                .marks.bold
+            (onActiveStateChange.mock.calls.at(-1)![0] as { marks: Record<string, boolean> }).marks
+                .bold
         ).toBe(false);
 
         const mirror = handle.bridge.renderUpdate({ anchor: 0, head: 0 });
@@ -1431,27 +1512,54 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handleB.destroy();
     });
 
-    it('drops an A snapshot that completes after the same editor component rebinds to B', () => {
+    it('discards a re-entrant A render entirely after the same editor component rebinds to B', () => {
         const handleA = createV2LocalHandle(V2_INITIAL_DOC);
         const handleB = createV2LocalHandle(V2_DOC_B);
         const ref = createRef<NativeRichTextEditorRef>();
+        const onActiveStateChange = jest.fn();
+        const onRequestLink = jest.fn();
         const { getByTestId, rerender } = render(
-            <NativeRichTextEditor ref={ref} documentHandle={handleA} />
+            <NativeRichTextEditor
+                ref={ref}
+                documentHandle={handleA}
+                onActiveStateChange={onActiveStateChange}
+                onRequestLink={onRequestLink}
+            />
         );
+        act(() => {});
         const renderAUpdate = handleA.bridge.renderUpdate.bind(handleA.bridge);
         const renderUpdate = jest.spyOn(handleA.bridge, 'renderUpdate').mockImplementation(() => {
-            rerender(<NativeRichTextEditor ref={ref} documentHandle={handleB} />);
+            act(() => {
+                rerender(
+                    <NativeRichTextEditor
+                        ref={ref}
+                        documentHandle={handleB}
+                        onActiveStateChange={onActiveStateChange}
+                        onRequestLink={onRequestLink}
+                    />
+                );
+            });
             return renderAUpdate();
         });
 
-        act(() => {
-            ref.current!.toggleMark('bold');
-        });
+        onActiveStateChange.mockClear();
+        ref.current!.toggleMark('bold');
 
         const view = getByTestId('native-editor-view');
         expect(view.props.editorId).toBe(handleB.editorId);
         expect(view.props.editorUpdateJson).toBeUndefined();
         expect(view.props.editorUpdateEditorId).toBeUndefined();
+        expect(renderUpdate).toHaveBeenCalledTimes(1);
+        expect(onActiveStateChange).not.toHaveBeenCalled();
+
+        act(() => {
+            view.props.onToolbarAction({
+                nativeEvent: { key: '__native-editor-link__', editorId: handleB.editorId },
+            });
+        });
+        expect(onRequestLink).toHaveBeenCalledWith(
+            expect.objectContaining({ selection: { type: 'text', anchor: 0, head: 0 } })
+        );
         renderUpdate.mockRestore();
         handleA.destroy();
         handleB.destroy();
@@ -1479,9 +1587,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             scalarLength: 5,
         }) as ReturnType<typeof handle.bridge.renderUpdate>;
         const snapshotJson = JSON.stringify(snapshot);
-        const renderUpdate = jest
-            .spyOn(handle.bridge, 'renderUpdate')
-            .mockReturnValue(snapshot);
+        const renderUpdate = jest.spyOn(handle.bridge, 'renderUpdate').mockReturnValue(snapshot);
         const parse = jest.spyOn(JSON, 'parse');
         const { getByTestId } = render(
             <NativeRichTextEditor
@@ -1753,9 +1859,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
         // Every command carried the rendered engine revision as its base.
         const bases = mockNativeModule.editorV2ApplyCommand.mock.calls.map((call) =>
-            String(
-                (JSON.parse(call[1] as string) as Record<string, unknown>).baseDocumentRevision
-            )
+            String((JSON.parse(call[1] as string) as Record<string, unknown>).baseDocumentRevision)
         );
         expect(bases.every((base) => base !== 'undefined' && base !== 'null')).toBe(true);
 
@@ -1763,9 +1867,10 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         act(() => ref.current!.insertText('abc'));
         expect(commandCount()).toBe(commandsBefore);
         const inputCalls = mockNativeModule.editorV2ApplyInput.mock.calls;
-        const inputRequest = JSON.parse(
-            inputCalls[inputCalls.length - 1][1] as string
-        ) as Record<string, unknown>;
+        const inputRequest = JSON.parse(inputCalls[inputCalls.length - 1][1] as string) as Record<
+            string,
+            unknown
+        >;
         expect(inputRequest.text).toBe('abc');
         handle.destroy();
     });
