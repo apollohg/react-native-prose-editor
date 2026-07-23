@@ -932,6 +932,54 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
         expect(handle.bridge.collaborationPeers()).toEqual([]);
     });
 
+    it('rejects malformed desired awareness JSON atomically with the structured boundary error', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        const generation = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(generation);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+        handle.bridge.collaborationTick('12000');
+        handle.bridge.collaborationSetAwareness({ user: ALICE });
+
+        const before = runtime.session(handle.editorId);
+        const desiredBefore = JSON.parse(JSON.stringify(before.desiredAwareness)) as Record<
+            string,
+            unknown
+        >;
+        const clockBefore = before.localClock;
+        const liveBefore = before.localAwarenessLive;
+        const queuedBefore = runtime
+            .queuedFrames(handle.editorId)
+            .map((frame) => Array.from(frame));
+        const nowBefore = before.awarenessNowMillis;
+        const publishBefore = before.lastLocalAwarenessPublishMillis;
+
+        expect(
+            runtime.module.editorV2CollaborationSetAwareness(handle.editorId, '{not json')
+        ).toEqual({
+            value: null,
+            error: {
+                domain: 'boundary',
+                code: 'AWARENESS_STATE_INVALID',
+                message: expect.stringMatching(/^desired awareness state is not valid JSON:/),
+                requestId: null,
+                operationIndex: null,
+                limit: null,
+                actual: null,
+                details: null,
+            },
+        });
+
+        const after = runtime.session(handle.editorId);
+        expect(after.desiredAwareness).toEqual(desiredBefore);
+        expect(after.localClock).toBe(clockBefore);
+        expect(after.localAwarenessLive).toBe(liveBefore);
+        expect(runtime.queuedFrames(handle.editorId).map((frame) => Array.from(frame))).toEqual(
+            queuedBefore
+        );
+        expect(after.awarenessNowMillis).toBe(nowBefore);
+        expect(after.lastLocalAwarenessPublishMillis).toBe(publishBefore);
+    });
+
     it('sorts the combined local and remote awareness projection by numeric client id', () => {
         const handle = createRoomHandle({ withSnapshot: true });
         handle.bridge.collaborationSetAwareness({ user: ALICE });
@@ -1045,6 +1093,63 @@ describe('YjsCollaboration (Task 14 thin controller)', () => {
             outboundChanged: false,
             peersChanged: false,
         });
+    });
+
+    it('admits max-minus-one remote clocks and rejects a mixed terminal-clock delta atomically', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        const generation = handle.bridge.collaborationBeginConnect();
+        handle.bridge.collaborationSocketOpen(generation);
+        handle.bridge.collaborationReceive(generation, V2_FAKE_STEP2_FRAME);
+        handle.bridge.collaborationTick('10000');
+
+        const edgePeer = remotePeer({ clientId: '41', clock: 4_294_967_294 });
+        runtime.pushRemotePeers(handle.editorId, [edgePeer]);
+        expect(
+            handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME).close
+        ).toBeNull();
+        expect(handle.bridge.collaborationPeers()).toEqual([edgePeer]);
+
+        runtime.pushRemotePeers(handle.editorId, [
+            remotePeer({ clientId: '42', clock: 1 }),
+            remotePeer({ clientId: '43', clock: 4_294_967_295 }),
+        ]);
+        expect(handle.bridge.collaborationReceive(generation, V2_FAKE_AWARENESS_FRAME)).toEqual({
+            framesDecoded: 1,
+            repliesEnqueued: 0,
+            replyBytesEnqueued: 0,
+            remoteCommitApplied: false,
+            documentPromoted: false,
+            transportState: 'Incompatible',
+            close: {
+                disposition: 'incompatible',
+                error: {
+                    domain: 'transport',
+                    code: 'TRANSPORT_AWARENESS_LIMIT_EXCEEDED',
+                    message: 'awareness frame handling failed',
+                    requestId: null,
+                    operationIndex: null,
+                    limit: null,
+                    actual: null,
+                    details: {
+                        action: 'receiveMessage',
+                        cause: {
+                            code: 'INPUT_LIMIT_EXCEEDED',
+                            message: 'input exceeds limit 4294967294: 4294967295',
+                            limit: 4_294_967_294,
+                            actual: 4_294_967_295,
+                            details: { field: 'awarenessClock' },
+                        },
+                    },
+                },
+            },
+        });
+        const session = runtime.session(handle.editorId);
+        expect(session.transportState).toBe('Incompatible');
+        expect(session.liveGeneration).toBeNull();
+        expect(session.remotePeers).toEqual([]);
+        expect(session.remoteAwarenessClocks.size).toBe(0);
+        expect(session.remotePeerActivity.size).toBe(0);
+        expect(handle.bridge.collaborationPeers()).toEqual([]);
     });
 
     // ── Awareness / peers ───────────────────────────────────────

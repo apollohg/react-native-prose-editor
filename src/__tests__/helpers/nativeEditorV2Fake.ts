@@ -35,6 +35,7 @@ export const V2_FAKE_MALFORMED_FRAME = new Uint8Array([0xff]);
 export const V2_FAKE_INCOMPATIBLE_FRAME = new Uint8Array([0xfe]);
 
 const V2_FAKE_U64_MAX = 18_446_744_073_709_551_615n;
+const V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK = 0xffff_fffe;
 const V2_FAKE_AWARENESS_RENEWAL_INTERVAL_MILLIS = 15_000n;
 const V2_FAKE_AWARENESS_EXPIRY_MILLIS = 30_000n;
 
@@ -808,6 +809,35 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         });
     }
 
+    function remoteAwarenessClockLimitError(
+        session: FakeSession,
+        entries: NativeEditorV2PeerInfo[]
+    ): FakeErrorRecord | null {
+        for (const peer of entries) {
+            const clientId = canonicalV2U64(peer.clientId);
+            if (peer.isLocal || clientId == null || clientId === session.localClientId) continue;
+            if (peer.clock <= V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK) continue;
+
+            const error = errorRecord(
+                'transport',
+                'TRANSPORT_AWARENESS_LIMIT_EXCEEDED',
+                'awareness frame handling failed'
+            );
+            error.details = {
+                action: 'receiveMessage',
+                cause: {
+                    code: 'INPUT_LIMIT_EXCEEDED',
+                    message: `input exceeds limit ${V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK}: ${peer.clock}`,
+                    limit: V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK,
+                    actual: peer.clock,
+                    details: { field: 'awarenessClock' },
+                },
+            };
+            return error;
+        }
+        return null;
+    }
+
     function queueDocumentUpdate(session: FakeSession): void {
         if (!session.roomBound) return;
         session.documentQueue.push(documentFrame(session.documentRevision));
@@ -951,7 +981,15 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
         // Remote awareness state.
         if (tag === 0x02) {
             const remote = pendingFor(session.editorId);
-            applyRemoteAwarenessDelta(session, remote.awarenessDeltas.shift() ?? []);
+            const entries = remote.awarenessDeltas.shift() ?? [];
+            const clockLimitError = remoteAwarenessClockLimitError(session, entries);
+            if (clockLimitError) {
+                retireGeneration(session, 'Incompatible');
+                return outcome({
+                    close: { disposition: 'incompatible', error: clockLimitError },
+                });
+            }
+            applyRemoteAwarenessDelta(session, entries);
             return outcome({});
         }
         if (tag === 0xff) {
@@ -1620,10 +1658,17 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     session.desiredAwareness = null;
                     session.lastLocalAwarenessPublishMillis = null;
                 } else {
-                    session.desiredAwareness = JSON.parse(awarenessJson) as Record<
-                        string,
-                        unknown
-                    >;
+                    let desiredAwareness: Record<string, unknown>;
+                    try {
+                        desiredAwareness = JSON.parse(awarenessJson) as Record<string, unknown>;
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        return boundaryError(
+                            'AWARENESS_STATE_INVALID',
+                            `desired awareness state is not valid JSON: ${message}`
+                        );
+                    }
+                    session.desiredAwareness = desiredAwareness;
                     setLocalAwarenessState(session);
                 }
                 if (awarenessJson.trim() !== 'null' && session.transportState === 'Synchronized') {
