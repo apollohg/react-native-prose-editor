@@ -1,6 +1,26 @@
 import XCTest
 
 final class RichTextEditorViewTests: XCTestCase {
+    func testNativeCommitEventPayloadKeepsTheCommittedUpdateSourceAndRevision() throws {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        _ = EditorV2Shadow.setHtml(id: editorId, html: "<p>native</p>")
+        let updateJSON = EditorV2Shadow.getCurrentState(id: editorId)
+
+        let event = try XCTUnwrap(
+            NativeEditorExpoView.nativeCommitEventPayload(
+                originatingEditorId: String(editorId),
+                updateJSON: updateJSON
+            )
+        )
+        let update = parseJSONObject(updateJSON)
+
+        XCTAssertEqual(event["editorId"] as? String, String(editorId))
+        XCTAssertEqual(event["documentRevision"] as? String, update["documentVersion"] as? String)
+        XCTAssertEqual(event["updateJson"] as? String, updateJSON)
+    }
+
     func testNonTextSelectionApplicationsClearBackwardTextDirection() throws {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }

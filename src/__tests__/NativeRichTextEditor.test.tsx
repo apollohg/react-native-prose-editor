@@ -952,7 +952,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                 nativeEvent: {
                     editorId: handle.editorId,
                     updateJson: renderUpdateValue(handle.editorId),
-                    documentVersion: handle.bridge.getState().documentRevision,
+                    documentRevision: handle.bridge.getState().documentRevision,
                 },
             });
         });
@@ -972,6 +972,112 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         expect(ref.current!.getContent()).toBe('<p>hello!</p>');
         handle.destroy();
     });
+
+    it.each(['iOS', 'Android'])(
+        'accepts only an authentic canonical %s native commit payload and suppresses its exact echo',
+        (platform) => {
+            const handle = createV2LocalHandle(V2_INITIAL_DOC);
+            const onContentChange = jest.fn();
+            const onLocalDocumentCommit = jest.fn();
+            const { getByTestId, rerender } = render(
+                <NativeRichTextEditor
+                    documentHandle={handle}
+                    onContentChange={onContentChange}
+                    onLocalDocumentCommit={onLocalDocumentCommit}
+                />
+            );
+            const view = getByTestId('native-editor-view');
+            const commit = (text: string) => {
+                v2Runtime.module.editorV2ApplyInput(
+                    handle.editorId,
+                    JSON.stringify({
+                        version: 1,
+                        requestId: text === '!' ? '1' : '2',
+                        baseDocumentRevision: handle.bridge.getState().documentRevision,
+                        text,
+                    })
+                );
+                const documentRevision = handle.bridge.getState().documentRevision;
+                return {
+                    editorId: handle.editorId,
+                    documentRevision,
+                    updateJson: renderUpdateValue(handle.editorId),
+                };
+            };
+            const first = commit('!');
+            const emit = (payload: Record<string, unknown>) =>
+                view.props.onEditorUpdate({
+                    // Keep both native property orderings covered: iOS emits
+                    // identity first while Android builds its map update-first.
+                    nativeEvent:
+                        platform === 'iOS'
+                            ? payload
+                            : {
+                                  updateJson: payload.updateJson,
+                                  documentRevision: payload.documentRevision,
+                                  editorId: payload.editorId,
+                              },
+                });
+
+            const mismatchedSnapshot = JSON.parse(first.updateJson) as Record<string, unknown>;
+            mismatchedSnapshot.documentVersion = '0';
+            const rejectedPayloads: Record<string, unknown>[] = [
+                { ...first, editorId: '999' },
+                { ...first, documentRevision: '01' },
+                { ...first, documentRevision: '18446744073709551616' },
+                { ...first, updateJson: '{}' },
+                { ...first, updateJson: JSON.stringify(mismatchedSnapshot) },
+            ];
+            for (const rejected of rejectedPayloads) {
+                act(() => emit(rejected));
+            }
+            expect(onContentChange).not.toHaveBeenCalled();
+            expect(onLocalDocumentCommit).not.toHaveBeenCalled();
+
+            act(() => emit(first));
+            expect(onContentChange).toHaveBeenCalledTimes(1);
+            expect(onLocalDocumentCommit).toHaveBeenCalledTimes(1);
+
+            // Duplicate native delivery must not refresh, notify, or replace
+            // the one-shot echo token.
+            act(() => emit(first));
+            expect(onContentChange).toHaveBeenCalledTimes(1);
+            expect(onLocalDocumentCommit).toHaveBeenCalledTimes(1);
+
+            // The identical revision signal is the sole suppressed echo.
+            rerender(
+                <NativeRichTextEditor
+                    documentHandle={handle}
+                    documentRevision={first.documentRevision}
+                    onContentChange={onContentChange}
+                    onLocalDocumentCommit={onLocalDocumentCommit}
+                />
+            );
+            expect(getByTestId('native-editor-view').props.editorUpdateJson).toBeUndefined();
+
+            // A different/newer external revision clears that token and is
+            // pushed, rather than being hidden behind native revision N.
+            handle.bridge.replaceDocument({ setJson: V2_DOC_B, history: 'undoableBoundary' });
+            const externalRevision = handle.bridge.getState().documentRevision;
+            rerender(
+                <NativeRichTextEditor
+                    documentHandle={handle}
+                    documentRevision={externalRevision}
+                    onContentChange={onContentChange}
+                    onLocalDocumentCommit={onLocalDocumentCommit}
+                />
+            );
+            expect(
+                JSON.parse(getByTestId('native-editor-view').props.editorUpdateJson as string)
+                    .documentVersion
+            ).toBe(externalRevision);
+
+            // A stale native commit after N+1 is deterministically rejected.
+            act(() => emit(first));
+            expect(onLocalDocumentCommit).toHaveBeenCalledTimes(1);
+            handle.destroy();
+        }
+    );
 
     it('forwards native selection changes with the engine selection and fires focus/blur edges', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
@@ -1196,7 +1302,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                 nativeEvent: {
                     editorId: handleA.editorId,
                     updateJson: renderUpdateValue(handleA.editorId),
-                    documentVersion: handleA.bridge.getState().documentRevision,
+                    documentRevision: handleA.bridge.getState().documentRevision,
                 },
             });
         });

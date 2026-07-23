@@ -3058,6 +3058,13 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     }
 
     func editorTextView(_ textView: EditorTextView, didReceiveUpdate updateJSON: String) {
+        // Capture both fields from the same committed atomic update before
+        // any view work can cause a rebind. The event must never relabel A's
+        // update as B merely because the host changes editorId afterwards.
+        let nativeCommitEvent = Self.nativeCommitEventPayload(
+            originatingEditorId: String(textView.editorId),
+            updateJSON: updateJSON
+        )
         if let state = NativeToolbarState(updateJSON: updateJSON) {
             toolbarState = state
             accessoryToolbar.apply(state: state)
@@ -3066,7 +3073,31 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         refreshMentionQuery()
         richTextView.refreshRemoteSelections()
         guard !isApplyingJSUpdate else { return }
-        onEditorUpdate(["updateJson": updateJSON])
+        guard let nativeCommitEvent else { return }
+        onEditorUpdate(nativeCommitEvent)
+    }
+
+    /// The canonical JS commit contract. `originatingEditorId` is captured
+    /// synchronously from the text view which applied `updateJSON`; it is not
+    /// read from the host view after asynchronous rebind work.
+    static func nativeCommitEventPayload(
+        originatingEditorId: String,
+        updateJSON: String
+    ) -> [String: Any]? {
+        guard let editorId = v2CanonicalUInt64String(originatingEditorId),
+              editorId != "0",
+              let data = updateJSON.data(using: .utf8),
+              let update = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rawRevision = update["documentVersion"] as? String,
+              let documentRevision = v2CanonicalUInt64String(rawRevision)
+        else {
+            return nil
+        }
+        return [
+            "editorId": editorId,
+            "documentRevision": documentRevision,
+            "updateJson": updateJSON,
+        ]
     }
 
     @discardableResult

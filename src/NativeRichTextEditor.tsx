@@ -22,6 +22,7 @@ import {
     _assertNativeEditorDocumentHandle,
     _getNativeEditorDocumentHandleDescriptor,
     normalizeNativeEditorV2DecimalId,
+    normalizeNativeEditorV2RenderUpdateValue,
     requireNativeEditorV2U32,
     type ActiveState,
     type DocumentJSON,
@@ -99,9 +100,9 @@ const NativeEditorView = requireNativeViewManager('NativeEditor') as React.Compo
 >;
 
 interface NativeUpdateEvent {
-    updateJson?: string;
-    editorId?: string;
-    documentVersion?: string;
+    updateJson: string;
+    editorId: string;
+    documentRevision: string;
 }
 
 interface NativeSelectionEvent {
@@ -127,7 +128,7 @@ interface NativeToolbarActionEvent {
     editorId?: string;
     updateJson?: string;
     stateJson?: string;
-    documentVersion?: string;
+    documentRevision?: string;
 }
 
 interface NativeAddonEvent {
@@ -198,6 +199,49 @@ function isRevisionMismatchError(error: unknown): boolean {
     return (
         error instanceof NativeEditorV2OperationError && error.code === 'REVISION_MISMATCH'
     );
+}
+
+interface NativeCommitPayload {
+    editorId: string;
+    documentRevision: string;
+    updateJson: string;
+}
+
+interface AcceptedNativeCommit {
+    documentRevision: string;
+    snapshot: NativeEditorV2AtomicRenderSnapshot;
+}
+
+/**
+ * Native commits are a transport boundary, not a best-effort view hint. The
+ * payload must be a complete atomic snapshot paired with the same canonical
+ * revision that native says it committed.
+ */
+function acceptNativeCommitPayload(
+    payload: NativeCommitPayload,
+    boundEditorId: string,
+    lastAcceptedRevision: string | null
+): AcceptedNativeCommit | null {
+    const canonicalBoundEditorId = normalizeNativeEditorV2DecimalId(boundEditorId);
+    const canonicalEditorId = normalizeNativeEditorV2DecimalId(payload.editorId);
+    const canonicalRevision = normalizeNativeEditorV2DecimalId(payload.documentRevision);
+    if (
+        canonicalBoundEditorId == null ||
+        canonicalBoundEditorId !== boundEditorId ||
+        canonicalEditorId == null ||
+        canonicalEditorId !== payload.editorId ||
+        canonicalEditorId !== boundEditorId ||
+        canonicalRevision == null ||
+        canonicalRevision !== payload.documentRevision
+    ) {
+        return null;
+    }
+    const snapshot = normalizeNativeEditorV2RenderUpdateValue(payload.updateJson);
+    if (snapshot == null || snapshot.documentVersion !== canonicalRevision) return null;
+    if (lastAcceptedRevision != null && BigInt(canonicalRevision) <= BigInt(lastAcceptedRevision)) {
+        return null;
+    }
+    return { documentRevision: canonicalRevision, snapshot };
 }
 
 function mapToolbarChildForNative(
@@ -748,6 +792,7 @@ export const NativeRichTextEditor = forwardRef<
     const pushRevisionRef = useRef(0);
     const lastPushedEngineRevisionRef = useRef<string | null>(null);
     const lastNativeDrivenRevisionRef = useRef<string | null>(null);
+    const lastAcceptedNativeCommitRevisionRef = useRef<string | null>(null);
     const didObserveInitialRevisionRef = useRef(false);
     const revisionScopeEditorIdRef = useRef(editorId);
     const didRebindRevisionScope = revisionScopeEditorIdRef.current !== editorId;
@@ -755,6 +800,7 @@ export const NativeRichTextEditor = forwardRef<
         revisionScopeEditorIdRef.current = editorId;
         lastPushedEngineRevisionRef.current = null;
         lastNativeDrivenRevisionRef.current = null;
+        lastAcceptedNativeCommitRevisionRef.current = null;
         didObserveInitialRevisionRef.current = false;
     }
 
@@ -807,6 +853,10 @@ export const NativeRichTextEditor = forwardRef<
             lastPushedEngineRevisionRef.current = revision;
             return;
         }
+        // This is an external revision, not the one native just committed.
+        // Consume the one-shot token before pushing so native N can never
+        // suppress a later external N+1.
+        lastNativeDrivenRevisionRef.current = null;
         pushEngineUpdateToView();
     }, [
         didRebindRevisionScope,
@@ -1038,18 +1088,25 @@ export const NativeRichTextEditor = forwardRef<
 
     const handleEditorUpdate = useCallback(
         (event: NativeSyntheticEvent<NativeUpdateEvent>) => {
-            if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
-            const { updateJson, documentVersion } = event.nativeEvent;
-            if (typeof documentVersion === 'string') {
-                lastNativeDrivenRevisionRef.current = documentVersion;
-            }
-            applyUpdateState(updateJson);
+            if (documentHandle.isDestroyed) return;
+            const accepted = acceptNativeCommitPayload(
+                event.nativeEvent,
+                documentHandle.editorId,
+                lastAcceptedNativeCommitRevisionRef.current
+            );
+            if (accepted == null) return;
+            // Record both native-scoped revisions before any observable
+            // state/callback/refresh work. This makes duplicate delivery and
+            // the handle's same-revision signal deterministic.
+            lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
+            lastNativeDrivenRevisionRef.current = accepted.documentRevision;
+            applyTypedUpdateState(accepted.snapshot);
             // The adapter already committed; re-read for content callbacks
             // and let collaboration flush the outbound frame.
             document.refresh();
             onLocalDocumentCommitRef.current?.();
         },
-        [applyUpdateState, document, documentHandle, isForThisEditor]
+        [applyTypedUpdateState, document, documentHandle]
     );
 
     const handleSelectionChange = useCallback(
@@ -1099,15 +1156,30 @@ export const NativeRichTextEditor = forwardRef<
     const handleToolbarAction = useCallback(
         (event: NativeSyntheticEvent<NativeToolbarActionEvent>) => {
             if (documentHandle.isDestroyed || !isForThisEditor(event.nativeEvent)) return;
-            const { key, updateJson, stateJson, documentVersion } = event.nativeEvent;
-            if (typeof documentVersion === 'string') {
-                lastNativeDrivenRevisionRef.current = documentVersion;
+            const { key, updateJson, stateJson, documentRevision } = event.nativeEvent;
+            // A toolbar event carrying update data is a native commit. It
+            // must satisfy the same atomic admission path as typing; a pure
+            // action (link/image/custom key) has no commit to refresh.
+            if (updateJson != null || documentRevision != null) {
+                if (typeof updateJson !== 'string' || typeof documentRevision !== 'string') return;
+                const accepted = acceptNativeCommitPayload(
+                    {
+                        editorId: event.nativeEvent.editorId ?? '',
+                        documentRevision,
+                        updateJson,
+                    },
+                    documentHandle.editorId,
+                    lastAcceptedNativeCommitRevisionRef.current
+                );
+                if (accepted == null) return;
+                lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
+                lastNativeDrivenRevisionRef.current = accepted.documentRevision;
+                applyTypedUpdateState(accepted.snapshot);
+                document.refresh();
+                onLocalDocumentCommitRef.current?.();
+            } else if (typeof stateJson === 'string') {
+                applyUpdateState(stateJson);
             }
-            applyUpdateState(typeof updateJson === 'string' ? updateJson : stateJson);
-            // The native toolbar already applied the engine command through
-            // the adapter; resync the document binding and flush outbound.
-            document.refresh();
-            onLocalDocumentCommitRef.current?.();
             if (key === LINK_TOOLBAR_ACTION_KEY) {
                 openLinkRequest();
                 return;
@@ -1118,7 +1190,15 @@ export const NativeRichTextEditor = forwardRef<
             }
             onToolbarActionRef.current?.(key);
         },
-        [applyUpdateState, document, documentHandle, isForThisEditor, openImageRequest, openLinkRequest]
+        [
+            applyTypedUpdateState,
+            applyUpdateState,
+            document,
+            documentHandle,
+            isForThisEditor,
+            openImageRequest,
+            openLinkRequest,
+        ]
     );
 
     const handleAddonEvent = useCallback(
