@@ -4603,7 +4603,12 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         } else if let renderedPatchMetadata,
                   renderedPatchMetadata.startIndex == patch.startIndex
         {
-            newEntries = renderedPatchMetadata.entries.map { entry in
+            let patchEntries = renderedPatchMetadata.entries.prefix(patch.renderBlocks.count)
+            guard patchEntries.count == patch.renderBlocks.count else {
+                currentTopLevelChildMetadata = nil
+                return
+            }
+            newEntries = patchEntries.map { entry in
                 TopLevelChildMetadata(
                     startOffset: replaceRange.location + entry.startOffset,
                     containsAttachment: entry.containsAttachment,
@@ -5172,6 +5177,8 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                 fromArray: patch.renderBlocks,
                 startIndex: patch.startIndex,
                 includeLeadingInterBlockSeparator: patch.startIndex > 0,
+                includeTrailingInterBlockSeparator: patch.startIndex + patch.deleteCount
+                    < (currentTopLevelChildMetadata?.count ?? 0),
                 baseFont: baseFont,
                 textColor: baseTextColor,
                 theme: theme

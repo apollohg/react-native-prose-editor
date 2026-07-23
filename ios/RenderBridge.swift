@@ -1544,6 +1544,7 @@ final class RenderBridge {
         fromArray blocks: [[[String: Any]]],
         startIndex: Int = 0,
         includeLeadingInterBlockSeparator: Bool = false,
+        includeTrailingInterBlockSeparator: Bool = false,
         baseFont: UIFont,
         textColor: UIColor,
         theme: EditorTheme? = nil
@@ -1566,25 +1567,44 @@ final class RenderBridge {
             textColor: textColor,
             theme: theme
         )
-        guard includeLeadingInterBlockSeparator, startIndex > 0, !blocks.isEmpty else {
+        let needsLeadingInterBlockSeparator = includeLeadingInterBlockSeparator && startIndex > 0
+        guard !blocks.isEmpty,
+              needsLeadingInterBlockSeparator || includeTrailingInterBlockSeparator
+        else {
             return renderedBlocks
         }
 
-        let separatorReadyBlocks = removingLeadingTopLevelChildIndex(
-            from: renderedBlocks,
-            topLevelChildIndex: startIndex
-        )
-
-        let result = NSMutableAttributedString(
-            attributedString: interBlockNewline(
-                baseFont: baseFont,
-                textColor: textColor,
-                blockStack: [],
-                theme: theme,
-                topLevelChildIndex: startIndex
+        let result = NSMutableAttributedString()
+        if needsLeadingInterBlockSeparator {
+            result.append(
+                interBlockNewline(
+                    baseFont: baseFont,
+                    textColor: textColor,
+                    blockStack: [],
+                    theme: theme,
+                    topLevelChildIndex: startIndex
+                )
             )
-        )
-        result.append(separatorReadyBlocks)
+            result.append(
+                removingLeadingTopLevelChildIndex(
+                    from: renderedBlocks,
+                    topLevelChildIndex: startIndex
+                )
+            )
+        } else {
+            result.append(renderedBlocks)
+        }
+        if includeTrailingInterBlockSeparator {
+            result.append(
+                interBlockNewline(
+                    baseFont: baseFont,
+                    textColor: textColor,
+                    blockStack: [],
+                    theme: theme,
+                    topLevelChildIndex: startIndex + blocks.count
+                )
+            )
+        }
         return result
     }
 

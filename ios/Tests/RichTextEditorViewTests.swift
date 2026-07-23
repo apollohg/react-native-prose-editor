@@ -641,9 +641,14 @@ final class RichTextEditorViewTests: XCTestCase {
             baseFont: textView.baseFont,
             textColor: textView.baseTextColor
         )
+        let trace = try XCTUnwrap(textView.lastApplyUpdateTrace())
         XCTAssertTrue(
-            try XCTUnwrap(textView.lastApplyUpdateTrace()).attemptedPatch,
+            trace.attemptedPatch,
             "the update must exercise the explicit renderPatch path"
+        )
+        XCTAssertTrue(
+            trace.usedPatch,
+            "the explicit prepend must retain the compact renderPatch path"
         )
         XCTAssertEqual(textView.textStorage.string, expected.string, "the prepend must not duplicate content")
 
