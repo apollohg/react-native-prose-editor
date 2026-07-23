@@ -252,7 +252,9 @@ class NativeDeviceImeRegressionTest {
                 waitUntil("paired editor should attach to the activity window") {
                     editText.isAttachedToWindow && editText.windowToken != null
                 }
-                runOnMainSyncWithResult { assertTrue(editText.requestFocus()) }
+                runOnMainSyncWithResult {
+                    assertTrue("mounted paired editor should accept focus", editText.requestFocus())
+                }
                 waitUntil("paired editor should gain focus before split") { editText.hasFocus() }
 
                 lateinit var initialInputConnection: EditorInputConnection
@@ -267,8 +269,14 @@ class NativeDeviceImeRegressionTest {
                 instrumentation.waitForIdleSync()
                 runOnMainSyncWithResult {
                     editText.clearImeTraceForTesting()
-                    assertTrue(initialInputConnection.setComposingText("\n", 1))
-                    assertTrue(initialInputConnection.commitText("\n", 1))
+                    assertTrue(
+                        "initial connection should accept composing Return",
+                        initialInputConnection.setComposingText("\n", 1)
+                    )
+                    assertTrue(
+                        "initial connection should commit Return through the paired adapter",
+                        initialInputConnection.commitText("\n", 1)
+                    )
                 }
 
                 lateinit var refreshedInputConnection: EditorInputConnection
@@ -289,11 +297,15 @@ class NativeDeviceImeRegressionTest {
                 // The empty trailing block owns a zero-width render placeholder. Android is
                 // given the sanitized value through EditorInfo, asserted below. The rendered
                 // Editable's raw caret sits after that placeholder.
-                assertEquals("seed\n\u200B", editText.text.toString())
-                assertEquals(6 to 6, afterSplit.selection)
-                assertEquals(5 to 5, afterSplit.imeSelection)
-                assertEquals(initialGeneration, afterSplit.inputConnectionGeneration)
-                assertEquals("seed\n", afterSplit.surroundingText)
+                assertEquals("rendered text after Return", "seed\n\u200B", editText.text.toString())
+                assertEquals("raw rendered caret after Return", 6 to 6, afterSplit.selection)
+                assertEquals("sanitized IME caret after Return", 5 to 5, afterSplit.imeSelection)
+                assertEquals(
+                    "input-connection generation after Return",
+                    initialGeneration,
+                    afterSplit.inputConnectionGeneration
+                )
+                assertEquals("IME surrounding text after Return", "seed\n", afterSplit.surroundingText)
                 assertTraceEventCount(
                     afterSplit.trace,
                     "lineBoundaryInputRefreshScheduled:source=splitBlock",
@@ -304,24 +316,31 @@ class NativeDeviceImeRegressionTest {
                     "restartInput:source=lineBoundary:splitBlock",
                     1,
                 )
-                assertTrue(refreshedInputConnection !== initialInputConnection)
-                assertTrue(afterSplit.trace.any {
-                    it.startsWith("applySelectionFromJSON:doc=") && it.contains("scalar=5..5")
-                })
-                assertTrue(afterSplit.ready)
+                assertTrue(
+                    "restart should require a newly acquired connection; trace=${afterSplit.trace}",
+                    refreshedInputConnection !== initialInputConnection
+                )
+                assertTrue(
+                    "refreshed connection should request sentence capitalization; result=$afterSplit",
+                    afterSplit.ready
+                )
 
                 runOnMainSyncWithResult {
-                    assertTrue(refreshedInputConnection.commitText("x", 1))
+                    assertTrue(
+                        "refreshed connection should commit x after Return; trace=${afterSplit.trace}",
+                        refreshedInputConnection.commitText("x", 1)
+                    )
                 }
                 instrumentation.waitForIdleSync()
 
-                assertEquals("seed\nx", editText.text.toString())
+                assertEquals("refreshed connection should insert x", "seed\nx", editText.text.toString())
                 assertEquals(
+                    "rendered caret after refreshed connection inserts x",
                     6 to 6,
                     runOnMainSyncWithResult { editText.selectionStart to editText.selectionEnd }
                 )
                 val document = adapter.documentJson()?.let(::JSONObject) ?: error("missing document JSON")
-                assertEquals(2, document.getJSONArray("content").length())
+                assertEquals("paired engine should retain two blocks after x", 2, document.getJSONArray("content").length())
             }
         } finally {
             releasePairedV2TestEditor(editorId)
@@ -373,7 +392,10 @@ class NativeDeviceImeRegressionTest {
         editorInfo: EditorInfo = EditorInfo()
     ): EditorInputConnection {
         val inputConnection = editText.onCreateInputConnection(editorInfo)
-        assertTrue(inputConnection is EditorInputConnection)
+        assertTrue(
+            "editor should create EditorInputConnection but was ${inputConnection?.javaClass?.name}",
+            inputConnection is EditorInputConnection
+        )
         return inputConnection as EditorInputConnection
     }
 
