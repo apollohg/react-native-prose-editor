@@ -41,6 +41,15 @@ function replace(path, from, to) {
   writeFileSync(path, contents.replace(from, to));
 }
 
+function replaceBytes(path, from, to) {
+  const contents = readFileSync(path);
+  const offset = contents.indexOf(from);
+  assert.notEqual(offset, -1, `fixture setup could not find native bytes in ${relative(repoRoot, path)}`);
+  assert.equal(contents.indexOf(from, offset + 1), -1, `fixture setup found multiple native byte sequences in ${relative(repoRoot, path)}`);
+  to.copy(contents, offset);
+  writeFileSync(path, contents);
+}
+
 function run(...args) {
   const result = spawnSync("bash", [validator, ...args], {
     cwd: repoRoot,
@@ -65,10 +74,28 @@ function expectFailure(name, result, expected) {
   }
 }
 
+function runWrongNativeChecksumFixture() {
+  const wrongNativeChecksum = makeFixture("wrong-native-checksum");
+  replaceBytes(
+    join(wrongNativeChecksum, "rust/android/x86_64/libeditor_core.so"),
+    Buffer.from([0x66, 0xb8, 0x94, 0x38, 0xc3]),
+    Buffer.from([0x66, 0xb8, 0x01, 0x00, 0xc3]),
+  );
+  expectPass("synchronized native copies", run("--validate-copies", wrongNativeChecksum, wrongNativeChecksum));
+  expectFailure(
+    "wrong native checksum value",
+    run("--validate-android-library", join(wrongNativeChecksum, "rust/android/x86_64/libeditor_core.so"), "x86_64"),
+    /Android x86_64 library checksum mismatch for editor_v2_apply_command: expected 14484, found 1/,
+  );
+}
+
 try {
-  const baseline = makeFixture("baseline");
-  expectPass("baseline ABI", run("--validate-abi-root", baseline));
-  expectPass("baseline copied artifacts", run("--validate-copies", repoRoot, baseline));
+  if (process.env.VALIDATE_PACKED_PACKAGE_FIXTURE === "wrong-native-checksum") {
+    runWrongNativeChecksumFixture();
+  } else {
+    const baseline = makeFixture("baseline");
+    expectPass("baseline ABI", run("--validate-abi-root", baseline));
+    expectPass("baseline copied artifacts", run("--validate-copies", repoRoot, baseline));
 
   const missingFunction = makeFixture("missing-function");
   replace(
@@ -173,6 +200,8 @@ try {
     run("--validate-android-consumer", unpackagedAndroid),
     /Android consumer package is missing libeditor_core\.so for arm64-v8a/,
   );
+  runWrongNativeChecksumFixture();
+  }
 } finally {
   rmSync(workDir, { recursive: true, force: true });
 }

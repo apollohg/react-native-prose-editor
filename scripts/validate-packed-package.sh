@@ -172,6 +172,10 @@ validate_android_library() {
   esac || fail "Android $abi library has the wrong machine type: $file_output"
   nm_output="$(nm -D -g "$library_path" 2>&1)" || fail "Android $abi library has no readable dynamic symbol table: $nm_output"
   validate_symbol_text "Android $abi library" "$nm_output"
+  ruby "$repo_root/scripts/validate-uniffi-checksum-values.rb" \
+    --manifest "$manifest_path" \
+    --label "Android $abi library" \
+    --elf "$abi" "$library_path" || fail "Android $abi library native checksum value validation failed"
 }
 
 validate_archive_architectures() {
@@ -180,6 +184,7 @@ validate_archive_architectures() {
   local label="$3"
   local architecture_info actual_architectures normalized_architectures architecture thin_archive
   local archive_members extracted_objects_dir unexpected_members
+  local checksum_objects
   local architecture_nm_output architecture_nm_status unexpected_nm_lines
 
   [[ -s "$archive_path" ]] || fail "$label archive is missing or empty"
@@ -220,6 +225,12 @@ validate_archive_architectures() {
       [[ -z "$unexpected_nm_lines" ]] || fail "$label $architecture archive symbols cannot be read: $architecture_nm_output"
     fi
     validate_symbol_text "$label $architecture archive" "$architecture_nm_output"
+    checksum_objects=("$extracted_objects_dir"/editor_core*.o)
+    [[ "${#checksum_objects[@]}" -gt 0 ]] || fail "$label $architecture archive has no editor_core checksum object member"
+    ruby "$repo_root/scripts/validate-uniffi-checksum-values.rb" \
+      --manifest "$manifest_path" \
+      --label "$label $architecture archive" \
+      --macho "$architecture" "${checksum_objects[@]}" || fail "$label $architecture archive native checksum value validation failed"
   done
 }
 
