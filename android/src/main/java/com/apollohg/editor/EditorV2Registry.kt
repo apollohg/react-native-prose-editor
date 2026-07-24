@@ -8,6 +8,14 @@ internal enum class EditorV2DestroyReservationResult {
     ALREADY_IN_PROGRESS,
 }
 
+internal fun <T> invokeDestroyTestingHook(hook: ((T) -> Unit)?, value: T) {
+    try {
+        hook?.invoke(value)
+    } catch (_: Throwable) {
+        // Destroy test hooks are observational and cannot alter the transaction.
+    }
+}
+
 /**
  * The v2 pairing registry keeps the public editor handle as its canonical
  * decimal string. A separate, opaque view token exists only for the Android
@@ -52,7 +60,7 @@ internal object EditorV2Registry {
         if (!destroyingHandles.add(handle)) {
             return EditorV2DestroyReservationResult.ALREADY_IN_PROGRESS
         }
-        onHandleDestroyReservationAcquiredForTesting?.invoke(handle)
+        invokeDestroyTestingHook(onHandleDestroyReservationAcquiredForTesting, handle)
         return EditorV2DestroyReservationResult.RESERVED
     }
 

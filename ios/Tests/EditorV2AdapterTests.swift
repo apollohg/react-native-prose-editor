@@ -13,6 +13,10 @@ final class EditorV2AdapterTests: XCTestCase {
 
     // MARK: - Helpers
 
+    private enum TestHookError: Error {
+        case failed
+    }
+
     private var adapters: [EditorV2Adapter] = []
 
     override func tearDown() {
@@ -1045,6 +1049,135 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertNil(retryResult.error)
         XCTAssertEqual(destroyAttempts, 2)
         XCTAssertNil(EditorV2Registry.adapter(forLegacyId: handle.nativeViewId))
+    }
+
+    func testThrowingHandleReservationHookDoesNotStrandDestroyRetry() {
+        let created = editorV2Create(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            snapshotState: nil
+        )
+        guard let value = created.value,
+              created.error == nil,
+              let handle = createdV2TestEditorHandle(value)
+        else {
+            XCTFail("expected v2 editor creation to succeed")
+            return
+        }
+
+        var destroyAttempts = 0
+        guard let adapter = EditorV2Adapter.attach(
+            editorId: handle.handle,
+            roomBound: false,
+            destroySession: { _ in
+                destroyAttempts += 1
+                return destroyAttempts == 1
+                    ? FfiUnitResult(
+                        value: nil,
+                        error: FfiError(
+                            domain: "operation",
+                            code: "OPERATION_INVALID",
+                            message: "retryable",
+                            requestId: nil,
+                            operationIndex: nil,
+                            limit: nil,
+                            actual: nil,
+                            detailsJson: nil
+                        )
+                    )
+                    : FfiUnitResult(value: true, error: nil)
+            }
+        )
+        else {
+            XCTFail("expected v2 adapter attachment to succeed")
+            return
+        }
+        adapters.append(adapter)
+        EditorV2Registry.register(adapter, forLegacyId: handle.nativeViewId)
+        NativeEditorViewRegistry.shared.markEditorCreated(editorId: handle.nativeViewId)
+        let throwingHook: (UInt64) throws -> Void = { editorId in
+            if editorId == handle.nativeViewId { throw TestHookError.failed }
+        }
+        EditorV2Registry.onHandleDestroyReservationAcquiredForTesting = throwingHook
+        defer {
+            EditorV2Registry.onHandleDestroyReservationAcquiredForTesting = nil
+            EditorV2Registry.removePairing(forLegacyId: handle.nativeViewId)
+            NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: handle.nativeViewId)
+            _ = editorV2Destroy(editorId: handle.handle)
+        }
+
+        let first = destroyEditorV2FromModule(editorId: handle.handle)
+        XCTAssertEqual(first.error?.message, "retryable")
+        XCTAssertTrue(EditorV2Registry.adapter(forLegacyId: handle.nativeViewId) === adapter)
+        XCTAssertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(handle.nativeViewId))
+        XCTAssertFalse(NativeEditorViewRegistry.shared.isDestroyReserved(editorId: handle.nativeViewId))
+
+        EditorV2Registry.onHandleDestroyReservationAcquiredForTesting = nil
+        let retry = destroyEditorV2FromModule(editorId: handle.handle)
+        XCTAssertEqual(retry.value, true)
+        XCTAssertNil(retry.error)
+        XCTAssertEqual(destroyAttempts, 2)
+        XCTAssertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(handle.nativeViewId))
+    }
+
+    func testThrowingPairRemovalHookPreservesTerminalResultAndFinalizesDestroy() {
+        let created = editorV2Create(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            snapshotState: nil
+        )
+        guard let value = created.value,
+              created.error == nil,
+              let handle = createdV2TestEditorHandle(value)
+        else {
+            XCTFail("expected v2 editor creation to succeed")
+            return
+        }
+
+        var destroyAttempts = 0
+        guard let adapter = EditorV2Adapter.attach(
+            editorId: handle.handle,
+            roomBound: false,
+            destroySession: { _ in
+                destroyAttempts += 1
+                return FfiUnitResult(value: true, error: nil)
+            }
+        )
+        else {
+            XCTFail("expected v2 adapter attachment to succeed")
+            return
+        }
+        adapters.append(adapter)
+        EditorV2Registry.register(adapter, forLegacyId: handle.nativeViewId)
+        NativeEditorViewRegistry.shared.markEditorCreated(editorId: handle.nativeViewId)
+        let throwingHook: (UInt64) throws -> Void = { editorId in
+            if editorId == handle.nativeViewId { throw TestHookError.failed }
+        }
+        EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting = throwingHook
+        defer {
+            EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting = nil
+            EditorV2Registry.removePairing(forLegacyId: handle.nativeViewId)
+            NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: handle.nativeViewId)
+            _ = editorV2Destroy(editorId: handle.handle)
+        }
+
+        let result = destroyEditorV2FromModule(editorId: handle.handle)
+        XCTAssertEqual(result.value, true)
+        XCTAssertNil(result.error)
+        XCTAssertNil(EditorV2Registry.adapter(forLegacyId: handle.nativeViewId))
+        XCTAssertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(handle.nativeViewId))
+        XCTAssertTrue(NativeEditorViewRegistry.shared.isDestroyed(editorId: handle.nativeViewId))
+
+        EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting = nil
+        let subsequent = destroyEditorV2FromModule(
+            editorId: handle.handle,
+            destroy: { _ in
+                destroyAttempts += 1
+                return FfiUnitResult(value: true, error: nil)
+            }
+        )
+        XCTAssertEqual(subsequent.value, true)
+        XCTAssertNil(subsequent.error)
+        XCTAssertEqual(destroyAttempts, 2)
+        XCTAssertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(handle.nativeViewId))
     }
 
     private func assertMalformedDestroyResultRetainsPairUntilRetry(

@@ -328,7 +328,10 @@ func destroyEditorV2FromModule(
     }
 
     let result = adapter?.destroyForModuleTransaction() ?? destroy(editorId)
-    EditorV2Registry.onDestroyFfiResultReceivedForTesting?(nativeViewId)
+    invokeDestroyTestingHook(
+        EditorV2Registry.onDestroyFfiResultReceivedForTesting,
+        editorId: nativeViewId
+    )
     switch (result.value, result.error) {
     case let (value?, nil) where value:
         break
@@ -360,7 +363,10 @@ func destroyEditorV2FromModule(
     // still held. The handle transaction remains held through finalization.
     if adapter != nil {
         _ = EditorV2Registry.removePairing(forLegacyId: nativeViewId)
-        EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting?(nativeViewId)
+        invokeDestroyTestingHook(
+            EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting,
+            editorId: nativeViewId
+        )
     }
     if reserved { viewRegistry.finalizeDestroy(editorId: nativeViewId) }
     return result

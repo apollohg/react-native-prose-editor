@@ -74,7 +74,10 @@ internal fun destroyEditorV2FromModule(
         }
 
         val result = destroy(canonicalHandle)
-        EditorV2Registry.onDestroyFfiResultReceivedForTesting?.invoke(canonicalHandle)
+        invokeDestroyTestingHook(
+            EditorV2Registry.onDestroyFfiResultReceivedForTesting,
+            canonicalHandle,
+        )
         val error = result.error
         when {
             result.value == true && error == null -> Unit
@@ -94,7 +97,10 @@ internal fun destroyEditorV2FromModule(
         // The owner clears callback ownership and removes the pairing while
         // both reservations still gate callbacks and view commands.
         EditorV2Registry.dropPair(canonicalHandle)
-        EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting?.invoke(canonicalHandle)
+        invokeDestroyTestingHook(
+            EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting,
+            canonicalHandle,
+        )
         if (reserved) {
             // Off-main finalization can finish after its bounded wait. Keep
             // canonical-handle ownership until the view reservation releases,

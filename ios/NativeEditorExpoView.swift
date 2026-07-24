@@ -13,7 +13,7 @@ final class NativeEditorViewRegistry {
     private var viewsByEditorId: [UInt64: NSHashTable<NativeEditorExpoView>] = [:]
     private var activeEditorIds: Set<UInt64> = []
     private var destroyingEditorIds: Set<UInt64> = []
-    var onFinalizeDestroyForTesting: ((UInt64) -> Void)?
+    var onFinalizeDestroyForTesting: ((UInt64) throws -> Void)?
 
     private init() {}
 
@@ -109,7 +109,7 @@ final class NativeEditorViewRegistry {
         guard editorId != 0 else { return }
         performOnMain {
             guard destroyingEditorIds.contains(editorId) else { return }
-            onFinalizeDestroyForTesting?(editorId)
+            invokeDestroyTestingHook(onFinalizeDestroyForTesting, editorId: editorId)
             activeEditorIds.remove(editorId)
             let views = viewsByEditorId.removeValue(forKey: editorId)?.allObjects ?? []
             views.forEach { $0.handleEditorDestroyed(editorId) }

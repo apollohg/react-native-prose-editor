@@ -232,7 +232,7 @@ internal object NativeEditorViewRegistry {
             }
             onCompleted?.invoke()
         }
-        onFinalizeDestroyForTesting?.invoke(editorId)
+        invokeDestroyTestingHook(onFinalizeDestroyForTesting, editorId)
         if (affectedViews.first.isEmpty() && affectedViews.second.isEmpty()) {
             releaseReservation()
             return

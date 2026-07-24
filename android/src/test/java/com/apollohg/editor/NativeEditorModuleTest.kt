@@ -132,6 +132,115 @@ class NativeEditorModuleTest {
     }
 
     @Test
+    fun `throwing handle reservation hook does not strand destroy retry`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"localEmpty\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            JSONObject(created.value).getString("editorId"),
+            roomBound = false,
+        )!!
+        val viewToken = EditorV2Registry.register(adapter)
+        NativeEditorViewRegistry.markEditorCreated(viewToken)
+        var destroyAttempts = 0
+        var finalizationCalls = 0
+        EditorV2Registry.onHandleDestroyReservationAcquiredForTesting = { handle ->
+            if (handle == adapter.editorId) throw IllegalStateException("test hook failure")
+        }
+        NativeEditorViewRegistry.onFinalizeDestroyForTesting = { finalizedToken ->
+            if (finalizedToken == viewToken) finalizationCalls += 1
+        }
+
+        try {
+            val destroy: (String) -> FfiUnitResult = {
+                destroyAttempts += 1
+                if (destroyAttempts == 1) {
+                    FfiUnitResult(
+                        null,
+                        FfiError("operation", "OPERATION_INVALID", "retryable", null, null, null, null, null),
+                    )
+                } else {
+                    FfiUnitResult(true, null)
+                }
+            }
+
+            val first = destroyEditorV2FromModule(adapter.editorId, destroy)
+            assertEquals("retryable", first.error?.message)
+            assertEquals(viewToken, EditorV2Registry.viewTokenForHandle(adapter.editorId))
+            assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(adapter.editorId))
+            assertTrue(NativeEditorViewRegistry.prepareForCommandJSON(viewToken).contains("\"ready\":true"))
+
+            EditorV2Registry.onHandleDestroyReservationAcquiredForTesting = null
+            val retry = destroyEditorV2FromModule(adapter.editorId, destroy)
+            assertEquals(true, retry.value)
+            assertNull(retry.error)
+            assertEquals(2, destroyAttempts)
+            assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(adapter.editorId))
+            assertEquals(1, finalizationCalls)
+            assertFalse(NativeEditorViewRegistry.isDestroyed(viewToken))
+        } finally {
+            EditorV2Registry.onHandleDestroyReservationAcquiredForTesting = null
+            NativeEditorViewRegistry.onFinalizeDestroyForTesting = null
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.invalidateDestroyedEditor(viewToken)
+        }
+    }
+
+    @Test
+    fun `throwing pair removal hook preserves terminal result and finalizes destroy`() {
+        val backend = FakeEditorV2Backend()
+        val created = backend.create(
+            "{\"initialization\":{\"type\":\"localEmpty\"}}",
+            null,
+        ) as EditorV2CallResult.Ok
+        val adapter = EditorV2Adapter.attach(
+            backend,
+            JSONObject(created.value).getString("editorId"),
+            roomBound = false,
+        )!!
+        val viewToken = EditorV2Registry.register(adapter)
+        NativeEditorViewRegistry.markEditorCreated(viewToken)
+        var destroyAttempts = 0
+        var finalizationCalls = 0
+        EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting = { handle ->
+            if (handle == adapter.editorId) throw IllegalStateException("test hook failure")
+        }
+        NativeEditorViewRegistry.onFinalizeDestroyForTesting = { finalizedToken ->
+            if (finalizedToken == viewToken) finalizationCalls += 1
+        }
+
+        try {
+            val destroy: (String) -> FfiUnitResult = {
+                destroyAttempts += 1
+                FfiUnitResult(true, null)
+            }
+
+            val result = destroyEditorV2FromModule(adapter.editorId, destroy)
+            assertEquals(true, result.value)
+            assertNull(result.error)
+            assertNull(EditorV2Registry.viewTokenForHandle(adapter.editorId))
+            assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(adapter.editorId))
+            assertEquals(1, finalizationCalls)
+            assertFalse(NativeEditorViewRegistry.isDestroyed(viewToken))
+
+            EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting = null
+            val subsequent = destroyEditorV2FromModule(adapter.editorId, destroy)
+            assertEquals(true, subsequent.value)
+            assertNull(subsequent.error)
+            assertEquals(2, destroyAttempts)
+            assertFalse(EditorV2Registry.isHandleDestroyReservedForTesting(adapter.editorId))
+        } finally {
+            EditorV2Registry.onPairRemovedBeforeDestroyFinalizationForTesting = null
+            NativeEditorViewRegistry.onFinalizeDestroyForTesting = null
+            EditorV2Registry.remove(adapter.editorId)
+            NativeEditorViewRegistry.invalidateDestroyedEditor(viewToken)
+        }
+    }
+
+    @Test
     fun `handle transaction blocks contender before pairing lookup`() {
         val backend = FakeEditorV2Backend()
         val created = backend.create(

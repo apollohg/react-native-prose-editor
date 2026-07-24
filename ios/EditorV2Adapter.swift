@@ -1682,6 +1682,17 @@ func v2DestroyAlreadyInProgressError() -> FfiError {
     )
 }
 
+func invokeDestroyTestingHook(
+    _ hook: ((UInt64) throws -> Void)?,
+    editorId: UInt64
+) {
+    do {
+        try hook?(editorId)
+    } catch {
+        // Destroy test hooks are observational and cannot alter the transaction.
+    }
+}
+
 /// Maps the public (module-visible) editor id to the v2 adapter backing it.
 /// The module's create path registers one pairing per editor; views bound
 /// to a paired id route every interaction through the adapter.
@@ -1689,9 +1700,9 @@ enum EditorV2Registry {
     private static let lock = NSLock()
     private static var pairings: [UInt64: EditorV2Adapter] = [:]
     private static var destroyingLegacyIds: Set<UInt64> = []
-    static var onHandleDestroyReservationAcquiredForTesting: ((UInt64) -> Void)?
-    static var onDestroyFfiResultReceivedForTesting: ((UInt64) -> Void)?
-    static var onPairRemovedBeforeDestroyFinalizationForTesting: ((UInt64) -> Void)?
+    static var onHandleDestroyReservationAcquiredForTesting: ((UInt64) throws -> Void)?
+    static var onDestroyFfiResultReceivedForTesting: ((UInt64) throws -> Void)?
+    static var onPairRemovedBeforeDestroyFinalizationForTesting: ((UInt64) throws -> Void)?
 
     static func register(_ adapter: EditorV2Adapter, forLegacyId legacyId: UInt64) {
         lock.lock()
@@ -1716,7 +1727,7 @@ enum EditorV2Registry {
         }
         destroyingLegacyIds.insert(legacyId)
         lock.unlock()
-        onHandleDestroyReservationAcquiredForTesting?(legacyId)
+        invokeDestroyTestingHook(onHandleDestroyReservationAcquiredForTesting, editorId: legacyId)
         return true
     }
 
