@@ -232,23 +232,17 @@ export interface NativeEditorV2Module {
         mirrorScalarAnchor: number | null,
         mirrorScalarHead: number | null
     ): unknown;
-    editorV2CollaborationBeginConnect(editorId: string): unknown;
-    editorV2CollaborationSocketOpen(editorId: string, generation: string): unknown;
-    editorV2CollaborationReceive(editorId: string, generation: string, message: Uint8Array): unknown;
-    editorV2CollaborationSocketClose(
+    editorV2CollaborationConfigureTransport(
         editorId: string,
-        generation: string,
-        code: number | null,
-        reason: string | null
+        configJsonOrNull: string | null
     ): unknown;
-    editorV2CollaborationTakeOutbound(editorId: string, generation: string): unknown;
     editorV2CollaborationSetAwareness(editorId: string, awarenessJson: string): unknown;
-    editorV2CollaborationPeers(editorId: string): unknown;
-    editorV2CollaborationTick(editorId: string, nowMillis: string): unknown;
-    editorV2CollaborationDetach(editorId: string): unknown;
-    editorV2CollaborationReattach(editorId: string): unknown;
     editorV2SnapshotExport(editorId: string): unknown;
     editorV2SnapshotRestore(editorId: string, metadataJson: string, encodedState: Uint8Array): unknown;
+    addListener(
+        eventName: 'onCollaborationTransportEvent',
+        listener: (event: unknown) => void
+    ): { remove(): void };
 }
 
 function invokeNativeEditorV2<K extends keyof NativeEditorV2Module>(
@@ -395,7 +389,7 @@ export interface NativeEditorV2EditorState {
 }
 
 export function normalizeNativeEditorV2StateValue(value: unknown): NativeEditorV2EditorState | null {
-    const parsed = parseNativeEditorV2JsonValue(value);
+    const parsed = typeof value === 'string' ? parseNativeEditorV2JsonValue(value) : value;
     if (!isPlainRecord(parsed)) return null;
     const documentState = whitelisted(parsed.documentState, V2_DOCUMENT_STATES);
     const transportState = whitelisted(parsed.transportState, V2_TRANSPORT_STATES);
@@ -875,20 +869,6 @@ export function normalizeNativeEditorV2CreateValue(value: unknown): { editorId: 
     return editorId == null ? null : { editorId };
 }
 
-export function normalizeNativeEditorV2GenerationValue(value: unknown): string | null {
-    const parsed = parseNativeEditorV2JsonValue(value);
-    if (!isPlainRecord(parsed)) return null;
-    return normalizeNativeEditorV2DecimalId(parsed.generation);
-}
-
-export function normalizeNativeEditorV2TransportStateValue(
-    value: unknown
-): NativeEditorV2TransportState | null {
-    const parsed = parseNativeEditorV2JsonValue(value);
-    if (!isPlainRecord(parsed)) return null;
-    return whitelisted(parsed.transportState, V2_TRANSPORT_STATES);
-}
-
 export interface NativeEditorV2PeerInfo {
     clientId: string;
     clock: number;
@@ -897,66 +877,124 @@ export interface NativeEditorV2PeerInfo {
     cursor: { anchor: number; head: number } | null;
 }
 
-export interface NativeEditorV2AwarenessTickResult {
-    nextDeadlineMillis: string | null;
-    renewedLocal: boolean;
-    expiredPeers: string[];
-    outboundChanged: boolean;
-    peersChanged: boolean;
-}
-
-export function normalizeNativeEditorV2AwarenessTickValue(
-    value: unknown
-): NativeEditorV2AwarenessTickResult | null {
-    const parsed = parseNativeEditorV2JsonValue(value);
-    if (
-        !isPlainRecord(parsed) ||
-        !hasExactOwnKeys(parsed, [
-            'nextDeadlineMillis',
-            'renewedLocal',
-            'expiredPeers',
-            'outboundChanged',
-            'peersChanged',
-        ])
-    ) {
-        return null;
-    }
-    let nextDeadlineMillis: string | null;
-    if (parsed.nextDeadlineMillis === null) {
-        nextDeadlineMillis = null;
-    } else {
-        const normalizedDeadline = normalizeNativeEditorV2DecimalId(parsed.nextDeadlineMillis);
-        if (normalizedDeadline == null) return null;
-        nextDeadlineMillis = normalizedDeadline;
-    }
-    const renewedLocal = optionalBoolean(parsed.renewedLocal);
-    const outboundChanged = optionalBoolean(parsed.outboundChanged);
-    const peersChanged = optionalBoolean(parsed.peersChanged);
-    if (
-        renewedLocal == null ||
-        !Array.isArray(parsed.expiredPeers) ||
-        outboundChanged == null ||
-        peersChanged == null
-    ) {
-        return null;
-    }
-    const expiredPeers: string[] = [];
-    for (const peerId of parsed.expiredPeers) {
-        const normalizedPeerId = normalizeNativeEditorV2DecimalId(peerId);
-        if (normalizedPeerId == null) return null;
-        expiredPeers.push(normalizedPeerId);
-    }
-    return {
-        nextDeadlineMillis,
-        renewedLocal,
-        expiredPeers,
-        outboundChanged,
-        peersChanged,
+export interface NativeCollaborationTransportConfig {
+    url: string;
+    connect: boolean;
+    /**
+     * Optional GraphQL WebSocket authentication prelude. When present, native
+     * sends `connection_init` with `Authorization: JWT <jwt>` and waits for
+     * `connection_ack` before opening the binary Yjs protocol.
+     */
+    connectionInit?: {
+        /** Raw JWT without the `JWT ` scheme prefix. */
+        jwt: string;
     };
 }
 
+export interface NativeCollaborationTransportDiagnostics {
+    wakeReason: string;
+    transportState: NativeEditorV2TransportState;
+    nextDeadlineMillis: string | null;
+    remoteCommitApplied: boolean;
+    peersChanged: boolean;
+    renewedLocal: boolean;
+    expiredPeerCount: number;
+}
+
+export interface NativeCollaborationTransportEvent {
+    editorId: string;
+    eventSequence: string;
+    generation: string | null;
+    kind: 'state' | 'error';
+    state?: NativeEditorV2EditorState;
+    peers?: NativeEditorV2PeerInfo[];
+    error?: NativeEditorV2ErrorBase;
+    diagnostics?: NativeCollaborationTransportDiagnostics;
+}
+
+function normalizeNativeCollaborationTransportDiagnostics(
+    value: unknown
+): NativeCollaborationTransportDiagnostics | null {
+    if (!isPlainRecord(value)) return null;
+    const transportState = whitelisted(value.transportState, V2_TRANSPORT_STATES);
+    const nextDeadlineMillis =
+        value.nextDeadlineMillis === null
+            ? null
+            : normalizeNativeEditorV2DecimalId(value.nextDeadlineMillis);
+    const remoteCommitApplied = optionalBoolean(value.remoteCommitApplied);
+    const peersChanged = optionalBoolean(value.peersChanged);
+    const renewedLocal = optionalBoolean(value.renewedLocal);
+    const expiredPeerCount = nativeEditorV2U32(value.expiredPeerCount);
+    if (
+        typeof value.wakeReason !== 'string' ||
+        transportState == null ||
+        (value.nextDeadlineMillis !== null && nextDeadlineMillis == null) ||
+        remoteCommitApplied == null ||
+        peersChanged == null ||
+        renewedLocal == null ||
+        expiredPeerCount == null
+    ) {
+        return null;
+    }
+    return {
+        wakeReason: value.wakeReason,
+        transportState,
+        nextDeadlineMillis,
+        remoteCommitApplied,
+        peersChanged,
+        renewedLocal,
+        expiredPeerCount,
+    };
+}
+
+export function normalizeNativeCollaborationTransportEvent(
+    value: unknown
+): NativeCollaborationTransportEvent | null {
+    if (!isPlainRecord(value)) return null;
+    const editorId = normalizeNativeEditorV2DecimalId(value.editorId);
+    const eventSequence = normalizeNativeEditorV2DecimalId(value.eventSequence);
+    const generation =
+        value.generation === null ? null : normalizeNativeEditorV2DecimalId(value.generation);
+    if (
+        editorId == null ||
+        editorId === '0' ||
+        eventSequence == null ||
+        eventSequence === '0' ||
+        (value.generation !== null && generation == null)
+    ) {
+        return null;
+    }
+    if (value.kind === 'state') {
+        const state = normalizeNativeEditorV2StateValue(value.state);
+        const peers = normalizeNativeEditorV2PeersValue({ peers: value.peers });
+        const diagnostics = normalizeNativeCollaborationTransportDiagnostics(value.diagnostics);
+        if (state == null || peers == null || diagnostics == null) return null;
+        return {
+            editorId,
+            eventSequence,
+            generation,
+            kind: 'state',
+            state,
+            peers,
+            diagnostics,
+        };
+    }
+    if (value.kind === 'error') {
+        const error = normalizeNativeEditorV2Error({ error: value.error });
+        if (error == null) return null;
+        return {
+            editorId,
+            eventSequence,
+            generation,
+            kind: 'error',
+            error: nativeEditorV2ErrorToException(error),
+        };
+    }
+    return null;
+}
+
 export function normalizeNativeEditorV2PeersValue(value: unknown): NativeEditorV2PeerInfo[] | null {
-    const parsed = parseNativeEditorV2JsonValue(value);
+    const parsed = typeof value === 'string' ? parseNativeEditorV2JsonValue(value) : value;
     if (!isPlainRecord(parsed) || !Array.isArray(parsed.peers)) return null;
     const peers: NativeEditorV2PeerInfo[] = [];
     for (const rawPeer of parsed.peers) {
@@ -983,61 +1021,6 @@ export function normalizeNativeEditorV2PeersValue(value: unknown): NativeEditorV
         });
     }
     return peers;
-}
-
-export interface NativeEditorV2ReceiveClose {
-    disposition: 'retryable' | 'incompatible';
-    error: NativeEditorV2Error;
-}
-
-export interface NativeEditorV2ReceiveOutcome {
-    framesDecoded: number;
-    repliesEnqueued: number;
-    replyBytesEnqueued: number;
-    remoteCommitApplied: boolean;
-    documentPromoted: boolean;
-    transportState: NativeEditorV2TransportState;
-    close: NativeEditorV2ReceiveClose | null;
-}
-
-export function normalizeNativeEditorV2ReceiveValue(
-    value: unknown
-): NativeEditorV2ReceiveOutcome | null {
-    const parsed = parseNativeEditorV2JsonValue(value);
-    if (!isPlainRecord(parsed)) return null;
-    const framesDecoded = nativeEditorV2U32(parsed.framesDecoded);
-    const repliesEnqueued = nativeEditorV2U32(parsed.repliesEnqueued);
-    const replyBytesEnqueued = nativeEditorV2U32(parsed.replyBytesEnqueued);
-    const remoteCommitApplied = optionalBoolean(parsed.remoteCommitApplied);
-    const documentPromoted = optionalBoolean(parsed.documentPromoted);
-    const transportState = whitelisted(parsed.transportState, V2_TRANSPORT_STATES);
-    if (
-        framesDecoded == null ||
-        repliesEnqueued == null ||
-        replyBytesEnqueued == null ||
-        remoteCommitApplied == null ||
-        documentPromoted == null ||
-        transportState == null
-    ) {
-        return null;
-    }
-    let close: NativeEditorV2ReceiveClose | null = null;
-    if (parsed.close !== null && parsed.close !== undefined) {
-        if (!isPlainRecord(parsed.close)) return null;
-        const disposition = whitelisted(parsed.close.disposition, ['retryable', 'incompatible']);
-        const error = normalizeNativeEditorV2Error({ error: parsed.close.error });
-        if (disposition == null || error == null) return null;
-        close = { disposition, error };
-    }
-    return {
-        framesDecoded,
-        repliesEnqueued,
-        replyBytesEnqueued,
-        remoteCommitApplied,
-        documentPromoted,
-        transportState,
-        close,
-    };
 }
 
 // ─── Imperative throws ──────────────────────────────────────────
@@ -2623,79 +2606,39 @@ export class NativeEditorV2Bridge {
 
     // ── Collaboration runtime ───────────────────────────────────
 
-    collaborationBeginConnect(): string {
-        return this.callV2(
-            () => invokeNativeEditorV2('editorV2CollaborationBeginConnect', this._editorId),
-            normalizeNativeEditorV2GenerationValue
-        );
-    }
-
-    collaborationSocketOpen(generation: string): Uint8Array {
+    configureCollaborationTransport(config: NativeCollaborationTransportConfig | null): void {
         this.assertAlive();
-        const acceptedGeneration = requireV2DecimalId(generation, 'generation');
-        return this.callV2(
+        if (
+            config !== null &&
+            (
+                typeof config.url !== 'string' ||
+                typeof config.connect !== 'boolean' ||
+                (
+                    config.connectionInit !== undefined &&
+                    (
+                        config.connectionInit === null ||
+                        typeof config.connectionInit !== 'object' ||
+                        typeof config.connectionInit.jwt !== 'string'
+                    )
+                )
+            )
+        ) {
+            throw invalidV2RequestError(
+                'NativeEditorBridge: invalid collaboration transport configuration'
+            );
+        }
+        this.callV2(
             () =>
                 invokeNativeEditorV2(
-                    'editorV2CollaborationSocketOpen',
+                    'editorV2CollaborationConfigureTransport',
                     this._editorId,
-                    acceptedGeneration
+                    config === null ? null : JSON.stringify(config)
                 ),
-            normalizeNativeEditorV2Bytes
+            normalizeNativeEditorV2Unit
         );
     }
 
-    collaborationReceive(generation: string, message: Uint8Array): NativeEditorV2ReceiveOutcome {
-        this.assertAlive();
-        const acceptedGeneration = requireV2DecimalId(generation, 'generation');
-        const bytes = requireV2Bytes(message, 'message');
-        return this.callV2(
-            () =>
-                invokeNativeEditorV2(
-                    'editorV2CollaborationReceive',
-                    this._editorId,
-                    acceptedGeneration,
-                    bytes
-                ),
-            normalizeNativeEditorV2ReceiveValue
-        );
-    }
-
-    collaborationSocketClose(
-        generation: string,
-        code?: number | null,
-        reason?: string | null
-    ): NativeEditorV2TransportState {
-        this.assertAlive();
-        const acceptedGeneration = requireV2DecimalId(generation, 'generation');
-        const acceptedCode = code == null ? null : requireNativeEditorV2U32(code, 'closeCode');
-        return this.callV2(
-            () =>
-                invokeNativeEditorV2(
-                    'editorV2CollaborationSocketClose',
-                    this._editorId,
-                    acceptedGeneration,
-                    acceptedCode,
-                    reason ?? null
-                ),
-            normalizeNativeEditorV2TransportStateValue
-        );
-    }
-
-    collaborationTakeOutbound(generation: string): Uint8Array {
-        this.assertAlive();
-        const acceptedGeneration = requireV2DecimalId(generation, 'generation');
-        return this.callV2(
-            () =>
-                invokeNativeEditorV2(
-                    'editorV2CollaborationTakeOutbound',
-                    this._editorId,
-                    acceptedGeneration
-                ),
-            normalizeNativeEditorV2Bytes
-        );
-    }
-
-    collaborationSetAwareness(intent: NativeEditorLocalAwarenessIntent | null): void {
+    setLocalAwareness(intent: NativeEditorLocalAwarenessIntent | null): void {
         this.assertAlive();
         const awarenessJson =
             intent === null ? 'null' : serializeLocalAwarenessIntent(validateLocalAwarenessIntent(intent));
@@ -2710,39 +2653,21 @@ export class NativeEditorV2Bridge {
         );
     }
 
-    collaborationPeers(): NativeEditorV2PeerInfo[] {
-        return this.callV2(
-            () => invokeNativeEditorV2('editorV2CollaborationPeers', this._editorId),
-            normalizeNativeEditorV2PeersValue
-        );
-    }
-
-    collaborationTick(nowMillis: string): NativeEditorV2AwarenessTickResult {
+    addCollaborationTransportListener(
+        listener: (event: NativeCollaborationTransportEvent) => void
+    ): () => void {
         this.assertAlive();
-        const acceptedNowMillis = requireV2DecimalId(nowMillis, 'nowMillis');
-        return this.callV2(
-            () =>
-                invokeNativeEditorV2(
-                    'editorV2CollaborationTick',
-                    this._editorId,
-                    acceptedNowMillis
-                ),
-            normalizeNativeEditorV2AwarenessTickValue
+        const subscription = getNativeModule().addListener(
+            'onCollaborationTransportEvent',
+            (rawEvent) => {
+                if (this._destroyed) return;
+                const event = normalizeNativeCollaborationTransportEvent(rawEvent);
+                if (event?.editorId === this._editorId) {
+                    listener(event);
+                }
+            }
         );
-    }
-
-    collaborationDetach(): void {
-        this.callV2(
-            () => invokeNativeEditorV2('editorV2CollaborationDetach', this._editorId),
-            normalizeNativeEditorV2Unit
-        );
-    }
-
-    collaborationReattach(): void {
-        this.callV2(
-            () => invokeNativeEditorV2('editorV2CollaborationReattach', this._editorId),
-            normalizeNativeEditorV2Unit
-        );
+        return () => subscription.remove();
     }
 }
 
@@ -2764,6 +2689,11 @@ export interface NativeEditorDocumentHandle {
     readonly isDestroyed: boolean;
     destroy(): void;
     addErrorListener(listener: (error: NativeEditorV2ErrorBase) => void): () => void;
+    configureCollaborationTransport(config: NativeCollaborationTransportConfig | null): void;
+    setLocalAwareness(intent: NativeEditorLocalAwarenessIntent | null): void;
+    addCollaborationTransportListener(
+        listener: (event: NativeCollaborationTransportEvent) => void
+    ): () => void;
 }
 
 class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandle {
@@ -2794,6 +2724,20 @@ class NativeEditorDocumentHandleImpl implements NativeEditorDocumentHandle {
 
     addErrorListener(listener: (error: NativeEditorV2ErrorBase) => void): () => void {
         return this.bridge.addErrorListener(listener);
+    }
+
+    configureCollaborationTransport(config: NativeCollaborationTransportConfig | null): void {
+        this.bridge.configureCollaborationTransport(config);
+    }
+
+    setLocalAwareness(intent: NativeEditorLocalAwarenessIntent | null): void {
+        this.bridge.setLocalAwareness(intent);
+    }
+
+    addCollaborationTransportListener(
+        listener: (event: NativeCollaborationTransportEvent) => void
+    ): () => void {
+        return this.bridge.addCollaborationTransportListener(listener);
     }
 }
 

@@ -7,7 +7,8 @@
 //! echoed into the outbox.
 
 use crate::collaboration_runtime::outbox::{
-    set_reservation_allocation_failure_for_test, CollaborationOutbox, OutboxReservationError,
+    set_reservation_allocation_failure_for_test, CollaborationOutbox, OutboundLeaseError,
+    OutboundLeasePayload, OutboxReservationError,
 };
 use crate::native_bridge_test_support::{self as bridge, BridgeTestOutcome, SessionOptions};
 
@@ -25,7 +26,246 @@ fn input_envelope(request_id: u64, revision: u64, text: &str) -> String {
 }
 
 #[test]
-fn reserve_install_take_flow_is_fifo_with_exact_accounting() {
+fn leased_front_remains_queued_and_charged_until_exact_ack() {
+    let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
+    let reservation = outbox.reserve_document_update(11, 3).unwrap();
+    outbox.install(reservation, vec![1, 2, 3]);
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 3);
+    assert_eq!(outbox.pending_protocol_reply_count(), 0);
+    assert_eq!(outbox.pending_protocol_reply_bytes(), 0);
+
+    let lease = outbox.lease_next().unwrap().unwrap();
+    assert!(matches!(
+        lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &[1, 2, 3]
+    ));
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 3);
+    assert_eq!(outbox.pending_protocol_reply_count(), 0);
+    assert_eq!(outbox.pending_protocol_reply_bytes(), 0);
+
+    outbox.ack_lease(lease.lease_id).unwrap();
+    assert_eq!(outbox.pending_document_update_count(), 0);
+    assert_eq!(outbox.pending_document_update_bytes(), 0);
+    assert_eq!(outbox.pending_protocol_reply_count(), 0);
+    assert_eq!(outbox.pending_protocol_reply_bytes(), 0);
+    assert_eq!(
+        outbox.ack_lease(lease.lease_id),
+        Err(OutboundLeaseError::NoActiveLease)
+    );
+    assert_eq!(outbox.pending_document_update_count(), 0);
+    assert_eq!(outbox.pending_document_update_bytes(), 0);
+}
+
+#[test]
+fn nack_releases_without_consuming_or_reordering() {
+    let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
+    let first = outbox.reserve_document_update(21, 2).unwrap();
+    outbox.install(first, vec![4, 5]);
+    let second = outbox.reserve_document_update(22, 3).unwrap();
+    outbox.install(second, vec![6, 7, 8]);
+    assert_eq!(outbox.pending_document_update_count(), 2);
+    assert_eq!(outbox.pending_document_update_bytes(), 5);
+
+    let first_lease = outbox.lease_next().unwrap().unwrap();
+    assert!(matches!(
+        first_lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &[4, 5]
+    ));
+    assert_eq!(outbox.pending_document_update_count(), 2);
+    assert_eq!(outbox.pending_document_update_bytes(), 5);
+    outbox.nack_lease(first_lease.lease_id).unwrap();
+    assert_eq!(outbox.pending_document_update_count(), 2);
+    assert_eq!(outbox.pending_document_update_bytes(), 5);
+
+    let retried_lease = outbox.lease_next().unwrap().unwrap();
+    assert!(matches!(
+        retried_lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &[4, 5]
+    ));
+    outbox.ack_lease(retried_lease.lease_id).unwrap();
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 3);
+
+    let second_lease = outbox.lease_next().unwrap().unwrap();
+    assert!(matches!(
+        second_lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &[6, 7, 8]
+    ));
+}
+
+#[test]
+fn stale_or_duplicate_ack_cannot_consume_a_newer_front() {
+    let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
+    let first = outbox.reserve_document_update(31, 2).unwrap();
+    outbox.install(first, vec![1, 2]);
+    let second = outbox.reserve_document_update(32, 3).unwrap();
+    outbox.install(second, vec![3, 4, 5]);
+    assert_eq!(outbox.pending_document_update_count(), 2);
+    assert_eq!(outbox.pending_document_update_bytes(), 5);
+
+    let first_lease = outbox.lease_next().unwrap().unwrap();
+    outbox.ack_lease(first_lease.lease_id).unwrap();
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 3);
+    let second_lease = outbox.lease_next().unwrap().unwrap();
+    assert!(matches!(
+        second_lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &[3, 4, 5]
+    ));
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 3);
+
+    assert_eq!(
+        outbox.ack_lease(first_lease.lease_id),
+        Err(OutboundLeaseError::LeaseMismatch)
+    );
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 3);
+    outbox.ack_lease(second_lease.lease_id).unwrap();
+    assert_eq!(outbox.pending_document_update_count(), 0);
+    assert_eq!(outbox.pending_document_update_bytes(), 0);
+    assert_eq!(
+        outbox.ack_lease(second_lease.lease_id),
+        Err(OutboundLeaseError::NoActiveLease)
+    );
+    assert_eq!(outbox.pending_document_update_count(), 0);
+    assert_eq!(outbox.pending_document_update_bytes(), 0);
+}
+
+#[test]
+fn protocol_priority_is_frozen_once_a_document_frame_is_leased() {
+    let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
+    let document = outbox.reserve_document_update(41, 2).unwrap();
+    outbox.install(document, vec![9, 10]);
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 2);
+    assert_eq!(outbox.pending_protocol_reply_count(), 0);
+    assert_eq!(outbox.pending_protocol_reply_bytes(), 0);
+
+    let document_lease = outbox.lease_next().unwrap().unwrap();
+    assert!(matches!(
+        document_lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &[9, 10]
+    ));
+    let replies = outbox.reserve_protocol_replies(1, 3).unwrap();
+    outbox.install_protocol_replies(replies, 42, vec![vec![11, 12, 13]]);
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 2);
+    assert_eq!(outbox.pending_protocol_reply_count(), 1);
+    assert_eq!(outbox.pending_protocol_reply_bytes(), 3);
+
+    let retained_lease = outbox.lease_next().unwrap().unwrap();
+    assert_eq!(retained_lease.lease_id, document_lease.lease_id);
+    assert!(matches!(
+        retained_lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &[9, 10]
+    ));
+    outbox.ack_lease(document_lease.lease_id).unwrap();
+    assert_eq!(outbox.pending_document_update_count(), 0);
+    assert_eq!(outbox.pending_document_update_bytes(), 0);
+    assert_eq!(outbox.pending_protocol_reply_count(), 1);
+    assert_eq!(outbox.pending_protocol_reply_bytes(), 3);
+
+    let protocol_lease = outbox.lease_next().unwrap().unwrap();
+    assert!(matches!(
+        protocol_lease.payload,
+        OutboundLeasePayload::ProtocolReply(ref reply) if reply == &[11, 12, 13]
+    ));
+    outbox.ack_lease(protocol_lease.lease_id).unwrap();
+    assert_eq!(outbox.pending_protocol_reply_count(), 0);
+    assert_eq!(outbox.pending_protocol_reply_bytes(), 0);
+}
+
+#[test]
+fn clear_protocol_replies_releases_active_protocol_lease() {
+    let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
+    let document = outbox.reserve_document_update(51, 2).unwrap();
+    outbox.install(document, vec![1, 2]);
+    let replies = outbox.reserve_protocol_replies(1, 3).unwrap();
+    outbox.install_protocol_replies(replies, 52, vec![vec![3, 4, 5]]);
+
+    let protocol_lease = outbox.lease_next().unwrap().unwrap();
+    assert!(matches!(
+        protocol_lease.payload,
+        OutboundLeasePayload::ProtocolReply(ref reply) if reply == &[3, 4, 5]
+    ));
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 2);
+    assert_eq!(outbox.pending_protocol_reply_count(), 1);
+    assert_eq!(outbox.pending_protocol_reply_bytes(), 3);
+
+    outbox.clear_protocol_replies();
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 2);
+    assert_eq!(outbox.pending_protocol_reply_count(), 0);
+    assert_eq!(outbox.pending_protocol_reply_bytes(), 0);
+    assert_eq!(
+        outbox.ack_lease(protocol_lease.lease_id),
+        Err(OutboundLeaseError::NoActiveLease)
+    );
+
+    let document_lease = outbox.lease_next().unwrap().unwrap();
+    assert!(matches!(
+        document_lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &[1, 2]
+    ));
+}
+
+#[test]
+fn release_lease_preserves_accounting_and_returns_a_fresh_lease() {
+    let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
+    let reservation = outbox.reserve_document_update(61, 3).unwrap();
+    outbox.install(reservation, vec![6, 7, 8]);
+    let first_lease = outbox.lease_next().unwrap().unwrap();
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 3);
+
+    outbox.release_lease();
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 3);
+    let second_lease = outbox.lease_next().unwrap().unwrap();
+    assert_ne!(second_lease.lease_id, first_lease.lease_id);
+    assert!(matches!(
+        second_lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &[6, 7, 8]
+    ));
+    outbox.ack_lease(second_lease.lease_id).unwrap();
+    assert_eq!(outbox.pending_document_update_count(), 0);
+    assert_eq!(outbox.pending_document_update_bytes(), 0);
+}
+
+#[test]
+fn mismatched_nack_preserves_the_active_lease_and_front() {
+    let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
+    let first = outbox.reserve_document_update(71, 2).unwrap();
+    outbox.install(first, vec![1, 2]);
+    let second = outbox.reserve_document_update(72, 3).unwrap();
+    outbox.install(second, vec![3, 4, 5]);
+
+    let first_lease = outbox.lease_next().unwrap().unwrap();
+    outbox.ack_lease(first_lease.lease_id).unwrap();
+    let second_lease = outbox.lease_next().unwrap().unwrap();
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 3);
+    assert_eq!(
+        outbox.nack_lease(first_lease.lease_id),
+        Err(OutboundLeaseError::LeaseMismatch)
+    );
+    assert_eq!(outbox.pending_document_update_count(), 1);
+    assert_eq!(outbox.pending_document_update_bytes(), 3);
+
+    let retained_lease = outbox.lease_next().unwrap().unwrap();
+    assert_eq!(retained_lease.lease_id, second_lease.lease_id);
+    assert!(matches!(
+        retained_lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &[3, 4, 5]
+    ));
+}
+
+#[test]
+fn reserve_install_lease_ack_flow_is_fifo_with_exact_accounting() {
     let mut outbox = CollaborationOutbox::with_ceilings(4, 1024);
     assert!(!outbox.has_pending_document_updates());
     assert_eq!(outbox.pending_document_update_count(), 0);
@@ -47,14 +287,28 @@ fn reserve_install_take_flow_is_fifo_with_exact_accounting() {
     assert_eq!(outbox.pending_document_update_count(), 2);
     assert_eq!(outbox.pending_document_update_bytes(), 11);
 
-    let taken = outbox.take_next().unwrap();
-    assert_eq!(taken.request_id, 11);
-    assert_eq!(taken.update_v1, vec![1, 2, 3]);
+    let first_lease = outbox.lease_next().unwrap().unwrap();
+    assert_eq!(
+        outbox.pending_document_update_request_id_for_leased_front(),
+        Some(11)
+    );
+    assert!(matches!(
+        first_lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &vec![1, 2, 3]
+    ));
+    outbox.ack_lease(first_lease.lease_id).unwrap();
     assert_eq!(outbox.pending_document_update_bytes(), 8);
-    let taken = outbox.take_next().unwrap();
-    assert_eq!(taken.request_id, 12);
-    assert_eq!(taken.update_v1, vec![9; 8]);
-    assert!(outbox.take_next().is_none());
+    let second_lease = outbox.lease_next().unwrap().unwrap();
+    assert_eq!(
+        outbox.pending_document_update_request_id_for_leased_front(),
+        Some(12)
+    );
+    assert!(matches!(
+        second_lease.payload,
+        OutboundLeasePayload::DocumentUpdate(ref update) if update == &vec![9; 8]
+    ));
+    outbox.ack_lease(second_lease.lease_id).unwrap();
+    assert!(outbox.lease_next().unwrap().is_none());
     assert!(!outbox.has_pending_document_updates());
     assert_eq!(outbox.pending_document_update_bytes(), 0);
 }
@@ -250,10 +504,11 @@ fn attached_session_enqueues_local_edits_and_detached_session_has_no_outbox() {
     let bound = bridge::last_reserved_upper_bound(attached)
         .unwrap()
         .unwrap();
-    let (request_id, update) = bridge::take_next_update(attached).unwrap().unwrap();
-    assert_eq!(request_id, 101);
-    assert_eq!(update.len(), bytes);
-    assert!(update.len() <= bound);
+    let lease = bridge::lease_next_update(attached).unwrap().unwrap();
+    assert_eq!(lease.request_id, 101);
+    assert_eq!(lease.update_v1.len(), bytes);
+    assert!(lease.update_v1.len() <= bound);
+    bridge::ack_leased_update(attached, lease.lease_id).unwrap();
 
     // The same edit on the detached session behaves identically and still
     // exposes no outbox.

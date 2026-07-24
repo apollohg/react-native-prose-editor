@@ -497,76 +497,6 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 }
 
 
-public struct FfiBytesResult {
-    public var value: Data?
-    public var error: FfiError?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(value: Data?, error: FfiError?) {
-        self.value = value
-        self.error = error
-    }
-}
-
-#if compiler(>=6)
-extension FfiBytesResult: Sendable {}
-#endif
-
-
-extension FfiBytesResult: Equatable, Hashable {
-    public static func ==(lhs: FfiBytesResult, rhs: FfiBytesResult) -> Bool {
-        if lhs.value != rhs.value {
-            return false
-        }
-        if lhs.error != rhs.error {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(value)
-        hasher.combine(error)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeFfiBytesResult: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiBytesResult {
-        return
-            try FfiBytesResult(
-                value: FfiConverterOptionData.read(from: &buf),
-                error: FfiConverterOptionTypeFfiError.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: FfiBytesResult, into buf: inout [UInt8]) {
-        FfiConverterOptionData.write(value.value, into: &buf)
-        FfiConverterOptionTypeFfiError.write(value.error, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeFfiBytesResult_lift(_ buf: RustBuffer) throws -> FfiBytesResult {
-    return try FfiConverterTypeFfiBytesResult.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeFfiBytesResult_lower(_ value: FfiBytesResult) -> RustBuffer {
-    return FfiConverterTypeFfiBytesResult.lower(value)
-}
-
-
 public struct FfiError {
     public var domain: String
     public var code: String
@@ -752,6 +682,163 @@ public func FfiConverterTypeFfiJsonResult_lift(_ buf: RustBuffer) throws -> FfiJ
 #endif
 public func FfiConverterTypeFfiJsonResult_lower(_ value: FfiJsonResult) -> RustBuffer {
     return FfiConverterTypeFfiJsonResult.lower(value)
+}
+
+
+/**
+ * One active outbound transport lease. The identifier stays canonical
+ * decimal text while the y-protocols frame remains binary end-to-end.
+ */
+public struct FfiOutboundLease {
+    public var leaseId: String
+    public var frame: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(leaseId: String, frame: Data) {
+        self.leaseId = leaseId
+        self.frame = frame
+    }
+}
+
+#if compiler(>=6)
+extension FfiOutboundLease: Sendable {}
+#endif
+
+
+extension FfiOutboundLease: Equatable, Hashable {
+    public static func ==(lhs: FfiOutboundLease, rhs: FfiOutboundLease) -> Bool {
+        if lhs.leaseId != rhs.leaseId {
+            return false
+        }
+        if lhs.frame != rhs.frame {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(leaseId)
+        hasher.combine(frame)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiOutboundLease: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiOutboundLease {
+        return
+            try FfiOutboundLease(
+                leaseId: FfiConverterString.read(from: &buf),
+                frame: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiOutboundLease, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.leaseId, into: &buf)
+        FfiConverterData.write(value.frame, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiOutboundLease_lift(_ buf: RustBuffer) throws -> FfiOutboundLease {
+    return try FfiConverterTypeFfiOutboundLease.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiOutboundLease_lower(_ value: FfiOutboundLease) -> RustBuffer {
+    return FfiConverterTypeFfiOutboundLease.lower(value)
+}
+
+
+/**
+ * Explicit three-way lease result: exactly one of a retained value, a
+ * queue-empty marker, or an error is selected. Empty is not encoded as an
+ * empty binary frame, which keeps it distinct from valid protocol bytes.
+ */
+public struct FfiOutboundLeaseResult {
+    public var value: FfiOutboundLease?
+    public var empty: Bool
+    public var error: FfiError?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(value: FfiOutboundLease?, empty: Bool, error: FfiError?) {
+        self.value = value
+        self.empty = empty
+        self.error = error
+    }
+}
+
+#if compiler(>=6)
+extension FfiOutboundLeaseResult: Sendable {}
+#endif
+
+
+extension FfiOutboundLeaseResult: Equatable, Hashable {
+    public static func ==(lhs: FfiOutboundLeaseResult, rhs: FfiOutboundLeaseResult) -> Bool {
+        if lhs.value != rhs.value {
+            return false
+        }
+        if lhs.empty != rhs.empty {
+            return false
+        }
+        if lhs.error != rhs.error {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(value)
+        hasher.combine(empty)
+        hasher.combine(error)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiOutboundLeaseResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiOutboundLeaseResult {
+        return
+            try FfiOutboundLeaseResult(
+                value: FfiConverterOptionTypeFfiOutboundLease.read(from: &buf),
+                empty: FfiConverterBool.read(from: &buf),
+                error: FfiConverterOptionTypeFfiError.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiOutboundLeaseResult, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeFfiOutboundLease.write(value.value, into: &buf)
+        FfiConverterBool.write(value.empty, into: &buf)
+        FfiConverterOptionTypeFfiError.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiOutboundLeaseResult_lift(_ buf: RustBuffer) throws -> FfiOutboundLeaseResult {
+    return try FfiConverterTypeFfiOutboundLeaseResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiOutboundLeaseResult_lower(_ value: FfiOutboundLeaseResult) -> RustBuffer {
+    return FfiConverterTypeFfiOutboundLeaseResult.lower(value)
 }
 
 
@@ -1091,6 +1178,30 @@ fileprivate struct FfiConverterOptionTypeFfiError: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeFfiOutboundLease: FfiConverterRustBuffer {
+    typealias SwiftType = FfiOutboundLease?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeFfiOutboundLease.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeFfiOutboundLease.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeFfiSnapshotExport: FfiConverterRustBuffer {
     typealias SwiftType = FfiSnapshotExport?
 
@@ -1144,10 +1255,12 @@ public func editorV2ApplyLocalApi(editorId: String, requestJson: String) -> FfiJ
     )
 })
 }
-public func editorV2CollaborationBeginConnect(editorId: String) -> FfiJsonResult  {
+public func editorV2CollaborationAckOutbound(editorId: String, generation: String, leaseId: String) -> FfiJsonResult  {
     return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_v2_collaboration_begin_connect(
-        FfiConverterString.lower(editorId),$0
+    uniffi_editor_core_fn_func_editor_v2_collaboration_ack_outbound(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(generation),
+        FfiConverterString.lower(leaseId),$0
     )
 })
 }
@@ -1159,6 +1272,40 @@ public func editorV2CollaborationDetach(editorId: String) -> FfiUnitResult  {
     return try!  FfiConverterTypeFfiUnitResult_lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_v2_collaboration_detach(
         FfiConverterString.lower(editorId),$0
+    )
+})
+}
+/**
+ * Drive initial connection, reconnect eligibility, local-awareness renewal,
+ * and remote-peer expiry from one Rust-owned monotonic clock operation.
+ */
+public func editorV2CollaborationDrive(editorId: String, nowMillis: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_drive(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(nowMillis),$0
+    )
+})
+}
+/**
+ * Lease one retained complete outbound frame. Exactly one of value, empty,
+ * or error is selected; protocol replies retain priority over document
+ * updates unless a frame was already leased.
+ */
+public func editorV2CollaborationLeaseOutbound(editorId: String, generation: String) -> FfiOutboundLeaseResult  {
+    return try!  FfiConverterTypeFfiOutboundLeaseResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_lease_outbound(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(generation),$0
+    )
+})
+}
+public func editorV2CollaborationNackOutbound(editorId: String, generation: String, leaseId: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_nack_outbound(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(generation),
+        FfiConverterString.lower(leaseId),$0
     )
 })
 }
@@ -1183,12 +1330,13 @@ public func editorV2CollaborationReattach(editorId: String) -> FfiUnitResult  {
     )
 })
 }
-public func editorV2CollaborationReceive(editorId: String, generation: String, message: Data) -> FfiJsonResult  {
+public func editorV2CollaborationReceive(editorId: String, generation: String, message: Data, nowMillis: String) -> FfiJsonResult  {
     return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_v2_collaboration_receive(
         FfiConverterString.lower(editorId),
         FfiConverterString.lower(generation),
-        FfiConverterData.lower(message),$0
+        FfiConverterData.lower(message),
+        FfiConverterString.lower(nowMillis),$0
     )
 })
 }
@@ -1210,51 +1358,26 @@ public func editorV2CollaborationSetAwareness(editorId: String, awarenessJson: S
  * eligibility); a policy-violation close code (1008) parks the transport
  * `Incompatible`, every other reported close is retryable.
  */
-public func editorV2CollaborationSocketClose(editorId: String, generation: String, code: UInt32?, reason: String?) -> FfiJsonResult  {
+public func editorV2CollaborationSocketClose(editorId: String, generation: String, code: UInt32?, reason: String?, nowMillis: String) -> FfiJsonResult  {
     return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_v2_collaboration_socket_close(
         FfiConverterString.lower(editorId),
         FfiConverterString.lower(generation),
         FfiConverterOptionUInt32.lower(code),
-        FfiConverterOptionString.lower(reason),$0
+        FfiConverterOptionString.lower(reason),
+        FfiConverterString.lower(nowMillis),$0
     )
 })
 }
 /**
- * On acceptance the socket owes Sync Step 1 immediately; the framed
- * message rides back as direct bytes.
+ * Socket open queues framed Sync Step 1 at protocol priority and returns
+ * only the frozen directive; bytes are retrieved through `lease_outbound`.
  */
-public func editorV2CollaborationSocketOpen(editorId: String, generation: String) -> FfiBytesResult  {
-    return try!  FfiConverterTypeFfiBytesResult_lift(try! rustCall() {
+public func editorV2CollaborationSocketOpen(editorId: String, generation: String, nowMillis: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
     uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(
         FfiConverterString.lower(editorId),
-        FfiConverterString.lower(generation),$0
-    )
-})
-}
-/**
- * ONE outbound frame per call: pending protocol replies first, then
- * document updates (raw outbox updates wrapped in standard Sync Update
- * framing at pickup, so every frame is a complete y-protocols message);
- * an empty queue returns the documented empty value (empty bytes).
- */
-public func editorV2CollaborationTakeOutbound(editorId: String, generation: String) -> FfiBytesResult  {
-    return try!  FfiConverterTypeFfiBytesResult_lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_v2_collaboration_take_outbound(
-        FfiConverterString.lower(editorId),
-        FfiConverterString.lower(generation),$0
-    )
-})
-}
-/**
- * Performs deterministic awareness renewal and expiry work. `now_millis`
- * must be a canonical decimal u64 because JavaScript cannot safely carry
- * the full clock range as a number.
- */
-public func editorV2CollaborationTick(editorId: String, nowMillis: String) -> FfiJsonResult  {
-    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
-    uniffi_editor_core_fn_func_editor_v2_collaboration_tick(
-        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(generation),
         FfiConverterString.lower(nowMillis),$0
     )
 })
@@ -1412,10 +1535,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_editor_v2_apply_local_api() != 36451) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_begin_connect() != 53071) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_ack_outbound() != 21755) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_detach() != 25325) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_drive() != 55434) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_lease_outbound() != 56190) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_nack_outbound() != 29045) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_peers() != 754) {
@@ -1424,22 +1556,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_reattach() != 44291) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 49592) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 19926) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness() != 59502) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 60112) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 53946) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open() != 10599) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_take_outbound() != 44572) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_tick() != 11479) {
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open() != 25835) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_create() != 9333) {

@@ -252,7 +252,13 @@ import {
   useYjsCollaboration,
 } from '@apollohg/react-native-prose-editor';
 
-export function CollaborativeEditor({ documentId }: { documentId: string }) {
+export function CollaborativeEditor({
+  documentId,
+  jwt,
+}: {
+  documentId: string;
+  jwt: string;
+}) {
   const documentHandle = useMemo(
     () =>
       createNativeEditorDocumentHandle({
@@ -267,8 +273,12 @@ export function CollaborativeEditor({ documentId }: { documentId: string }) {
   const collaboration = useYjsCollaboration({
     documentId,
     handle: documentHandle,
-    createWebSocket: () =>
-      new WebSocket(`wss://example.com/collaboration?documentId=${documentId}`),
+    transport: {
+      url: `wss://example.com/collaboration?documentId=${documentId}`,
+      connect: true,
+      // Optional: raw token, without the "JWT " prefix.
+      connectionInit: { jwt },
+    },
     localAwareness: { userId: 'u-1', name: 'Ada', color: '#0A84FF' },
   });
   useEffect(() => () => documentHandle.destroy(), [documentHandle]);
@@ -277,7 +287,6 @@ export function CollaborativeEditor({ documentId }: { documentId: string }) {
     <NativeRichTextEditor
       documentHandle={collaboration.editorBindings.documentHandle}
       documentRevision={collaboration.editorBindings.documentRevision}
-      onLocalDocumentCommit={collaboration.editorBindings.onLocalDocumentCommit}
       remoteSelections={collaboration.editorBindings.remoteSelections}
       onSelectionChange={collaboration.editorBindings.onSelectionChange}
       onFocus={collaboration.editorBindings.onFocus}
@@ -290,11 +299,31 @@ export function CollaborativeEditor({ documentId }: { documentId: string }) {
 `useYjsCollaboration` also renders `state` (transport status, rendered
 document JSON/revision, last error) and `peers` (`NativeEditorV2PeerInfo[]` —
 note `clientId` is a decimal **string**) for presence UI, and accepts
-`connect`, `retryIntervalMs`, `onPeersChange`, `onStateChange`, and `onError`
+`transport`, `onPeersChange`, `onStateChange`, and `onError`
 options. Bind the complete `editorBindings` set above — `documentHandle`,
 `documentRevision`, `remoteSelections`, `onSelectionChange`, `onFocus`,
-`onBlur`, and `onLocalDocumentCommit` — so document rendering, local commits,
-and awareness stay on the one shared handle.
+and `onBlur` — so document rendering and awareness stay on the one shared
+handle. Native code owns the WebSocket and flushes local commits directly.
+Swift owns `URLSessionWebSocketTask` on iOS, while Kotlin owns OkHttp on
+Android. JavaScript never constructs the collaboration socket and owns no
+retry, deadline, or outbound-drain timer.
+
+Rust remains authoritative for y-sync, awareness, generations, retry
+eligibility, deadlines, peers, and exact outbound leases. Native drivers only
+execute Rust directives on one serialized context per handle. Frames are
+binary-only after synchronization starts. If `connectionInit` is present,
+native first sends
+`{"type":"connection_init","payload":{"Authorization":"JWT <jwt>"}}`, waits
+up to 10 seconds for a text `{"type":"connection_ack"}` message, and only then
+opens the Rust y-sync generation. Without `connectionInit`, synchronization
+starts as soon as the WebSocket opens. Any other text frame is a protocol
+error.
+
+Treat transport URLs as credentials: do not log the complete URL, query,
+JWT, document content, awareness payload, frame bytes, or native error details.
+Log only redacted endpoint identity and bounded state/counter fields. The
+native owner follows app foreground/background lifecycle and is destroyed
+before its document handle.
 
 Low-level bridge callers must create a local awareness range with
 `createNativeEditorLocalAwarenessSelection(anchor, head)`. Plain objects,
@@ -304,9 +333,8 @@ clones, and proxies are rejected; Rust alone derives the sticky wire cursor.
 
 For an explicit recovery attempt (including a transport parked as
 incompatible), call `collaboration.reconnect()`; do not recreate the document
-handle or construct a second controller. It retires the live socket, then
-performs **detach → reattach → begin-connect** against the same native session
-before opening the fresh WebSocket:
+handle or construct a second controller. Native code retires the current
+socket and asks Rust to start a fresh generation against the same session:
 
 ```tsx
 function recoverCollaboration() {
@@ -314,9 +342,10 @@ function recoverCollaboration() {
 }
 ```
 
-The hook cleans up its controller and socket on unmount. The owning component
-must still destroy `documentHandle` in its cleanup effect, after the hook has
-been declared, so the controller can detach before the session is destroyed.
+The hook removes its native event subscription and detaches the native
+transport on unmount. The owning component must still destroy
+`documentHandle` in its cleanup effect, after the hook has been declared, so
+transport teardown precedes session destruction.
 
 ### Offline snapshot restore
 

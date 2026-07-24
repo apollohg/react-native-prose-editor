@@ -45,8 +45,8 @@ export interface UseNativeEditorDocumentOptions {
     onContentChange?: (html: string) => void;
     onContentChangeJSON?: (json: DocumentJSON) => void;
     onHistoryStateChange?: (state: HistoryState) => void;
-    /** Pinged after each successful local engine mutation so collaboration can flush outbound frames. */
-    onLocalDocumentCommit?: () => void;
+    /** Application notification after a successful local mutation. Transport does not depend on it. */
+    onLocalCommit?: () => void;
 }
 
 export interface UseNativeEditorDocumentReturn {
@@ -100,7 +100,7 @@ export function useNativeEditorDocument(
         valueJSON,
         valueJSONUpdateMode = 'replace',
         revisionSignal,
-        onLocalDocumentCommit,
+        onLocalCommit,
     } = options;
 
     _assertNativeEditorDocumentHandle(handle);
@@ -112,8 +112,8 @@ export function useNativeEditorDocument(
     onContentChangeJSONRef.current = options.onContentChangeJSON;
     const onHistoryStateChangeRef = useRef(options.onHistoryStateChange);
     onHistoryStateChangeRef.current = options.onHistoryStateChange;
-    const onLocalDocumentCommitRef = useRef(onLocalDocumentCommit);
-    onLocalDocumentCommitRef.current = onLocalDocumentCommit;
+    const onLocalCommitRef = useRef(onLocalCommit);
+    onLocalCommitRef.current = onLocalCommit;
 
     const [engineView, setEngineView] = useState<V2EngineView>({
         editorId,
@@ -265,7 +265,7 @@ export function useNativeEditorDocument(
                 baseDocumentRevision: engineView.documentRevision,
             });
             if (currentEditorIdRef.current !== editorId) return;
-            onLocalDocumentCommitRef.current?.();
+            onLocalCommitRef.current?.();
             refresh(false);
         } catch (error) {
             if (isRevisionMismatchError(error)) {
@@ -293,7 +293,7 @@ export function useNativeEditorDocument(
             if (handle.isDestroyed || currentEditorIdRef.current !== handle.editorId) return;
             operation();
             if (currentEditorIdRef.current !== handle.editorId) return;
-            onLocalDocumentCommitRef.current?.();
+            onLocalCommitRef.current?.();
             refresh(true);
         },
         [handle, refresh]

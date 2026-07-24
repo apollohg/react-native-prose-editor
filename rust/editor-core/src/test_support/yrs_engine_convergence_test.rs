@@ -416,9 +416,9 @@ mod protocol_driven {
     use crate::boundary::ResourceLimits;
     use crate::native_bridge_test_support as bridge;
     use crate::session_initialization_test_support::{
-        begin_connect, create_room_from_json, destroy_session, document_state, receive_message,
-        session_audit, socket_opened, sync_step1_frame, take_next_protocol_reply, transport_state,
-        DocumentState, TransportState,
+        collaboration_drive, collaboration_socket_open, ack_outbound, create_room_from_json,
+        destroy_session, document_state, lease_outbound, receive_message, session_audit,
+        transport_state, DocumentState, TransportState,
     };
     use crate::tiptap_schema;
     use crate::yrs_engine::{
@@ -476,7 +476,9 @@ mod protocol_driven {
     /// other through `receive_message`, returning how many were delivered.
     fn deliver_document_updates(from: u64, to: u64, to_generation: u64, request_id: u64) -> usize {
         let mut delivered = 0;
-        while let Some((_, update)) = bridge::take_next_update(from).unwrap() {
+        while let Some(lease) = bridge::lease_next_update(from).unwrap() {
+            let lease_id = lease.lease_id;
+            let update = lease.update_v1;
             let outcome = receive_message(
                 to,
                 request_id + delivered as u64,
@@ -485,18 +487,38 @@ mod protocol_driven {
             )
             .unwrap();
             assert!(outcome.close.is_none(), "{outcome:?}");
+            bridge::ack_leased_update(from, lease_id).unwrap();
             delivered += 1;
         }
         delivered
     }
 
     /// Ship every pending protocol reply from one session into the other.
-    fn deliver_protocol_replies(from: u64, to: u64, to_generation: u64, request_id: u64) -> usize {
+    fn deliver_protocol_replies(
+        from: u64,
+        from_generation: u64,
+        to: u64,
+        to_generation: u64,
+        request_id: u64,
+    ) -> usize {
         let mut delivered = 0;
-        while let Some((_, reply)) = take_next_protocol_reply(from).unwrap() {
+        while let Some(lease) = lease_outbound(
+            from,
+            request_id + delivered as u64,
+            from_generation,
+        )
+        .unwrap()
+        {
             let outcome =
-                receive_message(to, request_id + delivered as u64, to_generation, &reply).unwrap();
+                receive_message(to, request_id + delivered as u64, to_generation, &lease.frame).unwrap();
             assert!(outcome.close.is_none(), "{outcome:?}");
+            ack_outbound(
+                from,
+                request_id + delivered as u64,
+                from_generation,
+                lease.lease_id,
+            )
+            .unwrap();
             delivered += 1;
         }
         delivered
@@ -529,18 +551,32 @@ mod protocol_driven {
         assert_eq!(document_state(b).unwrap(), DocumentState::AwaitRemote);
 
         // Both sides connect; socket open owes a Step 1 send each.
-        let gen_a = begin_connect(a, 84_000).unwrap();
-        socket_opened(a, 84_001, gen_a).unwrap();
-        let gen_b = begin_connect(b, 84_002).unwrap();
-        socket_opened(b, 84_003, gen_b).unwrap();
-        let step1_a = sync_step1_frame(a, 84_004).unwrap();
-        let step1_b = sync_step1_frame(b, 84_005).unwrap();
+        let gen_a = collaboration_drive(a, 84_000, 0)
+            .unwrap()
+            .generation_to_open
+            .expect("the initial drive must issue A's generation");
+        collaboration_socket_open(a, 84_001, gen_a, 0).unwrap();
+        let gen_b = collaboration_drive(b, 84_002, 0)
+            .unwrap()
+            .generation_to_open
+            .expect("the initial drive must issue B's generation");
+        collaboration_socket_open(b, 84_003, gen_b, 0).unwrap();
+        let step1_a_lease = lease_outbound(a, 84_004, gen_a)
+            .unwrap()
+            .expect("A socket open must queue Sync Step 1");
+        let step1_a = step1_a_lease.frame.clone();
+        ack_outbound(a, 84_004, gen_a, step1_a_lease.lease_id).unwrap();
+        let step1_b_lease = lease_outbound(b, 84_005, gen_b)
+            .unwrap()
+            .expect("B socket open must queue Sync Step 1");
+        let step1_b = step1_b_lease.frame.clone();
+        ack_outbound(b, 84_005, gen_b, step1_b_lease.lease_id).unwrap();
 
         // A's Step 1 reaches B: B owes a Step 2 reply (a no-op — B is empty).
         let outcome = receive_message(b, 84_010, gen_b, &step1_a).unwrap();
         assert!(outcome.close.is_none(), "{outcome:?}");
         assert_eq!(outcome.replies_enqueued, 1, "{outcome:?}");
-        assert_eq!(deliver_protocol_replies(b, a, gen_a, 84_020), 1);
+        assert_eq!(deliver_protocol_replies(b, gen_b, a, gen_a, 84_020), 1);
         assert_eq!(
             transport_state(a).unwrap(),
             TransportState::Synchronized,
@@ -551,7 +587,7 @@ mod protocol_driven {
         let outcome = receive_message(a, 84_030, gen_a, &step1_b).unwrap();
         assert!(outcome.close.is_none(), "{outcome:?}");
         assert_eq!(outcome.replies_enqueued, 1, "{outcome:?}");
-        assert_eq!(deliver_protocol_replies(a, b, gen_b, 84_040), 1);
+        assert_eq!(deliver_protocol_replies(a, gen_a, b, gen_b, 84_040), 1);
         assert_eq!(document_state(b).unwrap(), DocumentState::RoomReady);
         assert_eq!(transport_state(b).unwrap(), TransportState::Synchronized);
 
@@ -575,8 +611,8 @@ mod protocol_driven {
         assert_eq!(audit_a.document_html, audit_b.document_html);
         assert_eq!(bridge::outbox_pending(a).unwrap().unwrap(), (0, 0));
         assert_eq!(bridge::outbox_pending(b).unwrap().unwrap(), (0, 0));
-        assert!(take_next_protocol_reply(a).unwrap().is_none());
-        assert!(take_next_protocol_reply(b).unwrap().is_none());
+        assert!(lease_outbound(a, 84_180, gen_a).unwrap().is_none());
+        assert!(lease_outbound(b, 84_181, gen_b).unwrap().is_none());
 
         destroy_session(a);
         destroy_session(b);

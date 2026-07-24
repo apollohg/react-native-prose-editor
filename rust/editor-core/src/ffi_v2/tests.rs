@@ -7,9 +7,7 @@ use crate::session::{
 };
 use crate::yrs_engine::{EditingLimits, OperationError, YrsEngineError};
 
-use super::types::{
-    FfiBytesResult, FfiError, FfiJsonResult, FfiUnitResult, ERROR_DOMAINS, OPERATION_ERROR_CODES,
-};
+use super::types::{FfiError, FfiJsonResult, FfiUnitResult, ERROR_DOMAINS, OPERATION_ERROR_CODES};
 
 fn shared_contract() -> serde_json::Value {
     let fixtures: serde_json::Value = serde_json::from_str(include_str!(
@@ -1086,12 +1084,6 @@ fn ffi_results_enforce_exactly_one_value_or_error() {
     assert_eq!(json.error, None);
     assert!(FfiJsonResult::try_new(None, None).is_err());
     assert!(FfiJsonResult::try_new(Some("{}".into()), Some(error.clone())).is_err());
-
-    let bytes = FfiBytesResult::ok(vec![1, 2, 3]);
-    assert_eq!(bytes.value, Some(vec![1, 2, 3]));
-    assert_eq!(bytes.error, None);
-    assert!(FfiBytesResult::try_new(None, None).is_err());
-    assert!(FfiBytesResult::try_new(Some(vec![]), Some(error.clone())).is_err());
 
     let unit = FfiUnitResult::ok();
     assert_eq!(unit.value, Some(true));

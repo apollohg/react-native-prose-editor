@@ -37,6 +37,24 @@ function makeFixture(name) {
   return fixture;
 }
 
+function makePackageEntriesFixture(name, legacyText = "") {
+  const fixture = join(workDir, name);
+  mkdirSync(join(fixture, "dist"), { recursive: true });
+  writeFileSync(join(fixture, "dist/index.js"), `export const ready = true;\n${legacyText}`);
+  writeFileSync(
+    join(fixture, "dist/index.d.ts"),
+    [
+      "export declare class NativeEditorBoundaryError extends Error {}",
+      "export interface NativeCollaborationTransportConfig { url: string; connect: boolean }",
+      "export interface NativeCollaborationTransportEvent { editorId: string }",
+      "export interface ResourceLimits { resourceLimits?: unknown }",
+      "export interface ImagePolicy { requestTimeoutMs?: number }",
+      legacyText,
+    ].join("\n"),
+  );
+  return fixture;
+}
+
 function replace(path, from, to) {
   const contents = readFileSync(path, "utf8");
   assert.ok(contents.includes(from), `fixture setup could not find ${from} in ${relative(repoRoot, path)}`);
@@ -267,6 +285,18 @@ try {
     const baseline = makeFixture("baseline");
     expectPass("baseline ABI", run("--validate-abi-root", baseline));
     expectPass("baseline copied artifacts", run("--validate-copies", repoRoot, baseline));
+    expectPass(
+      "native transport package entries",
+      run("--validate-package-entries", makePackageEntriesFixture("package-entries")),
+    );
+    expectFailure(
+      "legacy JavaScript socket package entry",
+      run(
+        "--validate-package-entries",
+        makePackageEntriesFixture("legacy-package-entry", "export const createWebSocket = () => {};"),
+      ),
+      /obsolete collaboration API createWebSocket/,
+    );
     runNativeParserBoundsFixtures();
 
     const missingFunction = makeFixture("missing-function");

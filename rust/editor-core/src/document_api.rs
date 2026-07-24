@@ -374,7 +374,7 @@ pub mod session_initialization_test_support {
     /// are unreachable through real transitions (`LocalReady` sessions are
     /// permanently `Detached` yet the Task 5 replacement gate deliberately
     /// covers every transport state). Room-bound tests must drive
-    /// [`begin_connect`] and friends instead.
+    /// [`collaboration_drive`] and its socket directives instead.
     pub fn set_transport_state_for_test(id: u64, state: TransportState) -> Result<(), TestError> {
         let internal = match state {
             TransportState::Detached => InternalTransportState::Detached,
@@ -390,17 +390,34 @@ pub mod session_initialization_test_support {
         })
     }
 
-    /// Public mirror of the accepted `socket_opened` directive.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum SyncDirective {
-        SendSyncStep1,
-    }
-
     /// Public mirror of the Rust-owned socket-close disposition.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum CloseDisposition {
         Retryable,
         Incompatible,
+    }
+
+    /// Public mirror of Rust's complete native-transport directive. Every
+    /// u64-shaped member stays typed as u64 in test support; the FFI tests
+    /// pin its canonical decimal-string representation separately.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CollaborationDirective {
+        pub transport_state: TransportState,
+        pub generation_to_open: Option<u64>,
+        pub next_deadline_millis: Option<u64>,
+        pub remote_commit_applied: bool,
+        pub peers_changed: bool,
+        pub renewed_local: bool,
+        pub expired_peers: Vec<u64>,
+    }
+
+    /// One retained outbound lease exposed to test scenarios. `frame` is
+    /// always a complete y-protocols message, including document updates
+    /// framed at the session/protocol boundary.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct OutboundLease {
+        pub lease_id: u64,
+        pub frame: Vec<u8>,
     }
 
     fn map_close_disposition(
@@ -416,55 +433,157 @@ pub mod session_initialization_test_support {
         }
     }
 
-    /// `Disconnected` -> `Connecting`; returns the raw generation value the
-    /// caller must carry through the socket callbacks below.
-    pub fn begin_connect(id: u64, request_id: u64) -> Result<u64, TestError> {
+    fn map_collaboration_directive(
+        directive: crate::session::CollaborationTransportDirective,
+    ) -> CollaborationDirective {
+        CollaborationDirective {
+            transport_state: map_transport_state(directive.transport_state),
+            generation_to_open: directive
+                .generation_to_open
+                .map(crate::collaboration_runtime::state::TransportGeneration::value),
+            next_deadline_millis: directive.next_deadline_millis,
+            remote_commit_applied: directive.remote_commit_applied,
+            peers_changed: directive.peers_changed,
+            renewed_local: directive.renewed_local,
+            expired_peers: directive.expired_peers,
+        }
+    }
+
+    fn map_outbound_lease(lease: crate::session::OutboundFrameLease) -> OutboundLease {
+        OutboundLease {
+            lease_id: lease.lease_id,
+            frame: lease.frame,
+        }
+    }
+
+    /// The one Rust-owned scheduler entry point. It alone issues a due
+    /// generation and returns all retry/awareness deadlines.
+    pub fn collaboration_drive(
+        id: u64,
+        request_id: u64,
+        now_millis: u64,
+    ) -> Result<CollaborationDirective, TestError> {
         with_live(id, |session| {
             session
-                .begin_connect(request_id)
-                .map(crate::collaboration_runtime::state::TransportGeneration::value)
+                .collaboration_drive(request_id, now_millis)
+                .map(map_collaboration_directive)
         })
     }
 
-    /// Current `Connecting` -> `Handshaking`; reports the owed Step 1 send.
-    pub fn socket_opened(
+    /// Reports a current socket open; Sync Step 1 is queued into the normal
+    /// protocol-priority lease path rather than returned directly.
+    pub fn collaboration_socket_open(
         id: u64,
         request_id: u64,
         generation: u64,
-    ) -> Result<SyncDirective, TestError> {
+        now_millis: u64,
+    ) -> Result<CollaborationDirective, TestError> {
         with_live(id, |session| {
             session
-                .socket_opened(
+                .collaboration_socket_open(
                     request_id,
                     crate::collaboration_runtime::state::TransportGeneration::from_value(
                         generation,
                     ),
+                    now_millis,
                 )
-                .map(
-                    |crate::collaboration_runtime::state::HandshakeDirective::SendSyncStep1| {
-                        SyncDirective::SendSyncStep1
-                    },
-                )
+                .map(map_collaboration_directive)
         })
     }
 
-    /// Current-generation close; returns the resulting transport state.
-    pub fn socket_closed(
+    /// Reports one current binary receive and returns the frozen directive.
+    pub fn collaboration_receive(
+        id: u64,
+        request_id: u64,
+        generation: u64,
+        bytes: &[u8],
+        now_millis: u64,
+    ) -> Result<CollaborationDirective, TestError> {
+        with_live(id, |session| {
+            session
+                .collaboration_receive(
+                    request_id,
+                    crate::collaboration_runtime::state::TransportGeneration::from_value(
+                        generation,
+                    ),
+                    bytes,
+                    now_millis,
+                )
+                .map(map_collaboration_directive)
+        })
+    }
+
+    /// Reports a current socket close and returns the resulting retry or
+    /// parked directive.
+    pub fn collaboration_socket_close(
         id: u64,
         request_id: u64,
         generation: u64,
         disposition: CloseDisposition,
-    ) -> Result<TransportState, TestError> {
+        now_millis: u64,
+    ) -> Result<CollaborationDirective, TestError> {
         with_live(id, |session| {
             session
-                .socket_closed(
+                .collaboration_socket_close(
                     request_id,
                     crate::collaboration_runtime::state::TransportGeneration::from_value(
                         generation,
                     ),
                     map_close_disposition(disposition),
+                    now_millis,
                 )
-                .map(map_transport_state)
+                .map(map_collaboration_directive)
+        })
+    }
+
+    /// Retains one current-generation outbox front for an explicit ACK/NACK
+    /// disposition. `None` is the only empty-queue representation.
+    pub fn lease_outbound(
+        id: u64,
+        request_id: u64,
+        generation: u64,
+    ) -> Result<Option<OutboundLease>, TestError> {
+        with_live(id, |session| {
+            session
+                .lease_outbound(
+                    request_id,
+                    crate::collaboration_runtime::state::TransportGeneration::from_value(
+                        generation,
+                    ),
+                )
+                .map(|lease| lease.map(map_outbound_lease))
+        })
+    }
+
+    /// Confirms exactly the current retained lease.
+    pub fn ack_outbound(
+        id: u64,
+        request_id: u64,
+        generation: u64,
+        lease_id: u64,
+    ) -> Result<(), TestError> {
+        with_live(id, |session| {
+            session.ack_outbound(
+                request_id,
+                crate::collaboration_runtime::state::TransportGeneration::from_value(generation),
+                lease_id,
+            )
+        })
+    }
+
+    /// Releases exactly the current retained lease without consuming it.
+    pub fn nack_outbound(
+        id: u64,
+        request_id: u64,
+        generation: u64,
+        lease_id: u64,
+    ) -> Result<(), TestError> {
+        with_live(id, |session| {
+            session.nack_outbound(
+                request_id,
+                crate::collaboration_runtime::state::TransportGeneration::from_value(generation),
+                lease_id,
+            )
         })
     }
 
@@ -567,25 +686,6 @@ pub mod session_initialization_test_support {
         .map(map_receive_outcome)
     }
 
-    /// The framed Sync Step 1 message a caller owes after `socket_opened`.
-    pub fn sync_step1_frame(id: u64, request_id: u64) -> Result<Vec<u8>, TestError> {
-        with_live(id, |session| session.sync_step1_message(request_id))
-    }
-
-    /// Pop the oldest pending framed protocol reply
-    /// (`(request_id, message)`); `None` when the queue is empty or the
-    /// session has no attached runtime.
-    pub fn take_next_protocol_reply(id: u64) -> Result<Option<(u64, Vec<u8>)>, TestError> {
-        with_live(id, |session| {
-            let (_, outbox) = session.engine_and_outbox();
-            Ok(outbox.and_then(|outbox| {
-                outbox
-                    .take_next_protocol_reply()
-                    .map(|entry| (entry.request_id, entry.message))
-            }))
-        })
-    }
-
     /// `(engine retained dependency bytes, runtime charged work units)`.
     pub fn remote_dependency_accounting(id: u64) -> Result<(usize, u64), TestError> {
         with_live(id, |session| Ok(session.remote_dependency_accounting()))
@@ -601,16 +701,6 @@ pub mod session_initialization_test_support {
         /// Resolved `(anchor, head)` document positions, `None` when the
         /// peer carries no resolvable sticky cursor.
         pub cursor: Option<(u32, u32)>,
-    }
-
-    /// Public mirror of one accepted Task 10 awareness tick outcome.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct AwarenessTickInfo {
-        pub renewed_local: bool,
-        pub outbound_changed: bool,
-        pub expired_peers: Vec<u64>,
-        pub peers_changed: bool,
-        pub next_deadline_millis: Option<u64>,
     }
 
     /// Task 10: publish the desired local awareness state.
@@ -652,25 +742,6 @@ pub mod session_initialization_test_support {
         })
     }
 
-    /// Task 10: deterministic awareness clock work driven by the caller's
-    /// `now_millis` (the only time source of the awareness layer).
-    pub fn awareness_tick(
-        id: u64,
-        request_id: u64,
-        now_millis: u64,
-    ) -> Result<AwarenessTickInfo, TestError> {
-        with_live(id, |session| {
-            let outcome = session.awareness_tick(request_id, now_millis)?;
-            Ok(AwarenessTickInfo {
-                renewed_local: outcome.renewed_local,
-                outbound_changed: outcome.outbound_changed,
-                expired_peers: outcome.expired_peers,
-                peers_changed: outcome.peers_changed,
-                next_deadline_millis: outcome.next_deadline_millis,
-            })
-        })
-    }
-
     /// Test-only collaboration-limit override by wire field name, for
     /// exact/one-over receive ceiling coverage.
     pub fn set_collaboration_limit_for_test(
@@ -703,51 +774,55 @@ pub mod session_initialization_test_support {
                 .map_err(TestError::from)
         }
 
-        pub fn begin_connect(&self, request_id: u64) -> Result<u64, TestError> {
+        pub fn collaboration_drive(
+            &self,
+            request_id: u64,
+            now_millis: u64,
+        ) -> Result<CollaborationDirective, TestError> {
             self.with_alive_session(|session| {
                 session
-                    .begin_connect(request_id)
-                    .map(crate::collaboration_runtime::state::TransportGeneration::value)
+                    .collaboration_drive(request_id, now_millis)
+                    .map(map_collaboration_directive)
             })
         }
 
-        pub fn socket_opened(
+        pub fn collaboration_socket_open(
             &self,
             request_id: u64,
             generation: u64,
-        ) -> Result<SyncDirective, TestError> {
+            now_millis: u64,
+        ) -> Result<CollaborationDirective, TestError> {
             self.with_alive_session(|session| {
                 session
-                    .socket_opened(
+                    .collaboration_socket_open(
                         request_id,
                         crate::collaboration_runtime::state::TransportGeneration::from_value(
                             generation,
                         ),
+                        now_millis,
                     )
-                    .map(
-                        |crate::collaboration_runtime::state::HandshakeDirective::SendSyncStep1| {
-                            SyncDirective::SendSyncStep1
-                        },
-                    )
+                    .map(map_collaboration_directive)
             })
         }
 
-        pub fn socket_closed(
+        pub fn collaboration_socket_close(
             &self,
             request_id: u64,
             generation: u64,
             disposition: CloseDisposition,
-        ) -> Result<TransportState, TestError> {
+            now_millis: u64,
+        ) -> Result<CollaborationDirective, TestError> {
             self.with_alive_session(|session| {
                 session
-                    .socket_closed(
+                    .collaboration_socket_close(
                         request_id,
                         crate::collaboration_runtime::state::TransportGeneration::from_value(
                             generation,
                         ),
                         map_close_disposition(disposition),
+                        now_millis,
                     )
-                    .map(map_transport_state)
+                    .map(map_collaboration_directive)
             })
         }
 

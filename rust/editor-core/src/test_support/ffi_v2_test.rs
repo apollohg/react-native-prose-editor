@@ -18,7 +18,7 @@ use crate::boundary::ResourceLimits;
 use crate::ffi_v2::collaboration as v2_collab;
 use crate::ffi_v2::editor as v2;
 use crate::ffi_v2::snapshot as v2_snapshot;
-use crate::ffi_v2::types::{FfiError, FfiJsonResult};
+use crate::ffi_v2::types::{FfiError, FfiJsonResult, FfiOutboundLeaseResult};
 use crate::tiptap_schema;
 use crate::yrs_engine::{
     DocumentScope, DocumentSnapshot, EditingLimits, InitializationMode, OperationError,
@@ -69,13 +69,25 @@ fn err_unit(result: &crate::ffi_v2::types::FfiUnitResult) -> FfiError {
     result.error.clone().expect("error result carries an error")
 }
 
-fn err_bytes(result: &crate::ffi_v2::types::FfiBytesResult) -> FfiError {
+fn ok_lease(result: &FfiOutboundLeaseResult) -> crate::ffi_v2::types::FfiOutboundLease {
+    assert!(
+        !result.empty,
+        "a leased value cannot be marked empty: {result:?}"
+    );
+    assert!(
+        result.error.is_none(),
+        "expected lease value, got {result:?}"
+    );
+    result.value.clone().expect("lease result carries a value")
+}
+
+fn err_lease(result: &FfiOutboundLeaseResult) -> FfiError {
     assert!(
         result.value.is_none(),
-        "expected error, got {:?}",
-        result.value
+        "expected lease error, got {result:?}"
     );
-    result.error.clone().expect("error result carries an error")
+    assert!(!result.empty, "an error cannot be marked empty: {result:?}");
+    result.error.clone().expect("lease result carries an error")
 }
 
 #[test]
@@ -111,11 +123,6 @@ fn assert_error(error: &FfiError, domain: &str, code: &str, request_id: Option<&
 fn ok_unit(result: &crate::ffi_v2::types::FfiUnitResult) {
     assert!(result.error.is_none(), "{:?}", result.error);
     assert_eq!(result.value, Some(true));
-}
-
-fn ok_bytes(result: &crate::ffi_v2::types::FfiBytesResult) -> Vec<u8> {
-    assert!(result.error.is_none(), "{:?}", result.error);
-    result.value.clone().expect("success carries bytes")
 }
 
 // ---------------------------------------------------------------------------
@@ -163,10 +170,11 @@ fn v2_u64_wire_fields_are_canonical_decimal_strings_and_inputs_reject_numeric_co
     assert_eq!(state["stateRevision"], json!("0"));
 
     let room_id = create_handle(room_config(None));
-    let generation = ok_json(&v2_collab::editor_v2_collaboration_begin_connect(
+    let directive = ok_json(&v2_collab::editor_v2_collaboration_drive(
         room_id.clone(),
+        "0".into(),
     ));
-    assert_eq!(generation["generation"], json!("1"));
+    assert_eq!(directive["generationToOpen"], json!("1"));
     destroy_handle(&room_id);
 
     let maximum = u64::MAX.to_string();
@@ -186,6 +194,78 @@ fn v2_u64_wire_fields_are_canonical_decimal_strings_and_inputs_reject_numeric_co
         assert_error(&error, "boundary", "CONFIG_INVALID", None);
     }
 
+    destroy_handle(&id);
+}
+
+#[test]
+fn ffi_lease_ids_and_deadlines_are_canonical_decimal_strings() {
+    let snapshot = snapshot_source();
+    let id = create_handle_with_state(
+        room_config(Some(&snapshot)),
+        Some(snapshot.encoded_state.clone()),
+    );
+
+    let initial = ok_json(&v2_collab::editor_v2_collaboration_drive(
+        id.clone(),
+        "0".into(),
+    ));
+    assert_frozen_directive(&initial);
+    assert_eq!(initial["transportState"], "Connecting", "{initial:?}");
+    assert_eq!(initial["generationToOpen"], "1", "{initial:?}");
+    assert_eq!(initial["nextDeadlineMillis"], Value::Null, "{initial:?}");
+    assert_eq!(initial["remoteCommitApplied"], false, "{initial:?}");
+    assert_eq!(initial["peersChanged"], false, "{initial:?}");
+    assert_eq!(initial["renewedLocal"], false, "{initial:?}");
+    assert_eq!(initial["expiredPeers"], json!([]), "{initial:?}");
+
+    let opened = ok_json(&v2_collab::editor_v2_collaboration_socket_open(
+        id.clone(),
+        "1".into(),
+        "0".into(),
+    ));
+    assert_frozen_directive(&opened);
+    assert_eq!(opened["transportState"], "Handshaking", "{opened:?}");
+    assert_eq!(opened["generationToOpen"], Value::Null, "{opened:?}");
+
+    let lease = ok_lease(&v2_collab::editor_v2_collaboration_lease_outbound(
+        id.clone(),
+        "1".into(),
+    ));
+    assert_eq!(lease.lease_id, "1");
+    assert!(
+        !lease.frame.is_empty(),
+        "Sync Step 1 crosses the FFI as bytes"
+    );
+    ok_json(&v2_collab::editor_v2_collaboration_ack_outbound(
+        id.clone(),
+        "1".into(),
+        lease.lease_id.clone(),
+    ));
+    assert_empty_lease_v2(&id, "1");
+
+    let malformed_lease = err_json(&v2_collab::editor_v2_collaboration_ack_outbound(
+        id.clone(),
+        "1".into(),
+        "01".into(),
+    ));
+    assert_error(&malformed_lease, "boundary", "CONFIG_INVALID", None);
+    let malformed_generation = err_lease(&v2_collab::editor_v2_collaboration_lease_outbound(
+        id.clone(),
+        "01".into(),
+    ));
+    assert_error(&malformed_generation, "boundary", "CONFIG_INVALID", None);
+
+    let closed = ok_json(&v2_collab::editor_v2_collaboration_socket_close(
+        id.clone(),
+        "1".into(),
+        None,
+        None,
+        "0".into(),
+    ));
+    assert_frozen_directive(&closed);
+    assert_eq!(closed["transportState"], "Disconnected", "{closed:?}");
+    assert_eq!(closed["generationToOpen"], Value::Null, "{closed:?}");
+    assert_eq!(closed["nextDeadlineMillis"], "500", "{closed:?}");
     destroy_handle(&id);
 }
 
@@ -360,27 +440,132 @@ fn step1_state_vector(step1: &[u8]) -> StateVector {
     }
 }
 
+fn assert_frozen_directive(directive: &Value) {
+    let object = directive
+        .as_object()
+        .expect("transport directives must be JSON objects");
+    let fields = object.keys().map(String::as_str).collect::<Vec<_>>();
+    assert_eq!(
+        fields,
+        vec![
+            "expiredPeers",
+            "generationToOpen",
+            "nextDeadlineMillis",
+            "peersChanged",
+            "remoteCommitApplied",
+            "renewedLocal",
+            "transportState",
+        ],
+        "directive field set is frozen: {directive:?}"
+    );
+    assert!(directive["transportState"].is_string(), "{directive:?}");
+    assert!(
+        directive["generationToOpen"].is_null() || directive["generationToOpen"].is_string(),
+        "{directive:?}"
+    );
+    assert!(
+        directive["nextDeadlineMillis"].is_null() || directive["nextDeadlineMillis"].is_string(),
+        "{directive:?}"
+    );
+    assert!(
+        directive["remoteCommitApplied"].is_boolean(),
+        "{directive:?}"
+    );
+    assert!(directive["peersChanged"].is_boolean(), "{directive:?}");
+    assert!(directive["renewedLocal"].is_boolean(), "{directive:?}");
+    assert!(
+        directive["expiredPeers"]
+            .as_array()
+            .is_some_and(|peers| peers.iter().all(Value::is_string)),
+        "{directive:?}"
+    );
+}
+
+fn drive_v2(id: &str, now_millis: u64) -> Value {
+    let directive = ok_json(&v2_collab::editor_v2_collaboration_drive(
+        id.to_string(),
+        now_millis.to_string(),
+    ));
+    assert_frozen_directive(&directive);
+    directive
+}
+
+fn open_v2(id: &str, generation: &str, now_millis: u64) -> Value {
+    let directive = ok_json(&v2_collab::editor_v2_collaboration_socket_open(
+        id.to_string(),
+        generation.to_string(),
+        now_millis.to_string(),
+    ));
+    assert_frozen_directive(&directive);
+    directive
+}
+
+fn receive_v2(id: &str, generation: &str, message: Vec<u8>, now_millis: u64) -> Value {
+    let directive = ok_json(&v2_collab::editor_v2_collaboration_receive(
+        id.to_string(),
+        generation.to_string(),
+        message,
+        now_millis.to_string(),
+    ));
+    assert_frozen_directive(&directive);
+    directive
+}
+
+fn close_v2(
+    id: &str,
+    generation: &str,
+    code: Option<u32>,
+    reason: Option<String>,
+    now_millis: u64,
+) -> Value {
+    let directive = ok_json(&v2_collab::editor_v2_collaboration_socket_close(
+        id.to_string(),
+        generation.to_string(),
+        code,
+        reason,
+        now_millis.to_string(),
+    ));
+    assert_frozen_directive(&directive);
+    directive
+}
+
+fn lease_v2(id: &str, generation: &str) -> crate::ffi_v2::types::FfiOutboundLease {
+    ok_lease(&v2_collab::editor_v2_collaboration_lease_outbound(
+        id.to_string(),
+        generation.to_string(),
+    ))
+}
+
+fn ack_v2(id: &str, generation: &str, lease_id: String) {
+    ok_json(&v2_collab::editor_v2_collaboration_ack_outbound(
+        id.to_string(),
+        generation.to_string(),
+        lease_id,
+    ));
+}
+
+fn assert_empty_lease_v2(id: &str, generation: &str) {
+    let result =
+        v2_collab::editor_v2_collaboration_lease_outbound(id.to_string(), generation.to_string());
+    assert!(result.value.is_none(), "{result:?}");
+    assert!(result.empty, "{result:?}");
+    assert!(result.error.is_none(), "{result:?}");
+}
+
 /// Drive a RoomReady editor to Synchronized through the v2 boundary: open,
 /// answer the owed Step 1 with a raw peer's Step 2, and return the live
 /// generation.
 fn synchronize_v2(id: &str, server: &RawPeer) -> String {
-    let begin = ok_json(&v2_collab::editor_v2_collaboration_begin_connect(
-        id.to_string(),
-    ));
-    let generation = begin["generation"]
+    let directive = drive_v2(id, 0);
+    let generation = directive["generationToOpen"]
         .as_str()
-        .expect("begin_connect returns a generation");
-    let step1 = ok_bytes(&v2_collab::editor_v2_collaboration_socket_open(
-        id.to_string(),
-        generation.to_string(),
-    ));
-    let step2 = server.diff_for(&step1_state_vector(&step1).encode_v1());
-    let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
-        id.to_string(),
-        generation.to_string(),
-        step2_frame(step2),
-    ));
-    assert_eq!(outcome["close"], Value::Null, "{outcome:?}");
+        .expect("initial drive returns a generation");
+    let opened = open_v2(id, generation, 0);
+    assert_eq!(opened["transportState"], "Handshaking", "{opened:?}");
+    let step1 = lease_v2(id, generation);
+    let step2 = server.diff_for(&step1_state_vector(&step1.frame).encode_v1());
+    ack_v2(id, generation, step1.lease_id);
+    let outcome = receive_v2(id, generation, step2_frame(step2), 0);
     assert_eq!(outcome["transportState"], "Synchronized", "{outcome:?}");
     assert_eq!(state_of(id)["transportState"], "Synchronized");
     generation.to_string()
@@ -541,7 +726,7 @@ fn malformed_handles_fail_with_structured_boundary_errors() {
         ));
         assert_error(&error, "boundary", "CONFIG_INVALID", None);
         let result =
-            v2_collab::editor_v2_collaboration_take_outbound(handle.to_string(), "1".into());
+            v2_collab::editor_v2_collaboration_lease_outbound(handle.to_string(), "1".into());
         assert!(result.value.is_none(), "{result:?}");
         assert_error(
             &result.error.expect("error"),
@@ -600,25 +785,29 @@ fn unknown_editor_id_fails_every_entry_with_a_lifecycle_error() {
         history_envelope(507),
     )));
     assert_lifecycle(err_unit(&v2::editor_v2_destroy(unknown.clone())));
-    assert_lifecycle(err_json(&v2_collab::editor_v2_collaboration_begin_connect(
+    assert_lifecycle(err_json(&v2_collab::editor_v2_collaboration_drive(
         unknown.clone(),
+        "0".into(),
     )));
-    assert_lifecycle(err_bytes(&v2_collab::editor_v2_collaboration_socket_open(
+    assert_lifecycle(err_json(&v2_collab::editor_v2_collaboration_socket_open(
         unknown.clone(),
         "1".into(),
+        "0".into(),
     )));
     assert_lifecycle(err_json(&v2_collab::editor_v2_collaboration_receive(
         unknown.clone(),
         "1".into(),
         vec![0],
+        "0".into(),
     )));
     assert_lifecycle(err_json(&v2_collab::editor_v2_collaboration_socket_close(
         unknown.clone(),
         "1".into(),
         None,
         None,
+        "0".into(),
     )));
-    let result = v2_collab::editor_v2_collaboration_take_outbound(unknown.clone(), "1".into());
+    let result = v2_collab::editor_v2_collaboration_lease_outbound(unknown.clone(), "1".into());
     assert!(result.value.is_none(), "{result:?}");
     assert_lifecycle(result.error.expect("error"));
     let result = v2_collab::editor_v2_collaboration_set_awareness(unknown.clone(), "{}".into());
@@ -1085,132 +1274,109 @@ fn collaboration_generation_flow_with_stale_and_disposition_refusals() {
     );
     let server = RawPeer::from_snapshot(&snapshot);
 
-    // Local-only editors have no room binding for connection-shaped calls.
+    // Local-only editors remain detached; drive never creates a generation.
     let local = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
-    let error = err_json(&v2_collab::editor_v2_collaboration_begin_connect(
-        local.clone(),
-    ));
-    assert_error(&error, "transport", "TRANSPORT_NOT_ROOM_BOUND", None);
+    let detached = drive_v2(&local, 0);
+    assert_eq!(detached["transportState"], "Detached", "{detached:?}");
+    assert_eq!(detached["generationToOpen"], Value::Null, "{detached:?}");
+    assert_eq!(detached["nextDeadlineMillis"], Value::Null, "{detached:?}");
     destroy_handle(&local);
 
-    // begin_connect issues generation 1; a second attempt is an invalid
-    // transition; socket_open owes the framed Sync Step 1 as direct bytes.
-    let generation = ok_json(&v2_collab::editor_v2_collaboration_begin_connect(
-        id.clone(),
-    ))["generation"]
+    // Drive issues generation 1. A subsequent drive is observational only;
+    // socket open queues Sync Step 1 for the retained lease path.
+    let generation = drive_v2(&id, 0)["generationToOpen"]
         .as_str()
         .unwrap()
         .to_string();
     assert_eq!(generation, "1", "first issued generation");
     let stale_generation = (generation.parse::<u64>().unwrap() + 100).to_string();
-    let error = err_json(&v2_collab::editor_v2_collaboration_begin_connect(
-        id.clone(),
-    ));
-    assert_error(&error, "transport", "TRANSPORT_INVALID_TRANSITION", None);
+    let waiting = drive_v2(&id, 0);
+    assert_eq!(waiting["transportState"], "Connecting", "{waiting:?}");
+    assert_eq!(waiting["generationToOpen"], Value::Null, "{waiting:?}");
 
-    let error = err_bytes(&v2_collab::editor_v2_collaboration_socket_open(
+    let error = err_json(&v2_collab::editor_v2_collaboration_socket_open(
         id.clone(),
         stale_generation.clone(),
+        "0".into(),
     ));
     assert_error(&error, "transport", "TRANSPORT_STALE_GENERATION", None);
-    let step1 = ok_bytes(&v2_collab::editor_v2_collaboration_socket_open(
-        id.clone(),
-        generation.clone(),
-    ));
-    let our_sv = step1_state_vector(&step1);
-    assert!(!step1.is_empty(), "step 1 bytes ride directly");
+    let opened = open_v2(&id, &generation, 0);
+    assert_eq!(opened["transportState"], "Handshaking", "{opened:?}");
+    let step1 = lease_v2(&id, &generation);
+    let our_sv = step1_state_vector(&step1.frame);
+    assert!(!step1.frame.is_empty(), "step 1 bytes ride through a lease");
+    ack_v2(&id, &generation, step1.lease_id);
 
     // receive on a stale generation refuses before any decode work.
     let error = err_json(&v2_collab::editor_v2_collaboration_receive(
         id.clone(),
         stale_generation.clone(),
         step2_frame(server.diff_for(&our_sv.encode_v1())),
+        "0".into(),
     ));
     assert_error(&error, "transport", "TRANSPORT_STALE_GENERATION", None);
 
-    // The real Step 2 completes the handshake; the outcome reports the
-    // synchronized transport with no close.
-    let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
-        id.clone(),
-        generation.clone(),
+    // The real Step 2 completes the handshake.
+    let outcome = receive_v2(
+        &id,
+        &generation,
         step2_frame(server.diff_for(&our_sv.encode_v1())),
-    ));
+        0,
+    );
     assert_eq!(outcome["transportState"], "Synchronized", "{outcome:?}");
-    assert_eq!(outcome["close"], Value::Null, "{outcome:?}");
-    assert_eq!(outcome["documentPromoted"], false, "{outcome:?}");
+    assert_eq!(outcome["remoteCommitApplied"], false, "{outcome:?}");
 
-    // The peer's Step 1 earns a Step 2 reply: take_outbound returns exactly
-    // one frame per call as direct bytes, then the documented empty value.
-    let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
-        id.clone(),
-        generation.clone(),
+    // The peer's Step 1 earns a retained Step 2 reply. ACK consumes exactly
+    // that lease; a subsequent lease observes the explicit empty variant.
+    let outcome = receive_v2(
+        &id,
+        &generation,
         step1_frame(&server.state_vector_bytes()),
-    ));
-    assert_eq!(outcome["repliesEnqueued"], 1, "{outcome:?}");
-    let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
-        id.clone(),
-        generation.clone(),
-    ));
-    match Message::decode_v1(&frame).expect("outbound frame must decode") {
+        0,
+    );
+    assert_eq!(outcome["transportState"], "Synchronized", "{outcome:?}");
+    let lease = lease_v2(&id, &generation);
+    match Message::decode_v1(&lease.frame).expect("outbound frame must decode") {
         Message::Sync(SyncMessage::SyncStep2(update)) => server.apply(&update),
         other => panic!("expected a Sync Step 2 reply frame, got {other:?}"),
     }
-    let empty = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
-        id.clone(),
-        generation.clone(),
-    ));
-    assert!(
-        empty.is_empty(),
-        "empty queue returns documented empty bytes"
-    );
+    ack_v2(&id, &generation, lease.lease_id);
+    assert_empty_lease_v2(&id, &generation);
 
-    // Stale generation refuses the take; the close retires the generation.
-    let error = err_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
+    // Stale generation refuses the lease; the close retires the generation.
+    let error = err_lease(&v2_collab::editor_v2_collaboration_lease_outbound(
         id.clone(),
-        stale_generation,
+        stale_generation.clone(),
     ));
     assert_error(&error, "transport", "TRANSPORT_STALE_GENERATION", None);
-    let outcome = ok_json(&v2_collab::editor_v2_collaboration_socket_close(
-        id.clone(),
-        generation.clone(),
-        None,
-        None,
-    ));
-    assert_eq!(
-        outcome,
-        json!({ "transportState": "Disconnected" }),
-        "{outcome:?}"
-    );
-    let error = err_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
+    let outcome = close_v2(&id, &generation, None, None, 0);
+    assert_eq!(outcome["transportState"], "Disconnected", "{outcome:?}");
+    assert_eq!(outcome["nextDeadlineMillis"], "500", "{outcome:?}");
+    let error = err_lease(&v2_collab::editor_v2_collaboration_lease_outbound(
         id.clone(),
         generation.clone(),
     ));
     assert_error(&error, "transport", "TRANSPORT_STALE_GENERATION", None);
 
     // Reconnect issues the next monotonic generation; a policy-violation
-    // close code parks the transport Incompatible and begin_connect refuses.
-    let generation = ok_json(&v2_collab::editor_v2_collaboration_begin_connect(
-        id.clone(),
-    ))["generation"]
+    // close code parks the transport Incompatible and drive remains inert.
+    let generation = drive_v2(&id, 500)["generationToOpen"]
         .as_str()
         .unwrap()
         .to_string();
     assert_eq!(generation, "2", "generations stay monotonic");
-    let outcome = ok_json(&v2_collab::editor_v2_collaboration_socket_close(
-        id.clone(),
-        generation,
+    let outcome = close_v2(
+        &id,
+        &generation,
         Some(1008),
         Some("policy violation".into()),
-    ));
-    assert_eq!(
-        outcome,
-        json!({ "transportState": "Incompatible" }),
-        "{outcome:?}"
+        500,
     );
-    let error = err_json(&v2_collab::editor_v2_collaboration_begin_connect(
-        id.clone(),
-    ));
-    assert_error(&error, "transport", "TRANSPORT_INCOMPATIBLE", None);
+    assert_eq!(outcome["transportState"], "Incompatible", "{outcome:?}");
+    assert_eq!(outcome["nextDeadlineMillis"], Value::Null, "{outcome:?}");
+    let inert = drive_v2(&id, 500);
+    assert_eq!(inert["transportState"], "Incompatible", "{inert:?}");
+    assert_eq!(inert["generationToOpen"], Value::Null, "{inert:?}");
     destroy_handle(&id);
 }
 
@@ -1224,21 +1390,19 @@ fn typed_awareness_intent_ffi_and_collaboration_binary_round_trip() {
     let server = RawPeer::from_snapshot(&snapshot);
     let generation = synchronize_v2(&id, &server);
 
-    // A local edit rides one outbound frame as direct bytes; the raw peer
-    // applies it and converges.
+    // A local edit rides one retained outbound lease; the raw peer applies
+    // it and ACK consumes that exact frame.
     let outcome = ok_json(&v2::editor_v2_apply_input(
         id.clone(),
         input_envelope(901, revision_of(&id), " outbound"),
     ));
     assert_eq!(outcome["changed"], true, "{outcome:?}");
-    let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
-        id.clone(),
-        generation.clone(),
-    ));
-    match Message::decode_v1(&frame).expect("update frame must decode") {
+    let lease = lease_v2(&id, &generation);
+    match Message::decode_v1(&lease.frame).expect("update frame must decode") {
         Message::Sync(SyncMessage::Update(update)) => server.apply(&update),
         other => panic!("expected a document update frame, got {other:?}"),
     }
+    ack_v2(&id, &generation, lease.lease_id);
     assert!(
         server.fragment_string().contains("ffi seed")
             && server.fragment_string().contains(" outbound"),
@@ -1283,20 +1447,14 @@ fn typed_awareness_intent_ffi_and_collaboration_binary_round_trip() {
             .is_ok(),
         "{local:?}",
     );
-    let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
-        id.clone(),
-        generation.clone(),
-    ));
+    let lease = lease_v2(&id, &generation);
     let mut raw_awareness = Awareness::new(Doc::new());
-    match Message::decode_v1(&frame).expect("awareness frame must decode") {
+    match Message::decode_v1(&lease.frame).expect("awareness frame must decode") {
         Message::Awareness(update) => raw_awareness.apply_update(update).unwrap(),
         other => panic!("expected an awareness frame, got {other:?}"),
     }
-    let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
-        id.clone(),
-        generation.clone(),
-    ));
-    assert!(frame.is_empty(), "queues fully drained");
+    ack_v2(&id, &generation, lease.lease_id);
+    assert_empty_lease_v2(&id, &generation);
 
     // Omitting selection deliberately removes the engine-owned cursor while
     // retaining the application state and focus flag.
@@ -1314,14 +1472,12 @@ fn typed_awareness_intent_ffi_and_collaboration_binary_round_trip() {
     assert_eq!(local["state"]["state"], json!({ "name": "cursorless" }));
     assert_eq!(local["state"]["focused"], false);
     assert_eq!(local["cursor"], Value::Null, "{local:?}");
-    let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
-        id.clone(),
-        generation.clone(),
-    ));
-    match Message::decode_v1(&frame).expect("cursorless awareness frame must decode") {
+    let lease = lease_v2(&id, &generation);
+    match Message::decode_v1(&lease.frame).expect("cursorless awareness frame must decode") {
         Message::Awareness(update) => raw_awareness.apply_update(update).unwrap(),
         other => panic!("expected cursorless awareness frame, got {other:?}"),
     }
+    ack_v2(&id, &generation, lease.lease_id);
 
     // "null" withdraws the desired state with a tombstone broadcast.
     ok_unit(&v2_collab::editor_v2_collaboration_set_awareness(
@@ -1330,14 +1486,12 @@ fn typed_awareness_intent_ffi_and_collaboration_binary_round_trip() {
     ));
     let peers = ok_json(&v2_collab::editor_v2_collaboration_peers(id.clone()));
     assert_eq!(peers["peers"], json!([]), "{peers:?}");
-    let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
-        id.clone(),
-        generation.clone(),
-    ));
-    match Message::decode_v1(&frame).expect("tombstone frame must decode") {
+    let lease = lease_v2(&id, &generation);
+    match Message::decode_v1(&lease.frame).expect("tombstone frame must decode") {
         Message::Awareness(update) => raw_awareness.apply_update(update).unwrap(),
         other => panic!("expected an awareness tombstone frame, got {other:?}"),
     }
+    ack_v2(&id, &generation, lease.lease_id);
 
     // Malformed awareness state is a structured error, never a panic.
     let result = v2_collab::editor_v2_collaboration_set_awareness(id.clone(), "{not json".into());
@@ -1394,7 +1548,7 @@ fn awareness_review_fix_raw_publication_is_test_only() {
 }
 
 #[test]
-fn task8_third_remediation_ffi_tick_reports_local_renewal_as_peer_change() {
+fn ffi_drive_reports_local_renewal_as_peer_change() {
     let snapshot = snapshot_source();
     let id = create_handle_with_state(
         room_config(Some(&snapshot)),
@@ -1403,7 +1557,7 @@ fn task8_third_remediation_ffi_tick_reports_local_renewal_as_peer_change() {
     let generation = synchronize_v2(&id, &RawPeer::from_snapshot(&snapshot));
 
     for malformed in ["+1", "01", " 1", "1 ", "1e3"] {
-        let error = err_json(&v2_collab::editor_v2_collaboration_tick(
+        let error = err_json(&v2_collab::editor_v2_collaboration_drive(
             id.clone(),
             malformed.into(),
         ));
@@ -1414,50 +1568,46 @@ fn task8_third_remediation_ffi_tick_reports_local_renewal_as_peer_change() {
         id.clone(),
         json!({ "state": { "name": "tick local" }, "focused": false }).to_string(),
     ));
-    let before = ok_json(&v2_collab::editor_v2_collaboration_tick(
-        id.clone(),
-        "14999".into(),
-    ));
+    let before = drive_v2(&id, 14_999);
     assert_eq!(
         before,
         json!({
+            "transportState": "Synchronized",
+            "generationToOpen": null,
             "nextDeadlineMillis": "15000",
+            "remoteCommitApplied": false,
             "renewedLocal": false,
             "expiredPeers": [],
-            "outboundChanged": false,
             "peersChanged": false,
         }),
         "{before:?}"
     );
 
-    let at = ok_json(&v2_collab::editor_v2_collaboration_tick(
-        id.clone(),
-        "15000".into(),
-    ));
+    let at = drive_v2(&id, 15_000);
     assert_eq!(
         at,
         json!({
+            "transportState": "Synchronized",
+            "generationToOpen": null,
             "nextDeadlineMillis": "30000",
+            "remoteCommitApplied": false,
             "renewedLocal": true,
             "expiredPeers": [],
-            "outboundChanged": true,
             "peersChanged": true,
         }),
         "{at:?}"
     );
+    let lease = lease_v2(&id, &generation);
     assert!(
-        !ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
-            id.clone(),
-            generation
-        ))
-        .is_empty(),
+        !lease.frame.is_empty(),
         "renewal enqueues an outbound awareness frame"
     );
+    ack_v2(&id, &generation, lease.lease_id);
     destroy_handle(&id);
 }
 
 #[test]
-fn collaboration_task8_tick_rejects_regressing_time_without_corrupting_peer_expiry() {
+fn collaboration_drive_rejects_regressing_time_without_corrupting_peer_expiry() {
     let snapshot = snapshot_source();
     let id = create_handle_with_state(
         room_config(Some(&snapshot)),
@@ -1465,11 +1615,8 @@ fn collaboration_task8_tick_rejects_regressing_time_without_corrupting_peer_expi
     );
     let generation = synchronize_v2(&id, &RawPeer::from_snapshot(&snapshot));
 
-    ok_json(&v2_collab::editor_v2_collaboration_tick(
-        id.clone(),
-        "10000".into(),
-    ));
-    let error = err_json(&v2_collab::editor_v2_collaboration_tick(
+    drive_v2(&id, 10_000);
+    let error = err_json(&v2_collab::editor_v2_collaboration_drive(
         id.clone(),
         "9999".into(),
     ));
@@ -1485,7 +1632,7 @@ fn collaboration_task8_tick_rejects_regressing_time_without_corrupting_peer_expi
         json!({ "nowMillis": "9999", "lastNowMillis": "10000" }),
     );
 
-    // The remote update must retain the last accepted tick time (10s), not
+    // The remote update must retain the last accepted drive time (10s), not
     // the rejected 9_999ms input, so expiry remains scheduled for 40s.
     let clients = [(
         yrs::ClientID::new(9_001),
@@ -1496,30 +1643,25 @@ fn collaboration_task8_tick_rejects_regressing_time_without_corrupting_peer_expi
     )]
     .into_iter()
     .collect();
-    let receive = ok_json(&v2_collab::editor_v2_collaboration_receive(
-        id.clone(),
-        generation,
+    let receive = receive_v2(
+        &id,
+        &generation,
         Message::Awareness(yrs::sync::awareness::AwarenessUpdate { clients }).encode_v1(),
-    ));
-    assert_eq!(receive["close"], Value::Null, "{receive:?}");
+        10_000,
+    );
+    assert_eq!(receive["transportState"], "Synchronized", "{receive:?}");
 
-    let before = ok_json(&v2_collab::editor_v2_collaboration_tick(
-        id.clone(),
-        "39999".into(),
-    ));
+    let before = drive_v2(&id, 39_999);
     assert_eq!(before["expiredPeers"], json!([]), "{before:?}");
     assert_eq!(before["nextDeadlineMillis"], json!("40000"), "{before:?}");
 
-    let at = ok_json(&v2_collab::editor_v2_collaboration_tick(
-        id.clone(),
-        "40000".into(),
-    ));
+    let at = drive_v2(&id, 40_000);
     assert_eq!(at["expiredPeers"], json!(["9001"]), "{at:?}");
     destroy_handle(&id);
 }
 
 #[test]
-fn collaboration_tick_expires_remote_peers_with_decimal_ids() {
+fn collaboration_drive_expires_remote_peers_with_decimal_ids() {
     // Yrs client IDs occupy the same 53-bit integer domain as Yjs numbers.
     // Use its maximum valid value so the FFI must preserve the exact decimal
     // spelling without constructing an out-of-domain ID that aliases in
@@ -1540,24 +1682,19 @@ fn collaboration_tick_expires_remote_peers_with_decimal_ids() {
     )]
     .into_iter()
     .collect();
-    let receive = ok_json(&v2_collab::editor_v2_collaboration_receive(
-        id.clone(),
-        generation,
+    let receive = receive_v2(
+        &id,
+        &generation,
         Message::Awareness(yrs::sync::awareness::AwarenessUpdate { clients }).encode_v1(),
-    ));
-    assert_eq!(receive["close"], Value::Null, "{receive:?}");
+        0,
+    );
+    assert_eq!(receive["transportState"], "Synchronized", "{receive:?}");
 
-    let before = ok_json(&v2_collab::editor_v2_collaboration_tick(
-        id.clone(),
-        "29999".into(),
-    ));
+    let before = drive_v2(&id, 29_999);
     assert_eq!(before["expiredPeers"], json!([]), "{before:?}");
     assert_eq!(before["peersChanged"], false, "{before:?}");
 
-    let at = ok_json(&v2_collab::editor_v2_collaboration_tick(
-        id.clone(),
-        "30000".into(),
-    ));
+    let at = drive_v2(&id, 30_000);
     assert_eq!(at["nextDeadlineMillis"], Value::Null, "{at:?}");
     assert_eq!(
         at["expiredPeers"],
@@ -1565,7 +1702,7 @@ fn collaboration_tick_expires_remote_peers_with_decimal_ids() {
         "{at:?}"
     );
     assert_eq!(at["peersChanged"], true, "{at:?}");
-    assert_eq!(at["outboundChanged"], false, "{at:?}");
+    assert_eq!(at["remoteCommitApplied"], false, "{at:?}");
     destroy_handle(&id);
 }
 
@@ -1577,17 +1714,17 @@ fn collaboration_task8_detach_and_reattach_are_idempotent_after_incompatible() {
         Some(snapshot.encoded_state.clone()),
     );
     let first_generation = synchronize_v2(&id, &RawPeer::from_snapshot(&snapshot));
-    let close = ok_json(&v2_collab::editor_v2_collaboration_socket_close(
-        id.clone(),
-        first_generation,
+    let close = close_v2(
+        &id,
+        &first_generation,
         Some(1008),
         Some("policy violation".into()),
-    ));
+        0,
+    );
     assert_eq!(close["transportState"], "Incompatible", "{close:?}");
-    let error = err_json(&v2_collab::editor_v2_collaboration_begin_connect(
-        id.clone(),
-    ));
-    assert_error(&error, "transport", "TRANSPORT_INCOMPATIBLE", None);
+    let inert = drive_v2(&id, 0);
+    assert_eq!(inert["transportState"], "Incompatible", "{inert:?}");
+    assert_eq!(inert["generationToOpen"], Value::Null, "{inert:?}");
 
     ok_unit(&v2_collab::editor_v2_collaboration_detach(id.clone()));
     assert_eq!(state_of(&id)["transportState"], "Detached");
@@ -1598,15 +1735,13 @@ fn collaboration_task8_detach_and_reattach_are_idempotent_after_incompatible() {
     ok_unit(&v2_collab::editor_v2_collaboration_reattach(id.clone()));
     assert_eq!(state_of(&id)["transportState"], "Disconnected");
 
-    let next = ok_json(&v2_collab::editor_v2_collaboration_begin_connect(
-        id.clone(),
-    ));
-    assert_eq!(next["generation"], "2", "{next:?}");
+    let next = drive_v2(&id, 0);
+    assert_eq!(next["generationToOpen"], "2", "{next:?}");
     destroy_handle(&id);
 }
 
 #[test]
-fn take_outbound_drains_protocol_replies_before_document_updates() {
+fn leased_outbound_drains_protocol_replies_before_document_updates() {
     let snapshot = snapshot_source();
     let id = create_handle_with_state(
         room_config(Some(&snapshot)),
@@ -1632,12 +1767,13 @@ fn take_outbound_drains_protocol_replies_before_document_updates() {
         id.clone(),
         json!({ "state": { "name": "ordering peer" }, "focused": false }).to_string(),
     ));
-    let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
-        id.clone(),
-        generation.clone(),
+    let outcome = receive_v2(
+        &id,
+        &generation,
         step1_frame(&server.state_vector_bytes()),
-    ));
-    assert_eq!(outcome["repliesEnqueued"], 1, "{outcome:?}");
+        0,
+    );
+    assert_eq!(outcome["transportState"], "Synchronized", "{outcome:?}");
     let outcome = ok_json(&v2::editor_v2_apply_input(
         id.clone(),
         input_envelope(1101, revision_of(&id), " ordered"),
@@ -1658,18 +1794,22 @@ fn take_outbound_drains_protocol_replies_before_document_updates() {
     assert_eq!(document_count, 1, "the local edit is pending");
     assert!(document_bytes > 0);
 
-    // Drain one frame per call: every frame decodes as a standard
-    // yrs::sync::Message, and every protocol frame precedes every document
-    // frame.
+    // Lease one frame per call: every frame decodes as a standard
+    // yrs::sync::Message, every successful lease is ACKed, and every
+    // protocol frame precedes every document frame.
     let mut kinds = Vec::new();
     loop {
-        let frame = ok_bytes(&v2_collab::editor_v2_collaboration_take_outbound(
-            id.clone(),
-            generation.clone(),
-        ));
-        if frame.is_empty() {
+        let result =
+            v2_collab::editor_v2_collaboration_lease_outbound(id.clone(), generation.clone());
+        if result.empty {
+            assert!(
+                result.value.is_none() && result.error.is_none(),
+                "{result:?}"
+            );
             break;
         }
+        let lease = ok_lease(&result);
+        let frame = lease.frame;
         let kind = match Message::decode_v1(&frame).expect("outbound frame must decode") {
             Message::Sync(SyncMessage::SyncStep2(update)) => {
                 server.apply(&update);
@@ -1683,6 +1823,7 @@ fn take_outbound_drains_protocol_replies_before_document_updates() {
             other => panic!("unexpected outbound frame: {other:?}"),
         };
         kinds.push(kind);
+        ack_v2(&id, &generation, lease.lease_id);
     }
     assert_eq!(
         kinds,
@@ -1861,14 +2002,15 @@ fn full_drive_local_editing_to_synchronized_room() {
 
     // The peer edits; its update frame rides the receive entry as bytes.
     server.push_text(" from server");
-    let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
-        id.clone(),
-        generation.clone(),
+    let outcome = receive_v2(
+        &id,
+        &generation,
         sync_frame(SyncMessage::Update(
             server.diff_for(&snapshot.encoded_state),
         )),
-    ));
-    assert_eq!(outcome["close"], Value::Null, "{outcome:?}");
+        0,
+    );
+    assert_eq!(outcome["transportState"], "Synchronized", "{outcome:?}");
     assert_eq!(outcome["remoteCommitApplied"], true, "{outcome:?}");
 
     let state = state_of(&id);
@@ -1879,17 +2021,9 @@ fn full_drive_local_editing_to_synchronized_room() {
         "{:?}",
         document_json_of(&id),
     );
-    let outcome = ok_json(&v2_collab::editor_v2_collaboration_socket_close(
-        id.clone(),
-        generation,
-        None,
-        None,
-    ));
-    assert_eq!(
-        outcome,
-        json!({ "transportState": "Disconnected" }),
-        "{outcome:?}"
-    );
+    let outcome = close_v2(&id, &generation, None, None, 0);
+    assert_eq!(outcome["transportState"], "Disconnected", "{outcome:?}");
+    assert_eq!(outcome["nextDeadlineMillis"], "500", "{outcome:?}");
     destroy_handle(&id);
 }
 
@@ -1951,23 +2085,9 @@ fn oversize_inputs_fail_with_structured_limit_errors() {
     .into_iter()
     .collect();
     let frame = Message::Awareness(yrs::sync::awareness::AwarenessUpdate { clients }).encode_v1();
-    let outcome = ok_json(&v2_collab::editor_v2_collaboration_receive(
-        id.clone(),
-        generation,
-        frame,
-    ));
-    assert_eq!(
-        outcome["close"]["disposition"], "incompatible",
-        "{outcome:?}"
-    );
-    assert_eq!(
-        outcome["close"]["error"]["code"], "TRANSPORT_FRAME_LIMIT_EXCEEDED",
-        "{outcome:?}",
-    );
-    assert_eq!(
-        outcome["close"]["error"]["domain"], "transport",
-        "{outcome:?}",
-    );
+    let outcome = receive_v2(&id, &generation, frame, 0);
+    assert_eq!(outcome["transportState"], "Incompatible", "{outcome:?}");
+    assert_eq!(outcome["nextDeadlineMillis"], Value::Null, "{outcome:?}");
     assert_eq!(state_of(&id)["transportState"], "Incompatible");
     destroy_handle(&id);
 }

@@ -73,6 +73,7 @@ impl CollaborationRuntime {
     ///   retained — the engine's store-swap rebind already re-published it
     ///   under the fresh client identity with a fresh clock.
     pub(crate) fn reset_for_restore(&mut self) {
+        self.outbox.release_lease();
         self.outbox.clear_protocol_replies();
         self.remote_dependency_work = 0;
         self.awareness.reset_for_restore();

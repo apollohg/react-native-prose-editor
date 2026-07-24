@@ -158,7 +158,57 @@ macro_rules! ffi_result {
 }
 
 ffi_result!(FfiJsonResult, String);
-ffi_result!(FfiBytesResult, Vec<u8>);
+
+/// One active outbound transport lease. The identifier stays canonical
+/// decimal text while the y-protocols frame remains binary end-to-end.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiOutboundLease {
+    pub lease_id: String,
+    pub frame: Vec<u8>,
+}
+
+/// Explicit three-way lease result: exactly one of a retained value, a
+/// queue-empty marker, or an error is selected. Empty is not encoded as an
+/// empty binary frame, which keeps it distinct from valid protocol bytes.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FfiOutboundLeaseResult {
+    pub value: Option<FfiOutboundLease>,
+    pub empty: bool,
+    pub error: Option<FfiError>,
+}
+
+impl FfiOutboundLeaseResult {
+    pub(crate) fn try_new(
+        value: Option<FfiOutboundLease>,
+        empty: bool,
+        error: Option<FfiError>,
+    ) -> Result<Self, &'static str> {
+        let selected =
+            usize::from(value.is_some()) + usize::from(empty) + usize::from(error.is_some());
+        if selected != 1 {
+            return Err(
+                "FFI outbound lease result must contain exactly one of value, empty, or error",
+            );
+        }
+        Ok(Self {
+            value,
+            empty,
+            error,
+        })
+    }
+
+    pub(crate) fn ok(value: FfiOutboundLease) -> Self {
+        Self::try_new(Some(value), false, None).expect("value-only lease result is valid")
+    }
+
+    pub(crate) fn empty() -> Self {
+        Self::try_new(None, true, None).expect("empty-only lease result is valid")
+    }
+
+    pub(crate) fn err(error: FfiError) -> Self {
+        Self::try_new(None, false, Some(error)).expect("error-only lease result is valid")
+    }
+}
 
 /// One exported document snapshot: the five-field manifest as JSON plus the
 /// encoded state as direct bytes (never a JSON number array).
@@ -262,5 +312,59 @@ mod tests {
             serde_json::from_str(error.details_json.as_deref().unwrap()).unwrap();
         assert_eq!(details["requiresFreshEditorIdentity"], true);
         assert_eq!(details["retryable"], false);
+    }
+
+    #[test]
+    fn outbound_lease_result_selects_exactly_one_value_empty_or_error() {
+        let lease = FfiOutboundLease {
+            lease_id: "18446744073709551615".into(),
+            frame: vec![1, 2, 3],
+        };
+        let error = FfiError::new(
+            ErrorDomain::Transport,
+            "TRANSPORT_LEASE_MISMATCH",
+            "mismatch",
+        );
+
+        assert_eq!(
+            FfiOutboundLeaseResult::ok(lease.clone()),
+            FfiOutboundLeaseResult {
+                value: Some(lease.clone()),
+                empty: false,
+                error: None,
+            }
+        );
+        assert_eq!(
+            FfiOutboundLeaseResult::empty(),
+            FfiOutboundLeaseResult {
+                value: None,
+                empty: true,
+                error: None,
+            }
+        );
+        assert_eq!(
+            FfiOutboundLeaseResult::err(error.clone()),
+            FfiOutboundLeaseResult {
+                value: None,
+                empty: false,
+                error: Some(error.clone()),
+            }
+        );
+
+        assert!(FfiOutboundLeaseResult::try_new(Some(lease.clone()), false, None).is_ok());
+        assert!(FfiOutboundLeaseResult::try_new(None, true, None).is_ok());
+        assert!(FfiOutboundLeaseResult::try_new(None, false, Some(error)).is_ok());
+        assert!(FfiOutboundLeaseResult::try_new(None, false, None).is_err());
+        assert!(FfiOutboundLeaseResult::try_new(Some(lease.clone()), true, None).is_err());
+        assert!(FfiOutboundLeaseResult::try_new(
+            Some(lease),
+            false,
+            Some(FfiError::new(
+                ErrorDomain::Transport,
+                "TRANSPORT_LEASE_MISMATCH",
+                "mismatch",
+            ))
+        )
+        .is_err());
     }
 }

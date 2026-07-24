@@ -27,6 +27,8 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         val undoStack = ArrayDeque<Triple<String, Int, Int>>()
         val redoStack = ArrayDeque<Triple<String, Int, Int>>()
         val outbox = ArrayDeque<ByteArray>()
+        var outboundLease: Pair<String, ByteArray>? = null
+        var nextLeaseId = 1uL
         val commands = mutableListOf<JSONObject>()
     }
 
@@ -418,13 +420,109 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         return EditorV2CallResult.Ok(JSONObject().put("changed", true).toString())
     }
 
-    override fun collaborationTakeOutbound(editorId: String, generation: String): EditorV2CallResult<ByteArray> {
-        calls.add("takeOutbound")
-        val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
-        if (canonicalV2U64(generation) == null) {
-            return EditorV2CallResult.Err(configInvalid("generation must be canonical decimal u64 text"))
+    private fun collaborationDirective(
+        transportState: String,
+        generationToOpen: String? = null,
+    ): String = JSONObject()
+        .put("transportState", transportState)
+        .put("generationToOpen", generationToOpen ?: JSONObject.NULL)
+        .put("nextDeadlineMillis", JSONObject.NULL)
+        .put("remoteCommitApplied", false)
+        .put("peersChanged", false)
+        .put("renewedLocal", false)
+        .put("expiredPeers", JSONArray())
+        .toString()
+
+    override fun collaborationDrive(editorId: String, nowMillis: String): EditorV2CallResult<String> {
+        calls.add("collaborationDrive")
+        liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        return EditorV2CallResult.Ok(collaborationDirective("Detached"))
+    }
+
+    override fun collaborationSocketOpen(
+        editorId: String,
+        generation: String,
+        nowMillis: String,
+    ): EditorV2CallResult<String> {
+        calls.add("collaborationSocketOpen")
+        liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        return EditorV2CallResult.Ok(collaborationDirective("Handshaking"))
+    }
+
+    override fun collaborationReceive(
+        editorId: String,
+        generation: String,
+        message: ByteArray,
+        nowMillis: String,
+    ): EditorV2CallResult<String> {
+        calls.add("collaborationReceive")
+        liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        return EditorV2CallResult.Ok(collaborationDirective("Synchronized"))
+    }
+
+    override fun collaborationSocketClose(
+        editorId: String,
+        generation: String,
+        code: UInt?,
+        reason: String?,
+        nowMillis: String,
+    ): EditorV2CallResult<String> {
+        calls.add("collaborationSocketClose")
+        liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        return EditorV2CallResult.Ok(collaborationDirective("Disconnected"))
+    }
+
+    override fun collaborationLeaseOutbound(
+        editorId: String,
+        generation: String,
+    ): EditorV2LeaseResult {
+        calls.add("collaborationLeaseOutbound")
+        val session = liveSession(editorId) ?: return EditorV2LeaseResult.Err(destroyedError())
+        session.outboundLease?.let { (leaseId, frame) ->
+            return EditorV2LeaseResult.Value(EditorV2OutboundLease(leaseId, frame))
         }
-        return EditorV2CallResult.Ok(session.outbox.removeFirstOrNull() ?: ByteArray(0))
+        val frame = session.outbox.removeFirstOrNull() ?: return EditorV2LeaseResult.Empty
+        val leaseId = session.nextLeaseId.toString()
+        session.nextLeaseId += 1u
+        session.outboundLease = leaseId to frame
+        return EditorV2LeaseResult.Value(EditorV2OutboundLease(leaseId, frame))
+    }
+
+    override fun collaborationAckOutbound(
+        editorId: String,
+        generation: String,
+        leaseId: String,
+    ): EditorV2CallResult<String> {
+        calls.add("collaborationAckOutbound")
+        val session = liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        session.outboundLease = null
+        return EditorV2CallResult.Ok(collaborationDirective("Synchronized"))
+    }
+
+    override fun collaborationNackOutbound(
+        editorId: String,
+        generation: String,
+        leaseId: String,
+    ): EditorV2CallResult<String> {
+        calls.add("collaborationNackOutbound")
+        liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        return EditorV2CallResult.Ok(collaborationDirective("Disconnected"))
+    }
+
+    override fun collaborationDetach(editorId: String): EditorV2Error? {
+        calls.add("collaborationDetach")
+        return if (liveSession(editorId) == null) destroyedError() else null
+    }
+
+    override fun collaborationReattach(editorId: String): EditorV2Error? {
+        calls.add("collaborationReattach")
+        return if (liveSession(editorId) == null) destroyedError() else null
+    }
+
+    override fun collaborationPeers(editorId: String): EditorV2CallResult<String> {
+        calls.add("collaborationPeers")
+        liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        return EditorV2CallResult.Ok(JSONObject().put("peers", JSONArray()).toString())
     }
 
     override fun getContentSnapshot(editorId: String): EditorV2CallResult<String> {

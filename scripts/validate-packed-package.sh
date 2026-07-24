@@ -33,7 +33,7 @@ manifest_rows() {
   ruby -rjson -e '
     manifest = JSON.parse(File.read(ARGV.fetch(0)))
     entries = manifest.fetch("functions")
-    abort "package ABI manifest must contain exactly 29 editor_v2 functions" unless entries.length == 29
+    abort "package ABI manifest must contain exactly 30 editor_v2 functions" unless entries.length == 30
     names = entries.map { |entry| entry.fetch("name") }
     abort "package ABI manifest contains duplicate function names" unless names.uniq.length == names.length
     abort "package ABI manifest contains a non-v2 function" unless names.all? { |name| name.start_with?("editor_v2_") }
@@ -251,6 +251,14 @@ require_declaration_symbol() {
   find "$root/dist" -type f -name '*.d.ts' -exec grep -Fq "$symbol" {} + || fail "packed TypeScript declarations are missing $symbol"
 }
 
+reject_dist_symbol() {
+  local root="$1"
+  local symbol="$2"
+  if find "$root/dist" -type f \( -name '*.js' -o -name '*.d.ts' \) -exec grep -Fq "$symbol" {} +; then
+    fail "packed JavaScript surface still contains obsolete collaboration API $symbol"
+  fi
+}
+
 validate_ios_consumer() {
   local root="$1"
   local ios_consumer="$work_dir/ios-consumer"
@@ -344,7 +352,10 @@ import ReactNativeProseEditor
 func packedEditorCoreLinkProbe() {
   _ = editorV2Create(configJson: "{}", snapshotState: nil)
   _ = editorV2RenderUpdate(editorId: "1", mirrorScalarAnchor: nil, mirrorScalarHead: nil)
-  _ = editorV2CollaborationTick(editorId: "1", nowMillis: "0")
+  _ = editorV2CollaborationDrive(editorId: "1", nowMillis: "0")
+  _ = editorV2CollaborationLeaseOutbound(editorId: "1", generation: "1")
+  _ = editorV2CollaborationAckOutbound(editorId: "1", generation: "1", leaseId: "1")
+  _ = editorV2CollaborationNackOutbound(editorId: "1", generation: "1", leaseId: "1")
   _ = editorV2CollaborationDetach(editorId: "1")
   _ = editorV2CollaborationReattach(editorId: "1")
 }
@@ -505,7 +516,10 @@ object PackedEditorCoreProbe {
   fun referenceFinalApi() {
     editorV2Create("{}", null)
     editorV2RenderUpdate("1", null, null)
-    editorV2CollaborationTick("1", "0")
+    editorV2CollaborationDrive("1", "0")
+    editorV2CollaborationLeaseOutbound("1", "1")
+    editorV2CollaborationAckOutbound("1", "1", "1")
+    editorV2CollaborationNackOutbound("1", "1", "1")
     editorV2CollaborationDetach("1")
     editorV2CollaborationReattach("1")
   }
@@ -532,8 +546,22 @@ validate_package_entries() {
   require_file "$root" "dist/index.js"
   require_file "$root" "dist/index.d.ts"
   require_declaration_symbol "$root" "NativeEditorBoundaryError"
+  require_declaration_symbol "$root" "NativeCollaborationTransportConfig"
+  require_declaration_symbol "$root" "NativeCollaborationTransportEvent"
   require_declaration_symbol "$root" "resourceLimits"
   require_declaration_symbol "$root" "requestTimeoutMs"
+  for obsolete in \
+    createWebSocket \
+    collaborationTakeOutbound \
+    editorV2CollaborationBeginConnect \
+    editorV2CollaborationTick \
+    drainOutbound \
+    collaborationGeneration \
+    outboundFrameSink \
+    onLocalDocumentCommit
+  do
+    reject_dist_symbol "$root" "$obsolete"
+  done
 }
 
 case "${1:-}" in

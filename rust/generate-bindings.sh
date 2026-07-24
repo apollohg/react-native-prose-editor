@@ -13,7 +13,7 @@
 #   - The crate must be built for the host target first (cargo build --release)
 #
 # Since the Task 16C production cutover, the v2 ABI is the ONLY surface: the
-# generated bindings and the dylib are verified to expose all 29 editor_v2_*
+# generated bindings and the dylib are verified to expose all 30 editor_v2_*
 # symbols plus editor_core_version and zero legacy editor_*/collaboration_*
 # symbols before the script succeeds.
 
@@ -40,14 +40,15 @@ V2_SYMBOLS=(
     editor_v2_set_selection
     editor_v2_undo
     editor_v2_redo
-    editor_v2_collaboration_begin_connect
+    editor_v2_collaboration_drive
     editor_v2_collaboration_socket_open
     editor_v2_collaboration_receive
     editor_v2_collaboration_socket_close
-    editor_v2_collaboration_take_outbound
+    editor_v2_collaboration_lease_outbound
+    editor_v2_collaboration_ack_outbound
+    editor_v2_collaboration_nack_outbound
     editor_v2_collaboration_set_awareness
     editor_v2_collaboration_peers
-    editor_v2_collaboration_tick
     editor_v2_collaboration_detach
     editor_v2_collaboration_reattach
     editor_v2_snapshot_export
@@ -56,6 +57,12 @@ V2_SYMBOLS=(
     editor_v2_resolve_scalar_selection
     editor_v2_doc_to_scalar
     editor_v2_scalar_to_doc
+)
+
+OBSOLETE_V2_SYMBOLS=(
+    editor_v2_collaboration_begin_connect
+    editor_v2_collaboration_take_outbound
+    editor_v2_collaboration_tick
 )
 
 normalize_header() {
@@ -106,6 +113,12 @@ for symbol in "${V2_SYMBOLS[@]}"; do
         echo "error: dylib is missing uniffi_editor_core_fn_func_${symbol}" >&2
         exit 1
     }
+done
+for symbol in "${OBSOLETE_V2_SYMBOLS[@]}"; do
+    if nm -gU "$CDYLIB_PATH" | grep -q "uniffi_editor_core_fn_func_${symbol}"; then
+        echo "error: dylib still exposes obsolete uniffi_editor_core_fn_func_${symbol}" >&2
+        exit 1
+    fi
 done
 nm -gU "$CDYLIB_PATH" | grep -q "uniffi_editor_core_fn_func_editor_core_version" || {
     echo "error: dylib is missing the editor_core_version query" >&2
@@ -166,6 +179,17 @@ for artifact in \
         echo "$LEGACY_ARTIFACT_LINES" >&2
         exit 1
     fi
+done
+for symbol in "${OBSOLETE_V2_SYMBOLS[@]}"; do
+    for artifact in \
+        "$OUT_DIR/swift/editor_coreFFI.h" \
+        "$OUT_DIR/swift/editor_core.swift" \
+        "$OUT_DIR/kotlin/uniffi/editor_core/editor_core.kt"; do
+        if grep -q "uniffi_editor_core_\(fn\|checksum\)_func_${symbol}" "$artifact"; then
+            echo "error: generated binding $artifact still exposes obsolete ${symbol}" >&2
+            exit 1
+        fi
+    done
 done
 
 echo "==> Copying Swift binding into ios/ for Xcode compilation..."

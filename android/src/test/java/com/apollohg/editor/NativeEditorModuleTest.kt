@@ -838,69 +838,6 @@ class NativeEditorModuleTest {
     }
 
     @Test
-    fun `generation parser rejects every non-canonical decimal spelling`() {
-        val parser = Class.forName("com.apollohg.editor.NativeEditorModuleKt")
-            .getDeclaredMethod("parseGeneration", String::class.java)
-            .apply { isAccessible = true }
-
-        assertEquals("18446744073709551615", parser.invoke(null, "18446744073709551615"))
-        for (value in listOf("+1", "01", " 1", "1 ", "1e3")) {
-            assertNull("generation $value must be rejected", parser.invoke(null, value))
-        }
-    }
-
-    @Test
-    fun `collaboration tick forwards canonical maximum and raw json result`() {
-        var forwardedEditorId: String? = null
-        var forwardedNowMillis: String? = null
-        val rawValue = """{"nextDeadlineMillis":null,"renewedLocal":false,"expiredPeers":[],"outboundChanged":false,"peersChanged":false}"""
-
-        val result = collaborationTickResult("editor-1", ULong.MAX_VALUE.toString()) { editorId, nowMillis ->
-            forwardedEditorId = editorId
-            forwardedNowMillis = nowMillis
-            FfiJsonResult(rawValue, null)
-        }
-
-        assertEquals("editor-1", forwardedEditorId)
-        assertEquals(ULong.MAX_VALUE.toString(), forwardedNowMillis)
-        assertEquals(rawValue, result["value"])
-        assertNull(result["error"])
-    }
-
-    @Test
-    fun `collaboration tick rejects malformed nowMillis before backend`() {
-        var called = false
-
-        val result = collaborationTickResult("editor-1", "01") { _, _ ->
-            called = true
-            FfiJsonResult("{}", null)
-        }
-
-        assertFalse(called)
-        val error = result["error"] as Map<*, *>
-        assertEquals("CONFIG_INVALID", error["code"])
-    }
-
-    @Test
-    fun `collaboration detach and reattach bridge raw unit results`() {
-        val invoked = mutableListOf<String>()
-        val detach = collaborationUnitResult("editor-1") { editorId ->
-            invoked += "detach:$editorId"
-            FfiUnitResult(true, null)
-        }
-        val reattach = collaborationUnitResult("editor-1") { editorId ->
-            invoked += "reattach:$editorId"
-            FfiUnitResult(true, null)
-        }
-
-        assertEquals(listOf("detach:editor-1", "reattach:editor-1"), invoked)
-        assertEquals(true, detach["value"])
-        assertNull(detach["error"])
-        assertEquals(true, reattach["value"])
-        assertNull(reattach["error"])
-    }
-
-    @Test
     fun `v2 u32 parser admits only exact finite integral values`() {
         assertEquals(UInt.MAX_VALUE, exactV2U32(4_294_967_295L))
         assertEquals(0u, exactV2U32(0))

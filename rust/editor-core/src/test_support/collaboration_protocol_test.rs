@@ -21,10 +21,10 @@ use crate::collaboration_runtime::state::{
 use crate::native_bridge_test_support as bridge;
 use crate::schema::Schema;
 use crate::session_initialization_test_support::{
-    begin_connect, create_room_from_json, destroy_session, document_state, receive_message,
-    remote_dependency_accounting, render_state, session_audit, set_collaboration_limit_for_test,
-    socket_opened, sync_step1_frame, take_next_protocol_reply, transport_state, CloseDisposition,
-    DocumentState, RenderState, TransportState,
+    ack_outbound, collaboration_drive, collaboration_socket_open, create_room_from_json,
+    destroy_session, document_state, lease_outbound, receive_message, remote_dependency_accounting,
+    render_state, session_audit, set_collaboration_limit_for_test, transport_state,
+    CloseDisposition, DocumentState, RenderState, TransportState,
 };
 use crate::tiptap_schema;
 use crate::yrs_engine::{
@@ -97,11 +97,33 @@ fn create_await_remote_room() -> u64 {
     id
 }
 
-/// `begin_connect` + `socket_opened`: the transport is `Handshaking` and the
-/// returned generation is live.
+/// Drive and open a current generation, then ACK the queued Sync Step 1 so
+/// tests that do not inspect it begin with a drained protocol outbox.
 fn handshake(id: u64) -> u64 {
-    let generation = begin_connect(id, 9_000).unwrap();
-    socket_opened(id, 9_001, generation).unwrap();
+    let initial = collaboration_drive(id, 9_000, 0).unwrap();
+    let (generation, now_millis) = match initial.generation_to_open {
+        Some(generation) => (generation, 0),
+        None => {
+            let deadline = initial
+                .next_deadline_millis
+                .expect("a disconnected retry must expose its Rust deadline");
+            let due = collaboration_drive(id, 9_000, deadline).unwrap();
+            (
+                due.generation_to_open
+                    .expect("the due Rust drive must issue a generation"),
+                deadline,
+            )
+        }
+    };
+    collaboration_socket_open(id, 9_001, generation, now_millis).unwrap();
+    let step1 = lease_outbound(id, 9_002, generation)
+        .unwrap()
+        .expect("socket open must queue Sync Step 1");
+    assert!(matches!(
+        Message::decode_v1(&step1.frame).unwrap(),
+        Message::Sync(SyncMessage::SyncStep1(_))
+    ));
+    ack_outbound(id, 9_002, generation, step1.lease_id).unwrap();
     generation
 }
 
@@ -275,6 +297,40 @@ fn local_edit(id: u64, request_id: u64, text: &str) {
 }
 
 #[test]
+fn socket_open_queues_step1_as_the_first_leased_protocol_frame() {
+    let (id, _snapshot) = create_ready_room();
+    local_edit(id, 19_001, " queued before open");
+    assert_eq!(bridge::outbox_pending(id).unwrap().unwrap().0, 1);
+
+    let generation = collaboration_drive(id, 19_002, 0)
+        .unwrap()
+        .generation_to_open
+        .expect("the initial drive must issue the generation");
+    let opened = collaboration_socket_open(id, 19_003, generation, 0).unwrap();
+    assert_eq!(opened.transport_state, TransportState::Handshaking);
+    assert_eq!(opened.generation_to_open, None);
+
+    let step1 = lease_outbound(id, 19_004, generation)
+        .unwrap()
+        .expect("socket open queues Sync Step 1 into the normal lease path");
+    assert!(matches!(
+        Message::decode_v1(&step1.frame).unwrap(),
+        Message::Sync(SyncMessage::SyncStep1(_))
+    ));
+    ack_outbound(id, 19_005, generation, step1.lease_id).unwrap();
+
+    let document = lease_outbound(id, 19_006, generation)
+        .unwrap()
+        .expect("the pre-existing document update remains after the Step 1 ACK");
+    assert!(matches!(
+        Message::decode_v1(&document.frame).unwrap(),
+        Message::Sync(SyncMessage::Update(_))
+    ));
+    ack_outbound(id, 19_007, generation, document.lease_id).unwrap();
+    destroy_session(id);
+}
+
+#[test]
 fn step1_replies_are_read_only_completely_built_and_wire_compatible() {
     let (id, snapshot) = create_ready_room();
     let generation = handshake(id);
@@ -302,23 +358,25 @@ fn step1_replies_are_read_only_completely_built_and_wire_compatible() {
 
     // The reply is a complete standard Step 2 an independent raw peer can
     // apply directly, converging to our exact state.
-    let (reply_request_id, reply) = take_next_protocol_reply(id).unwrap().unwrap();
-    assert_eq!(reply_request_id, 201);
-    assert_eq!(reply.len(), outcome.reply_bytes_enqueued);
+    let reply = lease_outbound(id, 202, generation)
+        .unwrap()
+        .expect("Step 1 must retain its complete Step 2 reply");
+    assert_eq!(reply.frame.len(), outcome.reply_bytes_enqueued);
     let peer = RawPeer::empty();
-    peer.apply(&decode_step2_reply(&reply));
+    peer.apply(&decode_step2_reply(&reply.frame));
     assert_eq!(peer.state_vector(), session_state_vector(id));
     assert_eq!(
         peer.fragment_string(),
         RawPeer::from_snapshot(&snapshot).fragment_string(),
     );
-    assert!(take_next_protocol_reply(id).unwrap().is_none());
+    ack_outbound(id, 203, generation, reply.lease_id).unwrap();
+    assert!(lease_outbound(id, 204, generation).unwrap().is_none());
 
     destroy_session(id);
 }
 
 #[test]
-fn receive_refuses_sessions_without_an_attached_runtime() {
+fn socket_open_refuses_sessions_without_an_attached_runtime() {
     let snapshot = snapshot_source();
     let config = serde_json::json!({
         "documentId": snapshot.document_id,
@@ -326,12 +384,15 @@ fn receive_refuses_sessions_without_an_attached_runtime() {
         "snapshot": snapshot,
     });
     let id = create_room_from_json(&config.to_string()).unwrap();
-    let generation = handshake(id);
+    let generation = collaboration_drive(id, 210, 0)
+        .unwrap()
+        .generation_to_open
+        .expect("the drive may issue before socket-open runtime admission");
 
-    let error = receive_message(id, 211, generation, &NOOP_UPDATE_V1).unwrap_err();
+    let error = collaboration_socket_open(id, 211, generation, 0).unwrap_err();
     assert_eq!(error.domain, "boundary", "{error:?}");
     assert_eq!(error.code, "CONFIG_INVALID", "{error:?}");
-    assert_eq!(transport_state(id).unwrap(), TransportState::Handshaking);
+    assert_eq!(transport_state(id).unwrap(), TransportState::Connecting);
 
     destroy_session(id);
 }
@@ -356,7 +417,10 @@ fn stale_generations_and_wrong_states_refuse_before_any_decode() {
     // Connecting is not a frame-accepting state, even for the live
     // generation.
     let (id, _snapshot) = create_ready_room();
-    let generation = begin_connect(id, 222).unwrap();
+    let generation = collaboration_drive(id, 222, 0)
+        .unwrap()
+        .generation_to_open
+        .expect("the initial drive must issue a generation");
     let error = receive_message(id, 223, generation, &NOOP_UPDATE_V1).unwrap_err();
     assert_eq!(error.code, TRANSPORT_INVALID_TRANSITION, "{error:?}");
     assert_eq!(transport_state(id).unwrap(), TransportState::Connecting);
@@ -441,7 +505,11 @@ fn malformed_frames_close_the_generation_with_a_protocol_error() {
         assert_eq!(bridge::session_audit(id).unwrap(), before_engine, "{label}");
 
         // Retry stays eligible after a protocol close.
-        begin_connect(id, 232).unwrap();
+        let retry = collaboration_drive(id, 232, 500).unwrap();
+        assert!(
+            retry.generation_to_open.is_some(),
+            "a due Rust drive must issue the retry generation"
+        );
         destroy_session(id);
     }
 }
@@ -451,10 +519,19 @@ fn await_remote_valid_step2_initializes_and_synchronizes() {
     let id = create_await_remote_room();
     assert_eq!(document_state(id).unwrap(), DocumentState::AwaitRemote);
     assert_eq!(render_state(id).unwrap(), RenderState::Loading);
-    let generation = handshake(id);
+    let generation = collaboration_drive(id, 240, 0)
+        .unwrap()
+        .generation_to_open
+        .expect("the initial directive must issue a generation");
+    collaboration_socket_open(id, 240, generation, 0).unwrap();
 
-    // Our Step 1 is a standard frame an independent peer consumes directly.
-    let our_step1 = sync_step1_frame(id, 241).unwrap();
+    // Our Step 1 is queued at protocol priority and leased as a standard
+    // frame an independent peer consumes directly.
+    let step1_lease = lease_outbound(id, 241, generation)
+        .unwrap()
+        .expect("socket open must retain Sync Step 1");
+    let our_step1 = step1_lease.frame.clone();
+    ack_outbound(id, 241, generation, step1_lease.lease_id).unwrap();
     let server = RawPeer::from_snapshot(&snapshot_source());
     let our_sv = match Message::decode_v1(&our_step1).unwrap() {
         Message::Sync(SyncMessage::SyncStep1(sv)) => sv.encode_v1(),
@@ -485,8 +562,11 @@ fn await_remote_valid_step2_initializes_and_synchronizes() {
     );
 
     // Our reply Step 2 converges the server side (a no-op for it here).
-    let (_, reply) = take_next_protocol_reply(id).unwrap().unwrap();
-    server.apply(&decode_step2_reply(&reply));
+    let reply = lease_outbound(id, 243, generation)
+        .unwrap()
+        .expect("the peer Step 1 must retain our Step 2 reply");
+    server.apply(&decode_step2_reply(&reply.frame));
+    ack_outbound(id, 244, generation, reply.lease_id).unwrap();
     assert_eq!(server.state_vector(), session_state_vector(id));
 
     destroy_session(id);
@@ -737,13 +817,15 @@ fn reply_aggregate_ceiling_has_exact_and_one_over_behavior() {
     assert!(outcome.close.is_none(), "{outcome:?}");
     let reply_bytes = outcome.reply_bytes_enqueued;
     assert!(reply_bytes > 0, "{outcome:?}");
-    take_next_protocol_reply(id).unwrap().unwrap();
+    let reply = lease_outbound(id, 314, generation).unwrap().unwrap();
+    ack_outbound(id, 315, generation, reply.lease_id).unwrap();
 
     set_collaboration_limit_for_test(id, "maxAggregateResponseBytes", reply_bytes).unwrap();
     let outcome = receive_message(id, 312, generation, &step1).unwrap();
     assert!(outcome.close.is_none(), "{outcome:?}");
     assert_eq!(outcome.reply_bytes_enqueued, reply_bytes, "{outcome:?}");
-    take_next_protocol_reply(id).unwrap().unwrap();
+    let reply = lease_outbound(id, 316, generation).unwrap().unwrap();
+    ack_outbound(id, 317, generation, reply.lease_id).unwrap();
 
     set_collaboration_limit_for_test(id, "maxAggregateResponseBytes", reply_bytes - 1).unwrap();
     let before_engine = bridge::session_audit(id).unwrap();
@@ -762,7 +844,9 @@ fn reply_aggregate_ceiling_has_exact_and_one_over_behavior() {
         "{close:?}"
     );
     assert_eq!(outcome.replies_enqueued, 0, "{outcome:?}");
-    assert!(take_next_protocol_reply(id).unwrap().is_none());
+    let error = lease_outbound(id, 318, generation).unwrap_err();
+    assert_eq!(error.domain, "transport", "{error:?}");
+    assert_eq!(error.code, TRANSPORT_STALE_GENERATION, "{error:?}");
     assert_eq!(bridge::session_audit(id).unwrap(), before_engine);
 
     destroy_session(id);
@@ -836,14 +920,17 @@ fn reply_reservation_failures_close_before_any_engine_commit() {
 #[test]
 fn outbox_saturation_drains_and_the_transport_reconnects_without_a_wedge() {
     let (id, snapshot) = create_ready_room();
-    // One shared outbox slot: the offline edit below fills it completely.
-    bridge::set_outbox_ceilings(id, 1, 10 * 1024 * 1024).unwrap();
+    // Two slots let the production socket-open queue and ACK its Sync Step
+    // 1 alongside the offline edit. Before the peer's Step 1 arrives, put
+    // the ceiling back at one so its reply reservation still saturates.
+    bridge::set_outbox_ceilings(id, 2, 10 * 1024 * 1024).unwrap();
     local_edit(id, 401, "offline edit");
     let (pending_count, _) = bridge::outbox_pending(id).unwrap().unwrap();
-    assert_eq!(pending_count, 1, "the offline edit must fill the only slot");
+    assert_eq!(pending_count, 1, "the offline edit must occupy one slot");
 
     // Reconnect: the peer's Step 1 cannot reserve its reply — retryable.
     let generation = handshake(id);
+    bridge::set_outbox_ceilings(id, 1, 10 * 1024 * 1024).unwrap();
     let step1 = step1_frame(&StateVector::default().encode_v1());
     let outcome = receive_message(id, 402, generation, &step1).unwrap();
     let close = outcome
@@ -858,11 +945,12 @@ fn outbox_saturation_drains_and_the_transport_reconnects_without_a_wedge() {
     assert_eq!(transport_state(id).unwrap(), TransportState::Disconnected);
 
     // The pending offline edit drains through the normal pickup seam.
-    let (request_id, _) = bridge::take_next_update(id).unwrap().unwrap();
-    assert_eq!(request_id, 401);
+    let lease = bridge::lease_next_update(id).unwrap().unwrap();
+    assert_eq!(lease.request_id, 401);
+    bridge::ack_leased_update(id, lease.lease_id).unwrap();
     assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), (0, 0));
 
-    // The same session reconnects (begin_connect accepted — not wedged in
+    // The same session's due Rust drive reconnects (not wedged in
     // Incompatible) and completes the full handshake.
     let generation = synchronize_ready_room(id, &snapshot);
     let outcome = receive_message(id, 403, generation, &step1).unwrap();
@@ -1231,7 +1319,7 @@ fn remote_commits_are_never_echoed_and_local_edits_still_enqueue_once() {
         (0, 0),
         "remote commits must never be echoed as document updates",
     );
-    assert!(take_next_protocol_reply(id).unwrap().is_none());
+    assert!(lease_outbound(id, 373, generation).unwrap().is_none());
 
     // A local edit while Synchronized still enqueues exactly one bounded
     // document update, and the two paths coexist.
@@ -1239,12 +1327,15 @@ fn remote_commits_are_never_echoed_and_local_edits_still_enqueue_once() {
     let (pending_count, pending_bytes) = bridge::outbox_pending(id).unwrap().unwrap();
     assert_eq!(pending_count, 1);
     assert!(pending_bytes > 0);
-    let (request_id, update) = bridge::take_next_update(id).unwrap().unwrap();
-    assert_eq!(request_id, 372);
+    let lease = bridge::lease_next_update(id).unwrap().unwrap();
+    let lease_id = lease.lease_id;
+    assert_eq!(lease.request_id, 372);
+    let update = lease.update_v1;
 
     // The captured update converges the independent peer.
     server.apply(&update);
     assert_eq!(server.state_vector(), session_state_vector(id));
+    bridge::ack_leased_update(id, lease_id).unwrap();
     assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), (0, 0));
 
     destroy_session(id);
@@ -1269,8 +1360,11 @@ fn update_exchange_converges_with_an_independent_raw_peer() {
 
     // Our edit -> their doc.
     local_edit(id, 382, " from us");
-    let (_, update) = bridge::take_next_update(id).unwrap().unwrap();
+    let lease = bridge::lease_next_update(id).unwrap().unwrap();
+    let lease_id = lease.lease_id;
+    let update = lease.update_v1;
     server.apply(&update);
+    bridge::ack_leased_update(id, lease_id).unwrap();
 
     // Both directions converge to state-vector equality.
     assert_eq!(server.state_vector(), session_state_vector(id));

@@ -102,7 +102,7 @@ SCRIPT
   cat > "$bin_dir/nm" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
-for symbol in $(seq 1 29); do
+for symbol in $(seq 1 30); do
   printf 'uniffi_editor_core_fn_func_editor_v2_%s\n' "$symbol"
 done
 SCRIPT

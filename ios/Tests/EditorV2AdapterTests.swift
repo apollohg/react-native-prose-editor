@@ -1555,73 +1555,12 @@ final class EditorV2AdapterTests: XCTestCase {
         XCTAssertEqual(attrs?["height"] as? Int, 80)
     }
 
-    // MARK: - Collaboration drain ping
+    // MARK: - Collaboration ownership
 
-    func testLocalCommitDrivesDrainPingOnRoomBoundSession() {
-        // NOTE: promoting an AwaitRemote room to RoomReady requires a peer
-        // that already holds the document (raw yrs peer in the Rust tests);
-        // the public FFI cannot fabricate one natively. This test proves the
-        // ping's full drain semantics against the room's live outbox using
-        // the protocol reply queued by a real Step 1 receive: frames drain
-        // one per call, as complete y-protocols messages, until empty. The
-        // commit-triggered ping on a live room is covered on Android (fake
-        // engine lets room commits succeed) and device E2E is Task 17 scope.
-        let adapterA = makeRoomAdapter(documentId: "doc-room", lineageId: "lineage-room")
-        let adapterB = makeRoomAdapter(documentId: "doc-room", lineageId: "lineage-room")
-
-        func beginGeneration(_ adapter: EditorV2Adapter, file: StaticString = #filePath, line: UInt = #line) -> String {
-            let begin = editorV2CollaborationBeginConnect(editorId: adapter.editorId)
-            guard let generation = parseObject(begin.value)["generation"] as? String,
-                  UInt64(generation) != nil,
-                  generation == "0" || generation.first != "0"
-            else {
-                XCTFail("beginConnect returned no generation: \(begin.value ?? "nil")", file: file, line: line)
-                fatalError("unreachable")
-            }
-            return generation
-        }
-
-        let genA = beginGeneration(adapterA)
-        let genB = beginGeneration(adapterB)
-        let step1A = editorV2CollaborationSocketOpen(editorId: adapterA.editorId, generation: genA)
-        let step1B = editorV2CollaborationSocketOpen(editorId: adapterB.editorId, generation: genB)
-        XCTAssertNil(step1A.error)
-        XCTAssertNil(step1B.error)
-
-        // B's Step 1 reaches A: A queues its bounded protocol reply.
-        let receiveA = editorV2CollaborationReceive(
-            editorId: adapterA.editorId,
-            generation: genA,
-            message: step1B.value ?? Data()
-        )
-        XCTAssertNil(receiveA.error)
-        let receiveOutcome = parseObject(receiveA.value)
-        XCTAssertEqual(receiveOutcome["repliesEnqueued"] as? Int, 1)
-
-        var frames: [Data] = []
-        adapterA.outboundFrameSink = { frames.append($0) }
-
-        // No live generation on the adapter: the ping is a no-op (mirrors
-        // the TS controller skipping the drain with no current socket).
-        adapterA.driveCollaborationDrainPing()
-        XCTAssertTrue(frames.isEmpty)
-
-        adapterA.collaborationGeneration = genA
-        adapterA.driveCollaborationDrainPing()
-        XCTAssertEqual(frames.count, 1, "the queued protocol reply drains as one framed message")
-        XCTAssertEqual(frames.first?.count, 5, "same bytes the outbox reserved")
-        adapterA.driveCollaborationDrainPing()
-        XCTAssertEqual(frames.count, 1, "the queue stays drained until new work arrives")
-        adapterB.destroy()
-    }
-
-    func testDrainPingSkippedForLocalOnlySession() {
+    func testLocalOnlyMutationRequiresNoTransportOwner() {
         let adapter = makeAdapter()
-        var frames: [Data] = []
-        adapter.outboundFrameSink = { frames.append($0) }
-        adapter.collaborationGeneration = "1"
-        _ = adapter.insertText("x", atScalar: 0)
-        XCTAssertTrue(frames.isEmpty, "local-only sessions own no outbox; the ping must not fire")
+        XCTAssertNotNil(adapter.insertText("x", atScalar: 0))
+        XCTAssertEqual(documentText(adapter), "x")
     }
 
     // MARK: - Synthesized update contract

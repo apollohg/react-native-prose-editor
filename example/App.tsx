@@ -208,11 +208,6 @@ function AppScreen() {
         () => buildCollaborationSocketUrl(collaborationEndpoint, collaborationRoomName),
         [collaborationEndpoint, collaborationRoomName]
     );
-    const createCollaborationWebSocket = React.useCallback(
-        () => new WebSocket(collaborationSocketUrl),
-        [collaborationSocketUrl]
-    );
-
     // ── Document session ─────────────────────────────────────────
     // One NativeEditorDocumentHandle per session: a local handle while
     // offline, a room handle while collaborating. The editor and the
@@ -267,8 +262,10 @@ function AppScreen() {
     const collaboration = useYjsCollaboration({
         documentId: collaborationEnabled ? collaborationDocumentId : 'local',
         handle: documentHandle,
-        connect: collaborationEnabled,
-        createWebSocket: createCollaborationWebSocket,
+        transport: {
+            url: collaborationSocketUrl,
+            connect: collaborationEnabled,
+        },
         localAwareness: collaborationEnabled
             ? {
                   userId: `${Platform.OS}-demo-user`,
@@ -476,9 +473,6 @@ function AppScreen() {
                             ref={editorRef}
                             documentHandle={collaboration.editorBindings.documentHandle}
                             documentRevision={collaboration.editorBindings.documentRevision}
-                            onLocalDocumentCommit={
-                                collaboration.editorBindings.onLocalDocumentCommit
-                            }
                             remoteSelections={collaboration.editorBindings.remoteSelections}
                             onSelectionChange={collaboration.editorBindings.onSelectionChange}
                             onFocus={collaboration.editorBindings.onFocus}

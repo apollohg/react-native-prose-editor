@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 
 use crate::boundary::ResourceLimits;
+use crate::native_bridge_test_support as bridge;
 use crate::session_initialization_test_support::{
-    begin_connect, can_redo, can_undo, client_id, create_local_json,
-    create_local_json_with_options, create_room_from_json, destroy_session, encoded_state,
-    get_json, has_document_state, mark_synchronized_for_test, redo, registry_count, request_edit,
-    session_audit, set_transport_state_for_test, socket_closed, socket_opened, undo, write_html,
-    write_json, CloseDisposition, DocumentState, TransportState,
+    ack_outbound, can_redo, can_undo, client_id, collaboration_drive, collaboration_socket_close,
+    collaboration_socket_open, create_local_json, create_local_json_with_options,
+    create_room_from_json, destroy_session, encoded_state, get_json, has_document_state,
+    lease_outbound, mark_synchronized_for_test, redo, registry_count, request_edit, session_audit,
+    set_transport_state_for_test, undo, write_html, write_json, CloseDisposition, DocumentState,
+    TransportState,
 };
 use crate::tiptap_schema;
 use crate::yrs_engine::{
@@ -89,6 +91,7 @@ fn await_remote_sessions_reject_replacement_not_ready_for_every_transport() {
         r#"{"documentId":"replacement-room","lineageId":"replacement-lineage"}"#,
     )
     .unwrap();
+    bridge::attach_runtime(id).unwrap();
     assert_eq!(
         crate::session_initialization_test_support::document_state(id).unwrap(),
         DocumentState::AwaitRemote
@@ -108,15 +111,25 @@ fn await_remote_sessions_reject_replacement_not_ready_for_every_transport() {
     ] {
         match transport {
             TransportState::Disconnected => {}
-            TransportState::Connecting => generation = begin_connect(id, 500).unwrap(),
+            TransportState::Connecting => {
+                generation = collaboration_drive(id, 500, 0)
+                    .unwrap()
+                    .generation_to_open
+                    .expect("the initial Rust drive must issue a generation");
+            }
             TransportState::Handshaking => {
-                socket_opened(id, 500, generation).unwrap();
+                collaboration_socket_open(id, 500, generation, 0).unwrap();
+                let step1 = lease_outbound(id, 500, generation)
+                    .unwrap()
+                    .expect("socket open must queue Sync Step 1");
+                ack_outbound(id, 500, generation, step1.lease_id).unwrap();
             }
             TransportState::Synchronized => {
                 mark_synchronized_for_test(id, 500, generation).unwrap();
             }
             TransportState::Incompatible => {
-                socket_closed(id, 500, generation, CloseDisposition::Incompatible).unwrap();
+                collaboration_socket_close(id, 500, generation, CloseDisposition::Incompatible, 0)
+                    .unwrap();
             }
             TransportState::Detached => unreachable!("not part of the AwaitRemote row"),
         }

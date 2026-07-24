@@ -569,8 +569,8 @@ export interface NativeRichTextEditorProps {
      * trigger an authoritative engine re-read (remote commits, promotions).
      */
     documentRevision?: string | null;
-    /** Pinged after each successful local engine mutation (JS- or adapter-driven) so the collaboration controller can flush outbound frames. */
-    onLocalDocumentCommit?: () => void;
+    /** Application notification after a successful local mutation. Native transport wakes independently. */
+    onLocalCommit?: () => void;
 }
 
 export interface NativeRichTextEditorRef {
@@ -693,7 +693,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             onHistoryStateChange,
             onFocus,
             onBlur,
-            onLocalDocumentCommit,
+            onLocalCommit,
         },
         ref
     ) {
@@ -722,7 +722,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
             onContentChange,
             onContentChangeJSON,
             onHistoryStateChange,
-            onLocalDocumentCommit,
+            onLocalCommit,
         });
 
         const bridge = documentHandle.bridge;
@@ -769,9 +769,8 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
         onRequestLinkRef.current = onRequestLink;
         const onRequestImageRef = useRef(onRequestImage);
         onRequestImageRef.current = onRequestImage;
-        const onLocalDocumentCommitRef = useRef(onLocalDocumentCommit);
-        onLocalDocumentCommitRef.current = onLocalDocumentCommit;
-
+        const onLocalCommitRef = useRef(onLocalCommit);
+        onLocalCommitRef.current = onLocalCommit;
         // ── Engine-observed interactive state ───────────────────────
         const [activeState, setActiveState] = useState<ReadonlyActiveState>(EMPTY_ACTIVE_STATE);
         const [pushedUpdate, setPushedUpdate] = useState<{
@@ -975,7 +974,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
 
         // ── Engine mutation path (ref commands + toolbar requests) ──
         const afterLocalEngineMutation = useCallback(() => {
-            onLocalDocumentCommitRef.current?.();
+            onLocalCommitRef.current?.();
             document.refresh();
             pushEngineUpdateToView();
         }, [document, pushEngineUpdateToView]);
@@ -1208,10 +1207,9 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                 lastAcceptedNativeCommitRevisionRef.current = accepted.documentRevision;
                 lastNativeDrivenRevisionRef.current = accepted.documentRevision;
                 applyTypedUpdateState(accepted.snapshot);
-                // The adapter already committed; re-read for content callbacks
-                // and let collaboration flush the outbound frame.
+                // The adapter already committed; re-read for content callbacks.
                 document.refresh();
-                onLocalDocumentCommitRef.current?.();
+                onLocalCommitRef.current?.();
             },
             [applyTypedUpdateState, document, documentHandle]
         );
@@ -1311,7 +1309,7 @@ export const NativeRichTextEditor = forwardRef<NativeRichTextEditorRef, NativeRi
                     lastNativeDrivenRevisionRef.current = accepted.documentRevision;
                     applyTypedUpdateState(accepted.snapshot);
                     document.refresh();
-                    onLocalDocumentCommitRef.current?.();
+                    onLocalCommitRef.current?.();
                 } else if (typeof stateJson === 'string') {
                     applyUpdateState(stateJson);
                 }

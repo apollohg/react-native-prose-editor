@@ -73,6 +73,7 @@ internal fun destroyEditorV2FromModule(
             return invalidDestroyResult("v2 destroy could not reserve its native view")
         }
 
+        NativeCollaborationTransportRegistry.destroy(canonicalHandle)
         val result = destroy(canonicalHandle)
         invokeDestroyTestingHook(
             EditorV2Registry.onDestroyFfiResultReceivedForTesting,
@@ -165,9 +166,6 @@ internal fun EditorV2Error.toJSMap(): Map<String, Any?> = mapOf(
 private fun FfiJsonResult.toJSMap(): Map<String, Any?> =
     mapOf("value" to value, "error" to error?.toJSMap())
 
-private fun FfiBytesResult.toJSMap(): Map<String, Any?> =
-    mapOf("value" to value, "error" to error?.toJSMap())
-
 private fun FfiUnitResult.toJSMap(): Map<String, Any?> =
     mapOf("value" to value, "error" to error?.toJSMap())
 
@@ -251,26 +249,46 @@ internal fun createEditorV2FromModule(
     return result.toJSMap()
 }
 
-private fun parseGeneration(generation: String): String? = canonicalV2U64(generation)
-
-internal fun collaborationTickResult(
+private fun mutationResult(
     editorId: String,
-    nowMillis: String,
-    tick: (String, String) -> FfiJsonResult,
+    result: FfiJsonResult,
 ): Map<String, Any?> {
-    val canonicalNowMillis = canonicalV2U64(nowMillis)
-        ?: return v2BoundaryErrorRecord("invalid nowMillis")
-    return tick(editorId, canonicalNowMillis).toJSMap()
+    if (result.error == null && result.value != null) {
+        val changed = runCatching {
+            JSONObject(result.value!!).optBoolean("changed", false)
+        }.getOrDefault(false)
+        if (changed) {
+            NativeCollaborationTransportRegistry.notifyOutboundAvailable(
+                editorId,
+                CollaborationWakeReason.MODULE_MUTATION,
+            )
+        }
+    }
+    return result.toJSMap()
 }
-
-internal fun collaborationUnitResult(
-    editorId: String,
-    operation: (String) -> FfiUnitResult,
-): Map<String, Any?> = operation(editorId).toJSMap()
 
 class NativeEditorModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("NativeEditor")
+        Events("onCollaborationTransportEvent")
+
+        OnCreate {
+            NativeCollaborationTransportRegistry.setEventEmitter { payload ->
+                sendEvent("onCollaborationTransportEvent", payload)
+            }
+        }
+        OnActivityEntersBackground {
+            NativeCollaborationTransportRegistry.enterBackground()
+        }
+        OnActivityEntersForeground {
+            NativeCollaborationTransportRegistry.enterForeground()
+        }
+        OnActivityDestroys {
+            NativeCollaborationTransportRegistry.destroyAll()
+        }
+        OnDestroy {
+            NativeCollaborationTransportRegistry.destroyAll()
+        }
 
         // ── v2 engine surface (the only construction path) ─────────────
 
@@ -293,25 +311,25 @@ class NativeEditorModule : Module() {
             editorV2GetContentSnapshot(editorId).toJSMap()
         }
         Function("editorV2ReplaceDocument") { editorId: String, requestJson: String ->
-            editorV2ReplaceDocument(editorId, requestJson).toJSMap()
+            mutationResult(editorId, editorV2ReplaceDocument(editorId, requestJson))
         }
         Function("editorV2ApplyInput") { editorId: String, requestJson: String ->
-            editorV2ApplyInput(editorId, requestJson).toJSMap()
+            mutationResult(editorId, editorV2ApplyInput(editorId, requestJson))
         }
         Function("editorV2ApplyCommand") { editorId: String, requestJson: String ->
-            editorV2ApplyCommand(editorId, requestJson).toJSMap()
+            mutationResult(editorId, editorV2ApplyCommand(editorId, requestJson))
         }
         Function("editorV2ApplyLocalApi") { editorId: String, requestJson: String ->
-            editorV2ApplyLocalApi(editorId, requestJson).toJSMap()
+            mutationResult(editorId, editorV2ApplyLocalApi(editorId, requestJson))
         }
         Function("editorV2SetSelection") { editorId: String, requestJson: String ->
             editorV2SetSelection(editorId, requestJson).toJSMap()
         }
         Function("editorV2Undo") { editorId: String, requestJson: String ->
-            editorV2Undo(editorId, requestJson).toJSMap()
+            mutationResult(editorId, editorV2Undo(editorId, requestJson))
         }
         Function("editorV2Redo") { editorId: String, requestJson: String ->
-            editorV2Redo(editorId, requestJson).toJSMap()
+            mutationResult(editorId, editorV2Redo(editorId, requestJson))
         }
         Function("editorV2RenderUpdate") { editorId: String, mirrorScalarAnchor: Number?, mirrorScalarHead: Number? ->
             // The render accessor for the interactive component: after a
@@ -327,62 +345,41 @@ class NativeEditorModule : Module() {
 
         // ── v2 collaboration runtime ─────────────────────────────────────
 
-        Function("editorV2CollaborationBeginConnect") { editorId: String ->
-            editorV2CollaborationBeginConnect(editorId).toJSMap()
-        }
-        Function("editorV2CollaborationSocketOpen") { editorId: String, generation: String ->
-            val parsed = parseGeneration(generation)
-                ?: return@Function v2BoundaryErrorRecord("invalid generation")
-            editorV2CollaborationSocketOpen(editorId, parsed).toJSMap()
-        }
-        Function("editorV2CollaborationReceive") { editorId: String, generation: String, message: ByteArray ->
-            val parsed = parseGeneration(generation)
-                ?: return@Function v2BoundaryErrorRecord("invalid generation")
-            editorV2CollaborationReceive(editorId, parsed, message).toJSMap()
-        }
-        Function("editorV2CollaborationSocketClose") {
+        Function("editorV2CollaborationConfigureTransport") {
             editorId: String,
-            generation: String,
-            code: Number?,
-            reason: String? ->
-            val parsed = parseGeneration(generation)
-                ?: return@Function v2BoundaryErrorRecord("invalid generation")
-            val exactCode = code?.let(::exactV2U32)
-            if (code != null && exactCode == null) {
-                return@Function v2BoundaryErrorRecord("invalid close code")
-            }
-            editorV2CollaborationSocketClose(editorId, parsed, exactCode, reason).toJSMap()
-        }
-        Function("editorV2CollaborationTakeOutbound") { editorId: String, generation: String ->
-            val parsed = parseGeneration(generation)
-                ?: return@Function v2BoundaryErrorRecord("invalid generation")
-            editorV2CollaborationTakeOutbound(editorId, parsed).toJSMap()
+            configJsonOrNull: String? ->
+            val error = NativeCollaborationTransportRegistry.configure(
+                editorId,
+                configJsonOrNull,
+            )
+            mapOf(
+                "value" to if (error == null) true else null,
+                "error" to error?.toJSMap(),
+            )
         }
         Function("editorV2CollaborationSetAwareness") { editorId: String, awarenessJson: String ->
-            editorV2CollaborationSetAwareness(editorId, awarenessJson).toJSMap()
+            val result = editorV2CollaborationSetAwareness(editorId, awarenessJson)
+            if (result.value == true && result.error == null) {
+                NativeCollaborationTransportRegistry.notifyOutboundAvailable(
+                    editorId,
+                    CollaborationWakeReason.AWARENESS,
+                )
+            }
+            result.toJSMap()
         }
         Function("editorV2CollaborationPeers") { editorId: String ->
             editorV2CollaborationPeers(editorId).toJSMap()
         }
-        Function("editorV2CollaborationTick") { editorId: String, nowMillis: String ->
-            collaborationTickResult(editorId, nowMillis) { id, canonicalNowMillis ->
-                editorV2CollaborationTick(id, canonicalNowMillis)
-            }
-        }
-        Function("editorV2CollaborationDetach") { editorId: String ->
-            collaborationUnitResult(editorId) { id -> editorV2CollaborationDetach(id) }
-        }
-        Function("editorV2CollaborationReattach") { editorId: String ->
-            collaborationUnitResult(editorId) { id -> editorV2CollaborationReattach(id) }
-        }
-
         // ── v2 snapshots ───────────────────────────────────────────────
 
         Function("editorV2SnapshotExport") { editorId: String ->
             editorV2SnapshotExport(editorId).toJSMap()
         }
         Function("editorV2SnapshotRestore") { editorId: String, metadataJson: String, encodedState: ByteArray ->
-            editorV2SnapshotRestore(editorId, metadataJson, encodedState).toJSMap()
+            mutationResult(
+                editorId,
+                editorV2SnapshotRestore(editorId, metadataJson, encodedState),
+            )
         }
 
         // ── Stateless render probes (NativeProseViewer) ────────────────

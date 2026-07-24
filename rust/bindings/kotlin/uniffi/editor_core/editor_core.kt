@@ -773,9 +773,15 @@ internal interface IntegrityCheckingUniffiLib : Library {
 
     fun uniffi_editor_core_checksum_func_editor_v2_apply_local_api(): Short
 
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_begin_connect(): Short
+    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_ack_outbound(): Short
 
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_detach(): Short
+
+    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_drive(): Short
+
+    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_lease_outbound(): Short
+
+    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_nack_outbound(): Short
 
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_peers(): Short
 
@@ -788,10 +794,6 @@ internal interface IntegrityCheckingUniffiLib : Library {
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close(): Short
 
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_take_outbound(): Short
-
-    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_tick(): Short
 
     fun uniffi_editor_core_checksum_func_editor_v2_create(): Short
 
@@ -887,13 +889,34 @@ internal interface UniffiLib : Library {
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_begin_connect(
+    fun uniffi_editor_core_fn_func_editor_v2_collaboration_ack_outbound(
         `editorId`: RustBuffer.ByValue,
+        `generation`: RustBuffer.ByValue,
+        `leaseId`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
     fun uniffi_editor_core_fn_func_editor_v2_collaboration_detach(
         `editorId`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_func_editor_v2_collaboration_drive(
+        `editorId`: RustBuffer.ByValue,
+        `nowMillis`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_func_editor_v2_collaboration_lease_outbound(
+        `editorId`: RustBuffer.ByValue,
+        `generation`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_func_editor_v2_collaboration_nack_outbound(
+        `editorId`: RustBuffer.ByValue,
+        `generation`: RustBuffer.ByValue,
+        `leaseId`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
@@ -911,6 +934,7 @@ internal interface UniffiLib : Library {
         `editorId`: RustBuffer.ByValue,
         `generation`: RustBuffer.ByValue,
         `message`: RustBuffer.ByValue,
+        `nowMillis`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
@@ -925,23 +949,13 @@ internal interface UniffiLib : Library {
         `generation`: RustBuffer.ByValue,
         `code`: RustBuffer.ByValue,
         `reason`: RustBuffer.ByValue,
+        `nowMillis`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
     fun uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(
         `editorId`: RustBuffer.ByValue,
         `generation`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_take_outbound(
-        `editorId`: RustBuffer.ByValue,
-        `generation`: RustBuffer.ByValue,
-        uniffi_out_err: UniffiRustCallStatus,
-    ): RustBuffer.ByValue
-
-    fun uniffi_editor_core_fn_func_editor_v2_collaboration_tick(
-        `editorId`: RustBuffer.ByValue,
         `nowMillis`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
@@ -1280,10 +1294,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_v2_apply_local_api() != 36451.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_begin_connect() != 53071.toShort()) {
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_ack_outbound() != 21755.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_detach() != 25325.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_drive() != 55434.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_lease_outbound() != 56190.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_nack_outbound() != 29045.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_peers() != 754.toShort()) {
@@ -1292,22 +1315,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_reattach() != 44291.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 49592.toShort()) {
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_receive() != 19926.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness() != 59502.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 60112.toShort()) {
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 53946.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open() != 10599.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_take_outbound() != 44572.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_tick() != 11479.toShort()) {
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open() != 25835.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_create() != 9333.toShort()) {
@@ -1564,38 +1581,6 @@ public object FfiConverterByteArray : FfiConverterRustBuffer<ByteArray> {
     }
 }
 
-data class FfiBytesResult(
-    var `value`: kotlin.ByteArray?,
-    var `error`: FfiError?,
-) {
-    companion object
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypeFfiBytesResult : FfiConverterRustBuffer<FfiBytesResult> {
-    override fun read(buf: ByteBuffer): FfiBytesResult =
-        FfiBytesResult(
-            FfiConverterOptionalByteArray.read(buf),
-            FfiConverterOptionalTypeFfiError.read(buf),
-        )
-
-    override fun allocationSize(value: FfiBytesResult) =
-        (
-            FfiConverterOptionalByteArray.allocationSize(value.`value`) +
-                FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
-        )
-
-    override fun write(
-        value: FfiBytesResult,
-        buf: ByteBuffer,
-    ) {
-        FfiConverterOptionalByteArray.write(value.`value`, buf)
-        FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
-    }
-}
-
 data class FfiError(
     var `domain`: kotlin.String,
     var `code`: kotlin.String,
@@ -1680,6 +1665,83 @@ public object FfiConverterTypeFfiJsonResult : FfiConverterRustBuffer<FfiJsonResu
         buf: ByteBuffer,
     ) {
         FfiConverterOptionalString.write(value.`value`, buf)
+        FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
+    }
+}
+
+/**
+ * One active outbound transport lease. The identifier stays canonical
+ * decimal text while the y-protocols frame remains binary end-to-end.
+ */
+data class FfiOutboundLease(
+    var `leaseId`: kotlin.String,
+    var `frame`: kotlin.ByteArray,
+) {
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeFfiOutboundLease : FfiConverterRustBuffer<FfiOutboundLease> {
+    override fun read(buf: ByteBuffer): FfiOutboundLease =
+        FfiOutboundLease(
+            FfiConverterString.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+
+    override fun allocationSize(value: FfiOutboundLease) =
+        (
+            FfiConverterString.allocationSize(value.`leaseId`) +
+                FfiConverterByteArray.allocationSize(value.`frame`)
+        )
+
+    override fun write(
+        value: FfiOutboundLease,
+        buf: ByteBuffer,
+    ) {
+        FfiConverterString.write(value.`leaseId`, buf)
+        FfiConverterByteArray.write(value.`frame`, buf)
+    }
+}
+
+/**
+ * Explicit three-way lease result: exactly one of a retained value, a
+ * queue-empty marker, or an error is selected. Empty is not encoded as an
+ * empty binary frame, which keeps it distinct from valid protocol bytes.
+ */
+data class FfiOutboundLeaseResult(
+    var `value`: FfiOutboundLease?,
+    var `empty`: kotlin.Boolean,
+    var `error`: FfiError?,
+) {
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeFfiOutboundLeaseResult : FfiConverterRustBuffer<FfiOutboundLeaseResult> {
+    override fun read(buf: ByteBuffer): FfiOutboundLeaseResult =
+        FfiOutboundLeaseResult(
+            FfiConverterOptionalTypeFfiOutboundLease.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalTypeFfiError.read(buf),
+        )
+
+    override fun allocationSize(value: FfiOutboundLeaseResult) =
+        (
+            FfiConverterOptionalTypeFfiOutboundLease.allocationSize(value.`value`) +
+                FfiConverterBoolean.allocationSize(value.`empty`) +
+                FfiConverterOptionalTypeFfiError.allocationSize(value.`error`)
+        )
+
+    override fun write(
+        value: FfiOutboundLeaseResult,
+        buf: ByteBuffer,
+    ) {
+        FfiConverterOptionalTypeFfiOutboundLease.write(value.`value`, buf)
+        FfiConverterBoolean.write(value.`empty`, buf)
         FfiConverterOptionalTypeFfiError.write(value.`error`, buf)
     }
 }
@@ -1947,6 +2009,38 @@ public object FfiConverterOptionalTypeFfiError : FfiConverterRustBuffer<FfiError
 /**
  * @suppress
  */
+public object FfiConverterOptionalTypeFfiOutboundLease : FfiConverterRustBuffer<FfiOutboundLease?> {
+    override fun read(buf: ByteBuffer): FfiOutboundLease? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeFfiOutboundLease.read(buf)
+    }
+
+    override fun allocationSize(value: FfiOutboundLease?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeFfiOutboundLease.allocationSize(value)
+        }
+    }
+
+    override fun write(
+        value: FfiOutboundLease?,
+        buf: ByteBuffer,
+    ) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeFfiOutboundLease.write(value, buf)
+        }
+    }
+}
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalTypeFfiSnapshotExport : FfiConverterRustBuffer<FfiSnapshotExport?> {
     override fun read(buf: ByteBuffer): FfiSnapshotExport? {
         if (buf.get().toInt() == 0) {
@@ -2028,11 +2122,17 @@ fun `editorV2ApplyLocalApi`(
         },
     )
 
-fun `editorV2CollaborationBeginConnect`(`editorId`: kotlin.String): FfiJsonResult =
+fun `editorV2CollaborationAckOutbound`(
+    `editorId`: kotlin.String,
+    `generation`: kotlin.String,
+    `leaseId`: kotlin.String,
+): FfiJsonResult =
     FfiConverterTypeFfiJsonResult.lift(
         uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_begin_connect(
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_ack_outbound(
                 FfiConverterString.lower(`editorId`),
+                FfiConverterString.lower(`generation`),
+                FfiConverterString.lower(`leaseId`),
                 _status,
             )
         },
@@ -2046,6 +2146,59 @@ fun `editorV2CollaborationDetach`(`editorId`: kotlin.String): FfiUnitResult =
     FfiConverterTypeFfiUnitResult.lift(
         uniffiRustCall { _status ->
             UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_detach(FfiConverterString.lower(`editorId`), _status)
+        },
+    )
+
+/**
+ * Drive initial connection, reconnect eligibility, local-awareness renewal,
+ * and remote-peer expiry from one Rust-owned monotonic clock operation.
+ */
+fun `editorV2CollaborationDrive`(
+    `editorId`: kotlin.String,
+    `nowMillis`: kotlin.String,
+): FfiJsonResult =
+    FfiConverterTypeFfiJsonResult.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_drive(
+                FfiConverterString.lower(`editorId`),
+                FfiConverterString.lower(`nowMillis`),
+                _status,
+            )
+        },
+    )
+
+/**
+ * Lease one retained complete outbound frame. Exactly one of value, empty,
+ * or error is selected; protocol replies retain priority over document
+ * updates unless a frame was already leased.
+ */
+fun `editorV2CollaborationLeaseOutbound`(
+    `editorId`: kotlin.String,
+    `generation`: kotlin.String,
+): FfiOutboundLeaseResult =
+    FfiConverterTypeFfiOutboundLeaseResult.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_lease_outbound(
+                FfiConverterString.lower(`editorId`),
+                FfiConverterString.lower(`generation`),
+                _status,
+            )
+        },
+    )
+
+fun `editorV2CollaborationNackOutbound`(
+    `editorId`: kotlin.String,
+    `generation`: kotlin.String,
+    `leaseId`: kotlin.String,
+): FfiJsonResult =
+    FfiConverterTypeFfiJsonResult.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_nack_outbound(
+                FfiConverterString.lower(`editorId`),
+                FfiConverterString.lower(`generation`),
+                FfiConverterString.lower(`leaseId`),
+                _status,
+            )
         },
     )
 
@@ -2074,6 +2227,7 @@ fun `editorV2CollaborationReceive`(
     `editorId`: kotlin.String,
     `generation`: kotlin.String,
     `message`: kotlin.ByteArray,
+    `nowMillis`: kotlin.String,
 ): FfiJsonResult =
     FfiConverterTypeFfiJsonResult.lift(
         uniffiRustCall { _status ->
@@ -2081,6 +2235,7 @@ fun `editorV2CollaborationReceive`(
                 FfiConverterString.lower(`editorId`),
                 FfiConverterString.lower(`generation`),
                 FfiConverterByteArray.lower(`message`),
+                FfiConverterString.lower(`nowMillis`),
                 _status,
             )
         },
@@ -2115,6 +2270,7 @@ fun `editorV2CollaborationSocketClose`(
     `generation`: kotlin.String,
     `code`: kotlin.UInt?,
     `reason`: kotlin.String?,
+    `nowMillis`: kotlin.String,
 ): FfiJsonResult =
     FfiConverterTypeFfiJsonResult.lift(
         uniffiRustCall { _status ->
@@ -2123,62 +2279,26 @@ fun `editorV2CollaborationSocketClose`(
                 FfiConverterString.lower(`generation`),
                 FfiConverterOptionalUInt.lower(`code`),
                 FfiConverterOptionalString.lower(`reason`),
+                FfiConverterString.lower(`nowMillis`),
                 _status,
             )
         },
     )
 
 /**
- * On acceptance the socket owes Sync Step 1 immediately; the framed
- * message rides back as direct bytes.
+ * Socket open queues framed Sync Step 1 at protocol priority and returns
+ * only the frozen directive; bytes are retrieved through `lease_outbound`.
  */
 fun `editorV2CollaborationSocketOpen`(
     `editorId`: kotlin.String,
     `generation`: kotlin.String,
-): FfiBytesResult =
-    FfiConverterTypeFfiBytesResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`generation`),
-                _status,
-            )
-        },
-    )
-
-/**
- * ONE outbound frame per call: pending protocol replies first, then
- * document updates (raw outbox updates wrapped in standard Sync Update
- * framing at pickup, so every frame is a complete y-protocols message);
- * an empty queue returns the documented empty value (empty bytes).
- */
-fun `editorV2CollaborationTakeOutbound`(
-    `editorId`: kotlin.String,
-    `generation`: kotlin.String,
-): FfiBytesResult =
-    FfiConverterTypeFfiBytesResult.lift(
-        uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_take_outbound(
-                FfiConverterString.lower(`editorId`),
-                FfiConverterString.lower(`generation`),
-                _status,
-            )
-        },
-    )
-
-/**
- * Performs deterministic awareness renewal and expiry work. `now_millis`
- * must be a canonical decimal u64 because JavaScript cannot safely carry
- * the full clock range as a number.
- */
-fun `editorV2CollaborationTick`(
-    `editorId`: kotlin.String,
     `nowMillis`: kotlin.String,
 ): FfiJsonResult =
     FfiConverterTypeFfiJsonResult.lift(
         uniffiRustCall { _status ->
-            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_tick(
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_socket_open(
                 FfiConverterString.lower(`editorId`),
+                FfiConverterString.lower(`generation`),
                 FfiConverterString.lower(`nowMillis`),
                 _status,
             )

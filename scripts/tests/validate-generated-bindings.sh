@@ -31,12 +31,12 @@ expected_function_symbols="$(rg -o 'uniffi_editor_core_fn_func_editor_v2_[[:alnu
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
 expected_checksum_symbols="$(rg -o 'uniffi_editor_core_checksum_func_editor_v2_[[:alnum:]_]+' \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
-[[ "$(printf '%s\n' "$expected_function_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "29" ]] || {
-  echo "ERROR: generated FFI header must expose exactly 29 editor_v2 functions" >&2
+[[ "$(printf '%s\n' "$expected_function_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "30" ]] || {
+  echo "ERROR: generated FFI header must expose exactly 30 editor_v2 functions" >&2
   exit 1
 }
-[[ "$(printf '%s\n' "$expected_checksum_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "29" ]] || {
-  echo "ERROR: generated FFI header must expose exactly 29 editor_v2 checksums" >&2
+[[ "$(printf '%s\n' "$expected_checksum_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "30" ]] || {
+  echo "ERROR: generated FFI header must expose exactly 30 editor_v2 checksums" >&2
   exit 1
 }
 
@@ -57,6 +57,21 @@ for artifact in \
   }
 done
 
+for obsolete in \
+  editor_v2_collaboration_begin_connect \
+  editor_v2_collaboration_take_outbound \
+  editor_v2_collaboration_tick; do
+  if rg -n "uniffi_editor_core_(fn|checksum)_func_${obsolete}" \
+    "$repo_root/rust/bindings/swift/editor_core.swift" \
+    "$repo_root/rust/bindings/swift/editor_coreFFI.h" \
+    "$repo_root/rust/bindings/kotlin/uniffi/editor_core/editor_core.kt" \
+    "$repo_root/ios/Generated_editor_core.swift" \
+    "$repo_root/ios/editor_coreFFI/editor_coreFFI.h"; then
+    echo "ERROR: generated bindings still expose obsolete ${obsolete}" >&2
+    exit 1
+  fi
+done
+
 if [[ -e "$repo_root/android/src/main/java/uniffi/editor_core/editor_core.kt" ]]; then
   echo "ERROR: Android must compile rust/bindings/kotlin; do not add a duplicate UniFFI binding" >&2
   exit 1
@@ -69,4 +84,4 @@ if rg -n '[[:blank:]]+$' \
   exit 1
 fi
 
-echo "Generated binding normalization, 29-symbol, checksum, and copy validation passed."
+echo "Generated binding normalization, 30-symbol, checksum, and copy validation passed."

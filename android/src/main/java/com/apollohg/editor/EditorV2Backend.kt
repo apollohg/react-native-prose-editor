@@ -22,6 +22,14 @@ internal sealed interface EditorV2CallResult<out T> {
     data class Err(val error: EditorV2Error) : EditorV2CallResult<Nothing>
 }
 
+internal data class EditorV2OutboundLease(val leaseId: String, val frame: ByteArray)
+
+internal sealed interface EditorV2LeaseResult {
+    data class Value(val lease: EditorV2OutboundLease) : EditorV2LeaseResult
+    data object Empty : EditorV2LeaseResult
+    data class Err(val error: EditorV2Error) : EditorV2LeaseResult
+}
+
 internal interface EditorV2Backend {
     fun create(configJson: String, snapshotState: ByteArray?): EditorV2CallResult<String>
     fun destroy(editorId: String): EditorV2Error?
@@ -36,7 +44,39 @@ internal interface EditorV2Backend {
     fun setSelection(editorId: String, requestJson: String): EditorV2CallResult<String>
     fun undo(editorId: String, requestJson: String): EditorV2CallResult<String>
     fun redo(editorId: String, requestJson: String): EditorV2CallResult<String>
-    fun collaborationTakeOutbound(editorId: String, generation: String): EditorV2CallResult<ByteArray>
+    fun collaborationDrive(editorId: String, nowMillis: String): EditorV2CallResult<String>
+    fun collaborationSocketOpen(
+        editorId: String,
+        generation: String,
+        nowMillis: String,
+    ): EditorV2CallResult<String>
+    fun collaborationReceive(
+        editorId: String,
+        generation: String,
+        message: ByteArray,
+        nowMillis: String,
+    ): EditorV2CallResult<String>
+    fun collaborationSocketClose(
+        editorId: String,
+        generation: String,
+        code: UInt?,
+        reason: String?,
+        nowMillis: String,
+    ): EditorV2CallResult<String>
+    fun collaborationLeaseOutbound(editorId: String, generation: String): EditorV2LeaseResult
+    fun collaborationAckOutbound(
+        editorId: String,
+        generation: String,
+        leaseId: String,
+    ): EditorV2CallResult<String>
+    fun collaborationNackOutbound(
+        editorId: String,
+        generation: String,
+        leaseId: String,
+    ): EditorV2CallResult<String>
+    fun collaborationDetach(editorId: String): EditorV2Error?
+    fun collaborationReattach(editorId: String): EditorV2Error?
+    fun collaborationPeers(editorId: String): EditorV2CallResult<String>
     fun snapshotExport(editorId: String): EditorV2CallResult<Pair<String, ByteArray>>
 
     /**

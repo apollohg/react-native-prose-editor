@@ -8,21 +8,22 @@
 //! policy gate driven by real transitions, and outbox preservation across
 //! transport teardown.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::boundary::ResourceLimits;
 use crate::collaboration_runtime::state::{
-    TRANSPORT_INCOMPATIBLE, TRANSPORT_INVALID_TRANSITION, TRANSPORT_NOT_ROOM_BOUND,
-    TRANSPORT_STALE_GENERATION,
+    TRANSPORT_INVALID_TRANSITION, TRANSPORT_NOT_ROOM_BOUND, TRANSPORT_STALE_GENERATION,
 };
 use crate::native_bridge_test_support as bridge;
 use crate::session_initialization_test_support::{
-    begin_connect, create_local_json, create_room_from_json, destroy_session,
-    mark_synchronized_for_test, session_audit, set_transport_state_for_test, socket_closed,
-    socket_opened, transport_detach, transport_disconnect, transport_handle, transport_reattach,
-    transport_state, write_json, CloseDisposition, DocumentState, SyncDirective, TestError,
+    ack_outbound, collaboration_drive, collaboration_receive, collaboration_socket_close,
+    collaboration_socket_open, create_local_json, create_room_from_json, destroy_session,
+    lease_outbound, mark_synchronized_for_test, nack_outbound, session_audit,
+    set_transport_state_for_test, transport_detach, transport_disconnect, transport_handle,
+    transport_reattach, transport_state, write_json, CloseDisposition, DocumentState, TestError,
     TransportHandle, TransportState,
 };
 use crate::tiptap_schema;
@@ -30,6 +31,8 @@ use crate::yrs_engine::{
     DocumentScope, EditingLimits, InitializationMode, ReplacementHistory, TransactionOrigin,
     YrsDocumentEngine, YrsEngineConfig,
 };
+use yrs::sync::{Message, SyncMessage};
+use yrs::updates::encoder::Encode;
 
 const JSON_SEED: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"transport seed"}]}]}"#;
 const JSON_REPLACEMENT_A: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"replacement a"}]}]}"#;
@@ -42,6 +45,58 @@ const SETUP_REQUEST_ID: u64 = 9_000;
 /// Request id used for the action under test; refusals must echo it.
 const ACTION_REQUEST_ID: u64 = 9_100;
 const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+static LEGACY_TEST_NOW_MILLIS: AtomicU64 = AtomicU64::new(0);
+
+/// The older state-matrix scenarios do not otherwise own a deterministic
+/// clock. Give every production-shaped callback a strictly increasing test
+/// timestamp so retry drives happen after their returned deadlines.
+fn next_legacy_test_now_millis() -> u64 {
+    LEGACY_TEST_NOW_MILLIS.fetch_add(100_000, Ordering::Relaxed) + 100_000
+}
+
+/// Issue a current generation only through Rust's drive directive.
+fn drive_generation(id: u64, request_id: u64) -> Result<u64, TestError> {
+    collaboration_drive(id, request_id, next_legacy_test_now_millis()).and_then(|directive| {
+        directive.generation_to_open.ok_or_else(|| TestError {
+            domain: "transport",
+            code: "TEST_EXPECTED_GENERATION".into(),
+            request_id: Some(request_id),
+            details: None,
+        })
+    })
+}
+
+/// Socket-open setup enters the production queue and explicitly ACKs Sync
+/// Step 1 where the higher-level scenario needs a drained outbox.
+fn open_socket_and_ack_step1(id: u64, request_id: u64, generation: u64) -> Result<(), TestError> {
+    collaboration_socket_open(id, request_id, generation, next_legacy_test_now_millis())?;
+    let step1 = lease_outbound(id, request_id, generation)?.ok_or_else(|| TestError {
+        domain: "transport",
+        code: "TEST_EXPECTED_STEP1".into(),
+        request_id: Some(request_id),
+        details: None,
+    })?;
+    ack_outbound(id, request_id, generation, step1.lease_id)
+}
+
+/// Report a close through the production callback and retain its state-only
+/// shape for existing transition assertions.
+fn close_socket(
+    id: u64,
+    request_id: u64,
+    generation: u64,
+    disposition: CloseDisposition,
+) -> Result<TransportState, TestError> {
+    collaboration_socket_close(
+        id,
+        request_id,
+        generation,
+        disposition,
+        next_legacy_test_now_millis(),
+    )
+    .map(|directive| directive.transport_state)
+}
 
 /// The six transport states a live (non-destroyed) session can hold. The
 /// `Destroying`/`Destroyed` rows of the design table are exercised through
@@ -65,7 +120,7 @@ enum Doc {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
-    BeginConnect,
+    Drive,
     Reattach,
     SocketOpenedCurrent,
     SocketOpenedStale,
@@ -81,7 +136,7 @@ enum Action {
 }
 
 const ALL_ACTIONS: [Action; 13] = [
-    Action::BeginConnect,
+    Action::Drive,
     Action::Reattach,
     Action::SocketOpenedCurrent,
     Action::SocketOpenedStale,
@@ -134,6 +189,12 @@ fn create_ready_room() -> u64 {
     create_room_from_json(&config.to_string()).unwrap()
 }
 
+fn create_ready_room_with_runtime() -> u64 {
+    let id = create_ready_room();
+    bridge::attach_runtime(id).unwrap();
+    id
+}
+
 fn create_await_remote_room() -> u64 {
     create_room_from_json(r#"{"documentId":"transport-room","lineageId":"transport-lineage"}"#)
         .unwrap()
@@ -142,8 +203,12 @@ fn create_await_remote_room() -> u64 {
 fn create_for(doc: Doc) -> u64 {
     match doc {
         Doc::Local => create_local_json(JSON_SEED).unwrap(),
-        Doc::AwaitRemote => create_await_remote_room(),
-        Doc::RoomReady => create_ready_room(),
+        Doc::AwaitRemote => {
+            let id = create_await_remote_room();
+            bridge::attach_runtime(id).unwrap();
+            id
+        }
+        Doc::RoomReady => create_ready_room_with_runtime(),
     }
 }
 
@@ -167,25 +232,22 @@ fn drive_transport(id: u64, doc: Doc, target: TransportState) -> Option<u64> {
             transport_detach(id, SETUP_REQUEST_ID).unwrap();
             None
         }
-        TransportState::Connecting => Some(begin_connect(id, SETUP_REQUEST_ID).unwrap()),
+        TransportState::Connecting => Some(drive_generation(id, SETUP_REQUEST_ID).unwrap()),
         TransportState::Handshaking => {
-            let generation = begin_connect(id, SETUP_REQUEST_ID).unwrap();
-            assert_eq!(
-                socket_opened(id, SETUP_REQUEST_ID, generation).unwrap(),
-                SyncDirective::SendSyncStep1,
-            );
+            let generation = drive_generation(id, SETUP_REQUEST_ID).unwrap();
+            open_socket_and_ack_step1(id, SETUP_REQUEST_ID, generation).unwrap();
             Some(generation)
         }
         TransportState::Synchronized => {
-            let generation = begin_connect(id, SETUP_REQUEST_ID).unwrap();
-            socket_opened(id, SETUP_REQUEST_ID, generation).unwrap();
+            let generation = drive_generation(id, SETUP_REQUEST_ID).unwrap();
+            open_socket_and_ack_step1(id, SETUP_REQUEST_ID, generation).unwrap();
             mark_synchronized_for_test(id, SETUP_REQUEST_ID, generation).unwrap();
             Some(generation)
         }
         TransportState::Incompatible => {
-            let generation = begin_connect(id, SETUP_REQUEST_ID).unwrap();
+            let generation = drive_generation(id, SETUP_REQUEST_ID).unwrap();
             assert_eq!(
-                socket_closed(
+                close_socket(
                     id,
                     SETUP_REQUEST_ID,
                     generation,
@@ -210,13 +272,9 @@ fn expected(doc: Doc, state: TransportState, action: Action) -> Expected {
     // generation-carrying callback on them is stale by definition.
     let live_attempt = doc != Doc::Local && active;
     match action {
-        Action::BeginConnect => match (doc, state) {
-            (Doc::Local, _) => Expected::Refused(TRANSPORT_NOT_ROOM_BOUND),
-            (_, Disconnected) => Expected::Accepted(Connecting),
-            (_, Incompatible) => Expected::Refused(TRANSPORT_INCOMPATIBLE),
-            (_, Detached | Connecting | Handshaking | Synchronized) => {
-                Expected::Refused(TRANSPORT_INVALID_TRANSITION)
-            }
+        Action::Drive => match (doc, state) {
+            (Doc::RoomReady | Doc::AwaitRemote, Disconnected) => Expected::Accepted(Connecting),
+            _ => Expected::Accepted(state),
         },
         Action::Reattach => match (doc, state) {
             (Doc::Local, _) => Expected::Refused(TRANSPORT_NOT_ROOM_BOUND),
@@ -275,7 +333,7 @@ fn expected(doc: Doc, state: TransportState, action: Action) -> Expected {
 /// The action name every refusal's structured details must echo.
 fn wire_action(action: Action) -> &'static str {
     match action {
-        Action::BeginConnect => "beginConnect",
+        Action::Drive => "collaborationDrive",
         Action::Reattach => "reattach",
         Action::SocketOpenedCurrent | Action::SocketOpenedStale => "socketOpened",
         Action::SocketClosedCurrentRetryable
@@ -291,38 +349,32 @@ fn wire_action(action: Action) -> &'static str {
 
 fn run_action(id: u64, action: Action, current: u64) -> Result<(), TestError> {
     match action {
-        Action::BeginConnect => begin_connect(id, ACTION_REQUEST_ID).map(|_| ()),
-        Action::Reattach => transport_reattach(id, ACTION_REQUEST_ID),
-        Action::SocketOpenedCurrent => {
-            socket_opened(id, ACTION_REQUEST_ID, current).map(|directive| {
-                assert_eq!(
-                    directive,
-                    SyncDirective::SendSyncStep1,
-                    "socket open must demand a Sync Step 1 send",
-                );
-            })
+        Action::Drive => {
+            collaboration_drive(id, ACTION_REQUEST_ID, next_legacy_test_now_millis()).map(|_| ())
         }
+        Action::Reattach => transport_reattach(id, ACTION_REQUEST_ID),
+        Action::SocketOpenedCurrent => open_socket_and_ack_step1(id, ACTION_REQUEST_ID, current),
         Action::SocketOpenedStale => {
-            socket_opened(id, ACTION_REQUEST_ID, FABRICATED_GENERATION).map(|_| ())
+            open_socket_and_ack_step1(id, ACTION_REQUEST_ID, FABRICATED_GENERATION).map(|_| ())
         }
         Action::SocketClosedCurrentRetryable => {
-            socket_closed(id, ACTION_REQUEST_ID, current, CloseDisposition::Retryable).map(|_| ())
+            close_socket(id, ACTION_REQUEST_ID, current, CloseDisposition::Retryable).map(|_| ())
         }
-        Action::SocketClosedCurrentIncompatible => socket_closed(
+        Action::SocketClosedCurrentIncompatible => close_socket(
             id,
             ACTION_REQUEST_ID,
             current,
             CloseDisposition::Incompatible,
         )
         .map(|_| ()),
-        Action::SocketClosedStaleRetryable => socket_closed(
+        Action::SocketClosedStaleRetryable => close_socket(
             id,
             ACTION_REQUEST_ID,
             FABRICATED_GENERATION,
             CloseDisposition::Retryable,
         )
         .map(|_| ()),
-        Action::SocketClosedStaleIncompatible => socket_closed(
+        Action::SocketClosedStaleIncompatible => close_socket(
             id,
             ACTION_REQUEST_ID,
             FABRICATED_GENERATION,
@@ -345,16 +397,29 @@ fn assert_destroy_cell(id: u64, current: u64, label: &str) {
     destroy_session(id);
     let refusals: [(&str, Result<(), TestError>); 7] = [
         (
-            "beginConnect",
-            begin_connect(id, ACTION_REQUEST_ID).map(|_| ()),
+            "collaborationDrive",
+            collaboration_drive(id, ACTION_REQUEST_ID, next_legacy_test_now_millis()).map(|_| ()),
         ),
         (
-            "socketOpened",
-            socket_opened(id, ACTION_REQUEST_ID, current).map(|_| ()),
+            "collaborationSocketOpen",
+            collaboration_socket_open(
+                id,
+                ACTION_REQUEST_ID,
+                current,
+                next_legacy_test_now_millis(),
+            )
+            .map(|_| ()),
         ),
         (
-            "socketClosed",
-            socket_closed(id, ACTION_REQUEST_ID, current, CloseDisposition::Retryable).map(|_| ()),
+            "collaborationSocketClose",
+            collaboration_socket_close(
+                id,
+                ACTION_REQUEST_ID,
+                current,
+                CloseDisposition::Retryable,
+                next_legacy_test_now_millis(),
+            )
+            .map(|_| ()),
         ),
         ("disconnect", transport_disconnect(id, ACTION_REQUEST_ID)),
         ("detach", transport_detach(id, ACTION_REQUEST_ID)),
@@ -460,25 +525,32 @@ fn task8_lifecycle_contract_room_ready_matrix_has_an_explicit_outcome_for_every_
 fn generations_increment_exactly_once_per_accepted_connect() {
     let id = create_ready_room();
 
-    let first = begin_connect(id, 101).unwrap();
-    // A refused begin_connect must not consume a generation.
-    let error = begin_connect(id, 102).unwrap_err();
-    assert_eq!(error.code, TRANSPORT_INVALID_TRANSITION, "{error:?}");
+    let first = drive_generation(id, 101).unwrap();
+    // A drive while an attempt is live reports no generation and does not
+    // consume one.
+    let parked = collaboration_drive(id, 102, next_legacy_test_now_millis()).unwrap();
+    assert_eq!(parked.generation_to_open, None);
     assert_eq!(
-        socket_closed(id, 103, first, CloseDisposition::Retryable).unwrap(),
+        close_socket(id, 103, first, CloseDisposition::Retryable).unwrap(),
         TransportState::Disconnected,
     );
 
-    let second = begin_connect(id, 104).unwrap();
+    let second = drive_generation(id, 104).unwrap();
     assert_eq!(
         second,
         first + 1,
         "an accepted connect increments the generation exactly once",
     );
     transport_disconnect(id, 105).unwrap();
+    transport_detach(id, 105).unwrap();
+    transport_reattach(id, 105).unwrap();
 
-    let third = begin_connect(id, 106).unwrap();
-    assert_eq!(third, second + 1, "refusals must never burn a generation");
+    let third = drive_generation(id, 106).unwrap();
+    assert_eq!(
+        third,
+        second + 1,
+        "parked drives must never burn a generation"
+    );
 
     destroy_session(id);
 }
@@ -486,25 +558,26 @@ fn generations_increment_exactly_once_per_accepted_connect() {
 #[test]
 fn stale_generations_can_neither_advance_nor_regress_state() {
     let id = create_ready_room();
+    bridge::attach_runtime(id).unwrap();
 
     // Open and retire a first generation, then start a second attempt.
-    let first = begin_connect(id, 111).unwrap();
-    socket_closed(id, 112, first, CloseDisposition::Retryable).unwrap();
-    let second = begin_connect(id, 113).unwrap();
+    let first = drive_generation(id, 111).unwrap();
+    close_socket(id, 112, first, CloseDisposition::Retryable).unwrap();
+    let second = drive_generation(id, 113).unwrap();
     let audit = session_audit(id).unwrap();
     assert_eq!(audit.transport_state, TransportState::Connecting);
 
     // The retired generation is refused for every callback, observably, and
     // both the state and the live generation stay untouched.
     for (request_id, result) in [
-        (114, socket_opened(id, 114, first).map(|_| ())),
+        (114, open_socket_and_ack_step1(id, 114, first)),
         (
             115,
-            socket_closed(id, 115, first, CloseDisposition::Retryable).map(|_| ()),
+            close_socket(id, 115, first, CloseDisposition::Retryable).map(|_| ()),
         ),
         (
             116,
-            socket_closed(id, 116, first, CloseDisposition::Incompatible).map(|_| ()),
+            close_socket(id, 116, first, CloseDisposition::Incompatible).map(|_| ()),
         ),
         (117, mark_synchronized_for_test(id, 117, first)),
     ] {
@@ -516,42 +589,42 @@ fn stale_generations_can_neither_advance_nor_regress_state() {
     }
 
     // The live generation still works: the attempt was not poisoned.
-    assert_eq!(
-        socket_opened(id, 118, second).unwrap(),
-        SyncDirective::SendSyncStep1,
-    );
+    open_socket_and_ack_step1(id, 118, second).unwrap();
     assert_eq!(transport_state(id).unwrap(), TransportState::Handshaking);
 
     // Local disconnect retires the live generation: its late close callback
     // is stale and cannot resurrect or regress the transport.
     transport_disconnect(id, 119).unwrap();
-    let error = socket_closed(id, 120, second, CloseDisposition::Incompatible).unwrap_err();
+    let error = close_socket(id, 120, second, CloseDisposition::Incompatible).unwrap_err();
     assert_eq!(error.code, TRANSPORT_STALE_GENERATION, "{error:?}");
     assert_eq!(transport_state(id).unwrap(), TransportState::Disconnected);
-    // Retry stays Rust-eligible after a local disconnect.
-    begin_connect(id, 121).unwrap();
+    // A lifecycle reset makes a fresh Rust drive eligible after a local disconnect.
+    transport_detach(id, 121).unwrap();
+    transport_reattach(id, 121).unwrap();
+    drive_generation(id, 121).unwrap();
 
     destroy_session(id);
 }
 
 #[test]
-fn incompatible_refuses_javascript_reconnects_until_detach_and_reattach() {
+fn incompatible_ignores_repeated_drives_until_detach_and_reattach() {
     let id = create_ready_room();
+    bridge::attach_runtime(id).unwrap();
 
-    let generation = begin_connect(id, 131).unwrap();
-    socket_opened(id, 132, generation).unwrap();
+    let generation = drive_generation(id, 131).unwrap();
+    open_socket_and_ack_step1(id, 132, generation).unwrap();
     assert_eq!(
-        socket_closed(id, 133, generation, CloseDisposition::Incompatible).unwrap(),
+        close_socket(id, 133, generation, CloseDisposition::Incompatible).unwrap(),
         TransportState::Incompatible,
     );
 
-    // A JS retry timer cannot force a reconnect out of deterministic
-    // incompatibility, no matter how often it asks.
+    // Repeated native calls to Rust's drive cannot force a reconnect out of
+    // deterministic incompatibility.
     for request_id in [134, 135, 136] {
-        let error = begin_connect(id, request_id).unwrap_err();
-        assert_eq!(error.domain, "transport", "{error:?}");
-        assert_eq!(error.code, TRANSPORT_INCOMPATIBLE, "{error:?}");
-        assert_eq!(transport_state(id).unwrap(), TransportState::Incompatible);
+        let parked = collaboration_drive(id, request_id, next_legacy_test_now_millis()).unwrap();
+        assert_eq!(parked.transport_state, TransportState::Incompatible);
+        assert_eq!(parked.generation_to_open, None);
+        assert_eq!(parked.next_deadline_millis, None);
     }
 
     // The only escape hatch is the explicit detach/reattach cycle.
@@ -559,7 +632,7 @@ fn incompatible_refuses_javascript_reconnects_until_detach_and_reattach() {
     assert_eq!(transport_state(id).unwrap(), TransportState::Detached);
     transport_reattach(id, 138).unwrap();
     assert_eq!(transport_state(id).unwrap(), TransportState::Disconnected);
-    let next = begin_connect(id, 139).unwrap();
+    let next = drive_generation(id, 139).unwrap();
     assert_eq!(next, generation + 1);
 
     destroy_session(id);
@@ -568,6 +641,7 @@ fn incompatible_refuses_javascript_reconnects_until_detach_and_reattach() {
 #[test]
 fn replacement_policy_gate_follows_real_transport_transitions() {
     let id = create_ready_room();
+    bridge::attach_runtime(id).unwrap();
 
     let assert_connected_refusal = |request_id: u64, json: &str| {
         let error =
@@ -593,16 +667,16 @@ fn replacement_policy_gate_follows_real_transport_transitions() {
     );
 
     // Connecting, Handshaking, Synchronized via real transitions: refused.
-    let generation = begin_connect(id, 142).unwrap();
+    let generation = drive_generation(id, 142).unwrap();
     assert_connected_refusal(143, JSON_REPLACEMENT_B);
-    socket_opened(id, 144, generation).unwrap();
+    open_socket_and_ack_step1(id, 144, generation).unwrap();
     assert_connected_refusal(145, JSON_REPLACEMENT_B);
     mark_synchronized_for_test(id, 146, generation).unwrap();
     assert_connected_refusal(147, JSON_REPLACEMENT_B);
 
     // Remote close back to Disconnected: allowed again.
     assert_eq!(
-        socket_closed(id, 148, generation, CloseDisposition::Retryable).unwrap(),
+        close_socket(id, 148, generation, CloseDisposition::Retryable).unwrap(),
         TransportState::Disconnected,
     );
     assert!(
@@ -617,7 +691,7 @@ fn replacement_policy_gate_follows_real_transport_transitions() {
     );
 
     // Local disconnect also reopens the gate.
-    let generation = begin_connect(id, 150).unwrap();
+    let generation = drive_generation(id, 150).unwrap();
     assert_connected_refusal(151, JSON_REPLACEMENT_A);
     transport_disconnect(id, 152).unwrap();
     assert!(
@@ -633,8 +707,10 @@ fn replacement_policy_gate_follows_real_transport_transitions() {
     let _ = generation;
 
     // Incompatible is an allowed replacement row of the Task 5 matrix.
-    let generation = begin_connect(id, 154).unwrap();
-    socket_closed(id, 155, generation, CloseDisposition::Incompatible).unwrap();
+    transport_detach(id, 154).unwrap();
+    transport_reattach(id, 154).unwrap();
+    let generation = drive_generation(id, 154).unwrap();
+    close_socket(id, 155, generation, CloseDisposition::Incompatible).unwrap();
     assert!(
         write_json(
             id,
@@ -672,27 +748,28 @@ fn transport_teardown_never_drops_pending_outbox_entries() {
 
     // Close (retryable), close (incompatible), disconnect, and detach all
     // leave the pending offline entry in place for post-reconnect delivery.
-    let generation = begin_connect(id, 162).unwrap();
-    socket_closed(id, 163, generation, CloseDisposition::Retryable).unwrap();
+    let generation = drive_generation(id, 162).unwrap();
+    close_socket(id, 163, generation, CloseDisposition::Retryable).unwrap();
     assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), pending);
 
-    let generation = begin_connect(id, 164).unwrap();
-    socket_closed(id, 165, generation, CloseDisposition::Incompatible).unwrap();
+    let generation = drive_generation(id, 164).unwrap();
+    close_socket(id, 165, generation, CloseDisposition::Incompatible).unwrap();
     assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), pending);
 
     transport_detach(id, 166).unwrap();
     assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), pending);
 
     transport_reattach(id, 167).unwrap();
-    let generation = begin_connect(id, 168).unwrap();
-    socket_opened(id, 169, generation).unwrap();
+    let generation = drive_generation(id, 168).unwrap();
+    open_socket_and_ack_step1(id, 169, generation).unwrap();
     transport_disconnect(id, 170).unwrap();
     assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), pending);
 
     // The entry is still deliverable.
-    let (request_id, update) = bridge::take_next_update(id).unwrap().unwrap();
-    assert_eq!(request_id, 161);
-    assert!(!update.is_empty());
+    let lease = bridge::lease_next_update(id).unwrap().unwrap();
+    assert_eq!(lease.request_id, 161);
+    assert!(!lease.update_v1.is_empty());
+    bridge::ack_leased_update(id, lease.lease_id).unwrap();
 
     bridge::destroy_session(id);
 }
@@ -748,29 +825,29 @@ fn transport_teardown_clears_awareness_peers_and_retains_desired_awareness() {
     };
 
     // Retryable close.
-    let generation = begin_connect(id, 173).unwrap();
-    socket_opened(id, 174, generation).unwrap();
+    let generation = drive_generation(id, 173).unwrap();
+    open_socket_and_ack_step1(id, 174, generation).unwrap();
     receive_message(id, 175, generation, &awareness_frame(9_501, 1)).unwrap();
     assert_eq!(remote_peer_count(id), 1);
-    socket_closed(id, 176, generation, CloseDisposition::Retryable).unwrap();
+    close_socket(id, 176, generation, CloseDisposition::Retryable).unwrap();
     assert_eq!(remote_peer_count(id), 0, "retryable close clears peers");
     assert_eq!(desired_awareness(id).unwrap(), Some(desired.clone()));
     assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), pending);
 
     // Incompatible close.
-    let generation = begin_connect(id, 177).unwrap();
-    socket_opened(id, 178, generation).unwrap();
+    let generation = drive_generation(id, 177).unwrap();
+    open_socket_and_ack_step1(id, 178, generation).unwrap();
     receive_message(id, 179, generation, &awareness_frame(9_502, 1)).unwrap();
     assert_eq!(remote_peer_count(id), 1);
-    socket_closed(id, 180, generation, CloseDisposition::Incompatible).unwrap();
+    close_socket(id, 180, generation, CloseDisposition::Incompatible).unwrap();
     assert_eq!(remote_peer_count(id), 0, "incompatible close clears peers");
     assert_eq!(desired_awareness(id).unwrap(), Some(desired.clone()));
 
     // Detach/reattach escape hatch, then a local disconnect.
     transport_detach(id, 181).unwrap();
     transport_reattach(id, 182).unwrap();
-    let generation = begin_connect(id, 183).unwrap();
-    socket_opened(id, 184, generation).unwrap();
+    let generation = drive_generation(id, 183).unwrap();
+    open_socket_and_ack_step1(id, 184, generation).unwrap();
     receive_message(id, 185, generation, &awareness_frame(9_503, 1)).unwrap();
     assert_eq!(remote_peer_count(id), 1);
     transport_disconnect(id, 186).unwrap();
@@ -834,22 +911,29 @@ fn destroy_wins_over_transport_transitions_from_pre_acquired_handles() {
 fn assert_handle_refusals(handle: &TransportHandle, expected_code: &str) {
     let refusals: [(&str, Result<(), TestError>); 7] = [
         (
-            "beginConnect",
-            handle.begin_connect(ACTION_REQUEST_ID).map(|_| ()),
-        ),
-        (
-            "socketOpened",
+            "collaborationDrive",
             handle
-                .socket_opened(ACTION_REQUEST_ID, FABRICATED_GENERATION)
+                .collaboration_drive(ACTION_REQUEST_ID, next_legacy_test_now_millis())
                 .map(|_| ()),
         ),
         (
-            "socketClosed",
+            "collaborationSocketOpen",
             handle
-                .socket_closed(
+                .collaboration_socket_open(
+                    ACTION_REQUEST_ID,
+                    FABRICATED_GENERATION,
+                    next_legacy_test_now_millis(),
+                )
+                .map(|_| ()),
+        ),
+        (
+            "collaborationSocketClose",
+            handle
+                .collaboration_socket_close(
                     ACTION_REQUEST_ID,
                     FABRICATED_GENERATION,
                     CloseDisposition::Retryable,
+                    next_legacy_test_now_millis(),
                 )
                 .map(|_| ()),
         ),
@@ -871,6 +955,7 @@ fn assert_handle_refusals(handle: &TransportHandle, expected_code: &str) {
 #[test]
 fn await_remote_rooms_connect_without_document_promotion() {
     let id = create_await_remote_room();
+    bridge::attach_runtime(id).unwrap();
     assert_eq!(
         crate::session_initialization_test_support::document_state(id).unwrap(),
         DocumentState::AwaitRemote
@@ -878,12 +963,8 @@ fn await_remote_rooms_connect_without_document_promotion() {
 
     // The full connect/handshake/synchronize path is transport-only: the
     // AwaitRemote -> RoomReady promotion belongs to Task 9's Step 2 handling.
-    let generation = begin_connect(id, 181).unwrap();
-    assert_eq!(
-        socket_opened(id, 182, generation).unwrap(),
-        SyncDirective::SendSyncStep1,
-        "socket open means Handshaking plus a demanded Step 1 send",
-    );
+    let generation = drive_generation(id, 181).unwrap();
+    open_socket_and_ack_step1(id, 182, generation).unwrap();
     assert_eq!(
         transport_state(id).unwrap(),
         TransportState::Handshaking,
@@ -992,12 +1073,293 @@ fn receive_message_refuses_destroyed_sessions_with_lifecycle_codes() {
 
     let id = create_ready_room();
     bridge::attach_runtime(id).unwrap();
-    let generation = begin_connect(id, 191).unwrap();
-    socket_opened(id, 192, generation).unwrap();
+    let generation = drive_generation(id, 191).unwrap();
+    open_socket_and_ack_step1(id, 192, generation).unwrap();
     destroy_session(id);
 
     let error = receive_message(id, 193, generation, &NOOP_SYNC_UPDATE_MESSAGE)
         .expect_err("destroyed sessions must refuse frames");
     assert_eq!(error.domain, "lifecycle", "{error:?}");
     assert_eq!(error.code, "ENGINE_DESTROYED", "{error:?}");
+}
+
+#[test]
+fn drive_starts_initial_generation_and_owns_exponential_retry_deadlines() {
+    let id = create_ready_room_with_runtime();
+    let mut now_millis = 0;
+    let mut generation = collaboration_drive(id, 20_001, now_millis)
+        .unwrap()
+        .generation_to_open
+        .expect("the initial attached drive opens generation one immediately");
+    assert_eq!(generation, 1);
+
+    for delay in [500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000] {
+        let deadline = now_millis + delay;
+        let closed = collaboration_socket_close(
+            id,
+            20_002,
+            generation,
+            CloseDisposition::Retryable,
+            now_millis,
+        )
+        .unwrap();
+        assert_eq!(closed.transport_state, TransportState::Disconnected);
+        assert_eq!(closed.generation_to_open, None);
+        assert_eq!(closed.next_deadline_millis, Some(deadline));
+
+        let before = collaboration_drive(id, 20_003, deadline - 1).unwrap();
+        assert_eq!(before.transport_state, TransportState::Disconnected);
+        assert_eq!(before.generation_to_open, None);
+        assert_eq!(before.next_deadline_millis, Some(deadline));
+
+        let due = collaboration_drive(id, 20_004, deadline).unwrap();
+        assert_eq!(due.transport_state, TransportState::Connecting);
+        assert_eq!(due.next_deadline_millis, None);
+        generation = due
+            .generation_to_open
+            .expect("only Rust's due drive may issue a retry generation");
+        now_millis = deadline;
+    }
+    assert_eq!(generation, 9, "the 30-second retry delay remains capped");
+    destroy_session(id);
+}
+
+#[test]
+fn retry_deadline_overflow_parks_without_busy_loop_or_outbox_loss_until_reattach() {
+    let id = create_ready_room_with_runtime();
+    let revision = bridge::session_audit(id).unwrap().document_revision;
+    bridge::submit_input(
+        id,
+        &serde_json::json!({
+            "version": 1,
+            "requestId": "20",
+            "baseDocumentRevision": revision.to_string(),
+            "text": " retained",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let pending = bridge::outbox_pending(id).unwrap().unwrap();
+
+    let generation = collaboration_drive(id, 20_050, 0)
+        .unwrap()
+        .generation_to_open
+        .unwrap();
+    collaboration_socket_open(id, 20_051, generation, 0).unwrap();
+    let step1 = lease_outbound(id, 20_052, generation).unwrap().unwrap();
+    ack_outbound(id, 20_053, generation, step1.lease_id).unwrap();
+    let retained_document = lease_outbound(id, 20_054, generation).unwrap().unwrap();
+
+    let closed = collaboration_socket_close(
+        id,
+        20_055,
+        generation,
+        CloseDisposition::Retryable,
+        u64::MAX,
+    )
+    .unwrap();
+    assert_eq!(closed.transport_state, TransportState::Disconnected);
+    assert_eq!(closed.generation_to_open, None);
+    assert_eq!(closed.next_deadline_millis, None);
+    assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), pending);
+
+    for request_id in [20_056, 20_057] {
+        let parked = collaboration_drive(id, request_id, u64::MAX).unwrap();
+        assert_eq!(parked.transport_state, TransportState::Disconnected);
+        assert_eq!(parked.generation_to_open, None);
+        assert_eq!(parked.next_deadline_millis, None);
+        assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), pending);
+    }
+
+    transport_detach(id, 20_058).unwrap();
+    transport_reattach(id, 20_059).unwrap();
+    let resumed_generation = collaboration_drive(id, 20_060, u64::MAX)
+        .unwrap()
+        .generation_to_open
+        .expect("reattach resets an exhausted retry schedule for a fresh drive");
+    collaboration_socket_open(id, 20_061, resumed_generation, u64::MAX).unwrap();
+    let resumed_step1 = lease_outbound(id, 20_062, resumed_generation)
+        .unwrap()
+        .unwrap();
+    ack_outbound(id, 20_063, resumed_generation, resumed_step1.lease_id).unwrap();
+    let resumed_document = lease_outbound(id, 20_064, resumed_generation)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed_document.frame, retained_document.frame);
+    ack_outbound(id, 20_065, resumed_generation, resumed_document.lease_id).unwrap();
+    assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), (0, 0));
+    destroy_session(id);
+}
+
+#[test]
+fn close_detach_and_generation_retirement_release_without_consuming_a_lease() {
+    let id = create_ready_room_with_runtime();
+    let revision = bridge::session_audit(id).unwrap().document_revision;
+    bridge::submit_input(
+        id,
+        &serde_json::json!({
+            "version": 1,
+            "requestId": "20",
+            "baseDocumentRevision": revision.to_string(),
+            "text": " retained",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let pending_before = bridge::outbox_pending(id).unwrap().unwrap();
+    assert_eq!(pending_before.0, 1);
+
+    let first_generation = collaboration_drive(id, 20_100, 0)
+        .unwrap()
+        .generation_to_open
+        .unwrap();
+    collaboration_socket_open(id, 20_101, first_generation, 0).unwrap();
+    let step1 = lease_outbound(id, 20_102, first_generation)
+        .unwrap()
+        .unwrap();
+    ack_outbound(id, 20_103, first_generation, step1.lease_id).unwrap();
+    let first_document = lease_outbound(id, 20_104, first_generation)
+        .unwrap()
+        .unwrap();
+
+    let closed = collaboration_socket_close(
+        id,
+        20_105,
+        first_generation,
+        CloseDisposition::Retryable,
+        10,
+    )
+    .unwrap();
+    assert_eq!(closed.next_deadline_millis, Some(510));
+    assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), pending_before);
+
+    let second_generation = collaboration_drive(id, 20_106, 510)
+        .unwrap()
+        .generation_to_open
+        .unwrap();
+    collaboration_socket_open(id, 20_107, second_generation, 510).unwrap();
+    let second_step1 = lease_outbound(id, 20_108, second_generation)
+        .unwrap()
+        .unwrap();
+    ack_outbound(id, 20_109, second_generation, second_step1.lease_id).unwrap();
+    let second_document = lease_outbound(id, 20_110, second_generation)
+        .unwrap()
+        .unwrap();
+    assert_ne!(second_document.lease_id, first_document.lease_id);
+    assert_eq!(second_document.frame, first_document.frame);
+
+    transport_detach(id, 20_111).unwrap();
+    assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), pending_before);
+    transport_reattach(id, 20_112).unwrap();
+    let third_generation = collaboration_drive(id, 20_113, 511)
+        .unwrap()
+        .generation_to_open
+        .unwrap();
+    collaboration_socket_open(id, 20_114, third_generation, 511).unwrap();
+    let third_step1 = lease_outbound(id, 20_115, third_generation)
+        .unwrap()
+        .unwrap();
+    ack_outbound(id, 20_116, third_generation, third_step1.lease_id).unwrap();
+    let third_document = lease_outbound(id, 20_117, third_generation)
+        .unwrap()
+        .unwrap();
+    assert_ne!(third_document.lease_id, second_document.lease_id);
+    assert_eq!(third_document.frame, first_document.frame);
+    assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), pending_before);
+
+    ack_outbound(id, 20_118, third_generation, third_document.lease_id).unwrap();
+    assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), (0, 0));
+    destroy_session(id);
+}
+
+#[test]
+fn stale_ack_nack_and_socket_callbacks_are_observationally_pure() {
+    let id = create_ready_room_with_runtime();
+    let generation = collaboration_drive(id, 20_200, 0)
+        .unwrap()
+        .generation_to_open
+        .unwrap();
+    collaboration_socket_open(id, 20_201, generation, 0).unwrap();
+    let retained = lease_outbound(id, 20_202, generation).unwrap().unwrap();
+    let before_state = transport_state(id).unwrap();
+
+    for error in [
+        ack_outbound(id, 20_203, FABRICATED_GENERATION, retained.lease_id).unwrap_err(),
+        nack_outbound(id, 20_204, FABRICATED_GENERATION, retained.lease_id).unwrap_err(),
+        collaboration_socket_open(id, 20_205, FABRICATED_GENERATION, 1).unwrap_err(),
+        collaboration_socket_close(
+            id,
+            20_206,
+            FABRICATED_GENERATION,
+            CloseDisposition::Retryable,
+            1,
+        )
+        .unwrap_err(),
+        collaboration_receive(id, 20_207, FABRICATED_GENERATION, &[0xff], 1).unwrap_err(),
+    ] {
+        assert_eq!(error.code, TRANSPORT_STALE_GENERATION, "{error:?}");
+    }
+
+    assert_eq!(transport_state(id).unwrap(), before_state);
+    let re_leased = lease_outbound(id, 20_208, generation).unwrap().unwrap();
+    assert_eq!(re_leased, retained);
+    nack_outbound(id, 20_209, generation, retained.lease_id).unwrap();
+    destroy_session(id);
+}
+
+#[test]
+fn synchronization_resets_retry_and_incompatible_has_no_deadline() {
+    let id = create_ready_room_with_runtime();
+    let initial = collaboration_drive(id, 20_300, 0)
+        .unwrap()
+        .generation_to_open
+        .unwrap();
+    let first_close =
+        collaboration_socket_close(id, 20_301, initial, CloseDisposition::Retryable, 0).unwrap();
+    assert_eq!(first_close.next_deadline_millis, Some(500));
+
+    let synchronized_generation = collaboration_drive(id, 20_302, 500)
+        .unwrap()
+        .generation_to_open
+        .unwrap();
+    collaboration_socket_open(id, 20_303, synchronized_generation, 500).unwrap();
+    let synchronized = collaboration_receive(
+        id,
+        20_304,
+        synchronized_generation,
+        &Message::Sync(SyncMessage::SyncStep2(vec![0, 0])).encode_v1(),
+        500,
+    )
+    .unwrap();
+    assert_eq!(synchronized.transport_state, TransportState::Synchronized);
+
+    let reset = collaboration_socket_close(
+        id,
+        20_305,
+        synchronized_generation,
+        CloseDisposition::Retryable,
+        500,
+    )
+    .unwrap();
+    assert_eq!(reset.next_deadline_millis, Some(1_000));
+
+    let incompatible_generation = collaboration_drive(id, 20_306, 1_000)
+        .unwrap()
+        .generation_to_open
+        .unwrap();
+    let incompatible = collaboration_socket_close(
+        id,
+        20_307,
+        incompatible_generation,
+        CloseDisposition::Incompatible,
+        1_000,
+    )
+    .unwrap();
+    assert_eq!(incompatible.transport_state, TransportState::Incompatible);
+    assert_eq!(incompatible.next_deadline_millis, None);
+    let parked = collaboration_drive(id, 20_308, 1_000_000).unwrap();
+    assert_eq!(parked.transport_state, TransportState::Incompatible);
+    assert_eq!(parked.generation_to_open, None);
+    assert_eq!(parked.next_deadline_millis, None);
+    destroy_session(id);
 }

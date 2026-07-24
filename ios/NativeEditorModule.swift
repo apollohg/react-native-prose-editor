@@ -1,4 +1,5 @@
 import ExpoModulesCore
+import UIKit
 
 /// Test-facing parser for the v2 create value. Handles are never bridged
 /// through signed native numbers: the frozen wire shape is a canonical
@@ -87,14 +88,20 @@ private func v2JsonResultDictionary(_ result: FfiJsonResult) -> [String: Any] {
     v2ResultDictionary(value: result.value, error: result.error, mapValue: { $0 })
 }
 
-private func v2BytesResultDictionary(_ result: FfiBytesResult) -> [String: Any] {
-    v2ResultDictionary(value: result.value, error: result.error, mapValue: { $0 })
-}
-
 private func v2UnitResultDictionary(_ result: FfiUnitResult) -> [String: Any] {
     v2ResultDictionary(value: result.value, error: result.error, mapValue: { $0 })
 }
 
+func v2CollaborationUnitResultDictionary(
+    editorId: String,
+    operation: (String) -> FfiUnitResult
+) -> [String: Any] {
+    v2UnitResultDictionary(operation(editorId))
+}
+
+/// Boundary helper retained for canonical monotonic-u64 coverage. Production
+/// transport timing is native-owned and calls the generated drive function
+/// directly rather than exporting a JavaScript tick.
 func v2CollaborationTickResultDictionary(
     editorId: String,
     nowMillis: String,
@@ -106,11 +113,23 @@ func v2CollaborationTickResultDictionary(
     return v2JsonResultDictionary(tick(editorId, canonicalNowMillis))
 }
 
-func v2CollaborationUnitResultDictionary(
+private func v2MutationResultDictionary(
     editorId: String,
-    operation: (String) -> FfiUnitResult
+    result: FfiJsonResult
 ) -> [String: Any] {
-    v2UnitResultDictionary(operation(editorId))
+    if result.error == nil,
+       let value = result.value,
+       let data = value.data(using: .utf8),
+       let outcome = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       outcome["changed"] as? Bool == true,
+       let nativeEditorId = v2UInt64Argument(editorId)
+    {
+        NativeCollaborationTransportRegistry.notifyOutboundAvailable(
+            editorId: nativeEditorId,
+            reason: .moduleMutation
+        )
+    }
+    return v2JsonResultDictionary(result)
 }
 
 private func v2SnapshotExportResultDictionary(_ result: FfiSnapshotExportResult) -> [String: Any] {
@@ -327,6 +346,9 @@ func destroyEditorV2FromModule(
         )
     }
 
+    // Transport callbacks and retained sockets must lose ownership before
+    // the Rust session can be destroyed or its numeric handle reused.
+    NativeCollaborationTransportRegistry.destroy(editorId: nativeViewId)
     let result = adapter?.destroyForModuleTransaction() ?? destroy(editorId)
     invokeDestroyTestingHook(
         EditorV2Registry.onDestroyFfiResultReceivedForTesting,
@@ -471,8 +493,43 @@ private func renderDocumentProbe(
 }
 
 public class NativeEditorModule: Module {
+    private var collaborationLifecycleObservers: [NSObjectProtocol] = []
+
     public func definition() -> ModuleDefinition {
         Name("NativeEditor")
+        Events("onCollaborationTransportEvent")
+
+        OnCreate {
+            NativeCollaborationTransportRegistry.setEventEmitter { [weak self] payload in
+                DispatchQueue.main.async {
+                    self?.sendEvent("onCollaborationTransportEvent", payload)
+                }
+            }
+            let center = NotificationCenter.default
+            self.collaborationLifecycleObservers = [
+                center.addObserver(
+                    forName: UIApplication.didEnterBackgroundNotification,
+                    object: nil,
+                    queue: nil
+                ) { _ in
+                    NativeCollaborationTransportRegistry.enterBackground()
+                },
+                center.addObserver(
+                    forName: UIApplication.willEnterForegroundNotification,
+                    object: nil,
+                    queue: nil
+                ) { _ in
+                    NativeCollaborationTransportRegistry.enterForeground()
+                },
+            ]
+        }
+
+        OnDestroy {
+            let center = NotificationCenter.default
+            self.collaborationLifecycleObservers.forEach(center.removeObserver)
+            self.collaborationLifecycleObservers.removeAll()
+            NativeCollaborationTransportRegistry.destroyAll()
+        }
 
         // MARK: v2 UniFFI surface (production ABI)
         //
@@ -500,25 +557,43 @@ public class NativeEditorModule: Module {
             v2JsonResultDictionary(editorV2GetContentSnapshot(editorId: editorId))
         }
         Function("editorV2ReplaceDocument") { (editorId: String, requestJson: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2ReplaceDocument(editorId: editorId, requestJson: requestJson))
+            v2MutationResultDictionary(
+                editorId: editorId,
+                result: editorV2ReplaceDocument(editorId: editorId, requestJson: requestJson)
+            )
         }
         Function("editorV2ApplyInput") { (editorId: String, requestJson: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2ApplyInput(editorId: editorId, requestJson: requestJson))
+            v2MutationResultDictionary(
+                editorId: editorId,
+                result: editorV2ApplyInput(editorId: editorId, requestJson: requestJson)
+            )
         }
         Function("editorV2ApplyCommand") { (editorId: String, requestJson: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2ApplyCommand(editorId: editorId, requestJson: requestJson))
+            v2MutationResultDictionary(
+                editorId: editorId,
+                result: editorV2ApplyCommand(editorId: editorId, requestJson: requestJson)
+            )
         }
         Function("editorV2ApplyLocalApi") { (editorId: String, requestJson: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2ApplyLocalApi(editorId: editorId, requestJson: requestJson))
+            v2MutationResultDictionary(
+                editorId: editorId,
+                result: editorV2ApplyLocalApi(editorId: editorId, requestJson: requestJson)
+            )
         }
         Function("editorV2SetSelection") { (editorId: String, requestJson: String) -> [String: Any] in
             v2JsonResultDictionary(editorV2SetSelection(editorId: editorId, requestJson: requestJson))
         }
         Function("editorV2Undo") { (editorId: String, requestJson: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2Undo(editorId: editorId, requestJson: requestJson))
+            v2MutationResultDictionary(
+                editorId: editorId,
+                result: editorV2Undo(editorId: editorId, requestJson: requestJson)
+            )
         }
         Function("editorV2Redo") { (editorId: String, requestJson: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2Redo(editorId: editorId, requestJson: requestJson))
+            v2MutationResultDictionary(
+                editorId: editorId,
+                result: editorV2Redo(editorId: editorId, requestJson: requestJson)
+            )
         }
         Function("editorV2RenderUpdate") { (editorId: String, mirrorScalarAnchor: Double?, mirrorScalarHead: Double?) -> [String: Any] in
             // The render accessor for the interactive component: after a
@@ -537,79 +612,49 @@ public class NativeEditorModule: Module {
                 )
             )
         }
-        Function("editorV2CollaborationBeginConnect") { (editorId: String) -> [String: Any] in
-            v2JsonResultDictionary(editorV2CollaborationBeginConnect(editorId: editorId))
-        }
-        Function("editorV2CollaborationSocketOpen") { (editorId: String, generation: String) -> [String: Any] in
-            guard v2UInt64Argument(generation) != nil else {
-                return v2InvalidResultDictionary("invalid generation")
+        Function("editorV2CollaborationConfigureTransport") {
+            (editorId: String, configJsonOrNull: String?) -> [String: Any] in
+            guard let nativeEditorId = v2UInt64Argument(editorId), nativeEditorId > 0 else {
+                return v2InvalidResultDictionary("invalid editorId")
             }
-            return v2BytesResultDictionary(
-                editorV2CollaborationSocketOpen(editorId: editorId, generation: generation)
+            let error = NativeCollaborationTransportRegistry.configure(
+                editorId: nativeEditorId,
+                configJSON: configJsonOrNull
             )
-        }
-        Function("editorV2CollaborationReceive") { (editorId: String, generation: String, message: Data) -> [String: Any] in
-            guard v2UInt64Argument(generation) != nil else {
-                return v2InvalidResultDictionary("invalid generation")
-            }
-            return v2JsonResultDictionary(
-                editorV2CollaborationReceive(editorId: editorId, generation: generation, message: message)
-            )
-        }
-        Function("editorV2CollaborationSocketClose") { (editorId: String, generation: String, code: Double?, reason: String?) -> [String: Any] in
-            guard v2UInt64Argument(generation) != nil else {
-                return v2InvalidResultDictionary("invalid generation")
-            }
-            let closeCode = code.flatMap { v2ExactUInt32(NSNumber(value: $0)) }
-            if code != nil && closeCode == nil {
-                return v2InvalidResultDictionary("invalid close code")
-            }
-            return v2JsonResultDictionary(
-                editorV2CollaborationSocketClose(
-                    editorId: editorId,
-                    generation: generation,
-                    code: closeCode,
-                    reason: reason
-                )
-            )
-        }
-        Function("editorV2CollaborationTakeOutbound") { (editorId: String, generation: String) -> [String: Any] in
-            guard v2UInt64Argument(generation) != nil else {
-                return v2InvalidResultDictionary("invalid generation")
-            }
-            return v2BytesResultDictionary(
-                editorV2CollaborationTakeOutbound(editorId: editorId, generation: generation)
-            )
+            return v2UnitResultDictionary(FfiUnitResult(
+                value: error == nil ? true : nil,
+                error: error
+            ))
         }
         Function("editorV2CollaborationSetAwareness") { (editorId: String, awarenessJson: String) -> [String: Any] in
-            v2UnitResultDictionary(
-                editorV2CollaborationSetAwareness(editorId: editorId, awarenessJson: awarenessJson)
+            let result = editorV2CollaborationSetAwareness(
+                editorId: editorId,
+                awarenessJson: awarenessJson
             )
+            if result.value == true, result.error == nil,
+               let nativeEditorId = v2UInt64Argument(editorId)
+            {
+                NativeCollaborationTransportRegistry.notifyOutboundAvailable(
+                    editorId: nativeEditorId,
+                    reason: .awareness
+                )
+            }
+            return v2UnitResultDictionary(result)
         }
         Function("editorV2CollaborationPeers") { (editorId: String) -> [String: Any] in
             v2JsonResultDictionary(editorV2CollaborationPeers(editorId: editorId))
-        }
-        Function("editorV2CollaborationTick") { (editorId: String, nowMillis: String) -> [String: Any] in
-            v2CollaborationTickResultDictionary(editorId: editorId, nowMillis: nowMillis) { editorId, nowMillis in
-                editorV2CollaborationTick(editorId: editorId, nowMillis: nowMillis)
-            }
-        }
-        Function("editorV2CollaborationDetach") { (editorId: String) -> [String: Any] in
-            v2CollaborationUnitResultDictionary(editorId: editorId) { editorId in
-                editorV2CollaborationDetach(editorId: editorId)
-            }
-        }
-        Function("editorV2CollaborationReattach") { (editorId: String) -> [String: Any] in
-            v2CollaborationUnitResultDictionary(editorId: editorId) { editorId in
-                editorV2CollaborationReattach(editorId: editorId)
-            }
         }
         Function("editorV2SnapshotExport") { (editorId: String) -> [String: Any] in
             v2SnapshotExportResultDictionary(editorV2SnapshotExport(editorId: editorId))
         }
         Function("editorV2SnapshotRestore") { (editorId: String, metadataJson: String, encodedState: Data) -> [String: Any] in
-            v2JsonResultDictionary(
-                editorV2SnapshotRestore(editorId: editorId, metadataJson: metadataJson, encodedState: encodedState)
+            v2MutationResultDictionary(
+                editorId: editorId,
+                result: editorV2SnapshotRestore(
+                    editorId: editorId,
+                    metadataJson: metadataJson,
+                    encodedState: encodedState
+                )
             )
         }
 

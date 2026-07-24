@@ -21,7 +21,7 @@
     reason = "SessionError is the established unboxed session error envelope"
 )]
 
-use serde_json::{value::RawValue, Value};
+use serde_json::value::RawValue;
 
 use crate::boundary::{
     deserialize_non_null_option, parse_json_value_stack_safe, BoundaryError, BoundedInput,
@@ -670,36 +670,6 @@ pub(crate) fn unit_result(result: Result<(), FfiError>) -> FfiUnitResult {
         Ok(()) => FfiUnitResult::ok(),
         Err(error) => FfiUnitResult::err(error),
     }
-}
-
-/// Serialize a session error for the receive outcome's structured close
-/// cause, honoring the same nullability rules as the boundary envelope.
-pub(crate) fn session_error_json(error: &SessionError) -> Value {
-    let error = ffi_error_without_request(error.clone());
-    let mut value = serde_json::json!({
-        "domain": error.domain,
-        "code": error.code,
-        "message": error.message,
-    });
-    let object = value.as_object_mut().expect("error base is an object");
-    if let Some(request_id) = error.request_id {
-        object.insert("requestId".into(), Value::String(request_id));
-    }
-    if let Some(operation_index) = error.operation_index {
-        object.insert("operationIndex".into(), Value::String(operation_index));
-    }
-    if let Some(limit) = error.limit {
-        object.insert("limit".into(), Value::String(limit));
-    }
-    if let Some(actual) = error.actual {
-        object.insert("actual".into(), Value::String(actual));
-    }
-    if let Some(details_json) = error.details_json {
-        if let Ok(details) = serde_json::from_str::<Value>(&details_json) {
-            object.insert("details".into(), details);
-        }
-    }
-    value
 }
 
 // ---------------------------------------------------------------------------

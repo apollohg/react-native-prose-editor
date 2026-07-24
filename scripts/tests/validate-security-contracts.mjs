@@ -257,9 +257,9 @@ for (const code of ffiV2.operationCodes) assert.ok(ffiTypes.includes(`"${code}"`
 assert.match(ffiTypes, /Some\(true\)/, 'unit success must cross UniFFI as Some(true)');
 
 // Task 16C: the legacy UDL and the legacy editor_*/collaboration_session_*
-// exports were deleted; the production surface is the 29 editor_v2_*
+// exports were deleted; the production surface is the 30 editor_v2_*
 // UniFFI functions plus editor_core_version.
-const V2_EXPORT_COUNT = 29;
+const V2_EXPORT_COUNT = 30;
 if (releaseMode) {
     const androidModule = read('android/src/main/java/com/apollohg/editor/NativeEditorModule.kt');
     const iosModule = read('ios/NativeEditorModule.swift');
@@ -272,6 +272,34 @@ if (releaseMode) {
     assert.doesNotMatch(iosModule, /\beditorCreate\(/);
     assert.doesNotMatch(iosModule, /\bcollaborationSession[A-Z]/);
     assert.doesNotMatch(read('src/NativeEditorBridge.ts'), /\beditorCreate\(/);
+    const productionTransportSources = [
+        read('src/NativeEditorBridge.ts'),
+        read('src/YjsCollaboration.ts'),
+        read('src/NativeRichTextEditor.tsx'),
+        read('src/useNativeEditor.ts'),
+    ].join('\n');
+    for (const obsolete of [
+        'createWebSocket',
+        'collaborationTakeOutbound',
+        'drainOutbound',
+        'collaborationGeneration',
+        'outboundFrameSink',
+        'onLocalDocumentCommit',
+    ]) {
+        assert.ok(
+            !productionTransportSources.includes(obsolete),
+            `production TypeScript must not contain obsolete collaboration API ${obsolete}`
+        );
+    }
+    assert.doesNotMatch(
+        productionTransportSources,
+        /\bnew\s+WebSocket\s*\(/,
+        'production TypeScript must not construct the collaboration WebSocket'
+    );
+    assert.match(androidModule, /Function\("editorV2CollaborationConfigureTransport"\)/);
+    assert.match(androidModule, /Events\("onCollaborationTransportEvent"\)/);
+    assert.match(iosModule, /Function\("editorV2CollaborationConfigureTransport"\)/);
+    assert.match(iosModule, /Events\("onCollaborationTransportEvent"\)/);
     const kotlinBindings = read('rust/bindings/kotlin/uniffi/editor_core/editor_core.kt');
     assert.match(kotlinBindings, /fun `?editorV2Create`?\(/);
     assert.doesNotMatch(kotlinBindings, /uniffi_editor_core_fn_func_editor_create/);
@@ -284,10 +312,20 @@ if (releaseMode) {
     assert.equal(
         (ffiHeader.match(/uniffi_editor_core_fn_func_editor_v2_/g) ?? []).length,
         V2_EXPORT_COUNT,
-        'the FFI header must expose exactly 29 editor_v2_* symbols'
+        'the FFI header must expose exactly 30 editor_v2_* symbols'
     );
     assert.match(ffiHeader, /uniffi_editor_core_fn_func_editor_core_version/);
     assert.doesNotMatch(ffiHeader, /uniffi_editor_core_fn_func_collaboration_session/);
+    for (const obsoleteExport of [
+        'editor_v2_collaboration_begin_connect',
+        'editor_v2_collaboration_take_outbound',
+        'editor_v2_collaboration_tick',
+    ]) {
+        assert.ok(
+            !ffiHeader.includes(`uniffi_editor_core_fn_func_${obsoleteExport}`),
+            `FFI header must not expose ${obsoleteExport}`
+        );
+    }
 }
 
 if (behaviorMode) {

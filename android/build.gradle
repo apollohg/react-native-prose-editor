@@ -31,7 +31,7 @@ android {
     }
 
     // Task 16C: the v2 engine is the ONLY runtime. The prebuilt Rust .so
-    // files (29 editor_v2_* symbols + version, zero legacy symbols) and the
+    // files (30 editor_v2_* symbols + version, zero legacy symbols) and the
     // regenerated UniFFI Kotlin bindings are wired into every variant.
     sourceSets {
         main {
@@ -58,6 +58,7 @@ android {
 dependencies {
     implementation "androidx.appcompat:appcompat:1.7.0"
     implementation "com.google.android.material:material:1.12.0"
+    implementation "com.squareup.okhttp3:okhttp:4.9.2"
 
     api "net.java.dev.jna:jna:5.18.1@aar"
 
@@ -67,4 +68,5 @@ dependencies {
     androidTestImplementation "androidx.test:core-ktx:1.6.1"
     androidTestImplementation "androidx.test:runner:1.6.2"
     androidTestImplementation "androidx.test.ext:junit:1.2.1"
+    androidTestImplementation "com.squareup.okhttp3:mockwebserver:4.9.2"
 }

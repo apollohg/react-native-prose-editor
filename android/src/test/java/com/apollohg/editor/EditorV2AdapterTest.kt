@@ -647,34 +647,6 @@ class EditorV2AdapterTest {
         assertEquals("ENGINE_DESTROYED", secondErrors.single().code)
     }
 
-    // MARK: drain ping
-
-    @Test
-    fun `local commit drives drain ping on room bound session`() {
-        val adapter = makeRoomAdapter()
-        val frames = mutableListOf<ByteArray>()
-
-        adapter.outboundFrameSink = { frames.add(it) }
-        adapter.insertText("x", 0)
-        assertTrue("no live generation: the ping must not fire", frames.isEmpty())
-
-        adapter.collaborationGeneration = "7"
-        val update = adapter.insertText("x", 0)
-        assertNotNull(update)
-        assertTrue("a local commit on a live generation drains the outbox", frames.isNotEmpty())
-        frames.forEach { assertTrue(it.isNotEmpty()) }
-    }
-
-    @Test
-    fun `drain ping skipped for local only session`() {
-        val adapter = makeAdapter()
-        val frames = mutableListOf<ByteArray>()
-        adapter.outboundFrameSink = { frames.add(it) }
-        adapter.collaborationGeneration = "1"
-        adapter.insertText("x", 0)
-        assertTrue(frames.isEmpty())
-    }
-
     // MARK: synthesized update contract
 
     @Test

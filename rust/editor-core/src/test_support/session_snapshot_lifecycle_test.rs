@@ -16,13 +16,14 @@ use crate::boundary::ResourceLimits;
 use crate::collaboration_runtime::state::TRANSPORT_STALE_GENERATION;
 use crate::native_bridge_test_support as bridge;
 use crate::session_initialization_test_support::{
-    awareness_peers, begin_connect, client_id, create_local_json, create_room_from_json,
-    desired_awareness, destroy_session, document_state, encoded_state, export_snapshot, get_json,
+    ack_outbound, awareness_peers, client_id, collaboration_drive, collaboration_socket_close,
+    collaboration_socket_open, create_local_json, create_room_from_json, desired_awareness,
+    destroy_session, document_state, encoded_state, export_snapshot, get_json, lease_outbound,
     mark_synchronized_for_test, pending_protocol_replies, receive_message,
     remote_dependency_accounting, render_state, restore_snapshot, session_audit,
-    set_desired_awareness_for_test as set_desired_awareness, socket_closed, socket_opened,
-    transport_detach, transport_disconnect, transport_state, AwarenessPeerInfo, CloseDisposition,
-    DocumentState, RenderState, SessionAudit, TransportState,
+    set_desired_awareness_for_test as set_desired_awareness, transport_detach,
+    transport_disconnect, transport_state, AwarenessPeerInfo, CloseDisposition, DocumentState,
+    RenderState, SessionAudit, TransportState,
 };
 use crate::tiptap_schema;
 use crate::yrs_engine::{
@@ -99,11 +100,40 @@ fn create_await_remote_room() -> u64 {
     id
 }
 
-/// `begin_connect` + `socket_opened`: the transport is `Handshaking` and the
-/// returned generation is live.
+/// Issue a generation through the Rust drive. A retry is driven at its exact
+/// returned deadline rather than bypassing the schedule.
+fn drive_generation(id: u64, request_id: u64, now_millis: u64) -> (u64, u64) {
+    let initial = collaboration_drive(id, request_id, now_millis).unwrap();
+    match initial.generation_to_open {
+        Some(generation) => (generation, now_millis),
+        None => {
+            let deadline = initial
+                .next_deadline_millis
+                .expect("a disconnected retry must expose its Rust deadline");
+            let due = collaboration_drive(id, request_id, deadline).unwrap();
+            (
+                due.generation_to_open
+                    .expect("the due Rust drive must issue a generation"),
+                deadline,
+            )
+        }
+    }
+}
+
+/// Open the socket through the production directive and drain its queued Sync
+/// Step 1 for tests that need no protocol work before their own assertions.
+fn open_socket_and_ack_step1(id: u64, request_id: u64, generation: u64, now_millis: u64) {
+    collaboration_socket_open(id, request_id, generation, now_millis).unwrap();
+    let step1 = lease_outbound(id, request_id, generation)
+        .unwrap()
+        .expect("socket open must queue Sync Step 1");
+    ack_outbound(id, request_id, generation, step1.lease_id).unwrap();
+}
+
+/// Drive and open a live generation with its Sync Step 1 explicitly ACKed.
 fn handshake(id: u64) -> u64 {
-    let generation = begin_connect(id, 9_000).unwrap();
-    socket_opened(id, 9_001, generation).unwrap();
+    let (generation, now_millis) = drive_generation(id, 9_000, 0);
+    open_socket_and_ack_step1(id, 9_001, generation, now_millis);
     generation
 }
 
@@ -210,6 +240,13 @@ fn local_edit(id: u64, request_id: u64, text: &str) {
     bridge::submit_input(id, &envelope).unwrap();
 }
 
+fn ack_next_document_lease(id: u64) {
+    let lease = bridge::lease_next_update(id)
+        .unwrap()
+        .expect("the pending local update must be leased before it can be acknowledged");
+    bridge::ack_leased_update(id, lease.lease_id).unwrap();
+}
+
 /// The complete observable state a restore rejection must leave untouched:
 /// session/engine audits, client identity, both outbox queues, dependency
 /// accounting, awareness peers, and the desired local awareness state.
@@ -269,7 +306,7 @@ fn export_is_read_only_allowed_while_connected_and_round_trips() {
 
     // Connecting -> Handshaking -> Synchronized through real transitions;
     // export stays read-only and allowed in every connected state.
-    let generation = begin_connect(id, 100).unwrap();
+    let (generation, now_millis) = drive_generation(id, 100, 0);
     for (request_id, expected_transport) in [
         (101, TransportState::Connecting),
         (102, TransportState::Handshaking),
@@ -277,7 +314,7 @@ fn export_is_read_only_allowed_while_connected_and_round_trips() {
     ] {
         match expected_transport {
             TransportState::Handshaking => {
-                socket_opened(id, 104, generation).unwrap();
+                open_socket_and_ack_step1(id, 104, generation, now_millis);
             }
             TransportState::Synchronized => {
                 let outcome =
@@ -323,7 +360,7 @@ fn export_is_read_only_allowed_while_connected_and_round_trips() {
 #[test]
 fn connected_transports_reject_restore_with_the_frozen_snapshot_code() {
     let (id, snapshot) = create_ready_room();
-    let generation = begin_connect(id, 200).unwrap();
+    let (generation, now_millis) = drive_generation(id, 200, 0);
 
     // Every row is reached through the real Task 8 transitions. `Incompatible`
     // is pinned to the same code by decision: restore is
@@ -338,7 +375,7 @@ fn connected_transports_reject_restore_with_the_frozen_snapshot_code() {
     ] {
         match expected_transport {
             TransportState::Handshaking => {
-                socket_opened(id, 205, generation).unwrap();
+                open_socket_and_ack_step1(id, 205, generation, now_millis);
             }
             TransportState::Synchronized => {
                 let outcome =
@@ -347,7 +384,14 @@ fn connected_transports_reject_restore_with_the_frozen_snapshot_code() {
                 assert!(outcome.close.is_none(), "{outcome:?}");
             }
             TransportState::Incompatible => {
-                socket_closed(id, 207, generation, CloseDisposition::Incompatible).unwrap();
+                collaboration_socket_close(
+                    id,
+                    207,
+                    generation,
+                    CloseDisposition::Incompatible,
+                    now_millis,
+                )
+                .unwrap();
             }
             _ => {}
         }
@@ -386,7 +430,7 @@ fn pending_document_updates_reject_restore_until_drained() {
     assert_eq!(full_audit(id), before);
 
     // Draining the genuine pending edit (transport handoff) unblocks restore.
-    assert!(bridge::take_next_update(id).unwrap().is_some());
+    ack_next_document_lease(id);
     assert_eq!(bridge::outbox_pending(id).unwrap().unwrap().0, 0);
     let outcome = restore_snapshot(id, 302, &snapshot).unwrap();
     assert!(
@@ -491,7 +535,7 @@ fn restore_installs_a_fresh_client_identity_and_preserves_remote_clocks() {
     // A genuine local edit (drained, so restore is allowed) gives the
     // pre-restore client a durable clock the restore must discard.
     local_edit(id, 600, " local");
-    assert!(bridge::take_next_update(id).unwrap().is_some());
+    ack_next_document_lease(id);
     assert!(session_state_vector(id).get(&ClientID::new(writer_before)) > 0);
 
     let outcome = restore_snapshot(id, 601, &snapshot).unwrap();
@@ -585,7 +629,8 @@ fn restore_clears_protocol_replies_quarantine_peers_and_generation_state() {
     // 4. the transport settled to Disconnected and the pre-restore generation
     //    refuses every callback as stale;
     assert_eq!(transport_state(id).unwrap(), TransportState::Disconnected);
-    let error = socket_closed(id, 705, generation, CloseDisposition::Retryable).unwrap_err();
+    let error = collaboration_socket_close(id, 705, generation, CloseDisposition::Retryable, 0)
+        .unwrap_err();
     assert_eq!(error.code, TRANSPORT_STALE_GENERATION, "{error:?}");
     let error =
         receive_message(id, 706, generation, &step2_frame(NOOP_UPDATE_V1.to_vec())).unwrap_err();
@@ -598,9 +643,9 @@ fn restore_clears_protocol_replies_quarantine_peers_and_generation_state() {
     // and the cleared quarantine treats the same dependent update as
     // missing-dependencies anew: exactly one payload's worth of accounting,
     // then the prefix drains it and the document converges.
-    let next_generation = begin_connect(id, 708).unwrap();
+    let (next_generation, next_now_millis) = drive_generation(id, 708, 0);
     assert!(next_generation > generation);
-    socket_opened(id, 709, next_generation).unwrap();
+    open_socket_and_ack_step1(id, 709, next_generation, next_now_millis);
     let outcome = receive_message(
         id,
         710,
@@ -653,7 +698,7 @@ fn desired_awareness_survives_restore_and_its_cursor_is_recomputed() {
 
     // Make the store differ from the snapshot, then drain so restore runs.
     local_edit(id, 802, " more");
-    assert!(bridge::take_next_update(id).unwrap().is_some());
+    ack_next_document_lease(id);
     let outcome = restore_snapshot(id, 803, &snapshot).unwrap();
     assert!(outcome.changed);
 
@@ -804,8 +849,11 @@ fn await_remote_restore_promotes_to_room_ready_and_settles_disconnected() {
         TransportState::Disconnected,
         "restore settles the transport to the room's disconnected row",
     );
-    // The settled transport accepts a fresh connection attempt.
-    assert!(begin_connect(id, 1_005).is_ok());
+    // The settled transport issues a fresh generation through Rust's drive.
+    assert!(collaboration_drive(id, 1_005, 0)
+        .unwrap()
+        .generation_to_open
+        .is_some());
     destroy_session(id);
 }
 

@@ -8,8 +8,8 @@
 //! [`crate::yrs_engine::AwarenessCodec`]. This module never constructs a
 //! `yrs::sync::Awareness`, never duplicates the codec's clocks, and never
 //! reads a wall clock: time enters exclusively as the `now_millis` parameter
-//! of [`CollaborationRuntime::tick`], which JavaScript schedules from the
-//! returned deadline.
+//! of [`CollaborationRuntime::tick`], which the native host reaches through
+//! Rust's returned collaboration-drive deadline.
 
 #![allow(
     clippy::result_large_err,
@@ -86,11 +86,7 @@ fn awareness_state_invalid(request_id: u64, message: impl Into<String>) -> Sessi
     error
 }
 
-fn awareness_peer_bytes_limit_error(
-    request_id: u64,
-    limit: usize,
-    actual: usize,
-) -> SessionError {
+fn awareness_peer_bytes_limit_error(request_id: u64, limit: usize, actual: usize) -> SessionError {
     engine_error_with_request(
         YrsEngineError::limit("INPUT_LIMIT_EXCEEDED", limit, actual)
             .with_details(serde_json::json!({ "field": "maxAwarenessPeerBytes" })),
@@ -247,7 +243,7 @@ pub(crate) struct TickOutcome {
     pub(crate) expired_peers: Vec<u64>,
     /// Whether this tick changed a local or remote peer projection.
     pub(crate) peers_changed: bool,
-    /// The next renewal/expiry deadline for JavaScript to schedule.
+    /// The next renewal/expiry deadline for the native host to schedule.
     pub(crate) next_deadline_millis: Option<u64>,
 }
 
@@ -336,6 +332,24 @@ fn broadcast_reservation_error(error: OutboxReservationError, request_id: u64) -
 }
 
 impl CollaborationRuntime {
+    /// Validates the monotonic clock before a stateful transport callback
+    /// mutates its generation, outbox, or awareness projection. Stale
+    /// generation admission runs before this check at the session boundary.
+    pub(crate) fn check_now_millis(
+        &self,
+        request_id: u64,
+        now_millis: u64,
+    ) -> Result<(), SessionError> {
+        if now_millis < self.awareness.now_millis {
+            return Err(time_regression_error(
+                request_id,
+                now_millis,
+                self.awareness.now_millis,
+            ));
+        }
+        Ok(())
+    }
+
     /// Test-only raw-state fixture seam: validated JSON, bounded by the
     /// per-peer and aggregate awareness byte ceilings at set time
     /// (atomic rejection through the codec), retained across every transport
@@ -527,7 +541,8 @@ impl CollaborationRuntime {
     /// remote peers (and their activity deadlines) are cleared, the local
     /// entry is tombstoned by the codec with its clock preserved for the
     /// reconnect re-publish, and the desired state is retained.
-    pub(crate) fn clear_transport_peers(&mut self, engine: &mut YrsDocumentEngine) {
+    pub(crate) fn clear_transport_peers(&mut self, engine: &mut YrsDocumentEngine) -> bool {
+        let peers_changed = !engine.awareness().peer_snapshot().is_empty();
         // Live local publications always retain one checked tombstone clock,
         // and local-client remote echoes never mutate it. Exhaustion is thus
         // unreachable in production cleanup; the guarded failure arm keeps
@@ -535,6 +550,7 @@ impl CollaborationRuntime {
         if engine.awareness().clear_transport_states().is_ok() {
             self.awareness.peer_activity.clear();
         }
+        peers_changed
     }
 
     /// Applies one inbound awareness update payload through the codec and
@@ -610,13 +626,7 @@ impl CollaborationRuntime {
             transport_state,
             limits,
         } = context;
-        if now_millis < self.awareness.now_millis {
-            return Err(time_regression_error(
-                request_id,
-                now_millis,
-                self.awareness.now_millis,
-            ));
-        }
+        self.check_now_millis(request_id, now_millis)?;
         self.awareness.now_millis = now_millis;
 
         let expired_peers: Vec<u64> = self

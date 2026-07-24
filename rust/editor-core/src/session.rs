@@ -627,6 +627,29 @@ pub(crate) struct CollaborationLifecycle {
     lifecycle_test_teardowns: usize,
 }
 
+/// Frozen Rust-to-native transport directive. Native executes only the
+/// explicit open/deadline work it carries; all retry and awareness decisions
+/// remain in Rust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CollaborationTransportDirective {
+    pub(crate) transport_state: TransportState,
+    pub(crate) generation_to_open: Option<crate::collaboration_runtime::state::TransportGeneration>,
+    pub(crate) next_deadline_millis: Option<u64>,
+    pub(crate) remote_commit_applied: bool,
+    pub(crate) peers_changed: bool,
+    pub(crate) renewed_local: bool,
+    pub(crate) expired_peers: Vec<u64>,
+}
+
+/// A complete framed outbound payload retained by its outbox lease until an
+/// exact ACK. Document Update-v1 bytes are framed only here, at the
+/// session/protocol boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutboundFrameLease {
+    pub(crate) lease_id: u64,
+    pub(crate) frame: Vec<u8>,
+}
+
 impl EditorSession {
     pub(crate) fn new(
         engine: YrsDocumentEngine,
@@ -911,54 +934,81 @@ impl EditorSession {
         self.document_state != DocumentState::LocalReady
     }
 
-    /// `Disconnected` -> `Connecting`; returns the generation JavaScript
-    /// must carry through its socket callbacks. Runs under the session lock
-    /// like every transition (callers only reach sessions via `with_alive`).
-    pub(crate) fn begin_connect(
+    /// Rust's unified scheduler. It advances awareness work, issues a due
+    /// initial/retry generation, and returns the sole native directive.
+    pub(crate) fn collaboration_drive(
         &mut self,
         request_id: u64,
-    ) -> Result<crate::collaboration_runtime::state::TransportGeneration, SessionError> {
-        let room_bound = self.room_bound();
-        self.collaboration
-            .transport
-            .begin_connect(request_id, room_bound)
+        now_millis: u64,
+    ) -> Result<CollaborationTransportDirective, SessionError> {
+        self.finish_transport_directive(request_id, now_millis, false, false)
     }
 
-    /// Current `Connecting` -> `Handshaking`; the caller owes a Sync Step 1
-    /// send (framed in Task 9).
-    pub(crate) fn socket_opened(
+    /// Current native socket-open callback. Sync Step 1 is framed and
+    /// reserved before the state transitions, then enters the same
+    /// protocol-priority lease queue as every other outbound protocol frame.
+    pub(crate) fn collaboration_socket_open(
         &mut self,
         request_id: u64,
         generation: crate::collaboration_runtime::state::TransportGeneration,
-    ) -> Result<crate::collaboration_runtime::state::HandshakeDirective, SessionError> {
+        now_millis: u64,
+    ) -> Result<CollaborationTransportDirective, SessionError> {
         self.collaboration
             .transport
-            .socket_opened(request_id, generation)
+            .admit_socket_open(request_id, generation)?;
+        self.check_collaboration_now(request_id, now_millis)?;
+
+        let step1 =
+            crate::collaboration_runtime::protocol::sync_step1_message(&self.engine, request_id)?;
+        let CollaborationLifecycle {
+            transport, runtime, ..
+        } = &mut self.collaboration;
+        let runtime = runtime.as_mut().ok_or_else(no_attached_runtime)?;
+        let reservation = runtime
+            .outbox_mut()
+            .reserve_protocol_replies(1, step1.len())
+            .map_err(|error| {
+                crate::collaboration_runtime::protocol::protocol_reply_reservation_error(
+                    request_id, error,
+                )
+            })?;
+        transport.socket_opened(request_id, generation)?;
+        runtime
+            .outbox_mut()
+            .install_protocol_replies(reservation, request_id, vec![step1]);
+
+        self.finish_transport_directive(request_id, now_millis, false, false)
     }
 
-    /// Current-generation close with a Rust-owned disposition; stale
-    /// generations are observable no-ops. An accepted close clears the
-    /// transport-scoped awareness peers (Task 10); desired local awareness
-    /// survives by construction.
-    pub(crate) fn socket_closed(
+    /// Current native socket-close callback. The accepted closure retires
+    /// its lease without consuming the retained frame and schedules only
+    /// Rust's retry deadline.
+    pub(crate) fn collaboration_socket_close(
         &mut self,
         request_id: u64,
         generation: crate::collaboration_runtime::state::TransportGeneration,
         disposition: crate::collaboration_runtime::state::SocketCloseDisposition,
-    ) -> Result<TransportState, SessionError> {
-        let state =
-            self.collaboration
-                .transport
-                .socket_closed(request_id, generation, disposition)?;
-        self.clear_transport_scoped_peers();
-        Ok(state)
+        now_millis: u64,
+    ) -> Result<CollaborationTransportDirective, SessionError> {
+        self.collaboration
+            .transport
+            .admit_socket_close(request_id, generation)?;
+        self.check_collaboration_now(request_id, now_millis)?;
+        self.collaboration.transport.socket_closed(
+            request_id,
+            generation,
+            disposition,
+            now_millis,
+        )?;
+        let peers_changed = self.retire_transport_scope();
+        self.finish_transport_directive(request_id, now_millis, false, peers_changed)
     }
 
-    /// Local intent: close the live attempt -> `Disconnected`. Clears the
-    /// transport-scoped awareness peers like every generation close.
+    /// Test-only local close helper for legacy lifecycle coverage.
+    #[cfg(test)]
     pub(crate) fn disconnect(&mut self, request_id: u64) -> Result<(), SessionError> {
         self.collaboration.transport.disconnect(request_id)?;
-        self.clear_transport_scoped_peers();
+        self.retire_transport_scope();
         Ok(())
     }
 
@@ -967,7 +1017,7 @@ impl EditorSession {
     /// Remote awareness peers are transport-scoped and clear here too.
     pub(crate) fn detach(&mut self, request_id: u64) -> Result<(), SessionError> {
         self.collaboration.transport.detach(request_id)?;
-        self.clear_transport_scoped_peers();
+        self.retire_transport_scope();
         Ok(())
     }
 
@@ -979,7 +1029,7 @@ impl EditorSession {
         self.collaboration
             .transport
             .reattach(request_id, room_bound)?;
-        self.clear_transport_scoped_peers();
+        self.retire_transport_scope();
         Ok(())
     }
 
@@ -987,15 +1037,18 @@ impl EditorSession {
     /// transition: remote awareness peers are transport-scoped, desired
     /// local awareness is retained. Sessions without an attached runtime
     /// own no peers by construction.
-    fn clear_transport_scoped_peers(&mut self) {
+    fn retire_transport_scope(&mut self) -> bool {
         if let Some(runtime) = self.collaboration.runtime.as_mut() {
-            runtime.clear_transport_peers(&mut self.engine);
+            runtime.outbox_mut().release_lease();
+            return runtime.clear_transport_peers(&mut self.engine);
         }
+        false
     }
 
     /// Crate-private Task 9 seam: an accepted current-generation Sync
     /// Step 2 turns `Handshaking` into `Synchronized`. Transport-only —
     /// document-state promotion is Task 9's Step 2 handling.
+    #[cfg(test)]
     pub(crate) fn mark_synchronized(
         &mut self,
         request_id: u64,
@@ -1012,11 +1065,43 @@ impl EditorSession {
     /// generation discipline); the session only performs the field-disjoint
     /// split borrow. Sessions without an attached runtime own no protocol
     /// surface and refuse like every other runtime-shaped operation.
+    pub(crate) fn collaboration_receive(
+        &mut self,
+        request_id: u64,
+        generation: crate::collaboration_runtime::state::TransportGeneration,
+        bytes: &[u8],
+        now_millis: u64,
+    ) -> Result<CollaborationTransportDirective, SessionError> {
+        self.collaboration
+            .transport
+            .admit_receive(request_id, generation)?;
+        self.check_collaboration_now(request_id, now_millis)?;
+        let outcome = self.receive_message_at(request_id, generation, bytes, now_millis)?;
+        self.finish_transport_directive(
+            request_id,
+            now_millis,
+            outcome.remote_commit_applied,
+            outcome.peers_changed,
+        )
+    }
+
+    /// Test-only detailed receive seam retained for protocol matrix tests.
+    #[cfg(test)]
     pub(crate) fn receive_message(
         &mut self,
         request_id: u64,
         generation: crate::collaboration_runtime::state::TransportGeneration,
         bytes: &[u8],
+    ) -> Result<crate::collaboration_runtime::protocol::ReceiveOutcome, SessionError> {
+        self.receive_message_at(request_id, generation, bytes, 0)
+    }
+
+    fn receive_message_at(
+        &mut self,
+        request_id: u64,
+        generation: crate::collaboration_runtime::state::TransportGeneration,
+        bytes: &[u8],
+        now_millis: u64,
     ) -> Result<crate::collaboration_runtime::protocol::ReceiveOutcome, SessionError> {
         let CollaborationLifecycle {
             transport,
@@ -1033,47 +1118,151 @@ impl EditorSession {
                 engine: &mut self.engine,
                 document_state: &mut self.document_state,
                 limits,
+                now_millis,
             },
             bytes,
         )
     }
 
-    /// The standard framed Sync Step 1 message the caller owes after
-    /// `socket_opened` (read-only; framing lives in the protocol module).
-    pub(crate) fn sync_step1_message(&self, request_id: u64) -> Result<Vec<u8>, SessionError> {
-        crate::collaboration_runtime::protocol::sync_step1_message(&self.engine, request_id)
-    }
-
-    /// Task 12: the next outbound wire frame for the live generation. The
-    /// generation gate is identical to `receive_message` (the live
-    /// generation in `Handshaking`/`Synchronized`); pending protocol
-    /// replies drain before document updates so peer-triggered answers move
-    /// first, and `None` means the queues are empty. Every returned frame
-    /// is a complete y-protocols message: replies are pre-framed at
-    /// enqueue, and raw outbox document updates are wrapped in standard
-    /// Sync Update framing at pickup. Sessions without an attached runtime
-    /// refuse like every other runtime-shaped operation.
-    pub(crate) fn take_next_outbound_frame(
+    /// Retain at most one current-generation frame until exact ACK/NACK.
+    pub(crate) fn lease_outbound(
         &mut self,
         request_id: u64,
         generation: crate::collaboration_runtime::state::TransportGeneration,
-    ) -> Result<Option<Vec<u8>>, SessionError> {
+    ) -> Result<Option<OutboundFrameLease>, SessionError> {
         let CollaborationLifecycle {
             transport, runtime, ..
         } = &mut self.collaboration;
         let runtime = runtime.as_mut().ok_or_else(no_attached_runtime)?;
-        transport.admit_outbound_take(request_id, generation)?;
-        let outbox = runtime.outbox_mut();
-        Ok(outbox
-            .take_next_protocol_reply()
-            .map(|reply| reply.message)
-            .or_else(|| {
-                outbox.take_next().map(|update| {
-                    crate::collaboration_runtime::protocol::frame_sync_update_message(
-                        &update.update_v1,
-                    )
-                })
-            }))
+        transport.admit_outbound_lease(request_id, generation)?;
+        let lease = runtime.outbox_mut().lease_next().map_err(|error| {
+            outbound_lease_session_error(error, request_id, "leaseOutbound", None)
+        })?;
+        Ok(lease.map(|lease| {
+            let frame = match lease.payload {
+                crate::collaboration_runtime::outbox::OutboundLeasePayload::ProtocolReply(
+                    frame,
+                ) => frame,
+                crate::collaboration_runtime::outbox::OutboundLeasePayload::DocumentUpdate(
+                    update_v1,
+                ) => crate::collaboration_runtime::protocol::frame_sync_update_message(&update_v1),
+            };
+            OutboundFrameLease {
+                lease_id: lease.lease_id.value(),
+                frame,
+            }
+        }))
+    }
+
+    /// Consume exactly the retained current-generation lease.
+    pub(crate) fn ack_outbound(
+        &mut self,
+        request_id: u64,
+        generation: crate::collaboration_runtime::state::TransportGeneration,
+        lease_id: u64,
+    ) -> Result<(), SessionError> {
+        let CollaborationLifecycle {
+            transport, runtime, ..
+        } = &mut self.collaboration;
+        let runtime = runtime.as_mut().ok_or_else(no_attached_runtime)?;
+        transport.admit_outbound_lease(request_id, generation)?;
+        runtime
+            .outbox_mut()
+            .ack_lease(crate::collaboration_runtime::outbox::OutboundLeaseId::from_value(lease_id))
+            .map_err(|error| {
+                outbound_lease_session_error(error, request_id, "ackOutbound", Some(lease_id))
+            })
+    }
+
+    /// Release exactly the retained current-generation lease without
+    /// consuming the queue front.
+    pub(crate) fn nack_outbound(
+        &mut self,
+        request_id: u64,
+        generation: crate::collaboration_runtime::state::TransportGeneration,
+        lease_id: u64,
+    ) -> Result<(), SessionError> {
+        let CollaborationLifecycle {
+            transport, runtime, ..
+        } = &mut self.collaboration;
+        let runtime = runtime.as_mut().ok_or_else(no_attached_runtime)?;
+        transport.admit_outbound_lease(request_id, generation)?;
+        runtime
+            .outbox_mut()
+            .nack_lease(crate::collaboration_runtime::outbox::OutboundLeaseId::from_value(lease_id))
+            .map_err(|error| {
+                outbound_lease_session_error(error, request_id, "nackOutbound", Some(lease_id))
+            })
+    }
+
+    fn check_collaboration_now(
+        &self,
+        request_id: u64,
+        now_millis: u64,
+    ) -> Result<(), SessionError> {
+        match self.collaboration.runtime.as_ref() {
+            Some(runtime) => runtime.check_now_millis(request_id, now_millis),
+            None => Ok(()),
+        }
+    }
+
+    fn drive_awareness(
+        &mut self,
+        request_id: u64,
+        now_millis: u64,
+    ) -> Result<crate::collaboration_runtime::awareness::TickOutcome, SessionError> {
+        let CollaborationLifecycle {
+            transport,
+            runtime,
+            limits,
+            ..
+        } = &mut self.collaboration;
+        let Some(runtime) = runtime.as_mut() else {
+            return Ok(crate::collaboration_runtime::awareness::TickOutcome {
+                renewed_local: false,
+                outbound_changed: false,
+                expired_peers: Vec::new(),
+                peers_changed: false,
+                next_deadline_millis: None,
+            });
+        };
+        runtime.tick(
+            request_id,
+            now_millis,
+            crate::collaboration_runtime::awareness::AwarenessContext {
+                engine: &mut self.engine,
+                transport_state: transport.state(),
+                limits,
+            },
+        )
+    }
+
+    fn finish_transport_directive(
+        &mut self,
+        request_id: u64,
+        now_millis: u64,
+        remote_commit_applied: bool,
+        peers_changed: bool,
+    ) -> Result<CollaborationTransportDirective, SessionError> {
+        let awareness = self.drive_awareness(request_id, now_millis)?;
+        let room_bound = self.room_bound();
+        let generation_to_open = self
+            .collaboration
+            .transport
+            .drive(request_id, room_bound, now_millis)?;
+        let next_deadline_millis = minimum_deadline(
+            self.collaboration.transport.next_retry_deadline_millis(),
+            awareness.next_deadline_millis,
+        );
+        Ok(CollaborationTransportDirective {
+            transport_state: self.collaboration.transport.state(),
+            generation_to_open,
+            next_deadline_millis,
+            remote_commit_applied,
+            peers_changed: peers_changed || awareness.peers_changed,
+            renewed_local: awareness.renewed_local,
+            expired_peers: awareness.expired_peers,
+        })
     }
 
     /// Test-only raw awareness fixture seam. Production callers must use the
@@ -1127,17 +1316,6 @@ impl EditorSession {
             .as_ref()
             .ok_or_else(no_attached_runtime)?;
         Ok(runtime.peers(&mut self.engine))
-    }
-
-    /// Task 10: deterministic awareness clock work; `now_millis` is the only
-    /// time source (JavaScript schedules the returned deadline).
-    pub(crate) fn awareness_tick(
-        &mut self,
-        request_id: u64,
-        now_millis: u64,
-    ) -> Result<crate::collaboration_runtime::awareness::TickOutcome, SessionError> {
-        let (runtime, context) = self.awareness_runtime_and_context()?;
-        runtime.tick(request_id, now_millis, context)
     }
 
     /// Field-disjoint split borrow for awareness operations, mirroring the
@@ -1298,6 +1476,48 @@ fn split_engine_and_outbox<'session>(
     (engine, outbox)
 }
 
+fn minimum_deadline(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (deadline @ Some(_), None) | (None, deadline @ Some(_)) => deadline,
+        (None, None) => None,
+    }
+}
+
+fn outbound_lease_session_error(
+    error: crate::collaboration_runtime::outbox::OutboundLeaseError,
+    request_id: u64,
+    action: &'static str,
+    lease_id: Option<u64>,
+) -> SessionError {
+    use crate::collaboration_runtime::outbox::OutboundLeaseError;
+    use crate::collaboration_runtime::state::{
+        TRANSPORT_GENERATION_EXHAUSTED, TRANSPORT_INVALID_TRANSITION,
+    };
+
+    let (code, message) = match error {
+        OutboundLeaseError::LeaseIdExhausted => (
+            TRANSPORT_GENERATION_EXHAUSTED,
+            "outbound lease identifier space is exhausted",
+        ),
+        OutboundLeaseError::NoActiveLease => (
+            TRANSPORT_INVALID_TRANSITION,
+            "no outbound lease is active for this disposition",
+        ),
+        OutboundLeaseError::LeaseMismatch => (
+            TRANSPORT_INVALID_TRANSITION,
+            "outbound lease identifier does not match the retained queue front",
+        ),
+    };
+    let mut session_error = SessionError::new(ErrorDomain::Transport, code, message);
+    session_error.request_id = Some(request_id);
+    session_error.details = Some(serde_json::json!({
+        "action": action,
+        "leaseId": lease_id.map(|value| value.to_string()),
+    }));
+    session_error
+}
+
 impl NativeBridgeLifecycle {
     fn teardown(&mut self) {
         self.active = false;
@@ -1309,6 +1529,9 @@ impl CollaborationLifecycle {
         if self.active {
             self.active = false;
             {
+                if let Some(runtime) = self.runtime.as_mut() {
+                    runtime.outbox_mut().release_lease();
+                }
                 self.transport.teardown_destroyed();
                 self.runtime = None;
                 self.lifecycle_test_teardowns += 1;

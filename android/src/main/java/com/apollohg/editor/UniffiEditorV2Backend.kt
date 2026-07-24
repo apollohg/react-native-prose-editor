@@ -3,7 +3,16 @@ package com.apollohg.editor
 import uniffi.editor_core.editorV2ApplyCommand
 import uniffi.editor_core.editorV2ApplyInput
 import uniffi.editor_core.editorV2ApplyLocalApi
-import uniffi.editor_core.editorV2CollaborationTakeOutbound
+import uniffi.editor_core.editorV2CollaborationAckOutbound
+import uniffi.editor_core.editorV2CollaborationDetach
+import uniffi.editor_core.editorV2CollaborationDrive
+import uniffi.editor_core.editorV2CollaborationLeaseOutbound
+import uniffi.editor_core.editorV2CollaborationNackOutbound
+import uniffi.editor_core.editorV2CollaborationPeers
+import uniffi.editor_core.editorV2CollaborationReattach
+import uniffi.editor_core.editorV2CollaborationReceive
+import uniffi.editor_core.editorV2CollaborationSocketClose
+import uniffi.editor_core.editorV2CollaborationSocketOpen
 import uniffi.editor_core.editorV2Create
 import uniffi.editor_core.editorV2Destroy
 import uniffi.editor_core.editorV2DocToScalar
@@ -19,7 +28,6 @@ import uniffi.editor_core.editorV2ScalarToDoc
 import uniffi.editor_core.editorV2SetSelection
 import uniffi.editor_core.editorV2SnapshotExport
 import uniffi.editor_core.editorV2Undo
-import uniffi.editor_core.FfiBytesResult
 import uniffi.editor_core.FfiError
 import uniffi.editor_core.FfiJsonResult
 
@@ -38,14 +46,6 @@ internal object UniffiEditorV2Backend : EditorV2Backend {
         EditorV2Error(domain = "boundary", code = "FFI_RESULT_INVALID", message = message)
 
     private fun normalize(result: FfiJsonResult): EditorV2CallResult<String> {
-        val value = result.value
-        val error = result.error
-        if (value != null && error == null) return EditorV2CallResult.Ok(value)
-        if (value == null && error != null) return EditorV2CallResult.Err(error.toV2())
-        return EditorV2CallResult.Err(contractError("v2 result must carry exactly one of value/error"))
-    }
-
-    private fun normalize(result: FfiBytesResult): EditorV2CallResult<ByteArray> {
         val value = result.value
         val error = result.error
         if (value != null && error == null) return EditorV2CallResult.Ok(value)
@@ -92,8 +92,71 @@ internal object UniffiEditorV2Backend : EditorV2Backend {
     override fun redo(editorId: String, requestJson: String): EditorV2CallResult<String> =
         normalize(editorV2Redo(editorId, requestJson))
 
-    override fun collaborationTakeOutbound(editorId: String, generation: String): EditorV2CallResult<ByteArray> =
-        normalize(editorV2CollaborationTakeOutbound(editorId, generation))
+    override fun collaborationDrive(editorId: String, nowMillis: String): EditorV2CallResult<String> =
+        normalize(editorV2CollaborationDrive(editorId, nowMillis))
+
+    override fun collaborationSocketOpen(
+        editorId: String,
+        generation: String,
+        nowMillis: String,
+    ): EditorV2CallResult<String> =
+        normalize(editorV2CollaborationSocketOpen(editorId, generation, nowMillis))
+
+    override fun collaborationReceive(
+        editorId: String,
+        generation: String,
+        message: ByteArray,
+        nowMillis: String,
+    ): EditorV2CallResult<String> =
+        normalize(editorV2CollaborationReceive(editorId, generation, message, nowMillis))
+
+    override fun collaborationSocketClose(
+        editorId: String,
+        generation: String,
+        code: UInt?,
+        reason: String?,
+        nowMillis: String,
+    ): EditorV2CallResult<String> =
+        normalize(editorV2CollaborationSocketClose(editorId, generation, code, reason, nowMillis))
+
+    override fun collaborationLeaseOutbound(
+        editorId: String,
+        generation: String,
+    ): EditorV2LeaseResult {
+        val result = editorV2CollaborationLeaseOutbound(editorId, generation)
+        val value = result.value
+        val error = result.error
+        return when {
+            value != null && !result.empty && error == null ->
+                EditorV2LeaseResult.Value(EditorV2OutboundLease(value.leaseId, value.frame))
+            value == null && result.empty && error == null -> EditorV2LeaseResult.Empty
+            value == null && !result.empty && error != null -> EditorV2LeaseResult.Err(error.toV2())
+            else -> EditorV2LeaseResult.Err(contractError("v2 lease result violates the frozen shape"))
+        }
+    }
+
+    override fun collaborationAckOutbound(
+        editorId: String,
+        generation: String,
+        leaseId: String,
+    ): EditorV2CallResult<String> =
+        normalize(editorV2CollaborationAckOutbound(editorId, generation, leaseId))
+
+    override fun collaborationNackOutbound(
+        editorId: String,
+        generation: String,
+        leaseId: String,
+    ): EditorV2CallResult<String> =
+        normalize(editorV2CollaborationNackOutbound(editorId, generation, leaseId))
+
+    override fun collaborationDetach(editorId: String): EditorV2Error? =
+        editorV2CollaborationDetach(editorId).error?.toV2()
+
+    override fun collaborationReattach(editorId: String): EditorV2Error? =
+        editorV2CollaborationReattach(editorId).error?.toV2()
+
+    override fun collaborationPeers(editorId: String): EditorV2CallResult<String> =
+        normalize(editorV2CollaborationPeers(editorId))
 
     override fun snapshotExport(editorId: String): EditorV2CallResult<Pair<String, ByteArray>> {
         val result = editorV2SnapshotExport(editorId)

@@ -61,14 +61,6 @@ final class EditorV2Adapter {
             autonomousErrorLock.unlock()
         }
     }
-    /// Sink for drained outbound collaboration frames; the socket owner
-    /// (JS/TS in production, spies in tests) receives one frame per call.
-    var outboundFrameSink: ((Data) -> Void)?
-    /// The live collaboration generation, set by the transport owner while a
-    /// socket is current. `nil` disables the local-commit drain ping (the TS
-    /// controller's "no current socket" case).
-    var collaborationGeneration: String?
-
     /// The document revision the next mutation will be based on.
     private(set) var baseDocumentRevision: UInt64 = 0
     /// The state revision paired atomically with `baseDocumentRevision` by
@@ -1215,8 +1207,10 @@ final class EditorV2Adapter {
                 emit(contractError("v2 mutation outcome violates the frozen shape"))
                 return nil
             }
+            let changed: Bool
             switch outcome.kind {
-            case .transaction(_, let revision):
+            case .transaction(let didChange, let revision):
+                changed = didChange
                 baseDocumentRevision = revision
                 if let postSelectionMirror {
                     lastSyncedScalarSelection = postSelectionMirror
@@ -1225,7 +1219,8 @@ final class EditorV2Adapter {
                 // Nothing applicable: no commit happened; surface the current
                 // state (legacy no-op command parity) and skip the drain.
                 return refreshInternal(mirrorSelection: postSelectionMirror ?? preSelection)?.updateJSON
-            case .replacement(_, let revision):
+            case .replacement(let didChange, let revision):
+                changed = didChange
                 baseDocumentRevision = revision
                 // Whole-root replacement resets the engine-side selection;
                 // the cached sync point is no longer valid.
@@ -1241,7 +1236,9 @@ final class EditorV2Adapter {
             )?.updateJSON else {
                 return nil
             }
-            drainOutboundIfNeeded()
+            if changed {
+                notifyCollaborationMutation()
+            }
             return update
         }
     }
@@ -1311,41 +1308,22 @@ final class EditorV2Adapter {
             }
             guard let update = refreshInternal(mirrorSelection: nil)?.updateJSON else { return nil }
             if changed {
-                drainOutboundIfNeeded()
+                notifyCollaborationMutation()
             }
             return update
         }
     }
 
-    // MARK: - Drain ping (mirrors the TS controller's onLocalDocumentCommit)
+    // MARK: - Native transport wake
 
-    /// The manual drain ping: on a room-bound session with a live
-    /// generation and a frame sink, drain the outbox one frame per call
-    /// until empty (protocol replies before document updates — Rust owns the
-    /// ordering). Called internally after every accepted local mutation;
-    /// also the public entry for the transport owner (the TS controller's
-    /// `onLocalDocumentCommit` semantics).
-    func driveCollaborationDrainPing() {
-        drainOutboundIfNeeded()
-    }
-
-    private func drainOutboundIfNeeded() {
-        guard roomBound, let generation = collaborationGeneration, let sink = outboundFrameSink else {
-            return
-        }
-        while true {
-            let result = editorV2CollaborationTakeOutbound(editorId: editorId, generation: generation)
-            if let error = result.error {
-                emit(error)
-                return
-            }
-            guard let frame = result.value else {
-                emit(contractError("v2 takeOutbound result must carry exactly one of value/error"))
-                return
-            }
-            if frame.isEmpty { return }
-            sink(frame)
-        }
+    /// A successful room mutation wakes the handle-owned native driver.
+    /// The adapter never owns a generation, socket, frame, or retry timer.
+    private func notifyCollaborationMutation() {
+        guard roomBound, let nativeEditorId = UInt64(editorId) else { return }
+        NativeCollaborationTransportRegistry.notifyOutboundAvailable(
+            editorId: nativeEditorId,
+            reason: .localMutation
+        )
     }
 
     // MARK: - Typed verbs (one method per legacy choke point)

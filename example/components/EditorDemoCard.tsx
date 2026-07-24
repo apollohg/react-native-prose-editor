@@ -16,8 +16,6 @@ type EditorDemoCardProps = {
     documentHandle: NativeEditorDocumentHandle;
     /** Revision signal from the collaboration controller (remote commits, promotions). */
     documentRevision?: string | null;
-    /** Pinged after each local engine mutation so collaboration can flush outbound frames. */
-    onLocalDocumentCommit?: () => void;
     theme: React.ComponentProps<typeof NativeRichTextEditor>['theme'];
     addons?: EditorAddons;
     onContentChange: (html: string) => void;
@@ -30,7 +28,6 @@ export function EditorDemoCard({
     editorRef,
     documentHandle,
     documentRevision,
-    onLocalDocumentCommit,
     theme,
     addons,
     onContentChange,
@@ -48,7 +45,6 @@ export function EditorDemoCard({
                 ref={editorRef}
                 documentHandle={documentHandle}
                 documentRevision={documentRevision}
-                onLocalDocumentCommit={onLocalDocumentCommit}
                 theme={theme}
                 addons={addons}
                 placeholder='Start typing...'

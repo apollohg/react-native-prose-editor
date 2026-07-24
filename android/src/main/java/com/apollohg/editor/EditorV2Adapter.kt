@@ -28,8 +28,6 @@ internal class EditorV2Adapter private constructor(
 ) : EditorV2Driver {
 
     var onAutonomousError: ((EditorV2Error) -> Unit)? = null
-    var outboundFrameSink: ((ByteArray) -> Unit)? = null
-    var collaborationGeneration: String? = null
 
     private data class AutonomousErrorOwner(
         val token: Long,
@@ -748,13 +746,14 @@ internal class EditorV2Adapter private constructor(
                     emit(contractError("v2 mutation outcome violates the frozen shape"))
                     return null
                 }
-                when (outcome) {
+                val changed = when (outcome) {
                     is MutationOutcome.Transaction -> {
                         baseDocumentRevision = outcome.revision
                         if (postSelectionMirror != null) {
                             lastSyncedScalarSelection = postSelectionMirror
                         }
                         invalidateCachedAtomicState(postSelectionMirror ?: preSelection)
+                        outcome.changed
                     }
                     is MutationOutcome.NotApplicable -> {
                         return refreshInternal(postSelectionMirror ?: preSelection)
@@ -764,11 +763,12 @@ internal class EditorV2Adapter private constructor(
                         // Whole-root replacement resets the engine-side selection.
                         lastSyncedScalarSelection = null
                         invalidateCachedAtomicState(null)
+                        outcome.changed
                     }
                 }
                 val mirror = if (includeSelectionInUpdate) postSelectionMirror ?: preSelection else null
                 val update = refreshInternal(mirror) ?: return null
-                drainOutboundIfNeeded()
+                if (changed) notifyCollaborationMutation()
                 update
             }
         }
@@ -812,7 +812,7 @@ internal class EditorV2Adapter private constructor(
                         lastSyncedScalarSelection = postSelectionMirror
                         invalidateCachedAtomicState(postSelectionMirror)
                         val update = refreshInternal(postSelectionMirror) ?: return null
-                        if (outcome.changed) drainOutboundIfNeeded()
+                        if (outcome.changed) notifyCollaborationMutation()
                         EditorV2SplitRender(update, committed = outcome.changed)
                     }
                     is MutationOutcome.Replacement -> {
@@ -820,7 +820,7 @@ internal class EditorV2Adapter private constructor(
                         lastSyncedScalarSelection = null
                         invalidateCachedAtomicState(null)
                         val update = refreshInternal(postSelectionMirror) ?: return null
-                        if (outcome.changed) drainOutboundIfNeeded()
+                        if (outcome.changed) notifyCollaborationMutation()
                         EditorV2SplitRender(update, committed = outcome.changed)
                     }
                 }
@@ -851,35 +851,21 @@ internal class EditorV2Adapter private constructor(
                 }
                 val update = refreshInternal(null) ?: return null
                 if (changed) {
-                    drainOutboundIfNeeded()
+                    notifyCollaborationMutation()
                 }
                 update
             }
         }
     }
 
-    // ── Drain ping (mirrors the TS controller's onLocalDocumentCommit) ──
+    // ── Native transport wake ──
 
-    override fun driveCollaborationDrainPing() {
-        drainOutboundIfNeeded()
-    }
-
-    private fun drainOutboundIfNeeded() {
-        val generation = collaborationGeneration ?: return
-        val sink = outboundFrameSink ?: return
+    private fun notifyCollaborationMutation() {
         if (!roomBound) return
-        while (true) {
-            when (val result = backend.collaborationTakeOutbound(editorId, generation)) {
-                is EditorV2CallResult.Err -> {
-                    emit(result.error)
-                    return
-                }
-                is EditorV2CallResult.Ok -> {
-                    if (result.value.isEmpty()) return
-                    sink(result.value)
-                }
-            }
-        }
+        NativeCollaborationTransportRegistry.notifyOutboundAvailable(
+            editorId,
+            CollaborationWakeReason.LOCAL_MUTATION,
+        )
     }
 
     // ── Typed verbs ──

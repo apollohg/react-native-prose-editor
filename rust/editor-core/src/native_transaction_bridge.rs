@@ -794,14 +794,77 @@ pub mod native_bridge_test_support {
         })
     }
 
-    pub fn take_next_update(id: u64) -> Result<Option<(u64, Vec<u8>)>, TestError> {
+    /// Retain the next raw document update for test transport simulation.
+    /// The entry stays charged until `ack_leased_update`; protocol frames are
+    /// intentionally not exposed by this local-mutation fixture seam.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct LeasedDocumentUpdate {
+        pub lease_id: u64,
+        pub request_id: u64,
+        pub update_v1: Vec<u8>,
+    }
+
+    pub fn lease_next_update(id: u64) -> Result<Option<LeasedDocumentUpdate>, TestError> {
         with_live_session(id, |session| {
             let (_, outbox) = session.engine_and_outbox();
-            Ok(outbox.and_then(|outbox| {
-                outbox
-                    .take_next()
-                    .map(|entry| (entry.request_id, entry.update_v1))
-            }))
+            let Some(outbox) = outbox else {
+                return Ok(None);
+            };
+            match outbox.lease_next().map_err(|error| {
+                crate::session::SessionError::new(
+                    crate::session::ErrorDomain::Transport,
+                    "TRANSPORT_INVALID_TRANSITION",
+                    format!("native bridge test lease failed: {error:?}"),
+                )
+            })? {
+                None => Ok(None),
+                Some(crate::collaboration_runtime::outbox::OutboundLease {
+                    lease_id,
+                    payload:
+                        crate::collaboration_runtime::outbox::OutboundLeasePayload::DocumentUpdate(
+                            update_v1,
+                        ),
+                }) => {
+                    let request_id = outbox
+                        .pending_document_update_request_id_for_leased_front()
+                        .expect("a leased document front has its original request id");
+                    Ok(Some(LeasedDocumentUpdate {
+                        lease_id: lease_id.value(),
+                        request_id,
+                        update_v1,
+                    }))
+                }
+                Some(crate::collaboration_runtime::outbox::OutboundLease {
+                    lease_id: _,
+                    payload:
+                        crate::collaboration_runtime::outbox::OutboundLeasePayload::ProtocolReply(_),
+                }) => {
+                    outbox.release_lease();
+                    Err(crate::session::SessionError::new(
+                        crate::session::ErrorDomain::Transport,
+                        "TRANSPORT_INVALID_TRANSITION",
+                        "native bridge document fixture cannot lease a protocol reply",
+                    ))
+                }
+            }
+        })
+    }
+
+    pub fn ack_leased_update(id: u64, lease_id: u64) -> Result<(), TestError> {
+        with_live_session(id, |session| {
+            let (_, outbox) = session.engine_and_outbox();
+            let outbox = outbox.ok_or_else(crate::session::no_attached_runtime)?;
+            outbox
+                .ack_lease(
+                    crate::collaboration_runtime::outbox::OutboundLeaseId::from_value(lease_id),
+                )
+                .map_err(|error| {
+                    crate::session::SessionError::new(
+                        crate::session::ErrorDomain::Transport,
+                        "TRANSPORT_INVALID_TRANSITION",
+                        format!("native bridge test lease ACK failed: {error:?}"),
+                    )
+                })
         })
     }
 

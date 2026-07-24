@@ -71,6 +71,4 @@ internal interface EditorV2Driver {
     /** Stale-revision recovery: refresh from Rust state, never retry the failed op. */
     fun refreshFromRustState(mirrorSelection: IntArray?): String?
 
-    /** Manual drain ping (the TS controller's `onLocalDocumentCommit` semantics). */
-    fun driveCollaborationDrainPing()
 }

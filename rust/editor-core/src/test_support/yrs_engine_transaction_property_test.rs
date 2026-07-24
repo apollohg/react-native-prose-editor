@@ -1620,8 +1620,11 @@ mod outbound_update_bounds {
              -> Result<(), TestCaseError> {
                 let bound = bridge::last_reserved_upper_bound(id).unwrap();
                 let bound = bound.unwrap_or_else(|| panic!("{label}: missing reservation"));
-                let (_, update) = bridge::take_next_update(id).unwrap()
-                    .unwrap_or_else(|| panic!("{label}: missing outbox entry"));
+                let lease = bridge::lease_next_update(id)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{label}: missing outbox lease"));
+                let lease_id = lease.lease_id;
+                let update = lease.update_v1;
                 prop_assert!(
                     update.len() <= bound,
                     "{} captured {} bytes above admitted bound {}",
@@ -1637,8 +1640,9 @@ mod outbound_update_bounds {
                     "{} twin replica must converge from the captured update",
                     label,
                 );
+                bridge::ack_leased_update(id, lease_id).unwrap();
                 prop_assert!(
-                    bridge::take_next_update(id).unwrap().is_none(),
+                    bridge::lease_next_update(id).unwrap().is_none(),
                     "{} must enqueue exactly one entry",
                     label,
                 );

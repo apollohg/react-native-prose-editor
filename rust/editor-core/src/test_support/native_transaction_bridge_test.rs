@@ -36,6 +36,16 @@ fn revision(id: u64) -> u64 {
     bridge::session_audit(id).unwrap().document_revision
 }
 
+fn lease_update(id: u64) -> bridge::LeasedDocumentUpdate {
+    bridge::lease_next_update(id)
+        .unwrap()
+        .expect("durable local work must retain an outbox lease")
+}
+
+fn ack_update(id: u64, lease_id: u64) {
+    bridge::ack_leased_update(id, lease_id).unwrap();
+}
+
 fn input_envelope(request_id: u64, base_revision: u64, text: &str) -> String {
     serde_json::json!({
         "version": 1,
@@ -302,7 +312,8 @@ fn oversized_envelopes_reject_before_parsing() {
 fn stale_base_revisions_reject_with_revision_mismatch() {
     let id = session_with_runtime();
     bridge::submit_input(id, &input_envelope(51, revision(id), "a")).unwrap();
-    bridge::take_next_update(id).unwrap().unwrap();
+    let lease = lease_update(id);
+    ack_update(id, lease.lease_id);
     let stale = revision(id) - 1;
     let before = bridge::session_audit(id).unwrap();
 
@@ -390,7 +401,8 @@ fn input_filter_keeps_matching_characters_and_filters_whole_commits() {
         "filtered insert must keep only digits: {text}"
     );
     assert!(!text.contains("a1b2"));
-    bridge::take_next_update(id).unwrap().unwrap();
+    let lease = lease_update(id);
+    ack_update(id, lease.lease_id);
 
     // A fully filtered commit is a structured no-op: no document change, no
     // history entry, no reservation, no outbox entry.
@@ -480,7 +492,9 @@ fn captured_updates_converge_on_a_twin_replica_across_all_durable_paths() {
 
     let mut drain_and_replay = |label: &str| {
         let bound = bridge::last_reserved_upper_bound(id).unwrap().unwrap();
-        let (_, update) = bridge::take_next_update(id).unwrap().unwrap();
+        let lease = lease_update(id);
+        let lease_id = lease.lease_id;
+        let update = lease.update_v1;
         assert!(
             update.len() <= bound,
             "{label}: captured {} exceeds admitted bound {bound}",
@@ -495,8 +509,9 @@ fn captured_updates_converge_on_a_twin_replica_across_all_durable_paths() {
             audit.document_json,
             "{label}: twin must converge from the captured update alone",
         );
+        ack_update(id, lease_id);
         assert!(
-            bridge::take_next_update(id).unwrap().is_none(),
+            bridge::lease_next_update(id).unwrap().is_none(),
             "{label}: exactly one entry per durable commit",
         );
     };
@@ -542,14 +557,17 @@ fn captured_updates_converge_on_a_twin_replica_across_all_durable_paths() {
 fn history_pop_reservation_bound_is_the_exact_captured_length() {
     let id = session_with_runtime();
     bridge::submit_input(id, &input_envelope(101, revision(id), "pop")).unwrap();
-    bridge::take_next_update(id).unwrap().unwrap();
+    let lease = lease_update(id);
+    ack_update(id, lease.lease_id);
 
     let probed = bridge::probe_history_pop_bytes(id, 102, true)
         .unwrap()
         .unwrap();
     assert!(bridge::undo(id, 102).unwrap());
     let bound = bridge::last_reserved_upper_bound(id).unwrap().unwrap();
-    let (_, update) = bridge::take_next_update(id).unwrap().unwrap();
+    let lease = lease_update(id);
+    let lease_id = lease.lease_id;
+    let update = lease.update_v1;
     assert_eq!(
         update.len(),
         probed,
@@ -560,6 +578,7 @@ fn history_pop_reservation_bound_is_the_exact_captured_length() {
         bound,
         "pop reservations are exact-length bounds"
     );
+    ack_update(id, lease_id);
     bridge::destroy_session(id);
 }
 
@@ -600,7 +619,9 @@ fn prepared_session(path: DurablePath) -> u64 {
             assert!(bridge::undo(id, 902).unwrap());
         }
     }
-    while bridge::take_next_update(id).unwrap().is_some() {}
+    while let Some(lease) = bridge::lease_next_update(id).unwrap() {
+        ack_update(id, lease.lease_id);
+    }
     id
 }
 

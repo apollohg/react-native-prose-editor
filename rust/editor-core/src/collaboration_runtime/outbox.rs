@@ -145,6 +145,56 @@ pub struct OutboxDocumentUpdate {
     pub update_v1: Vec<u8>,
 }
 
+/// Opaque identity for one retained outbound handoff lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OutboundLeaseId(u64);
+
+impl OutboundLeaseId {
+    pub(crate) fn value(self) -> u64 {
+        self.0
+    }
+
+    pub(crate) fn from_value(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+/// Bytes handed to the transport under an outbound lease. Protocol replies
+/// are already framed; document updates are raw Update-v1 bytes and are
+/// framed at the session/protocol boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OutboundLeasePayload {
+    ProtocolReply(Vec<u8>),
+    DocumentUpdate(Vec<u8>),
+}
+
+/// One retained outbound queue-front lease.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutboundLease {
+    pub(crate) lease_id: OutboundLeaseId,
+    pub(crate) payload: OutboundLeasePayload,
+}
+
+/// Lease lifecycle failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutboundLeaseError {
+    LeaseIdExhausted,
+    NoActiveLease,
+    LeaseMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutboundLeaseKind {
+    ProtocolReply,
+    DocumentUpdate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveOutboundLease {
+    id: OutboundLeaseId,
+    kind: OutboundLeaseKind,
+}
+
 /// Bounded outbound document-update queue owned by the collaboration
 /// runtime. Ceilings come from the session's validated
 /// [`CollaborationLimits`].
@@ -156,6 +206,8 @@ pub struct CollaborationOutbox {
     pending_bytes: usize,
     pending_protocol: VecDeque<OutboxProtocolReply>,
     pending_protocol_bytes: usize,
+    next_lease_id: Option<u64>,
+    active_lease: Option<ActiveOutboundLease>,
     ledger: Arc<ReservationLedger>,
     last_reserved_upper_bound: Option<usize>,
 }
@@ -170,6 +222,8 @@ impl CollaborationOutbox {
             pending_bytes: 0,
             pending_protocol: VecDeque::new(),
             pending_protocol_bytes: 0,
+            next_lease_id: Some(1),
+            active_lease: None,
             ledger: Arc::new(ReservationLedger::default()),
             last_reserved_upper_bound: None,
         }
@@ -286,20 +340,82 @@ impl CollaborationOutbox {
         }
     }
 
-    /// Pop the oldest pending document update for transport handoff.
-    pub fn take_next(&mut self) -> Option<OutboxDocumentUpdate> {
-        let entry = self.pending.pop_front()?;
-        self.pending_bytes = self.pending_bytes.saturating_sub(entry.update_v1.len());
-        Some(entry)
+    /// Lease the transport-priority queue front without consuming it.
+    /// Repeated calls while a lease is active return the same queue front and
+    /// lease identity; only an exact ACK releases the queued accounting.
+    pub(crate) fn lease_next(&mut self) -> Result<Option<OutboundLease>, OutboundLeaseError> {
+        if let Some(active_lease) = self.active_lease {
+            return Ok(Some(self.clone_leased_front(active_lease)));
+        }
+
+        let kind = if self.pending_protocol.front().is_some() {
+            OutboundLeaseKind::ProtocolReply
+        } else if self.pending.front().is_some() {
+            OutboundLeaseKind::DocumentUpdate
+        } else {
+            return Ok(None);
+        };
+        let lease_id = OutboundLeaseId(
+            self.next_lease_id
+                .ok_or(OutboundLeaseError::LeaseIdExhausted)?,
+        );
+        self.next_lease_id = self.next_lease_id.and_then(|id| id.checked_add(1));
+        let active_lease = ActiveOutboundLease { id: lease_id, kind };
+        self.active_lease = Some(active_lease);
+        Ok(Some(self.clone_leased_front(active_lease)))
     }
 
-    /// Pop the oldest pending framed protocol reply for transport handoff.
-    pub fn take_next_protocol_reply(&mut self) -> Option<OutboxProtocolReply> {
-        let entry = self.pending_protocol.pop_front()?;
-        self.pending_protocol_bytes = self
-            .pending_protocol_bytes
-            .saturating_sub(entry.message.len());
-        Some(entry)
+    /// Confirm transport delivery of the active queue front. The queue entry
+    /// and its accounting are released exactly once after an exact ID match.
+    pub(crate) fn ack_lease(
+        &mut self,
+        lease_id: OutboundLeaseId,
+    ) -> Result<(), OutboundLeaseError> {
+        let active_lease = self.require_matching_lease(lease_id)?;
+        match active_lease.kind {
+            OutboundLeaseKind::ProtocolReply => {
+                let entry = self
+                    .pending_protocol
+                    .front()
+                    .expect("an active protocol lease requires a queued protocol reply");
+                let remaining_bytes = self
+                    .pending_protocol_bytes
+                    .checked_sub(entry.message.len())
+                    .expect("active protocol lease accounting underflow");
+                let _ = self.pending_protocol.pop_front();
+                self.pending_protocol_bytes = remaining_bytes;
+            }
+            OutboundLeaseKind::DocumentUpdate => {
+                let entry = self
+                    .pending
+                    .front()
+                    .expect("an active document lease requires a queued document update");
+                let remaining_bytes = self
+                    .pending_bytes
+                    .checked_sub(entry.update_v1.len())
+                    .expect("active document lease accounting underflow");
+                let _ = self.pending.pop_front();
+                self.pending_bytes = remaining_bytes;
+            }
+        }
+        self.active_lease = None;
+        Ok(())
+    }
+
+    /// Reject the active transport handoff while preserving the queue front
+    /// and all pending accounting for a later lease.
+    pub(crate) fn nack_lease(
+        &mut self,
+        lease_id: OutboundLeaseId,
+    ) -> Result<(), OutboundLeaseError> {
+        self.require_matching_lease(lease_id)?;
+        self.active_lease = None;
+        Ok(())
+    }
+
+    /// Clear an active lease without consuming its retained queue front.
+    pub(crate) fn release_lease(&mut self) {
+        self.active_lease = None;
     }
 
     /// Task 11 teardown-on-restore: drop every pending framed protocol
@@ -309,6 +425,15 @@ impl CollaborationOutbox {
     /// untouched: restore rejects while any exist, so none can be here by
     /// the time this runs. Infallible by construction.
     pub fn clear_protocol_replies(&mut self) {
+        if matches!(
+            self.active_lease,
+            Some(ActiveOutboundLease {
+                kind: OutboundLeaseKind::ProtocolReply,
+                ..
+            })
+        ) {
+            self.release_lease();
+        }
         self.pending_protocol.clear();
         self.pending_protocol_bytes = 0;
     }
@@ -329,6 +454,21 @@ impl CollaborationOutbox {
 
     pub fn has_pending_document_updates(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    /// Test-only observability for a retained document front. The production
+    /// handoff deliberately exposes bytes and lease identity only; the native
+    /// transaction fixture needs the originating request id to preserve its
+    /// existing assertions while it drives the explicit ACK path.
+    #[cfg(test)]
+    pub(crate) fn pending_document_update_request_id_for_leased_front(&self) -> Option<u64> {
+        match self.active_lease {
+            Some(ActiveOutboundLease {
+                kind: OutboundLeaseKind::DocumentUpdate,
+                ..
+            }) => self.pending.front().map(|entry| entry.request_id),
+            _ => None,
+        }
     }
 
     // Not reachable from production call paths after the Task 16C legacy runtime
@@ -409,6 +549,42 @@ impl CollaborationOutbox {
         }
         Ok(())
     }
+
+    fn require_matching_lease(
+        &self,
+        lease_id: OutboundLeaseId,
+    ) -> Result<ActiveOutboundLease, OutboundLeaseError> {
+        match self.active_lease {
+            None => Err(OutboundLeaseError::NoActiveLease),
+            Some(active_lease) if active_lease.id != lease_id => {
+                Err(OutboundLeaseError::LeaseMismatch)
+            }
+            Some(active_lease) => Ok(active_lease),
+        }
+    }
+
+    fn clone_leased_front(&self, active_lease: ActiveOutboundLease) -> OutboundLease {
+        let payload = match active_lease.kind {
+            OutboundLeaseKind::ProtocolReply => OutboundLeasePayload::ProtocolReply(
+                self.pending_protocol
+                    .front()
+                    .expect("an active protocol lease requires a queued protocol reply")
+                    .message
+                    .clone(),
+            ),
+            OutboundLeaseKind::DocumentUpdate => OutboundLeasePayload::DocumentUpdate(
+                self.pending
+                    .front()
+                    .expect("an active document lease requires a queued document update")
+                    .update_v1
+                    .clone(),
+            ),
+        };
+        OutboundLease {
+            lease_id: active_lease.id,
+            payload,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -439,18 +615,25 @@ mod tests {
     }
 
     #[test]
-    fn install_charges_actual_length_and_take_next_restores_it() {
+    fn install_charges_actual_length_and_acknowledged_lease_restores_it() {
         let mut outbox = CollaborationOutbox::with_ceilings(2, 64);
         let reservation = outbox.reserve_document_update(7, 40).unwrap();
         assert_eq!(outbox.reserved_bytes(), 40);
         outbox.install(reservation, vec![1; 5]);
         assert_eq!(outbox.reserved_bytes(), 0);
         assert_eq!(outbox.pending_document_update_bytes(), 5);
-        let entry = outbox.take_next().unwrap();
-        assert_eq!(entry.request_id, 7);
-        assert_eq!(entry.update_v1.len(), 5);
+        let lease = outbox.lease_next().unwrap().unwrap();
+        assert_eq!(
+            outbox.pending_document_update_request_id_for_leased_front(),
+            Some(7)
+        );
+        assert!(matches!(
+            lease.payload,
+            OutboundLeasePayload::DocumentUpdate(ref update) if update.len() == 5
+        ));
+        outbox.ack_lease(lease.lease_id).unwrap();
         assert_eq!(outbox.pending_document_update_bytes(), 0);
-        assert!(outbox.take_next().is_none());
+        assert!(outbox.lease_next().unwrap().is_none());
     }
 
     #[test]
@@ -469,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_reply_install_and_pickup_keep_separate_accounting() {
+    fn protocol_reply_install_and_acknowledged_lease_keep_separate_accounting() {
         let mut outbox = CollaborationOutbox::with_ceilings(4, 64);
         let reservation = outbox.reserve_protocol_replies(2, 20).unwrap();
         assert_eq!(outbox.reserved_messages(), 2);
@@ -485,15 +668,22 @@ mod tests {
         assert_eq!(outbox.pending_document_update_count(), 0);
         assert_eq!(outbox.pending_document_update_bytes(), 0);
 
-        let first = outbox.take_next_protocol_reply().unwrap();
-        assert_eq!(first.request_id, 9);
-        assert_eq!(first.message, vec![1; 6]);
+        let first = outbox.lease_next().unwrap().unwrap();
+        assert!(matches!(
+            first.payload,
+            OutboundLeasePayload::ProtocolReply(ref reply) if reply == &vec![1; 6]
+        ));
+        outbox.ack_lease(first.lease_id).unwrap();
         assert_eq!(outbox.pending_protocol_reply_bytes(), 4);
-        let second = outbox.take_next_protocol_reply().unwrap();
-        assert_eq!(second.message, vec![2; 4]);
+        let second = outbox.lease_next().unwrap().unwrap();
+        assert!(matches!(
+            second.payload,
+            OutboundLeasePayload::ProtocolReply(ref reply) if reply == &vec![2; 4]
+        ));
+        outbox.ack_lease(second.lease_id).unwrap();
         assert_eq!(outbox.pending_protocol_reply_count(), 0);
         assert_eq!(outbox.pending_protocol_reply_bytes(), 0);
-        assert!(outbox.take_next_protocol_reply().is_none());
+        assert!(outbox.lease_next().unwrap().is_none());
     }
 
     #[test]
@@ -540,12 +730,16 @@ mod tests {
 
         assert_eq!(outbox.pending_protocol_reply_count(), 0);
         assert_eq!(outbox.pending_protocol_reply_bytes(), 0);
-        assert!(outbox.take_next_protocol_reply().is_none());
         // Document entries and their accounting are never touched.
         assert_eq!(outbox.pending_document_update_count(), 1);
         assert_eq!(outbox.pending_document_update_bytes(), 8);
         assert!(outbox.has_pending_document_updates());
-        assert_eq!(outbox.take_next().unwrap().update_v1, vec![1; 8]);
+        let document_lease = outbox.lease_next().unwrap().unwrap();
+        assert!(matches!(
+            document_lease.payload,
+            OutboundLeasePayload::DocumentUpdate(ref update) if update == &vec![1; 8]
+        ));
+        outbox.ack_lease(document_lease.lease_id).unwrap();
         // Clearing an already empty queue is a no-op.
         outbox.clear_protocol_replies();
         assert_eq!(outbox.pending_protocol_reply_count(), 0);
@@ -567,5 +761,52 @@ mod tests {
         assert_eq!(outbox.reserved_messages(), 0);
         assert_eq!(outbox.reserved_bytes(), 0);
         assert_eq!(outbox.last_reserved_upper_bound_for_test(), None);
+    }
+
+    #[test]
+    fn lease_id_exhaustion_never_wraps() {
+        let mut outbox = CollaborationOutbox::with_ceilings(2, 16);
+        let first = outbox.reserve_document_update(1, 1).unwrap();
+        outbox.install(first, vec![1]);
+        let second = outbox.reserve_document_update(2, 1).unwrap();
+        outbox.install(second, vec![2]);
+        outbox.next_lease_id = Some(u64::MAX);
+
+        let final_lease = outbox.lease_next().unwrap().unwrap();
+        assert_eq!(final_lease.lease_id, OutboundLeaseId(u64::MAX));
+        outbox.ack_lease(final_lease.lease_id).unwrap();
+        assert_eq!(outbox.next_lease_id, None);
+        assert_eq!(outbox.pending_document_update_count(), 1);
+        assert_eq!(outbox.pending_document_update_bytes(), 1);
+        assert_eq!(
+            outbox.lease_next(),
+            Err(OutboundLeaseError::LeaseIdExhausted)
+        );
+        assert_eq!(outbox.pending_document_update_count(), 1);
+        assert_eq!(outbox.pending_document_update_bytes(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "active document lease accounting underflow")]
+    fn ack_lease_rejects_document_accounting_underflow() {
+        let mut outbox = CollaborationOutbox::with_ceilings(1, 16);
+        let reservation = outbox.reserve_document_update(1, 2).unwrap();
+        outbox.install(reservation, vec![1, 2]);
+        let lease = outbox.lease_next().unwrap().unwrap();
+        outbox.pending_bytes = 0;
+
+        outbox.ack_lease(lease.lease_id).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "active protocol lease accounting underflow")]
+    fn ack_lease_rejects_protocol_accounting_underflow() {
+        let mut outbox = CollaborationOutbox::with_ceilings(1, 16);
+        let reservation = outbox.reserve_protocol_replies(1, 2).unwrap();
+        outbox.install_protocol_replies(reservation, 1, vec![vec![1, 2]]);
+        let lease = outbox.lease_next().unwrap().unwrap();
+        outbox.pending_protocol_bytes = 0;
+
+        outbox.ack_lease(lease.lease_id).unwrap();
     }
 }

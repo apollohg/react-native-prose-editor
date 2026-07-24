@@ -1,29 +1,23 @@
 //! Task 12: UniFFI v2 collaboration entry points (production since the
 //! Task 16C cutover removed the staging gate).
 //!
-//! The generation flow is exactly the Task 8–10 session surface: transport
-//! callbacks carry the raw generation value, `socket_open` returns the owed
-//! framed Sync Step 1 as direct bytes, `receive` reports the structured
-//! outcome (including generation-closing failures as a nested error
-//! object), and `take_outbound` returns ONE frame per call — protocol
-//! replies before document updates — with an empty queue reported as the
-//! documented empty value (empty bytes). Rust owns retry eligibility: a
-//! reported close is retryable unless it carries the WebSocket
-//! policy-violation code (1008), which parks the transport `Incompatible`.
+//! Native owns socket I/O; this module exposes Rust's one directive driver
+//! plus a retained ACK/NACK outbound lease. Rust alone owns generations,
+//! retry/deadline policy, protocol framing, and queue ordering.
 
 #![allow(
     clippy::result_large_err,
     reason = "SessionError is the established unboxed session error envelope"
 )]
 
-use crate::collaboration_runtime::protocol::ReceiveDisposition;
 use crate::collaboration_runtime::state::{SocketCloseDisposition, TransportGeneration};
 
 use super::editor::{
-    json_result, session_error_json, unit_result, with_editor, INTERNAL_UNCORRELATED_REQUEST_ID,
+    json_result, unit_result, with_editor, INTERNAL_UNCORRELATED_REQUEST_ID,
 };
 use super::types::{
-    decimal_u64, parse_canonical_u64, FfiBytesResult, FfiError, FfiJsonResult, FfiUnitResult,
+    decimal_u64, parse_canonical_u64, FfiError, FfiJsonResult, FfiOutboundLease,
+    FfiOutboundLeaseResult, FfiUnitResult,
 };
 
 fn parse_generation(generation: &str) -> Result<u64, FfiError> {
@@ -41,46 +35,63 @@ fn parse_now_millis(now_millis: &str) -> Result<u64, FfiError> {
         FfiError::new(
             crate::session::ErrorDomain::Boundary,
             "CONFIG_INVALID",
-            format!("malformed awareness nowMillis: {now_millis:?}"),
+            format!("malformed transport nowMillis: {now_millis:?}"),
         )
     })
 }
 
-fn bytes_result(result: Result<Vec<u8>, super::types::FfiError>) -> FfiBytesResult {
-    match result {
-        Ok(value) => FfiBytesResult::ok(value),
-        Err(error) => FfiBytesResult::err(error),
-    }
+fn directive_json(directive: crate::session::CollaborationTransportDirective) -> String {
+    serde_json::json!({
+        "transportState": directive.transport_state.as_str(),
+        "generationToOpen": directive.generation_to_open.map(|generation| decimal_u64(generation.value())),
+        "nextDeadlineMillis": directive.next_deadline_millis.map(decimal_u64),
+        "remoteCommitApplied": directive.remote_commit_applied,
+        "peersChanged": directive.peers_changed,
+        "renewedLocal": directive.renewed_local,
+        "expiredPeers": directive.expired_peers.into_iter().map(decimal_u64).collect::<Vec<_>>(),
+    })
+    .to_string()
 }
 
+/// Drive initial connection, reconnect eligibility, local-awareness renewal,
+/// and remote-peer expiry from one Rust-owned monotonic clock operation.
 #[uniffi::export]
-pub fn editor_v2_collaboration_begin_connect(editor_id: String) -> FfiJsonResult {
+pub fn editor_v2_collaboration_drive(editor_id: String, now_millis: String) -> FfiJsonResult {
+    let now_millis = match parse_now_millis(&now_millis) {
+        Ok(now_millis) => now_millis,
+        Err(error) => return FfiJsonResult::err(error),
+    };
     json_result(with_editor(&editor_id, |session| {
         session
-            .begin_connect(INTERNAL_UNCORRELATED_REQUEST_ID)
-            .map(|generation| {
-                serde_json::json!({ "generation": decimal_u64(generation.value()) }).to_string()
-            })
+            .collaboration_drive(INTERNAL_UNCORRELATED_REQUEST_ID, now_millis)
+            .map(directive_json)
     }))
 }
 
-/// On acceptance the socket owes Sync Step 1 immediately; the framed
-/// message rides back as direct bytes.
+/// Socket open queues framed Sync Step 1 at protocol priority and returns
+/// only the frozen directive; bytes are retrieved through `lease_outbound`.
 #[uniffi::export]
 pub fn editor_v2_collaboration_socket_open(
     editor_id: String,
     generation: String,
-) -> FfiBytesResult {
+    now_millis: String,
+) -> FfiJsonResult {
     let generation = match parse_generation(&generation) {
         Ok(generation) => generation,
-        Err(error) => return FfiBytesResult::err(error),
+        Err(error) => return FfiJsonResult::err(error),
     };
-    bytes_result(with_editor(&editor_id, |session| {
-        session.socket_opened(
-            INTERNAL_UNCORRELATED_REQUEST_ID,
-            TransportGeneration::from_value(generation),
-        )?;
-        session.sync_step1_message(INTERNAL_UNCORRELATED_REQUEST_ID)
+    let now_millis = match parse_now_millis(&now_millis) {
+        Ok(now_millis) => now_millis,
+        Err(error) => return FfiJsonResult::err(error),
+    };
+    json_result(with_editor(&editor_id, |session| {
+        session
+            .collaboration_socket_open(
+                INTERNAL_UNCORRELATED_REQUEST_ID,
+                TransportGeneration::from_value(generation),
+                now_millis,
+            )
+            .map(directive_json)
     }))
 }
 
@@ -89,37 +100,25 @@ pub fn editor_v2_collaboration_receive(
     editor_id: String,
     generation: String,
     message: Vec<u8>,
+    now_millis: String,
 ) -> FfiJsonResult {
     let generation = match parse_generation(&generation) {
         Ok(generation) => generation,
         Err(error) => return FfiJsonResult::err(error),
     };
+    let now_millis = match parse_now_millis(&now_millis) {
+        Ok(now_millis) => now_millis,
+        Err(error) => return FfiJsonResult::err(error),
+    };
     json_result(with_editor(&editor_id, |session| {
-        let outcome = session.receive_message(
-            INTERNAL_UNCORRELATED_REQUEST_ID,
-            TransportGeneration::from_value(generation),
-            &message,
-        )?;
-        let close = match &outcome.disposition {
-            ReceiveDisposition::Continue => serde_json::Value::Null,
-            ReceiveDisposition::CloseGeneration { close, error } => serde_json::json!({
-                "disposition": match close {
-                    SocketCloseDisposition::Retryable => "retryable",
-                    SocketCloseDisposition::Incompatible => "incompatible",
-                },
-                "error": session_error_json(error),
-            }),
-        };
-        Ok(serde_json::json!({
-            "framesDecoded": outcome.frames_decoded,
-            "repliesEnqueued": outcome.replies_enqueued,
-            "replyBytesEnqueued": outcome.reply_bytes_enqueued,
-            "remoteCommitApplied": outcome.remote_commit_applied,
-            "documentPromoted": outcome.document_promoted,
-            "transportState": outcome.transport_state.as_str(),
-            "close": close,
-        })
-        .to_string())
+        session
+            .collaboration_receive(
+                INTERNAL_UNCORRELATED_REQUEST_ID,
+                TransportGeneration::from_value(generation),
+                &message,
+                now_millis,
+            )
+            .map(directive_json)
     }))
 }
 
@@ -132,9 +131,14 @@ pub fn editor_v2_collaboration_socket_close(
     generation: String,
     code: Option<u32>,
     reason: Option<String>,
+    now_millis: String,
 ) -> FfiJsonResult {
     let generation = match parse_generation(&generation) {
         Ok(generation) => generation,
+        Err(error) => return FfiJsonResult::err(error),
+    };
+    let now_millis = match parse_now_millis(&now_millis) {
+        Ok(now_millis) => now_millis,
         Err(error) => return FfiJsonResult::err(error),
     };
     let _ = reason;
@@ -144,35 +148,91 @@ pub fn editor_v2_collaboration_socket_close(
     };
     json_result(with_editor(&editor_id, |session| {
         session
-            .socket_closed(
+            .collaboration_socket_close(
                 INTERNAL_UNCORRELATED_REQUEST_ID,
                 TransportGeneration::from_value(generation),
                 disposition,
+                now_millis,
             )
-            .map(|state| serde_json::json!({ "transportState": state.as_str() }).to_string())
+            .map(directive_json)
     }))
 }
 
-/// ONE outbound frame per call: pending protocol replies first, then
-/// document updates (raw outbox updates wrapped in standard Sync Update
-/// framing at pickup, so every frame is a complete y-protocols message);
-/// an empty queue returns the documented empty value (empty bytes).
+/// Lease one retained complete outbound frame. Exactly one of value, empty,
+/// or error is selected; protocol replies retain priority over document
+/// updates unless a frame was already leased.
 #[uniffi::export]
-pub fn editor_v2_collaboration_take_outbound(
+pub fn editor_v2_collaboration_lease_outbound(
     editor_id: String,
     generation: String,
-) -> FfiBytesResult {
+) -> FfiOutboundLeaseResult {
     let generation = match parse_generation(&generation) {
         Ok(generation) => generation,
-        Err(error) => return FfiBytesResult::err(error),
+        Err(error) => return FfiOutboundLeaseResult::err(error),
     };
-    bytes_result(with_editor(&editor_id, |session| {
+    match with_editor(&editor_id, |session| {
         session
-            .take_next_outbound_frame(
+            .lease_outbound(
                 INTERNAL_UNCORRELATED_REQUEST_ID,
                 TransportGeneration::from_value(generation),
             )
-            .map(Option::unwrap_or_default)
+    }) {
+        Ok(Some(lease)) => FfiOutboundLeaseResult::ok(FfiOutboundLease {
+            lease_id: lease.lease_id.to_string(),
+            frame: lease.frame,
+        }),
+        Ok(None) => FfiOutboundLeaseResult::empty(),
+        Err(error) => FfiOutboundLeaseResult::err(error),
+    }
+}
+
+#[uniffi::export]
+pub fn editor_v2_collaboration_ack_outbound(
+    editor_id: String,
+    generation: String,
+    lease_id: String,
+) -> FfiJsonResult {
+    let generation = match parse_generation(&generation) {
+        Ok(generation) => generation,
+        Err(error) => return FfiJsonResult::err(error),
+    };
+    let lease_id = match parse_generation(&lease_id) {
+        Ok(lease_id) => lease_id,
+        Err(error) => return FfiJsonResult::err(error),
+    };
+    json_result(with_editor(&editor_id, |session| {
+        session
+            .ack_outbound(
+                INTERNAL_UNCORRELATED_REQUEST_ID,
+                TransportGeneration::from_value(generation),
+                lease_id,
+            )
+            .map(|()| "{}".into())
+    }))
+}
+
+#[uniffi::export]
+pub fn editor_v2_collaboration_nack_outbound(
+    editor_id: String,
+    generation: String,
+    lease_id: String,
+) -> FfiJsonResult {
+    let generation = match parse_generation(&generation) {
+        Ok(generation) => generation,
+        Err(error) => return FfiJsonResult::err(error),
+    };
+    let lease_id = match parse_generation(&lease_id) {
+        Ok(lease_id) => lease_id,
+        Err(error) => return FfiJsonResult::err(error),
+    };
+    json_result(with_editor(&editor_id, |session| {
+        session
+            .nack_outbound(
+                INTERNAL_UNCORRELATED_REQUEST_ID,
+                TransportGeneration::from_value(generation),
+                lease_id,
+            )
+            .map(|()| "{}".into())
     }))
 }
 
@@ -215,28 +275,6 @@ pub fn editor_v2_collaboration_peers(editor_id: String) -> FfiJsonResult {
             })
             .collect::<Vec<_>>();
         Ok(serde_json::json!({ "peers": peers }).to_string())
-    }))
-}
-
-/// Performs deterministic awareness renewal and expiry work. `now_millis`
-/// must be a canonical decimal u64 because JavaScript cannot safely carry
-/// the full clock range as a number.
-#[uniffi::export]
-pub fn editor_v2_collaboration_tick(editor_id: String, now_millis: String) -> FfiJsonResult {
-    let now_millis = match parse_now_millis(&now_millis) {
-        Ok(now_millis) => now_millis,
-        Err(error) => return FfiJsonResult::err(error),
-    };
-    json_result(with_editor(&editor_id, |session| {
-        let outcome = session.awareness_tick(INTERNAL_UNCORRELATED_REQUEST_ID, now_millis)?;
-        Ok(serde_json::json!({
-            "nextDeadlineMillis": outcome.next_deadline_millis.map(decimal_u64),
-            "renewedLocal": outcome.renewed_local,
-            "expiredPeers": outcome.expired_peers.into_iter().map(decimal_u64).collect::<Vec<_>>(),
-            "outboundChanged": outcome.outbound_changed,
-            "peersChanged": outcome.peers_changed,
-        })
-        .to_string())
     }))
 }
 

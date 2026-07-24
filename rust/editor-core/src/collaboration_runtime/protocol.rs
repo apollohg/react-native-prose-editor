@@ -92,6 +92,7 @@ pub(crate) struct ReceiveContext<'a> {
     pub(crate) engine: &'a mut YrsDocumentEngine,
     pub(crate) document_state: &'a mut DocumentState,
     pub(crate) limits: &'a CollaborationLimits,
+    pub(crate) now_millis: u64,
 }
 
 /// What one accepted receive did. Refusals (stale generation, wrong state,
@@ -105,11 +106,19 @@ pub(crate) struct ReceiveOutcome {
     pub(crate) reply_bytes_enqueued: usize,
     pub(crate) remote_commit_applied: bool,
     pub(crate) document_promoted: bool,
+    pub(crate) peers_changed: bool,
     pub(crate) transport_state: TransportState,
     pub(crate) disposition: ReceiveDisposition,
 }
 
 #[derive(Debug)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "close diagnostics are consumed by the protocol matrix's test-only detailed receive seam"
+    )
+)]
 pub(crate) enum ReceiveDisposition {
     /// Frames accepted; the socket stays open.
     Continue,
@@ -160,6 +169,7 @@ impl CollaborationRuntime {
             engine,
             document_state,
             limits,
+            now_millis,
         } = context;
         // Generation + state gate before ANY decode work: only the live
         // generation in Handshaking/Synchronized may cause work.
@@ -171,6 +181,7 @@ impl CollaborationRuntime {
             reply_bytes_enqueued: 0,
             remote_commit_applied: false,
             document_promoted: false,
+            peers_changed: false,
             transport_state: transport.state(),
             disposition: ReceiveDisposition::Continue,
         };
@@ -192,13 +203,14 @@ impl CollaborationRuntime {
             }
             Err(failure) => {
                 let closed = transport
-                    .socket_closed(request_id, generation, failure.close)
+                    .socket_closed(request_id, generation, failure.close, now_millis)
                     .expect(
                         "the admitted live generation must remain closable for its own failure",
                     );
                 // Task 10 lifecycle rule: every generation close clears the
                 // transport-scoped peers while desired awareness survives.
-                self.clear_transport_peers(engine);
+                self.outbox.release_lease();
+                outcome.peers_changed |= self.clear_transport_peers(engine);
                 outcome.transport_state = closed;
                 outcome.disposition = ReceiveDisposition::CloseGeneration {
                     close: failure.close,
@@ -361,6 +373,7 @@ impl CollaborationRuntime {
                     // plus runtime activity stamping only.
                     self.apply_awareness_frame(engine, limits, payload)
                         .map_err(|error| classify_awareness_error(request_id, error))?;
+                    outcome.peers_changed = true;
                 }
             }
         }
@@ -428,7 +441,7 @@ impl CollaborationRuntime {
             }
             DocumentState::LocalReady => unreachable!(
                 "a Handshaking transport with a live generation requires an accepted \
-                 begin_connect, which refuses local-only (LocalReady) sessions"
+                 collaboration drive, which refuses local-only (LocalReady) sessions"
             ),
         }
     }
@@ -775,6 +788,15 @@ fn classify_reservation_error(request_id: u64, error: OutboxReservationError) ->
             ),
         },
     }
+}
+
+/// Reuse the established protocol-reply reservation taxonomy when socket
+/// open reserves its queued Sync Step 1 before changing transport state.
+pub(crate) fn protocol_reply_reservation_error(
+    request_id: u64,
+    error: OutboxReservationError,
+) -> SessionError {
+    classify_reservation_error(request_id, error).error
 }
 
 /// Deterministic configured-ceiling violation: retrying the same message

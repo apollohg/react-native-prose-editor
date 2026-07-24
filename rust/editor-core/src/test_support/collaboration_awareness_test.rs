@@ -5,7 +5,7 @@
 //! local awareness across transport lifecycle (including the reconnect
 //! re-publish that mitigates the Task 6 tombstone-migration gap),
 //! deterministic renewal/expiry clocks driven exclusively through
-//! `tick(now_millis)`, tombstone semantics through the runtime path, sticky
+//! `collaboration_drive(now_millis)`, tombstone semantics through the runtime path, sticky
 //! cursor projections that recompute with document revisions, and every
 //! awareness ceiling at its exact and one-over boundary with atomic
 //! rejection. Wire compatibility is proven against independent raw
@@ -27,13 +27,13 @@ use crate::ffi_v2::collaboration as v2_collaboration;
 use crate::native_bridge_test_support as bridge;
 use crate::session::{CollaborationLimits, TransportState as RuntimeTransportState};
 use crate::session_initialization_test_support::{
-    awareness_peers, awareness_tick, begin_connect, clear_desired_awareness, create_room_from_json,
-    desired_awareness, destroy_session, document_state, receive_message, restore_snapshot,
-    session_audit, set_collaboration_limit_for_test,
-    set_desired_awareness_for_test as set_desired_awareness, socket_closed, socket_opened,
-    take_next_protocol_reply, transport_detach, transport_disconnect, transport_reattach,
-    transport_state, AwarenessPeerInfo, CloseDisposition, DocumentState, ReceiveOutcome,
-    SessionAudit, TransportState,
+    ack_outbound, awareness_peers, clear_desired_awareness, collaboration_drive,
+    collaboration_receive, collaboration_socket_close, collaboration_socket_open,
+    create_room_from_json, desired_awareness, destroy_session, document_state, lease_outbound,
+    pending_protocol_replies, receive_message, restore_snapshot, session_audit,
+    set_collaboration_limit_for_test, set_desired_awareness_for_test as set_desired_awareness,
+    transport_detach, transport_disconnect, transport_reattach, transport_state, AwarenessPeerInfo,
+    CloseDisposition, DocumentState, ReceiveOutcome, SessionAudit, TestError, TransportState,
 };
 use crate::tiptap_schema;
 use crate::yrs_engine::{
@@ -90,31 +90,141 @@ fn create_ready_room() -> (u64, DocumentSnapshot) {
     (id, snapshot)
 }
 
-/// `begin_connect` + `socket_opened`: the transport is `Handshaking`.
+/// Drive a generation now or at the exact retry deadline Rust returns.
+fn drive_generation(id: u64, request_id: u64, now_millis: u64) -> (u64, u64) {
+    let initial = collaboration_drive(id, request_id, now_millis).unwrap();
+    match initial.generation_to_open {
+        Some(generation) => (generation, now_millis),
+        None => {
+            let deadline = initial
+                .next_deadline_millis
+                .expect("a disconnected retry must expose its Rust deadline");
+            let due = collaboration_drive(id, request_id, deadline).unwrap();
+            (
+                due.generation_to_open
+                    .expect("the due Rust drive must issue a generation"),
+                deadline,
+            )
+        }
+    }
+}
+
+/// Open through the production callback and ACK the queued Sync Step 1 for
+/// setups that need a drained protocol outbox.
+fn open_socket_and_ack_step1(id: u64, request_id: u64, generation: u64, now_millis: u64) {
+    collaboration_socket_open(id, request_id, generation, now_millis).unwrap();
+    let step1 = lease_outbound(id, request_id, generation)
+        .unwrap()
+        .expect("socket open must queue Sync Step 1");
+    ack_outbound(id, request_id, generation, step1.lease_id).unwrap();
+}
+
+/// The production-shaped handshake setup, with the socket-open Step 1
+/// explicitly ACKed so later protocol assertions start from an empty queue.
+fn handshake_at(id: u64, now_millis: u64) -> (u64, u64) {
+    let (generation, opened_at) = drive_generation(id, 9_000, now_millis);
+    open_socket_and_ack_step1(id, 9_001, generation, opened_at);
+    (generation, opened_at)
+}
+
 fn handshake(id: u64) -> u64 {
-    let generation = begin_connect(id, 9_000).unwrap();
-    socket_opened(id, 9_001, generation).unwrap();
-    generation
+    handshake_at(id, 0).0
 }
 
 /// Drive a ready room to `Synchronized` through a real no-op Step 2 from a
 /// raw peer sharing the session's snapshot lineage.
 fn synchronize_ready_room(id: u64, snapshot: &DocumentSnapshot) -> u64 {
-    let generation = handshake(id);
+    synchronize_ready_room_at(id, snapshot, 0).0
+}
+
+fn synchronize_ready_room_at(id: u64, snapshot: &DocumentSnapshot, now_millis: u64) -> (u64, u64) {
+    let (generation, opened_at) = handshake_at(id, now_millis);
     let server = raw_doc_from_snapshot(snapshot);
     let step2 = server
         .transact()
         .encode_state_as_update_v1(&yrs::StateVector::default());
-    let outcome = receive_message(
+    let directive = collaboration_receive(
         id,
         9_002,
         generation,
         &Message::Sync(yrs::sync::SyncMessage::SyncStep2(step2)).encode_v1(),
+        opened_at,
     )
     .unwrap();
-    assert!(outcome.close.is_none(), "{outcome:?}");
+    assert!(!directive.remote_commit_applied, "{directive:?}");
+    assert_eq!(transport_state(id).unwrap(), TransportState::Synchronized);
+    (generation, opened_at)
+}
+
+/// Reconnect when a retained protocol reply precedes the new socket-open
+/// Sync Step 1. Both frames must be leased and ACKed in FIFO order before
+/// the normal Step 2 completion; a generic empty-outbox handshake cannot
+/// safely assume its first lease is Step 1 here.
+fn synchronize_ready_room_after_draining_retained_protocol_reply(
+    id: u64,
+    snapshot: &DocumentSnapshot,
+) -> u64 {
+    let (generation, opened_at) = drive_generation(id, 9_003, 0);
+    collaboration_socket_open(id, 9_004, generation, opened_at).unwrap();
+
+    let retained_reply = lease_outbound(id, 9_005, generation)
+        .unwrap()
+        .expect("the prior protocol reply must stay queued across reconnect");
+    ack_outbound(id, 9_005, generation, retained_reply.lease_id).unwrap();
+
+    let step1 = lease_outbound(id, 9_006, generation)
+        .unwrap()
+        .expect("socket open must queue Sync Step 1 after the retained reply");
+    assert!(matches!(
+        Message::decode_v1(&step1.frame).unwrap(),
+        Message::Sync(yrs::sync::SyncMessage::SyncStep1(_))
+    ));
+    ack_outbound(id, 9_006, generation, step1.lease_id).unwrap();
+
+    let server = raw_doc_from_snapshot(snapshot);
+    let step2 = server
+        .transact()
+        .encode_state_as_update_v1(&yrs::StateVector::default());
+    let directive = collaboration_receive(
+        id,
+        9_007,
+        generation,
+        &Message::Sync(yrs::sync::SyncMessage::SyncStep2(step2)).encode_v1(),
+        opened_at,
+    )
+    .unwrap();
+    assert!(!directive.remote_commit_applied, "{directive:?}");
     assert_eq!(transport_state(id).unwrap(), TransportState::Synchronized);
     generation
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AwarenessDriveOutcome {
+    renewed_local: bool,
+    outbound_changed: bool,
+    expired_peers: Vec<u64>,
+    peers_changed: bool,
+    next_deadline_millis: Option<u64>,
+}
+
+/// Test-local projection of the production directive for legacy awareness
+/// assertions. It never bypasses the driver: outbound change is derived from
+/// the real protocol outbox before and after `collaboration_drive`.
+fn drive_awareness(
+    id: u64,
+    request_id: u64,
+    now_millis: u64,
+) -> Result<AwarenessDriveOutcome, TestError> {
+    let protocol_before = pending_protocol_replies(id)?;
+    let directive = collaboration_drive(id, request_id, now_millis)?;
+    let protocol_after = pending_protocol_replies(id)?;
+    Ok(AwarenessDriveOutcome {
+        renewed_local: directive.renewed_local,
+        outbound_changed: protocol_before != protocol_after,
+        expired_peers: directive.expired_peers,
+        peers_changed: directive.peers_changed,
+        next_deadline_millis: directive.next_deadline_millis,
+    })
 }
 
 fn raw_doc_from_snapshot(snapshot: &DocumentSnapshot) -> Doc {
@@ -156,10 +266,20 @@ fn decode_awareness_reply(reply: &[u8]) -> AwarenessUpdate {
     }
 }
 
-fn drain_protocol_replies(id: u64) -> Vec<Vec<u8>> {
+fn drain_protocol_replies(id: u64, generation: u64) -> Vec<Vec<u8>> {
     let mut replies = Vec::new();
-    while let Some((_, message)) = take_next_protocol_reply(id).unwrap() {
-        replies.push(message);
+    while pending_protocol_replies(id).unwrap().unwrap_or((0, 0)).0 > 0 {
+        let lease = lease_outbound(id, 90_000 + replies.len() as u64, generation)
+            .unwrap()
+            .expect("a pending protocol reply must be retained by an outbound lease");
+        replies.push(lease.frame);
+        ack_outbound(
+            id,
+            91_000 + replies.len() as u64,
+            generation,
+            lease.lease_id,
+        )
+        .unwrap();
     }
     replies
 }
@@ -258,7 +378,7 @@ fn query_awareness_reply_answers_completely_and_interoperates_with_a_raw_peer() 
     let desired = json!({ "name": "local author" });
     set_desired_awareness(id, 321, &desired.to_string()).unwrap();
     let local_client = local_peer(id).expect("desired state projects locally");
-    drain_protocol_replies(id);
+    drain_protocol_replies(id, generation);
 
     // One live peer and one peer that announced then tombstoned itself.
     let live_state = json!({ "name": "alive" });
@@ -280,7 +400,7 @@ fn query_awareness_reply_answers_completely_and_interoperates_with_a_raw_peer() 
     let outcome = receive_message(id, 324, generation, &query_awareness_message()).unwrap();
     assert!(outcome.close.is_none(), "{outcome:?}");
     assert_eq!(outcome.replies_enqueued, 1, "{outcome:?}");
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     assert_eq!(replies.len(), 1, "{replies:?}");
     let reply = decode_awareness_reply(&replies[0]);
 
@@ -572,13 +692,13 @@ fn query_awareness_replies_are_bounded_and_reserved_like_every_protocol_reply() 
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
     set_desired_awareness(id, 381, &json!({ "name": "measured" }).to_string()).unwrap();
-    drain_protocol_replies(id);
+    drain_protocol_replies(id, generation);
 
     let outcome = receive_message(id, 382, generation, &query_awareness_message()).unwrap();
     assert!(outcome.close.is_none(), "{outcome:?}");
     let reply_bytes = outcome.reply_bytes_enqueued;
     assert!(reply_bytes > 0, "{outcome:?}");
-    drain_protocol_replies(id);
+    drain_protocol_replies(id, generation);
 
     set_collaboration_limit_for_test(id, "maxAggregateResponseBytes", reply_bytes).unwrap();
     let outcome = receive_message(id, 383, generation, &query_awareness_message()).unwrap();
@@ -587,7 +707,7 @@ fn query_awareness_replies_are_bounded_and_reserved_like_every_protocol_reply() 
         "exact reply bytes pass: {outcome:?}"
     );
     assert_eq!(outcome.reply_bytes_enqueued, reply_bytes, "{outcome:?}");
-    drain_protocol_replies(id);
+    drain_protocol_replies(id, generation);
 
     set_collaboration_limit_for_test(id, "maxAggregateResponseBytes", reply_bytes - 1).unwrap();
     let outcome = receive_message(id, 384, generation, &query_awareness_message()).unwrap();
@@ -602,8 +722,8 @@ fn query_awareness_replies_are_bounded_and_reserved_like_every_protocol_reply() 
         "{close:?}"
     );
     assert_eq!(
-        take_next_protocol_reply(id).unwrap(),
-        None,
+        pending_protocol_replies(id).unwrap(),
+        Some((0, 0)),
         "a refused reply must not enqueue",
     );
     destroy_session(id);
@@ -630,7 +750,7 @@ fn query_awareness_replies_are_bounded_and_reserved_like_every_protocol_reply() 
 #[test]
 fn set_desired_awareness_publishes_immediately_and_bounds_the_state_at_set_time() {
     let (id, snapshot) = create_ready_room();
-    let _generation = synchronize_ready_room(id, &snapshot);
+    let generation = synchronize_ready_room(id, &snapshot);
 
     let desired = json!({ "name": "author", "color": "#204060" });
     set_desired_awareness(id, 401, &desired.to_string()).unwrap();
@@ -640,7 +760,7 @@ fn set_desired_awareness_publishes_immediately_and_bounds_the_state_at_set_time(
 
     // The synchronized transport broadcasts the state immediately; a raw
     // peer applying the frame sees exactly the desired state.
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     assert_eq!(replies.len(), 1, "{replies:?}");
     let mut raw = Awareness::new(Doc::new());
     raw.apply_update(decode_awareness_reply(&replies[0]))
@@ -679,11 +799,11 @@ fn set_desired_awareness_publishes_immediately_and_bounds_the_state_at_set_time(
 #[test]
 fn clear_desired_awareness_broadcasts_a_tombstone_and_clears_the_projection() {
     let (id, snapshot) = create_ready_room();
-    let _generation = synchronize_ready_room(id, &snapshot);
+    let generation = synchronize_ready_room(id, &snapshot);
     let desired = json!({ "name": "leaving" });
     set_desired_awareness(id, 411, &desired.to_string()).unwrap();
     let local = local_peer(id).unwrap();
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     let mut raw = Awareness::new(Doc::new());
     raw.apply_update(decode_awareness_reply(&replies[0]))
         .unwrap();
@@ -700,7 +820,7 @@ fn clear_desired_awareness_broadcasts_a_tombstone_and_clears_the_projection() {
     );
 
     // The broadcast tombstone removes us from the raw peer's view.
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     assert_eq!(replies.len(), 1, "{replies:?}");
     raw.apply_update(decode_awareness_reply(&replies[0]))
         .unwrap();
@@ -708,7 +828,7 @@ fn clear_desired_awareness_broadcasts_a_tombstone_and_clears_the_projection() {
 
     // Clearing twice stays an idempotent no-op with nothing to broadcast.
     clear_desired_awareness(id, 413).unwrap();
-    assert_eq!(drain_protocol_replies(id).len(), 0);
+    assert_eq!(drain_protocol_replies(id, generation).len(), 0);
     destroy_session(id);
 }
 
@@ -716,13 +836,13 @@ fn clear_desired_awareness_broadcasts_a_tombstone_and_clears_the_projection() {
 fn withdrawal_review_fix_saturated_clear_is_one_shot_and_tick_heals_after_drain() {
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
-    awareness_tick(id, 414, 0).unwrap();
+    drive_awareness(id, 414, 0).unwrap();
     let desired = json!({ "name": "saturated withdrawal" });
     set_desired_awareness(id, 415, &desired.to_string()).unwrap();
     let local = local_peer(id).unwrap();
     let local_client = ClientID::new(local.client_id);
     let mut raw = Awareness::new(Doc::new());
-    for reply in drain_protocol_replies(id) {
+    for reply in drain_protocol_replies(id, generation) {
         raw.apply_update(decode_awareness_reply(&reply)).unwrap();
     }
     let published_clock = raw.meta(local_client).unwrap().0;
@@ -741,7 +861,7 @@ fn withdrawal_review_fix_saturated_clear_is_one_shot_and_tick_heals_after_drain(
 
     // Repeating clear cannot recreate a tombstone or advance its clock.
     clear_desired_awareness(id, 418).unwrap();
-    let before_retry = awareness_tick(id, 419, AWARENESS_RENEWAL_INTERVAL_MILLIS - 1).unwrap();
+    let before_retry = drive_awareness(id, 419, AWARENESS_RENEWAL_INTERVAL_MILLIS - 1).unwrap();
     assert!(!before_retry.outbound_changed, "{before_retry:?}");
     assert_eq!(
         before_retry.next_deadline_millis,
@@ -751,12 +871,15 @@ fn withdrawal_review_fix_saturated_clear_is_one_shot_and_tick_heals_after_drain(
 
     // Draining the blocker lets the deterministic boundary tick enqueue the
     // exact already-clocked tombstone.
-    assert!(take_next_protocol_reply(id).unwrap().is_some());
-    let healed = awareness_tick(id, 420, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
+    let blocker = lease_outbound(id, 419, generation)
+        .unwrap()
+        .expect("the query reply must remain retained until explicit ACK");
+    ack_outbound(id, 419, generation, blocker.lease_id).unwrap();
+    let healed = drive_awareness(id, 420, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
     assert!(!healed.renewed_local, "{healed:?}");
     assert!(healed.outbound_changed, "{healed:?}");
     assert_eq!(healed.next_deadline_millis, None, "{healed:?}");
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     assert_eq!(replies.len(), 1, "{replies:?}");
     let tombstone = decode_awareness_reply(&replies[0]);
     assert_eq!(tombstone.clients[&local_client].clock, published_clock + 1);
@@ -769,8 +892,8 @@ fn withdrawal_review_fix_saturated_clear_is_one_shot_and_tick_heals_after_drain(
 #[test]
 fn withdrawal_review_fix_allocation_retry_stays_pending_without_closing_generation() {
     let (id, snapshot) = create_ready_room();
-    let _generation = synchronize_ready_room(id, &snapshot);
-    awareness_tick(id, 421, 0).unwrap();
+    let generation = synchronize_ready_room(id, &snapshot);
+    drive_awareness(id, 421, 0).unwrap();
     set_desired_awareness(
         id,
         422,
@@ -780,7 +903,7 @@ fn withdrawal_review_fix_allocation_retry_stays_pending_without_closing_generati
     let local = local_peer(id).unwrap();
     let local_client = ClientID::new(local.client_id);
     let mut raw = Awareness::new(Doc::new());
-    for reply in drain_protocol_replies(id) {
+    for reply in drain_protocol_replies(id, generation) {
         raw.apply_update(decode_awareness_reply(&reply)).unwrap();
     }
     let published_clock = raw.meta(local_client).unwrap().0;
@@ -795,25 +918,25 @@ fn withdrawal_review_fix_allocation_retry_stays_pending_without_closing_generati
     assert!(local_peer(id).is_none());
 
     bridge::set_outbox_allocation_failure(true);
-    let retry_result = awareness_tick(id, 424, AWARENESS_RENEWAL_INTERVAL_MILLIS);
+    let retry_result = drive_awareness(id, 424, AWARENESS_RENEWAL_INTERVAL_MILLIS);
     bridge::set_outbox_allocation_failure(false);
     let error = retry_result.unwrap_err();
     assert_eq!(error.code, TRANSPORT_RESOURCE_EXHAUSTED, "{error:?}");
     assert_eq!(transport_state(id).unwrap(), TransportState::Synchronized);
-    assert_eq!(drain_protocol_replies(id).len(), 0);
+    assert_eq!(drain_protocol_replies(id, generation).len(), 0);
 
     // Retry failure preserves the frame but moves the next attempt out by
     // one interval, so scheduling cannot spin at the failed timestamp.
-    let before_retry = awareness_tick(id, 425, AWARENESS_RENEWAL_INTERVAL_MILLIS * 2 - 1).unwrap();
+    let before_retry = drive_awareness(id, 425, AWARENESS_RENEWAL_INTERVAL_MILLIS * 2 - 1).unwrap();
     assert!(!before_retry.outbound_changed, "{before_retry:?}");
     assert_eq!(
         before_retry.next_deadline_millis,
         Some(AWARENESS_RENEWAL_INTERVAL_MILLIS * 2),
         "{before_retry:?}",
     );
-    let healed = awareness_tick(id, 426, AWARENESS_RENEWAL_INTERVAL_MILLIS * 2).unwrap();
+    let healed = drive_awareness(id, 426, AWARENESS_RENEWAL_INTERVAL_MILLIS * 2).unwrap();
     assert!(healed.outbound_changed, "{healed:?}");
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     assert_eq!(replies.len(), 1, "{replies:?}");
     let tombstone = decode_awareness_reply(&replies[0]);
     assert_eq!(tombstone.clients[&local_client].clock, published_clock + 1);
@@ -827,7 +950,8 @@ fn withdrawal_review_fix_pending_tombstone_survives_close_detach_and_reconnect()
     type LifecycleAction = fn(u64, u64);
     let scenarios: [(&str, LifecycleAction); 2] = [
         ("retryable close", |id, generation| {
-            socket_closed(id, 427, generation, CloseDisposition::Retryable).unwrap();
+            collaboration_socket_close(id, 427, generation, CloseDisposition::Retryable, 0)
+                .unwrap();
         }),
         ("detach and reattach", |id, _generation| {
             transport_detach(id, 428).unwrap();
@@ -838,12 +962,12 @@ fn withdrawal_review_fix_pending_tombstone_survives_close_detach_and_reconnect()
     for (label, lifecycle_action) in scenarios {
         let (id, snapshot) = create_ready_room();
         let generation = synchronize_ready_room(id, &snapshot);
-        awareness_tick(id, 430, 0).unwrap();
+        drive_awareness(id, 430, 0).unwrap();
         set_desired_awareness(id, 431, &json!({ "name": label }).to_string()).unwrap();
         let local = local_peer(id).unwrap();
         let local_client = ClientID::new(local.client_id);
         let mut raw = Awareness::new(Doc::new());
-        for reply in drain_protocol_replies(id) {
+        for reply in drain_protocol_replies(id, generation) {
             raw.apply_update(decode_awareness_reply(&reply)).unwrap();
         }
         let published_clock = raw.meta(local_client).unwrap().0;
@@ -855,25 +979,33 @@ fn withdrawal_review_fix_pending_tombstone_survives_close_detach_and_reconnect()
             error.code, TRANSPORT_REPLY_LIMIT_EXCEEDED,
             "{label}: {error:?}"
         );
+        // A full queue cannot reserve the new socket's Step 1. Preserve the
+        // earlier saturation assertion, then make room for its actual
+        // production-shaped reconnect sequence.
+        bridge::set_outbox_ceilings(id, 2, 10 * 1024 * 1024).unwrap();
         lifecycle_action(id, generation);
         assert_eq!(desired_awareness(id).unwrap(), None, "{label}");
         assert!(local_peer(id).is_none(), "{label}");
 
-        // Drain the pre-close blocker, then reconnect. The pending local
-        // withdrawal is retried by the synchronized timer, not folded into
-        // receive processing where reservation failure would close a peer.
-        assert!(take_next_protocol_reply(id).unwrap().is_some(), "{label}");
-        let _new_generation = synchronize_ready_room(id, &snapshot);
-        assert_eq!(drain_protocol_replies(id).len(), 0, "{label}");
-        let before_retry = awareness_tick(id, 434, AWARENESS_RENEWAL_INTERVAL_MILLIS - 1).unwrap();
+        // The close releases any active lease but preserves the frame. The
+        // reconnect drains that retained blocker before its newly queued
+        // Step 1, then completes the normal Step 2 handshake.
+        let new_generation =
+            synchronize_ready_room_after_draining_retained_protocol_reply(id, &snapshot);
+        assert_eq!(
+            drain_protocol_replies(id, new_generation).len(),
+            0,
+            "{label}"
+        );
+        let before_retry = drive_awareness(id, 434, AWARENESS_RENEWAL_INTERVAL_MILLIS - 1).unwrap();
         assert_eq!(
             before_retry.next_deadline_millis,
             Some(AWARENESS_RENEWAL_INTERVAL_MILLIS),
             "{label}: {before_retry:?}",
         );
-        let healed = awareness_tick(id, 435, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
+        let healed = drive_awareness(id, 435, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
         assert!(healed.outbound_changed, "{label}: {healed:?}");
-        let replies = drain_protocol_replies(id);
+        let replies = drain_protocol_replies(id, new_generation);
         assert_eq!(replies.len(), 1, "{label}: {replies:?}");
         let tombstone = decode_awareness_reply(&replies[0]);
         assert_eq!(
@@ -898,7 +1030,7 @@ fn desired_awareness_survives_disconnect_and_republishes_with_a_newer_clock() {
 
     // A raw peer observes our published state at its current clock.
     let mut raw = Awareness::new(Doc::new());
-    for reply in drain_protocol_replies(id) {
+    for reply in drain_protocol_replies(id, generation) {
         raw.apply_update(decode_awareness_reply(&reply)).unwrap();
     }
     let (observed_clock, _) = raw.meta(local_client).unwrap();
@@ -912,14 +1044,13 @@ fn desired_awareness_survives_disconnect_and_republishes_with_a_newer_clock() {
 
     // Generation close: desired local awareness survives, remote peers do
     // not (transport-scoped).
-    socket_closed(id, 422, generation, CloseDisposition::Retryable).unwrap();
+    collaboration_socket_close(id, 422, generation, CloseDisposition::Retryable, 0).unwrap();
     assert_eq!(desired_awareness(id).unwrap(), Some(desired.clone()));
 
     // Reconnect + handshake completion re-publishes with a fresh clock; the
     // peer that tombstoned us sees us again with a strictly newer clock.
     let generation = synchronize_ready_room(id, &snapshot);
-    let _ = generation;
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     assert!(
         !replies.is_empty(),
         "handshake completion must re-publish the desired awareness",
@@ -998,14 +1129,14 @@ fn reconnect_after_cleanup_and_undo_preserves_clock_or_requires_fresh_identity()
 #[test]
 fn desired_awareness_republishes_past_two_reconnect_tombstones_with_inductive_clocks() {
     let (id, snapshot) = create_ready_room();
-    let mut generation = synchronize_ready_room(id, &snapshot);
+    let (mut generation, mut now_millis) = synchronize_ready_room_at(id, &snapshot, 0);
     let desired = json!({ "name": "twice resilient" });
     set_desired_awareness(id, 471, &desired.to_string()).unwrap();
     let local_client = ClientID::new(local_peer(id).unwrap().client_id);
 
     // A raw peer observes the initial publish: the induction base clock.
     let mut raw = Awareness::new(Doc::new());
-    for reply in drain_protocol_replies(id) {
+    for reply in drain_protocol_replies(id, generation) {
         raw.apply_update(decode_awareness_reply(&reply)).unwrap();
     }
     let initial_clock = raw.meta(local_client).unwrap().0;
@@ -1025,15 +1156,22 @@ fn desired_awareness_republishes_past_two_reconnect_tombstones_with_inductive_cl
         );
         assert_eq!(raw.state::<Value>(local_client), None);
 
-        socket_closed(id, close_request, generation, CloseDisposition::Retryable).unwrap();
+        collaboration_socket_close(
+            id,
+            close_request,
+            generation,
+            CloseDisposition::Retryable,
+            now_millis,
+        )
+        .unwrap();
         assert_eq!(
             desired_awareness(id).unwrap(),
             Some(desired.clone()),
             "cycle {cycle}: desired local awareness survives the close",
         );
 
-        generation = synchronize_ready_room(id, &snapshot);
-        let replies = drain_protocol_replies(id);
+        (generation, now_millis) = synchronize_ready_room_at(id, &snapshot, now_millis);
+        let replies = drain_protocol_replies(id, generation);
         assert!(
             !replies.is_empty(),
             "cycle {cycle}: handshake completion must re-publish the desired awareness",
@@ -1068,10 +1206,12 @@ fn remote_peers_clear_on_every_generation_close_while_desired_awareness_survives
     let desired = json!({ "name": "still here" });
     let scenarios: [(&str, CloseAction); 4] = [
         ("retryable close", |id, generation| {
-            socket_closed(id, 431, generation, CloseDisposition::Retryable).unwrap();
+            collaboration_socket_close(id, 431, generation, CloseDisposition::Retryable, 0)
+                .unwrap();
         }),
         ("incompatible close", |id, generation| {
-            socket_closed(id, 432, generation, CloseDisposition::Incompatible).unwrap();
+            collaboration_socket_close(id, 432, generation, CloseDisposition::Incompatible, 0)
+                .unwrap();
         }),
         ("local disconnect", |id, _generation| {
             transport_disconnect(id, 433).unwrap();
@@ -1313,26 +1453,26 @@ fn remote_cannot_advance_the_local_client_clock() {
 #[test]
 fn tick_renews_local_awareness_at_exactly_the_renewal_interval() {
     let (id, snapshot) = create_ready_room();
-    let _generation = synchronize_ready_room(id, &snapshot);
-    awareness_tick(id, 501, 0).unwrap();
+    let generation = synchronize_ready_room(id, &snapshot);
+    drive_awareness(id, 501, 0).unwrap();
     set_desired_awareness(id, 502, &json!({ "name": "renewer" }).to_string()).unwrap();
     let published_clock = local_peer(id).unwrap().clock;
-    drain_protocol_replies(id);
+    drain_protocol_replies(id, generation);
 
     // One millisecond before the interval: no renewal, deadline reported.
-    let outcome = awareness_tick(id, 503, AWARENESS_RENEWAL_INTERVAL_MILLIS - 1).unwrap();
+    let outcome = drive_awareness(id, 503, AWARENESS_RENEWAL_INTERVAL_MILLIS - 1).unwrap();
     assert!(!outcome.renewed_local, "{outcome:?}");
     assert_eq!(
         outcome.next_deadline_millis,
         Some(AWARENESS_RENEWAL_INTERVAL_MILLIS),
         "{outcome:?}"
     );
-    assert_eq!(drain_protocol_replies(id).len(), 0);
+    assert_eq!(drain_protocol_replies(id, generation).len(), 0);
     assert_eq!(local_peer(id).unwrap().clock, published_clock);
 
     // Exactly at the interval: the local state renews with a fresh clock and
     // the renewed frame is enqueued for broadcast.
-    let outcome = awareness_tick(id, 504, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
+    let outcome = drive_awareness(id, 504, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
     assert!(outcome.renewed_local, "{outcome:?}");
     assert_eq!(
         outcome.next_deadline_millis,
@@ -1344,7 +1484,7 @@ fn tick_renews_local_awareness_at_exactly_the_renewal_interval() {
         renewed_clock > published_clock,
         "renewal must publish a fresh clock: {renewed_clock} vs {published_clock}",
     );
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     assert_eq!(replies.len(), 1, "{replies:?}");
     let reply = decode_awareness_reply(&replies[0]);
     let entry = reply.clients.values().next().unwrap();
@@ -1356,7 +1496,7 @@ fn tick_renews_local_awareness_at_exactly_the_renewal_interval() {
 fn refused_broadcast_keeps_the_publish_clock_and_a_tick_heals_it_after_drain() {
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
-    awareness_tick(id, 541, 0).unwrap();
+    drive_awareness(id, 541, 0).unwrap();
 
     // Baseline: one successful publish; its clock is the last successful one.
     let desired = json!({ "name": "pre-fill" });
@@ -1365,7 +1505,7 @@ fn refused_broadcast_keeps_the_publish_clock_and_a_tick_heals_it_after_drain() {
     let local_client = ClientID::new(local.client_id);
     let published_clock = local.clock;
     let mut raw = Awareness::new(Doc::new());
-    for reply in drain_protocol_replies(id) {
+    for reply in drain_protocol_replies(id, generation) {
         raw.apply_update(decode_awareness_reply(&reply)).unwrap();
     }
     assert_eq!(raw.meta(local_client).unwrap().0, published_clock);
@@ -1409,7 +1549,7 @@ fn refused_broadcast_keeps_the_publish_clock_and_a_tick_heals_it_after_drain() {
 
     // (a)+(b): the valid desired-state change is retained, but its broadcast
     // reservation is refused retryably WITHOUT closing the generation.
-    awareness_tick(id, 545, 5_000).unwrap();
+    drive_awareness(id, 545, 5_000).unwrap();
     let changed = json!({ "name": "retained through refusal" });
     let error = set_desired_awareness(id, 546, &changed.to_string()).unwrap_err();
     assert_eq!(error.code, TRANSPORT_REPLY_LIMIT_EXCEEDED, "{error:?}");
@@ -1426,7 +1566,7 @@ fn refused_broadcast_keeps_the_publish_clock_and_a_tick_heals_it_after_drain() {
     );
 
     // No partial install: the failed attempt left zero entries anywhere.
-    assert_eq!(take_next_protocol_reply(id).unwrap(), None);
+    assert_eq!(pending_protocol_replies(id).unwrap(), Some((0, 0)));
     assert_eq!(
         bridge::outbox_pending(id).unwrap().unwrap().0,
         1,
@@ -1437,32 +1577,33 @@ fn refused_broadcast_keeps_the_publish_clock_and_a_tick_heals_it_after_drain() {
     // anchored at the last successful broadcast (t=0), not at the refusal
     // (t=5_000), and the boundary tick still finds renewal due: it attempts
     // the broadcast and is refused the same retryable way.
-    let outcome = awareness_tick(id, 547, AWARENESS_RENEWAL_INTERVAL_MILLIS - 1).unwrap();
+    let outcome = drive_awareness(id, 547, AWARENESS_RENEWAL_INTERVAL_MILLIS - 1).unwrap();
     assert!(!outcome.renewed_local, "{outcome:?}");
     assert_eq!(
         outcome.next_deadline_millis,
         Some(AWARENESS_RENEWAL_INTERVAL_MILLIS),
         "a refused publish must not push the renewal deadline out: {outcome:?}",
     );
-    let error = awareness_tick(id, 548, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap_err();
+    let error = drive_awareness(id, 548, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap_err();
     assert_eq!(error.code, TRANSPORT_REPLY_LIMIT_EXCEEDED, "{error:?}");
     assert_eq!(transport_state(id).unwrap(), TransportState::Synchronized);
-    assert_eq!(take_next_protocol_reply(id).unwrap(), None);
+    assert_eq!(pending_protocol_replies(id).unwrap(), Some((0, 0)));
 
     // (d): drain through the normal pickup seam, then a retried tick heals
     // the broadcast end-to-end with a fresh clock past the last successful
     // publish — the raw peer sees the retained state again.
-    let (request_id, _) = bridge::take_next_update(id).unwrap().unwrap();
-    assert_eq!(request_id, 544);
+    let lease = bridge::lease_next_update(id).unwrap().unwrap();
+    assert_eq!(lease.request_id, 544);
+    bridge::ack_leased_update(id, lease.lease_id).unwrap();
     assert_eq!(bridge::outbox_pending(id).unwrap().unwrap(), (0, 0));
-    let outcome = awareness_tick(id, 549, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
+    let outcome = drive_awareness(id, 549, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
     assert!(outcome.renewed_local, "{outcome:?}");
     assert_eq!(
         outcome.next_deadline_millis,
         Some(AWARENESS_RENEWAL_INTERVAL_MILLIS * 2),
         "{outcome:?}",
     );
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     assert_eq!(replies.len(), 1, "{replies:?}");
     for reply in replies {
         raw.apply_update(decode_awareness_reply(&reply)).unwrap();
@@ -1478,7 +1619,7 @@ fn refused_broadcast_keeps_the_publish_clock_and_a_tick_heals_it_after_drain() {
     // answered without a close, with the healed local entry included.
     let outcome = receive_message(id, 550, generation, &query_awareness_message()).unwrap();
     assert!(outcome.close.is_none(), "{outcome:?}");
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     assert_eq!(replies.len(), 1, "{replies:?}");
     let reply = decode_awareness_reply(&replies[0]);
     let entry = &reply.clients[&local_client];
@@ -1491,12 +1632,70 @@ fn refused_broadcast_keeps_the_publish_clock_and_a_tick_heals_it_after_drain() {
 }
 
 #[test]
+fn directive_deadline_is_minimum_of_retry_renewal_and_peer_expiry() {
+    let (id, snapshot) = create_ready_room();
+    let generation = collaboration_drive(id, 20_400, 0)
+        .unwrap()
+        .generation_to_open
+        .expect("the initial drive issues the current generation");
+    collaboration_socket_open(id, 20_401, generation, 0).unwrap();
+    let server = raw_doc_from_snapshot(&snapshot);
+    let synchronized = collaboration_receive(
+        id,
+        20_402,
+        generation,
+        &Message::Sync(yrs::sync::SyncMessage::SyncStep2(
+            server
+                .transact()
+                .encode_state_as_update_v1(&yrs::StateVector::default()),
+        ))
+        .encode_v1(),
+        0,
+    )
+    .unwrap();
+    assert_eq!(synchronized.transport_state, TransportState::Synchronized);
+
+    set_desired_awareness(id, 20_403, &json!({ "name": "deadline local" }).to_string()).unwrap();
+    collaboration_receive(
+        id,
+        20_404,
+        generation,
+        &awareness_message(&[(6_901, 1, r#"{"name":"deadline peer"}"#)]),
+        0,
+    )
+    .unwrap();
+
+    let renewal_wins = collaboration_drive(id, 20_405, 0).unwrap();
+    assert_eq!(renewal_wins.next_deadline_millis, Some(15_000));
+    assert!(
+        renewal_wins.next_deadline_millis < Some(AWARENESS_EXPIRY_MILLIS),
+        "the directive chooses the earlier local renewal over peer expiry"
+    );
+
+    let tied = collaboration_drive(id, 20_406, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
+    assert!(tied.renewed_local, "the due drive renews local awareness");
+    assert_eq!(tied.next_deadline_millis, Some(AWARENESS_EXPIRY_MILLIS));
+
+    let retry_wins = collaboration_socket_close(
+        id,
+        20_407,
+        generation,
+        CloseDisposition::Retryable,
+        AWARENESS_RENEWAL_INTERVAL_MILLIS,
+    )
+    .unwrap();
+    assert_eq!(retry_wins.transport_state, TransportState::Disconnected);
+    assert_eq!(retry_wins.next_deadline_millis, Some(15_500));
+    destroy_session(id);
+}
+
+#[test]
 fn tick_never_renews_without_a_synchronized_transport_or_desired_state() {
     // No desired state: nothing renews, no deadline is requested.
     let (id, snapshot) = create_ready_room();
     let _generation = synchronize_ready_room(id, &snapshot);
-    awareness_tick(id, 511, 0).unwrap();
-    let outcome = awareness_tick(id, 512, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
+    drive_awareness(id, 511, 0).unwrap();
+    let outcome = drive_awareness(id, 512, AWARENESS_RENEWAL_INTERVAL_MILLIS).unwrap();
     assert!(!outcome.renewed_local, "{outcome:?}");
     assert_eq!(outcome.next_deadline_millis, None, "{outcome:?}");
     destroy_session(id);
@@ -1506,12 +1705,12 @@ fn tick_never_renews_without_a_synchronized_transport_or_desired_state() {
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
     set_desired_awareness(id, 513, &json!({ "name": "offline" }).to_string()).unwrap();
-    socket_closed(id, 514, generation, CloseDisposition::Retryable).unwrap();
-    drain_protocol_replies(id);
-    let outcome = awareness_tick(id, 515, AWARENESS_RENEWAL_INTERVAL_MILLIS * 3).unwrap();
+    drain_protocol_replies(id, generation);
+    collaboration_socket_close(id, 514, generation, CloseDisposition::Retryable, 0).unwrap();
+    let outcome = drive_awareness(id, 515, AWARENESS_RENEWAL_INTERVAL_MILLIS * 3).unwrap();
     assert!(!outcome.renewed_local, "{outcome:?}");
     assert_eq!(outcome.next_deadline_millis, None, "{outcome:?}");
-    assert_eq!(drain_protocol_replies(id).len(), 0);
+    assert_eq!(pending_protocol_replies(id).unwrap(), Some((0, 0)));
     assert_eq!(
         desired_awareness(id).unwrap(),
         Some(json!({ "name": "offline" })),
@@ -1523,7 +1722,7 @@ fn tick_never_renews_without_a_synchronized_transport_or_desired_state() {
 fn tick_expires_remote_peers_at_exactly_the_expiry_deadline() {
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
-    awareness_tick(id, 521, 0).unwrap();
+    drive_awareness(id, 521, 0).unwrap();
     receive_message(
         id,
         522,
@@ -1533,7 +1732,7 @@ fn tick_expires_remote_peers_at_exactly_the_expiry_deadline() {
     .unwrap();
 
     // One millisecond before the deadline: the peer survives.
-    let outcome = awareness_tick(id, 523, AWARENESS_EXPIRY_MILLIS - 1).unwrap();
+    let outcome = drive_awareness(id, 523, AWARENESS_EXPIRY_MILLIS - 1).unwrap();
     assert!(outcome.expired_peers.is_empty(), "{outcome:?}");
     assert_eq!(
         outcome.next_deadline_millis,
@@ -1544,11 +1743,11 @@ fn tick_expires_remote_peers_at_exactly_the_expiry_deadline() {
 
     // Exactly at the deadline: the peer expires, leaves peers(), and leaves
     // the complete query answer.
-    let outcome = awareness_tick(id, 524, AWARENESS_EXPIRY_MILLIS).unwrap();
+    let outcome = drive_awareness(id, 524, AWARENESS_EXPIRY_MILLIS).unwrap();
     assert_eq!(outcome.expired_peers, vec![6_801], "{outcome:?}");
     assert!(remote_peers(id).is_empty());
     receive_message(id, 525, generation, &query_awareness_message()).unwrap();
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     let reply = decode_awareness_reply(&replies[0]);
     assert!(
         !reply.clients.contains_key(&ClientID::new(6_801)),
@@ -1582,7 +1781,7 @@ fn tick_expires_remote_peers_at_exactly_the_expiry_deadline() {
 fn renewed_announcements_refresh_the_peer_expiry_deadline() {
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
-    awareness_tick(id, 531, 0).unwrap();
+    drive_awareness(id, 531, 0).unwrap();
     receive_message(
         id,
         532,
@@ -1592,7 +1791,7 @@ fn renewed_announcements_refresh_the_peer_expiry_deadline() {
     .unwrap();
 
     // A renewed announcement (fresh clock) at t=20s pushes the deadline out.
-    awareness_tick(id, 533, 20_000).unwrap();
+    drive_awareness(id, 533, 20_000).unwrap();
     receive_message(
         id,
         534,
@@ -1600,7 +1799,7 @@ fn renewed_announcements_refresh_the_peer_expiry_deadline() {
         &awareness_message(&[(6_901, 2, r#"{"name":"heartbeat"}"#)]),
     )
     .unwrap();
-    let outcome = awareness_tick(id, 535, AWARENESS_EXPIRY_MILLIS).unwrap();
+    let outcome = drive_awareness(id, 535, AWARENESS_EXPIRY_MILLIS).unwrap();
     assert!(
         outcome.expired_peers.is_empty(),
         "activity at 20s keeps the peer alive at 30s: {outcome:?}",
@@ -1610,7 +1809,7 @@ fn renewed_announcements_refresh_the_peer_expiry_deadline() {
         Some(20_000 + AWARENESS_EXPIRY_MILLIS),
         "{outcome:?}"
     );
-    let outcome = awareness_tick(id, 536, 20_000 + AWARENESS_EXPIRY_MILLIS).unwrap();
+    let outcome = drive_awareness(id, 536, 20_000 + AWARENESS_EXPIRY_MILLIS).unwrap();
     assert_eq!(outcome.expired_peers, vec![6_901], "{outcome:?}");
     destroy_session(id);
 }
@@ -1746,7 +1945,7 @@ fn typed_awareness_intent_owns_sticky_cursors_and_survives_or_omits_them_on_rest
     assert_eq!(local.state["focused"], true);
     assert!(local.state["cursor"].is_object(), "{local:?}");
     assert_eq!(local.cursor, Some((7, 7)), "{local:?}");
-    drain_protocol_replies(id);
+    drain_protocol_replies(id, generation);
 
     // Every invalid caller payload rejects before awareness, clocks, the
     // outbox, peer projections, or the document can move.
@@ -1786,8 +1985,9 @@ fn typed_awareness_intent_owns_sticky_cursors_and_survives_or_omits_them_on_rest
         );
         assert_eq!(awareness_peers(id).unwrap(), peers_before, "{invalid}");
         assert_eq!(session_audit(id).unwrap(), audit_before, "{invalid}");
-        assert!(
-            take_next_protocol_reply(id).unwrap().is_none(),
+        assert_eq!(
+            pending_protocol_replies(id).unwrap(),
+            Some((0, 0)),
             "{invalid} must not enqueue an awareness update",
         );
     }
@@ -1826,14 +2026,22 @@ fn typed_awareness_intent_owns_sticky_cursors_and_survives_or_omits_them_on_rest
 
     // Snapshot restore deliberately refuses pending document updates, so
     // deliver the local edit before moving to the disconnected restore row.
-    let frame = v2_collaboration::editor_v2_collaboration_take_outbound(
+    let frame = v2_collaboration::editor_v2_collaboration_lease_outbound(
         id.to_string(),
         generation.to_string(),
     );
     assert!(frame.error.is_none(), "{frame:?}");
-    assert!(!frame.value.unwrap_or_default().is_empty());
+    assert!(!frame.empty, "{frame:?}");
+    let frame = frame.value.expect("the local edit must retain a lease");
+    assert!(!frame.frame.is_empty());
+    let ack = v2_collaboration::editor_v2_collaboration_ack_outbound(
+        id.to_string(),
+        generation.to_string(),
+        frame.lease_id,
+    );
+    assert!(ack.error.is_none(), "{ack:?}");
 
-    socket_closed(id, 614, generation, CloseDisposition::Retryable).unwrap();
+    collaboration_socket_close(id, 614, generation, CloseDisposition::Retryable, 0).unwrap();
     restore_snapshot(id, 615, &snapshot).unwrap();
     assert_eq!(local_peer(id).unwrap().cursor, Some((7, 7)));
 
@@ -1848,7 +2056,7 @@ fn typed_awareness_intent_owns_sticky_cursors_and_survives_or_omits_them_on_rest
 #[test]
 fn awareness_review_fix_rejects_explicit_null_selection_atomically() {
     let (id, snapshot) = create_ready_room();
-    let _generation = synchronize_ready_room(id, &snapshot);
+    let generation = synchronize_ready_room(id, &snapshot);
     let accepted = json!({
         "state": { "name": "kept" },
         "focused": true,
@@ -1859,7 +2067,7 @@ fn awareness_review_fix_rejects_explicit_null_selection_atomically() {
         accepted.to_string(),
     );
     assert!(result.error.is_none(), "{result:?}");
-    drain_protocol_replies(id);
+    drain_protocol_replies(id, generation);
 
     let peers_before = awareness_peers(id).unwrap();
     let desired_before = desired_awareness(id).unwrap();
@@ -1879,7 +2087,7 @@ fn awareness_review_fix_rejects_explicit_null_selection_atomically() {
     assert_eq!(awareness_peers(id).unwrap(), peers_before);
     assert_eq!(desired_awareness(id).unwrap(), desired_before);
     assert_eq!(session_audit(id).unwrap(), audit_before);
-    assert!(take_next_protocol_reply(id).unwrap().is_none());
+    assert_eq!(pending_protocol_replies(id).unwrap(), Some((0, 0)));
     destroy_session(id);
 }
 
@@ -2037,7 +2245,7 @@ fn unknown_tombstone_storms_are_accepted_as_no_ops() {
     // A query-awareness answer contains none of the storm clients.
     let outcome = receive_message(id, 432, generation, &query_awareness_message()).unwrap();
     assert!(outcome.close.is_none(), "{outcome:?}");
-    let replies = drain_protocol_replies(id);
+    let replies = drain_protocol_replies(id, generation);
     assert_eq!(replies.len(), 1, "{replies:?}");
     let reply = decode_awareness_reply(&replies[0]);
     assert!(
@@ -2047,7 +2255,7 @@ fn unknown_tombstone_storms_are_accepted_as_no_ops() {
 
     // The storm stamped no activity deadlines: a tick far in the future
     // expires nothing.
-    let outcome = awareness_tick(id, 433, 10_000_000).unwrap();
+    let outcome = drive_awareness(id, 433, 10_000_000).unwrap();
     assert!(outcome.expired_peers.is_empty(), "{outcome:?}");
     destroy_session(id);
 }
