@@ -57,7 +57,7 @@ Required peer dependencies:
 Install the package:
 
 ```sh
-npm install @apollohg/react-native-prose-editor@0.5.1
+npm install @apollohg/react-native-prose-editor@1.0.0
 ```
 
 Expo prebuild apps should add the package config plugin so Android excludes
@@ -295,6 +295,10 @@ options. Bind the complete `editorBindings` set above — `documentHandle`,
 `documentRevision`, `remoteSelections`, `onSelectionChange`, `onFocus`,
 `onBlur`, and `onLocalDocumentCommit` — so document rendering, local commits,
 and awareness stay on the one shared handle.
+
+Low-level bridge callers must create a local awareness range with
+`createNativeEditorLocalAwarenessSelection(anchor, head)`. Plain objects,
+clones, and proxies are rejected; Rust alone derives the sticky wire cursor.
 
 ### Reconnect recovery
 
