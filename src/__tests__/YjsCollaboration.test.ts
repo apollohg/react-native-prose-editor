@@ -53,6 +53,7 @@ import {
     createNativeEditorLocalAwarenessSelection,
     createNativeEditorDocumentHandle,
     type NativeEditorDocumentHandle,
+    type NativeEditorV2CreateConfig,
     _resetNativeModuleCache,
     type DocumentJSON,
     type NativeEditorLocalAwarenessIntent,
@@ -273,7 +274,11 @@ function snapshotState(doc: DocumentJSON, revision = 7): Uint8Array {
 }
 
 function createRoomHandle(
-    options: { documentId?: string; withSnapshot?: boolean } = {}
+    options: {
+        documentId?: string;
+        withSnapshot?: boolean;
+        limits?: NativeEditorV2CreateConfig['limits'];
+    } = {}
 ): NativeEditorDocumentHandle {
     const documentId = options.documentId ?? 'doc-1';
     return createNativeEditorDocumentHandle({
@@ -296,6 +301,7 @@ function createRoomHandle(
                   }
                 : {}),
         },
+        ...(options.limits === undefined ? {} : { limits: options.limits }),
     });
 }
 
@@ -1651,6 +1657,105 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         );
         expect(after.awarenessNowMillis).toBe(nowBefore);
         expect(after.lastLocalAwarenessPublishMillis).toBe(publishBefore);
+    });
+
+    it('admits an awareness intent at the configured UTF-8 peer-byte limit', () => {
+        const awarenessJson = JSON.stringify({ state: { label: '😀' }, focused: false });
+        const actual = new TextEncoder().encode(awarenessJson).byteLength;
+        const handle = createRoomHandle({
+            withSnapshot: true,
+            limits: { collaboration: { maxAwarenessPeerBytes: actual } },
+        });
+
+        expect(
+            (runtime.session(handle.editorId) as unknown as {
+                maxAwarenessPeerBytes?: number;
+            }).maxAwarenessPeerBytes
+        ).toBe(actual);
+        expect(
+            runtime.module.editorV2CollaborationSetAwareness(handle.editorId, awarenessJson)
+        ).toEqual({ value: true, error: null });
+    });
+
+    it('defaults omitted awareness peer bytes to 64 KiB and rejects one-over before parsing', () => {
+        const limit = 64 * 1024;
+        const actual = limit + 1;
+        const awarenessJson = '['.repeat(actual);
+        const handle = createRoomHandle({ withSnapshot: true });
+
+        expect({
+            storedLimit: (
+                runtime.session(handle.editorId) as unknown as {
+                    maxAwarenessPeerBytes?: number;
+                }
+            ).maxAwarenessPeerBytes,
+            result: runtime.module.editorV2CollaborationSetAwareness(
+                handle.editorId,
+                awarenessJson
+            ),
+        }).toEqual({
+            storedLimit: limit,
+            result: {
+                value: null,
+                error: {
+                    domain: 'boundary',
+                    code: 'INPUT_LIMIT_EXCEEDED',
+                    message: `input exceeds limit ${limit}: ${actual}`,
+                    requestId: null,
+                    operationIndex: null,
+                    limit: String(limit),
+                    actual: String(actual),
+                    details: { field: 'maxAwarenessPeerBytes' },
+                },
+            },
+        });
+    });
+
+    it('rejects an awareness intent one UTF-8 byte above the configured peer-byte limit', () => {
+        const awarenessJson = JSON.stringify({ state: { label: '😀' }, focused: false });
+        const actual = new TextEncoder().encode(awarenessJson).byteLength;
+        const limit = actual - 1;
+        const handle = createRoomHandle({
+            withSnapshot: true,
+            limits: { collaboration: { maxAwarenessPeerBytes: limit } },
+        });
+
+        expect(runtime.module.editorV2CollaborationSetAwareness(handle.editorId, awarenessJson)).toEqual({
+            value: null,
+            error: {
+                domain: 'boundary',
+                code: 'INPUT_LIMIT_EXCEEDED',
+                message: `input exceeds limit ${limit}: ${actual}`,
+                requestId: null,
+                operationIndex: null,
+                limit: String(limit),
+                actual: String(actual),
+                details: { field: 'maxAwarenessPeerBytes' },
+            },
+        });
+    });
+
+    it('rejects oversized malformed awareness JSON with the peer-byte limit before parsing', () => {
+        const limit = 64;
+        const awarenessJson = '['.repeat(limit + 1);
+        const handle = createRoomHandle({
+            withSnapshot: true,
+            limits: { collaboration: { maxAwarenessPeerBytes: limit } },
+        });
+
+        expect(runtime.module.editorV2CollaborationSetAwareness(handle.editorId, awarenessJson)).toEqual({
+            value: null,
+            error: {
+                domain: 'boundary',
+                code: 'INPUT_LIMIT_EXCEEDED',
+                message: `input exceeds limit ${limit}: ${limit + 1}`,
+                requestId: null,
+                operationIndex: null,
+                limit: String(limit),
+                actual: String(limit + 1),
+                details: { field: 'maxAwarenessPeerBytes' },
+            },
+        });
     });
 
     it('fake validates the production text-only intent and publishes nested engine-owned cursor state', () => {

@@ -42,6 +42,7 @@ const V2_FAKE_U32_MAX = 0xffff_ffff;
 const V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK = V2_FAKE_U32_MAX - 1;
 const V2_FAKE_AWARENESS_RENEWAL_INTERVAL_MILLIS = 15_000n;
 const V2_FAKE_AWARENESS_EXPIRY_MILLIS = 30_000n;
+const V2_FAKE_DEFAULT_MAX_AWARENESS_PEER_BYTES = 64 * 1024;
 const V2_FAKE_MALFORMED_AWARENESS_MESSAGE =
     'awareness update cannot decode: fake entry requires canonical u64 clientId and exact u32 clock';
 
@@ -137,6 +138,18 @@ function snapshotError(code: string, message: string): Record<string, unknown> {
 
 function boundaryError(code: string, message: string): Record<string, unknown> {
     return errRecord(errorRecord('boundary', code, message));
+}
+
+function awarenessPeerBytesLimitError(limit: number, actual: number): Record<string, unknown> {
+    const error = errorRecord(
+        'boundary',
+        'INPUT_LIMIT_EXCEEDED',
+        `input exceeds limit ${limit}: ${actual}`
+    );
+    error.limit = String(limit);
+    error.actual = String(actual);
+    error.details = { field: 'maxAwarenessPeerBytes' };
+    return errRecord(error);
 }
 
 /** Match the production v2 boundary: u64s are canonical decimal strings only. */
@@ -601,6 +614,7 @@ interface FakeSession {
     lastIssuedGeneration: bigint;
     protocolQueue: Uint8Array[];
     documentQueue: Uint8Array[];
+    maxAwarenessPeerBytes: number;
     desiredAwareness: FakeNativeEditorLocalAwarenessWireIntent | null;
     localAwarenessCursor: { anchor: number; head: number } | null;
     localClientId: string;
@@ -1488,6 +1502,16 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 lastIssuedGeneration: 0n,
                 protocolQueue: [],
                 documentQueue: [],
+                maxAwarenessPeerBytes: (() => {
+                    const limits = config.limits;
+                    const collaboration =
+                        isFakeRecord(limits) && isFakeRecord(limits.collaboration)
+                            ? limits.collaboration
+                            : null;
+                    return typeof collaboration?.maxAwarenessPeerBytes === 'number'
+                        ? collaboration.maxAwarenessPeerBytes
+                        : V2_FAKE_DEFAULT_MAX_AWARENESS_PEER_BYTES;
+                })(),
                 desiredAwareness: null,
                 localAwarenessCursor: null,
                 localClientId: String((clientIdCounter += 1)),
@@ -2090,6 +2114,13 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     return boundaryError(
                         'CONFIG_INVALID',
                         'local sessions have no attached collaboration runtime'
+                    );
+                }
+                const awarenessBytes = new TextEncoder().encode(awarenessJson).byteLength;
+                if (awarenessBytes > session.maxAwarenessPeerBytes) {
+                    return awarenessPeerBytesLimitError(
+                        session.maxAwarenessPeerBytes,
+                        awarenessBytes
                     );
                 }
                 if (awarenessJson.trim() === 'null') {
