@@ -13,6 +13,7 @@
     { "name": "editor_v2_collaboration_reattach", "checksum": 44291 },
     { "name": "editor_v2_collaboration_receive", "checksum": 19926 },
     { "name": "editor_v2_collaboration_set_awareness", "checksum": 59502 },
+    { "name": "editor_v2_collaboration_set_awareness_selection", "checksum": 3071 },
     { "name": "editor_v2_collaboration_socket_close", "checksum": 53946 },
     { "name": "editor_v2_collaboration_socket_open", "checksum": 25835 },
     { "name": "editor_v2_create", "checksum": 9333 },

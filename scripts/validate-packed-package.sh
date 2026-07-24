@@ -33,7 +33,7 @@ manifest_rows() {
   ruby -rjson -e '
     manifest = JSON.parse(File.read(ARGV.fetch(0)))
     entries = manifest.fetch("functions")
-    abort "package ABI manifest must contain exactly 30 editor_v2 functions" unless entries.length == 30
+    abort "package ABI manifest must contain exactly 31 editor_v2 functions" unless entries.length == 31
     names = entries.map { |entry| entry.fetch("name") }
     abort "package ABI manifest contains duplicate function names" unless names.uniq.length == names.length
     abort "package ABI manifest contains a non-v2 function" unless names.all? { |name| name.start_with?("editor_v2_") }

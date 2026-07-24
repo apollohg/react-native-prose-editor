@@ -1353,6 +1353,14 @@ public func editorV2CollaborationSetAwareness(editorId: String, awarenessJson: S
     )
 })
 }
+public func editorV2CollaborationSetAwarenessSelection(editorId: String, selectionJson: String) -> FfiJsonResult  {
+    return try!  FfiConverterTypeFfiJsonResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness_selection(
+        FfiConverterString.lower(editorId),
+        FfiConverterString.lower(selectionJson),$0
+    )
+})
+}
 /**
  * `reason` carries no classification weight (Rust alone owns retry
  * eligibility); a policy-violation close code (1008) parks the transport
@@ -1560,6 +1568,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness() != 59502) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness_selection() != 3071) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 53946) {

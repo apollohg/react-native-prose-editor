@@ -791,6 +791,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
 
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness(): Short
 
+    fun uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness_selection(): Short
+
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close(): Short
 
     fun uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_open(): Short
@@ -941,6 +943,12 @@ internal interface UniffiLib : Library {
     fun uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness(
         `editorId`: RustBuffer.ByValue,
         `awarenessJson`: RustBuffer.ByValue,
+        uniffi_out_err: UniffiRustCallStatus,
+    ): RustBuffer.ByValue
+
+    fun uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness_selection(
+        `editorId`: RustBuffer.ByValue,
+        `selectionJson`: RustBuffer.ByValue,
         uniffi_out_err: UniffiRustCallStatus,
     ): RustBuffer.ByValue
 
@@ -1319,6 +1327,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness() != 59502.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_set_awareness_selection() != 3071.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_editor_core_checksum_func_editor_v2_collaboration_socket_close() != 53946.toShort()) {
@@ -2255,6 +2266,20 @@ fun `editorV2CollaborationSetAwareness`(
             UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness(
                 FfiConverterString.lower(`editorId`),
                 FfiConverterString.lower(`awarenessJson`),
+                _status,
+            )
+        },
+    )
+
+fun `editorV2CollaborationSetAwarenessSelection`(
+    `editorId`: kotlin.String,
+    `selectionJson`: kotlin.String,
+): FfiJsonResult =
+    FfiConverterTypeFfiJsonResult.lift(
+        uniffiRustCall { _status ->
+            UniffiLib.INSTANCE.uniffi_editor_core_fn_func_editor_v2_collaboration_set_awareness_selection(
+                FfiConverterString.lower(`editorId`),
+                FfiConverterString.lower(`selectionJson`),
                 _status,
             )
         },

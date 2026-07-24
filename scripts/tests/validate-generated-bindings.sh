@@ -31,12 +31,12 @@ expected_function_symbols="$(rg -o 'uniffi_editor_core_fn_func_editor_v2_[[:alnu
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
 expected_checksum_symbols="$(rg -o 'uniffi_editor_core_checksum_func_editor_v2_[[:alnum:]_]+' \
   "$repo_root/rust/bindings/swift/editor_coreFFI.h" | sort -u)"
-[[ "$(printf '%s\n' "$expected_function_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "30" ]] || {
-  echo "ERROR: generated FFI header must expose exactly 30 editor_v2 functions" >&2
+[[ "$(printf '%s\n' "$expected_function_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "31" ]] || {
+  echo "ERROR: generated FFI header must expose exactly 31 editor_v2 functions" >&2
   exit 1
 }
-[[ "$(printf '%s\n' "$expected_checksum_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "30" ]] || {
-  echo "ERROR: generated FFI header must expose exactly 30 editor_v2 checksums" >&2
+[[ "$(printf '%s\n' "$expected_checksum_symbols" | sed '/^$/d' | wc -l | tr -d ' ')" == "31" ]] || {
+  echo "ERROR: generated FFI header must expose exactly 31 editor_v2 checksums" >&2
   exit 1
 }
 

@@ -257,9 +257,9 @@ for (const code of ffiV2.operationCodes) assert.ok(ffiTypes.includes(`"${code}"`
 assert.match(ffiTypes, /Some\(true\)/, 'unit success must cross UniFFI as Some(true)');
 
 // Task 16C: the legacy UDL and the legacy editor_*/collaboration_session_*
-// exports were deleted; the production surface is the 30 editor_v2_*
+// exports were deleted; the production surface is the 31 editor_v2_*
 // UniFFI functions plus editor_core_version.
-const V2_EXPORT_COUNT = 30;
+const V2_EXPORT_COUNT = 31;
 if (releaseMode) {
     const androidModule = read('android/src/main/java/com/apollohg/editor/NativeEditorModule.kt');
     const iosModule = read('ios/NativeEditorModule.swift');
@@ -312,7 +312,7 @@ if (releaseMode) {
     assert.equal(
         (ffiHeader.match(/uniffi_editor_core_fn_func_editor_v2_/g) ?? []).length,
         V2_EXPORT_COUNT,
-        'the FFI header must expose exactly 30 editor_v2_* symbols'
+        'the FFI header must expose exactly 31 editor_v2_* symbols'
     );
     assert.match(ffiHeader, /uniffi_editor_core_fn_func_editor_core_version/);
     assert.doesNotMatch(ffiHeader, /uniffi_editor_core_fn_func_collaboration_session/);
