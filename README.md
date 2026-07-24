@@ -57,7 +57,7 @@ Required peer dependencies:
 Install the package:
 
 ```sh
-npm install @apollohg/react-native-prose-editor@1.0.0
+npm install @apollohg/react-native-prose-editor@2.0.0
 ```
 
 Expo prebuild apps should add the package config plugin so Android excludes
@@ -216,6 +216,72 @@ View-facing props include `editable` (default true),
 interaction in this mounted view; it never changes the handle's
 `policy.readOnly`. See the 1.0.0 migration table in the
 [CHANGELOG](./CHANGELOG.md) for pre-cutover names and replacements.
+
+## Native Viewer Embedding
+
+The package exposes the display-only prose viewer directly to UIKit and
+Android View hosts. These facades do not depend on Expo view lifecycle types
+and do not create or retain an editor handle.
+
+Both views consume the flattened render-ops JSON produced by the package render
+bridge. This is not raw ProseMirror document JSON. An application-owned native
+module can accept that render JSON as a prop and pass it directly to the
+platform view.
+
+UIKit:
+
+```swift
+import ReactNativeProseEditor
+import UIKit
+
+final class MessageCell: UICollectionViewCell {
+    let proseViewer = ProseViewerView(frame: .zero)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        contentView.addSubview(proseViewer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("MessageCell does not support NSCoder")
+    }
+
+    func configure(renderJson: String, themeJson: String) {
+        _ = proseViewer.apply(renderJson: renderJson, themeJson: themeJson)
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        proseViewer.prepareForReuse()
+    }
+}
+```
+
+Android:
+
+```kotlin
+import androidx.recyclerview.widget.RecyclerView
+import com.apollohg.editor.ProseViewerView
+
+class MessageViewHolder(
+    val proseViewer: ProseViewerView
+) : RecyclerView.ViewHolder(proseViewer) {
+    fun bind(renderJson: String, themeJson: String) {
+        proseViewer.apply(renderJson, themeJson)
+    }
+
+    fun recycle() {
+        proseViewer.prepareForReuse()
+    }
+}
+```
+
+`apply` returns `false` and safely clears the view when render JSON is invalid.
+Both facades also expose serialized image-policy configuration, current-content
+height measurement, headless height-for-width measurement, and link/mention
+interaction callbacks. UIKit dimensions are points; Android dimensions are
+pixels.
 
 ## Customization
 

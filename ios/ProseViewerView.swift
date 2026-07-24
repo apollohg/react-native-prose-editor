@@ -110,8 +110,11 @@ public final class ProseViewerView: UIView {
         imageLoadOwner.cancelAll()
         lastRenderJSON = "[]"
         lastThemeJSON = nil
+        collapsesWhenEmpty = false
         isCollapsedEmptyContent = false
+        _ = textView.applyTheme(nil)
         textView.applyRenderJSON("[]")
+        imageLoadOwner.updatePolicy(.default)
         textView.isHidden = false
         invalidateIntrinsicContentSize()
         setNeedsLayout()
