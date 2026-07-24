@@ -2054,6 +2054,159 @@ fn typed_awareness_intent_owns_sticky_cursors_and_survives_or_omits_them_on_rest
 }
 
 #[test]
+fn awareness_selection_patch_preserves_state_and_focus_and_queues_one_frame() {
+    let (id, snapshot) = create_ready_room();
+    let generation = synchronize_ready_room(id, &snapshot);
+    let initial = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        json!({
+            "state": {"user": {"name": "Ada"}, "custom": 7},
+            "focused": true
+        })
+        .to_string(),
+    );
+    assert!(initial.error.is_none(), "{initial:?}");
+    drain_protocol_replies(id, generation);
+
+    let result = v2_collaboration::editor_v2_collaboration_set_awareness_selection(
+        id.to_string(),
+        json!({"type": "text", "anchor": 2, "head": 2}).to_string(),
+    );
+    assert!(result.error.is_none(), "{result:?}");
+    let outcome: Value =
+        serde_json::from_str(result.value.as_deref().expect("selection patch value")).unwrap();
+
+    assert_eq!(outcome, json!({"outboundChanged": true}));
+    let desired = desired_awareness(id).unwrap().unwrap();
+    assert_eq!(desired["state"], json!({"user": {"name": "Ada"}, "custom": 7}));
+    assert_eq!(desired["focused"], true);
+    assert!(desired.get("cursor").is_some());
+    assert_eq!(drain_protocol_replies(id, generation).len(), 1);
+    destroy_session(id);
+}
+
+#[test]
+fn awareness_selection_patch_without_retained_awareness_is_a_noop() {
+    let (id, snapshot) = create_ready_room();
+    let generation = synchronize_ready_room(id, &snapshot);
+
+    let result = v2_collaboration::editor_v2_collaboration_set_awareness_selection(
+        id.to_string(),
+        json!({"type": "text", "anchor": 2, "head": 2}).to_string(),
+    );
+    assert!(result.error.is_none(), "{result:?}");
+    let outcome: Value =
+        serde_json::from_str(result.value.as_deref().expect("selection patch value")).unwrap();
+
+    assert_eq!(outcome, json!({"outboundChanged": false}));
+    assert_eq!(desired_awareness(id).unwrap(), None);
+    assert_eq!(drain_protocol_replies(id, generation).len(), 0);
+    destroy_session(id);
+}
+
+#[test]
+fn repeating_an_awareness_selection_patch_does_not_advance_the_local_clock() {
+    let (id, snapshot) = create_ready_room();
+    let generation = synchronize_ready_room(id, &snapshot);
+    let initial = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        json!({"state": {"name": "Ada"}, "focused": true}).to_string(),
+    );
+    assert!(initial.error.is_none(), "{initial:?}");
+    drain_protocol_replies(id, generation);
+
+    let selection = json!({"type": "text", "anchor": 2, "head": 2}).to_string();
+    let initial_patch = v2_collaboration::editor_v2_collaboration_set_awareness_selection(
+        id.to_string(),
+        selection.clone(),
+    );
+    assert!(initial_patch.error.is_none(), "{initial_patch:?}");
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            initial_patch
+                .value
+                .as_deref()
+                .expect("selection patch value"),
+        )
+        .unwrap(),
+        json!({"outboundChanged": true}),
+    );
+    let clock_after_initial_patch = local_peer(id).unwrap().clock;
+    drain_protocol_replies(id, generation);
+
+    let repeated = v2_collaboration::editor_v2_collaboration_set_awareness_selection(
+        id.to_string(),
+        selection,
+    );
+    assert!(repeated.error.is_none(), "{repeated:?}");
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            repeated
+                .value
+                .as_deref()
+                .expect("selection patch value"),
+        )
+        .unwrap(),
+        json!({"outboundChanged": false}),
+    );
+    assert_eq!(local_peer(id).unwrap().clock, clock_after_initial_patch);
+    assert_eq!(drain_protocol_replies(id, generation).len(), 0);
+    destroy_session(id);
+}
+
+#[test]
+fn awareness_selection_patch_updates_the_retained_cursor_while_disconnected() {
+    let (id, snapshot) = create_ready_room();
+    let generation = synchronize_ready_room(id, &snapshot);
+    let initial = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        json!({"state": {"name": "Ada"}, "focused": true}).to_string(),
+    );
+    assert!(initial.error.is_none(), "{initial:?}");
+    drain_protocol_replies(id, generation);
+    transport_disconnect(id, 617).unwrap();
+
+    let result = v2_collaboration::editor_v2_collaboration_set_awareness_selection(
+        id.to_string(),
+        json!({"type": "text", "anchor": 2, "head": 2}).to_string(),
+    );
+    assert!(result.error.is_none(), "{result:?}");
+    let outcome: Value =
+        serde_json::from_str(result.value.as_deref().expect("selection patch value")).unwrap();
+
+    assert_eq!(outcome, json!({"outboundChanged": false}));
+    assert!(desired_awareness(id).unwrap().unwrap().get("cursor").is_some());
+    assert_eq!(pending_protocol_replies(id).unwrap(), Some((0, 0)));
+    destroy_session(id);
+}
+
+#[test]
+fn out_of_range_awareness_selection_patch_is_atomic() {
+    let (id, snapshot) = create_ready_room();
+    let generation = synchronize_ready_room(id, &snapshot);
+    let initial = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        json!({"state": {"name": "Ada"}, "focused": true}).to_string(),
+    );
+    assert!(initial.error.is_none(), "{initial:?}");
+    drain_protocol_replies(id, generation);
+    let desired_before = desired_awareness(id).unwrap();
+    let clock_before = local_peer(id).unwrap().clock;
+
+    let result = v2_collaboration::editor_v2_collaboration_set_awareness_selection(
+        id.to_string(),
+        json!({"type": "text", "anchor": 999, "head": 999}).to_string(),
+    );
+    assert!(result.value.is_none(), "{result:?}");
+    let error = result.error.expect("out-of-range selection must reject");
+    assert_eq!(error.code, "AWARENESS_STATE_INVALID", "{error:?}");
+    assert_eq!(desired_awareness(id).unwrap(), desired_before);
+    assert_eq!(local_peer(id).unwrap().clock, clock_before);
+    assert_eq!(drain_protocol_replies(id, generation).len(), 0);
+    destroy_session(id);
+}
+
+#[test]
 fn awareness_review_fix_rejects_explicit_null_selection_atomically() {
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);

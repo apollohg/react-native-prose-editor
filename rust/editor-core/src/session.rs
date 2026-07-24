@@ -1288,6 +1288,16 @@ impl EditorSession {
         runtime.set_awareness_intent(request_id, intent_json, context)
     }
 
+    pub(crate) fn set_awareness_selection(
+        &mut self,
+        request_id: u64,
+        selection_json: &str,
+    ) -> Result<crate::collaboration_runtime::awareness::AwarenessSelectionOutcome, SessionError>
+    {
+        let (runtime, context) = self.awareness_runtime_and_context()?;
+        runtime.set_awareness_selection(request_id, selection_json, context)
+    }
+
     /// Task 10: withdraw the desired local awareness state.
     pub(crate) fn clear_desired_awareness(&mut self, request_id: u64) -> Result<(), SessionError> {
         let (runtime, context) = self.awareness_runtime_and_context()?;

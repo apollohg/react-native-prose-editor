@@ -58,10 +58,15 @@ struct LocalAwarenessIntent {
     selection: LocalAwarenessSelectionWire,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 enum LocalAwarenessSelection {
     Text { anchor: u32, head: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AwarenessSelectionOutcome {
+    pub(crate) outbound_changed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -447,6 +452,57 @@ impl CollaborationRuntime {
             transport_state,
             limits,
         )
+    }
+
+    pub(crate) fn set_awareness_selection(
+        &mut self,
+        request_id: u64,
+        selection_json: &str,
+        context: AwarenessContext<'_>,
+    ) -> Result<AwarenessSelectionOutcome, SessionError> {
+        let selection: LocalAwarenessSelection =
+            serde_json::from_str(selection_json).map_err(|error| {
+                awareness_state_invalid(
+                    request_id,
+                    format!("local awareness selection is invalid: {error}"),
+                )
+            })?;
+        let AwarenessContext {
+            engine,
+            transport_state,
+            limits,
+        } = context;
+        let Some(Value::Object(current)) = self.awareness.desired_state.as_ref() else {
+            return Ok(AwarenessSelectionOutcome {
+                outbound_changed: false,
+            });
+        };
+        let LocalAwarenessSelection::Text { anchor, head } = selection;
+        let cursor = engine
+            .awareness_sticky_cursor(anchor, head)
+            .ok_or_else(|| {
+                awareness_state_invalid(
+                    request_id,
+                    "local awareness selection is outside the current document",
+                )
+            })?;
+        if current.get("cursor") == Some(&cursor) {
+            return Ok(AwarenessSelectionOutcome {
+                outbound_changed: false,
+            });
+        }
+        let mut next = current.clone();
+        next.insert("cursor".into(), cursor);
+        self.set_desired_awareness_value(
+            request_id,
+            Value::Object(next),
+            engine,
+            transport_state,
+            limits,
+        )?;
+        Ok(AwarenessSelectionOutcome {
+            outbound_changed: transport_state == TransportState::Synchronized,
+        })
     }
 
     fn set_desired_awareness_value(

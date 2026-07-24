@@ -253,6 +253,23 @@ pub fn editor_v2_collaboration_set_awareness(
     }))
 }
 
+#[uniffi::export]
+pub fn editor_v2_collaboration_set_awareness_selection(
+    editor_id: String,
+    selection_json: String,
+) -> FfiJsonResult {
+    json_result(with_editor(&editor_id, |session| {
+        session
+            .set_awareness_selection(INTERNAL_UNCORRELATED_REQUEST_ID, &selection_json)
+            .map(|outcome| {
+                serde_json::json!({
+                    "outboundChanged": outcome.outbound_changed,
+                })
+                .to_string()
+            })
+    }))
+}
+
 /// Live awareness peer projections; client ids are decimal strings so full
 /// u64 ids survive the JSON round-trip.
 #[uniffi::export]

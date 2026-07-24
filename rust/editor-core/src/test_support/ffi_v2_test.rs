@@ -1512,6 +1512,56 @@ fn typed_awareness_intent_ffi_and_collaboration_binary_round_trip() {
 }
 
 #[test]
+fn awareness_selection_patch_ffi_has_a_closed_result_and_input_shape() {
+    let snapshot = snapshot_source();
+    let id = create_handle_with_state(
+        room_config(Some(&snapshot)),
+        Some(snapshot.encoded_state.clone()),
+    );
+    let server = RawPeer::from_snapshot(&snapshot);
+    let generation = synchronize_v2(&id, &server);
+    ok_unit(&v2_collab::editor_v2_collaboration_set_awareness(
+        id.clone(),
+        json!({ "state": { "name": "ffi peer" }, "focused": true }).to_string(),
+    ));
+    let lease = lease_v2(&id, &generation);
+    ack_v2(&id, &generation, lease.lease_id);
+
+    let outcome = ok_json(&v2_collab::editor_v2_collaboration_set_awareness_selection(
+        id.clone(),
+        json!({ "type": "text", "anchor": 4, "head": 6 }).to_string(),
+    ));
+    let keys: std::collections::BTreeSet<&str> = outcome
+        .as_object()
+        .expect("selection patch outcome is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        ["outboundChanged"]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<&str>>(),
+        "selection patch result has exactly one key: {keys:?}",
+    );
+    assert_eq!(outcome, json!({ "outboundChanged": true }));
+    let lease = lease_v2(&id, &generation);
+    ack_v2(&id, &generation, lease.lease_id);
+
+    for invalid in [
+        "{not json".to_string(),
+        json!({ "type": "text", "anchor": 4, "head": 6, "unknown": true }).to_string(),
+    ] {
+        let error = err_json(&v2_collab::editor_v2_collaboration_set_awareness_selection(
+            id.clone(),
+            invalid,
+        ));
+        assert_error(&error, "boundary", "AWARENESS_STATE_INVALID", None);
+    }
+    destroy_handle(&id);
+}
+
+#[test]
 fn awareness_review_fix_raw_publication_is_test_only() {
     let session = include_str!("../session.rs");
     let runtime = include_str!("../collaboration_runtime/awareness.rs");
