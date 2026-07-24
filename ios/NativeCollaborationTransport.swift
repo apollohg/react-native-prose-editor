@@ -4,14 +4,17 @@ extension FfiError: Error {}
 
 struct NativeCollaborationTransportConfig: Equatable {
     static let maximumURLBytes = 4_096
-    static let maximumJWTBytes = 16_384
 
     let url: URL
     let connect: Bool
-    let connectionInitJWT: String?
+    let protocolAdapter: NativeCollaborationProtocolAdapterConfig?
     let diagnosticEndpoint: String
 
-    init(url: URL, connect: Bool, connectionInitJWT: String?) throws {
+    init(
+        url: URL,
+        connect: Bool,
+        protocolAdapter: NativeCollaborationProtocolAdapterConfig?
+    ) throws {
         guard let absolute = url.absoluteString.data(using: .utf8),
               !absolute.isEmpty,
               absolute.count <= Self.maximumURLBytes,
@@ -39,21 +42,9 @@ struct NativeCollaborationTransportConfig: Equatable {
         guard let endpoint = diagnostic.string else {
             throw NativeCollaborationTransportConfigurationError.invalidURL
         }
-        if let connectionInitJWT {
-            guard let bytes = connectionInitJWT.data(using: .utf8),
-                  !bytes.isEmpty,
-                  bytes.count <= Self.maximumJWTBytes,
-                  !connectionInitJWT.unicodeScalars.contains(where: {
-                      CharacterSet.newlines.contains($0) || $0.value == 0
-                  })
-            else {
-                throw NativeCollaborationTransportConfigurationError.invalidJWT
-            }
-        }
-
         self.url = url
         self.connect = connect
-        self.connectionInitJWT = connectionInitJWT
+        self.protocolAdapter = protocolAdapter
         diagnosticEndpoint = endpoint
     }
 
@@ -63,13 +54,50 @@ struct NativeCollaborationTransportConfig: Equatable {
     ) -> Bool {
         lhs.url.absoluteString == rhs.url.absoluteString
             && lhs.connect == rhs.connect
-            && lhs.connectionInitJWT == rhs.connectionInitJWT
+            && lhs.protocolAdapter == rhs.protocolAdapter
     }
 }
 
 enum NativeCollaborationTransportConfigurationError: Error {
     case invalidURL
-    case invalidJWT
+}
+
+struct NativeCollaborationProtocolAdapterConfig: Equatable {
+    static let defaultTimeoutMillis: UInt64 = 10_000
+    static let maximumFrameBytes = 64 * 1_024
+
+    let protocols: [String]
+    let timeoutMillis: UInt64
+    let terminalCloseCodes: Set<UInt32>
+}
+
+enum NativeCollaborationProtocolFrame {
+    case text(String)
+    case binary(Data)
+}
+
+enum NativeCollaborationProtocolAdapterAction {
+    case `continue`
+    case ready
+    case reject
+}
+
+struct NativeCollaborationProtocolAdapterResponse {
+    let action: NativeCollaborationProtocolAdapterAction
+    let frames: [NativeCollaborationProtocolFrame]
+}
+
+enum NativeCollaborationProtocolAdapterPhase {
+    case open
+    case message(NativeCollaborationProtocolFrame)
+}
+
+struct NativeCollaborationProtocolAdapterEvent {
+    let attemptId: String
+    let eventId: String
+    let generation: String
+    let negotiatedProtocol: String?
+    let phase: NativeCollaborationProtocolAdapterPhase
 }
 
 enum CollaborationWakeReason: String {
@@ -99,6 +127,7 @@ enum NativeCollaborationTransportEvent {
         wakeReason: CollaborationWakeReason
     )
     case error(FfiError, generation: String?)
+    case protocolAdapter(NativeCollaborationProtocolAdapterEvent)
 }
 
 protocol NativeCollaborationTransportBackend {
@@ -227,10 +256,14 @@ final class NativeCollaborationTransport {
     private var generation: String?
     private var socketToken = UUID()
     private var timer: DispatchWorkItem?
-    private var connectionAckTimer: DispatchWorkItem?
+    private var protocolAdapterTimer: DispatchWorkItem?
     private var inFlightLease: FfiOutboundLease?
     private var networkSocketOpened = false
     private var socketOpened = false
+    private var protocolAttemptId: String?
+    private var protocolEventSequence: UInt64 = 0
+    private var pendingProtocolEventId: String?
+    private var negotiatedProtocol: String?
     private var closeReported = false
     private var backgrounded = false
     private var destroyed = false
@@ -287,6 +320,65 @@ final class NativeCollaborationTransport {
         queue.async { [weak self] in
             guard let self, self.canDrive else { return }
             self.drive(reason: reason)
+        }
+    }
+
+    @discardableResult
+    func resolveProtocolAdapter(
+        attemptId: String,
+        eventId: String,
+        response: NativeCollaborationProtocolAdapterResponse
+    ) -> FfiError? {
+        onQueueSync {
+            guard !destroyed else {
+                return lifecycleError("ENGINE_DESTROYED", "collaboration transport is destroyed")
+            }
+            guard protocolAttemptId == attemptId,
+                  pendingProtocolEventId == eventId,
+                  let generation,
+                  let socket
+            else {
+                // RN promises from a retired attempt are intentionally harmless.
+                return nil
+            }
+            pendingProtocolEventId = nil
+            let token = socketToken
+            sendProtocolAdapterFrames(
+                response.frames,
+                index: 0,
+                socket: socket,
+                token: token,
+                generation: generation,
+                completion: { [weak self] success in
+                    guard let self,
+                          self.isCurrent(token: token, generation: generation),
+                          self.protocolAttemptId == attemptId
+                    else {
+                        return
+                    }
+                    guard success else {
+                        self.failCurrentSocket(
+                            token: token,
+                            generation: generation,
+                            code: nil
+                        )
+                        return
+                    }
+                    switch response.action {
+                    case .continue:
+                        self.receiveNext(token: token, generation: generation)
+                    case .ready:
+                        self.activateYjs(token: token, generation: generation)
+                    case .reject:
+                        self.failCurrentSocket(
+                            token: token,
+                            generation: generation,
+                            code: UInt32(URLSessionWebSocketTask.CloseCode.policyViolation.rawValue)
+                        )
+                    }
+                }
+            )
+            return nil
         }
     }
 
@@ -373,12 +465,20 @@ final class NativeCollaborationTransport {
         closeReported = false
         networkSocketOpened = false
         socketOpened = false
+        protocolAttemptId = config.protocolAdapter == nil ? nil : UUID().uuidString
+        protocolEventSequence = 0
+        pendingProtocolEventId = nil
+        negotiatedProtocol = nil
         let token = UUID()
         socketToken = token
         let callbacks = CollaborationSocketCallbacks(
-            didOpen: { [weak self] in
+            didOpen: { [weak self] negotiatedProtocol in
                 self?.queue.async {
-                    self?.socketDidOpen(token: token, generation: newGeneration)
+                    self?.socketDidOpen(
+                        token: token,
+                        generation: newGeneration,
+                        negotiatedProtocol: negotiatedProtocol
+                    )
                 }
             },
             didClose: { [weak self] code, _ in
@@ -391,46 +491,37 @@ final class NativeCollaborationTransport {
                 }
             }
         )
-        let newSocket = socketFactory.makeSocket(url: config.url, callbacks: callbacks)
+        let newSocket = socketFactory.makeSocket(
+            url: config.url,
+            protocols: config.protocolAdapter?.protocols ?? [],
+            callbacks: callbacks
+        )
         socket = newSocket
         newSocket.resume()
     }
 
-    private func socketDidOpen(token: UUID, generation callbackGeneration: String) {
+    private func socketDidOpen(
+        token: UUID,
+        generation callbackGeneration: String,
+        negotiatedProtocol: String?
+    ) {
         guard isCurrent(token: token, generation: callbackGeneration),
               !networkSocketOpened
         else {
             return
         }
         networkSocketOpened = true
-        guard let jwt = config?.connectionInitJWT else {
+        self.negotiatedProtocol = negotiatedProtocol
+        guard config?.protocolAdapter != nil else {
             activateYjs(token: token, generation: callbackGeneration)
             return
         }
-        guard let message = connectionInitMessage(jwt: jwt), let socket else {
-            failCurrentSocket(token: token, generation: callbackGeneration, code: 1008)
-            return
-        }
-        scheduleConnectionAckTimeout(token: token, generation: callbackGeneration)
-        socket.sendText(message) { [weak self] result in
-            self?.queue.async {
-                guard let self,
-                      self.isCurrent(token: token, generation: callbackGeneration)
-                else {
-                    return
-                }
-                switch result {
-                case .success:
-                    self.receiveNext(token: token, generation: callbackGeneration)
-                case .failure:
-                    self.failCurrentSocket(
-                        token: token,
-                        generation: callbackGeneration,
-                        code: nil
-                    )
-                }
-            }
-        }
+        scheduleProtocolAdapterTimeout(token: token, generation: callbackGeneration)
+        emitProtocolAdapterEvent(
+            phase: .open,
+            token: token,
+            generation: callbackGeneration
+        )
     }
 
     private func activateYjs(token: UUID, generation callbackGeneration: String) {
@@ -440,8 +531,9 @@ final class NativeCollaborationTransport {
         else {
             return
         }
-        connectionAckTimer?.cancel()
-        connectionAckTimer = nil
+        protocolAdapterTimer?.cancel()
+        protocolAdapterTimer = nil
+        pendingProtocolEventId = nil
         socketOpened = true
         let accepted = consumeDirective(
             backend.socketOpen(
@@ -475,8 +567,20 @@ final class NativeCollaborationTransport {
                 }
                 switch result {
                 case .success(.text(let text)):
-                    if !self.socketOpened, self.isConnectionAck(text) {
-                        self.activateYjs(token: token, generation: callbackGeneration)
+                    if !self.socketOpened, self.config?.protocolAdapter != nil {
+                        guard self.protocolAdapterFrameIsWithinLimit(.text(text)) else {
+                            self.failCurrentSocket(
+                                token: token,
+                                generation: callbackGeneration,
+                                code: 1008
+                            )
+                            return
+                        }
+                        self.emitProtocolAdapterEvent(
+                            phase: .message(.text(text)),
+                            token: token,
+                            generation: callbackGeneration
+                        )
                     } else {
                         self.failCurrentSocket(
                             token: token,
@@ -486,11 +590,27 @@ final class NativeCollaborationTransport {
                     }
                 case .success(.binary(let data)):
                     guard self.socketOpened else {
-                        self.failCurrentSocket(
-                            token: token,
-                            generation: callbackGeneration,
-                            code: 1008
-                        )
+                        if self.config?.protocolAdapter != nil {
+                            guard self.protocolAdapterFrameIsWithinLimit(.binary(data)) else {
+                                self.failCurrentSocket(
+                                    token: token,
+                                    generation: callbackGeneration,
+                                    code: 1008
+                                )
+                                return
+                            }
+                            self.emitProtocolAdapterEvent(
+                                phase: .message(.binary(data)),
+                                token: token,
+                                generation: callbackGeneration
+                            )
+                        } else {
+                            self.failCurrentSocket(
+                                token: token,
+                                generation: callbackGeneration,
+                                code: 1008
+                            )
+                        }
                         return
                     }
                     if self.consumeDirective(
@@ -519,6 +639,18 @@ final class NativeCollaborationTransport {
                     )
                 }
             }
+        }
+    }
+
+    private func protocolAdapterFrameIsWithinLimit(
+        _ frame: NativeCollaborationProtocolFrame
+    ) -> Bool {
+        switch frame {
+        case .text(let text):
+            return (text.data(using: .utf8)?.count ?? Int.max)
+                <= NativeCollaborationProtocolAdapterConfig.maximumFrameBytes
+        case .binary(let data):
+            return data.count <= NativeCollaborationProtocolAdapterConfig.maximumFrameBytes
         }
     }
 
@@ -611,7 +743,15 @@ final class NativeCollaborationTransport {
 
     private func socketDidClose(token: UUID, generation: String, code: UInt32?) {
         guard isCurrent(token: token, generation: generation) else { return }
-        reportCurrentSocketClose(generation: generation, code: code)
+        let backendCode: UInt32?
+        if let code,
+           config?.protocolAdapter?.terminalCloseCodes.contains(code) == true
+        {
+            backendCode = UInt32(URLSessionWebSocketTask.CloseCode.policyViolation.rawValue)
+        } else {
+            backendCode = code
+        }
+        reportCurrentSocketClose(generation: generation, code: backendCode)
     }
 
     private func failCurrentSocket(token: UUID, generation: String, code: UInt32?) {
@@ -625,12 +765,15 @@ final class NativeCollaborationTransport {
         closeReported = true
         timer?.cancel()
         timer = nil
-        connectionAckTimer?.cancel()
-        connectionAckTimer = nil
+        protocolAdapterTimer?.cancel()
+        protocolAdapterTimer = nil
         socketToken = UUID()
         socket = nil
         networkSocketOpened = false
         socketOpened = false
+        protocolAttemptId = nil
+        pendingProtocolEventId = nil
+        negotiatedProtocol = nil
         inFlightLease = nil
         generation = nil
         consumeDirective(
@@ -668,46 +811,93 @@ final class NativeCollaborationTransport {
         queue.asyncAfter(deadline: .now() + .nanoseconds(Int(nanoseconds)), execute: work)
     }
 
-    private func scheduleConnectionAckTimeout(token: UUID, generation: String) {
-        connectionAckTimer?.cancel()
+    private func scheduleProtocolAdapterTimeout(token: UUID, generation: String) {
+        protocolAdapterTimer?.cancel()
+        guard let timeoutMillis = config?.protocolAdapter?.timeoutMillis else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.connectionAckTimer = nil
+            self.protocolAdapterTimer = nil
             self.failCurrentSocket(token: token, generation: generation, code: 1008)
         }
-        connectionAckTimer = work
-        queue.asyncAfter(deadline: .now() + .seconds(10), execute: work)
+        protocolAdapterTimer = work
+        let nanoseconds = min(timeoutMillis, UInt64(Int.max / 1_000_000)) * 1_000_000
+        queue.asyncAfter(deadline: .now() + .nanoseconds(Int(nanoseconds)), execute: work)
     }
 
-    private func connectionInitMessage(jwt: String) -> String? {
-        let value: [String: Any] = [
-            "type": "connection_init",
-            "payload": ["Authorization": "JWT \(jwt)"],
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: value),
-              let message = String(data: data, encoding: .utf8)
+    private func emitProtocolAdapterEvent(
+        phase: NativeCollaborationProtocolAdapterPhase,
+        token: UUID,
+        generation: String
+    ) {
+        guard isCurrent(token: token, generation: generation),
+              config?.protocolAdapter != nil,
+              let attemptId = protocolAttemptId,
+              pendingProtocolEventId == nil,
+              protocolEventSequence < UInt64.max
         else {
-            return nil
+            failCurrentSocket(token: token, generation: generation, code: 1008)
+            return
         }
-        return message
+        protocolEventSequence += 1
+        let eventId = String(protocolEventSequence)
+        pendingProtocolEventId = eventId
+        eventSink(.protocolAdapter(NativeCollaborationProtocolAdapterEvent(
+            attemptId: attemptId,
+            eventId: eventId,
+            generation: generation,
+            negotiatedProtocol: negotiatedProtocol,
+            phase: phase
+        )))
     }
 
-    private func isConnectionAck(_ text: String) -> Bool {
-        guard let data = text.data(using: .utf8),
-              data.count <= 8_192,
-              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              value["type"] as? String == "connection_ack"
-        else {
-            return false
+    private func sendProtocolAdapterFrames(
+        _ frames: [NativeCollaborationProtocolFrame],
+        index: Int,
+        socket: CollaborationSocket,
+        token: UUID,
+        generation: String,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard isCurrent(token: token, generation: generation) else { return }
+        guard index < frames.count else {
+            completion(true)
+            return
         }
-        return true
+        let callback: (Result<Void, Error>) -> Void = { [weak self] result in
+            self?.queue.async {
+                guard let self,
+                      self.isCurrent(token: token, generation: generation)
+                else {
+                    return
+                }
+                switch result {
+                case .success:
+                    self.sendProtocolAdapterFrames(
+                        frames,
+                        index: index + 1,
+                        socket: socket,
+                        token: token,
+                        generation: generation,
+                        completion: completion
+                    )
+                case .failure:
+                    completion(false)
+                }
+            }
+        }
+        switch frames[index] {
+        case .text(let text):
+            socket.sendText(text, completion: callback)
+        case .binary(let data):
+            socket.sendBinary(data, completion: callback)
+        }
     }
 
     private func retireNativeResources() {
         timer?.cancel()
         timer = nil
-        connectionAckTimer?.cancel()
-        connectionAckTimer = nil
+        protocolAdapterTimer?.cancel()
+        protocolAdapterTimer = nil
         socketToken = UUID()
         socket?.cancel(code: .goingAway, reason: nil)
         socket = nil
@@ -715,6 +905,9 @@ final class NativeCollaborationTransport {
         inFlightLease = nil
         networkSocketOpened = false
         socketOpened = false
+        protocolAttemptId = nil
+        pendingProtocolEventId = nil
+        negotiatedProtocol = nil
         closeReported = true
     }
 

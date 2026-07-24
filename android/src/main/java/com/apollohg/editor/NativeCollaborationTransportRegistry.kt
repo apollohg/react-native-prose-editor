@@ -1,5 +1,6 @@
 package com.apollohg.editor
 
+import android.util.Base64
 import org.json.JSONObject
 
 internal object NativeCollaborationTransportRegistry {
@@ -68,6 +69,23 @@ internal object NativeCollaborationTransportRegistry {
         synchronized(lock) {
             transports[canonical]
         }?.notifyOutboundAvailable(reason)
+    }
+
+    fun resolveProtocolAdapter(
+        editorId: String,
+        attemptId: String,
+        eventId: String,
+        responseJson: String,
+    ): EditorV2Error? {
+        val canonical = canonicalV2U64(editorId)?.takeIf { it != "0" }
+            ?: return contractError("invalid editorId")
+        val response = parseProtocolAdapterResponse(responseJson)
+            ?: return contractError("invalid collaboration protocol adapter response")
+        if (attemptId.isEmpty() || canonicalV2U64(eventId) == null) {
+            return contractError("invalid collaboration protocol adapter response")
+        }
+        val transport = synchronized(lock) { transports[canonical] } ?: return null
+        return transport.resolveProtocolAdapter(attemptId, eventId, response)
     }
 
     fun destroy(editorId: String) {
@@ -140,6 +158,31 @@ internal object NativeCollaborationTransportRegistry {
                     base["generation"] = event.generation
                     base["error"] = event.error.toJSMap()
                 }
+                is AndroidCollaborationTransportEvent.ProtocolAdapter -> {
+                    val adapterEvent = event.event
+                    base["kind"] = "protocolAdapter"
+                    base["generation"] = adapterEvent.generation
+                    base["attemptId"] = adapterEvent.attemptId
+                    base["eventId"] = adapterEvent.eventId
+                    base["negotiatedProtocol"] = adapterEvent.negotiatedProtocol
+                    when (val phase = adapterEvent.phase) {
+                        NativeCollaborationProtocolAdapterPhase.Open -> {
+                            base["phase"] = "open"
+                        }
+                        is NativeCollaborationProtocolAdapterPhase.Message -> {
+                            base["phase"] = "message"
+                            base["frame"] = when (val frame = phase.frame) {
+                                is NativeCollaborationProtocolFrame.Text ->
+                                    mapOf("type" to "text", "data" to frame.data)
+                                is NativeCollaborationProtocolFrame.Binary ->
+                                    mapOf(
+                                        "type" to "binary",
+                                        "data" to Base64.encodeToString(frame.data, Base64.NO_WRAP),
+                                    )
+                            }
+                        }
+                    }
+                }
             }
             base
         }
@@ -171,19 +214,123 @@ internal object NativeCollaborationTransportRegistry {
         val keys = value.keys().asSequence().toSet()
         if (
             !keys.containsAll(setOf("url", "connect")) ||
-            !setOf("url", "connect", "connectionInit").containsAll(keys)
+            !setOf("url", "connect", "protocolAdapter").containsAll(keys)
         ) return null
         val url = value.opt("url") as? String ?: return null
         val connect = value.opt("connect") as? Boolean ?: return null
-        val connectionInitJwt = when (val rawConnectionInit = value.opt("connectionInit")) {
+        val protocolAdapter = when (val rawAdapter = value.opt("protocolAdapter")) {
             null -> null
-            is JSONObject -> {
-                if (rawConnectionInit.keys().asSequence().toSet() != setOf("jwt")) return null
-                rawConnectionInit.opt("jwt") as? String ?: return null
+            is JSONObject -> parseProtocolAdapterConfig(rawAdapter) ?: return null
+            else -> return null
+        }
+        return NativeCollaborationTransportConfig.parse(url, connect, protocolAdapter)
+    }
+
+    private fun parseProtocolAdapterConfig(
+        value: JSONObject,
+    ): NativeCollaborationProtocolAdapterConfig? {
+        val keys = value.keys().asSequence().toSet()
+        if (
+            !keys.contains("protocols") ||
+            !setOf("protocols", "timeoutMillis", "terminalCloseCodes").containsAll(keys)
+        ) return null
+        val rawProtocols = value.optJSONArray("protocols") ?: return null
+        if (rawProtocols.length() !in 1..16) return null
+        val protocols = List(rawProtocols.length()) { index ->
+            rawProtocols.opt(index) as? String ?: return null
+        }
+        if (protocols.toSet().size != protocols.size || protocols.any { !validWebSocketProtocol(it) }) {
+            return null
+        }
+        val timeoutMillis = when (val rawTimeout = value.opt("timeoutMillis")) {
+            null -> 10_000L
+            is Number -> {
+                val asDouble = rawTimeout.toDouble()
+                if (
+                    !asDouble.isFinite() ||
+                    asDouble % 1.0 != 0.0 ||
+                    asDouble < 1.0 ||
+                    asDouble > 60_000.0
+                ) return null
+                asDouble.toLong()
             }
             else -> return null
         }
-        return NativeCollaborationTransportConfig.parse(url, connect, connectionInitJwt)
+        val terminalCloseCodes = when (val rawCodes = value.optJSONArray("terminalCloseCodes")) {
+            null -> emptySet()
+            else -> buildSet {
+                for (index in 0 until rawCodes.length()) {
+                    val rawCode = rawCodes.opt(index) as? Number ?: return null
+                    val asDouble = rawCode.toDouble()
+                    if (
+                        !asDouble.isFinite() ||
+                        asDouble % 1.0 != 0.0 ||
+                        asDouble < 1_000.0 ||
+                        asDouble > 4_999.0 ||
+                        !add(asDouble.toInt())
+                    ) return null
+                }
+            }
+        }
+        return NativeCollaborationProtocolAdapterConfig(
+            protocols = protocols,
+            timeoutMillis = timeoutMillis,
+            terminalCloseCodes = terminalCloseCodes,
+        )
+    }
+
+    private fun validWebSocketProtocol(value: String): Boolean {
+        if (value.toByteArray(Charsets.UTF_8).size !in 1..128) return false
+        val allowed = "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+            .toSet()
+        return value.all { it in allowed }
+    }
+
+    private fun parseProtocolAdapterResponse(
+        json: String,
+    ): NativeCollaborationProtocolAdapterResponse? {
+        if (json.toByteArray(Charsets.UTF_8).size > 1_500_000) return null
+        val value = runCatching { JSONObject(json) }.getOrNull() ?: return null
+        val keys = value.keys().asSequence().toSet()
+        if (!keys.contains("action") || !setOf("action", "frames").containsAll(keys)) return null
+        val action = when (value.opt("action") as? String) {
+            "continue" -> NativeCollaborationProtocolAdapterAction.CONTINUE
+            "ready" -> NativeCollaborationProtocolAdapterAction.READY
+            "reject" -> NativeCollaborationProtocolAdapterAction.REJECT
+            else -> return null
+        }
+        val rawFrames = value.optJSONArray("frames")
+        if (rawFrames != null && rawFrames.length() > 16) return null
+        val frames = buildList {
+            if (rawFrames != null) {
+                for (index in 0 until rawFrames.length()) {
+                    val frame = rawFrames.optJSONObject(index) ?: return null
+                    if (frame.keys().asSequence().toSet() != setOf("type", "data")) return null
+                    val data = frame.opt("data") as? String ?: return null
+                    when (frame.opt("type") as? String) {
+                        "text" -> {
+                            if (
+                                data.toByteArray(Charsets.UTF_8).size >
+                                NativeCollaborationProtocolAdapterConfig.MAXIMUM_FRAME_BYTES
+                            ) return null
+                            add(NativeCollaborationProtocolFrame.Text(data))
+                        }
+                        "binary" -> {
+                            val decoded = runCatching {
+                                Base64.decode(data, Base64.NO_WRAP)
+                            }.getOrNull() ?: return null
+                            if (
+                                decoded.size >
+                                NativeCollaborationProtocolAdapterConfig.MAXIMUM_FRAME_BYTES
+                            ) return null
+                            add(NativeCollaborationProtocolFrame.Binary(decoded))
+                        }
+                        else -> return null
+                    }
+                }
+            }
+        }
+        return NativeCollaborationProtocolAdapterResponse(action, frames)
     }
 
     private fun JSONObject.toMap(): Map<String, Any?> =

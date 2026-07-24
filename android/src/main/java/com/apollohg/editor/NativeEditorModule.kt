@@ -357,6 +357,22 @@ class NativeEditorModule : Module() {
                 "error" to error?.toJSMap(),
             )
         }
+        Function("editorV2CollaborationResolveProtocolAdapter") {
+            editorId: String,
+            attemptId: String,
+            eventId: String,
+            responseJson: String ->
+            val error = NativeCollaborationTransportRegistry.resolveProtocolAdapter(
+                editorId,
+                attemptId,
+                eventId,
+                responseJson,
+            )
+            mapOf(
+                "value" to if (error == null) true else null,
+                "error" to error?.toJSMap(),
+            )
+        }
         Function("editorV2CollaborationSetAwareness") { editorId: String, awarenessJson: String ->
             val result = editorV2CollaborationSetAwareness(editorId, awarenessJson)
             if (result.value == true && result.error == null) {

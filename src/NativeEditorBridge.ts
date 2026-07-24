@@ -236,6 +236,12 @@ export interface NativeEditorV2Module {
         editorId: string,
         configJsonOrNull: string | null
     ): unknown;
+    editorV2CollaborationResolveProtocolAdapter(
+        editorId: string,
+        attemptId: string,
+        eventId: string,
+        responseJson: string
+    ): unknown;
     editorV2CollaborationSetAwareness(editorId: string, awarenessJson: string): unknown;
     editorV2SnapshotExport(editorId: string): unknown;
     editorV2SnapshotRestore(editorId: string, metadataJson: string, encodedState: Uint8Array): unknown;
@@ -877,18 +883,55 @@ export interface NativeEditorV2PeerInfo {
     cursor: { anchor: number; head: number } | null;
 }
 
+export type NativeCollaborationProtocolFrame =
+    | { type: 'text'; data: string }
+    | { type: 'binary'; data: Uint8Array };
+
+export type NativeCollaborationProtocolAdapterAction = 'continue' | 'ready' | 'reject';
+
+export interface NativeCollaborationProtocolAdapterResult {
+    action: NativeCollaborationProtocolAdapterAction;
+    frames?: readonly NativeCollaborationProtocolFrame[];
+}
+
+export interface NativeCollaborationProtocolAdapterContext {
+    attemptId: string;
+    generation: string;
+    negotiatedProtocol: string | null;
+}
+
+/**
+ * An RN-owned, attempt-scoped prelude for a native-owned WebSocket.
+ *
+ * Native blocks all Yjs traffic until `onMessage` returns `ready`. Callbacks
+ * run once per native event and can read fresh credentials on every physical
+ * reconnect. Their frames and return values are never persisted by native.
+ */
+export interface NativeCollaborationProtocolAdapter {
+    /** WebSocket subprotocols offered during the physical handshake, in preference order. */
+    protocols: readonly string[];
+    /** Maximum time native permits the adapter to keep a physical socket pending. */
+    timeoutMillis?: number;
+    /** Close codes that park the Rust transport instead of entering automatic retry. */
+    terminalCloseCodes?: readonly number[];
+    onOpen(
+        context: NativeCollaborationProtocolAdapterContext
+    ):
+        | NativeCollaborationProtocolAdapterResult
+        | Promise<NativeCollaborationProtocolAdapterResult>;
+    onMessage(
+        context: NativeCollaborationProtocolAdapterContext,
+        frame: NativeCollaborationProtocolFrame
+    ):
+        | NativeCollaborationProtocolAdapterResult
+        | Promise<NativeCollaborationProtocolAdapterResult>;
+}
+
 export interface NativeCollaborationTransportConfig {
     url: string;
     connect: boolean;
-    /**
-     * Optional GraphQL WebSocket authentication prelude. When present, native
-     * sends `connection_init` with `Authorization: JWT <jwt>` and waits for
-     * `connection_ack` before opening the binary Yjs protocol.
-     */
-    connectionInit?: {
-        /** Raw JWT without the `JWT ` scheme prefix. */
-        jwt: string;
-    };
+    /** Optional RN-owned prelude that gates the native Yjs transport. */
+    protocolAdapter?: NativeCollaborationProtocolAdapter;
 }
 
 export interface NativeCollaborationTransportDiagnostics {
@@ -901,15 +944,209 @@ export interface NativeCollaborationTransportDiagnostics {
     expiredPeerCount: number;
 }
 
-export interface NativeCollaborationTransportEvent {
+export interface NativeCollaborationTransportStateEvent {
     editorId: string;
     eventSequence: string;
     generation: string | null;
-    kind: 'state' | 'error';
-    state?: NativeEditorV2EditorState;
-    peers?: NativeEditorV2PeerInfo[];
-    error?: NativeEditorV2ErrorBase;
-    diagnostics?: NativeCollaborationTransportDiagnostics;
+    kind: 'state';
+    state: NativeEditorV2EditorState;
+    peers: NativeEditorV2PeerInfo[];
+    diagnostics: NativeCollaborationTransportDiagnostics;
+}
+
+export interface NativeCollaborationTransportErrorEvent {
+    editorId: string;
+    eventSequence: string;
+    generation: string | null;
+    kind: 'error';
+    error: NativeEditorV2ErrorBase;
+}
+
+export interface NativeCollaborationProtocolAdapterEvent {
+    editorId: string;
+    eventSequence: string;
+    generation: string;
+    kind: 'protocolAdapter';
+    attemptId: string;
+    eventId: string;
+    negotiatedProtocol: string | null;
+    phase: 'open' | 'message';
+    frame?: NativeCollaborationProtocolFrame;
+}
+
+export type NativeCollaborationTransportEvent =
+    | NativeCollaborationTransportStateEvent
+    | NativeCollaborationTransportErrorEvent
+    | NativeCollaborationProtocolAdapterEvent;
+
+interface NativeCollaborationProtocolAdapterDescriptor {
+    protocols: string[];
+    timeoutMillis?: number;
+    terminalCloseCodes?: number[];
+}
+
+interface NativeCollaborationTransportWireConfig {
+    url: string;
+    connect: boolean;
+    protocolAdapter?: NativeCollaborationProtocolAdapterDescriptor;
+}
+
+const COLLABORATION_PROTOCOL_TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const MAX_COLLABORATION_PROTOCOLS = 16;
+const MAX_COLLABORATION_PROTOCOL_BYTES = 128;
+const MAX_COLLABORATION_ADAPTER_TIMEOUT_MILLIS = 60_000;
+const MAX_COLLABORATION_ADAPTER_FRAMES = 16;
+const MAX_COLLABORATION_ADAPTER_FRAME_BYTES = 64 * 1024;
+
+function collaborationProtocolAdapterDescriptor(
+    value: NativeCollaborationProtocolAdapter
+): NativeCollaborationProtocolAdapterDescriptor {
+    if (
+        value === null ||
+        typeof value !== 'object' ||
+        !Array.isArray(value.protocols) ||
+        value.protocols.length < 1 ||
+        value.protocols.length > MAX_COLLABORATION_PROTOCOLS ||
+        typeof value.onOpen !== 'function' ||
+        typeof value.onMessage !== 'function'
+    ) {
+        throw invalidV2RequestError(
+            'NativeEditorBridge: invalid collaboration protocol adapter'
+        );
+    }
+    const protocols = value.protocols.map((protocol) => {
+        if (
+            typeof protocol !== 'string' ||
+            protocol.length === 0 ||
+            utf8V2JsonByteLength(protocol) > MAX_COLLABORATION_PROTOCOL_BYTES ||
+            !COLLABORATION_PROTOCOL_TOKEN.test(protocol)
+        ) {
+            throw invalidV2RequestError(
+                'NativeEditorBridge: invalid collaboration WebSocket subprotocol'
+            );
+        }
+        return protocol;
+    });
+    if (new Set(protocols).size !== protocols.length) {
+        throw invalidV2RequestError(
+            'NativeEditorBridge: duplicate collaboration WebSocket subprotocol'
+        );
+    }
+    const timeoutMillis = value.timeoutMillis;
+    if (
+        timeoutMillis !== undefined &&
+        (
+            !Number.isSafeInteger(timeoutMillis) ||
+            timeoutMillis < 1 ||
+            timeoutMillis > MAX_COLLABORATION_ADAPTER_TIMEOUT_MILLIS
+        )
+    ) {
+        throw invalidV2RequestError(
+            'NativeEditorBridge: invalid collaboration protocol adapter timeout'
+        );
+    }
+    const rawTerminalCloseCodes = value.terminalCloseCodes;
+    if (
+        rawTerminalCloseCodes !== undefined &&
+        (
+            !Array.isArray(rawTerminalCloseCodes) ||
+            rawTerminalCloseCodes.some(
+                (code) => !Number.isSafeInteger(code) || code < 1_000 || code > 4_999
+            )
+        )
+    ) {
+        throw invalidV2RequestError(
+            'NativeEditorBridge: invalid collaboration terminal close code'
+        );
+    }
+    const terminalCloseCodes =
+        rawTerminalCloseCodes === undefined ? undefined : [...rawTerminalCloseCodes];
+    if (
+        terminalCloseCodes !== undefined &&
+        new Set(terminalCloseCodes).size !== terminalCloseCodes.length
+    ) {
+        throw invalidV2RequestError(
+            'NativeEditorBridge: duplicate collaboration terminal close code'
+        );
+    }
+    return {
+        protocols,
+        ...(timeoutMillis === undefined ? {} : { timeoutMillis }),
+        ...(terminalCloseCodes === undefined ? {} : { terminalCloseCodes }),
+    };
+}
+
+function collaborationTransportWireConfig(
+    config: NativeCollaborationTransportConfig
+): NativeCollaborationTransportWireConfig {
+    if (
+        config === null ||
+        typeof config !== 'object' ||
+        typeof config.url !== 'string' ||
+        typeof config.connect !== 'boolean'
+    ) {
+        throw invalidV2RequestError(
+            'NativeEditorBridge: invalid collaboration transport configuration'
+        );
+    }
+    return {
+        url: config.url,
+        connect: config.connect,
+        ...(config.protocolAdapter === undefined
+            ? {}
+            : {
+                protocolAdapter: collaborationProtocolAdapterDescriptor(config.protocolAdapter),
+            }),
+    };
+}
+
+function serializeCollaborationProtocolAdapterResult(
+    value: NativeCollaborationProtocolAdapterResult
+): string {
+    if (
+        value === null ||
+        typeof value !== 'object' ||
+        (value.action !== 'continue' && value.action !== 'ready' && value.action !== 'reject') ||
+        (value.frames !== undefined &&
+            (!Array.isArray(value.frames) ||
+                value.frames.length > MAX_COLLABORATION_ADAPTER_FRAMES))
+    ) {
+        throw invalidV2RequestError(
+            'NativeEditorBridge: invalid collaboration protocol adapter result'
+        );
+    }
+    const frames = (value.frames ?? []).map((frame) => {
+        if (frame === null || typeof frame !== 'object') {
+            throw invalidV2RequestError(
+                'NativeEditorBridge: invalid collaboration protocol adapter frame'
+            );
+        }
+        if (frame.type === 'text' && typeof frame.data === 'string') {
+            if (utf8V2JsonByteLength(frame.data) > MAX_COLLABORATION_ADAPTER_FRAME_BYTES) {
+                throw invalidV2RequestError(
+                    'NativeEditorBridge: collaboration protocol adapter frame is too large'
+                );
+            }
+            return { type: 'text' as const, data: frame.data };
+        }
+        if (
+            frame.type === 'binary' &&
+            frame.data instanceof Uint8Array &&
+            frame.data.byteLength <= MAX_COLLABORATION_ADAPTER_FRAME_BYTES
+        ) {
+            return {
+                type: 'binary' as const,
+                data: encodeNativeCollaborationProtocolBytes(frame.data),
+            };
+        }
+        throw invalidV2RequestError(
+            'NativeEditorBridge: invalid collaboration protocol adapter frame'
+        );
+    });
+    return JSON.stringify({
+        action: value.action,
+        ...(frames.length === 0 ? {} : { frames }),
+    });
 }
 
 function normalizeNativeCollaborationTransportDiagnostics(
@@ -945,6 +1182,46 @@ function normalizeNativeCollaborationTransportDiagnostics(
         renewedLocal,
         expiredPeerCount,
     };
+}
+
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function encodeNativeCollaborationProtocolBytes(bytes: Uint8Array): string {
+    let encoded = '';
+    for (let index = 0; index < bytes.length; index += 3) {
+        const first = bytes[index];
+        const second = index + 1 < bytes.length ? bytes[index + 1] : 0;
+        const third = index + 2 < bytes.length ? bytes[index + 2] : 0;
+        const value = (first << 16) | (second << 8) | third;
+        encoded += BASE64_ALPHABET[(value >>> 18) & 63];
+        encoded += BASE64_ALPHABET[(value >>> 12) & 63];
+        encoded += index + 1 < bytes.length ? BASE64_ALPHABET[(value >>> 6) & 63] : '=';
+        encoded += index + 2 < bytes.length ? BASE64_ALPHABET[value & 63] : '=';
+    }
+    return encoded;
+}
+
+function decodeNativeCollaborationProtocolBytes(value: string): Uint8Array | null {
+    if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return null;
+    const firstPadding = value.indexOf('=');
+    if (firstPadding >= 0 && firstPadding < value.length - 2) return null;
+    const outputLength =
+        (value.length / 4) * 3 -
+        (value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0);
+    const bytes = new Uint8Array(outputLength);
+    let outputIndex = 0;
+    for (let index = 0; index < value.length; index += 4) {
+        const first = BASE64_ALPHABET.indexOf(value[index]);
+        const second = BASE64_ALPHABET.indexOf(value[index + 1]);
+        const third = value[index + 2] === '=' ? 0 : BASE64_ALPHABET.indexOf(value[index + 2]);
+        const fourth = value[index + 3] === '=' ? 0 : BASE64_ALPHABET.indexOf(value[index + 3]);
+        if (first < 0 || second < 0 || third < 0 || fourth < 0) return null;
+        const decoded = (first << 18) | (second << 12) | (third << 6) | fourth;
+        if (outputIndex < outputLength) bytes[outputIndex++] = (decoded >>> 16) & 0xff;
+        if (outputIndex < outputLength) bytes[outputIndex++] = (decoded >>> 8) & 0xff;
+        if (outputIndex < outputLength) bytes[outputIndex++] = decoded & 0xff;
+    }
+    return bytes;
 }
 
 export function normalizeNativeCollaborationTransportEvent(
@@ -989,6 +1266,51 @@ export function normalizeNativeCollaborationTransportEvent(
             kind: 'error',
             error: nativeEditorV2ErrorToException(error),
         };
+    }
+    if (value.kind === 'protocolAdapter') {
+        const eventId = normalizeNativeEditorV2DecimalId(value.eventId);
+        if (
+            generation == null ||
+            typeof value.attemptId !== 'string' ||
+            value.attemptId.length === 0 ||
+            eventId == null ||
+            eventId === '0' ||
+            (value.negotiatedProtocol !== null &&
+                typeof value.negotiatedProtocol !== 'string') ||
+            (value.phase !== 'open' && value.phase !== 'message')
+        ) {
+            return null;
+        }
+        const base = {
+            editorId,
+            eventSequence,
+            generation,
+            kind: 'protocolAdapter' as const,
+            attemptId: value.attemptId,
+            eventId,
+            negotiatedProtocol: value.negotiatedProtocol as string | null,
+        };
+        if (value.phase === 'open') {
+            if (value.frame !== undefined) return null;
+            return { ...base, phase: 'open' };
+        }
+        if (!isPlainRecord(value.frame) || typeof value.frame.data !== 'string') return null;
+        if (value.frame.type === 'text') {
+            return {
+                ...base,
+                phase: 'message',
+                frame: { type: 'text', data: value.frame.data },
+            };
+        }
+        if (value.frame.type === 'binary') {
+            const data = decodeNativeCollaborationProtocolBytes(value.frame.data);
+            if (data == null) return null;
+            return {
+                ...base,
+                phase: 'message',
+                frame: { type: 'binary', data },
+            };
+        }
     }
     return null;
 }
@@ -2328,6 +2650,8 @@ export class NativeEditorV2Bridge {
     private _destroyed = false;
     private _nextRequestId = 0n;
     private readonly _errorListeners = new Set<(error: NativeEditorV2ErrorBase) => void>();
+    private _collaborationProtocolAdapter: NativeCollaborationProtocolAdapter | null = null;
+    private _collaborationProtocolAdapterSubscription: { remove(): void } | null = null;
 
     /** @internal Created by createNativeEditorDocumentHandle. */
     constructor(editorId: string) {
@@ -2406,6 +2730,9 @@ export class NativeEditorV2Bridge {
             }
         }
         this._destroyed = true;
+        this._collaborationProtocolAdapter = null;
+        this._collaborationProtocolAdapterSubscription?.remove();
+        this._collaborationProtocolAdapterSubscription = null;
         this._errorListeners.clear();
     }
 
@@ -2608,34 +2935,86 @@ export class NativeEditorV2Bridge {
 
     configureCollaborationTransport(config: NativeCollaborationTransportConfig | null): void {
         this.assertAlive();
-        if (
-            config !== null &&
-            (
-                typeof config.url !== 'string' ||
-                typeof config.connect !== 'boolean' ||
-                (
-                    config.connectionInit !== undefined &&
-                    (
-                        config.connectionInit === null ||
-                        typeof config.connectionInit !== 'object' ||
-                        typeof config.connectionInit.jwt !== 'string'
-                    )
-                )
-            )
-        ) {
-            throw invalidV2RequestError(
-                'NativeEditorBridge: invalid collaboration transport configuration'
+        const wireConfig = config === null ? null : collaborationTransportWireConfig(config);
+        const previousAdapter = this._collaborationProtocolAdapter;
+        const nextAdapter = config?.protocolAdapter ?? null;
+        if (nextAdapter !== null && this._collaborationProtocolAdapterSubscription === null) {
+            this._collaborationProtocolAdapterSubscription = getNativeModule().addListener(
+                'onCollaborationTransportEvent',
+                (rawEvent) => this.handleCollaborationProtocolAdapterEvent(rawEvent)
             );
         }
-        this.callV2(
-            () =>
-                invokeNativeEditorV2(
-                    'editorV2CollaborationConfigureTransport',
-                    this._editorId,
-                    config === null ? null : JSON.stringify(config)
-                ),
-            normalizeNativeEditorV2Unit
-        );
+        this._collaborationProtocolAdapter = nextAdapter;
+        try {
+            this.callV2(
+                () =>
+                    invokeNativeEditorV2(
+                        'editorV2CollaborationConfigureTransport',
+                        this._editorId,
+                        wireConfig === null ? null : JSON.stringify(wireConfig)
+                    ),
+                normalizeNativeEditorV2Unit
+            );
+        } catch (error) {
+            this._collaborationProtocolAdapter = previousAdapter;
+            if (
+                previousAdapter === null &&
+                this._collaborationProtocolAdapterSubscription !== null
+            ) {
+                this._collaborationProtocolAdapterSubscription.remove();
+                this._collaborationProtocolAdapterSubscription = null;
+            }
+            throw error;
+        }
+        if (nextAdapter === null && this._collaborationProtocolAdapterSubscription !== null) {
+            this._collaborationProtocolAdapterSubscription.remove();
+            this._collaborationProtocolAdapterSubscription = null;
+        }
+    }
+
+    private handleCollaborationProtocolAdapterEvent(rawEvent: unknown): void {
+        if (this._destroyed || this._collaborationProtocolAdapter === null) return;
+        const event = normalizeNativeCollaborationTransportEvent(rawEvent);
+        if (
+            event?.editorId !== this._editorId ||
+            event.kind !== 'protocolAdapter'
+        ) {
+            return;
+        }
+        const adapter = this._collaborationProtocolAdapter;
+        const context: NativeCollaborationProtocolAdapterContext = {
+            attemptId: event.attemptId,
+            generation: event.generation,
+            negotiatedProtocol: event.negotiatedProtocol,
+        };
+        const callback =
+            event.phase === 'open'
+                ? () => adapter.onOpen(context)
+                : () => adapter.onMessage(context, event.frame!);
+        void Promise.resolve()
+            .then(callback)
+            .then((result) => serializeCollaborationProtocolAdapterResult(result))
+            .catch(() => '{"action":"reject"}')
+            .then((responseJson) => {
+                if (this._destroyed) return;
+                try {
+                    this.callV2(
+                        () =>
+                            invokeNativeEditorV2(
+                                'editorV2CollaborationResolveProtocolAdapter',
+                                this._editorId,
+                                event.attemptId,
+                                event.eventId,
+                                responseJson
+                            ),
+                        normalizeNativeEditorV2Unit
+                    );
+                } catch {
+                    // Native treats stale attempt responses as no-ops. A live
+                    // resolution failure is surfaced by its transport event;
+                    // adapter payloads and callback errors are never logged.
+                }
+            });
     }
 
     setLocalAwareness(intent: NativeEditorLocalAwarenessIntent | null): void {

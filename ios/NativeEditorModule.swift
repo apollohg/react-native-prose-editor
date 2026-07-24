@@ -626,6 +626,27 @@ public class NativeEditorModule: Module {
                 error: error
             ))
         }
+        Function("editorV2CollaborationResolveProtocolAdapter") {
+            (
+                editorId: String,
+                attemptId: String,
+                eventId: String,
+                responseJson: String
+            ) -> [String: Any] in
+            guard let nativeEditorId = v2UInt64Argument(editorId), nativeEditorId > 0 else {
+                return v2InvalidResultDictionary("invalid editorId")
+            }
+            let error = NativeCollaborationTransportRegistry.resolveProtocolAdapter(
+                editorId: nativeEditorId,
+                attemptId: attemptId,
+                eventId: eventId,
+                responseJSON: responseJson
+            )
+            return v2UnitResultDictionary(FfiUnitResult(
+                value: error == nil ? true : nil,
+                error: error
+            ))
+        }
         Function("editorV2CollaborationSetAwareness") { (editorId: String, awarenessJson: String) -> [String: Any] in
             let result = editorV2CollaborationSetAwareness(
                 editorId: editorId,

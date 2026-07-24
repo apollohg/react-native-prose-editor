@@ -6,6 +6,7 @@ import okio.ByteString.Companion.toByteString
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
+import java.util.ArrayDeque
 import java.util.concurrent.Future
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
@@ -15,26 +16,18 @@ import java.util.concurrent.atomic.AtomicReference
 internal data class NativeCollaborationTransportConfig(
     val url: String,
     val connect: Boolean,
-    val connectionInitJwt: String?,
+    val protocolAdapter: NativeCollaborationProtocolAdapterConfig?,
     val diagnosticEndpoint: String,
 ) {
     companion object {
         const val MAXIMUM_URL_BYTES = 4_096
-        const val MAXIMUM_JWT_BYTES = 16_384
 
         fun parse(
             url: String,
             connect: Boolean,
-            connectionInitJwt: String?,
+            protocolAdapter: NativeCollaborationProtocolAdapterConfig?,
         ): NativeCollaborationTransportConfig? {
             if (url.toByteArray(Charsets.UTF_8).size !in 1..MAXIMUM_URL_BYTES) return null
-            if (
-                connectionInitJwt != null &&
-                (
-                    connectionInitJwt.toByteArray(Charsets.UTF_8).size !in 1..MAXIMUM_JWT_BYTES ||
-                        connectionInitJwt.any { it == '\u0000' || it == '\r' || it == '\n' }
-                )
-            ) return null
             val uri = runCatching { URI(url) }.getOrNull() ?: return null
             if (uri.scheme?.lowercase() !in setOf("ws", "wss")) return null
             if (uri.host.isNullOrEmpty() || uri.rawUserInfo != null || uri.rawFragment != null) return null
@@ -43,10 +36,51 @@ internal data class NativeCollaborationTransportConfig(
                 URI(uri.scheme.lowercase(), null, uri.host, uri.port, uri.rawPath, null, null)
                     .toASCIIString()
             }.getOrNull() ?: return null
-            return NativeCollaborationTransportConfig(url, connect, connectionInitJwt, endpoint)
+            return NativeCollaborationTransportConfig(url, connect, protocolAdapter, endpoint)
         }
     }
 }
+
+internal data class NativeCollaborationProtocolAdapterConfig(
+    val protocols: List<String>,
+    val timeoutMillis: Long,
+    val terminalCloseCodes: Set<Int>,
+) {
+    companion object {
+        const val MAXIMUM_FRAME_BYTES = 64 * 1_024
+        const val MAXIMUM_PRE_READY_FRAMES = 16
+    }
+}
+
+internal sealed interface NativeCollaborationProtocolFrame {
+    data class Text(val data: String) : NativeCollaborationProtocolFrame
+    data class Binary(val data: ByteArray) : NativeCollaborationProtocolFrame
+}
+
+internal enum class NativeCollaborationProtocolAdapterAction {
+    CONTINUE,
+    READY,
+    REJECT,
+}
+
+internal data class NativeCollaborationProtocolAdapterResponse(
+    val action: NativeCollaborationProtocolAdapterAction,
+    val frames: List<NativeCollaborationProtocolFrame>,
+)
+
+internal sealed interface NativeCollaborationProtocolAdapterPhase {
+    object Open : NativeCollaborationProtocolAdapterPhase
+    data class Message(val frame: NativeCollaborationProtocolFrame) :
+        NativeCollaborationProtocolAdapterPhase
+}
+
+internal data class NativeCollaborationProtocolAdapterEvent(
+    val attemptId: String,
+    val eventId: String,
+    val generation: String,
+    val negotiatedProtocol: String?,
+    val phase: NativeCollaborationProtocolAdapterPhase,
+)
 
 internal enum class CollaborationWakeReason(val wireValue: String) {
     LOCAL_MUTATION("localMutation"),
@@ -79,6 +113,10 @@ internal sealed interface AndroidCollaborationTransportEvent {
         val error: EditorV2Error,
         val generation: String?,
     ) : AndroidCollaborationTransportEvent
+
+    data class ProtocolAdapter(
+        val event: NativeCollaborationProtocolAdapterEvent,
+    ) : AndroidCollaborationTransportEvent
 }
 
 internal fun interface CollaborationMonotonicClock {
@@ -108,10 +146,15 @@ internal class AndroidCollaborationTransport(
     private var generation: String? = null
     private var socketToken = 0L
     private var deadline: ScheduledFuture<*>? = null
-    private var connectionAckDeadline: ScheduledFuture<*>? = null
+    private var protocolAdapterDeadline: ScheduledFuture<*>? = null
     private var inFlightLease: EditorV2OutboundLease? = null
     private var networkSocketOpened = false
     private var socketOpened = false
+    private var protocolAttemptId: String? = null
+    private var protocolEventSequence = 0uL
+    private var pendingProtocolEventId: String? = null
+    private var negotiatedProtocol: String? = null
+    private val bufferedProtocolFrames = ArrayDeque<NativeCollaborationProtocolFrame>()
     private var closeReported = false
     private var backgrounded = false
     private var destroyed = false
@@ -141,6 +184,40 @@ internal class AndroidCollaborationTransport(
         enqueue {
             if (canDrive()) drive(reason)
         }
+    }
+
+    fun resolveProtocolAdapter(
+        attemptId: String,
+        eventId: String,
+        response: NativeCollaborationProtocolAdapterResponse,
+    ): EditorV2Error? = onWorker {
+        if (destroyed) return@onWorker lifecycleError("collaboration transport is destroyed")
+        val activeGeneration = generation
+        val activeSocket = socket
+        if (
+            protocolAttemptId != attemptId ||
+            pendingProtocolEventId != eventId ||
+            activeGeneration == null ||
+            activeSocket == null
+        ) {
+            return@onWorker null
+        }
+        pendingProtocolEventId = null
+        if (!sendProtocolAdapterFrames(activeSocket, response.frames)) {
+            failCurrentSocket(socketToken, activeGeneration, null)
+            return@onWorker null
+        }
+        when (response.action) {
+            NativeCollaborationProtocolAdapterAction.CONTINUE ->
+                emitNextBufferedProtocolFrame(socketToken, activeGeneration)
+            NativeCollaborationProtocolAdapterAction.READY -> {
+                activateYjs(socketToken, activeGeneration)
+                drainBufferedFramesAfterReady(socketToken, activeGeneration)
+            }
+            NativeCollaborationProtocolAdapterAction.REJECT ->
+                failCurrentSocket(socketToken, activeGeneration, 1008)
+        }
+        null
     }
 
     fun enterBackground() = onWorker {
@@ -219,11 +296,19 @@ internal class AndroidCollaborationTransport(
         closeReported = false
         networkSocketOpened = false
         socketOpened = false
+        protocolAttemptId = if (activeConfig.protocolAdapter == null) null else java.util.UUID.randomUUID().toString()
+        protocolEventSequence = 0uL
+        pendingProtocolEventId = null
+        negotiatedProtocol = null
+        bufferedProtocolFrames.clear()
         val token = ++socketToken
         val newSocket = socketFactory.makeSocket(
             activeConfig.url,
+            activeConfig.protocolAdapter?.protocols ?: emptyList(),
             CollaborationSocketCallbacks(
-                onOpen = { enqueue { socketDidOpen(token, newGeneration) } },
+                onOpen = { selectedProtocol ->
+                    enqueue { socketDidOpen(token, newGeneration, selectedProtocol) }
+                },
                 onBinaryMessage = { bytes ->
                     enqueue { socketDidReceive(token, newGeneration, bytes) }
                 },
@@ -242,23 +327,24 @@ internal class AndroidCollaborationTransport(
         newSocket.connect()
     }
 
-    private fun socketDidOpen(token: Long, callbackGeneration: String) {
+    private fun socketDidOpen(
+        token: Long,
+        callbackGeneration: String,
+        selectedProtocol: String?,
+    ) {
         if (!isCurrent(token, callbackGeneration) || networkSocketOpened) return
         networkSocketOpened = true
-        val jwt = config?.connectionInitJwt
-        if (jwt == null) {
+        negotiatedProtocol = selectedProtocol
+        if (config?.protocolAdapter == null) {
             activateYjs(token, callbackGeneration)
             return
         }
-        val message = JSONObject()
-            .put("type", "connection_init")
-            .put("payload", JSONObject().put("Authorization", "JWT $jwt"))
-            .toString()
-        if (socket?.send(message) != true) {
-            failCurrentSocket(token, callbackGeneration, null)
-            return
-        }
-        scheduleConnectionAckTimeout(token, callbackGeneration)
+        scheduleProtocolAdapterTimeout(token, callbackGeneration)
+        emitProtocolAdapterEvent(
+            NativeCollaborationProtocolAdapterPhase.Open,
+            token,
+            callbackGeneration,
+        )
     }
 
     private fun activateYjs(token: Long, callbackGeneration: String) {
@@ -267,8 +353,9 @@ internal class AndroidCollaborationTransport(
             !networkSocketOpened ||
             socketOpened
         ) return
-        connectionAckDeadline?.cancel(false)
-        connectionAckDeadline = null
+        protocolAdapterDeadline?.cancel(false)
+        protocolAdapterDeadline = null
+        pendingProtocolEventId = null
         socketOpened = true
         val accepted = consumeDirective(
             backend.collaborationSocketOpen(
@@ -285,7 +372,11 @@ internal class AndroidCollaborationTransport(
     private fun socketDidReceive(token: Long, callbackGeneration: String, bytes: ByteArray) {
         if (!isCurrent(token, callbackGeneration)) return
         if (!socketOpened) {
-            failCurrentSocket(token, callbackGeneration, 1008)
+            receiveProtocolAdapterFrame(
+                NativeCollaborationProtocolFrame.Binary(bytes),
+                token,
+                callbackGeneration,
+            )
             return
         }
         val accepted = consumeDirective(
@@ -307,12 +398,12 @@ internal class AndroidCollaborationTransport(
         text: String,
     ) {
         if (!isCurrent(token, callbackGeneration)) return
-        val acknowledged = !socketOpened &&
-            text.toByteArray(Charsets.UTF_8).size <= 8_192 &&
-            runCatching { JSONObject(text).optString("type") == "connection_ack" }
-                .getOrDefault(false)
-        if (acknowledged) {
-            activateYjs(token, callbackGeneration)
+        if (!socketOpened) {
+            receiveProtocolAdapterFrame(
+                NativeCollaborationProtocolFrame.Text(text),
+                token,
+                callbackGeneration,
+            )
         } else {
             failCurrentSocket(token, callbackGeneration, 1008)
         }
@@ -369,7 +460,9 @@ internal class AndroidCollaborationTransport(
 
     private fun socketDidClose(token: Long, callbackGeneration: String, code: Int) {
         if (!isCurrent(token, callbackGeneration)) return
-        reportCurrentSocketClose(callbackGeneration, code)
+        val backendCode =
+            if (config?.protocolAdapter?.terminalCloseCodes?.contains(code) == true) 1008 else code
+        reportCurrentSocketClose(callbackGeneration, backendCode)
     }
 
     private fun failCurrentSocket(token: Long, callbackGeneration: String, code: Int?) {
@@ -383,12 +476,16 @@ internal class AndroidCollaborationTransport(
         closeReported = true
         deadline?.cancel(false)
         deadline = null
-        connectionAckDeadline?.cancel(false)
-        connectionAckDeadline = null
+        protocolAdapterDeadline?.cancel(false)
+        protocolAdapterDeadline = null
         socketToken += 1
         socket = null
         networkSocketOpened = false
         socketOpened = false
+        protocolAttemptId = null
+        pendingProtocolEventId = null
+        negotiatedProtocol = null
+        bufferedProtocolFrames.clear()
         inFlightLease = null
         generation = null
         consumeDirective(
@@ -422,23 +519,130 @@ internal class AndroidCollaborationTransport(
         )
     }
 
-    private fun scheduleConnectionAckTimeout(token: Long, callbackGeneration: String) {
-        connectionAckDeadline?.cancel(false)
-        connectionAckDeadline = executor.schedule(
+    private fun scheduleProtocolAdapterTimeout(token: Long, callbackGeneration: String) {
+        protocolAdapterDeadline?.cancel(false)
+        val timeoutMillis = config?.protocolAdapter?.timeoutMillis ?: return
+        protocolAdapterDeadline = executor.schedule(
             {
-                connectionAckDeadline = null
+                protocolAdapterDeadline = null
                 failCurrentSocket(token, callbackGeneration, 1008)
             },
-            10,
-            TimeUnit.SECONDS,
+            timeoutMillis,
+            TimeUnit.MILLISECONDS,
         )
+    }
+
+    private fun receiveProtocolAdapterFrame(
+        frame: NativeCollaborationProtocolFrame,
+        token: Long,
+        callbackGeneration: String,
+    ) {
+        if (config?.protocolAdapter == null) {
+            failCurrentSocket(token, callbackGeneration, 1008)
+            return
+        }
+        val frameSize = when (frame) {
+            is NativeCollaborationProtocolFrame.Text ->
+                frame.data.toByteArray(Charsets.UTF_8).size
+            is NativeCollaborationProtocolFrame.Binary -> frame.data.size
+        }
+        if (frameSize > NativeCollaborationProtocolAdapterConfig.MAXIMUM_FRAME_BYTES) {
+            failCurrentSocket(token, callbackGeneration, 1008)
+            return
+        }
+        if (pendingProtocolEventId != null) {
+            if (
+                bufferedProtocolFrames.size >=
+                NativeCollaborationProtocolAdapterConfig.MAXIMUM_PRE_READY_FRAMES - 1
+            ) {
+                failCurrentSocket(token, callbackGeneration, 1008)
+            } else {
+                bufferedProtocolFrames.addLast(frame)
+            }
+            return
+        }
+        emitProtocolAdapterEvent(
+            NativeCollaborationProtocolAdapterPhase.Message(frame),
+            token,
+            callbackGeneration,
+        )
+    }
+
+    private fun emitProtocolAdapterEvent(
+        phase: NativeCollaborationProtocolAdapterPhase,
+        token: Long,
+        callbackGeneration: String,
+    ) {
+        val attemptId = protocolAttemptId
+        if (
+            !isCurrent(token, callbackGeneration) ||
+            config?.protocolAdapter == null ||
+            attemptId == null ||
+            pendingProtocolEventId != null ||
+            protocolEventSequence == ULong.MAX_VALUE
+        ) {
+            failCurrentSocket(token, callbackGeneration, 1008)
+            return
+        }
+        protocolEventSequence += 1uL
+        val eventId = protocolEventSequence.toString()
+        pendingProtocolEventId = eventId
+        eventSink(
+            AndroidCollaborationTransportEvent.ProtocolAdapter(
+                NativeCollaborationProtocolAdapterEvent(
+                    attemptId = attemptId,
+                    eventId = eventId,
+                    generation = callbackGeneration,
+                    negotiatedProtocol = negotiatedProtocol,
+                    phase = phase,
+                ),
+            ),
+        )
+    }
+
+    private fun emitNextBufferedProtocolFrame(token: Long, callbackGeneration: String) {
+        if (bufferedProtocolFrames.isEmpty()) return
+        val next = bufferedProtocolFrames.removeFirst()
+        emitProtocolAdapterEvent(
+            NativeCollaborationProtocolAdapterPhase.Message(next),
+            token,
+            callbackGeneration,
+        )
+    }
+
+    private fun drainBufferedFramesAfterReady(token: Long, callbackGeneration: String) {
+        while (
+            bufferedProtocolFrames.isNotEmpty() &&
+            isCurrent(token, callbackGeneration) &&
+            socketOpened
+        ) {
+            when (val frame = bufferedProtocolFrames.removeFirst()) {
+                is NativeCollaborationProtocolFrame.Text -> {
+                    failCurrentSocket(token, callbackGeneration, 1008)
+                }
+                is NativeCollaborationProtocolFrame.Binary -> {
+                    socketDidReceive(token, callbackGeneration, frame.data)
+                }
+            }
+        }
+    }
+
+    private fun sendProtocolAdapterFrames(
+        activeSocket: CollaborationSocket,
+        frames: List<NativeCollaborationProtocolFrame>,
+    ): Boolean = frames.all { frame ->
+        when (frame) {
+            is NativeCollaborationProtocolFrame.Text -> activeSocket.send(frame.data)
+            is NativeCollaborationProtocolFrame.Binary ->
+                activeSocket.send(frame.data.toByteString())
+        }
     }
 
     private fun retireNativeResources() {
         deadline?.cancel(false)
         deadline = null
-        connectionAckDeadline?.cancel(false)
-        connectionAckDeadline = null
+        protocolAdapterDeadline?.cancel(false)
+        protocolAdapterDeadline = null
         socketToken += 1
         socket?.cancel()
         socket = null
@@ -446,6 +650,10 @@ internal class AndroidCollaborationTransport(
         inFlightLease = null
         networkSocketOpened = false
         socketOpened = false
+        protocolAttemptId = null
+        pendingProtocolEventId = null
+        negotiatedProtocol = null
+        bufferedProtocolFrames.clear()
         closeReported = true
     }
 

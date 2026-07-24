@@ -76,6 +76,32 @@ enum NativeCollaborationTransportRegistry {
         }
     }
 
+    static func resolveProtocolAdapter(
+        editorId: UInt64,
+        attemptId: String,
+        eventId: String,
+        responseJSON: String
+    ) -> FfiError? {
+        guard editorId > 0,
+              !attemptId.isEmpty,
+              canonicalProtocolEventId(eventId) != nil,
+              let response = parseProtocolAdapterResponse(responseJSON)
+        else {
+            return contractError("invalid collaboration protocol adapter response")
+        }
+        return queue.sync {
+            guard let transport = transports[editorId] else {
+                // A response racing teardown belongs to a retired attempt.
+                return nil
+            }
+            return transport.resolveProtocolAdapter(
+                attemptId: attemptId,
+                eventId: eventId,
+                response: response
+            )
+        }
+    }
+
     static func destroy(editorId: UInt64) {
         queue.sync {
             transports.removeValue(forKey: editorId)?.destroy()
@@ -146,6 +172,26 @@ enum NativeCollaborationTransportRegistry {
                 payload["kind"] = "error"
                 payload["generation"] = generation ?? NSNull()
                 payload["error"] = errorDictionary(error)
+            case let .protocolAdapter(adapterEvent):
+                payload["kind"] = "protocolAdapter"
+                payload["generation"] = adapterEvent.generation
+                payload["attemptId"] = adapterEvent.attemptId
+                payload["eventId"] = adapterEvent.eventId
+                payload["negotiatedProtocol"] =
+                    adapterEvent.negotiatedProtocol ?? NSNull()
+                switch adapterEvent.phase {
+                case .open:
+                    payload["phase"] = "open"
+                case .message(.text(let text)):
+                    payload["phase"] = "message"
+                    payload["frame"] = ["type": "text", "data": text]
+                case .message(.binary(let data)):
+                    payload["phase"] = "message"
+                    payload["frame"] = [
+                        "type": "binary",
+                        "data": data.base64EncodedString(),
+                    ]
+                }
             }
             eventEmitter?(payload)
         }
@@ -185,7 +231,7 @@ enum NativeCollaborationTransportRegistry {
         guard let data = json.data(using: .utf8),
               data.count <= 32_768,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys).isSubset(of: Set(["url", "connect", "connectionInit"])),
+              Set(object.keys).isSubset(of: Set(["url", "connect", "protocolAdapter"])),
               object.keys.contains("url"),
               object.keys.contains("connect"),
               let rawURL = object["url"] as? String,
@@ -195,27 +241,154 @@ enum NativeCollaborationTransportRegistry {
         else {
             return .failure(contractError("invalid collaboration transport configuration"))
         }
-        let connectionInitJWT: String?
-        if let rawConnectionInit = object["connectionInit"] {
-            guard let connectionInit = rawConnectionInit as? [String: Any],
-                  Set(connectionInit.keys) == Set(["jwt"]),
-                  let jwt = connectionInit["jwt"] as? String
-            else {
-                return .failure(contractError("invalid collaboration connection_init configuration"))
+        let protocolAdapter: NativeCollaborationProtocolAdapterConfig?
+        if let rawAdapter = object["protocolAdapter"] {
+            guard let adapter = parseProtocolAdapterConfig(rawAdapter) else {
+                return .failure(contractError("invalid collaboration protocol adapter"))
             }
-            connectionInitJWT = jwt
+            protocolAdapter = adapter
         } else {
-            connectionInitJWT = nil
+            protocolAdapter = nil
         }
         do {
             return .success(try NativeCollaborationTransportConfig(
                 url: url,
                 connect: connectNumber.boolValue,
-                connectionInitJWT: connectionInitJWT
+                protocolAdapter: protocolAdapter
             ))
         } catch {
             return .failure(contractError("invalid collaboration WebSocket URL"))
         }
+    }
+
+    private static func parseProtocolAdapterConfig(
+        _ raw: Any
+    ) -> NativeCollaborationProtocolAdapterConfig? {
+        guard let object = raw as? [String: Any],
+              Set(object.keys).isSubset(of: Set([
+                "protocols",
+                "timeoutMillis",
+                "terminalCloseCodes",
+              ])),
+              let protocols = object["protocols"] as? [String],
+              !protocols.isEmpty,
+              protocols.count <= 16,
+              Set(protocols).count == protocols.count,
+              protocols.allSatisfy(validWebSocketProtocol)
+        else {
+            return nil
+        }
+        let timeoutMillis: UInt64
+        if let rawTimeout = object["timeoutMillis"] {
+            guard let number = rawTimeout as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.rounded(.towardZero) == number.doubleValue,
+                  number.doubleValue >= 1,
+                  number.doubleValue <= 60_000
+            else {
+                return nil
+            }
+            timeoutMillis = number.uint64Value
+        } else {
+            timeoutMillis = NativeCollaborationProtocolAdapterConfig.defaultTimeoutMillis
+        }
+        let terminalCloseCodes: Set<UInt32>
+        if let rawCodes = object["terminalCloseCodes"] {
+            guard let values = rawCodes as? [Any] else { return nil }
+            var codes = Set<UInt32>()
+            for rawCode in values {
+                guard let number = rawCode as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      number.doubleValue.rounded(.towardZero) == number.doubleValue,
+                      number.doubleValue >= 1_000,
+                      number.doubleValue <= 4_999
+                else {
+                    return nil
+                }
+                guard codes.insert(number.uint32Value).inserted else { return nil }
+            }
+            terminalCloseCodes = codes
+        } else {
+            terminalCloseCodes = []
+        }
+        return NativeCollaborationProtocolAdapterConfig(
+            protocols: protocols,
+            timeoutMillis: timeoutMillis,
+            terminalCloseCodes: terminalCloseCodes
+        )
+    }
+
+    private static func validWebSocketProtocol(_ value: String) -> Bool {
+        guard let bytes = value.data(using: .utf8),
+              !bytes.isEmpty,
+              bytes.count <= 128
+        else {
+            return false
+        }
+        let allowed = CharacterSet(
+            charactersIn: "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        )
+        return value.unicodeScalars.allSatisfy(allowed.contains)
+    }
+
+    private static func parseProtocolAdapterResponse(
+        _ json: String
+    ) -> NativeCollaborationProtocolAdapterResponse? {
+        guard let data = json.data(using: .utf8),
+              data.count <= 1_500_000,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(object.keys).isSubset(of: Set(["action", "frames"])),
+              let rawAction = object["action"] as? String
+        else {
+            return nil
+        }
+        let action: NativeCollaborationProtocolAdapterAction
+        switch rawAction {
+        case "continue": action = .continue
+        case "ready": action = .ready
+        case "reject": action = .reject
+        default: return nil
+        }
+        let rawFrames = object["frames"] as? [Any] ?? []
+        guard rawFrames.count <= 16 else { return nil }
+        var frames: [NativeCollaborationProtocolFrame] = []
+        frames.reserveCapacity(rawFrames.count)
+        for rawFrame in rawFrames {
+            guard let frame = rawFrame as? [String: Any],
+                  Set(frame.keys) == Set(["type", "data"]),
+                  let type = frame["type"] as? String,
+                  let value = frame["data"] as? String
+            else {
+                return nil
+            }
+            switch type {
+            case "text":
+                guard (value.data(using: .utf8)?.count ?? Int.max) <= 64 * 1_024 else {
+                    return nil
+                }
+                frames.append(.text(value))
+            case "binary":
+                guard let decoded = Data(base64Encoded: value),
+                      decoded.count <= 64 * 1_024
+                else {
+                    return nil
+                }
+                frames.append(.binary(decoded))
+            default:
+                return nil
+            }
+        }
+        return NativeCollaborationProtocolAdapterResponse(action: action, frames: frames)
+    }
+
+    private static func canonicalProtocolEventId(_ raw: String) -> UInt64? {
+        guard !raw.isEmpty,
+              raw.allSatisfy({ $0 >= "0" && $0 <= "9" }),
+              raw == "0" || raw.first != "0"
+        else {
+            return nil
+        }
+        return UInt64(raw)
     }
 
     private static func errorDictionary(_ error: FfiError) -> [String: Any] {

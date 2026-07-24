@@ -320,10 +320,10 @@ import {
 
 export function CollaborativeEditor({
   documentId,
-  jwt,
+  getCurrentCredential,
 }: {
   documentId: string;
-  jwt: string;
+  getCurrentCredential: () => Promise<string>;
 }) {
   const documentHandle = useMemo(
     () =>
@@ -336,14 +336,44 @@ export function CollaborativeEditor({
       }),
     [documentId]
   );
+  const protocolAdapter = useMemo(
+    () => ({
+      protocols: ['example-auth-v1'],
+      timeoutMillis: 5_000,
+      terminalCloseCodes: [4401, 4408],
+      async onOpen({ negotiatedProtocol }: { negotiatedProtocol: string | null }) {
+        if (negotiatedProtocol !== 'example-auth-v1') {
+          return { action: 'reject' as const };
+        }
+        const credential = await getCurrentCredential();
+        return {
+          action: 'continue' as const,
+          frames: [
+            {
+              type: 'text' as const,
+              data: JSON.stringify({ type: 'authenticate', credential }),
+            },
+          ],
+        };
+      },
+      async onMessage(
+        _context: unknown,
+        frame: { type: 'text' | 'binary'; data: string | Uint8Array }
+      ) {
+        return frame.type === 'text' && frame.data === '{"type":"authenticated"}'
+          ? { action: 'ready' as const }
+          : { action: 'reject' as const };
+      },
+    }),
+    [getCurrentCredential]
+  );
   const collaboration = useYjsCollaboration({
     documentId,
     handle: documentHandle,
     transport: {
       url: `wss://example.com/collaboration?documentId=${documentId}`,
       connect: true,
-      // Optional: raw token, without the "JWT " prefix.
-      connectionInit: { jwt },
+      protocolAdapter,
     },
     localAwareness: { userId: 'u-1', name: 'Ada', color: '#0A84FF' },
   });
@@ -377,16 +407,29 @@ retry, deadline, or outbound-drain timer.
 Rust remains authoritative for y-sync, awareness, generations, retry
 eligibility, deadlines, peers, and exact outbound leases. Native drivers only
 execute Rust directives on one serialized context per handle. Frames are
-binary-only after synchronization starts. If `connectionInit` is present,
-native first sends
-`{"type":"connection_init","payload":{"Authorization":"JWT <jwt>"}}`, waits
-up to 10 seconds for a text `{"type":"connection_ack"}` message, and only then
-opens the Rust y-sync generation. Without `connectionInit`, synchronization
-starts as soon as the WebSocket opens. Any other text frame is a protocol
-error.
+binary-only after synchronization starts.
+
+UIKit and Android publish the authoritative editor selection into retained
+Rust awareness in the same native mutation path, before waking the transport
+for the document update. React Native still owns awareness identity,
+application state, and focus; the mounted `editorBindings.onSelectionChange`
+only caches selection for the next React Native-owned awareness update and
+does not send a delayed duplicate. Headless callers can still publish a
+selection explicitly through `YjsCollaborationController.handleSelectionChange`.
+
+`protocolAdapter` is optional and protocol-agnostic. Its `protocols` are
+offered in the physical WebSocket handshake. On every physical open, RN
+receives a fresh attempt context, can read current credentials, and returns
+text or binary initialization frames. Pre-open server frames are delivered
+only to `onMessage`; returning `ready` opens the Rust y-sync generation,
+`continue` keeps it gated, and `reject` parks the attempt. Native ignores
+late responses from retired attempts. Codes in `terminalCloseCodes` also park
+the Rust transport without consuming queued local work. Without an adapter,
+y-sync starts as soon as the physical socket opens.
 
 Treat transport URLs as credentials: do not log the complete URL, query,
-JWT, document content, awareness payload, frame bytes, or native error details.
+adapter frames, credentials, document content, awareness payload, frame bytes,
+or native error details.
 Log only redacted endpoint identity and bounded state/counter fields. The
 native owner follows app foreground/background lifecycle and is destroyed
 before its document handle.

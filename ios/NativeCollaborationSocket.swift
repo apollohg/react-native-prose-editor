@@ -1,7 +1,7 @@
 import Foundation
 
 struct CollaborationSocketCallbacks {
-    let didOpen: () -> Void
+    let didOpen: (_ negotiatedProtocol: String?) -> Void
     let didClose: (_ code: URLSessionWebSocketTask.CloseCode, _ reason: Data?) -> Void
 }
 
@@ -19,12 +19,20 @@ protocol CollaborationSocket: AnyObject {
 }
 
 protocol CollaborationSocketFactory {
-    func makeSocket(url: URL, callbacks: CollaborationSocketCallbacks) -> CollaborationSocket
+    func makeSocket(
+        url: URL,
+        protocols: [String],
+        callbacks: CollaborationSocketCallbacks
+    ) -> CollaborationSocket
 }
 
 struct URLSessionCollaborationSocketFactory: CollaborationSocketFactory {
-    func makeSocket(url: URL, callbacks: CollaborationSocketCallbacks) -> CollaborationSocket {
-        NativeCollaborationSocket(url: url, callbacks: callbacks)
+    func makeSocket(
+        url: URL,
+        protocols: [String],
+        callbacks: CollaborationSocketCallbacks
+    ) -> CollaborationSocket {
+        NativeCollaborationSocket(url: url, protocols: protocols, callbacks: callbacks)
     }
 }
 
@@ -35,11 +43,17 @@ final class NativeCollaborationSocket: NSObject, CollaborationSocket, URLSession
     private var session: URLSession!
     private var task: URLSessionWebSocketTask!
 
-    init(url: URL, callbacks: CollaborationSocketCallbacks) {
+    init(url: URL, protocols: [String], callbacks: CollaborationSocketCallbacks) {
         self.callbacks = callbacks
         super.init()
-        session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-        task = session.webSocketTask(with: url)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        task = session.webSocketTask(with: url, protocols: protocols)
     }
 
     func resume() {
@@ -91,7 +105,7 @@ final class NativeCollaborationSocket: NSObject, CollaborationSocket, URLSession
         webSocketTask: URLSessionWebSocketTask,
         didOpenWithProtocol protocol: String?
     ) {
-        callbacks.didOpen()
+        callbacks.didOpen(`protocol`)
     }
 
     func urlSession(

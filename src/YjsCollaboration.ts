@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
     _assertNativeEditorDocumentHandle,
     createNativeEditorLocalAwarenessSelection,
     type DocumentJSON,
+    type NativeCollaborationProtocolAdapter,
     type NativeCollaborationTransportConfig,
     type NativeCollaborationTransportEvent,
     type NativeEditorDocumentHandle,
@@ -224,12 +225,10 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
                 : {
                     url: options.transport.url,
                     connect: options.transport.connect,
-                    ...(options.transport.connectionInit === undefined
+                    ...(options.transport.protocolAdapter === undefined
                         ? {}
                         : {
-                            connectionInit: {
-                                jwt: options.transport.connectionInit.jwt,
-                            },
+                            protocolAdapter: options.transport.protocolAdapter,
                         }),
                 };
         this._state = this.readEngineState(this.handle.bridge.getState());
@@ -293,6 +292,11 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.updateLocalAwareness({ selection });
     }
 
+    handleNativeSelectionChange(selection: Selection): void {
+        if (this.destroyed || this.desiredAwareness === null) return;
+        this.desiredAwareness = mergeAwarenessPartial(this.desiredAwareness, { selection });
+    }
+
     handleFocusChange(focused: boolean): void {
         this.updateLocalAwareness({ focused });
     }
@@ -340,7 +344,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
             this.callbacks.onError?.(error);
             return;
         }
-        if (event.state == null || event.peers == null) return;
+        if (event.kind !== 'state') return;
         this._peers = [...event.peers];
         this.callbacks.onPeersChange?.(this._peers);
         try {
@@ -405,7 +409,41 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
     const localAwarenessKey = JSON.stringify(options.localAwareness ?? null);
     const transportUrl = options.transport?.url ?? null;
     const transportConnect = options.transport?.connect ?? false;
-    const transportConnectionInitJWT = options.transport?.connectionInit?.jwt ?? null;
+    const transportProtocolAdapterRef = useRef<NativeCollaborationProtocolAdapter | null>(null);
+    transportProtocolAdapterRef.current = options.transport?.protocolAdapter ?? null;
+    const transportProtocolAdapterMetadata = JSON.stringify(
+        options.transport?.protocolAdapter == null
+            ? null
+            : {
+                protocols: options.transport.protocolAdapter.protocols,
+                timeoutMillis: options.transport.protocolAdapter.timeoutMillis,
+                terminalCloseCodes: options.transport.protocolAdapter.terminalCloseCodes,
+            }
+    );
+    const stableTransportProtocolAdapter = useMemo<NativeCollaborationProtocolAdapter | null>(() => {
+        const current = transportProtocolAdapterRef.current;
+        if (current === null) return null;
+        return {
+            protocols: [...current.protocols],
+            ...(current.timeoutMillis === undefined
+                ? {}
+                : { timeoutMillis: current.timeoutMillis }),
+            ...(current.terminalCloseCodes === undefined
+                ? {}
+                : { terminalCloseCodes: [...current.terminalCloseCodes] }),
+            onOpen: (context) =>
+                transportProtocolAdapterRef.current?.onOpen(context) ?? {
+                    action: 'reject',
+                },
+            onMessage: (context, frame) =>
+                transportProtocolAdapterRef.current?.onMessage(context, frame) ?? {
+                    action: 'reject',
+                },
+        };
+        // Static metadata changes require a new native socket descriptor.
+        // Callback identity alone is read through the ref and never reconnects.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [transportProtocolAdapterMetadata]);
     const [state, setState] = useState<YjsCollaborationState>({
         documentId: options.documentId,
         status: 'idle',
@@ -418,17 +456,32 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
     useEffect(() => {
         let controller: YjsCollaborationControllerImpl;
         try {
-            controller = new YjsCollaborationControllerImpl(options, {
-                onStateChange: (nextState) => {
-                    setState({ ...nextState });
-                    callbacksRef.current.onStateChange?.(nextState);
+            controller = new YjsCollaborationControllerImpl(
+                {
+                    ...options,
+                    transport:
+                        options.transport === null
+                            ? null
+                            : {
+                                url: options.transport.url,
+                                connect: options.transport.connect,
+                                ...(stableTransportProtocolAdapter === null
+                                    ? {}
+                                    : { protocolAdapter: stableTransportProtocolAdapter }),
+                            },
                 },
-                onPeersChange: (nextPeers) => {
-                    setPeers([...nextPeers]);
-                    callbacksRef.current.onPeersChange?.(nextPeers);
-                },
-                onError: (error) => callbacksRef.current.onError?.(error),
-            });
+                {
+                    onStateChange: (nextState) => {
+                        setState({ ...nextState });
+                        callbacksRef.current.onStateChange?.(nextState);
+                    },
+                    onPeersChange: (nextPeers) => {
+                        setPeers([...nextPeers]);
+                        callbacksRef.current.onPeersChange?.(nextPeers);
+                    },
+                    onError: (error) => callbacksRef.current.onError?.(error),
+                }
+            );
             controllerRef.current = controller;
             setState({ ...controller.state });
             setPeers([...controller.peers]);
@@ -453,7 +506,7 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
         // The controller owns one URL/handle binding. Connection intent is
         // updated independently below without recreating the observer.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [options.documentId, options.handle, transportConnectionInitJWT, transportUrl]);
+    }, [options.documentId, options.handle, stableTransportProtocolAdapter, transportUrl]);
 
     useEffect(() => {
         controllerRef.current?.applyLocalAwarenessOption(options.localAwareness);
@@ -467,7 +520,7 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
         } else {
             controllerRef.current?.disconnect();
         }
-    }, [transportConnect, transportConnectionInitJWT, transportUrl]);
+    }, [transportConnect, stableTransportProtocolAdapter, transportUrl]);
 
     return {
         state,
@@ -481,7 +534,8 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
             documentHandle: options.handle,
             documentRevision: state.documentRevision,
             remoteSelections: peersToRemoteSelections(peers),
-            onSelectionChange: (selection) => controllerRef.current?.handleSelectionChange(selection),
+            onSelectionChange: (selection) =>
+                controllerRef.current?.handleNativeSelectionChange(selection),
             onFocus: () => controllerRef.current?.handleFocusChange(true),
             onBlur: () => controllerRef.current?.handleFocusChange(false),
         },

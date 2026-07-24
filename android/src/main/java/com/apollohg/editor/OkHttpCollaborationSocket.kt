@@ -8,7 +8,7 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 
 internal data class CollaborationSocketCallbacks(
-    val onOpen: () -> Unit,
+    val onOpen: (negotiatedProtocol: String?) -> Unit,
     val onBinaryMessage: (ByteArray) -> Unit,
     val onTextMessage: (String) -> Unit,
     val onClose: (Int) -> Unit,
@@ -24,7 +24,11 @@ internal interface CollaborationSocket {
 }
 
 internal interface CollaborationSocketFactory {
-    fun makeSocket(url: String, callbacks: CollaborationSocketCallbacks): CollaborationSocket
+    fun makeSocket(
+        url: String,
+        protocols: List<String>,
+        callbacks: CollaborationSocketCallbacks,
+    ): CollaborationSocket
 }
 
 internal class OkHttpCollaborationSocketFactory(
@@ -32,24 +36,31 @@ internal class OkHttpCollaborationSocketFactory(
 ) : CollaborationSocketFactory {
     override fun makeSocket(
         url: String,
+        protocols: List<String>,
         callbacks: CollaborationSocketCallbacks,
-    ): CollaborationSocket = OkHttpCollaborationSocket(client, url, callbacks)
+    ): CollaborationSocket = OkHttpCollaborationSocket(client, url, protocols, callbacks)
 }
 
 private class OkHttpCollaborationSocket(
     private val client: OkHttpClient,
     private val url: String,
+    private val protocols: List<String>,
     private val callbacks: CollaborationSocketCallbacks,
 ) : CollaborationSocket {
     private var webSocket: WebSocket? = null
 
     override fun connect() {
         check(webSocket == null)
+        val request = Request.Builder().url(url).apply {
+            if (protocols.isNotEmpty()) {
+                header("Sec-WebSocket-Protocol", protocols.joinToString(", "))
+            }
+        }.build()
         webSocket = client.newWebSocket(
-            Request.Builder().url(url).build(),
+            request,
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
-                    callbacks.onOpen()
+                    callbacks.onOpen(response.header("Sec-WebSocket-Protocol"))
                 }
 
                 override fun onMessage(webSocket: WebSocket, bytes: ByteString) {

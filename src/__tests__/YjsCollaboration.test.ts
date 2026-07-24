@@ -3026,6 +3026,44 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
         expect(result.current.state.status).toBe('connecting');
     });
 
+    it('caches mounted native selection without republishing awareness', () => {
+        const handle = createRoomHandle({ withSnapshot: true });
+        const { result } = renderHook(() =>
+            useYjsCollaboration({
+                documentId: 'doc-1',
+                handle,
+                connect: false,
+                localAwareness: ALICE,
+                createWebSocket: () => new MockWebSocket() as unknown as WebSocket,
+            })
+        );
+        runtime.module.editorV2CollaborationSetAwareness.mockClear();
+
+        act(() => {
+            result.current.editorBindings.onSelectionChange({
+                type: 'text',
+                anchor: 4,
+                head: 4,
+            });
+        });
+
+        expect(runtime.module.editorV2CollaborationSetAwareness).not.toHaveBeenCalled();
+
+        act(() => {
+            result.current.editorBindings.onBlur();
+        });
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(1);
+        expect(
+            JSON.parse(
+                runtime.module.editorV2CollaborationSetAwareness.mock.calls[0][1] as string
+            )
+        ).toEqual({
+            state: { user: ALICE },
+            focused: false,
+            selection: { type: 'text', anchor: 4, head: 4 },
+        });
+    });
+
     it('clears live prop awareness once, keeps hooks inert, and lets an explicit user restore it', () => {
         const handle = createRoomHandle({ withSnapshot: true });
         const sockets: MockWebSocket[] = [];
@@ -3092,7 +3130,7 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
             result.current.editorBindings.onSelectionChange({ type: 'text', anchor: 1, head: 3 });
             result.current.editorBindings.onBlur();
         });
-        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(6);
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(5);
         expect(
             JSON.parse(
                 runtime.module.editorV2CollaborationSetAwareness.mock.calls.at(-1)?.[1] as string
@@ -3112,7 +3150,7 @@ describe('YjsCollaboration (Task 10 awareness controller)', () => {
             sockets[1].open();
             sockets[1].receive(V2_FAKE_STEP2_FRAME);
         });
-        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(7);
+        expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenCalledTimes(6);
         expect(runtime.module.editorV2CollaborationSetAwareness).toHaveBeenLastCalledWith(
             handle.editorId,
             'null'
