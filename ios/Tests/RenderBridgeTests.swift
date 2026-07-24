@@ -1190,7 +1190,7 @@ final class RenderBridgeTests: XCTestCase {
         ]
         """
 
-        XCTAssertTrue(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+        XCTAssertTrue(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
     }
 
     func testViewerEmptyCollapseKeepsVisibleRenderedContentMeasurable() {
@@ -1202,7 +1202,7 @@ final class RenderBridgeTests: XCTestCase {
         ]
         """
 
-        XCTAssertFalse(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+        XCTAssertFalse(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
     }
 
     func testViewerEmptyCollapseKeepsNonParagraphRenderedBlocksMeasurable() {
@@ -1212,7 +1212,7 @@ final class RenderBridgeTests: XCTestCase {
         ]
         """
 
-        XCTAssertFalse(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+        XCTAssertFalse(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
     }
 
     // MARK: - Plain Text Rendering
