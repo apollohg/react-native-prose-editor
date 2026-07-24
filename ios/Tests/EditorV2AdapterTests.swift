@@ -114,6 +114,15 @@ final class EditorV2AdapterTests: XCTestCase {
     private func makeAttachedAdapter(
         configJson: String,
         roomBound: Bool,
+        setAwarenessSelection: @escaping (String, String) -> FfiJsonResult = {
+            editorV2CollaborationSetAwarenessSelection(editorId: $0, selectionJson: $1)
+        },
+        collaborationWake: @escaping (UInt64, CollaborationWakeReason) -> Void = {
+            NativeCollaborationTransportRegistry.notifyOutboundAvailable(
+                editorId: $0,
+                reason: $1
+            )
+        },
         file: StaticString,
         line: UInt
     ) -> EditorV2Adapter {
@@ -121,7 +130,12 @@ final class EditorV2AdapterTests: XCTestCase {
         guard let value = result.value,
               result.error == nil,
               let createdHandle = createdV2TestEditorHandle(value),
-              let adapter = EditorV2Adapter.attach(editorId: createdHandle.handle, roomBound: roomBound)
+              let adapter = EditorV2Adapter.attach(
+                editorId: createdHandle.handle,
+                roomBound: roomBound,
+                setAwarenessSelection: setAwarenessSelection,
+                collaborationWake: collaborationWake
+              )
         else {
             let error = result.error
             XCTFail(
@@ -277,6 +291,95 @@ final class EditorV2AdapterTests: XCTestCase {
         // whole commit and nothing else.
         let undone = adapter.undo()
         XCTAssertEqual(renderedText(undone), "ab")
+    }
+
+    func testRoomTypingPublishesPostMutationAwarenessBeforeTransportWake() {
+        var calls: [String] = []
+        let adapter = makeAttachedAdapter(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            roomBound: true,
+            setAwarenessSelection: { _, _ in
+                calls.append("awarenessSelection")
+                return FfiJsonResult(value: #"{"outboundChanged":true}"#, error: nil)
+            },
+            collaborationWake: { _, reason in
+                calls.append("wake:\(reason.rawValue)")
+            },
+            file: #filePath,
+            line: #line
+        )
+        _ = adapter.setContentHtml("<p>ab</p>")
+        calls.removeAll()
+
+        let update = adapter.insertText("X", atScalar: 2)
+
+        XCTAssertEqual(renderedText(update), "abX")
+        XCTAssertEqual(
+            calls,
+            ["awarenessSelection", "wake:awareness", "wake:localMutation"]
+        )
+    }
+
+    func testRoomStandaloneSelectionPublishesAwarenessWithoutDocumentWake() {
+        var calls: [String] = []
+        let adapter = makeAttachedAdapter(
+            configJson: #"{"initialization":{"type":"localHtml","html":"<p>ab</p>"}}"#,
+            roomBound: true,
+            setAwarenessSelection: { _, _ in
+                calls.append("awarenessSelection")
+                return FfiJsonResult(value: #"{"outboundChanged":true}"#, error: nil)
+            },
+            collaborationWake: { _, reason in
+                calls.append("wake:\(reason.rawValue)")
+            },
+            file: #filePath,
+            line: #line
+        )
+
+        let mapping = adapter.syncSelection(anchor: 1, head: 1)
+
+        XCTAssertEqual(mapping?.docAnchor, 2)
+        XCTAssertEqual(mapping?.docHead, 2)
+        XCTAssertEqual(calls, ["awarenessSelection", "wake:awareness"])
+    }
+
+    func testAwarenessPublicationFailureDoesNotRollbackCommittedTyping() {
+        var rejectAwareness = false
+        let adapter = makeAttachedAdapter(
+            configJson: #"{"initialization":{"type":"localEmpty"}}"#,
+            roomBound: true,
+            setAwarenessSelection: { _, _ in
+                if rejectAwareness {
+                    return FfiJsonResult(
+                        value: nil,
+                        error: FfiError(
+                            domain: "transport",
+                            code: "TRANSPORT_RESOURCE_EXHAUSTED",
+                            message: "awareness outbox is full",
+                            requestId: nil,
+                            operationIndex: nil,
+                            limit: nil,
+                            actual: nil,
+                            detailsJson: nil
+                        )
+                    )
+                }
+                return FfiJsonResult(value: #"{"outboundChanged":false}"#, error: nil)
+            },
+            collaborationWake: { _, _ in },
+            file: #filePath,
+            line: #line
+        )
+        _ = adapter.setContentHtml("<p>ab</p>")
+        let spy = ErrorSpy()
+        adapter.onAutonomousError = spy.record
+        rejectAwareness = true
+
+        let update = adapter.insertText("X", atScalar: 2)
+
+        XCTAssertEqual(renderedText(update), "abX")
+        XCTAssertEqual(documentText(adapter), "abX")
+        XCTAssertEqual(spy.last?.code, "TRANSPORT_RESOURCE_EXHAUSTED")
     }
 
     func testReplacementCommitIsOneTransaction() {

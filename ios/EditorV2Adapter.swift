@@ -82,6 +82,8 @@ final class EditorV2Adapter {
     /// autonomous error events.
     private(set) var debugNotes: [String] = []
     private let destroySession: (String) -> FfiUnitResult
+    private let setAwarenessSelection: (String, String) -> FfiJsonResult
+    private let collaborationWake: (UInt64, CollaborationWakeReason) -> Void
     private var destroyed = false
 
     var isDestroyed: Bool {
@@ -92,12 +94,16 @@ final class EditorV2Adapter {
         editorId: String,
         roomBound: Bool,
         baseDocumentRevision: UInt64,
-        destroySession: @escaping (String) -> FfiUnitResult
+        destroySession: @escaping (String) -> FfiUnitResult,
+        setAwarenessSelection: @escaping (String, String) -> FfiJsonResult,
+        collaborationWake: @escaping (UInt64, CollaborationWakeReason) -> Void
     ) {
         self.editorId = editorId
         self.roomBound = roomBound
         self.baseDocumentRevision = baseDocumentRevision
         self.destroySession = destroySession
+        self.setAwarenessSelection = setAwarenessSelection
+        self.collaborationWake = collaborationWake
     }
 
     // MARK: - Construction
@@ -110,7 +116,16 @@ final class EditorV2Adapter {
     static func attach(
         editorId: String,
         roomBound: Bool,
-        destroySession: @escaping (String) -> FfiUnitResult = { editorV2Destroy(editorId: $0) }
+        destroySession: @escaping (String) -> FfiUnitResult = { editorV2Destroy(editorId: $0) },
+        setAwarenessSelection: @escaping (String, String) -> FfiJsonResult = {
+            editorV2CollaborationSetAwarenessSelection(editorId: $0, selectionJson: $1)
+        },
+        collaborationWake: @escaping (UInt64, CollaborationWakeReason) -> Void = {
+            NativeCollaborationTransportRegistry.notifyOutboundAvailable(
+                editorId: $0,
+                reason: $1
+            )
+        }
     ) -> EditorV2Adapter? {
         guard isCanonicalDecimalEditorId(editorId) else {
             return nil
@@ -119,7 +134,9 @@ final class EditorV2Adapter {
             editorId: editorId,
             roomBound: roomBound,
             baseDocumentRevision: 0,
-            destroySession: destroySession
+            destroySession: destroySession,
+            setAwarenessSelection: setAwarenessSelection,
+            collaborationWake: collaborationWake
         )
         // Attachment only establishes that the handle is live. It must not
         // render (a render resolves an otherwise absent selection) or stamp
@@ -1023,23 +1040,36 @@ final class EditorV2Adapter {
             )
             return nil
         }
+        let mapping: (docAnchor: UInt32, docHead: UInt32)?
         switch ensureSelection(anchor: anchor, head: head) {
         case .ok:
-            break
+            mapping = resolveSelectionMapping(scalarAnchor: anchor, scalarHead: head)
         case .refreshed(let updateJSON):
-            guard let data = updateJSON.data(using: .utf8),
-                  let update = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let selection = update["selection"] as? [String: Any],
-                  let docAnchor = Self.uint32Field(selection, "anchor"),
-                  let docHead = Self.uint32Field(selection, "head")
-            else {
-                return nil
-            }
-            return (docAnchor, docHead)
+            mapping = Self.textDocumentSelection(from: updateJSON)
         case .failed:
             return nil
         }
-        return resolveSelectionMapping(scalarAnchor: anchor, scalarHead: head)
+        guard let mapping else { return nil }
+        publishCollaborationSelection(
+            docAnchor: mapping.docAnchor,
+            docHead: mapping.docHead
+        )
+        return mapping
+    }
+
+    private static func textDocumentSelection(
+        from updateJSON: String
+    ) -> (docAnchor: UInt32, docHead: UInt32)? {
+        guard let data = updateJSON.data(using: .utf8),
+              let update = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let selection = update["selection"] as? [String: Any],
+              selection["type"] as? String == "text",
+              let docAnchor = uint32Field(selection, "anchor"),
+              let docHead = uint32Field(selection, "head")
+        else {
+            return nil
+        }
+        return (docAnchor, docHead)
     }
 
     /// Engine-authoritative scalar→doc selection mapping for one live v2
@@ -1075,7 +1105,72 @@ final class EditorV2Adapter {
     /// that only need the engine to track the caret).
     func syncSelectionQuiet(anchor: UInt32, head: UInt32) {
         guard !destroyed else { return }
-        _ = ensureSelection(anchor: anchor, head: head)
+        let mapping: (docAnchor: UInt32, docHead: UInt32)?
+        switch ensureSelection(anchor: anchor, head: head) {
+        case .ok:
+            guard let selection = lastSyncedScalarSelection else { return }
+            mapping = resolveSelectionMapping(
+                scalarAnchor: selection.anchor,
+                scalarHead: selection.head
+            )
+        case .refreshed(let updateJSON):
+            mapping = Self.textDocumentSelection(from: updateJSON)
+        case .failed:
+            return
+        }
+        guard let mapping else { return }
+        publishCollaborationSelection(
+            docAnchor: mapping.docAnchor,
+            docHead: mapping.docHead
+        )
+    }
+
+    private func publishCachedCollaborationSelection() {
+        guard let selection = cachedAuthoritativeScalarSelection,
+              let mapping = resolveSelectionMapping(
+                  scalarAnchor: selection.anchor,
+                  scalarHead: selection.head
+              )
+        else {
+            return
+        }
+        publishCollaborationSelection(
+            docAnchor: mapping.docAnchor,
+            docHead: mapping.docHead
+        )
+    }
+
+    private func publishCollaborationSelection(docAnchor: UInt32, docHead: UInt32) {
+        guard roomBound, let nativeEditorId = UInt64(editorId) else { return }
+        let selection: [String: Any] = [
+            "type": "text",
+            "anchor": Int(docAnchor),
+            "head": Int(docHead),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: selection),
+              let selectionJSON = String(data: data, encoding: .utf8)
+        else {
+            emit(contractError("awareness selection serialization failed"))
+            return
+        }
+        switch Self.normalizeJsonResult(
+            setAwarenessSelection(editorId, selectionJSON)
+        ) {
+        case .failure(let error):
+            emit(error)
+        case .success(let value):
+            guard let data = value.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  Set(object.keys) == ["outboundChanged"],
+                  let outboundChanged = Self.exactBool(object["outboundChanged"])
+            else {
+                emit(contractError("awareness selection result violates the frozen shape"))
+                return
+            }
+            if outboundChanged {
+                collaborationWake(nativeEditorId, .awareness)
+            }
+        }
     }
 
     /// Lenient scalar→doc mapping through the v2 accessor (clamps at
@@ -1237,6 +1332,7 @@ final class EditorV2Adapter {
                 return nil
             }
             if changed {
+                publishCachedCollaborationSelection()
                 notifyCollaborationMutation()
             }
             return update
@@ -1308,6 +1404,7 @@ final class EditorV2Adapter {
             }
             guard let update = refreshInternal(mirrorSelection: nil)?.updateJSON else { return nil }
             if changed {
+                publishCachedCollaborationSelection()
                 notifyCollaborationMutation()
             }
             return update
@@ -1320,10 +1417,7 @@ final class EditorV2Adapter {
     /// The adapter never owns a generation, socket, frame, or retry timer.
     private func notifyCollaborationMutation() {
         guard roomBound, let nativeEditorId = UInt64(editorId) else { return }
-        NativeCollaborationTransportRegistry.notifyOutboundAvailable(
-            editorId: nativeEditorId,
-            reason: .localMutation
-        )
+        collaborationWake(nativeEditorId, .localMutation)
     }
 
     // MARK: - Typed verbs (one method per legacy choke point)
