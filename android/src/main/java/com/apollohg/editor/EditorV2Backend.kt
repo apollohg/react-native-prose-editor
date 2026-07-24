@@ -77,6 +77,10 @@ internal interface EditorV2Backend {
     fun collaborationDetach(editorId: String): EditorV2Error?
     fun collaborationReattach(editorId: String): EditorV2Error?
     fun collaborationPeers(editorId: String): EditorV2CallResult<String>
+    fun collaborationSetAwarenessSelection(
+        editorId: String,
+        selectionJson: String,
+    ): EditorV2CallResult<String>
     fun snapshotExport(editorId: String): EditorV2CallResult<Pair<String, ByteArray>>
 
     /**

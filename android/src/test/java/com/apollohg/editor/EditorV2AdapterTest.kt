@@ -59,7 +59,11 @@ class EditorV2AdapterTest {
         assertNull(EditorV2Adapter.attach(backend, "999999", roomBound = false))
     }
 
-    private fun makeRoomAdapter(): EditorV2Adapter {
+    private fun makeRoomAdapter(
+        collaborationWake: (String, CollaborationWakeReason) -> Unit = { editorId, reason ->
+            NativeCollaborationTransportRegistry.notifyOutboundAvailable(editorId, reason)
+        },
+    ): EditorV2Adapter {
         val seed = makeAdapter()
         seed.setContentHtml("<p>seed</p>")
         val snapshot = (backend.snapshotExport(seed.editorId) as EditorV2CallResult.Ok).value
@@ -79,6 +83,7 @@ class EditorV2AdapterTest {
                 snapshot.second,
             ),
             roomBound = true,
+            collaborationWake = collaborationWake,
         ) ?: throw AssertionError("created room editor could not be attached")
         createdAdapters.add(adapter)
         return adapter
@@ -202,6 +207,75 @@ class EditorV2AdapterTest {
 
         val undone = adapter.undo()
         assertEquals("ab", renderedText(undone))
+    }
+
+    @Test
+    fun `room typing publishes post mutation awareness before transport wake`() {
+        val adapter = makeRoomAdapter { _, reason ->
+            backend.calls.add("wake:${reason.wireValue}")
+        }
+        backend.awarenessSelectionResult =
+            EditorV2CallResult.Ok("""{"outboundChanged":true}""")
+        backend.calls.clear()
+
+        val update = adapter.insertText("X", 4)
+
+        assertEquals("seedX", renderedText(update))
+        assertEquals(
+            listOf(
+                "collaborationSetAwarenessSelection",
+                "wake:awareness",
+                "wake:localMutation",
+            ),
+            backend.calls.filter {
+                it == "collaborationSetAwarenessSelection" || it.startsWith("wake:")
+            },
+        )
+        val awarenessSelection = JSONObject(backend.lastAwarenessSelectionJson!!)
+        assertEquals(3, awarenessSelection.length())
+        assertEquals("text", awarenessSelection.getString("type"))
+        assertEquals(6, awarenessSelection.getInt("anchor"))
+        assertEquals(6, awarenessSelection.getInt("head"))
+    }
+
+    @Test
+    fun `room standalone selection publishes awareness without document wake`() {
+        val adapter = makeRoomAdapter { _, reason ->
+            backend.calls.add("wake:${reason.wireValue}")
+        }
+        backend.awarenessSelectionResult =
+            EditorV2CallResult.Ok("""{"outboundChanged":true}""")
+        backend.calls.clear()
+
+        val mapping = adapter.syncSelection(1, 1)
+
+        assertNotNull(mapping)
+        assertEquals(
+            listOf("collaborationSetAwarenessSelection", "wake:awareness"),
+            backend.calls.filter {
+                it == "collaborationSetAwarenessSelection" || it.startsWith("wake:")
+            },
+        )
+    }
+
+    @Test
+    fun `awareness publication failure does not roll back committed typing`() {
+        val adapter = makeRoomAdapter { _, _ -> }
+        val errors = mutableListOf<EditorV2Error>()
+        adapter.onAutonomousError = { errors.add(it) }
+        backend.awarenessSelectionResult = EditorV2CallResult.Err(
+            EditorV2Error(
+                domain = "transport",
+                code = "TRANSPORT_RESOURCE_EXHAUSTED",
+                message = "awareness outbox is full",
+            ),
+        )
+
+        val update = adapter.insertText("X", 4)
+
+        assertEquals("seedX", renderedText(update))
+        assertEquals("seedX", documentText(adapter))
+        assertEquals("TRANSPORT_RESOURCE_EXHAUSTED", errors.last().code)
     }
 
     @Test

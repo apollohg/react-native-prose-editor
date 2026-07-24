@@ -11,6 +11,7 @@ import uniffi.editor_core.editorV2CollaborationNackOutbound
 import uniffi.editor_core.editorV2CollaborationPeers
 import uniffi.editor_core.editorV2CollaborationReattach
 import uniffi.editor_core.editorV2CollaborationReceive
+import uniffi.editor_core.editorV2CollaborationSetAwarenessSelection
 import uniffi.editor_core.editorV2CollaborationSocketClose
 import uniffi.editor_core.editorV2CollaborationSocketOpen
 import uniffi.editor_core.editorV2Create
@@ -157,6 +158,12 @@ internal object UniffiEditorV2Backend : EditorV2Backend {
 
     override fun collaborationPeers(editorId: String): EditorV2CallResult<String> =
         normalize(editorV2CollaborationPeers(editorId))
+
+    override fun collaborationSetAwarenessSelection(
+        editorId: String,
+        selectionJson: String,
+    ): EditorV2CallResult<String> =
+        normalize(editorV2CollaborationSetAwarenessSelection(editorId, selectionJson))
 
     override fun snapshotExport(editorId: String): EditorV2CallResult<Pair<String, ByteArray>> {
         val result = editorV2SnapshotExport(editorId)

@@ -35,6 +35,9 @@ internal class FakeEditorV2Backend : EditorV2Backend {
     val sessions = LinkedHashMap<String, FakeSession>()
     private var nextId = 0uL
     private var nextSplitCommandNotApplicableRemoteText: String? = null
+    var awarenessSelectionResult: EditorV2CallResult<String> =
+        EditorV2CallResult.Ok("""{"outboundChanged":false}""")
+    var lastAwarenessSelectionJson: String? = null
 
     /** Backend call log ("applyInput", "getState", ...), for traffic assertions. */
     val calls = mutableListOf<String>()
@@ -523,6 +526,16 @@ internal class FakeEditorV2Backend : EditorV2Backend {
         calls.add("collaborationPeers")
         liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
         return EditorV2CallResult.Ok(JSONObject().put("peers", JSONArray()).toString())
+    }
+
+    override fun collaborationSetAwarenessSelection(
+        editorId: String,
+        selectionJson: String,
+    ): EditorV2CallResult<String> {
+        calls.add("collaborationSetAwarenessSelection")
+        liveSession(editorId) ?: return EditorV2CallResult.Err(destroyedError())
+        lastAwarenessSelectionJson = selectionJson
+        return awarenessSelectionResult
     }
 
     override fun getContentSnapshot(editorId: String): EditorV2CallResult<String> {

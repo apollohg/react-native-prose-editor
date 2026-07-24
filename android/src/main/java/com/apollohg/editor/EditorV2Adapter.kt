@@ -25,6 +25,7 @@ internal class EditorV2Adapter private constructor(
     private val backend: EditorV2Backend,
     val editorId: String,
     private val roomBound: Boolean,
+    private val collaborationWake: (String, CollaborationWakeReason) -> Unit,
 ) : EditorV2Driver {
 
     var onAutonomousError: ((EditorV2Error) -> Unit)? = null
@@ -69,13 +70,20 @@ internal class EditorV2Adapter private constructor(
          * shared session (the TS document handle and collaboration
          * controller drive the same session over the module surface).
          */
-        fun attach(backend: EditorV2Backend, editorId: String, roomBound: Boolean): EditorV2Adapter? {
+        fun attach(
+            backend: EditorV2Backend,
+            editorId: String,
+            roomBound: Boolean,
+            collaborationWake: (String, CollaborationWakeReason) -> Unit = { id, reason ->
+                NativeCollaborationTransportRegistry.notifyOutboundAvailable(id, reason)
+            },
+        ): EditorV2Adapter? {
             if (!isCanonicalDecimalEditorId(editorId)) return null
             // Attachment establishes only that the handle is live. The first
             // render adopts the revision, scalar extent, selection, active,
             // and history caches as one locked snapshot before input resumes.
             if (backend.getState(editorId) !is EditorV2CallResult.Ok) return null
-            return EditorV2Adapter(backend, editorId, roomBound)
+            return EditorV2Adapter(backend, editorId, roomBound, collaborationWake)
         }
 
         private fun isCanonicalDecimalEditorId(editorId: String): Boolean =
@@ -625,21 +633,30 @@ internal class EditorV2Adapter private constructor(
             emit(destroyedError())
             return null
         }
-        when (val outcome = ensureSelection(anchor, head)) {
-            is SelectionSyncOutcome.Ok -> Unit
-            is SelectionSyncOutcome.Refreshed -> {
-                return try {
-                    val selection = JSONObject(outcome.updateJson).getJSONObject("selection")
-                    intArrayOf(
-                        scalarField(selection, "anchor") ?: return null,
-                        scalarField(selection, "head") ?: return null,
-                    )
-                } catch (error: Exception) {
-                    null
-                }
-            }
+        val mapping = when (val outcome = ensureSelection(anchor, head)) {
+            is SelectionSyncOutcome.Ok -> resolveSelectionMapping(anchor, head)
+            is SelectionSyncOutcome.Refreshed -> textDocumentSelection(outcome.updateJson)
             is SelectionSyncOutcome.Failed -> return null
         }
+        if (mapping == null) return null
+        publishCollaborationSelection(mapping[0], mapping[1])
+        return mapping
+    }
+
+    private fun textDocumentSelection(updateJson: String): IntArray? {
+        return try {
+            val selection = JSONObject(updateJson).getJSONObject("selection")
+            if (selection.optString("type") != "text") return null
+            intArrayOf(
+                scalarField(selection, "anchor") ?: return null,
+                scalarField(selection, "head") ?: return null,
+            )
+        } catch (error: Exception) {
+            null
+        }
+    }
+
+    private fun resolveSelectionMapping(anchor: Int, head: Int): IntArray? {
         // Engine-authoritative scalar→doc selection mapping for the delegate
         // callback's doc positions (v2 accessor).
         val resolved = when (val result = backend.resolveScalarSelection(editorId, anchor, head)) {
@@ -662,7 +679,60 @@ internal class EditorV2Adapter private constructor(
 
     override fun syncSelectionQuiet(anchor: Int, head: Int) {
         if (destroyed) return
-        ensureSelection(anchor, head)
+        val mapping = when (val outcome = ensureSelection(anchor, head)) {
+            is SelectionSyncOutcome.Ok -> {
+                if (!roomBound) return
+                val selection = lastSyncedScalarSelection ?: return
+                resolveSelectionMapping(selection[0], selection[1])
+            }
+            is SelectionSyncOutcome.Refreshed -> textDocumentSelection(outcome.updateJson)
+            is SelectionSyncOutcome.Failed -> return
+        } ?: return
+        publishCollaborationSelection(mapping[0], mapping[1])
+    }
+
+    private fun publishCachedCollaborationSelection() {
+        if (!roomBound) return
+        val selection = cachedAuthoritativeScalarSelection ?: return
+        val mapping = resolveSelectionMapping(selection[0], selection[1]) ?: return
+        publishCollaborationSelection(mapping[0], mapping[1])
+    }
+
+    private fun publishCollaborationSelection(docAnchor: Int, docHead: Int) {
+        if (!roomBound) return
+        val selectionJson = JSONObject()
+            .put("type", "text")
+            .put("anchor", docAnchor)
+            .put("head", docHead)
+            .toString()
+        when (
+            val result = backend.collaborationSetAwarenessSelection(
+                editorId,
+                selectionJson,
+            )
+        ) {
+            is EditorV2CallResult.Err -> emit(result.error)
+            is EditorV2CallResult.Ok -> {
+                val outboundChanged = try {
+                    val value = JSONObject(result.value)
+                    if (value.length() != 1 ||
+                        !value.has("outboundChanged") ||
+                        value.opt("outboundChanged") !is Boolean
+                    ) {
+                        null
+                    } else {
+                        value.getBoolean("outboundChanged")
+                    }
+                } catch (error: Exception) {
+                    null
+                }
+                if (outboundChanged == null) {
+                    emit(contractError("awareness selection result violates the frozen shape"))
+                } else if (outboundChanged) {
+                    collaborationWake(editorId, CollaborationWakeReason.AWARENESS)
+                }
+            }
+        }
     }
 
     override fun scalarPositionForDoc(docPos: Int): Int? =
@@ -768,7 +838,10 @@ internal class EditorV2Adapter private constructor(
                 }
                 val mirror = if (includeSelectionInUpdate) postSelectionMirror ?: preSelection else null
                 val update = refreshInternal(mirror) ?: return null
-                if (changed) notifyCollaborationMutation()
+                if (changed) {
+                    publishCachedCollaborationSelection()
+                    notifyCollaborationMutation()
+                }
                 update
             }
         }
@@ -812,7 +885,10 @@ internal class EditorV2Adapter private constructor(
                         lastSyncedScalarSelection = postSelectionMirror
                         invalidateCachedAtomicState(postSelectionMirror)
                         val update = refreshInternal(postSelectionMirror) ?: return null
-                        if (outcome.changed) notifyCollaborationMutation()
+                        if (outcome.changed) {
+                            publishCachedCollaborationSelection()
+                            notifyCollaborationMutation()
+                        }
                         EditorV2SplitRender(update, committed = outcome.changed)
                     }
                     is MutationOutcome.Replacement -> {
@@ -820,7 +896,10 @@ internal class EditorV2Adapter private constructor(
                         lastSyncedScalarSelection = null
                         invalidateCachedAtomicState(null)
                         val update = refreshInternal(postSelectionMirror) ?: return null
-                        if (outcome.changed) notifyCollaborationMutation()
+                        if (outcome.changed) {
+                            publishCachedCollaborationSelection()
+                            notifyCollaborationMutation()
+                        }
                         EditorV2SplitRender(update, committed = outcome.changed)
                     }
                 }
@@ -851,6 +930,7 @@ internal class EditorV2Adapter private constructor(
                 }
                 val update = refreshInternal(null) ?: return null
                 if (changed) {
+                    publishCachedCollaborationSelection()
                     notifyCollaborationMutation()
                 }
                 update
@@ -862,7 +942,7 @@ internal class EditorV2Adapter private constructor(
 
     private fun notifyCollaborationMutation() {
         if (!roomBound) return
-        NativeCollaborationTransportRegistry.notifyOutboundAvailable(
+        collaborationWake(
             editorId,
             CollaborationWakeReason.LOCAL_MUTATION,
         )
