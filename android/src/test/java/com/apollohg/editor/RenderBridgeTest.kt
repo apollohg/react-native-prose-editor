@@ -199,7 +199,7 @@ class RenderBridgeTest {
         ]
         """.trimIndent()
 
-        assertTrue(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+        assertTrue(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
     }
 
     @Test
@@ -212,7 +212,7 @@ class RenderBridgeTest {
         ]
         """.trimIndent()
 
-        assertFalse(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+        assertFalse(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
     }
 
     @Test
@@ -223,7 +223,7 @@ class RenderBridgeTest {
         ]
         """.trimIndent()
 
-        assertFalse(NativeProseViewerExpoView.renderJsonContainsOnlyEmptyParagraphs(json))
+        assertFalse(ProseViewerView.renderJsonContainsOnlyEmptyParagraphs(json))
     }
 
     // ── Plain Text Rendering ────────────────────────────────────────────

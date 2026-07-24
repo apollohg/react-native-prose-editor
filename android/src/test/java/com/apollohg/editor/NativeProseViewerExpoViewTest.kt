@@ -160,7 +160,7 @@ class NativeProseViewerExpoViewTest {
             )
         )
 
-        viewer.setRenderJson(paragraphRenderJson("replacement"))
+        viewer.apply(paragraphRenderJson("replacement"), "{}")
 
         assertTrue(
             parent.eventTypes.contains(
@@ -178,7 +178,7 @@ class NativeProseViewerExpoViewTest {
         val provider = viewer.accessibilityNodeProvider
         assertTrue(provider.createAccessibilityNodeInfo(1) != null)
 
-        viewer.setRenderJson(paragraphRenderJson("replacement"))
+        viewer.apply(paragraphRenderJson("replacement"), "{}")
 
         assertTrue(provider.createAccessibilityNodeInfo(1) == null)
         val eventIndex = parent.eventTypes.indexOfLast {
@@ -199,7 +199,7 @@ class NativeProseViewerExpoViewTest {
         val provider = viewer.accessibilityNodeProvider
         assertTrue(provider.createAccessibilityNodeInfo(1) != null)
 
-        viewer.setEnableLinkTaps(false)
+        viewer.linkTapsEnabled = false
 
         assertTrue(provider.createAccessibilityNodeInfo(1) == null)
         val eventIndex = parent.eventTypes.indexOfLast {
@@ -211,7 +211,7 @@ class NativeProseViewerExpoViewTest {
             parent.contentChangeTypes[eventIndex]
         )
 
-        viewer.setEnableLinkTaps(true)
+        viewer.linkTapsEnabled = true
         assertTrue(provider.createAccessibilityNodeInfo(1) != null)
         assertTrue(
             parent.eventTypes.count { it == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED } >= 2
@@ -220,10 +220,8 @@ class NativeProseViewerExpoViewTest {
 
     @Test
     fun `crossing adjacent equal links does not activate the up range`() {
-        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
-        val viewer = NativeProseViewerExpoView(expoContext.context, expoContext.appContext)
-        viewer.suppressContentHeightEventsForTesting = true
-        viewer.setRenderJson(
+        val viewer = ProseViewerView(RuntimeEnvironment.getApplication())
+        viewer.apply(
             """
             [
               {"type":"blockStart","nodeType":"paragraph","depth":0},
@@ -231,13 +229,14 @@ class NativeProseViewerExpoViewTest {
               {"type":"textRun","text":"i","marks":[{"type":"link","href":"https://example.com/same"}]},
               {"type":"blockEnd"}
             ]
-            """.trimIndent()
+            """.trimIndent(),
+            "{}"
         )
         val widthSpec = View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY)
         val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         viewer.measure(widthSpec, heightSpec)
         viewer.layout(0, 0, viewer.measuredWidth, viewer.measuredHeight)
-        val proseView = viewer.getChildAt(0) as EditorEditText
+        val proseView = viewer.proseViewForTesting
         val text = proseView.text as Spanned
         val links = text.getSpans(0, text.length, Annotation::class.java)
             .filter { it.key == RenderBridge.NATIVE_LINK_HREF_ANNOTATION }
@@ -245,10 +244,7 @@ class NativeProseViewerExpoViewTest {
         assertEquals(2, links.size)
         val down = pointForOffset(proseView, text.getSpanStart(links[0]))
         val up = pointForOffset(proseView, text.getSpanStart(links[1]))
-        NativeProseViewerExpoView::class.java.getDeclaredField("touchSlop").apply {
-            isAccessible = true
-            setFloat(viewer, 1_000f)
-        }
+        viewer.touchSlopForTesting = 1_000f
         var activations = 0
         viewer.onLinkTapForTesting = { activations += 1 }
 
@@ -266,7 +262,7 @@ class NativeProseViewerExpoViewTest {
 
         view.setImageLoadingPolicyJson("""{"maxSourceBytes":123}""")
 
-        val proseView = view.getChildAt(0) as EditorEditText
+        val proseView = view.viewerForTesting.proseViewForTesting
         assertEquals(123, proseView.imageLoadingPolicy.maxSourceBytes)
     }
 
@@ -478,17 +474,15 @@ class NativeProseViewerExpoViewTest {
 
     private fun laidOutInteractiveViewer(
         targetKind: TargetKind
-    ): Pair<NativeProseViewerExpoView, EditorEditText> {
-        val expoContext = testExpoContext(RuntimeEnvironment.getApplication())
-        val view = NativeProseViewerExpoView(expoContext.context, expoContext.appContext)
-        view.suppressContentHeightEventsForTesting = true
+    ): Pair<ProseViewerView, EditorEditText> {
+        val view = ProseViewerView(RuntimeEnvironment.getApplication())
         val targetJson = when (targetKind) {
             TargetKind.LINK ->
                 """{"type":"textRun","text":"link target with plenty of width","marks":[{"type":"link","href":"https://example.com/viewer"}]}"""
             TargetKind.MENTION ->
                 """{"type":"opaqueInlineAtom","nodeType":"mention","label":"@Alice","docPos":31}"""
         }
-        view.setRenderJson(
+        view.apply(
             """
             [
               {"type":"blockStart","nodeType":"paragraph","depth":0},
@@ -496,13 +490,14 @@ class NativeProseViewerExpoViewTest {
               $targetJson,
               {"type":"blockEnd"}
             ]
-            """.trimIndent()
+            """.trimIndent(),
+            "{}"
         )
         val widthSpec = View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY)
         val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         view.measure(widthSpec, heightSpec)
         view.layout(0, 0, view.measuredWidth, view.measuredHeight)
-        val proseView = view.getChildAt(0) as EditorEditText
+        val proseView = view.proseViewForTesting
         return view to proseView
     }
 
@@ -561,10 +556,10 @@ class NativeProseViewerExpoViewTest {
     }
 
     private fun handleProseTouch(
-        viewer: NativeProseViewerExpoView,
+        viewer: ProseViewerView,
         event: MotionEvent
     ): Boolean {
-        val method = NativeProseViewerExpoView::class.java.getDeclaredMethod(
+        val method = ProseViewerView::class.java.getDeclaredMethod(
             "handleProseTouch",
             MotionEvent::class.java
         )
