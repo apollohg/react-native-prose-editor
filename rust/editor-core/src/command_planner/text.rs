@@ -124,6 +124,12 @@ pub(crate) fn plan_delete_backward(
     {
         return Ok(Some(plan));
     }
+    // Must precede the `to == 0` bail: a quote at the very start of the
+    // document leaves the caret there, and giving up would make the keystroke
+    // do nothing at all with no way out of the quote.
+    if let Some(plan) = super::plan_blockquote_lift_at_start(document, schema, cursor) {
+        return Ok(Some(plan));
+    }
     if to == 0 {
         return Ok(None);
     }

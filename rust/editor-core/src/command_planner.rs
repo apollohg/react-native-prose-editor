@@ -579,6 +579,75 @@ fn plan_empty_blockquote_exit(
     })
 }
 
+/// Backspace at the head of a blockquote's *first* line lifts that line out of
+/// the quote, keeping its content.
+///
+/// [`plan_empty_blockquote_exit`] already does this for an empty quoted line,
+/// where the lifted block can simply be a fresh default block. A line with text
+/// needs the block itself carried out. Without this the keystroke had nowhere
+/// sensible to go: a lone quote left the caret at offset 0, where
+/// [`text::plan_delete_backward`] gives up and nothing happens at all, and a
+/// quote under a paragraph fell through to the `DeleteRange` fallback, whose
+/// endpoints straddle the quote boundary and land in different parents.
+///
+/// Only the first line lifts. A later line has a quoted sibling above it to
+/// merge into, which [`join_with_previous_block_action`] already handles.
+fn plan_blockquote_lift_at_start(
+    document: &Document,
+    schema: &Schema,
+    position: u32,
+) -> Option<SemanticCommandPlan> {
+    let quote_type = schema.node_by_html_tag("blockquote")?.name.as_str();
+    let resolved = document.resolve(position).ok()?;
+    let block = resolved.parent(document);
+    if !is_text_block(schema, block) || resolved.parent_offset != 0 {
+        return None;
+    }
+
+    let mut node = document.root();
+    let mut quote_depth = None;
+    for (depth, index) in resolved.node_path.iter().copied().enumerate() {
+        node = node.child(index as usize)?;
+        if node.node_type() == quote_type {
+            quote_depth = Some(depth);
+        }
+    }
+    let depth = quote_depth?;
+    // The caret's block must be a direct child of the quote.
+    if resolved.node_path.len() != depth + 2 {
+        return None;
+    }
+    if usize::try_from(*resolved.node_path.get(depth + 1)?).ok()? != 0 {
+        return None;
+    }
+
+    let quote_path = &resolved.node_path[..=depth];
+    let quote = document.node_at(quote_path)?;
+    let content = quote.content()?;
+    let replace_from = node_delete_start(document, quote_path)?;
+
+    let mut replacement = vec![content.child(0)?.clone()];
+    let remaining = content.iter().skip(1).cloned().collect::<Vec<_>>();
+    if !remaining.is_empty() {
+        replacement.push(Node::element(
+            quote.node_type().to_string(),
+            quote.attrs().clone(),
+            Fragment::from(remaining),
+        ));
+    }
+
+    Some(SemanticCommandPlan {
+        operations: vec![SemanticOperation::ReplaceRange {
+            from: replace_from,
+            to: replace_from.checked_add(quote.node_size())?,
+            content: Fragment::from(replacement),
+        }],
+        // Into the lifted block's content, where the caret already sat.
+        selection_after: Some(Selection::cursor(replace_from.checked_add(1)?)),
+        history: SemanticCommandHistory::InputBoundary,
+    })
+}
+
 fn empty_text_block_context(
     document: &Document,
     map: &PositionMap,
