@@ -279,9 +279,7 @@ struct EditorToolbarTheme {
     }
 
     var resolvedHorizontalInset: CGFloat {
-        // Edge-to-edge by default on every appearance. Hosts that want the
-        // floating inset bar set `horizontalInset` explicitly.
-        horizontalInset ?? 0
+        horizontalInset ?? (appearance == .native ? 10 : 0)
     }
 
     var resolvedBorderRadius: CGFloat {

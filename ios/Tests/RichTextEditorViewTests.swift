@@ -1142,9 +1142,8 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(theme.toolbar?.appearance, .native)
         XCTAssertEqual(theme.toolbar?.height ?? 0, 44, accuracy: 0.1)
         XCTAssertEqual(theme.toolbar?.resolvedKeyboardOffset ?? 0, 6, accuracy: 0.1)
-        // Edge-to-edge and square by default on every appearance; the floating
-        // inset bar is opt-in via explicit horizontalInset/borderRadius.
-        XCTAssertEqual(theme.toolbar?.resolvedHorizontalInset ?? -1, 0, accuracy: 0.1)
+        XCTAssertEqual(theme.toolbar?.resolvedHorizontalInset ?? -1, 10, accuracy: 0.1)
+        // Square by default; the rounded floating bar is opt-in via borderRadius.
         XCTAssertEqual(theme.toolbar?.resolvedBorderRadius ?? -1, 0, accuracy: 0.1)
     }
 
