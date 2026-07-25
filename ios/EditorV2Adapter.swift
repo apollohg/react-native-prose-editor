@@ -1260,10 +1260,17 @@ final class EditorV2Adapter {
     /// caret — the legacy engine's updates always carried the selection.
     /// Callers that must NOT move the view caret (paste paths) pass no
     /// postSelectionMirror and get a selection-less update.
+    /// - Parameter adoptEngineSelection: report the engine's own post-command
+    ///   selection instead of forcing the caret back to caller-supplied
+    ///   offsets. Required for any command that can restructure the document:
+    ///   wrapping a line in a list inserts the list, item, and paragraph
+    ///   openings ahead of the text, so every offset inside it shifts and the
+    ///   pre-command numbers no longer address the character the caret was on.
     private func performMutation(
         preSelection: (UInt32, UInt32)? = nil,
         postSelectionMirror: (UInt32, UInt32)? = nil,
         includeSelectionInUpdate: Bool = false,
+        adoptEngineSelection: Bool = false,
         _ call: () -> FfiJsonResult
     ) -> String? {
         guard !destroyed else {
@@ -1307,7 +1314,7 @@ final class EditorV2Adapter {
             case .transaction(let didChange, let revision):
                 changed = didChange
                 baseDocumentRevision = revision
-                if let postSelectionMirror {
+                if let postSelectionMirror, !adoptEngineSelection {
                     lastSyncedScalarSelection = postSelectionMirror
                 }
             case .notApplicable:
@@ -1322,14 +1329,25 @@ final class EditorV2Adapter {
                 lastSyncedScalarSelection = nil
             }
             guard let update = refreshInternal(
-                mirrorSelection: postSelectionMirror ?? (includeSelectionInUpdate ? preSelection : nil),
+                mirrorSelection: adoptEngineSelection
+                    ? nil
+                    : postSelectionMirror ?? (includeSelectionInUpdate ? preSelection : nil),
                 // Paste and composition-preserving paths still derive active
                 // and history state from the authoritative post-operation
                 // selection. Only the view-facing selection is omitted so
                 // UIKit retains its IME-owned caret.
-                strippingViewSelection: postSelectionMirror == nil && !includeSelectionInUpdate
+                strippingViewSelection: !adoptEngineSelection
+                    && postSelectionMirror == nil
+                    && !includeSelectionInUpdate
             )?.updateJSON else {
                 return nil
+            }
+            if adoptEngineSelection {
+                // The refresh adopted the engine's own post-command selection;
+                // that is now the view's caret, so it becomes the sync point.
+                // Leaving the pre-command offsets here would make the next
+                // ensureSelection push a stale caret back into the engine.
+                lastSyncedScalarSelection = cachedAuthoritativeScalarSelection
             }
             if changed {
                 publishCachedCollaborationSelection()
@@ -1653,7 +1671,7 @@ final class EditorV2Adapter {
     }
 
     private func commandAtSelection(_ command: [String: Any], anchor: UInt32, head: UInt32) -> String? {
-        performMutation(preSelection: (anchor, head), postSelectionMirror: (anchor, head)) {
+        performMutation(preSelection: (anchor, head), adoptEngineSelection: true) {
             self.callWithEnvelope(["command": command]) { requestJson in
                 editorV2ApplyCommand(editorId: self.editorId, requestJson: requestJson)
             }
