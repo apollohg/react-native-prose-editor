@@ -1192,6 +1192,31 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(toolbar.selectedButtonCountForTesting, 1)
     }
 
+    /// A configured `UIButton` resolves its own selected-state background, so
+    /// filling `backgroundColor` as well stacks two shapes into a double halo.
+    func testActiveButtonPaintsExactlyOneBackground() {
+        for appearance in ["native", "custom"] {
+            let toolbar = EditorAccessoryToolbarView(frame: .zero)
+            toolbar.apply(theme: EditorToolbarTheme(dictionary: [
+                "appearance": appearance,
+            ]))
+
+            toolbar.applyBoldStateForTesting(active: true, enabled: true)
+            XCTAssertEqual(
+                toolbar.buttonBackgroundSourceCountForTesting(0),
+                1,
+                "an active \(appearance) button must paint one background, not stack two"
+            )
+
+            toolbar.applyBoldStateForTesting(active: false, enabled: true)
+            XCTAssertEqual(
+                toolbar.buttonBackgroundSourceCountForTesting(0),
+                0,
+                "an inactive \(appearance) button must paint no background at all"
+            )
+        }
+    }
+
     func testAccessoryToolbarExpandsGroupedButtonsInline() {
         let toolbar = EditorAccessoryToolbarView(frame: .zero)
         toolbar.setItemsJSONForTesting("""

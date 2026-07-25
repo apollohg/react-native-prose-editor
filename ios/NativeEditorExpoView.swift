@@ -808,6 +808,30 @@ final class EditorAccessoryToolbarView: UIInputView {
             }
         }
     }
+    /// How many distinct sources paint a background behind the button at
+    /// `index`. More than one stacks shapes into a double halo.
+    func buttonBackgroundSourceCountForTesting(_ index: Int) -> Int {
+        guard buttonBindings.indices.contains(index) else { return 0 }
+        let button = buttonBindings[index].button
+        var sources = 0
+        if Self.paintsBackground(button.backgroundColor) {
+            sources += 1
+        }
+        if #available(iOS 15.0, *),
+           Self.paintsBackground(button.configuration?.background.backgroundColor)
+        {
+            sources += 1
+        }
+        return sources
+    }
+
+    private static func paintsBackground(_ color: UIColor?) -> Bool {
+        guard let color else { return false }
+        var alpha: CGFloat = 0
+        color.getRed(nil, green: nil, blue: nil, alpha: &alpha)
+        return alpha > 0.01
+    }
+
     func triggerButtonTapForTesting(_ index: Int) {
         guard buttonBindings.indices.contains(index) else { return }
         buttonBindings[index].button.sendActions(for: .touchUpInside)
@@ -1536,9 +1560,10 @@ final class EditorAccessoryToolbarView: UIInputView {
             button.setTitleColor(resolvedNativeDisabledButtonTintColor(), for: .disabled)
             button.tintAdjustmentMode = enabled ? .automatic : .normal
             button.alpha = 1
-            button.backgroundColor = active
-                ? UIColor.white.withAlphaComponent(0.18)
-                : .clear
+            applyActiveBackground(
+                to: button,
+                color: active ? UIColor.white.withAlphaComponent(0.18) : .clear
+            )
             return
         }
 
@@ -1554,9 +1579,33 @@ final class EditorAccessoryToolbarView: UIInputView {
         button.tintColor = tintColor
         button.setTitleColor(tintColor, for: .normal)
         button.alpha = enabled ? 1 : 0.7
-        button.backgroundColor = active
-            ? (theme?.buttonActiveBackgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12))
-            : .clear
+        applyActiveBackground(
+            to: button,
+            color: active
+                ? (theme?.buttonActiveBackgroundColor ?? UIColor.systemBlue.withAlphaComponent(0.12))
+                : .clear
+        )
+    }
+
+    /// Paint the active-state background from exactly one source.
+    ///
+    /// `makeButton` gives every button a `UIButton.Configuration`, and
+    /// `apply(state:)` sets `isSelected`. A configured button resolves its own
+    /// selected-state background, so also filling `backgroundColor` stacks a
+    /// second shape behind the first — two offset rounded rects reading as a
+    /// double halo. Owning `configuration.background` outright replaces the
+    /// resolved one, and clearing `backgroundColor` leaves nothing underneath.
+    private func applyActiveBackground(to button: UIButton, color: UIColor) {
+        guard #available(iOS 15.0, *), var configuration = button.configuration else {
+            button.backgroundColor = color
+            return
+        }
+        var background = UIBackgroundConfiguration.clear()
+        background.backgroundColor = color
+        background.cornerRadius = resolvedButtonBorderRadius
+        configuration.background = background
+        button.configuration = configuration
+        button.backgroundColor = .clear
     }
 
     private var resolvedAppearance: EditorToolbarAppearance {
