@@ -3,6 +3,12 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+
+# The test host links EditorCore.xcframework, which is a build output.
+# shellcheck source=./require-native-artifacts.sh
+source "$repo_root/scripts/require-native-artifacts.sh"
+require_native_artifacts ios
+
 workspace="$repo_root/ios-tests/NativeEditorTests.xcworkspace"
 scheme="NativeEditorTests"
 destination="${IOS_DESTINATION:-}"

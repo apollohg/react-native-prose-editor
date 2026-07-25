@@ -540,6 +540,31 @@ For whole-document JSON loads, `{ type: 'localJson' }` handle initialization, co
 
 ## Development
 
+### Building the native core
+
+The compiled `editor-core` artifacts — `ios/EditorCore.xcframework` and
+`rust/android/*/libeditor_core.so` — are **build outputs and are not tracked
+in git**. CI builds them from the pinned Rust toolchain and publishes them
+inside the npm tarball, so a released package is always built from the source
+it ships beside.
+
+After a fresh clone, build them once before anything that links them (the iOS
+test workspace, the example app, or the Android connected tests):
+
+```sh
+npm run build:rust           # both platforms
+npm run build:rust:ios       # iOS only
+npm run build:rust:android   # Android only
+```
+
+Rebuild after any change under `rust/editor-core/src`. Commands that need the
+artifacts fail up front with the exact build command rather than a linker
+error. iOS needs the pinned toolchain from `rust/toolchain.sh`; Android also
+needs `ANDROID_NDK_HOME` and `cargo-ndk`.
+
+Consumers installing from npm never build Rust — the tarball carries the
+compiled core.
+
 Common commands:
 
 ```sh

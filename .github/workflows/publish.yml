@@ -59,6 +59,16 @@ jobs:
       - name: Install example dependencies
         run: npm --prefix example ci
 
+      # The compiled core is a build output, not a tracked file. It is built
+      # here from the pinned toolchain so the published binary provably comes
+      # from the source in this commit. This has to precede `pod install`,
+      # which resolves the podspec's vendored EditorCore.xcframework path.
+      - name: Build editor-core for all shipping targets
+        run: npm run build:rust
+
+      - name: Verify generated bindings are current
+        run: git diff --exit-code -- rust/bindings ios/Generated_editor_core.swift ios/editor_coreFFI
+
       - name: Install CocoaPods dependencies
         run: pod install --no-repo-update
         working-directory: example/ios
@@ -72,8 +82,17 @@ jobs:
       - name: Typecheck example
         run: npm --prefix example run typecheck
 
+      - name: Run Rust tests
+        run: cargo test --manifest-path rust/editor-core/Cargo.toml
+
       - name: Run JavaScript tests
         run: npm test
+
+      # Exact ABI manifest, native checksum values, byte-identical bindings,
+      # and real CocoaPods/Xcode and Gradle/APK consumer builds against the
+      # packed tarball. This is the gate that proves the artifact ships intact.
+      - name: Validate packed package
+        run: npm run package:validate
 
       - name: Publish to npm
         run: npm publish

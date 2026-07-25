@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The instrumentation APK packages the editor-core jniLibs, which are a
+# build output.
+# shellcheck source=./require-native-artifacts.sh
+source "$(cd "$(dirname "$0")" && pwd)/require-native-artifacts.sh"
+require_native_artifacts android
+
 project_dir="example/android"
 task=":apollohg-react-native-prose-editor:connectedDebugAndroidTest"
 device_id="${ANDROID_DEVICE_ID:-${ANDROID_SERIAL:-}}"

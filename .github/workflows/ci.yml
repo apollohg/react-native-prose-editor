@@ -29,6 +29,25 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # editor-core owns the document model, CRDT convergence, awareness,
+      # and the transport state machine. Its suite is the primary gate on
+      # this package's correctness and must run on every change.
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/editor-core/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust/editor-core/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path rust/editor-core/Cargo.toml
+
       - name: Install root dependencies
         run: npm ci
 
@@ -69,8 +88,31 @@ jobs:
             package-lock.json
             example/package-lock.json
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/editor-core/target
+          key: cargo-ios-${{ runner.os }}-${{ hashFiles('rust/editor-core/Cargo.lock') }}
+          restore-keys: cargo-ios-${{ runner.os }}-
+
       - name: Install root dependencies
         run: npm ci
+
+      # The test host links EditorCore.xcframework, which is a build output
+      # rather than a tracked file.
+      - name: Build editor-core for iOS
+        run: npm run build:rust:ios
+
+      - name: Verify generated bindings are current
+        run: git diff --exit-code -- rust/bindings ios/Generated_editor_core.swift ios/editor_coreFFI
 
       - name: Install example dependencies
         run: npm --prefix example ci
