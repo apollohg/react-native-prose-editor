@@ -394,6 +394,7 @@ final class EditorV2Adapter {
         let selection: (anchor: UInt32, head: UInt32)?
         let activeState: [String: Any]
         let historyState: (canUndo: Bool, canRedo: Bool)
+        let documentIsEmpty: Bool
     }
 
     private static let atomicRenderSnapshotKeys: Set<String> = [
@@ -405,6 +406,7 @@ final class EditorV2Adapter {
         "documentVersion",
         "stateRevision",
         "scalarLength",
+        "documentIsEmpty",
     ]
 
     private static let activeStateKeys: Set<String> = [
@@ -699,13 +701,16 @@ final class EditorV2Adapter {
               let canRedo = exactBool(history["canRedo"]),
               let documentRevision = uint64Field(object, "documentVersion"),
               let stateRevision = uint64Field(object, "stateRevision"),
-              let scalarLength = uint32Field(object, "scalarLength")
+              let scalarLength = uint32Field(object, "scalarLength"),
+              let documentIsEmpty = exactBool(object["documentIsEmpty"])
         else {
             return nil
         }
 
         let selection = scalarSelection(from: selectionValue)
         object.removeValue(forKey: "scalarLength")
+        // documentIsEmpty stays in the view payload: the text view needs the
+        // core's answer to decide whether to show its placeholder.
         guard let viewData = try? JSONSerialization.data(withJSONObject: object),
               let viewUpdateJSON = String(data: viewData, encoding: .utf8)
         else {
@@ -718,7 +723,8 @@ final class EditorV2Adapter {
             scalarLength: scalarLength,
             selection: selection,
             activeState: activeState,
-            historyState: (canUndo, canRedo)
+            historyState: (canUndo, canRedo),
+            documentIsEmpty: documentIsEmpty
         )
     }
 

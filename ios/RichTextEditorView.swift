@@ -1566,7 +1566,21 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         return didResignFirstResponder
     }
 
+    /// Whether the document holds nothing the user authored.
+    ///
+    /// The core answers this and the answer arrives on every editor update, so
+    /// it is used verbatim. Deriving it here cannot work: an empty list item
+    /// contributes no characters, so any scan of the text storage reports it as
+    /// empty and leaves the placeholder sitting on top of a visible bullet.
+    ///
+    /// The character scan below is only the fallback for renders that arrive
+    /// without an editor update — the read-only viewer, which has no
+    /// placeholder of its own to get wrong.
     private func isRenderedContentEmpty() -> Bool {
+        if let coreReportedDocumentIsEmpty {
+            return coreReportedDocumentIsEmpty
+        }
+
         let renderedText = textStorage.string
         guard !renderedText.isEmpty else { return true }
 
@@ -1579,32 +1593,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             }
         }
 
-        // No visible characters — but block structure is content the user can
-        // see. An empty bullet or an empty quoted line draws its marker from
-        // the structure Rust sent, never from stored text, so scanning
-        // characters alone cannot tell such a document apart from a genuinely
-        // empty one and the placeholder would sit on top of a visible marker.
-        return !hasStructuralBlockDecoration()
-    }
-
-    /// Whether the render carries block structure that draws something beyond a
-    /// bare paragraph: a list marker or a blockquote rule.
-    private func hasStructuralBlockDecoration() -> Bool {
-        guard textStorage.length > 0 else { return false }
-        var decorated = false
-        textStorage.enumerateAttributes(
-            in: NSRange(location: 0, length: textStorage.length),
-            options: []
-        ) { attributes, _, stop in
-            if attributes[RenderBridgeAttributes.listContext] != nil
-                || attributes[RenderBridgeAttributes.listMarkerContext] != nil
-                || attributes[RenderBridgeAttributes.blockquoteBorderWidth] != nil
-            {
-                decorated = true
-                stop.pointee = true
-            }
-        }
-        return decorated
+        return true
     }
 
     @discardableResult
@@ -1624,6 +1613,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         noteSelectionDidChange()
         return true
     }
+
+    /// The core's `documentIsEmpty` from the most recent editor update, or nil
+    /// when the current render arrived without one.
+    private var coreReportedDocumentIsEmpty: Bool?
 
     private func refreshPlaceholderVisibility() {
         placeholderLabel.isHidden = placeholder.isEmpty || !isRenderedContentEmpty()
@@ -5461,6 +5454,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             currentTopLevelChildMetadata = nil
         }
 
+        // The core is the authority on empty state; adopt it before the
+        // placeholder is reconsidered.
+        coreReportedDocumentIsEmpty = update["documentIsEmpty"] as? Bool
         refreshPlaceholderVisibility()
         Self.updateLog.debug(
             "[applyUpdateJSON.rendered] mode=\(appliedPatch ? "patch" : "full", privacy: .public) after=\(self.textSnapshotSummary(), privacy: .public)"
@@ -5557,6 +5553,9 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         refreshTopLevelChildMetadata(from: attrStr)
         lastAppliedRenderAppearanceRevision = renderAppearanceRevision
 
+        // A bare render carries no editor update, so there is no authoritative
+        // empty state to adopt; fall back until the next update supplies one.
+        coreReportedDocumentIsEmpty = nil
         refreshPlaceholderVisibility()
         _ = performPostApplyMaintenance()
         recordAuthorizedSelectionIfPossible()
