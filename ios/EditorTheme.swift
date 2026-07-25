@@ -283,10 +283,7 @@ struct EditorToolbarTheme {
     }
 
     var resolvedBorderRadius: CGFloat {
-        // Square by default, to match the edge-to-edge default inset: rounded
-        // corners against the screen edges read as gaps. Hosts that want the
-        // floating capsule set `horizontalInset` and `borderRadius` together.
-        borderRadius ?? 0
+        borderRadius ?? (appearance == .native ? 20 : 0)
     }
 
     var resolvedBorderWidth: CGFloat {
