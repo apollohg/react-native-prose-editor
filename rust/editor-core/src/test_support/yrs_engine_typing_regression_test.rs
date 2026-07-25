@@ -445,3 +445,505 @@ fn holding_backspace_walks_back_through_marks_and_line_returns_to_an_empty_docum
         "backspacing everything must leave a single empty paragraph"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 4. Lists
+// ---------------------------------------------------------------------------
+//
+// Scalar offsets in a two-item bullet list `one` / `two`, verified against the
+// engine rather than derived on paper: offsets 0-2 all resolve to the head of
+// the first item's text, 3-4 step through it, 5 is its end (`Affinity::Before`
+// only), 6-8 all resolve to the head of the second item's text. The repeated
+// offsets are the list/item/paragraph opening tokens, which share a rendered
+// position. `START_OF_SECOND_ITEM` is the caret a user gets by tapping at the
+// very start of the second bullet.
+
+const START_OF_SECOND_ITEM: u32 = 6;
+/// Head of the quoted line when a blockquote follows a four-character paragraph.
+const START_OF_QUOTE_AFTER_PARAGRAPH: u32 = 5;
+/// Head of the second line inside a blockquote whose first line is `aa`.
+const START_OF_SECOND_QUOTE_LINE: u32 = 3;
+
+fn apply_bullet_list(engine: &mut YrsDocumentEngine, request_id: u64) {
+    engine
+        .apply_command(
+            request_id,
+            TypedCommand::ApplyListType {
+                list_type: "bulletList".into(),
+            },
+        )
+        .unwrap_or_else(|error| panic!("applying a bullet list must apply: {error:?}"))
+        .unwrap_or_else(|| panic!("applying a bullet list must not be a no-op"));
+}
+
+fn indent_item(engine: &mut YrsDocumentEngine, request_id: u64) {
+    engine
+        .apply_command(request_id, TypedCommand::IndentListItem)
+        .unwrap_or_else(|error| panic!("indent must apply: {error:?}"))
+        .unwrap_or_else(|| panic!("indent must not be a no-op"));
+}
+
+fn outdent_item(engine: &mut YrsDocumentEngine, request_id: u64) {
+    engine
+        .apply_command(request_id, TypedCommand::OutdentListItem)
+        .unwrap_or_else(|error| panic!("outdent must apply: {error:?}"))
+        .unwrap_or_else(|| panic!("outdent must not be a no-op"));
+}
+
+fn toggle_blockquote(engine: &mut YrsDocumentEngine, request_id: u64) {
+    engine
+        .apply_command(request_id, TypedCommand::ToggleBlockquote)
+        .unwrap_or_else(|error| panic!("blockquote toggle must apply: {error:?}"))
+        .unwrap_or_else(|| panic!("blockquote toggle must not be a no-op"));
+}
+
+fn list_item(blocks: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({ "type": "listItem", "content": blocks })
+}
+
+fn bullet_list(items: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({ "type": "bulletList", "content": items })
+}
+
+fn blockquote(blocks: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({ "type": "blockquote", "content": blocks })
+}
+
+fn empty_paragraph() -> serde_json::Value {
+    serde_json::json!({ "type": "paragraph" })
+}
+
+/// A two-item bullet list built the way a user builds one.
+fn two_item_list(engine: &mut YrsDocumentEngine) {
+    type_text(engine, 1, "one");
+    apply_bullet_list(engine, 2);
+    press_return(engine, 3);
+    type_text(engine, 4, "two");
+}
+
+#[test]
+fn applying_a_bullet_list_wraps_the_current_paragraph_in_an_item() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "one");
+    apply_bullet_list(&mut engine, 2);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![list_item(vec![paragraph(
+            serde_json::json!([plain("one")])
+        )])])])
+    );
+}
+
+/// Converting a line into a list item must leave the caret in that line's text,
+/// not stranded at a structural boundary — the next character typed has to land
+/// where the user left off.
+#[test]
+fn converting_a_line_into_a_list_item_keeps_the_caret_in_the_text() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "one");
+    apply_bullet_list(&mut engine, 2);
+    type_text(&mut engine, 3, "!");
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![list_item(vec![paragraph(
+            serde_json::json!([plain("one!")])
+        )])])]),
+        "the caret must still sit at the end of the converted line"
+    );
+}
+
+#[test]
+fn return_in_a_list_item_starts_a_sibling_item() {
+    let mut engine = engine();
+    two_item_list(&mut engine);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![
+            list_item(vec![paragraph(serde_json::json!([plain("one")]))]),
+            list_item(vec![paragraph(serde_json::json!([plain("two")]))]),
+        ])])
+    );
+}
+
+/// Return on an empty item escapes the list entirely.
+#[test]
+fn return_on_an_empty_list_item_escapes_the_list() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "one");
+    apply_bullet_list(&mut engine, 2);
+    press_return(&mut engine, 3);
+    press_return(&mut engine, 4);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![
+            bullet_list(vec![list_item(vec![paragraph(serde_json::json!([plain(
+                "one"
+            )]))])]),
+            empty_paragraph(),
+        ])
+    );
+}
+
+#[test]
+fn indent_nests_an_item_under_the_previous_one_and_outdent_restores_it() {
+    let mut engine = engine();
+    two_item_list(&mut engine);
+
+    indent_item(&mut engine, 5);
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![list_item(vec![
+            paragraph(serde_json::json!([plain("one")])),
+            bullet_list(vec![list_item(vec![paragraph(serde_json::json!([plain(
+                "two"
+            )]))])]),
+        ])])]),
+        "the indented item becomes a nested list inside the item above it"
+    );
+
+    outdent_item(&mut engine, 6);
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![
+            list_item(vec![paragraph(serde_json::json!([plain("one")]))]),
+            list_item(vec![paragraph(serde_json::json!([plain("two")]))]),
+        ])]),
+        "outdent restores the flat two-item list"
+    );
+}
+
+#[test]
+fn backspace_at_the_start_of_the_first_item_lifts_it_out_of_the_list() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "one");
+    apply_bullet_list(&mut engine, 2);
+    place_caret(&mut engine, 3, 0, Affinity::After);
+    press_backspace(&mut engine, 4);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([plain("one")]))]),
+        "the list disappears and its only line becomes a plain paragraph"
+    );
+}
+
+/// Backspace at the head of a later item merges its text into the item above,
+/// leaving one item with one paragraph — not one item holding two paragraphs.
+#[test]
+fn backspace_at_the_start_of_a_later_item_merges_its_text_into_the_previous_item() {
+    let mut engine = engine();
+    two_item_list(&mut engine);
+
+    place_caret(&mut engine, 5, START_OF_SECOND_ITEM, Affinity::After);
+    press_backspace(&mut engine, 6);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![list_item(vec![paragraph(
+            serde_json::json!([plain("onetwo")])
+        )])])]),
+        "merging two bullets must produce a single bullet with a single line"
+    );
+}
+
+/// Backspace at the head of a nested item outdents it, the mirror of Tab.
+#[test]
+fn backspace_at_the_start_of_a_nested_item_outdents_it() {
+    let mut engine = engine();
+    two_item_list(&mut engine);
+    indent_item(&mut engine, 5);
+
+    place_caret(&mut engine, 6, START_OF_SECOND_ITEM, Affinity::After);
+    press_backspace(&mut engine, 7);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![
+            list_item(vec![paragraph(serde_json::json!([plain("one")]))]),
+            list_item(vec![paragraph(serde_json::json!([plain("two")]))]),
+        ])]),
+        "the nested bullet returns to the parent level with its text intact"
+    );
+}
+
+#[test]
+fn return_on_an_empty_nested_item_outdents_to_the_parent_list() {
+    let mut engine = engine();
+    two_item_list(&mut engine);
+    indent_item(&mut engine, 5);
+    press_return(&mut engine, 6);
+    press_return(&mut engine, 7);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![
+            list_item(vec![
+                paragraph(serde_json::json!([plain("one")])),
+                bullet_list(vec![list_item(vec![paragraph(serde_json::json!([plain(
+                    "two"
+                )]))])]),
+            ]),
+            list_item(vec![empty_paragraph()]),
+        ])])
+    );
+}
+
+/// Pressing the list button in an empty editor, then immediately backspacing.
+///
+/// This is the shortest path to a lone empty bullet and it never involves any
+/// text: the item is empty from the moment it is created, so the backspace has
+/// to remove the list structure itself rather than falling out of a text
+/// deletion. Reaching the same state by deleting text (see
+/// [`backspacing_a_lone_list_item_away_returns_to_an_empty_document`]) exercises
+/// a different path into it.
+#[test]
+fn backspacing_an_empty_list_item_created_in_an_empty_editor_returns_to_an_empty_document() {
+    let mut engine = engine();
+
+    apply_bullet_list(&mut engine, 1);
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![list_item(vec![empty_paragraph()])])]),
+        "the list button on an empty editor makes one empty bullet"
+    );
+
+    press_backspace(&mut engine, 2);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![empty_paragraph()]),
+        "backspace must remove the empty bullet and leave an empty editor"
+    );
+}
+
+/// A document whose entire content is one bullet: backspacing must walk the
+/// text out, drop the bullet, and land back on an empty editor.
+#[test]
+fn backspacing_a_lone_list_item_away_returns_to_an_empty_document() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "ab");
+    apply_bullet_list(&mut engine, 2);
+
+    // "ab" (2 keystrokes) then one more to drop the now-empty bullet.
+    press_backspace(&mut engine, 3);
+    press_backspace(&mut engine, 4);
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![list_item(vec![empty_paragraph()])])]),
+        "deleting the text leaves an empty bullet"
+    );
+
+    press_backspace(&mut engine, 5);
+    assert_eq!(
+        document(&engine),
+        doc(vec![empty_paragraph()]),
+        "one more backspace removes the bullet and leaves an empty document"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5. Blockquotes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn toggling_a_blockquote_wraps_the_current_paragraph() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "quoted");
+    toggle_blockquote(&mut engine, 2);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![blockquote(vec![paragraph(serde_json::json!([plain(
+            "quoted"
+        )]))])])
+    );
+}
+
+#[test]
+fn return_inside_a_blockquote_adds_another_quoted_line() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "aa");
+    toggle_blockquote(&mut engine, 2);
+    press_return(&mut engine, 3);
+    type_text(&mut engine, 4, "bb");
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![blockquote(vec![
+            paragraph(serde_json::json!([plain("aa")])),
+            paragraph(serde_json::json!([plain("bb")])),
+        ])])
+    );
+}
+
+#[test]
+fn return_on_an_empty_quoted_line_escapes_the_blockquote() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "quoted");
+    toggle_blockquote(&mut engine, 2);
+    press_return(&mut engine, 3);
+    press_return(&mut engine, 4);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![
+            blockquote(vec![paragraph(serde_json::json!([plain("quoted")]))]),
+            empty_paragraph(),
+        ])
+    );
+}
+
+#[test]
+fn backspace_at_the_start_of_a_later_quoted_line_merges_it_upwards() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "aa");
+    toggle_blockquote(&mut engine, 2);
+    press_return(&mut engine, 3);
+    type_text(&mut engine, 4, "bb");
+
+    place_caret(&mut engine, 5, START_OF_SECOND_QUOTE_LINE, Affinity::After);
+    press_backspace(&mut engine, 6);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![blockquote(vec![paragraph(serde_json::json!([plain(
+            "aabb"
+        )]))])])
+    );
+}
+
+/// Backspace at the head of a blockquote's only line lifts that line out of the
+/// quote, the same escape hatch Return-on-empty provides.
+#[test]
+fn backspace_at_the_start_of_a_lone_blockquote_lifts_the_line_out() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "quoted");
+    toggle_blockquote(&mut engine, 2);
+    place_caret(&mut engine, 3, 0, Affinity::After);
+    press_backspace(&mut engine, 4);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([plain("quoted")]))]),
+        "the quote is removed and its text survives as a plain paragraph"
+    );
+}
+
+/// With a paragraph above it, backspacing at the head of a blockquote lifts the
+/// quoted line out to sit beside that paragraph. It does not merge the two
+/// lines: the first press escapes the quote, a second press would then join.
+#[test]
+fn backspace_at_the_start_of_a_blockquote_below_a_paragraph_lifts_the_line_out() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "para");
+    press_return(&mut engine, 2);
+    type_text(&mut engine, 3, "quoted");
+    toggle_blockquote(&mut engine, 4);
+
+    place_caret(
+        &mut engine,
+        5,
+        START_OF_QUOTE_AFTER_PARAGRAPH,
+        Affinity::After,
+    );
+    press_backspace(&mut engine, 6);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![
+            paragraph(serde_json::json!([plain("para")])),
+            paragraph(serde_json::json!([plain("quoted")])),
+        ]),
+        "escaping the quote must preserve both lines separately"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. Marks inside structures
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bold_carries_across_return_inside_a_list_item() {
+    let mut engine = engine();
+
+    toggle_mark(&mut engine, 1, "bold");
+    type_text(&mut engine, 2, "bold");
+    apply_bullet_list(&mut engine, 3);
+    press_return(&mut engine, 4);
+    type_text(&mut engine, 5, "next");
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![
+            list_item(vec![paragraph(serde_json::json!([marked(
+                "bold",
+                &["bold"]
+            )]))]),
+            list_item(vec![paragraph(serde_json::json!([marked(
+                "next",
+                &["bold"]
+            )]))]),
+        ])])
+    );
+}
+
+#[test]
+fn bold_carries_across_return_inside_a_blockquote() {
+    let mut engine = engine();
+
+    toggle_mark(&mut engine, 1, "bold");
+    type_text(&mut engine, 2, "bold");
+    toggle_blockquote(&mut engine, 3);
+    press_return(&mut engine, 4);
+    type_text(&mut engine, 5, "next");
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![blockquote(vec![
+            paragraph(serde_json::json!([marked("bold", &["bold"])])),
+            paragraph(serde_json::json!([marked("next", &["bold"])])),
+        ])])
+    );
+}
+
+/// Wrapping and unwrapping a list is a structural move: the marks on the text
+/// must be untouched by both directions.
+#[test]
+fn wrapping_and_unwrapping_a_list_preserves_marks_on_the_text() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "aa");
+    toggle_mark(&mut engine, 2, "bold");
+    type_text(&mut engine, 3, "bb");
+
+    let runs = serde_json::json!([plain("aa"), marked("bb", &["bold"])]);
+
+    apply_bullet_list(&mut engine, 4);
+    assert_eq!(
+        document(&engine),
+        doc(vec![bullet_list(vec![list_item(vec![paragraph(
+            runs.clone()
+        )])])])
+    );
+
+    engine
+        .apply_command(5, TypedCommand::UnwrapFromList)
+        .unwrap()
+        .expect("unwrap must apply");
+    assert_eq!(document(&engine), doc(vec![paragraph(runs)]));
+}
