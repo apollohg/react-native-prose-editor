@@ -98,41 +98,10 @@ const HANDLE_OWNED_ARTICLE_SCHEMA: SchemaDefinition = {
 
 // ─── Tests ──────────────────────────────────────────────────────
 
-class V2MockWebSocket {
-    static CONNECTING = 0;
-    static OPEN = 1;
-    static CLOSING = 2;
-    static CLOSED = 3;
-
-    readyState = V2MockWebSocket.CONNECTING;
-    binaryType?: string;
-    onopen: (() => void) | null = null;
-    onmessage: ((event: { data: unknown }) => void) | null = null;
-    onerror: (() => void) | null = null;
-    onclose: ((event?: { code?: number; reason?: string }) => void) | null = null;
-    send = jest.fn();
-    close = jest.fn(() => {
-        this.readyState = V2MockWebSocket.CLOSED;
-        this.onclose?.({ code: 1000, reason: '' });
-    });
-
-    open(): void {
-        this.readyState = V2MockWebSocket.OPEN;
-        this.onopen?.();
-    }
-
-    receive(bytes: Uint8Array): void {
-        this.onmessage?.({ data: bytes.slice().buffer });
-    }
-
-    serverClose(code: number, reason = ''): void {
-        this.readyState = V2MockWebSocket.CLOSED;
-        this.onclose?.({ code, reason });
-    }
-}
+/** The room URL every collaboration-bound view test configures. */
+const V2_TRANSPORT_URL = 'wss://example.test/collaboration';
 
 describe('NativeRichTextEditor (v2 document mode)', () => {
-    const OriginalWebSocket = global.WebSocket;
     let v2Runtime: FakeNativeEditorV2Runtime;
 
     const V2_INITIAL_DOC = fakeDocForText('hello');
@@ -173,25 +142,18 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         });
     }
 
+    /**
+     * Bind one controller to a handle. The socket lives natively, so the
+     * test drives it through the fake runtime's transport controls rather
+     * than through any JavaScript-owned WebSocket.
+     */
     function setupV2Controller(handle: NativeEditorDocumentHandle) {
-        const sockets: V2MockWebSocket[] = [];
         const controller = createYjsCollaborationController({
             documentId: 'doc-1',
             handle,
-            connect: false,
-            createWebSocket: () => {
-                const socket = new V2MockWebSocket();
-                sockets.push(socket);
-                return socket as unknown as WebSocket;
-            },
+            transport: { url: V2_TRANSPORT_URL, connect: false },
         });
-        return { controller, sockets };
-    }
-
-    function v2SentFrames(socket: V2MockWebSocket): number[][] {
-        return socket.send.mock.calls.map((call) =>
-            Array.from(new Uint8Array(call[0] as ArrayBuffer))
-        );
+        return { controller };
     }
 
     beforeEach(() => {
@@ -206,12 +168,10 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         mockNativeBlur.mockClear();
         mockNativeGetCaretRect.mockReset();
         mockResolveDocumentDescriptor.mockClear();
-        global.WebSocket = V2MockWebSocket as unknown as typeof WebSocket;
     });
 
     afterEach(() => {
         jest.useRealTimers();
-        global.WebSocket = OriginalWebSocket;
     });
 
     it('accepts only handle-bound view props and never creates a session on mount', () => {
@@ -603,7 +563,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
     it('renders nothing for a room editor without snapshot until an accepted server Step 2, and emits no client state', () => {
         const handle = createV2RoomHandle();
-        const { controller, sockets } = setupV2Controller(handle);
+        const { controller } = setupV2Controller(handle);
         const ref = createRef<NativeRichTextEditorRef>();
         const { queryByTestId, rerender } = render(
             <NativeRichTextEditor
@@ -620,7 +580,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             controller.connect();
         });
         act(() => {
-            sockets[0].open();
+            v2Runtime.transportOpen(handle.editorId);
         });
         rerender(
             <NativeRichTextEditor
@@ -635,7 +595,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
         act(() => {
             v2Runtime.pushRemoteDoc(handle.editorId, V2_SERVER_DOC);
-            sockets[0].receive(V2_FAKE_STEP2_FRAME);
+            v2Runtime.transportReceive(handle.editorId, V2_FAKE_STEP2_FRAME);
         });
         rerender(
             <NativeRichTextEditor
@@ -660,7 +620,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
     it('re-renders remote commits from the shared engine with no TypeScript document push (no callback reset loop)', () => {
         const handle = createV2RoomHandle({ withSnapshot: true });
-        const { controller, sockets } = setupV2Controller(handle);
+        const { controller } = setupV2Controller(handle);
         const ref = createRef<NativeRichTextEditorRef>();
         const onContentChangeJSON = jest.fn();
         const { rerender } = render(
@@ -677,8 +637,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             controller.connect();
         });
         act(() => {
-            sockets[0].open();
-            sockets[0].receive(V2_FAKE_STEP2_FRAME);
+            v2Runtime.transportOpen(handle.editorId);
+            v2Runtime.transportReceive(handle.editorId, V2_FAKE_STEP2_FRAME);
         });
         expect(controller.state.status).toBe('synchronized');
         mockNativeModule.editorV2ApplyLocalApi.mockClear();
@@ -687,7 +647,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
         act(() => {
             v2Runtime.pushRemoteDoc(handle.editorId, V2_SERVER_UPDATE_DOC);
-            sockets[0].receive(V2_FAKE_UPDATE_FRAME);
+            v2Runtime.transportReceive(handle.editorId, V2_FAKE_UPDATE_FRAME);
         });
         rerender(
             <NativeRichTextEditor
@@ -710,74 +670,6 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         handle.destroy();
     });
 
-    it('queues offline local edits in the engine and drains them in order after reconnect', () => {
-        const handle = createV2RoomHandle({ withSnapshot: true });
-        const { controller, sockets } = setupV2Controller(handle);
-        const ref = createRef<NativeRichTextEditorRef>();
-        render(
-            <NativeRichTextEditor
-                ref={ref}
-                documentHandle={handle}
-                documentRevision={controller.state.documentRevision}
-                onLocalDocumentCommit={() => controller.handleLocalCommit()}
-            />
-        );
-
-        act(() => {
-            controller.connect();
-        });
-        act(() => {
-            sockets[0].open();
-            sockets[0].receive(V2_FAKE_STEP2_FRAME);
-        });
-        expect(controller.state.status).toBe('synchronized');
-
-        act(() => {
-            sockets[0].serverClose(1006);
-        });
-        expect(controller.state.status).toBe('disconnected');
-
-        // Offline local edits through the editor queue in the engine.
-        act(() => {
-            ref.current!.setContentJson(V2_DOC_B);
-        });
-        act(() => {
-            ref.current!.setContentJson(V2_DOC_C);
-        });
-        expect(v2Runtime.queuedFrames(handle.editorId)).toHaveLength(2);
-
-        // The retry timer reconnects; on open the take-outbound loop
-        // delivers Step 1, then the queued document frames in order.
-        act(() => {
-            jest.advanceTimersByTime(500);
-        });
-        expect(sockets).toHaveLength(2);
-        act(() => {
-            sockets[1].open();
-        });
-        expect(v2SentFrames(sockets[1])).toEqual([
-            Array.from(V2_FAKE_STEP1_FRAME),
-            [0x64, 8],
-            [0x64, 9],
-        ]);
-
-        // Back online, an engine mutation flushes through the commit ping.
-        act(() => {
-            sockets[1].receive(V2_FAKE_STEP2_FRAME);
-        });
-        expect(controller.state.status).toBe('synchronized');
-        act(() => {
-            ref.current!.undo();
-        });
-        expect(v2SentFrames(sockets[1])).toEqual([
-            Array.from(V2_FAKE_STEP1_FRAME),
-            [0x64, 8],
-            [0x64, 9],
-            [0x64, 10],
-        ]);
-        expect(ref.current!.getContentJson()).toEqual(V2_DOC_B);
-        handle.destroy();
-    });
     it('still serializes remoteSelections for the native view in v2 mode', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const remoteSelections = [
@@ -1042,13 +934,11 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         const handle = createV2LocalHandle(V2_INITIAL_DOC);
         const ref = createRef<NativeRichTextEditorRef>();
         const onContentChange = jest.fn();
-        const onLocalDocumentCommit = jest.fn();
         const { getByTestId } = render(
             <NativeRichTextEditor
                 ref={ref}
                 documentHandle={handle}
                 onContentChange={onContentChange}
-                onLocalDocumentCommit={onLocalDocumentCommit}
             />
         );
         mockNativeModule.editorV2ApplyInput.mockClear();
@@ -1092,10 +982,9 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         expect(mockNativeModule.editorV2ApplyCommand).not.toHaveBeenCalled();
         expect(mockNativeModule.editorV2ApplyLocalApi).not.toHaveBeenCalled();
         expect(mockNativeModule.editorV2ReplaceDocument).not.toHaveBeenCalled();
-        // Content callbacks and the collaboration flush ping fired once.
+        // The content callback fired exactly once for the one commit.
         expect(onContentChange).toHaveBeenCalledTimes(1);
         expect(onContentChange).toHaveBeenCalledWith('<p>hello!</p>');
-        expect(onLocalDocumentCommit).toHaveBeenCalledTimes(1);
         // No echo: the view already applied the adapter's update natively.
         expect(getByTestId('native-editor-view').props.editorUpdateJson).toBeUndefined();
         expect(ref.current!.getContent()).toBe('<p>hello!</p>');
@@ -1107,13 +996,11 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
         (platform) => {
             const handle = createV2LocalHandle(V2_INITIAL_DOC);
             const onContentChange = jest.fn();
-            const onLocalDocumentCommit = jest.fn();
-            const { getByTestId, rerender } = render(
+                const { getByTestId, rerender } = render(
                 <NativeRichTextEditor
                     documentHandle={handle}
                     onContentChange={onContentChange}
-                    onLocalDocumentCommit={onLocalDocumentCommit}
-                />
+                    />
             );
             const view = getByTestId('native-editor-view');
             const commit = (text: string) => {
@@ -1161,17 +1048,14 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                 act(() => emit(rejected));
             }
             expect(onContentChange).not.toHaveBeenCalled();
-            expect(onLocalDocumentCommit).not.toHaveBeenCalled();
 
             act(() => emit(first));
             expect(onContentChange).toHaveBeenCalledTimes(1);
-            expect(onLocalDocumentCommit).toHaveBeenCalledTimes(1);
 
             // Duplicate native delivery must not refresh, notify, or replace
             // the one-shot echo token.
             act(() => emit(first));
             expect(onContentChange).toHaveBeenCalledTimes(1);
-            expect(onLocalDocumentCommit).toHaveBeenCalledTimes(1);
 
             // The identical revision signal is the sole suppressed echo.
             rerender(
@@ -1179,8 +1063,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                     documentHandle={handle}
                     documentRevision={first.documentRevision}
                     onContentChange={onContentChange}
-                    onLocalDocumentCommit={onLocalDocumentCommit}
-                />
+                    />
             );
             expect(getByTestId('native-editor-view').props.editorUpdateJson).toBeUndefined();
 
@@ -1193,17 +1076,18 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                     documentHandle={handle}
                     documentRevision={externalRevision}
                     onContentChange={onContentChange}
-                    onLocalDocumentCommit={onLocalDocumentCommit}
-                />
+                    />
             );
             expect(
                 JSON.parse(getByTestId('native-editor-view').props.editorUpdateJson as string)
                     .documentVersion
             ).toBe(externalRevision);
 
-            // A stale native commit after N+1 is deterministically rejected.
+            // A stale native commit after N+1 is deterministically rejected:
+            // it produces no further content notification of its own.
+            const notificationsBeforeStaleCommit = onContentChange.mock.calls.length;
             act(() => emit(first));
-            expect(onLocalDocumentCommit).toHaveBeenCalledTimes(1);
+            expect(onContentChange).toHaveBeenCalledTimes(notificationsBeforeStaleCommit);
             handle.destroy();
         }
     );
@@ -1352,7 +1236,6 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
     it('keeps editor-bound awareness hooks inert after localAwareness is removed', () => {
         const handle = createV2RoomHandle({ withSnapshot: true });
-        const sockets: V2MockWebSocket[] = [];
         let localAwareness: { userId: string; name: string; color: string } | undefined = {
             userId: '1',
             name: 'Alice',
@@ -1365,19 +1248,15 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
                 documentId: 'doc-1',
                 handle,
                 localAwareness,
-                createWebSocket: () => {
-                    const socket = new V2MockWebSocket();
-                    sockets.push(socket);
-                    return socket as unknown as WebSocket;
-                },
+                transport: { url: V2_TRANSPORT_URL, connect: true },
             });
             return <NativeRichTextEditor {...collaboration.editorBindings} />;
         }
 
         const { getByTestId, rerender } = render(<CollaborationBoundEditor />);
         act(() => {
-            sockets[0].open();
-            sockets[0].receive(V2_FAKE_STEP2_FRAME);
+            v2Runtime.transportOpen(handle.editorId);
+            v2Runtime.transportReceive(handle.editorId, V2_FAKE_STEP2_FRAME);
         });
         localAwareness = undefined;
         rerender(<CollaborationBoundEditor />);
@@ -2053,7 +1932,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
     it('rejects controlled valueJSON replace while the collaboration transport is connected', () => {
         const handle = createV2RoomHandle({ withSnapshot: true });
-        const { controller, sockets } = setupV2Controller(handle);
+        const { controller } = setupV2Controller(handle);
         const ref = createRef<NativeRichTextEditorRef>();
         const { rerender } = render(
             <NativeRichTextEditor
@@ -2068,8 +1947,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             controller.connect();
         });
         act(() => {
-            sockets[0].open();
-            sockets[0].receive(V2_FAKE_STEP2_FRAME);
+            v2Runtime.transportOpen(handle.editorId);
+            v2Runtime.transportReceive(handle.editorId, V2_FAKE_STEP2_FRAME);
         });
         expect(controller.state.status).toBe('synchronized');
 
@@ -2093,7 +1972,7 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
 
     it('rejects controlled valueJSON reset while the collaboration transport is connected', () => {
         const handle = createV2RoomHandle({ withSnapshot: true });
-        const { controller, sockets } = setupV2Controller(handle);
+        const { controller } = setupV2Controller(handle);
         const ref = createRef<NativeRichTextEditorRef>();
         const { rerender } = render(
             <NativeRichTextEditor
@@ -2108,8 +1987,8 @@ describe('NativeRichTextEditor (v2 document mode)', () => {
             controller.connect();
         });
         act(() => {
-            sockets[0].open();
-            sockets[0].receive(V2_FAKE_STEP2_FRAME);
+            v2Runtime.transportOpen(handle.editorId);
+            v2Runtime.transportReceive(handle.editorId, V2_FAKE_STEP2_FRAME);
         });
         expect(controller.state.status).toBe('synchronized');
 

@@ -1,7 +1,9 @@
 // ─── FFI v2 production bindings contract ───────────────────────
-// The checked-in UniFFI bindings are the production ABI: all 29
-// `editor_v2_*` functions plus `editor_core_version`, and zero legacy
-// symbols (the deleted legacy editor/collaboration runtime).
+// The checked-in UniFFI bindings are the production ABI. Its single
+// source of truth is scripts/package-abi-manifest.json — the same file
+// the release gate enforces — so this suite reads the expected export
+// set from there instead of restating it. Legacy symbols (the deleted
+// legacy editor/collaboration runtime) must appear nowhere.
 // These tests only assert the content of the checked-in artifacts — they
 // never rebuild the Rust library (rust/generate-bindings.sh regenerates
 // and verifies these files). An optional `nm` check against an already
@@ -12,40 +14,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const ABI_MANIFEST_PATH = path.join(REPO_ROOT, 'scripts', 'package-abi-manifest.json');
 
-const V2_EXPORTS = [
-    'editor_v2_create',
-    'editor_v2_destroy',
-    'editor_v2_get_state',
-    'editor_v2_get_document_json',
-    'editor_v2_get_document_html',
-    'editor_v2_get_content_snapshot',
-    'editor_v2_replace_document',
-    'editor_v2_apply_input',
-    'editor_v2_apply_command',
-    'editor_v2_apply_local_api',
-    'editor_v2_set_selection',
-    'editor_v2_undo',
-    'editor_v2_redo',
-    'editor_v2_collaboration_begin_connect',
-    'editor_v2_collaboration_socket_open',
-    'editor_v2_collaboration_receive',
-    'editor_v2_collaboration_socket_close',
-    'editor_v2_collaboration_take_outbound',
-    'editor_v2_collaboration_set_awareness',
-    'editor_v2_collaboration_peers',
-    'editor_v2_collaboration_tick',
-    'editor_v2_collaboration_detach',
-    'editor_v2_collaboration_reattach',
-    'editor_v2_snapshot_export',
-    'editor_v2_snapshot_restore',
-    'editor_v2_render_update',
-    'editor_v2_resolve_scalar_selection',
-    'editor_v2_doc_to_scalar',
-    'editor_v2_scalar_to_doc',
-];
+interface PackageAbiManifest {
+    version: { name: string; checksum: number };
+    functions: { name: string; checksum: number }[];
+}
 
-const ALL_EXPORTS = [...V2_EXPORTS, 'editor_core_version'];
+const ABI_MANIFEST = JSON.parse(
+    fs.readFileSync(ABI_MANIFEST_PATH, 'utf8')
+) as PackageAbiManifest;
+
+const V2_EXPORTS = ABI_MANIFEST.functions.map((entry) => entry.name);
+const ALL_EXPORTS = [...V2_EXPORTS, ABI_MANIFEST.version.name];
 const ALLOWED_FN_SYMBOLS = new Set(ALL_EXPORTS);
 
 const SWIFT_HEADERS = [
@@ -89,7 +70,19 @@ function expectNoLegacySymbols(contents: string): void {
 }
 
 describe('ffi v2 production bindings', () => {
-    it('ships all 29 v2 functions plus editor_core_version in the C headers (fn + checksum)', () => {
+    it('declares exactly the ABI manifest function set in the C headers, and nothing more', () => {
+        const expected = [...ALL_EXPORTS].sort();
+        for (const header of SWIFT_HEADERS) {
+            const declared = new Set(
+                (readArtifact(header).match(/uniffi_editor_core_fn_func_[a-z0-9_]+/g) ?? []).map(
+                    (reference) => reference.slice('uniffi_editor_core_fn_func_'.length)
+                )
+            );
+            expect([...declared].sort()).toEqual(expected);
+        }
+    });
+
+    it('ships every ABI manifest function plus editor_core_version in the C headers (fn + checksum)', () => {
         for (const header of SWIFT_HEADERS) {
             const contents = readArtifact(header);
             for (const symbol of ALL_EXPORTS) {
@@ -100,7 +93,7 @@ describe('ffi v2 production bindings', () => {
         }
     });
 
-    it('exposes all 29 v2 functions plus editorCoreVersion in the Swift bindings', () => {
+    it('exposes every ABI manifest function plus editorCoreVersion in the Swift bindings', () => {
         for (const swift of SWIFT_SOURCES) {
             const contents = readArtifact(swift);
             for (const symbol of ALL_EXPORTS) {
@@ -110,7 +103,7 @@ describe('ffi v2 production bindings', () => {
         }
     });
 
-    it('exposes all 29 v2 functions plus editorCoreVersion in the Kotlin bindings', () => {
+    it('exposes every ABI manifest function plus editorCoreVersion in the Kotlin bindings', () => {
         for (const kotlin of KOTLIN_SOURCES) {
             const contents = readArtifact(kotlin);
             for (const symbol of ALL_EXPORTS) {
@@ -148,7 +141,7 @@ describe('ffi v2 production bindings', () => {
 
     // Opt-in only: inspects an already-built dylib, never builds one.
     const checkDylib = process.env.FFI_V2_BINDINGS_CHECK_DYLIB === '1' ? it : it.skip;
-    checkDylib('exports exactly the 29 v2 symbols from an existing release dylib', () => {
+    checkDylib('exports exactly the ABI manifest v2 symbols from an existing release dylib', () => {
         const dylib = path.join(
             process.env.CARGO_TARGET_DIR ?? path.join(REPO_ROOT, 'rust', 'editor-core', 'target'),
             'release',

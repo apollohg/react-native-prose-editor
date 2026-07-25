@@ -56,7 +56,18 @@ export type NativeEditorLocalAwarenessSelection = NativeEditorLocalAwarenessSele
 export interface NativeEditorLocalAwarenessIntent {
     state: Record<string, unknown>;
     focused: boolean;
-    selection?: NativeEditorLocalAwarenessSelection;
+    /**
+     * How this intent treats the local cursor. Rust owns it as a sticky
+     * index, so the three cases are deliberately distinct:
+     *
+     * - **omitted** — retain the cursor already published. Use this for
+     *   focus-only or state-only updates: restating a document position
+     *   that the document has since invalidated would be refused.
+     * - **`null`** — publish presence with no cursor at all.
+     * - **a factory selection** — set the cursor to these positions, which
+     *   must resolve against the current document.
+     */
+    selection?: NativeEditorLocalAwarenessSelection | null;
 }
 
 export interface ListContext {
@@ -1485,7 +1496,8 @@ function normalizeLocalAwarenessState(value: unknown): Record<string, unknown> {
 interface NativeEditorLocalAwarenessWireIntent {
     state: Record<string, unknown>;
     focused: boolean;
-    selection?: { type: 'text'; anchor: number; head: number };
+    /** Absent retains the Rust-owned cursor; `null` clears it. */
+    selection?: { type: 'text'; anchor: number; head: number } | null;
 }
 
 function validateLocalAwarenessIntent(intent: unknown): NativeEditorLocalAwarenessWireIntent {
@@ -1504,14 +1516,14 @@ function validateLocalAwarenessIntent(intent: unknown): NativeEditorLocalAwarene
         const focused = localAwarenessOwnDataValue(intent, 'focused');
         if (typeof focused !== 'boolean') invalidLocalAwarenessIntent();
 
-        const selection = Object.prototype.hasOwnProperty.call(intent, 'selection')
-            ? validateLocalAwarenessSelection(localAwarenessOwnDataValue(intent, 'selection'))
-            : undefined;
-        return {
-            state,
-            focused,
-            ...(selection === undefined ? {} : { selection: { type: 'text', ...selection } }),
-        };
+        if (!Object.prototype.hasOwnProperty.call(intent, 'selection')) {
+            // Absent: retain whatever cursor Rust already holds.
+            return { state, focused };
+        }
+        const rawSelection = localAwarenessOwnDataValue(intent, 'selection');
+        if (rawSelection === null) return { state, focused, selection: null };
+        const selection = validateLocalAwarenessSelection(rawSelection);
+        return { state, focused, selection: { type: 'text', ...selection } };
     } catch (error) {
         if (error instanceof NativeEditorV2BoundaryError) throw error;
         invalidLocalAwarenessIntent();
@@ -1523,7 +1535,9 @@ function serializeLocalAwarenessIntent(intent: NativeEditorLocalAwarenessWireInt
         const wire = Object.create(null) as Record<string, unknown>;
         wire.state = intent.state;
         wire.focused = intent.focused;
-        if (intent.selection !== undefined) {
+        if (intent.selection === null) {
+            wire.selection = null;
+        } else if (intent.selection !== undefined) {
             const selection = Object.create(null) as Record<string, unknown>;
             selection.type = intent.selection.type;
             selection.anchor = intent.selection.anchor;

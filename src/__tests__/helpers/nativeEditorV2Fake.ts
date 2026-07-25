@@ -43,6 +43,8 @@ const V2_FAKE_MAX_ADMITTED_REMOTE_AWARENESS_CLOCK = V2_FAKE_U32_MAX - 1;
 const V2_FAKE_AWARENESS_RENEWAL_INTERVAL_MILLIS = 15_000n;
 const V2_FAKE_AWARENESS_EXPIRY_MILLIS = 30_000n;
 const V2_FAKE_DEFAULT_MAX_AWARENESS_PEER_BYTES = 64 * 1024;
+/** The single native notification the collaboration transport delivers. */
+const V2_FAKE_TRANSPORT_EVENT_NAME = 'onCollaborationTransportEvent';
 const V2_FAKE_MALFORMED_AWARENESS_MESSAGE =
     'awareness update cannot decode: fake entry requires canonical u64 clientId and exact u32 clock';
 
@@ -73,7 +75,8 @@ interface FakeNativeEditorLocalAwarenessWireSelection {
 interface FakeNativeEditorLocalAwarenessWireIntent {
     state: Record<string, unknown>;
     focused: boolean;
-    selection?: FakeNativeEditorLocalAwarenessWireSelection;
+    /** Absent retains the engine-owned cursor; `null` clears it. */
+    selection?: FakeNativeEditorLocalAwarenessWireSelection | null;
 }
 
 interface FakeErrorRecord {
@@ -629,6 +632,30 @@ interface FakeSession {
     remotePeerActivity: Map<string, bigint>;
     destroyed: boolean;
     replySequence: number;
+    /** Latest transport intent the TypeScript bridge configured, if any. */
+    transportConfig: FakeTransportWireConfig | null;
+}
+
+/**
+ * The transport intent TypeScript hands to the platform module. The native
+ * side — never TypeScript — owns the socket that acts on it.
+ */
+interface FakeTransportWireConfig {
+    url: string;
+    connect: boolean;
+    protocolAdapter?: {
+        protocols: string[];
+        timeoutMillis?: number;
+        terminalCloseCodes?: number[];
+    };
+}
+
+/** One resolved protocol-adapter reply the bridge handed back to native. */
+export interface FakeProtocolAdapterResolution {
+    editorId: string;
+    attemptId: string;
+    eventId: string;
+    responseJson: string;
 }
 
 function isFakeRecord(value: unknown): value is Record<string, unknown> {
@@ -694,7 +721,7 @@ function parseFakeAwarenessIntent(
         ) ||
         !isFakeRecord(state) ||
         typeof focused !== 'boolean' ||
-        (selection !== undefined && !validFakeAwarenessSelection(selection))
+        (selection !== undefined && selection !== null && !validFakeAwarenessSelection(selection))
     ) {
         return errorRecord('boundary', 'AWARENESS_STATE_INVALID', 'invalid local awareness intent');
     }
@@ -705,13 +732,84 @@ function parseFakeAwarenessIntent(
             'reserved cursor key is not allowed in local awareness state'
         );
     }
-    return selection === undefined ? { state, focused } : { state, focused, selection };
+    if (selection === undefined) return { state, focused };
+    return { state, focused, selection: selection as FakeNativeEditorLocalAwarenessWireSelection | null };
 }
 
-function fakeCursorForSelection(
-    selection: FakeNativeEditorLocalAwarenessWireSelection | undefined
+/**
+ * Accept the transport intent wire record the bridge serializes. `null`
+ * means "no transport"; anything else must carry a url, a connect flag, and
+ * at most the static protocol-adapter descriptor.
+ */
+function parseFakeTransportConfig(
+    configJson: string
+): FakeTransportWireConfig | FakeErrorRecord | null {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(configJson);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return errorRecord(
+            'boundary',
+            'CONFIG_INVALID',
+            `collaboration transport config is not valid JSON: ${message}`
+        );
+    }
+    if (parsed === null) return null;
+    if (
+        !isFakeRecord(parsed) ||
+        typeof parsed.url !== 'string' ||
+        parsed.url.length === 0 ||
+        typeof parsed.connect !== 'boolean'
+    ) {
+        return errorRecord(
+            'boundary',
+            'CONFIG_INVALID',
+            'invalid collaboration transport configuration'
+        );
+    }
+    const descriptor = parsed.protocolAdapter;
+    if (descriptor === undefined) {
+        return { url: parsed.url, connect: parsed.connect };
+    }
+    if (
+        !isFakeRecord(descriptor) ||
+        !Array.isArray(descriptor.protocols) ||
+        descriptor.protocols.some((protocol) => typeof protocol !== 'string')
+    ) {
+        return errorRecord(
+            'boundary',
+            'CONFIG_INVALID',
+            'invalid collaboration protocol adapter descriptor'
+        );
+    }
+    return {
+        url: parsed.url,
+        connect: parsed.connect,
+        protocolAdapter: {
+            protocols: descriptor.protocols as string[],
+            ...(typeof descriptor.timeoutMillis === 'number'
+                ? { timeoutMillis: descriptor.timeoutMillis }
+                : {}),
+            ...(Array.isArray(descriptor.terminalCloseCodes)
+                ? { terminalCloseCodes: descriptor.terminalCloseCodes as number[] }
+                : {}),
+        },
+    };
+}
+
+/**
+ * Resolve the cursor one intent publishes. An omitted selection retains the
+ * cursor the session already holds — the engine owns it as a sticky index,
+ * so it needs no restated document position. An explicit null clears it.
+ */
+function fakeCursorForIntent(
+    selection: FakeNativeEditorLocalAwarenessWireSelection | null | undefined,
+    retained: { anchor: number; head: number } | null
 ): { anchor: number; head: number } | null {
-    return selection === undefined ? null : { anchor: selection.anchor, head: selection.head };
+    if (selection === undefined) return retained;
+    if (selection === null) return null;
+    return { anchor: selection.anchor, head: selection.head };
 }
 
 function projectFakeLocalAwareness(
@@ -850,6 +948,29 @@ export interface FakeNativeEditorV2Runtime {
     session(editorId: string): FakeSession;
     /** Ids the module marked live for view binding at create (view-binding surface). */
     liveEditorIds(): string[];
+    /** The transport intent TypeScript last configured for this editor. */
+    transportConfig(editorId: string): FakeTransportWireConfig | null;
+    /** Native socket open: `Connecting` -> `Handshaking`, queueing Step 1. */
+    transportOpen(editorId: string): void;
+    /** Deliver one inbound frame the way the native socket would. */
+    transportReceive(editorId: string, frame: Uint8Array): void;
+    /** Native socket close; 1008 parks the transport `Incompatible`. */
+    transportClose(editorId: string, code?: number | null): void;
+    /** Deliver one native transport error notification. */
+    emitTransportError(editorId: string, error: FakeErrorRecord): void;
+    /** Deliver one protocol-adapter prelude notification. */
+    emitProtocolAdapterEvent(
+        editorId: string,
+        event: {
+            attemptId: string;
+            eventId: string;
+            phase: 'open' | 'message';
+            negotiatedProtocol: string | null;
+            frame?: { type: 'text' | 'binary'; data: string };
+        }
+    ): void;
+    /** Adapter replies the bridge handed back to native, oldest first. */
+    protocolAdapterResolutions(): readonly FakeProtocolAdapterResolution[];
     /** Queue the document the next accepted server Step 2 / update installs. */
     pushRemoteDoc(editorId: string, doc: DocumentJSON): void;
     /** Queue the clocked per-client delta the next inbound awareness frame applies. */
@@ -885,8 +1006,81 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
     const sessions = new Map<string, FakeSession>();
     const pending = new Map<string, PendingRemote>();
     const liveIds = new Set<string>();
+    const transportListeners = new Map<string, ((event: unknown) => void)[]>();
+    const protocolAdapterResolutions: FakeProtocolAdapterResolution[] = [];
     let editorIdCounter = 0;
     let clientIdCounter = 1000;
+    let transportEventSequence = 0n;
+
+    function listenersFor(eventName: string): ((event: unknown) => void)[] {
+        let entry = transportListeners.get(eventName);
+        if (!entry) {
+            entry = [];
+            transportListeners.set(eventName, entry);
+        }
+        return entry;
+    }
+
+    /**
+     * Deliver one native transport notification. The sequence is
+     * runtime-global and strictly increasing, exactly as the platform
+     * modules mint it, so superseded events stay observable to consumers.
+     */
+    function emitTransportEvent(event: Record<string, unknown>): void {
+        transportEventSequence += 1n;
+        const delivered = {
+            ...event,
+            eventSequence: String(transportEventSequence),
+        };
+        for (const listener of [...listenersFor(V2_FAKE_TRANSPORT_EVENT_NAME)]) {
+            listener(delivered);
+        }
+    }
+
+    /** The projected peer set the native side ships with every state event. */
+    function projectedPeers(session: FakeSession): NativeEditorV2PeerInfo[] {
+        const peers: NativeEditorV2PeerInfo[] = [];
+        if (session.localAwarenessLive && session.desiredAwareness != null) {
+            const local = projectFakeLocalAwareness(
+                session.desiredAwareness,
+                session.localAwarenessCursor
+            );
+            peers.push({
+                clientId: session.localClientId,
+                clock: session.localClock,
+                isLocal: true,
+                state: local.state,
+                cursor: local.cursor,
+            });
+        }
+        peers.push(...session.remotePeers);
+        peers.sort((left, right) => {
+            const leftId = BigInt(left.clientId);
+            const rightId = BigInt(right.clientId);
+            return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+        });
+        return peers;
+    }
+
+    /** Publish the session's current authority state as a transport event. */
+    function emitTransportState(session: FakeSession, wakeReason: string): void {
+        emitTransportEvent({
+            editorId: session.editorId,
+            generation: session.liveGeneration === null ? null : String(session.liveGeneration),
+            kind: 'state',
+            state: stateJson(session),
+            peers: projectedPeers(session),
+            diagnostics: {
+                wakeReason,
+                transportState: session.transportState,
+                nextDeadlineMillis: null,
+                remoteCommitApplied: false,
+                peersChanged: false,
+                renewedLocal: false,
+                expiredPeerCount: 0,
+            },
+        });
+    }
 
     function pendingFor(editorId: string): PendingRemote {
         let entry = pending.get(editorId);
@@ -905,6 +1099,12 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
 
     function getSession(editorId: string): FakeSession | null {
         return sessions.get(editorId) ?? null;
+    }
+
+    function requireSession(editorId: string): FakeSession {
+        const session = getSession(editorId);
+        if (!session) throw new Error(`unknown fake session ${editorId}`);
+        return session;
     }
 
     function withSession(
@@ -1526,6 +1726,7 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 remotePeerActivity: new Map(),
                 destroyed: false,
                 replySequence: 0,
+                transportConfig: null,
             };
             if (initialization.type === 'localJson') {
                 base.doc = cloneDoc((initialization.json as DocumentJSON) ?? EMPTY_DOC);
@@ -2007,107 +2208,6 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 return okRecord(JSON.stringify({ changed: true }));
             })
         ),
-        editorV2CollaborationBeginConnect: jest.fn((editorId: string) =>
-            withSession(editorId, (session) => {
-                if (!session.roomBound) {
-                    // Mirrors not_room_bound() in collaboration_runtime/state.rs:
-                    // ErrorDomain::Transport + TRANSPORT_NOT_ROOM_BOUND.
-                    return transportError(
-                        'TRANSPORT_NOT_ROOM_BOUND',
-                        'local-only sessions have no room binding to connect to'
-                    );
-                }
-                if (session.transportState === 'Incompatible') {
-                    return transportError(
-                        'TRANSPORT_INCOMPATIBLE',
-                        'transport is parked incompatible until detach/reattach'
-                    );
-                }
-                if (session.transportState !== 'Disconnected') {
-                    return transportError(
-                        'TRANSPORT_INVALID_TRANSITION',
-                        `begin_connect is only admitted from Disconnected (found ${session.transportState})`
-                    );
-                }
-                if (session.lastIssuedGeneration === V2_FAKE_U64_MAX) {
-                    return transportError(
-                        'TRANSPORT_GENERATION_EXHAUSTED',
-                        'transport generation space is exhausted',
-                        {
-                            action: 'beginConnect',
-                            transportState: session.transportState,
-                        }
-                    );
-                }
-                const nextGeneration = session.lastIssuedGeneration + 1n;
-                session.lastIssuedGeneration = nextGeneration;
-                session.liveGeneration = nextGeneration;
-                session.transportState = 'Connecting';
-                return okRecord(JSON.stringify({ generation: String(session.liveGeneration) }));
-            })
-        ),
-        editorV2CollaborationSocketOpen: jest.fn((editorId: string, generation: string) =>
-            withSession(editorId, (session) => {
-                const stale = requireLiveGeneration(session, generation, 'socketOpen');
-                if (stale) return stale;
-                if (session.transportState !== 'Connecting') {
-                    return transportError(
-                        'TRANSPORT_INVALID_TRANSITION',
-                        'socket_open is only admitted from Connecting'
-                    );
-                }
-                session.transportState = 'Handshaking';
-                return okRecord(new Uint8Array(V2_FAKE_STEP1_FRAME));
-            })
-        ),
-        editorV2CollaborationReceive: jest.fn(
-            (editorId: string, generation: string, message: Uint8Array) =>
-                withSession(editorId, (session) => {
-                    const stale = requireLiveGeneration(session, generation, 'receive');
-                    if (stale) return stale;
-                    if (
-                        session.transportState !== 'Handshaking' &&
-                        session.transportState !== 'Synchronized'
-                    ) {
-                        return transportError(
-                            'TRANSPORT_INVALID_TRANSITION',
-                            'receive is only admitted from Handshaking/Synchronized'
-                        );
-                    }
-                    return handleReceive(session, message);
-                })
-        ),
-        editorV2CollaborationSocketClose: jest.fn(
-            (editorId: string, generation: string, code: unknown, _reason: string | null) =>
-                withSession(editorId, (session) => {
-                    const stale = requireLiveGeneration(session, generation, 'socketClose');
-                    if (stale) return stale;
-                    if (code != null && exactV2U32(code) == null) {
-                        return boundaryError('CONFIG_INVALID', 'invalid collaboration close code');
-                    }
-                    const next: FakeTransportState =
-                        code === 1008 ? 'Incompatible' : 'Disconnected';
-                    retireGeneration(session, next);
-                    return okRecord(JSON.stringify({ transportState: session.transportState }));
-                })
-        ),
-        editorV2CollaborationTakeOutbound: jest.fn((editorId: string, generation: string) =>
-            withSession(editorId, (session) => {
-                const stale = requireLiveGeneration(session, generation, 'takeOutbound');
-                if (stale) return stale;
-                if (
-                    session.transportState !== 'Handshaking' &&
-                    session.transportState !== 'Synchronized'
-                ) {
-                    return transportError(
-                        'TRANSPORT_INVALID_TRANSITION',
-                        'take_outbound is only admitted from Handshaking/Synchronized'
-                    );
-                }
-                const frame = session.protocolQueue.shift() ?? session.documentQueue.shift();
-                return okRecord(frame ? new Uint8Array(frame) : new Uint8Array());
-            })
-        ),
         editorV2CollaborationSetAwareness: jest.fn((editorId: string, awarenessJson: string) =>
             withSession(editorId, (session) => {
                 if (!session.roomBound) {
@@ -2137,8 +2237,13 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 } else {
                     const desiredAwareness = parseFakeAwarenessIntent(awarenessJson);
                     if ('domain' in desiredAwareness) return errRecord(desiredAwareness);
-                    const cursor = fakeCursorForSelection(desiredAwareness.selection);
-                    if (cursor != null) {
+                    const cursor = fakeCursorForIntent(
+                        desiredAwareness.selection,
+                        session.localAwarenessCursor
+                    );
+                    // Only a caller-stated position is validated: a retained
+                    // sticky cursor is already engine-owned.
+                    if (cursor != null && desiredAwareness.selection != null) {
                         const positionMap = fakeScalarDocumentMap(session.doc);
                         if (
                             positionMap.clampDocumentOffset(cursor.anchor) !== cursor.anchor ||
@@ -2164,146 +2269,69 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                 return okRecord(true);
             })
         ),
-        editorV2CollaborationPeers: jest.fn((editorId: string) =>
-            withSession(editorId, (session) => {
-                const peers: NativeEditorV2PeerInfo[] = [];
-                if (session.localAwarenessLive && session.desiredAwareness != null) {
-                    const local = projectFakeLocalAwareness(
-                        session.desiredAwareness,
-                        session.localAwarenessCursor
-                    );
-                    peers.push({
-                        clientId: session.localClientId,
-                        clock: session.localClock,
-                        isLocal: true,
-                        state: local.state,
-                        cursor: local.cursor,
-                    });
-                }
-                peers.push(...session.remotePeers);
-                peers.sort((left, right) => {
-                    const leftId = BigInt(left.clientId);
-                    const rightId = BigInt(right.clientId);
-                    return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
-                });
-                return okRecord(JSON.stringify({ peers }));
-            })
-        ),
-        editorV2CollaborationTick: jest.fn((editorId: string, nowMillis: string) =>
-            withSession(editorId, (session) => {
-                if (!session.roomBound) {
-                    return boundaryError(
-                        'CONFIG_INVALID',
-                        'local sessions have no attached collaboration runtime'
-                    );
-                }
-                const canonicalNowMillis = canonicalV2U64(nowMillis);
-                if (canonicalNowMillis == null) {
-                    return boundaryError('CONFIG_INVALID', 'nowMillis must be canonical decimal u64 text');
-                }
-                const acceptedNowMillis = BigInt(canonicalNowMillis);
-                if (acceptedNowMillis < session.awarenessNowMillis) {
-                    return transportError(
-                        'AWARENESS_TIME_REGRESSION',
-                        'awareness tick nowMillis must not decrease',
-                        {
-                            nowMillis: canonicalNowMillis,
-                            lastNowMillis: String(session.awarenessNowMillis),
-                        }
-                    );
-                }
-                session.awarenessNowMillis = acceptedNowMillis;
-                const expiredPeers = [...session.remotePeerActivity.entries()]
-                    .filter(
-                        ([, seenAt]) =>
-                            session.awarenessNowMillis >= seenAt &&
-                            session.awarenessNowMillis - seenAt >=
-                                V2_FAKE_AWARENESS_EXPIRY_MILLIS
-                    )
-                    .map(([clientId]) => clientId)
-                    .sort((left, right) => (BigInt(left) < BigInt(right) ? -1 : 1));
-                for (const clientId of expiredPeers) {
-                    const clock = session.remoteAwarenessClocks.get(clientId);
-                    if (clock != null) session.remoteAwarenessClocks.set(clientId, clock + 1);
-                    session.remotePeerActivity.delete(clientId);
-                }
-                if (expiredPeers.length > 0) {
-                    const expired = new Set(expiredPeers);
-                    session.remotePeers = session.remotePeers.filter(
-                        (peer) => !expired.has(canonicalV2U64(peer.clientId) ?? peer.clientId)
-                    );
-                }
-                let tombstoneBroadcast = false;
-                if (
-                    session.transportState === 'Synchronized' &&
-                    session.pendingLocalAwarenessTombstone != null &&
-                    session.pendingLocalAwarenessTombstoneRetryMillis != null &&
-                    session.awarenessNowMillis >=
-                        session.pendingLocalAwarenessTombstoneRetryMillis
-                ) {
-                    const reservationError = enqueuePendingLocalAwarenessTombstone(session);
-                    if (reservationError) return errRecord(reservationError);
-                    tombstoneBroadcast = true;
-                }
-                let renewedLocal = false;
-                if (
-                    session.transportState === 'Synchronized' &&
-                    session.desiredAwareness != null &&
-                    (session.lastLocalAwarenessPublishMillis == null ||
-                        (session.awarenessNowMillis >= session.lastLocalAwarenessPublishMillis &&
-                            session.awarenessNowMillis - session.lastLocalAwarenessPublishMillis >=
-                                V2_FAKE_AWARENESS_RENEWAL_INTERVAL_MILLIS))
-                ) {
-                    const clockError = publishLocalAwareness(session);
-                    if (clockError) return errRecord(clockError);
-                    renewedLocal = true;
-                }
-                const nextDeadline = nextAwarenessDeadline(session);
-                return okRecord(
-                    JSON.stringify({
-                        nextDeadlineMillis: nextDeadline == null ? null : String(nextDeadline),
-                        renewedLocal,
-                        expiredPeers,
-                        outboundChanged: tombstoneBroadcast || renewedLocal,
-                        peersChanged: renewedLocal || expiredPeers.length > 0,
-                    })
-                );
-            })
-        ),
-        editorV2CollaborationDetach: jest.fn((editorId: string) =>
-            withSession(editorId, (session) => {
-                if (session.transportState === 'Detached') {
-                    clearTransportAwareness(session);
-                    return okRecord(true);
-                }
-                session.liveGeneration = null;
-                session.transportState = 'Detached';
-                clearTransportAwareness(session);
-                return okRecord(true);
-            })
-        ),
-        editorV2CollaborationReattach: jest.fn((editorId: string) =>
+        editorV2CollaborationConfigureTransport: jest.fn((editorId: string, configJson: string) =>
             withSession(editorId, (session) => {
                 if (!session.roomBound) {
                     return transportError(
                         'TRANSPORT_NOT_ROOM_BOUND',
-                        'local-only sessions have no room binding to reattach'
+                        'local-only sessions have no room binding to configure'
                     );
                 }
-                if (session.transportState !== 'Detached') {
-                    if (session.transportState === 'Disconnected') {
+                const config = parseFakeTransportConfig(configJson);
+                if (config != null && 'domain' in config) return errRecord(config);
+                session.transportConfig = config;
+                if (config === null) {
+                    session.liveGeneration = null;
+                    session.transportState = 'Detached';
+                    clearTransportAwareness(session);
+                    emitTransportState(session, 'configureDetach');
+                    return okRecord(true);
+                }
+                if (!config.connect) {
+                    if (session.transportState !== 'Disconnected') {
+                        session.liveGeneration = null;
+                        session.transportState = 'Disconnected';
                         clearTransportAwareness(session);
-                        return okRecord(true);
                     }
-                    return transportError(
-                        'TRANSPORT_INVALID_TRANSITION',
-                        `reattach is only admitted from Detached (found ${session.transportState})`
-                    );
+                    emitTransportState(session, 'configureDisconnect');
+                    return okRecord(true);
                 }
-                session.transportState = 'Disconnected';
-                clearTransportAwareness(session);
+                // Connect intent: the native transport mints the generation
+                // and starts the attempt without any TypeScript involvement.
+                if (session.transportState === 'Incompatible') {
+                    emitTransportState(session, 'configureParked');
+                    return okRecord(true);
+                }
+                if (
+                    session.transportState === 'Detached' ||
+                    session.transportState === 'Disconnected'
+                ) {
+                    if (session.lastIssuedGeneration === V2_FAKE_U64_MAX) {
+                        return transportError(
+                            'TRANSPORT_GENERATION_EXHAUSTED',
+                            'transport generation space is exhausted',
+                            { action: 'configureTransport', transportState: session.transportState }
+                        );
+                    }
+                    session.lastIssuedGeneration += 1n;
+                    session.liveGeneration = session.lastIssuedGeneration;
+                    session.transportState = 'Connecting';
+                }
+                emitTransportState(session, 'configureConnect');
                 return okRecord(true);
             })
+        ),
+        editorV2CollaborationResolveProtocolAdapter: jest.fn(
+            (editorId: string, attemptId: string, eventId: string, responseJson: string) =>
+                withSession(editorId, () => {
+                    protocolAdapterResolutions.push({
+                        editorId,
+                        attemptId,
+                        eventId,
+                        responseJson,
+                    });
+                    return okRecord(true);
+                })
         ),
         editorV2SnapshotExport: jest.fn((editorId: string) =>
             withSession(editorId, (session) =>
@@ -2378,6 +2406,16 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
                     );
                 })
         ),
+        addListener: jest.fn((eventName: string, listener: (event: unknown) => void) => {
+            const listeners = listenersFor(eventName);
+            listeners.push(listener);
+            return {
+                remove: () => {
+                    const index = listeners.indexOf(listener);
+                    if (index >= 0) listeners.splice(index, 1);
+                },
+            };
+        }),
     };
 
     return {
@@ -2389,6 +2427,52 @@ export function createFakeNativeEditorV2Runtime(): FakeNativeEditorV2Runtime {
             return session;
         },
         liveEditorIds: () => [...liveIds],
+        transportConfig: (editorId) => getSession(editorId)?.transportConfig ?? null,
+        transportOpen: (editorId) => {
+            const session = requireSession(editorId);
+            if (session.transportState !== 'Connecting') {
+                throw new Error(
+                    `socket open requires Connecting (found ${session.transportState})`
+                );
+            }
+            session.transportState = 'Handshaking';
+            // The native side answers an opened socket with Sync Step 1.
+            session.protocolQueue.push(new Uint8Array(V2_FAKE_STEP1_FRAME));
+            emitTransportState(session, 'socketOpen');
+        },
+        transportReceive: (editorId, frame) => {
+            const session = requireSession(editorId);
+            handleReceive(session, frame);
+            emitTransportState(session, 'receive');
+        },
+        transportClose: (editorId, code = null) => {
+            const session = requireSession(editorId);
+            retireGeneration(session, code === 1008 ? 'Incompatible' : 'Disconnected');
+            emitTransportState(session, 'socketClose');
+        },
+        emitTransportError: (editorId, error) => {
+            const session = requireSession(editorId);
+            emitTransportEvent({
+                editorId: session.editorId,
+                generation:
+                    session.liveGeneration === null ? null : String(session.liveGeneration),
+                kind: 'error',
+                error,
+            });
+        },
+        emitProtocolAdapterEvent: (editorId, event) => {
+            const session = requireSession(editorId);
+            emitTransportEvent({
+                editorId: session.editorId,
+                generation:
+                    session.liveGeneration === null
+                        ? String(session.lastIssuedGeneration)
+                        : String(session.liveGeneration),
+                kind: 'protocolAdapter',
+                ...event,
+            });
+        },
+        protocolAdapterResolutions: () => [...protocolAdapterResolutions],
         pushRemoteDoc: (editorId, doc) => {
             pendingFor(editorId).docs.push(cloneDoc(doc));
         },

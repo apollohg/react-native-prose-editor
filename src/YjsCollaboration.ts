@@ -72,11 +72,16 @@ export interface YjsCollaborationController {
     handleFocusChange(focused: boolean): void;
 }
 
+/**
+ * Props bound to one collaboration-aware editor view. There is no
+ * selection binding: the native adapters publish the local caret straight
+ * into Rust, which holds it as a sticky index. Mirroring it through
+ * JavaScript would only add a stale copy of a document position.
+ */
 export interface YjsCollaborationEditorBindings {
     documentHandle: NativeEditorDocumentHandle;
     documentRevision: string | null;
     remoteSelections: RemoteSelectionDecoration[];
-    onSelectionChange: (selection: Selection) => void;
     onFocus: () => void;
     onBlur: () => void;
 }
@@ -164,12 +169,35 @@ function peersToRemoteSelections(
     });
 }
 
+/**
+ * Narrow a caller selection to the text-only cursor awareness carries.
+ * Anything else — a node or all-document selection, or an absent one — is
+ * an explicit "no cursor", never a silently retained stale position.
+ */
 function normalizeAwarenessSelection(
-    selection: Selection
+    selection: Selection | undefined
 ): NativeEditorLocalAwarenessSelection | undefined {
-    if (selection.type !== 'text') return undefined;
+    if (selection === undefined || selection.type !== 'text') return undefined;
     if (selection.anchor === undefined || selection.head === undefined) return undefined;
     return createNativeEditorLocalAwarenessSelection(selection.anchor, selection.head);
+}
+
+/**
+ * Copy the caller's transport intent into a controller-owned record. A
+ * nullish config means "no transport": the handle stays detached, exactly
+ * as the transport-less reads elsewhere in this module assume.
+ */
+function copyTransportConfig(
+    config: NativeCollaborationTransportConfig | null | undefined
+): NativeCollaborationTransportConfig | null {
+    if (config == null) return null;
+    return {
+        url: config.url,
+        connect: config.connect,
+        ...(config.protocolAdapter === undefined
+            ? {}
+            : { protocolAdapter: config.protocolAdapter }),
+    };
 }
 
 function mergeAwarenessPartial(
@@ -191,13 +219,12 @@ function mergeAwarenessPartial(
                 ? partial.focused
                 : base.focused,
     };
+    // Selection is stated only when the caller states it. Rust holds the
+    // local cursor as a sticky index that already tracks every document
+    // change, so an omitted key means "retain it" — never "resend the last
+    // position I happened to see", which the document may have invalidated.
     if ('selection' in partial) {
-        if (partial.selection !== undefined) {
-            const selection = normalizeAwarenessSelection(partial.selection);
-            if (selection !== undefined) next.selection = selection;
-        }
-    } else if (base.selection !== undefined) {
-        next.selection = base.selection;
+        next.selection = normalizeAwarenessSelection(partial.selection) ?? null;
     }
     return next;
 }
@@ -209,6 +236,8 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     private transport: NativeCollaborationTransportConfig | null;
     private removeTransportListener: (() => void) | null = null;
     private desiredAwareness: NativeEditorLocalAwarenessIntent | null = null;
+    /** Serialized form of the last intent Rust accepted, for dedup. */
+    private publishedAwarenessJson: string | null = null;
     private lastEventSequence: string | null = null;
     private destroyed = false;
     private _state: YjsCollaborationState;
@@ -219,18 +248,7 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.handle = options.handle;
         this.documentId = options.documentId;
         this.callbacks = callbacks;
-        this.transport =
-            options.transport === null
-                ? null
-                : {
-                    url: options.transport.url,
-                    connect: options.transport.connect,
-                    ...(options.transport.protocolAdapter === undefined
-                        ? {}
-                        : {
-                            protocolAdapter: options.transport.protocolAdapter,
-                        }),
-                };
+        this.transport = copyTransportConfig(options.transport);
         this._state = this.readEngineState(this.handle.bridge.getState());
         this.removeTransportListener = this.handle.addCollaborationTransportListener((event) => {
             this.handleTransportEvent(event);
@@ -284,17 +302,16 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
 
     updateLocalAwareness(partial: Partial<LocalAwarenessState>): void {
         if (this.destroyed) return;
+        // Presence exists only while there is a local user. Once awareness
+        // is withdrawn, focus and selection updates must not resurrect it
+        // as an anonymous entry; only a fresh user re-establishes it.
+        if (this.desiredAwareness === null && partial.user == null) return;
         const base = this.desiredAwareness ?? { state: {}, focused: false };
         this.publishAwareness(mergeAwarenessPartial(base, partial));
     }
 
     handleSelectionChange(selection: Selection): void {
         this.updateLocalAwareness({ selection });
-    }
-
-    handleNativeSelectionChange(selection: Selection): void {
-        if (this.destroyed || this.desiredAwareness === null) return;
-        this.desiredAwareness = mergeAwarenessPartial(this.desiredAwareness, { selection });
     }
 
     handleFocusChange(focused: boolean): void {
@@ -304,18 +321,27 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
     applyLocalAwarenessOption(user?: LocalAwarenessUser): void {
         if (this.destroyed) return;
         if (user == null) {
+            // Always withdraw: a fresh controller inherits whatever presence
+            // a previous one left retained natively on this shared handle.
+            try {
+                this.handle.setLocalAwareness(null);
+            } catch (error) {
+                this.reportError(asError(error, 'Local awareness withdrawal failed'));
+                return;
+            }
             this.desiredAwareness = null;
-            this.handle.setLocalAwareness(null);
+            this.publishedAwarenessJson = null;
             return;
         }
         const current = this.desiredAwareness;
+        // No `selection` key: the Rust-owned cursor carries across a user
+        // change untouched.
         this.publishAwareness({
             state: {
                 ...(current?.state ?? {}),
                 user: { ...user },
             },
             focused: current?.focused ?? false,
-            ...(current?.selection === undefined ? {} : { selection: current.selection }),
         });
     }
 
@@ -325,9 +351,36 @@ class YjsCollaborationControllerImpl implements YjsCollaborationController {
         this.handle.configureCollaborationTransport(this.transport);
     }
 
+    /**
+     * Hand one desired presence to Rust. An intent identical to the last
+     * accepted one is skipped: republishing it would mint a fresh awareness
+     * clock and broadcast a frame that carries no new information.
+     * `desiredAwareness` advances only after native acceptance.
+     *
+     * Presence is ambient UI state, not user data. A refusal is reported
+     * through `onError` and retried on the next change — it never escapes
+     * into a host focus, blur, or selection handler, and never fails an
+     * edit. The candidate is discarded so state stays consistent with Rust.
+     */
     private publishAwareness(intent: NativeEditorLocalAwarenessIntent): void {
-        this.handle.setLocalAwareness(intent);
+        let intentJson: string;
+        try {
+            // Serializing caller-owned application state can itself fail on
+            // a cyclic or non-encodable value, so it stays inside the guard.
+            intentJson = JSON.stringify(intent);
+            if (intentJson === this.publishedAwarenessJson) return;
+            this.handle.setLocalAwareness(intent);
+        } catch (error) {
+            this.reportError(asError(error, 'Local awareness publication failed'));
+            return;
+        }
         this.desiredAwareness = intent;
+        this.publishedAwarenessJson = intentJson;
+    }
+
+    private reportError(error: Error): void {
+        this.setState({ lastError: error });
+        this.callbacks.onError?.(error);
     }
 
     private handleTransportEvent(event: NativeCollaborationTransportEvent): void {
@@ -460,7 +513,7 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
                 {
                     ...options,
                     transport:
-                        options.transport === null
+                        options.transport == null
                             ? null
                             : {
                                 url: options.transport.url,
@@ -534,8 +587,6 @@ export function useYjsCollaboration(options: YjsCollaborationOptions): UseYjsCol
             documentHandle: options.handle,
             documentRevision: state.documentRevision,
             remoteSelections: peersToRemoteSelections(peers),
-            onSelectionChange: (selection) =>
-                controllerRef.current?.handleNativeSelectionChange(selection),
             onFocus: () => controllerRef.current?.handleFocusChange(true),
             onBlur: () => controllerRef.current?.handleFocusChange(false),
         },

@@ -384,7 +384,6 @@ export function CollaborativeEditor({
       documentHandle={collaboration.editorBindings.documentHandle}
       documentRevision={collaboration.editorBindings.documentRevision}
       remoteSelections={collaboration.editorBindings.remoteSelections}
-      onSelectionChange={collaboration.editorBindings.onSelectionChange}
       onFocus={collaboration.editorBindings.onFocus}
       onBlur={collaboration.editorBindings.onBlur}
     />
@@ -397,9 +396,8 @@ document JSON/revision, last error) and `peers` (`NativeEditorV2PeerInfo[]` —
 note `clientId` is a decimal **string**) for presence UI, and accepts
 `transport`, `onPeersChange`, `onStateChange`, and `onError`
 options. Bind the complete `editorBindings` set above — `documentHandle`,
-`documentRevision`, `remoteSelections`, `onSelectionChange`, `onFocus`,
-and `onBlur` — so document rendering and awareness stay on the one shared
-handle. Native code owns the WebSocket and flushes local commits directly.
+`documentRevision`, `remoteSelections`, `onFocus`, and `onBlur` — so document
+rendering and awareness stay on the one shared handle. Native code owns the WebSocket and flushes local commits directly.
 Swift owns `URLSessionWebSocketTask` on iOS, while Kotlin owns OkHttp on
 Android. JavaScript never constructs the collaboration socket and owns no
 retry, deadline, or outbound-drain timer.
@@ -411,11 +409,21 @@ binary-only after synchronization starts.
 
 UIKit and Android publish the authoritative editor selection into retained
 Rust awareness in the same native mutation path, before waking the transport
-for the document update. React Native still owns awareness identity,
-application state, and focus; the mounted `editorBindings.onSelectionChange`
-only caches selection for the next React Native-owned awareness update and
-does not send a delayed duplicate. Headless callers can still publish a
-selection explicitly through `YjsCollaborationController.handleSelectionChange`.
+for the document update. Rust holds that cursor as a sticky index, so it keeps
+tracking the document through every later edit without being restated.
+
+React Native therefore owns awareness identity, application state, and focus —
+never a document position. `NativeEditorLocalAwarenessIntent.selection` makes
+this explicit: **omit** the key to retain the Rust-owned cursor (what focus and
+state updates do), pass `null` to publish presence with no cursor, or pass a
+`createNativeEditorLocalAwarenessSelection(anchor, head)` value to set it.
+Headless callers that own their own selection can publish one through
+`YjsCollaborationController.handleSelectionChange`; a position that does not
+resolve against the current document is refused and reported through `onError`.
+
+Awareness publication never throws into an editor binding or fails an edit.
+Presence is ambient UI state: a refusal is reported through `onError` and the
+next change retries.
 
 `protocolAdapter` is optional and protocol-agnostic. Its `protocols` are
 offered in the physical WebSocket handshake. On every physical open, RN

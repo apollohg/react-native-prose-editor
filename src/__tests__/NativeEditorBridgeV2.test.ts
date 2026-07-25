@@ -348,6 +348,18 @@ function catchThrown(fn: () => unknown): unknown {
     throw new Error('expected the call to throw');
 }
 
+/**
+ * Drain the microtask queue completely. The bridge resolves one protocol
+ * adapter event through a multi-hop promise chain around an async callback,
+ * so a fixed number of `await Promise.resolve()` hops cannot see the end of
+ * it. Yielding to a macrotask does, and stays deterministic.
+ */
+function flushMicrotasks(): Promise<void> {
+    return new Promise((resolve) => {
+        setImmediate(resolve);
+    });
+}
+
 // ─── Tests ──────────────────────────────────────────────────────
 
 describe('NativeEditorBridge v2', () => {
@@ -1959,7 +1971,7 @@ describe('NativeEditorBridge v2', () => {
                 () => handle.bridge.getState(),
                 () => handle.bridge.getDocumentJson(),
                 () => handle.bridge.undo(),
-                () => handle.bridge.collaborationTakeOutbound('1'),
+                () => handle.bridge.setLocalAwareness(null),
             ]) {
                 const error = catchThrown(call);
                 expectNonRetryable(error, 'ENGINE_DESTROYED');
@@ -2126,21 +2138,17 @@ describe('NativeEditorBridge v2', () => {
     });
 
     describe('binary transport', () => {
-        it('returns socket-open protocol frame bytes untouched', () => {
+        it('returns an empty exported snapshot as empty bytes', () => {
             const handle = createHandle();
-            const frame = handle.bridge.collaborationSocketOpen('7');
-            expect(frame).toBe(MOCK_PROTOCOL_FRAME);
-            expect(Array.from(frame)).toEqual([0, 3, 9, 200, 17]);
-        });
-
-        it('returns an empty outbound frame as empty bytes', () => {
-            const handle = createHandle();
-            mockNativeModule.editorV2CollaborationTakeOutbound.mockReturnValueOnce(
-                okRecord(new Uint8Array(0))
+            mockNativeModule.editorV2SnapshotExport.mockReturnValueOnce(
+                okRecord({
+                    metadataJson: JSON.stringify(MOCK_SNAPSHOT_METADATA),
+                    encodedState: new Uint8Array(0),
+                })
             );
-            const frame = handle.bridge.collaborationTakeOutbound('7');
-            expect(frame).toBeInstanceOf(Uint8Array);
-            expect(frame.length).toBe(0);
+            const exported = handle.bridge.snapshotExport();
+            expect(exported.encodedState).toBeInstanceOf(Uint8Array);
+            expect(exported.encodedState.length).toBe(0);
         });
 
         it('round-trips snapshot bytes byte-for-byte in both directions', () => {
@@ -2164,248 +2172,20 @@ describe('NativeEditorBridge v2', () => {
         it('rejects JSON number arrays as binary values', () => {
             expect(normalizeNativeEditorV2Bytes([1, 2, 3])).toBeNull();
             const handle = createHandle();
-            mockNativeModule.editorV2CollaborationSocketOpen.mockReturnValueOnce(
-                okRecord([0, 3, 9])
+            mockNativeModule.editorV2SnapshotExport.mockReturnValueOnce(
+                okRecord({
+                    metadataJson: JSON.stringify(MOCK_SNAPSHOT_METADATA),
+                    encodedState: [0, 3, 9],
+                })
             );
             expectNonRetryable(
-                catchThrown(() => handle.bridge.collaborationSocketOpen('7')),
+                catchThrown(() => handle.bridge.snapshotExport()),
                 'FFI_RESULT_INVALID'
             );
-        });
-
-        it('passes receive message bytes through unchanged', () => {
-            const handle = createHandle();
-            handle.bridge.collaborationReceive('7', MOCK_PROTOCOL_FRAME);
-            const [editorId, generation, message] =
-                mockNativeModule.editorV2CollaborationReceive.mock.calls[0];
-            expect(editorId).toBe('1');
-            expect(generation).toBe('7');
-            expect(message).toBe(MOCK_PROTOCOL_FRAME);
         });
     });
 
     describe('collaboration results', () => {
-        it('normalizes the connect generation as a decimal string', () => {
-            const handle = createHandle();
-            expect(handle.bridge.collaborationBeginConnect()).toBe('7');
-            mockNativeModule.editorV2CollaborationBeginConnect.mockReturnValueOnce(
-                okRecord(JSON.stringify({ generation: HUGE_U64_DECIMAL }))
-            );
-            expect(handle.bridge.collaborationBeginConnect()).toBe(HUGE_U64_DECIMAL);
-        });
-
-        it('normalizes the exact tick result shape and invokes the lifecycle entries', () => {
-            const handle = createHandle();
-
-            expect(handle.bridge.collaborationTick(HUGE_U64_DECIMAL)).toEqual({
-                nextDeadlineMillis: HUGE_U64_DECIMAL,
-                renewedLocal: true,
-                expiredPeers: ['7', HUGE_U64_DECIMAL],
-                outboundChanged: true,
-                peersChanged: false,
-            });
-            expect(mockNativeModule.editorV2CollaborationTick).toHaveBeenCalledWith(
-                handle.editorId,
-                HUGE_U64_DECIMAL
-            );
-
-            handle.bridge.collaborationDetach();
-            handle.bridge.collaborationReattach();
-            expect(mockNativeModule.editorV2CollaborationDetach).toHaveBeenCalledWith(
-                handle.editorId
-            );
-            expect(mockNativeModule.editorV2CollaborationReattach).toHaveBeenCalledWith(
-                handle.editorId
-            );
-        });
-
-        it.each([
-            {
-                nextDeadlineMillis: '8',
-                renewedLocal: false,
-                expiredPeers: [],
-                outboundChanged: false,
-            },
-            {
-                nextDeadlineMillis: '8',
-                renewedLocal: false,
-                expiredPeers: [],
-                outboundChanged: false,
-                peersChanged: true,
-                unexpected: true,
-            },
-            {
-                nextDeadlineMillis: '08',
-                renewedLocal: false,
-                expiredPeers: [],
-                outboundChanged: false,
-                peersChanged: true,
-            },
-            {
-                nextDeadlineMillis: null,
-                renewedLocal: false,
-                expiredPeers: ['01'],
-                outboundChanged: false,
-                peersChanged: true,
-            },
-            {
-                nextDeadlineMillis: null,
-                renewedLocal: 'false',
-                expiredPeers: [],
-                outboundChanged: false,
-                peersChanged: true,
-            },
-        ])('rejects malformed tick result shape %#', (value) => {
-            const handle = createHandle();
-            mockNativeModule.editorV2CollaborationTick.mockReturnValueOnce(
-                okRecord(JSON.stringify(value))
-            );
-
-            expectNonRetryable(
-                catchThrown(() => handle.bridge.collaborationTick('0')),
-                'FFI_RESULT_INVALID'
-            );
-        });
-
-        it.each(['', '00', '01', '-1', '+1', '1.0', ' 1', '1 ', '1e3', ONE_OVER_U64_DECIMAL])(
-            'rejects non-canonical tick nowMillis %p before native invocation',
-            (nowMillis) => {
-                const handle = createHandle();
-
-                const error = catchThrown(() =>
-                    (
-                        handle.bridge as unknown as {
-                            collaborationTick(value: unknown): unknown;
-                        }
-                    ).collaborationTick(nowMillis)
-                );
-                expect(error).toBeInstanceOf(NativeEditorV2BoundaryError);
-                expect((error as NativeEditorV2ErrorBase).code).toBe('CONFIG_INVALID');
-                expect(mockNativeModule.editorV2CollaborationTick).not.toHaveBeenCalled();
-            }
-        );
-
-        it('normalizes the receive outcome including a structured close cause', () => {
-            const handle = createHandle();
-            expect(handle.bridge.collaborationReceive('7', MOCK_PROTOCOL_FRAME)).toEqual({
-                framesDecoded: 1,
-                repliesEnqueued: 2,
-                replyBytesEnqueued: 64,
-                remoteCommitApplied: true,
-                documentPromoted: false,
-                transportState: 'Handshaking',
-                close: null,
-            });
-            mockNativeModule.editorV2CollaborationReceive.mockReturnValueOnce(
-                okRecord(
-                    JSON.stringify({
-                        framesDecoded: 0,
-                        repliesEnqueued: 0,
-                        replyBytesEnqueued: 0,
-                        remoteCommitApplied: false,
-                        documentPromoted: false,
-                        transportState: 'Incompatible',
-                        close: {
-                            disposition: 'incompatible',
-                            error: {
-                                domain: 'transport',
-                                code: 'TRANSPORT_PROTOCOL_INVALID',
-                                message: 'invalid protocol frame',
-                                limit: '1024',
-                                actual: '1025',
-                            },
-                        },
-                    })
-                )
-            );
-            const outcome = handle.bridge.collaborationReceive('7', MOCK_PROTOCOL_FRAME);
-            expect(outcome.transportState).toBe('Incompatible');
-            expect(outcome.close).toEqual({
-                disposition: 'incompatible',
-                error: {
-                    domain: 'transport',
-                    code: 'TRANSPORT_PROTOCOL_INVALID',
-                    message: 'invalid protocol frame',
-                    requestId: null,
-                    operationIndex: null,
-                    limit: '1024',
-                    actual: '1025',
-                    details: null,
-                },
-            });
-        });
-
-        it('rejects a malformed nested close error', () => {
-            const handle = createHandle();
-            mockNativeModule.editorV2CollaborationReceive.mockReturnValueOnce(
-                okRecord(
-                    JSON.stringify({
-                        framesDecoded: 0,
-                        repliesEnqueued: 0,
-                        replyBytesEnqueued: 0,
-                        remoteCommitApplied: false,
-                        documentPromoted: false,
-                        transportState: 'Incompatible',
-                        close: { disposition: 'incompatible', error: { code: 42 } },
-                    })
-                )
-            );
-            expectNonRetryable(
-                catchThrown(() => handle.bridge.collaborationReceive('7', MOCK_PROTOCOL_FRAME)),
-                'FFI_RESULT_INVALID'
-            );
-        });
-
-        it('keeps huge decimal-string peer client ids verbatim', () => {
-            const handle = createHandle();
-            const peers = handle.bridge.collaborationPeers();
-            expect(peers).toEqual([
-                {
-                    clientId: HUGE_U64_DECIMAL,
-                    clock: 3,
-                    isLocal: false,
-                    state: { user: { name: 'Alice' } },
-                    cursor: { anchor: 2, head: 5 },
-                },
-                { clientId: '1', clock: 0, isLocal: true, state: null, cursor: null },
-            ]);
-        });
-
-        it('rejects an unsafe integer peer clock', () => {
-            const handle = createHandle();
-            mockNativeModule.editorV2CollaborationPeers.mockReturnValueOnce(
-                okRecord(
-                    JSON.stringify({
-                        peers: [
-                            {
-                                clientId: '1',
-                                clock: Number.MAX_SAFE_INTEGER + 1,
-                                isLocal: true,
-                                state: null,
-                                cursor: null,
-                            },
-                        ],
-                    })
-                )
-            );
-            expectNonRetryable(
-                catchThrown(() => handle.bridge.collaborationPeers()),
-                'FFI_RESULT_INVALID'
-            );
-        });
-
-        it('normalizes the socket-close transport state and rejects unknown states', () => {
-            const handle = createHandle();
-            expect(handle.bridge.collaborationSocketClose('7', 1000, 'bye')).toBe('Disconnected');
-            mockNativeModule.editorV2CollaborationSocketClose.mockReturnValueOnce(
-                okRecord(JSON.stringify({ transportState: 'Floating' }))
-            );
-            expectNonRetryable(
-                catchThrown(() => handle.bridge.collaborationSocketClose('7', null, null)),
-                'FFI_RESULT_INVALID'
-            );
-        });
-
         it('creates a frozen local-awareness selection and serializes its tagged wire intent', () => {
             const handle = createHandle();
             const selection = createNativeEditorLocalAwarenessSelection(2, 5);
@@ -2419,8 +2199,8 @@ describe('NativeEditorBridge v2', () => {
             expect(Object.isFrozen(selection)).toBe(true);
             expect(() => Object.assign(selection, { anchor: 3 })).toThrow();
 
-            handle.bridge.collaborationSetAwareness(intent);
-            handle.bridge.collaborationSetAwareness(null);
+            handle.bridge.setLocalAwareness(intent);
+            handle.bridge.setLocalAwareness(null);
             const calls = mockNativeModule.editorV2CollaborationSetAwareness.mock.calls;
             expect(JSON.parse(calls[0][1])).toEqual({
                 selection: { type: 'text', anchor: 2, head: 5 },
@@ -2471,7 +2251,7 @@ describe('NativeEditorBridge v2', () => {
 
             for (const selection of invalidSelections) {
                 expect(() =>
-                    handle.bridge.collaborationSetAwareness({
+                    handle.bridge.setLocalAwareness({
                         state: { user: { name: 'Alice' } },
                         focused: true,
                         selection,
@@ -2508,12 +2288,12 @@ describe('NativeEditorBridge v2', () => {
             };
 
             expect(() =>
-                handle.bridge.collaborationSetAwareness(
+                handle.bridge.setLocalAwareness(
                     rawState as unknown as NativeEditorLocalAwarenessIntent
                 )
             ).toThrow('invalid local awareness intent');
             expect(() =>
-                handle.bridge.collaborationSetAwareness(
+                handle.bridge.setLocalAwareness(
                     cursorIntent as NativeEditorLocalAwarenessIntent
                 )
             ).toThrow('reserved cursor key');
@@ -2609,8 +2389,7 @@ describe('NativeEditorBridge v2', () => {
                 phase: 'open',
                 negotiatedProtocol: 'example-auth-v1',
             });
-            await Promise.resolve();
-            await Promise.resolve();
+            await flushMicrotasks();
 
             credential = 'second';
             emit({
@@ -2623,8 +2402,7 @@ describe('NativeEditorBridge v2', () => {
                 phase: 'open',
                 negotiatedProtocol: 'example-auth-v1',
             });
-            await Promise.resolve();
-            await Promise.resolve();
+            await flushMicrotasks();
 
             expect(onOpen).toHaveBeenCalledTimes(2);
             expect(mockNativeModule.editorV2CollaborationResolveProtocolAdapter).toHaveBeenNthCalledWith(
@@ -2672,8 +2450,7 @@ describe('NativeEditorBridge v2', () => {
                     frame: { type: 'binary', data: 'AQID' },
                 });
             }
-            await Promise.resolve();
-            await Promise.resolve();
+            await flushMicrotasks();
 
             expect(onMessage).toHaveBeenCalledWith(
                 expect.objectContaining({
