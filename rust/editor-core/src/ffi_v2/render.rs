@@ -155,6 +155,10 @@ struct AtomicRenderSnapshot {
     document_version: String,
     state_revision: String,
     scalar_length: u32,
+    /// Authoritative empty state for host affordances such as the placeholder.
+    /// Hosts must consume this rather than inspecting rendered characters,
+    /// which cannot see structure that renders no text (an empty list item).
+    document_is_empty: bool,
 }
 
 /// Resolve the schema for a v2 create envelope exactly the way the session
@@ -337,6 +341,7 @@ pub fn editor_v2_render_update(
             engine.resource_limits(),
         );
         let scalar_length = position_map.doc_to_scalar(u32::MAX, document);
+        let document_is_empty = crate::editor_state::document_is_empty(document, &schema);
 
         let snapshot = AtomicRenderSnapshot {
             render_blocks: serialize_render_blocks(&render_blocks),
@@ -357,6 +362,7 @@ pub fn editor_v2_render_update(
                 .expect("decimal u64 serializer returns a string")
                 .to_owned(),
             scalar_length,
+            document_is_empty,
         };
         Ok(serde_json::to_string(&snapshot).expect("atomic render snapshot serializes"))
     }))

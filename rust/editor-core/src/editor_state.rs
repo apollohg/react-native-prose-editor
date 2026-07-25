@@ -870,6 +870,36 @@ fn resource_growth_fits(
         && deepest_new_node <= limits.max_document_depth
 }
 
+/// Whether the document holds nothing the user has authored.
+///
+/// True only for the single empty default text block a fresh editor starts
+/// with. Anything else — text, a second block, or a block that carries
+/// structure such as a list item, a blockquote, or a heading — is content, even
+/// when it renders no characters at all.
+///
+/// This is the authority for a host's empty-state affordances (the placeholder
+/// above all). Hosts must not re-derive it from rendered text: an empty bullet
+/// contributes no characters, so any character-based test reports it as empty
+/// and hides a structure the user can plainly see.
+pub(crate) fn document_is_empty(document: &Document, schema: &Schema) -> bool {
+    let Some(content) = document.root().content() else {
+        return true;
+    };
+    let mut blocks = content.iter();
+    let Some(block) = blocks.next() else {
+        return true;
+    };
+    if blocks.next().is_some() {
+        return false;
+    }
+    if block.content_size() != 0 {
+        return false;
+    }
+    schema
+        .preferred_text_block()
+        .is_some_and(|spec| spec.name == block.node_type())
+}
+
 pub(crate) fn document_node_count(node: &Node) -> usize {
     node.content().map_or(1, |content| {
         content

@@ -2290,6 +2290,7 @@ fn render_update_is_one_complete_atomic_snapshot() {
             "documentVersion",
             "stateRevision",
             "scalarLength",
+            "documentIsEmpty",
         ]
         .into_iter()
         .collect::<std::collections::BTreeSet<&str>>(),
@@ -2752,17 +2753,66 @@ fn the_render_update_distinguishes_an_empty_document_from_an_empty_list_item() {
     ));
 
     assert_eq!(
-        empty_update["scalarLength"],
-        json!(1),
-        "an empty editor renders as its single empty placeholder block"
+        empty_update["documentIsEmpty"],
+        json!(true),
+        "a fresh editor holds nothing the user authored"
     );
     assert_eq!(
-        listed_update["scalarLength"],
-        json!(3),
-        "one empty bullet renders as the list and item openings around that \
-         block, so the host can tell the two apart without inspecting text"
+        listed_update["documentIsEmpty"],
+        json!(false),
+        "one empty bullet is content: it renders no characters, so only the \
+         core can tell the host this editor is no longer empty"
     );
 
     destroy_handle(&empty);
     destroy_handle(&listed);
+}
+
+/// A blank second line is content too.
+///
+/// Pressing Return in an empty editor leaves two blank lines. Not one character
+/// exists in the document, so nothing downstream of the rendered text can tell
+/// this apart from an untouched editor — only the core knows the user added a
+/// line, and the placeholder has to get out of the way of it.
+#[test]
+fn a_blank_line_added_with_return_stops_the_document_being_empty() {
+    let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
+
+    let before = ok_json(&v2_render::editor_v2_render_update(
+        id.clone(),
+        None,
+        None,
+    ));
+    assert_eq!(
+        before["documentIsEmpty"],
+        json!(true),
+        "precondition: a fresh editor is empty"
+    );
+
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(1, 0, json!({ "type": "splitBlock" })),
+    ));
+
+    let after = ok_json(&v2_render::editor_v2_render_update(
+        id.clone(),
+        None,
+        None,
+    ));
+    assert_eq!(
+        after["documentIsEmpty"],
+        json!(false),
+        "two blank lines are content, even though neither holds a character"
+    );
+
+    // The caret belongs on the new second line, not left behind on the first.
+    // Both lines are blank, so the second line is the end of the document.
+    assert_eq!(
+        json!(caret_scalar(&id)),
+        after["scalarLength"],
+        "Return must leave the caret on the blank line it just created, which \
+         with both lines blank is the end of the document"
+    );
+
+    destroy_handle(&id);
 }

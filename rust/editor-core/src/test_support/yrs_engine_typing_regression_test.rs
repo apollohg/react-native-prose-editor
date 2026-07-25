@@ -696,6 +696,45 @@ fn return_on_an_empty_nested_item_outdents_to_the_parent_list() {
     );
 }
 
+/// Return in an empty editor leaves two blank lines.
+///
+/// Neither line holds a character, but the document is no longer the single
+/// default block a fresh editor starts with: the user has made a line they can
+/// see, put a caret in, and delete again.
+#[test]
+fn return_in_an_empty_editor_leaves_two_blank_lines() {
+    let mut engine = engine();
+
+    press_return(&mut engine, 1);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![empty_paragraph(), empty_paragraph()]),
+        "Return on an empty line adds a second empty line rather than doing nothing"
+    );
+
+    // Where the caret actually is, proven by what the next character does:
+    // typing must land on the second line, not the first.
+    type_text(&mut engine, 2, "x");
+    assert_eq!(
+        document(&engine),
+        doc(vec![
+            empty_paragraph(),
+            paragraph(serde_json::json!([plain("x")])),
+        ]),
+        "the caret must sit on the blank line Return created"
+    );
+
+    // And backspace walks it straight back off again.
+    press_backspace(&mut engine, 3);
+    press_backspace(&mut engine, 4);
+    assert_eq!(
+        document(&engine),
+        doc(vec![empty_paragraph()]),
+        "backspace removes the character, then the blank line Return created"
+    );
+}
+
 /// Pressing the list button in an empty editor, then immediately backspacing.
 ///
 /// This is the shortest path to a lone empty bullet and it never involves any
