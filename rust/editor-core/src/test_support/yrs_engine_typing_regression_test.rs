@@ -1,0 +1,447 @@
+//! Keystroke-level regression coverage for typing, marks, line returns, and
+//! backspace.
+//!
+//! Every test here drives [`TypedCommand`] — the same command surface a real
+//! keypress reaches through the native bridge — rather than hand-authored
+//! [`TypedOperation`]s. That is deliberate: the operation-level suites already
+//! cover the engine's primitives, and the defects users actually report live in
+//! the *planner* that turns one keystroke into those primitives.
+//!
+//! Scalar offsets used below follow the mapping the engine actually implements:
+//! text characters occupy one scalar each, a block boundary occupies exactly
+//! one more, and a position at the end of a block is only representable with
+//! `Affinity::Before` (`Affinity::After` there is rejected as unrepresentable).
+//! So for `"ab"` + line return + `"cd"`, offset 2 is the end of the first
+//! block, and offset 3 is the start of the second.
+
+use crate::boundary::ResourceLimits;
+use crate::tiptap_schema;
+use crate::yrs_engine::{
+    Affinity, EditingLimits, EditorOffsetKind, HistoryPolicy, InitializationMode,
+    RevisionedPosition, SelectionInput, SelectionIntent, TransactionOrigin, TypedCommand,
+    TypedTransaction, YrsDocumentEngine, YrsEngineConfig,
+};
+
+fn engine() -> YrsDocumentEngine {
+    YrsDocumentEngine::new(YrsEngineConfig {
+        schema: tiptap_schema(),
+        fragment_name: "prosemirror".into(),
+        initialization_mode: InitializationMode::LocalEmpty,
+        resource_limits: ResourceLimits::default(),
+        editing_limits: EditingLimits::default(),
+        max_length: None,
+        scope: None,
+    })
+    .unwrap()
+}
+
+/// Type `text` at the caret, exactly as the input bridge does per keystroke.
+fn type_text(engine: &mut YrsDocumentEngine, request_id: u64, text: &str) {
+    engine
+        .apply_command(request_id, TypedCommand::InsertText { text: text.into() })
+        .unwrap_or_else(|error| panic!("typing {text:?} must apply: {error:?}"))
+        .unwrap_or_else(|| panic!("typing {text:?} must not be a no-op"));
+}
+
+/// Toggle a mark at the caret (collapsed) or over the selection.
+fn toggle_mark(engine: &mut YrsDocumentEngine, request_id: u64, mark_type: &str) {
+    engine
+        .apply_command(
+            request_id,
+            TypedCommand::ToggleMark {
+                mark_type: mark_type.into(),
+            },
+        )
+        .unwrap_or_else(|error| panic!("toggling {mark_type} must apply: {error:?}"));
+}
+
+/// Press Return.
+fn press_return(engine: &mut YrsDocumentEngine, request_id: u64) {
+    engine
+        .apply_command(request_id, TypedCommand::SplitBlock)
+        .unwrap_or_else(|error| panic!("Return must apply: {error:?}"))
+        .unwrap_or_else(|| panic!("Return must not be a no-op"));
+}
+
+/// Press Backspace, surfacing a rejection as a readable failure rather than an
+/// `unwrap` panic — the whole point of these tests is *which* backspaces the
+/// planner refuses.
+fn press_backspace(engine: &mut YrsDocumentEngine, request_id: u64) {
+    match engine.apply_command(request_id, TypedCommand::DeleteBackward) {
+        Ok(Some(_)) => {}
+        Ok(None) => panic!(
+            "Backspace was refused as not-applicable; document is {}",
+            engine.document_json().unwrap()
+        ),
+        Err(error) => panic!(
+            "Backspace was rejected with {} ({}); document is {}",
+            error.code,
+            error.message,
+            engine.document_json().unwrap()
+        ),
+    }
+}
+
+fn place_caret(engine: &mut YrsDocumentEngine, request_id: u64, offset: u32, affinity: Affinity) {
+    let position = RevisionedPosition {
+        offset,
+        kind: EditorOffsetKind::Scalar,
+        affinity,
+    };
+    engine
+        .apply_typed_transaction(TypedTransaction {
+            request_id,
+            base_document_revision: engine.revision(),
+            origin: TransactionOrigin::LocalInput,
+            operations: vec![],
+            selection_intent: SelectionIntent::Set(SelectionInput::Text {
+                anchor: position,
+                head: position,
+            }),
+            history_policy: HistoryPolicy::Skip,
+        })
+        .unwrap_or_else(|error| panic!("placing the caret at {offset} must apply: {error:?}"));
+}
+
+/// The caret position a user reaches by tapping at the very start of the second
+/// line: one scalar past the first block's own length (the block boundary).
+fn start_of_second_block(first_block_len: u32) -> u32 {
+    first_block_len + 1
+}
+
+fn document(engine: &YrsDocumentEngine) -> serde_json::Value {
+    engine.document_json().expect("document must render")
+}
+
+fn paragraph(runs: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "type": "paragraph", "content": runs })
+}
+
+fn plain(text: &str) -> serde_json::Value {
+    serde_json::json!({ "type": "text", "text": text })
+}
+
+fn marked(text: &str, marks: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "type": "text",
+        "text": text,
+        "marks": marks.iter().map(|m| serde_json::json!({ "type": m })).collect::<Vec<_>>(),
+    })
+}
+
+fn doc(blocks: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({ "type": "doc", "content": blocks })
+}
+
+// ---------------------------------------------------------------------------
+// 1. Typing sentences, adding marks
+// ---------------------------------------------------------------------------
+
+/// Type a sentence, switch bold on mid-way, then italic, exactly as a user
+/// tapping toolbar buttons between words would.
+#[test]
+fn typing_a_sentence_and_toggling_marks_mid_flow_produces_three_runs() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "The quick brown fox");
+    toggle_mark(&mut engine, 2, "bold");
+    type_text(&mut engine, 3, " jumps");
+    toggle_mark(&mut engine, 4, "bold");
+    toggle_mark(&mut engine, 5, "italic");
+    type_text(&mut engine, 6, " over");
+    toggle_mark(&mut engine, 7, "italic");
+    type_text(&mut engine, 8, " the lazy dog");
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([
+            plain("The quick brown fox"),
+            marked(" jumps", &["bold"]),
+            marked(" over", &["italic"]),
+            plain(" the lazy dog"),
+        ]))]),
+        "each toggle must start a new run and must not retroactively re-mark earlier text"
+    );
+}
+
+/// A collapsed toggle is stored-mark state only: it must not touch the document
+/// until the next character actually arrives.
+#[test]
+fn a_collapsed_mark_toggle_only_takes_effect_when_the_next_character_is_typed() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "plain");
+    toggle_mark(&mut engine, 2, "bold");
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([plain("plain")]))]),
+        "toggling bold with a collapsed caret must not alter the document yet"
+    );
+    assert_eq!(
+        engine.stored_marks().map(|marks| marks
+            .iter()
+            .map(|mark| mark.mark_type())
+            .collect::<Vec<_>>()),
+        Some(vec!["bold"]),
+        "the pending bold must be held as a stored mark"
+    );
+
+    type_text(&mut engine, 3, "BOLD");
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([
+            plain("plain"),
+            marked("BOLD", &["bold"]),
+        ]))])
+    );
+}
+
+/// Two marks stacked on the same run, then both switched off.
+#[test]
+fn stacking_bold_and_italic_then_clearing_both_returns_to_plain_typing() {
+    let mut engine = engine();
+
+    toggle_mark(&mut engine, 1, "bold");
+    toggle_mark(&mut engine, 2, "italic");
+    type_text(&mut engine, 3, "both");
+    toggle_mark(&mut engine, 4, "bold");
+    toggle_mark(&mut engine, 5, "italic");
+    type_text(&mut engine, 6, "neither");
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([
+            marked("both", &["bold", "italic"]),
+            plain("neither"),
+        ]))])
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2. Line returns, with and against marks
+// ---------------------------------------------------------------------------
+
+/// Return at the end of a bold run, then typing on the new line: the new line
+/// must inherit the stored bold, and the first line must keep its own runs.
+#[test]
+fn return_after_a_bold_run_carries_the_stored_mark_onto_the_new_line() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "start ");
+    toggle_mark(&mut engine, 2, "bold");
+    type_text(&mut engine, 3, "bold");
+    press_return(&mut engine, 4);
+    type_text(&mut engine, 5, "next");
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![
+            paragraph(serde_json::json!([plain("start "), marked("bold", &["bold"])])),
+            paragraph(serde_json::json!([marked("next", &["bold"])])),
+        ]),
+        "bold was still active when Return was pressed, so the new line continues bold"
+    );
+}
+
+/// Return in the middle of a marked run splits the run across both blocks
+/// without leaking the mark onto neighbouring plain text.
+#[test]
+fn return_inside_a_marked_run_splits_it_across_both_lines() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "aa");
+    toggle_mark(&mut engine, 2, "bold");
+    type_text(&mut engine, 3, "bbcc");
+    toggle_mark(&mut engine, 4, "bold");
+    type_text(&mut engine, 5, "dd");
+
+    // Caret between "bb" and "cc": 2 plain + 2 bold characters in.
+    place_caret(&mut engine, 6, 4, Affinity::After);
+    press_return(&mut engine, 7);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![
+            paragraph(serde_json::json!([plain("aa"), marked("bb", &["bold"])])),
+            paragraph(serde_json::json!([marked("cc", &["bold"]), plain("dd")])),
+        ])
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 3. Backspace
+// ---------------------------------------------------------------------------
+
+/// The ordinary case: backspace removes characters one at a time from the end
+/// of a marked run without disturbing the run in front of it.
+#[test]
+fn backspace_deletes_characters_out_of_a_marked_run_one_at_a_time() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "keep");
+    toggle_mark(&mut engine, 2, "bold");
+    type_text(&mut engine, 3, "gone");
+
+    for (index, request_id) in (10..14u64).enumerate() {
+        press_backspace(&mut engine, request_id);
+        let remaining = &"gone"[..3 - index];
+        let expected = if remaining.is_empty() {
+            paragraph(serde_json::json!([plain("keep")]))
+        } else {
+            paragraph(serde_json::json!([plain("keep"), marked(remaining, &["bold"])]))
+        };
+        assert_eq!(
+            document(&engine),
+            doc(vec![expected]),
+            "after {} backspaces the bold run should be {remaining:?}",
+            index + 1
+        );
+    }
+}
+
+/// Backspace at the start of a *non-empty* second line must join the two lines.
+/// This is the plainest possible form of "backspacing a line return" — no marks
+/// anywhere — and it is the shape every marked variant below builds on.
+#[test]
+fn backspace_at_the_start_of_a_second_line_joins_it_onto_the_first() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "first");
+    press_return(&mut engine, 2);
+    type_text(&mut engine, 3, "second");
+
+    place_caret(&mut engine, 4, start_of_second_block(5), Affinity::After);
+    press_backspace(&mut engine, 5);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([plain("firstsecond")]))]),
+        "backspace at the head of the second line must merge it into the first"
+    );
+}
+
+/// The line return sits immediately *after* a mark: the first line ends bold,
+/// the second starts plain. Joining must keep the boundary exactly where it
+/// was — the bold must not swallow the text that follows it.
+#[test]
+fn backspacing_a_line_return_that_follows_a_marked_run_keeps_the_mark_boundary() {
+    let mut engine = engine();
+
+    toggle_mark(&mut engine, 1, "bold");
+    type_text(&mut engine, 2, "bold");
+    toggle_mark(&mut engine, 3, "bold");
+    press_return(&mut engine, 4);
+    type_text(&mut engine, 5, "plain");
+
+    place_caret(&mut engine, 6, start_of_second_block(4), Affinity::After);
+    press_backspace(&mut engine, 7);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([
+            marked("bold", &["bold"]),
+            plain("plain"),
+        ]))]),
+        "the joined line must keep bold on the first run only"
+    );
+}
+
+/// The line return sits immediately *before* a mark: the first line is plain,
+/// the second starts bold. Joining must not extend the bold backwards over the
+/// plain text it lands against.
+#[test]
+fn backspacing_a_line_return_that_precedes_a_marked_run_keeps_the_mark_boundary() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "plain");
+    press_return(&mut engine, 2);
+    toggle_mark(&mut engine, 3, "bold");
+    type_text(&mut engine, 4, "bold");
+
+    place_caret(&mut engine, 5, start_of_second_block(5), Affinity::After);
+    press_backspace(&mut engine, 6);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([
+            plain("plain"),
+            marked("bold", &["bold"]),
+        ]))]),
+        "the joined line must keep the plain run plain"
+    );
+}
+
+/// Both sides of the line return carry the same mark: joining should produce
+/// one continuous marked run, not two adjacent ones.
+#[test]
+fn backspacing_a_line_return_between_two_bold_runs_produces_one_bold_run() {
+    let mut engine = engine();
+
+    toggle_mark(&mut engine, 1, "bold");
+    type_text(&mut engine, 2, "one");
+    press_return(&mut engine, 3);
+    type_text(&mut engine, 4, "two");
+
+    place_caret(&mut engine, 5, start_of_second_block(3), Affinity::After);
+    press_backspace(&mut engine, 6);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([marked("onetwo", &["bold"])]))]),
+        "identically marked text either side of the removed break must coalesce"
+    );
+}
+
+/// Backspacing an *empty* trailing line: the line return is removed and the
+/// caret returns to the end of the previous line's marked run.
+#[test]
+fn backspacing_an_empty_line_removes_it_and_leaves_the_marked_line_intact() {
+    let mut engine = engine();
+
+    toggle_mark(&mut engine, 1, "bold");
+    type_text(&mut engine, 2, "bold");
+    press_return(&mut engine, 3);
+
+    press_backspace(&mut engine, 4);
+
+    assert_eq!(
+        document(&engine),
+        doc(vec![paragraph(serde_json::json!([marked("bold", &["bold"])]))])
+    );
+}
+
+/// The full round trip a user performs when they change their mind: type two
+/// marked lines, then hold backspace until the document is empty again. This
+/// walks the caret through the marked run, across the line return, and into the
+/// first line's text in one continuous sequence.
+#[test]
+fn holding_backspace_walks_back_through_marks_and_line_returns_to_an_empty_document() {
+    let mut engine = engine();
+
+    type_text(&mut engine, 1, "ab");
+    toggle_mark(&mut engine, 2, "bold");
+    type_text(&mut engine, 3, "cd");
+    press_return(&mut engine, 4);
+    type_text(&mut engine, 5, "ef");
+
+    // "ef" (2) + the line return (1) + "cd" (2) + "ab" (2) = 7 keystrokes.
+    for (index, request_id) in (10..17u64).enumerate() {
+        press_backspace(&mut engine, request_id);
+        assert!(
+            engine.document_json().is_some(),
+            "the document must stay renderable after backspace {}",
+            index + 1
+        );
+    }
+
+    assert_eq!(
+        document(&engine),
+        serde_json::json!({
+            "type": "doc",
+            "content": [{ "type": "paragraph" }]
+        }),
+        "backspacing everything must leave a single empty paragraph"
+    );
+}
