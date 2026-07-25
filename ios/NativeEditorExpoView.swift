@@ -19,7 +19,7 @@ final class NativeEditorViewRegistry {
 
     func markEditorCreated(editorId: UInt64) {
         guard editorId != 0 else { return }
-        performOnMain {
+        _ = performOnMain {
             activeEditorIds.insert(editorId)
         }
     }
@@ -93,7 +93,7 @@ final class NativeEditorViewRegistry {
 
     func rollbackDestroy(editorId: UInt64) {
         guard editorId != 0 else { return }
-        performOnMain {
+        _ = performOnMain {
             destroyingEditorIds.remove(editorId)
         }
     }
@@ -776,6 +776,47 @@ final class EditorAccessoryToolbarView: UIInputView {
             apply(theme: theme)
         }
     }
+    /// One-line geometry census of everything that can make a full-height
+    /// accessory bar render without visible controls: item and button counts,
+    /// the frames the buttons actually laid out at, and every hidden/alpha
+    /// flag between them and the screen. Read through
+    /// `NativeEditorExpoView.toolbarDiagnosticsDescription`.
+    var diagnosticsDescription: String {
+        let scrollButtons = stackView.arrangedSubviews.map { view -> String in
+            let hidden = view.isHidden ? "hidden" : "shown"
+            return "\(Self.describe(view.frame)) \(hidden) a=\(String(format: "%.2f", view.alpha))"
+        }
+        let startButtons = startPinnedStackView.arrangedSubviews.map { Self.describe($0.frame) }
+        let endButtons = endPinnedStackView.arrangedSubviews.map { Self.describe($0.frame) }
+        return [
+            "items=\(items.count)",
+            "bindings=\(buttonBindings.count)",
+            "mentionButtons=\(mentionButtons.count)",
+            "usesBarToolbar=\(usesNativeBarToolbar)",
+            "self=\(Self.describe(bounds)) hidden=\(isHidden) alpha=\(String(format: "%.2f", alpha))",
+            "intrinsic=\(Self.describe(CGRect(origin: .zero, size: intrinsicContentSize)))",
+            "chrome=\(Self.describe(chromeView.frame)) hidden=\(chromeView.isHidden)",
+            "contentStack=\(Self.describe(contentStackView.frame)) hidden=\(contentStackView.isHidden)",
+            "scroll=\(Self.describe(scrollView.frame)) hidden=\(scrollView.isHidden)"
+                + " content=\(Self.describe(CGRect(origin: .zero, size: scrollView.contentSize)))"
+                + " offset=\(String(format: "%.1f", scrollView.contentOffset.x))",
+            "stack=\(Self.describe(stackView.frame)) hidden=\(stackView.isHidden)",
+            "startStack=\(Self.describe(startPinnedStackView.frame)) \(startButtons)",
+            "endStack=\(Self.describe(endPinnedStackView.frame)) \(endButtons)",
+            "scrollButtons=\(scrollButtons)",
+        ].joined(separator: " | ")
+    }
+
+    private static func describe(_ rect: CGRect) -> String {
+        String(
+            format: "(%.0f,%.0f,%.0fx%.0f)",
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.width,
+            rect.size.height
+        )
+    }
+
     var nativeToolbarScrollViewIsHiddenForTesting: Bool {
         nativeToolbarScrollView.isHidden
     }
@@ -784,6 +825,9 @@ final class EditorAccessoryToolbarView: UIInputView {
     }
     var nativeToolbarScrollViewFrameForTesting: CGRect {
         nativeToolbarScrollView.frame
+    }
+    var scrollViewFrameForTesting: CGRect {
+        scrollView.frame
     }
     var startPinnedStackViewFrameForTesting: CGRect {
         startPinnedStackView.frame
@@ -1372,6 +1416,7 @@ final class EditorAccessoryToolbarView: UIInputView {
         rebuildButtons(items: visibleItems.start, in: startPinnedStackView)
         rebuildButtons(items: visibleItems.scroll, in: stackView)
         rebuildButtons(items: visibleItems.end, in: endPinnedStackView)
+        updatePinnedStackParticipation()
 
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
@@ -1386,6 +1431,20 @@ final class EditorAccessoryToolbarView: UIInputView {
         updateNativeToolbarMetricsIfNeeded()
         apply(theme: theme)
         apply(state: currentState)
+    }
+
+    /// Exclude an empty pinned stack from `bodyStackView` entirely.
+    ///
+    /// Horizontal hugging cannot hold an empty `UIStackView` at zero width:
+    /// hugging only resists growing beyond an *intrinsic* size, and an empty
+    /// stack has none. With nothing to hug to, `bodyStackView`'s fill
+    /// distribution is free to hand the whole row to an empty pinned stack,
+    /// collapsing the scrolling middle that holds every button. Hiding an
+    /// arranged subview removes it from the distribution outright, which is
+    /// the only unambiguous way to say "this edge takes no space".
+    private func updatePinnedStackParticipation() {
+        startPinnedStackView.isHidden = startPinnedStackView.arrangedSubviews.isEmpty
+        endPinnedStackView.isHidden = endPinnedStackView.arrangedSubviews.isEmpty
     }
 
     private func rebuildButtons(items: [NativeToolbarItem], in container: UIStackView) {
@@ -1898,18 +1957,14 @@ final class EditorAccessoryToolbarView: UIInputView {
 
     private var usesNativeBarToolbarOverride: Bool?
 
-    /// The bar-style `UIToolbar` layout is available once iOS 26's `UIGlassEffect`
-    /// chrome is in play; on the "native" appearance we hand the scrollable middle
-    /// section over to `UIToolbar` and lay pinned items out beside it (see
-    /// `apply(theme:animateChrome:)` and the `bodyStackView` arrangement in
-    /// `setupView()`). Older OS versions and non-native appearances keep the
-    /// original custom stack-view toolbar unchanged.
+    /// The nested `UIToolbar` implementation remains available to structural
+    /// tests, but is not used as an input accessory in production. On physical
+    /// iOS 26 devices UIKit can collapse that nested bar while still reserving
+    /// the accessory slot, leaving no visible controls. The custom stack keeps
+    /// the same native appearance without relying on that host behavior.
     private var usesNativeBarToolbar: Bool {
         if let usesNativeBarToolbarOverride {
             return usesNativeBarToolbarOverride
-        }
-        if #available(iOS 26.0, *) {
-            return resolvedAppearance == .native
         }
         return false
     }
@@ -2258,7 +2313,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         clearPendingAccessoryRetry()
         clearPendingMentionSuggestionRetry()
         lastMentionEventJSON = nil
-        richTextView.textView.resignFirstResponder()
+        _ = richTextView.textView.resignFirstResponder()
         richTextView.editorId = 0
         mentionQueryState = nil
         _ = accessoryToolbar.setMentionSuggestions([])
@@ -2913,6 +2968,12 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
             // Mark this prop revision consumed before discarding its envelope:
             // OnViewDidUpdateProps can run again with the same values, but a
             // permanent rejection must not report or retry a second time.
+            if let sourceEditorId = pendingEditorUpdateEditorId,
+               richTextView.editorId != 0,
+               sourceEditorId != String(richTextView.editorId)
+            {
+                pendingEditorUpdateEditorId = nil
+            }
             consumePendingEditorUpdate(revision: pendingRevision)
         }
     }
@@ -2920,7 +2981,6 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
     private func consumePendingEditorUpdate(revision: Int) {
         appliedEditorUpdateRevision = revision
         pendingEditorUpdateJSON = nil
-        pendingEditorUpdateEditorId = nil
         pendingEditorUpdateRevision = 0
         pendingEditorUpdateRetryScheduled = false
         pendingEditorUpdateRetryEditorId = nil
@@ -3111,7 +3171,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     func blur() {
         clearRecentToolbarTouch()
-        richTextView.textView.resignFirstResponder()
+        _ = richTextView.textView.resignFirstResponder()
     }
 
     func getCaretRectJson() -> String? {
@@ -3140,11 +3200,34 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
 
     // MARK: - Focus Notifications
 
+    /// Opt-in accessory-toolbar census, printed on every focus and blur.
+    /// Enable with `defaults write <app-bundle-id> NativeEditorToolbarDiagnostics -bool YES`
+    /// (or `UserDefaults.standard.set(true, forKey:)` from the host app) and
+    /// read the lines in Console. Off by default and free when off.
+    private static let toolbarDiagnosticsEnabled = UserDefaults.standard.bool(
+        forKey: "NativeEditorToolbarDiagnostics"
+    )
+
+    private func logToolbarDiagnostics(_ phase: String) {
+        guard Self.toolbarDiagnosticsEnabled else { return }
+        print(
+            "[NativeEditorToolbar] \(phase)"
+                + " editorId=\(richTextView.editorId)"
+                + " firstResponder=\(richTextView.textView.isFirstResponder)"
+                + " accessory=\(isUsingAccessoryToolbarForTesting() ? "toolbar" : (isUsingAccessoryPlaceholderForTesting() ? "placeholder" : "none"))"
+                + " | \(accessoryToolbar.diagnosticsDescription)"
+        )
+    }
+
     @objc private func textViewDidBeginEditing(_ notification: Notification) {
         let originatingEditorId = richTextView.textView.editorId
         installOutsideTapRecognizerIfNeeded()
         richTextView.textView.refreshSelectionVisualState()
         refreshMentionQuery()
+        DispatchQueue.main.async { [weak self] in
+            self?.logToolbarDiagnostics("didBeginEditing+async")
+        }
+        logToolbarDiagnostics("didBeginEditing")
         guard let event = Self.editorScopedEventPayload(
             ["isFocused": true],
             originatingEditorId: originatingEditorId
@@ -3164,6 +3247,7 @@ class NativeEditorExpoView: ExpoView, EditorTextViewDelegate, UIGestureRecognize
         uninstallOutsideTapRecognizer()
         richTextView.textView.refreshSelectionVisualState()
         clearMentionQueryStateAndHidePopover()
+        logToolbarDiagnostics("didEndEditing")
         guard let event = Self.editorScopedEventPayload(
             ["isFocused": false],
             originatingEditorId: originatingEditorId

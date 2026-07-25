@@ -1142,7 +1142,23 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(theme.toolbar?.appearance, .native)
         XCTAssertEqual(theme.toolbar?.height ?? 0, 44, accuracy: 0.1)
         XCTAssertEqual(theme.toolbar?.resolvedKeyboardOffset ?? 0, 6, accuracy: 0.1)
-        XCTAssertEqual(theme.toolbar?.resolvedHorizontalInset ?? 0, 10, accuracy: 0.1)
+        // Edge-to-edge and square by default on every appearance; the floating
+        // inset bar is opt-in via explicit horizontalInset/borderRadius.
+        XCTAssertEqual(theme.toolbar?.resolvedHorizontalInset ?? -1, 0, accuracy: 0.1)
+        XCTAssertEqual(theme.toolbar?.resolvedBorderRadius ?? -1, 0, accuracy: 0.1)
+    }
+
+    func testToolbarThemeHonorsExplicitInsetAndBorderRadius() {
+        let theme = EditorTheme(dictionary: [
+            "toolbar": [
+                "appearance": "native",
+                "horizontalInset": 10,
+                "borderRadius": 22,
+            ],
+        ])
+
+        XCTAssertEqual(theme.toolbar?.resolvedHorizontalInset ?? -1, 10, accuracy: 0.1)
+        XCTAssertEqual(theme.toolbar?.resolvedBorderRadius ?? -1, 22, accuracy: 0.1)
     }
 
     func testAccessoryToolbarAppliesNativeAppearanceChrome() {
@@ -1731,11 +1747,9 @@ final class RichTextEditorViewTests: XCTestCase {
         return host
     }
 
-    /// With appearance native on iOS 26, the bar toolbar activates, carries
-    /// the scroll items, and the pinned stacks stay visible without overlap.
-    func testNativeBarToolbarActivatesWithPinnedItems() throws {
-        guard #available(iOS 26.0, *) else { throw XCTSkip("native bar requires iOS 26") }
-
+    /// Native appearance keeps the custom stack in production because a
+    /// nested UIToolbar can collapse inside the physical-device accessory host.
+    func testNativeAppearanceUsesCustomStackForInputAccessoryContent() {
         let toolbar = EditorAccessoryToolbarView(frame: .zero)
         let host = Self.attachToFixedWidthHost(toolbar, width: 320)
         toolbar.apply(theme: EditorToolbarTheme(dictionary: [
@@ -1744,13 +1758,13 @@ final class RichTextEditorViewTests: XCTestCase {
         toolbar.setItemsJSONForTesting(Self.nativeBarToolbarFixtureJSON)
         host.layoutIfNeeded()
 
-        XCTAssertFalse(
-            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
-            "the UIToolbar-backed scroll view should be visible once native appearance is active on iOS 26"
-        )
         XCTAssertTrue(
+            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
+            "the nested UIToolbar path must remain disabled for production input accessories"
+        )
+        XCTAssertFalse(
             toolbar.contentStackViewIsHiddenForTesting,
-            "the custom stack toolbar's content column should be hidden while the bar toolbar owns the middle slot"
+            "native appearance should keep the reliable custom stack visible"
         )
         XCTAssertEqual(
             toolbar.buttonLabelsForPlacementForTesting("start"),
@@ -1765,29 +1779,12 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(
             toolbar.buttonLabelsForPlacementForTesting("scroll"),
             ["Scroll One", "Scroll Two"],
-            "only scroll-placement items should be carried by the UIToolbar bar buttons"
-        )
-
-        let barFrame = toolbar.nativeToolbarScrollViewFrameForTesting
-        let startFrame = toolbar.startPinnedStackViewFrameForTesting
-        let endFrame = toolbar.endPinnedStackViewFrameForTesting
-        XCTAssertGreaterThan(
-            barFrame.width,
-            0,
-            "the bar toolbar must actually claim the middle slot's width, not just avoid overlap by being empty"
-        )
-        XCTAssertFalse(
-            barFrame.intersects(startFrame),
-            "bar toolbar frame \(barFrame) must not overlap the start pinned stack frame \(startFrame)"
-        )
-        XCTAssertFalse(
-            barFrame.intersects(endFrame),
-            "bar toolbar frame \(barFrame) must not overlap the end pinned stack frame \(endFrame)"
+            "scroll-placement items should remain visible in the custom stack"
         )
     }
 
-    /// Structural counterpart to `testNativeBarToolbarActivatesWithPinnedItems` that does not
-    /// require an iOS 26 runtime: it drives the show/hide and no-overlap layout behavior directly
+    /// Structural coverage for the dormant native-bar implementation drives
+    /// the show/hide and no-overlap layout behavior directly
     /// through `usesNativeBarToolbarOverrideForTesting`, so the `bodyStackView` restructure (the
     /// bar toolbar and `contentStackView` occupying the same arranged-subview slot) is verified
     /// even when the test simulator predates iOS 26.
@@ -3527,6 +3524,7 @@ final class RichTextEditorViewTests: XCTestCase {
 
         view.setPendingEditorUpdateJson(accepted)
         view.setPendingEditorUpdateEditorId("00\(editorId)")
+        XCTAssertNil(retainedPendingEditorUpdateSourceId(in: view))
         view.setPendingEditorUpdateRevision(2)
         view.applyPendingEditorUpdateIfNeeded()
         flushMainQueue()
@@ -3538,6 +3536,149 @@ final class RichTextEditorViewTests: XCTestCase {
         flushMainQueue()
         XCTAssertEqual(errorSink.errors.count, 1)
         assertNoPendingEditorUpdate(in: view)
+        XCTAssertEqual(internalEditorUpdateRejections(in: view), [])
+    }
+
+    func testPendingEditorUpdateRetainsSourceAcrossSequentialExternalRenderRevisions() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected adapter")
+            return
+        }
+        let errorSink = AutonomousErrorEventSink()
+
+        let view = NativeEditorExpoView()
+        view.onEditorErrorForTesting = errorSink.record
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Revision one</p>")
+        guard let firstUpdate = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value else {
+            XCTFail("expected first atomic render snapshot")
+            return
+        }
+        view.setPendingEditorUpdateJson(firstUpdate)
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "Revision one")
+        XCTAssertEqual(retainedPendingEditorUpdateSourceId(in: view), String(editorId))
+
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Revision two</p>")
+        guard let secondUpdate = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value else {
+            XCTFail("expected second atomic render snapshot")
+            return
+        }
+        view.setPendingEditorUpdateJson(secondUpdate)
+        view.setPendingEditorUpdateRevision(2)
+        view.applyPendingEditorUpdateIfNeeded()
+
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "Revision two")
+        XCTAssertEqual(retainedPendingEditorUpdateSourceId(in: view), String(editorId))
+        flushMainQueue()
+        flushMainQueue()
+        XCTAssertTrue(errorSink.errors.isEmpty)
+        XCTAssertEqual(internalEditorUpdateRejections(in: view), [])
+    }
+
+    func testPendingEditorUpdateClearsMismatchedRetainedSourceBeforeNextRevision() {
+        let editorId = makeV2Editor()
+        let differentEditorId = makeV2Editor()
+        defer {
+            destroyV2Editor(id: editorId)
+            destroyV2Editor(id: differentEditorId)
+        }
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId),
+              let differentAdapter = EditorV2Registry.adapter(forLegacyId: differentEditorId)
+        else {
+            XCTFail("expected adapters")
+            return
+        }
+        let errorSink = AutonomousErrorEventSink()
+
+        let view = NativeEditorExpoView()
+        view.onEditorErrorForTesting = errorSink.record
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 160)
+        let window = hostNativeEditorExpoView(view)
+        defer {
+            view.removeFromSuperview()
+            window.isHidden = true
+        }
+        view.setEditorId(editorId)
+
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Canonical</p>")
+        guard let canonicalUpdate = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value else {
+            XCTFail("expected canonical atomic render snapshot")
+            return
+        }
+        view.setPendingEditorUpdateJson(canonicalUpdate)
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        view.setPendingEditorUpdateRevision(1)
+        view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "Canonical")
+
+        _ = EditorV2Shadow.replaceHtml(id: differentEditorId, html: "<p>Different source</p>")
+        guard let mismatchedUpdate = editorV2RenderUpdate(
+            editorId: differentAdapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value else {
+            XCTFail("expected mismatched atomic render snapshot")
+            return
+        }
+        view.setPendingEditorUpdateJson(mismatchedUpdate)
+        view.setPendingEditorUpdateEditorId(String(differentEditorId))
+        view.setPendingEditorUpdateRevision(2)
+        view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
+        flushMainQueue()
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "Canonical")
+        XCTAssertNil(retainedPendingEditorUpdateSourceId(in: view))
+        XCTAssertEqual(errorSink.errors.count, 1)
+        XCTAssertEqual(
+            errorSink.errors.last?.message,
+            "external editor update source does not match the bound canonical editor id"
+        )
+
+        _ = EditorV2Shadow.replaceHtml(id: editorId, html: "<p>Must not render</p>")
+        guard let idOmittedUpdate = editorV2RenderUpdate(
+            editorId: adapter.editorId,
+            mirrorScalarAnchor: nil,
+            mirrorScalarHead: nil
+        ).value else {
+            XCTFail("expected ID-omitted atomic render snapshot")
+            return
+        }
+        view.setPendingEditorUpdateJson(idOmittedUpdate)
+        view.setPendingEditorUpdateRevision(3)
+        view.applyPendingEditorUpdateIfNeeded()
+        flushMainQueue()
+        flushMainQueue()
+
+        XCTAssertEqual(view.richTextView.textView.textStorage.string, "Canonical")
+        XCTAssertEqual(errorSink.errors.count, 2)
+        XCTAssertEqual(
+            errorSink.errors.last?.message,
+            "external editor update source id is missing or malformed"
+        )
         XCTAssertEqual(internalEditorUpdateRejections(in: view), [])
     }
 
@@ -3553,8 +3694,10 @@ final class RichTextEditorViewTests: XCTestCase {
         let view = NativeEditorExpoView()
         view.onEditorErrorForTesting = errorSink.record
         view.setEditorId(editorId)
-        view.setPendingEditorUpdateJson(nil)
         view.setPendingEditorUpdateEditorId(String(editorId))
+        XCTAssertEqual(retainedPendingEditorUpdateSourceId(in: view), String(editorId))
+        view.setPendingEditorUpdateJson(nil)
+        XCTAssertNil(retainedPendingEditorUpdateSourceId(in: view))
         view.setPendingEditorUpdateRevision(1)
 
         view.applyPendingEditorUpdateIfNeeded()
@@ -3944,12 +4087,14 @@ final class RichTextEditorViewTests: XCTestCase {
         view.setPendingEditorUpdateEditorId(String(firstEditorId))
         view.setPendingEditorUpdateRevision(1)
         view.applyPendingEditorUpdateIfNeeded()
+        XCTAssertEqual(retainedPendingEditorUpdateSourceId(in: view), String(firstEditorId))
 
         view.setEditorId(secondEditorId)
         flushMainQueue()
         flushMainQueue()
 
         XCTAssertEqual(view.richTextView.textView.textStorage.string, "Second")
+        XCTAssertNil(retainedPendingEditorUpdateSourceId(in: view))
     }
 
     func testInputTraitChangesDrainPendingNativeAutocorrectBeforeReload() {
@@ -4559,6 +4704,8 @@ final class RichTextEditorViewTests: XCTestCase {
         view.setEditorId(editorId)
         XCTAssertEqual(view.richTextView.editorId, editorId)
         XCTAssertEqual(view.richTextView.textView.editorId, editorId)
+        view.setPendingEditorUpdateEditorId(String(editorId))
+        XCTAssertEqual(retainedPendingEditorUpdateSourceId(in: view), String(editorId))
 
         NativeEditorViewRegistry.shared.invalidateDestroyedEditor(editorId: editorId)
         destroyV2Editor(id: editorId)
@@ -4570,6 +4717,7 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertEqual(preparation["blockedReason"] as? String, "destroyed")
         XCTAssertEqual(view.richTextView.editorId, 0)
         XCTAssertEqual(view.richTextView.textView.editorId, 0)
+        XCTAssertNil(retainedPendingEditorUpdateSourceId(in: view))
     }
 
     func testMalformedEditorIdPropRetainsExistingBinding() {
@@ -8235,6 +8383,12 @@ final class RichTextEditorViewTests: XCTestCase {
         }?.value as? [String] ?? []
     }
 
+    private func retainedPendingEditorUpdateSourceId(in view: NativeEditorExpoView) -> String? {
+        Mirror(reflecting: view).children.first {
+            $0.label == "pendingEditorUpdateEditorId"
+        }?.value as? String
+    }
+
     private func assertNoPendingEditorUpdate(
         in view: NativeEditorExpoView,
         file: StaticString = #filePath,
@@ -8246,7 +8400,6 @@ final class RichTextEditorViewTests: XCTestCase {
             return (label, child.value)
         })
         XCTAssertNil(state["pendingEditorUpdateJSON"] as? String, file: file, line: line)
-        XCTAssertNil(state["pendingEditorUpdateEditorId"] as? String, file: file, line: line)
         XCTAssertEqual(state["pendingEditorUpdateRevision"] as? Int, 0, file: file, line: line)
         XCTAssertEqual(state["pendingEditorUpdateRetryScheduled"] as? Bool, false, file: file, line: line)
     }
