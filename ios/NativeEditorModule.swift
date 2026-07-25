@@ -492,9 +492,28 @@ private func renderDocumentProbe(
     )
 }
 
-public class NativeEditorModule: Module {
+// `Module` is `BaseModule & AnyModule`; the conformance is spelled out so
+// `AnyModule` can carry `@preconcurrency`. That is what lets `definition()`
+// below be `@MainActor` even though the protocol requirement is nonisolated.
+//
+// Why `definition()` has to be main-actor isolated: expo-modules-core declares
+// `extension UIView: @MainActor AnyArgument`, so every `UIView` subclass gets a
+// main-actor-isolated `AnyArgument` conformance. The `AsyncFunction` factories
+// used for view functions require `A0: AnyArgument`, and an isolated conformance
+// may only be used from a context isolated to the same actor — otherwise the
+// compiler reports `#IsolatedConformances` (a warning in Swift 5 mode, an error
+// in Swift 6).
+//
+// Caveat: `definition()` is actually invoked on the JS thread
+// (`EXReactNativeFactory host:didInitializeRuntime:` → `registerNativeModules`),
+// so the isolation claimed here is a compile-time device only. Under Swift 5
+// mode the witness thunk is a plain passthrough — no executor check is emitted —
+// but that also means nothing in this method body may touch main-actor state.
+// Keep it pure definition building.
+public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
     private var collaborationLifecycleObservers: [NSObjectProtocol] = []
 
+    @MainActor
     public func definition() -> ModuleDefinition {
         Name("NativeEditor")
         Events("onCollaborationTransportEvent")
