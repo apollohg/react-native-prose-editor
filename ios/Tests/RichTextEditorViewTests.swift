@@ -206,6 +206,35 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertTrue(textView.isPlaceholderVisibleForTesting())
     }
 
+    /// An empty bullet is content the user can see, so the placeholder must go.
+    ///
+    /// `isRenderedContentEmpty()` decides this by scanning the characters in the
+    /// text view's own storage. An empty list item contributes no characters —
+    /// the bullet marker is drawn from block structure, not stored as text — so
+    /// that scan cannot tell this document apart from a genuinely empty one, and
+    /// the placeholder stays up over a visible bullet. Emptiness has to come
+    /// from the core, which reports this document as longer than an empty one.
+    func testPlaceholderHidesForRenderedEmptyListItem() {
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
+        textView.placeholder = "Type here"
+        textView.applyRenderJSON("""
+        [
+          {"type":"blockStart","nodeType":"bulletList","depth":0},
+          {"type":"blockStart","nodeType":"listItem","depth":1},
+          {"type":"blockStart","nodeType":"paragraph","depth":2},
+          {"type":"textRun","text":"\\u200B","marks":[]},
+          {"type":"blockEnd"},
+          {"type":"blockEnd"},
+          {"type":"blockEnd"}
+        ]
+        """)
+
+        XCTAssertFalse(
+            textView.isPlaceholderVisibleForTesting(),
+            "a document containing an empty bullet is not an empty editor"
+        )
+    }
+
     func testPlaceholderHidesForRenderedNonEmptyParagraph() {
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.placeholder = "Type here"
