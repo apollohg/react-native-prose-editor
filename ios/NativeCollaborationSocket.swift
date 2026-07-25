@@ -3,6 +3,7 @@ import Foundation
 struct CollaborationSocketCallbacks {
     let didOpen: (_ negotiatedProtocol: String?) -> Void
     let didClose: (_ code: URLSessionWebSocketTask.CloseCode, _ reason: Data?) -> Void
+    let didFail: () -> Void
 }
 
 enum CollaborationSocketMessage {
@@ -115,5 +116,14 @@ final class NativeCollaborationSocket: NSObject, CollaborationSocket, URLSession
         reason: Data?
     ) {
         callbacks.didClose(closeCode, reason)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard error != nil else { return }
+        callbacks.didFail()
     }
 }

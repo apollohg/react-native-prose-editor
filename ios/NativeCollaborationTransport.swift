@@ -489,6 +489,15 @@ final class NativeCollaborationTransport {
                         code: UInt32(code.rawValue)
                     )
                 }
+            },
+            didFail: { [weak self] in
+                self?.queue.async {
+                    self?.failCurrentSocket(
+                        token: token,
+                        generation: newGeneration,
+                        code: nil
+                    )
+                }
             }
         )
         let newSocket = socketFactory.makeSocket(
