@@ -2510,3 +2510,259 @@ fn staging_render_accessor_errors_are_structured() {
     let error = err_json(&v2_render::editor_v2_render_update(id.clone(), None, None));
     assert_error(&error, "lifecycle", "ENGINE_DESTROYED", None);
 }
+
+/// Reported active mark state, as the toolbar reads it.
+///
+/// `NativeToolbarState` on iOS is built from the render update's `activeState`
+/// (see `activeState["marks"]` in `NativeEditorExpoView.swift`), so that is the
+/// surface a toolbar button's lit/unlit state actually comes from.
+fn active_mark(id: &str, mark_type: &str) -> Value {
+    let update = ok_json(&v2_render::editor_v2_render_update(
+        id.to_string(),
+        None,
+        None,
+    ));
+    update["activeState"]["marks"][mark_type].clone()
+}
+
+/// Toolbar button state must update the moment the button is pressed.
+///
+/// Pressing bold with a collapsed caret is a state-only transaction — it stores
+/// the mark without touching the document — so if the reported active state
+/// ignores stored marks the button stays unlit until the user types a character
+/// and the document finally carries the mark. That is the "bold doesn't light
+/// up until I type" behaviour.
+#[test]
+fn collapsed_mark_toggle_updates_reported_toolbar_state_before_the_next_character() {
+    let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
+
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(1, 0, json!({ "type": "insertText", "text": "word" })),
+    ));
+    assert_eq!(
+        active_mark(&id, "bold"),
+        json!(false),
+        "precondition: bold is off while typing plain text"
+    );
+
+    let revision = revision_of(&id);
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(
+            2,
+            revision,
+            json!({ "type": "toggleMark", "markType": "bold" }),
+        ),
+    ));
+
+    assert_eq!(
+        active_mark(&id, "bold"),
+        json!(true),
+        "the bold button must read as active immediately after it is pressed, \
+         before any character is typed"
+    );
+
+    // And it must stay active once the next character actually arrives.
+    let revision = revision_of(&id);
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(3, revision, json!({ "type": "insertText", "text": "X" })),
+    ));
+    assert_eq!(
+        active_mark(&id, "bold"),
+        json!(true),
+        "bold must remain active while typing inside the bold run"
+    );
+
+    destroy_handle(&id);
+}
+
+/// The mirror: switching a mark off with a collapsed caret must clear the
+/// button immediately too, rather than waiting for the next keystroke.
+#[test]
+fn collapsed_mark_untoggle_clears_reported_toolbar_state_immediately() {
+    let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
+
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(1, 0, json!({ "type": "toggleMark", "markType": "bold" })),
+    ));
+    let revision = revision_of(&id);
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(2, revision, json!({ "type": "insertText", "text": "bold" })),
+    ));
+    assert_eq!(active_mark(&id, "bold"), json!(true));
+
+    let revision = revision_of(&id);
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(
+            3,
+            revision,
+            json!({ "type": "toggleMark", "markType": "bold" }),
+        ),
+    ));
+    assert_eq!(
+        active_mark(&id, "bold"),
+        json!(false),
+        "switching bold off must unlight the button before the next character"
+    );
+
+    destroy_handle(&id);
+}
+
+/// The caret the host renders, as scalar offsets.
+///
+/// A collapsed caret serializes as a text selection whose anchor and head
+/// coincide; the scalar pair is what the native view maps onto its own text
+/// storage, so it is the offset a user sees the caret drawn at.
+fn caret_scalar(id: &str) -> u64 {
+    let update = ok_json(&v2_render::editor_v2_render_update(
+        id.to_string(),
+        None,
+        None,
+    ));
+    let selection = &update["selection"];
+    assert_eq!(selection["type"], json!("text"), "{selection:?}");
+    let anchor = selection["anchorScalar"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("selection carries a scalar anchor: {selection:?}"));
+    let head = selection["headScalar"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("selection carries a scalar head: {selection:?}"));
+    assert_eq!(anchor, head, "the caret must stay collapsed: {selection:?}");
+    anchor
+}
+
+/// Converting a line into a list item must leave the caret on the same
+/// character it was on before.
+///
+/// Wrapping shifts every scalar offset in the line: the bullet list, list item,
+/// and paragraph opening tokens sit in front of the text, so the same character
+/// reports a higher offset afterwards. If the caret is carried over as a raw
+/// number rather than re-resolved through the new structure, it lands short of
+/// where the user left it — visibly jumping backwards into the text.
+#[test]
+fn converting_a_line_into_a_list_item_keeps_the_caret_on_the_same_character() {
+    let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
+
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(1, 0, json!({ "type": "insertText", "text": "one" })),
+    ));
+    assert_eq!(
+        caret_scalar(&id),
+        3,
+        "precondition: the caret sits after the third character of a bare line"
+    );
+
+    let revision = revision_of(&id);
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(
+            2,
+            revision,
+            json!({ "type": "applyListType", "listType": "bulletList" }),
+        ),
+    ));
+
+    // "one" now begins two scalars in, behind the list and item openings, so the
+    // end of the same text is offset 5 rather than 3.
+    assert_eq!(
+        caret_scalar(&id),
+        5,
+        "the caret must still sit at the end of the converted line, not at the \
+         offset it held before the wrap"
+    );
+
+    destroy_handle(&id);
+}
+
+/// The same check with the caret parked mid-word rather than at the end, so a
+/// fix that merely pins the caret to the end of the line cannot pass.
+#[test]
+fn converting_a_line_into_a_list_item_keeps_a_mid_word_caret_in_place() {
+    let id = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
+
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(1, 0, json!({ "type": "insertText", "text": "one" })),
+    ));
+    ok_json(&v2::editor_v2_set_selection(
+        id.clone(),
+        selection_envelope(2, revision_of(&id), 1, 1),
+    ));
+    assert_eq!(caret_scalar(&id), 1, "precondition: caret between o and n");
+
+    let revision = revision_of(&id);
+    ok_json(&v2::editor_v2_apply_command(
+        id.clone(),
+        command_envelope(
+            3,
+            revision,
+            json!({ "type": "applyListType", "listType": "bulletList" }),
+        ),
+    ));
+
+    assert_eq!(
+        caret_scalar(&id),
+        3,
+        "a caret one character into the line must still be one character in \
+         after the wrap"
+    );
+
+    destroy_handle(&id);
+}
+
+/// Emptiness must be answerable from the core, not re-derived by the host.
+///
+/// The iOS placeholder is currently driven by scanning the rendered characters
+/// in the text view's own storage (`RichTextEditorView.isRenderedContentEmpty`).
+/// That scan structurally cannot see an empty list item: the bullet marker is
+/// drawn from block structure rather than stored as text, so a document holding
+/// one empty bullet looks character-for-character identical to an empty
+/// document and the placeholder stays up over a visible bullet.
+///
+/// The render update is the payload the host already consumes, so it has to
+/// carry a signal that separates the two.
+#[test]
+fn the_render_update_distinguishes_an_empty_document_from_an_empty_list_item() {
+    let empty = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
+    let empty_update = ok_json(&v2_render::editor_v2_render_update(
+        empty.clone(),
+        None,
+        None,
+    ));
+
+    let listed = create_handle(json!({ "initialization": { "type": "localEmpty" } }));
+    ok_json(&v2::editor_v2_apply_command(
+        listed.clone(),
+        command_envelope(
+            1,
+            0,
+            json!({ "type": "applyListType", "listType": "bulletList" }),
+        ),
+    ));
+    let listed_update = ok_json(&v2_render::editor_v2_render_update(
+        listed.clone(),
+        None,
+        None,
+    ));
+
+    assert_eq!(
+        empty_update["scalarLength"],
+        json!(1),
+        "an empty editor renders as its single empty placeholder block"
+    );
+    assert_eq!(
+        listed_update["scalarLength"],
+        json!(3),
+        "one empty bullet renders as the list and item openings around that \
+         block, so the host can tell the two apart without inspecting text"
+    );
+
+    destroy_handle(&empty);
+    destroy_handle(&listed);
+}
