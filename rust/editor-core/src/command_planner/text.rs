@@ -166,7 +166,7 @@ pub(crate) fn plan_delete_scalar_range(
             return Ok(Some(plan));
         }
     }
-    if let Some(operation) = super::marker_backspace_action(
+    if let Some(plan) = super::marker_backspace_action(
         document,
         position_map,
         schema,
@@ -175,7 +175,7 @@ pub(crate) fn plan_delete_scalar_range(
         doc_from,
         doc_to,
     ) {
-        return Ok(Some(SemanticCommandPlan::one(operation)));
+        return Ok(Some(plan));
     }
     if let Some(plan) = super::lift_trailing_empty_list_block(
         document,

@@ -282,7 +282,7 @@ fn marker_backspace_action(
     scalar_to: u32,
     doc_from: u32,
     doc_to: u32,
-) -> Option<SemanticOperation> {
+) -> Option<SemanticCommandPlan> {
     if scalar_from >= scalar_to
         || doc_from != doc_to
         || map.doc_to_scalar(doc_to, document) != scalar_to
@@ -304,13 +304,40 @@ fn marker_backspace_action(
         return None;
     }
     let item_index = usize::try_from(resolved.node_path[depth]).ok()?;
-    if item_index == 0 {
-        Some(SemanticOperation::UnwrapFromList { pos: doc_to })
-    } else {
-        Some(SemanticOperation::JoinBlocks {
-            pos: node_delete_start(document, &resolved.node_path[..=depth])?,
-        })
+    if item_index > 0 {
+        // A later bullet merges into the one above it. Joining the two items
+        // alone would leave their paragraphs side by side inside a single
+        // bullet, so the paragraphs are joined too.
+        //
+        // Plan operations apply in sequence without remapping, so the second
+        // position is stated in post-join coordinates: joining two blocks
+        // removes exactly two tokens — the previous item's close and this
+        // item's open — and the paragraph boundary sits after both.
+        let item_boundary = node_delete_start(document, &resolved.node_path[..=depth])?;
+        let paragraph_boundary = node_delete_start(document, &resolved.node_path)?.checked_sub(2)?;
+        return Some(SemanticCommandPlan {
+            operations: vec![
+                SemanticOperation::JoinBlocks { pos: item_boundary },
+                SemanticOperation::JoinBlocks {
+                    pos: paragraph_boundary,
+                },
+            ],
+            selection_after: None,
+            history: SemanticCommandHistory::InputBoundary,
+        });
     }
+    // First bullet of a nested list: step it out one level, the mirror of Tab.
+    // Unwrapping instead would drop it into the parent bullet as a second
+    // paragraph, losing the bullet entirely.
+    if nearest_list_item_depth(document, schema, &resolved.node_path[..depth]).is_some() {
+        return Some(SemanticCommandPlan::one(SemanticOperation::OutdentListItem {
+            pos: doc_to,
+        }));
+    }
+    // First bullet of a top-level list: leave the list altogether.
+    Some(SemanticCommandPlan::one(SemanticOperation::UnwrapFromList {
+        pos: doc_to,
+    }))
 }
 
 /// Backspace at the very start of a text block that still has content joins it
