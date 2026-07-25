@@ -313,6 +313,82 @@ fn marker_backspace_action(
     }
 }
 
+/// Backspace at the very start of a text block that still has content joins it
+/// onto the block before it — what every comparable editor does.
+///
+/// [`marker_backspace_action`] already implements this for list items, where
+/// the surrounding item structure makes the target unambiguous. Every other
+/// text block (paragraph, heading, a line inside a blockquote) fell through to
+/// the `DeleteRange` fallback at the end of [`text::plan_delete_scalar_range`],
+/// which asks the engine to delete a range whose start sits on a block boundary
+/// rather than inside tracked text. The engine correctly refuses that as a
+/// cross-parent structural deletion, so the keystroke failed outright instead
+/// of merging the two blocks.
+///
+/// Only a join against a previous *text block* sibling is planned here. A
+/// previous sibling that is a void/atom node (an image, a horizontal rule) has
+/// no text to merge into, and a first child has nothing before it at all; both
+/// fall through to the existing behaviour.
+fn join_with_previous_block_action(
+    document: &Document,
+    map: &PositionMap,
+    schema: &Schema,
+    scalar_from: u32,
+    scalar_to: u32,
+    doc_to: u32,
+) -> Option<SemanticOperation> {
+    if scalar_from >= scalar_to || map.doc_to_scalar(doc_to, document) != scalar_to {
+        return None;
+    }
+    let resolved = document.resolve(doc_to).ok()?;
+    let block = resolved.parent(document);
+    if !is_text_block(schema, block) || resolved.parent_offset != 0 || block.content_size() == 0 {
+        return None;
+    }
+
+    // The caret is at the head of this block; joining needs a preceding sibling
+    // within the same parent.
+    let (&index, ancestors) = resolved.node_path.split_last()?;
+    if index == 0 {
+        return None;
+    }
+    let mut parent = document.root();
+    for &ancestor in ancestors {
+        parent = parent.child(ancestor as usize)?;
+    }
+    let previous = parent.content()?.child(usize::try_from(index).ok()? - 1)?;
+    if !is_text_block(schema, previous) {
+        return None;
+    }
+
+    Some(SemanticOperation::JoinBlocks {
+        pos: node_delete_start_pos(document, &resolved.node_path)?,
+    })
+}
+
+fn is_text_block(schema: &Schema, node: &crate::model::Node) -> bool {
+    schema
+        .node(node.node_type())
+        .is_some_and(|spec| matches!(spec.role, NodeRole::TextBlock))
+}
+
+/// Position of the boundary immediately before the node at `path` — the
+/// `JoinBlocks` anchor.
+fn node_delete_start_pos(document: &Document, path: &[u32]) -> Option<u32> {
+    let mut node = document.root();
+    let mut open = 0u32;
+    for index in path.iter().copied() {
+        let content = node.content()?;
+        let mut child_open = open.checked_add(1)?;
+        for sibling in content.iter().take(index as usize) {
+            child_open = child_open.checked_add(sibling.node_size())?;
+        }
+        node = content.child(index as usize)?;
+        open = child_open;
+    }
+    open.checked_sub(1)
+}
+
 fn nearest_list_item_depth(document: &Document, schema: &Schema, path: &[u32]) -> Option<usize> {
     let mut node = document.root();
     let mut found = None;
