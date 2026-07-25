@@ -1784,4 +1784,75 @@ final class EditorV2AdapterTests: XCTestCase {
             .joined()
         XCTAssertEqual(voidText, "after")
     }
+
+    /// Wrapping a line in a list must not drag the caret backwards.
+    ///
+    /// `commandAtSelection` mirrors the post-command render update at the
+    /// caret's *pre-command* scalar offsets. That is right for a mark toggle,
+    /// which moves no text, but a structural wrap inserts the list, item, and
+    /// paragraph opening tokens in front of the line — every offset in it
+    /// shifts by two. Mirroring the old offsets pins the caret two characters
+    /// short of where the user left it.
+    func testWrappingALineInAListKeepsTheCaretAtTheEndOfTheText() {
+        let adapter = makeAdapter()
+        _ = adapter.insertText("one", atScalar: 0)
+
+        let beforeUpdate = parseObject(
+            editorV2RenderUpdate(
+                editorId: adapter.editorId,
+                mirrorScalarAnchor: nil,
+                mirrorScalarHead: nil
+            ).value
+        )
+        let beforeSelection = beforeUpdate["selection"] as? [String: Any]
+        XCTAssertEqual(
+            (beforeSelection?["anchorScalar"] as? NSNumber)?.uint32Value,
+            3,
+            "precondition: the caret sits at the end of the bare line"
+        )
+
+        let updateJSON = adapter.wrapInList(
+            listType: "bulletList",
+            itemType: "listItem",
+            anchor: 3,
+            head: 3
+        )
+        let update = parseObject(updateJSON)
+        let selection = update["selection"] as? [String: Any]
+
+        XCTAssertEqual(
+            (selection?["anchorScalar"] as? NSNumber)?.uint32Value,
+            5,
+            "the caret must land at the end of the wrapped line, not at the "
+                + "offset it held before the list tokens were inserted"
+        )
+        XCTAssertEqual(
+            (selection?["headScalar"] as? NSNumber)?.uint32Value,
+            5,
+            "the caret must stay collapsed at the end of the wrapped line"
+        )
+    }
+
+    /// The same shift applies to a caret parked mid-word, so a fix cannot get
+    /// away with pinning the caret to the end of the line.
+    func testWrappingALineInAListKeepsAMidWordCaretOnTheSameCharacter() {
+        let adapter = makeAdapter()
+        _ = adapter.insertText("one", atScalar: 0)
+
+        let updateJSON = adapter.wrapInList(
+            listType: "bulletList",
+            itemType: "listItem",
+            anchor: 1,
+            head: 1
+        )
+        let update = parseObject(updateJSON)
+        let selection = update["selection"] as? [String: Any]
+
+        XCTAssertEqual(
+            (selection?["anchorScalar"] as? NSNumber)?.uint32Value,
+            3,
+            "a caret one character into the line must still be one character "
+                + "in after the wrap"
+        )
+    }
 }
