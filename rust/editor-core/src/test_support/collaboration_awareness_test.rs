@@ -2054,6 +2054,112 @@ fn typed_awareness_intent_owns_sticky_cursors_and_survives_or_omits_them_on_rest
 }
 
 #[test]
+fn omitting_the_intent_selection_retains_the_cursor_and_an_explicit_null_clears_it() {
+    let (id, snapshot) = create_ready_room();
+    let generation = synchronize_ready_room(id, &snapshot);
+
+    // A first intent establishes the Rust-owned sticky cursor.
+    let established = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        json!({
+            "state": { "name": "local author" },
+            "focused": true,
+            "selection": { "type": "text", "anchor": 7, "head": 7 },
+        })
+        .to_string(),
+    );
+    assert!(established.error.is_none(), "{established:?}");
+    let cursor_after_establish = desired_awareness(id).unwrap().unwrap()["cursor"].clone();
+    assert!(cursor_after_establish.is_object(), "{cursor_after_establish}");
+    assert_eq!(local_peer(id).unwrap().cursor, Some((7, 7)));
+    drain_protocol_replies(id, generation);
+
+    // A focus-only intent omits `selection` entirely. The caller states no
+    // document position, so the established sticky cursor is kept verbatim
+    // rather than being dropped or re-resolved.
+    let focus_only = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        json!({ "state": { "name": "local author" }, "focused": false }).to_string(),
+    );
+    assert!(focus_only.error.is_none(), "{focus_only:?}");
+    let desired = desired_awareness(id).unwrap().unwrap();
+    assert_eq!(desired["focused"], false);
+    assert_eq!(
+        desired["cursor"], cursor_after_establish,
+        "an omitted selection must retain the exact sticky cursor: {desired}",
+    );
+    assert_eq!(local_peer(id).unwrap().cursor, Some((7, 7)));
+
+    // The sticky cursor keeps following the document across focus-only
+    // republishes: no caller-side position is ever restated.
+    let revision = bridge::session_audit(id).unwrap().document_revision;
+    bridge::submit_selection(
+        id,
+        &json!({
+            "version": 1,
+            "requestId": "9101",
+            "baseDocumentRevision": revision.to_string(),
+            "selection": {
+                "type": "text",
+                "anchor": { "offset": 0, "kind": "scalar" },
+                "head": { "offset": 0, "kind": "scalar" },
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let revision = bridge::session_audit(id).unwrap().document_revision;
+    bridge::submit_input(
+        id,
+        &json!({
+            "version": 1,
+            "requestId": "9102",
+            "baseDocumentRevision": revision.to_string(),
+            "text": "xx",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let refocused = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        json!({ "state": { "name": "local author" }, "focused": true }).to_string(),
+    );
+    assert!(refocused.error.is_none(), "{refocused:?}");
+    assert_eq!(
+        local_peer(id).unwrap().cursor,
+        Some((9, 9)),
+        "the retained sticky cursor tracks the edit that shifted it",
+    );
+
+    // An explicit null is the only way to publish presence without a cursor.
+    let cleared = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        json!({
+            "state": { "name": "local author" },
+            "focused": true,
+            "selection": Value::Null,
+        })
+        .to_string(),
+    );
+    assert!(cleared.error.is_none(), "{cleared:?}");
+    let desired = desired_awareness(id).unwrap().unwrap();
+    assert!(
+        desired.get("cursor").is_none(),
+        "an explicit null selection publishes no cursor: {desired}",
+    );
+    assert_eq!(local_peer(id).unwrap().cursor, None);
+
+    // Retaining an absent cursor stays absent rather than resurrecting one.
+    let still_absent = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        json!({ "state": { "name": "local author" }, "focused": false }).to_string(),
+    );
+    assert!(still_absent.error.is_none(), "{still_absent:?}");
+    assert!(desired_awareness(id).unwrap().unwrap().get("cursor").is_none());
+    destroy_session(id);
+}
+
+#[test]
 fn awareness_selection_patch_preserves_state_and_focus_and_queues_one_frame() {
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
@@ -2207,7 +2313,7 @@ fn out_of_range_awareness_selection_patch_is_atomic() {
 }
 
 #[test]
-fn awareness_review_fix_rejects_explicit_null_selection_atomically() {
+fn an_explicit_null_selection_clears_the_cursor_while_a_malformed_one_rejects_atomically() {
     let (id, snapshot) = create_ready_room();
     let generation = synchronize_ready_room(id, &snapshot);
     let accepted = json!({
@@ -2222,6 +2328,7 @@ fn awareness_review_fix_rejects_explicit_null_selection_atomically() {
     assert!(result.error.is_none(), "{result:?}");
     drain_protocol_replies(id, generation);
 
+    // A malformed selection is still refused without touching any state.
     let peers_before = awareness_peers(id).unwrap();
     let desired_before = desired_awareness(id).unwrap();
     let audit_before = session_audit(id).unwrap();
@@ -2230,17 +2337,34 @@ fn awareness_review_fix_rejects_explicit_null_selection_atomically() {
         json!({
             "state": { "name": "must not replace kept" },
             "focused": false,
-            "selection": null,
+            "selection": { "type": "node", "pos": 1 },
         })
         .to_string(),
     );
     assert!(result.value.is_none(), "{result:?}");
-    let error = result.error.expect("explicit null selection must reject");
+    let error = result.error.expect("a malformed selection must reject");
     assert_eq!(error.code, "AWARENESS_STATE_INVALID", "{error:?}");
     assert_eq!(awareness_peers(id).unwrap(), peers_before);
     assert_eq!(desired_awareness(id).unwrap(), desired_before);
     assert_eq!(session_audit(id).unwrap(), audit_before);
     assert_eq!(pending_protocol_replies(id).unwrap(), Some((0, 0)));
+
+    // An explicit null is the caller's way to publish presence with no
+    // cursor at all, distinct from omitting the key to retain one.
+    let result = v2_collaboration::editor_v2_collaboration_set_awareness(
+        id.to_string(),
+        json!({
+            "state": { "name": "cursorless" },
+            "focused": false,
+            "selection": Value::Null,
+        })
+        .to_string(),
+    );
+    assert!(result.error.is_none(), "{result:?}");
+    let desired = desired_awareness(id).unwrap().unwrap();
+    assert_eq!(desired["state"], json!({ "name": "cursorless" }));
+    assert!(desired.get("cursor").is_none(), "{desired}");
+    assert_eq!(local_peer(id).unwrap().cursor, None);
     destroy_session(id);
 }
 

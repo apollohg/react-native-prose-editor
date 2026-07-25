@@ -1456,11 +1456,13 @@ fn typed_awareness_intent_ffi_and_collaboration_binary_round_trip() {
     ack_v2(&id, &generation, lease.lease_id);
     assert_empty_lease_v2(&id, &generation);
 
-    // Omitting selection deliberately removes the engine-owned cursor while
-    // retaining the application state and focus flag.
+    // An explicit null selection removes the engine-owned cursor while
+    // retaining the application state and focus flag. (Omitting the key
+    // instead would retain the cursor — see the awareness suite.)
     ok_unit(&v2_collab::editor_v2_collaboration_set_awareness(
         id.clone(),
-        json!({ "state": { "name": "cursorless" }, "focused": false }).to_string(),
+        json!({ "state": { "name": "cursorless" }, "focused": false, "selection": Value::Null })
+            .to_string(),
     ));
     let peers = ok_json(&v2_collab::editor_v2_collaboration_peers(id.clone()));
     let local = peers["peers"]

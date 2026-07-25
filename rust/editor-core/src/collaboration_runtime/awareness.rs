@@ -69,10 +69,21 @@ pub(crate) struct AwarenessSelectionOutcome {
     pub(crate) outbound_changed: bool,
 }
 
+/// How one published intent treats the local cursor. Rust owns the sticky
+/// index, so a caller that is only changing focus or application state must
+/// be able to say "leave it alone" without restating a document position it
+/// may no longer be able to resolve.
+///
+/// - key omitted -> [`Self::Retain`]: keep the sticky cursor already
+///   published, whatever the document has done since;
+/// - `"selection": null` -> [`Self::Clear`]: publish no cursor at all;
+/// - a text selection -> [`Self::Present`]: materialize these positions
+///   against the current document, refusing if they do not resolve.
 #[derive(Debug, Default)]
 enum LocalAwarenessSelectionWire {
     #[default]
-    Absent,
+    Retain,
+    Clear,
     Present(LocalAwarenessSelection),
 }
 
@@ -81,7 +92,10 @@ impl<'de> Deserialize<'de> for LocalAwarenessSelectionWire {
     where
         D: serde::Deserializer<'de>,
     {
-        LocalAwarenessSelection::deserialize(deserializer).map(Self::Present)
+        match Option::<LocalAwarenessSelection>::deserialize(deserializer)? {
+            None => Ok(Self::Clear),
+            Some(selection) => Ok(Self::Present(selection)),
+        }
     }
 }
 
@@ -437,7 +451,16 @@ impl CollaborationRuntime {
                         "local awareness selection is outside the current document",
                     )
                 })?,
-            LocalAwarenessSelectionWire::Absent => Value::Null,
+            LocalAwarenessSelectionWire::Clear => Value::Null,
+            // Sticky indices survive every document mutation, so the cursor
+            // already published stays correct without being restated.
+            LocalAwarenessSelectionWire::Retain => self
+                .awareness
+                .desired_state
+                .as_ref()
+                .and_then(|state| state.get("cursor"))
+                .cloned()
+                .unwrap_or(Value::Null),
         };
         let mut published = Map::new();
         published.insert("state".into(), intent.state);
@@ -769,8 +792,8 @@ impl CollaborationRuntime {
         Ok(())
     }
 
-    /// Reserve-then-install one framed awareness broadcast as a protocol
-    /// entry (Task 7 seam; awareness frames never touch document entries).
+    /// Reserve-then-install one framed awareness broadcast after any document
+    /// update it may reference.
     fn enqueue_awareness_broadcast(
         &mut self,
         request_id: u64,
@@ -778,10 +801,10 @@ impl CollaborationRuntime {
     ) -> Result<(), SessionError> {
         let reservation = self
             .outbox
-            .reserve_protocol_replies(1, message.len())
+            .reserve_awareness_broadcast(message.len())
             .map_err(|error| broadcast_reservation_error(error, request_id))?;
         self.outbox
-            .install_protocol_replies(reservation, request_id, vec![message]);
+            .install_awareness_broadcast(reservation, request_id, message);
         Ok(())
     }
 }
