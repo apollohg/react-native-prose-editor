@@ -1168,13 +1168,6 @@ final class RichTextEditorViewTests: XCTestCase {
             "appearance": "native",
             "height": 44,
         ]))
-        // This test targets the always-on chrome (glass blur + hairline border) that the
-        // custom stack toolbar itself renders for "native" appearance. On iOS 26 the bar
-        // toolbar (UIToolbar) supplies its own translucent chrome instead and intentionally
-        // suppresses these (see apply(theme:animateChrome:)'s usesBarToolbar branches), so
-        // pin this test to the custom stack path to keep testing what it was written to test.
-        toolbar.usesNativeBarToolbarOverrideForTesting = false
-
         XCTAssertTrue(toolbar.usesNativeAppearanceForTesting)
         if #available(iOS 26.0, *) {
 #if compiler(>=6.2)
@@ -1549,13 +1542,6 @@ final class RichTextEditorViewTests: XCTestCase {
         toolbar.apply(theme: EditorToolbarTheme(dictionary: [
             "appearance": "native",
         ]))
-        // This test targets the mention-suggestions-specific chrome transparency (the outer
-        // chrome fades out only while suggestions are showing). On iOS 26 the bar toolbar makes
-        // the outer chrome transparent unconditionally (UIToolbar supplies its own translucent
-        // material), which would make this test's baseline "not transparent yet" assertion
-        // meaningless. Pin to the custom stack path to keep testing the mention-specific behavior.
-        toolbar.usesNativeBarToolbarOverrideForTesting = false
-
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             XCTAssertFalse(toolbar.nativeChromeIsTransparentForTesting)
@@ -1608,13 +1594,6 @@ final class RichTextEditorViewTests: XCTestCase {
             toolbar.removeFromSuperview()
             window.isHidden = true
         }
-
-        // This test targets the mention-suggestions-specific chrome fade-out animation on the
-        // custom stack toolbar's own blur/glass chrome. On iOS 26 the bar toolbar makes the
-        // outer chrome transparent unconditionally (UIToolbar supplies its own translucent
-        // material) rather than animating a fade tied to mention state, so pin to the custom
-        // stack path to keep testing the animated-transition behavior this test was written for.
-        toolbar.usesNativeBarToolbarOverrideForTesting = false
 
         toolbar.apply(theme: EditorToolbarTheme(dictionary: [
             "appearance": "native",
@@ -1692,19 +1671,17 @@ final class RichTextEditorViewTests: XCTestCase {
         ]))
         toolbar.layoutIfNeeded()
 
-        if #available(iOS 26.0, *) {
-            XCTAssertGreaterThan(
-                toolbar.nativeToolbarContentWidthForTesting,
-                toolbar.nativeToolbarVisibleWidthForTesting,
-                "native toolbar should overflow horizontally so all items remain reachable"
-            )
-            XCTAssertEqual(
-                toolbar.nativeToolbarContentOffsetXForTesting,
-                0,
-                accuracy: 0.1,
-                "native toolbar should start left-aligned"
-            )
-        }
+        XCTAssertGreaterThan(
+            toolbar.nativeToolbarContentWidthForTesting,
+            toolbar.nativeToolbarVisibleWidthForTesting,
+            "native toolbar should overflow horizontally so all items remain reachable"
+        )
+        XCTAssertEqual(
+            toolbar.nativeToolbarContentOffsetXForTesting,
+            0,
+            accuracy: 0.1,
+            "native toolbar should start left-aligned"
+        )
     }
 
     func testAccessoryToolbarNativeLayoutPreservesScrolledOffsetAcrossRelayout() {
@@ -1715,18 +1692,16 @@ final class RichTextEditorViewTests: XCTestCase {
         ]))
         toolbar.layoutIfNeeded()
 
-        if #available(iOS 26.0, *) {
-            let targetOffset = min(40, toolbar.nativeToolbarContentWidthForTesting - toolbar.nativeToolbarVisibleWidthForTesting)
-            XCTAssertGreaterThan(targetOffset, 0)
-            toolbar.setNativeToolbarContentOffsetXForTesting(targetOffset)
-            toolbar.layoutIfNeeded()
-            XCTAssertEqual(
-                toolbar.nativeToolbarContentOffsetXForTesting,
-                targetOffset,
-                accuracy: 0.1,
-                "native toolbar should not snap back after relayout"
-            )
-        }
+        let targetOffset = min(40, toolbar.nativeToolbarContentWidthForTesting - toolbar.nativeToolbarVisibleWidthForTesting)
+        XCTAssertGreaterThan(targetOffset, 0)
+        toolbar.setNativeToolbarContentOffsetXForTesting(targetOffset)
+        toolbar.layoutIfNeeded()
+        XCTAssertEqual(
+            toolbar.nativeToolbarContentOffsetXForTesting,
+            targetOffset,
+            accuracy: 0.1,
+            "native toolbar should not snap back after relayout"
+        )
     }
 
     /// Attaches `toolbar` to a fixed-width host so Auto Layout has a real width to resolve
@@ -1747,149 +1722,80 @@ final class RichTextEditorViewTests: XCTestCase {
         return host
     }
 
-    /// Native appearance keeps the custom stack in production because a
-    /// nested UIToolbar can collapse inside the physical-device accessory host.
-    func testNativeAppearanceUsesCustomStackForInputAccessoryContent() {
+    /// Every placement renders as a custom button, with scroll items in the
+    /// scrolling middle and pinned items in the stacks on either side.
+    func testNativeAppearanceRendersEveryPlacementAsCustomButtons() {
         let toolbar = EditorAccessoryToolbarView(frame: .zero)
         let host = Self.attachToFixedWidthHost(toolbar, width: 320)
         toolbar.apply(theme: EditorToolbarTheme(dictionary: [
             "appearance": "native",
         ]))
-        toolbar.setItemsJSONForTesting(Self.nativeBarToolbarFixtureJSON)
+        toolbar.setItemsJSONForTesting(Self.placementToolbarFixtureJSON)
         host.layoutIfNeeded()
 
-        XCTAssertTrue(
-            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
-            "the nested UIToolbar path must remain disabled for production input accessories"
-        )
-        XCTAssertFalse(
-            toolbar.contentStackViewIsHiddenForTesting,
-            "native appearance should keep the reliable custom stack visible"
-        )
         XCTAssertEqual(
             toolbar.buttonLabelsForPlacementForTesting("start"),
             ["Start"],
-            "start-pinned items should remain custom buttons beside the bar, not bar buttons"
+            "start-pinned items belong in the start pinned stack"
         )
         XCTAssertEqual(
             toolbar.buttonLabelsForPlacementForTesting("end"),
             ["End"],
-            "end-pinned items should remain custom buttons beside the bar, not bar buttons"
+            "end-pinned items belong in the end pinned stack"
         )
         XCTAssertEqual(
             toolbar.buttonLabelsForPlacementForTesting("scroll"),
             ["Scroll One", "Scroll Two"],
-            "scroll-placement items should remain visible in the custom stack"
+            "scroll-placement items belong in the scrolling middle"
         )
     }
 
-    /// Structural coverage for the dormant native-bar implementation drives
-    /// the show/hide and no-overlap layout behavior directly
-    /// through `usesNativeBarToolbarOverrideForTesting`, so the `bodyStackView` restructure (the
-    /// bar toolbar and `contentStackView` occupying the same arranged-subview slot) is verified
-    /// even when the test simulator predates iOS 26.
-    func testNativeBarToolbarOverrideHidesContentStackAndAvoidsPinnedOverlap() {
+    /// `bodyStackView` lays the scrolling middle out between the two pinned
+    /// stacks. Arranged subviews cannot overlap by construction, but the middle
+    /// can still be starved to zero width if a pinned stack claims the row (see
+    /// `updatePinnedStackParticipation`), so assert it actually claims width
+    /// rather than merely avoiding overlap by being empty.
+    func testContentStackClaimsMiddleSlotWithoutOverlappingPinnedStacks() {
         let toolbar = EditorAccessoryToolbarView(frame: .zero)
         let host = Self.attachToFixedWidthHost(toolbar, width: 320)
         toolbar.apply(theme: EditorToolbarTheme(dictionary: [
             "appearance": "native",
         ]))
-        toolbar.setItemsJSONForTesting(Self.nativeBarToolbarFixtureJSON)
-
-        // Each override toggle flips isHidden on two arranged subviews that swap the same
-        // bodyStackView slot; explicitly re-dirtying layout before layoutIfNeeded() ensures
-        // UIStackView fully redistributes the freed/claimed width within this single synchronous
-        // test call (outside a test harness, the normal run-loop display cycle does this for free).
-        toolbar.usesNativeBarToolbarOverrideForTesting = false
-        host.setNeedsLayout()
-        host.layoutIfNeeded()
-        XCTAssertTrue(
-            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
-            "with the bar toolbar forced off, the bar scroll view should stay hidden"
-        )
-        XCTAssertFalse(
-            toolbar.contentStackViewIsHiddenForTesting,
-            "with the bar toolbar forced off, the custom stack toolbar's content column should stay visible"
-        )
-        XCTAssertGreaterThan(
-            toolbar.contentStackViewFrameForTesting.width,
-            0,
-            "with the bar toolbar forced off, the content column should claim the middle slot's width"
-        )
-
-        toolbar.usesNativeBarToolbarOverrideForTesting = true
+        toolbar.setItemsJSONForTesting(Self.placementToolbarFixtureJSON)
         host.setNeedsLayout()
         host.layoutIfNeeded()
 
-        XCTAssertFalse(
-            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
-            "forcing usesNativeBarToolbar on should reveal the bar toolbar scroll view"
-        )
-        XCTAssertTrue(
-            toolbar.contentStackViewIsHiddenForTesting,
-            "forcing usesNativeBarToolbar on should hide the custom stack toolbar's content column"
-        )
-        XCTAssertEqual(
-            toolbar.buttonLabelsForPlacementForTesting("start"),
-            ["Start"],
-            "pinned start items remain custom buttons beside the bar even when the bar is forced on"
-        )
-        XCTAssertEqual(
-            toolbar.buttonLabelsForPlacementForTesting("end"),
-            ["End"],
-            "pinned end items remain custom buttons beside the bar even when the bar is forced on"
-        )
-
-        let barFrame = toolbar.nativeToolbarScrollViewFrameForTesting
+        let contentFrame = toolbar.contentStackViewFrameForTesting
         let startFrame = toolbar.startPinnedStackViewFrameForTesting
         let endFrame = toolbar.endPinnedStackViewFrameForTesting
-        XCTAssertGreaterThan(
-            barFrame.width,
-            0,
-            "the bar toolbar must actually claim the middle slot's width, not just avoid overlap by being empty"
-        )
-        XCTAssertFalse(
-            barFrame.intersects(startFrame),
-            "bar toolbar frame \(barFrame) must not overlap the start pinned stack frame \(startFrame) (forced-on)"
-        )
-        XCTAssertFalse(
-            barFrame.intersects(endFrame),
-            "bar toolbar frame \(barFrame) must not overlap the end pinned stack frame \(endFrame) (forced-on)"
-        )
 
-        toolbar.usesNativeBarToolbarOverrideForTesting = nil
+        XCTAssertGreaterThan(
+            contentFrame.width,
+            0,
+            "the content column must claim the middle slot's width, not collapse to zero"
+        )
+        XCTAssertFalse(
+            contentFrame.intersects(startFrame),
+            "content stack frame \(contentFrame) must not overlap the start pinned stack frame \(startFrame)"
+        )
+        XCTAssertFalse(
+            contentFrame.intersects(endFrame),
+            "content stack frame \(contentFrame) must not overlap the end pinned stack frame \(endFrame)"
+        )
     }
 
-    /// Sibling to `testNativeBarToolbarOverrideHidesContentStackAndAvoidsPinnedOverlap`: covers the
-    /// review-flagged combination of "native bar toolbar active" + "mention suggestions shown"
-    /// together. When mentions appear while the bar path is active, `apply(theme:animateChrome:)`'s
-    /// `nativeToolbarScrollView.isHidden = !(usesBarToolbar && mentionButtons.isEmpty)` /
-    /// `contentStackView.isHidden = usesBarToolbar && mentionButtons.isEmpty` pair (lines ~1112-1117)
-    /// swaps the bar back out for the custom content stack (which hosts the mention row), then swaps
-    /// back once suggestions clear. This combination was previously untested: the bar tests never
-    /// called `setMentionSuggestions`, and the mention-chrome tests pinned
-    /// `usesNativeBarToolbarOverrideForTesting = false`.
-    func testNativeBarToolbarSwapsToContentStackWhenMentionSuggestionsAppear() {
+    /// The mention row and the button row share `contentStackView`, so showing
+    /// suggestions swaps the middle slot's contents without disturbing either
+    /// pinned stack or letting the middle overlap them.
+    func testMentionSuggestionsSwapTheMiddleSlotWithoutDisturbingPinnedStacks() {
         let toolbar = EditorAccessoryToolbarView(frame: .zero)
         let host = Self.attachToFixedWidthHost(toolbar, width: 320)
         toolbar.apply(theme: EditorToolbarTheme(dictionary: [
             "appearance": "native",
         ]))
-        toolbar.setItemsJSONForTesting(Self.nativeBarToolbarFixtureJSON)
-        toolbar.usesNativeBarToolbarOverrideForTesting = true
+        toolbar.setItemsJSONForTesting(Self.placementToolbarFixtureJSON)
         host.setNeedsLayout()
         host.layoutIfNeeded()
-
-        // Precondition: the bar path is active before mentions appear (same forced-on state as
-        // testNativeBarToolbarOverrideHidesContentStackAndAvoidsPinnedOverlap).
-        XCTAssertFalse(
-            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
-            "precondition: the bar toolbar should be visible before mention suggestions appear"
-        )
-        XCTAssertTrue(
-            toolbar.contentStackViewIsHiddenForTesting,
-            "precondition: the custom content stack should be hidden before mention suggestions appear"
-        )
 
         let didChange = toolbar.setMentionSuggestions([
             NativeMentionSuggestion(dictionary: [
@@ -1904,31 +1810,20 @@ final class RichTextEditorViewTests: XCTestCase {
         host.layoutIfNeeded()
 
         XCTAssertTrue(didChange, "setMentionSuggestions should report a mode change from empty to non-empty")
-        XCTAssertFalse(
-            toolbar.contentStackViewIsHiddenForTesting,
-            "the custom content stack should reappear to host the mention row once suggestions show, even while the bar toolbar is active"
-        )
-        XCTAssertTrue(
-            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
-            "the bar toolbar scroll view should hide once mention suggestions swap the middle slot back to the content stack"
-        )
         XCTAssertEqual(
             toolbar.mentionButtonAtForTesting(0)?.titleTextForTesting(),
             "@alice",
-            "the mention suggestion chip should render inside the now-visible content stack"
+            "the mention suggestion chip should render inside the content stack"
         )
-
-        // Pinned stacks must still render their bar-path buttons and must not overlap whichever
-        // sibling now occupies the middle slot (contentStackView, not the bar).
         XCTAssertEqual(
             toolbar.buttonLabelsForPlacementForTesting("start"),
             ["Start"],
-            "start-pinned items should keep rendering while mention suggestions are shown on the bar path"
+            "start-pinned items should keep rendering while mention suggestions are shown"
         )
         XCTAssertEqual(
             toolbar.buttonLabelsForPlacementForTesting("end"),
             ["End"],
-            "end-pinned items should keep rendering while mention suggestions are shown on the bar path"
+            "end-pinned items should keep rendering while mention suggestions are shown"
         )
 
         let contentFrame = toolbar.contentStackViewFrameForTesting
@@ -1937,7 +1832,7 @@ final class RichTextEditorViewTests: XCTestCase {
         XCTAssertGreaterThan(
             contentFrame.width,
             0,
-            "the content stack must actually claim the middle slot's width while showing mentions, not just avoid overlap by being empty"
+            "the content stack must claim the middle slot's width while showing mentions"
         )
         XCTAssertFalse(
             contentFrame.intersects(startFrame),
@@ -1948,25 +1843,19 @@ final class RichTextEditorViewTests: XCTestCase {
             "content stack frame \(contentFrame) must not overlap the end pinned stack frame \(endFrame) while mentions are shown"
         )
 
-        // Clearing suggestions should restore the bar path.
         let didChangeBack = toolbar.setMentionSuggestions([], trigger: "@")
         host.setNeedsLayout()
         host.layoutIfNeeded()
 
         XCTAssertTrue(didChangeBack, "setMentionSuggestions should report a mode change back to empty")
-        XCTAssertFalse(
-            toolbar.nativeToolbarScrollViewIsHiddenForTesting,
-            "clearing mention suggestions should restore the bar toolbar scroll view"
+        XCTAssertEqual(
+            toolbar.buttonLabelsForPlacementForTesting("scroll"),
+            ["Scroll One", "Scroll Two"],
+            "clearing mention suggestions should restore the scrolling button row"
         )
-        XCTAssertTrue(
-            toolbar.contentStackViewIsHiddenForTesting,
-            "clearing mention suggestions should hide the custom content stack again"
-        )
-
-        toolbar.usesNativeBarToolbarOverrideForTesting = nil
     }
 
-    private static let nativeBarToolbarFixtureJSON = """
+    private static let placementToolbarFixtureJSON = """
     [
       {
         "type": "action",
