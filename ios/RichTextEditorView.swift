@@ -1579,7 +1579,32 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             }
         }
 
-        return true
+        // No visible characters — but block structure is content the user can
+        // see. An empty bullet or an empty quoted line draws its marker from
+        // the structure Rust sent, never from stored text, so scanning
+        // characters alone cannot tell such a document apart from a genuinely
+        // empty one and the placeholder would sit on top of a visible marker.
+        return !hasStructuralBlockDecoration()
+    }
+
+    /// Whether the render carries block structure that draws something beyond a
+    /// bare paragraph: a list marker or a blockquote rule.
+    private func hasStructuralBlockDecoration() -> Bool {
+        guard textStorage.length > 0 else { return false }
+        var decorated = false
+        textStorage.enumerateAttributes(
+            in: NSRange(location: 0, length: textStorage.length),
+            options: []
+        ) { attributes, _, stop in
+            if attributes[RenderBridgeAttributes.listContext] != nil
+                || attributes[RenderBridgeAttributes.listMarkerContext] != nil
+                || attributes[RenderBridgeAttributes.blockquoteBorderWidth] != nil
+            {
+                decorated = true
+                stop.pointee = true
+            }
+        }
+        return decorated
     }
 
     @discardableResult

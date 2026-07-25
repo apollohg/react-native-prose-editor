@@ -217,10 +217,14 @@ final class RichTextEditorViewTests: XCTestCase {
     func testPlaceholderHidesForRenderedEmptyListItem() {
         let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 120))
         textView.placeholder = "Type here"
+        // Shaped exactly as the core emits it: the list item's blockStart
+        // carries the listContext that drives the visible marker.
         textView.applyRenderJSON("""
         [
           {"type":"blockStart","nodeType":"bulletList","depth":0},
-          {"type":"blockStart","nodeType":"listItem","depth":1},
+          {"type":"blockStart","nodeType":"listItem","depth":1,
+           "listContext":{"ordered":false,"index":0,"total":1,"start":1,
+                          "isFirst":true,"isLast":true}},
           {"type":"blockStart","nodeType":"paragraph","depth":2},
           {"type":"textRun","text":"\\u200B","marks":[]},
           {"type":"blockEnd"},
