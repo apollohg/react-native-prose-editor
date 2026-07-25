@@ -1,4 +1,4 @@
-import ExpoModulesCore
+@preconcurrency import ExpoModulesCore
 import UIKit
 
 /// Test-facing parser for the v2 create value. Handles are never bridged
@@ -360,7 +360,7 @@ func destroyEditorV2FromModule(
     case let (nil, error?) where error.domain == "lifecycle"
         && (error.code == "ENGINE_DESTROYED" || error.code == "ENGINE_DESTROYING"):
         break
-    case let (nil, error?):
+    case (nil, .some(_)):
         if reserved { viewRegistry.rollbackDestroy(editorId: nativeViewId) }
         return result
     default:
