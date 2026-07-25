@@ -240,11 +240,19 @@ fn local_edit(id: u64, request_id: u64, text: &str) {
     bridge::submit_input(id, &envelope).unwrap();
 }
 
+/// Drain the outbound queue in order until one document update has been
+/// acknowledged. An awareness broadcast published while synchronized is
+/// queued ahead of a later local edit and survives disconnect, so the
+/// document update is not always the front.
 fn ack_next_document_lease(id: u64) {
-    let lease = bridge::lease_next_update(id)
-        .unwrap()
-        .expect("the pending local update must be leased before it can be acknowledged");
-    bridge::ack_leased_update(id, lease.lease_id).unwrap();
+    loop {
+        let kind = bridge::ack_next_outbound(id)
+            .unwrap()
+            .expect("the pending local update must be leased before it can be acknowledged");
+        if kind == bridge::DrainedOutboundKind::DocumentUpdate {
+            return;
+        }
+    }
 }
 
 /// The complete observable state a restore rejection must leave untouched:

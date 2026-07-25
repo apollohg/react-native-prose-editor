@@ -850,6 +850,53 @@ pub mod native_bridge_test_support {
         })
     }
 
+    /// The kind of queue front one [`ack_next_outbound`] drain step retired.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum DrainedOutboundKind {
+        DocumentUpdate,
+        ProtocolReply,
+    }
+
+    /// Lease and acknowledge the current outbound front whatever its kind —
+    /// the ordered drain the platform transports perform. Unlike
+    /// [`lease_next_update`], an awareness broadcast or protocol reply ahead
+    /// of a document update is retired rather than refused. `None` once the
+    /// queue is empty.
+    pub fn ack_next_outbound(id: u64) -> Result<Option<DrainedOutboundKind>, TestError> {
+        with_live_session(id, |session| {
+            let (_, outbox) = session.engine_and_outbox();
+            let Some(outbox) = outbox else {
+                return Ok(None);
+            };
+            let lease = match outbox.lease_next().map_err(|error| {
+                crate::session::SessionError::new(
+                    crate::session::ErrorDomain::Transport,
+                    "TRANSPORT_INVALID_TRANSITION",
+                    format!("native bridge test drain lease failed: {error:?}"),
+                )
+            })? {
+                None => return Ok(None),
+                Some(lease) => lease,
+            };
+            let kind = match lease.payload {
+                crate::collaboration_runtime::outbox::OutboundLeasePayload::DocumentUpdate(_) => {
+                    DrainedOutboundKind::DocumentUpdate
+                }
+                crate::collaboration_runtime::outbox::OutboundLeasePayload::ProtocolReply(_) => {
+                    DrainedOutboundKind::ProtocolReply
+                }
+            };
+            outbox.ack_lease(lease.lease_id).map_err(|error| {
+                crate::session::SessionError::new(
+                    crate::session::ErrorDomain::Transport,
+                    "TRANSPORT_INVALID_TRANSITION",
+                    format!("native bridge test drain ACK failed: {error:?}"),
+                )
+            })?;
+            Ok(Some(kind))
+        })
+    }
+
     pub fn ack_leased_update(id: u64, lease_id: u64) -> Result<(), TestError> {
         with_live_session(id, |session| {
             let (_, outbox) = session.engine_and_outbox();

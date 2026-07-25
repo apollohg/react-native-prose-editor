@@ -145,6 +145,15 @@ pub struct OutboxDocumentUpdate {
     pub update_v1: Vec<u8>,
 }
 
+/// One causally ordered collaboration message awaiting transport pickup.
+/// Document updates and awareness broadcasts share this queue so a cursor
+/// cannot overtake the Yjs item it references.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OutboxOrderedMessage {
+    DocumentUpdate(OutboxDocumentUpdate),
+    AwarenessBroadcast(OutboxProtocolReply),
+}
+
 /// Opaque identity for one retained outbound handoff lease.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OutboundLeaseId(u64);
@@ -187,6 +196,7 @@ pub(crate) enum OutboundLeaseError {
 enum OutboundLeaseKind {
     ProtocolReply,
     DocumentUpdate,
+    AwarenessBroadcast,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,8 +212,9 @@ struct ActiveOutboundLease {
 pub struct CollaborationOutbox {
     max_pending_messages: usize,
     max_pending_bytes: usize,
-    pending: VecDeque<OutboxDocumentUpdate>,
+    pending_ordered: VecDeque<OutboxOrderedMessage>,
     pending_bytes: usize,
+    pending_awareness_bytes: usize,
     pending_protocol: VecDeque<OutboxProtocolReply>,
     pending_protocol_bytes: usize,
     next_lease_id: Option<u64>,
@@ -218,8 +229,9 @@ impl CollaborationOutbox {
         Self {
             max_pending_messages,
             max_pending_bytes,
-            pending: VecDeque::new(),
+            pending_ordered: VecDeque::new(),
             pending_bytes: 0,
+            pending_awareness_bytes: 0,
             pending_protocol: VecDeque::new(),
             pending_protocol_bytes: 0,
             next_lease_id: Some(1),
@@ -246,7 +258,7 @@ impl CollaborationOutbox {
         upper_bound_bytes: usize,
     ) -> Result<OutboxReservation, OutboxReservationError> {
         self.admit_reservation(1, upper_bound_bytes)?;
-        if self.pending.try_reserve(1).is_err() {
+        if self.pending_ordered.try_reserve(1).is_err() {
             return Err(OutboxReservationError::Allocation);
         }
         self.ledger.charge(1, upper_bound_bytes);
@@ -254,6 +266,25 @@ impl CollaborationOutbox {
         Ok(OutboxReservation {
             ledger: Arc::clone(&self.ledger),
             request_id,
+            upper_bound_bytes,
+            consumed: false,
+        })
+    }
+
+    /// Fallible reservation of one awareness broadcast against the shared
+    /// outbox ceilings and causally ordered queue.
+    pub fn reserve_awareness_broadcast(
+        &mut self,
+        upper_bound_bytes: usize,
+    ) -> Result<ProtocolReplyReservation, OutboxReservationError> {
+        self.admit_reservation(1, upper_bound_bytes)?;
+        if self.pending_ordered.try_reserve(1).is_err() {
+            return Err(OutboxReservationError::Allocation);
+        }
+        self.ledger.charge(1, upper_bound_bytes);
+        Ok(ProtocolReplyReservation {
+            ledger: Arc::clone(&self.ledger),
+            reply_count: 1,
             upper_bound_bytes,
             consumed: false,
         })
@@ -297,10 +328,47 @@ impl CollaborationOutbox {
         reservation.consumed = true;
         self.ledger.release(1, reservation.upper_bound_bytes);
         self.pending_bytes = self.pending_bytes.saturating_add(update_v1.len());
-        self.pending.push_back(OutboxDocumentUpdate {
-            request_id: reservation.request_id,
-            update_v1,
-        });
+        self.pending_ordered
+            .push_back(OutboxOrderedMessage::DocumentUpdate(OutboxDocumentUpdate {
+                request_id: reservation.request_id,
+                update_v1,
+            }));
+    }
+
+    /// Infallible installation of one framed awareness broadcast. It shares
+    /// FIFO ordering with document updates while retaining transport-scoped
+    /// cleanup semantics.
+    pub fn install_awareness_broadcast(
+        &mut self,
+        mut reservation: ProtocolReplyReservation,
+        request_id: u64,
+        message: Vec<u8>,
+    ) {
+        debug_assert!(
+            Arc::ptr_eq(&self.ledger, &reservation.ledger),
+            "an awareness reservation can only be installed into its own outbox",
+        );
+        debug_assert_eq!(
+            reservation.reply_count, 1,
+            "an awareness reservation must admit exactly one broadcast",
+        );
+        debug_assert!(
+            message.len() <= reservation.upper_bound_bytes,
+            "installed awareness broadcast exceeds its reserved byte bound: {} > {}",
+            message.len(),
+            reservation.upper_bound_bytes,
+        );
+        reservation.consumed = true;
+        self.ledger
+            .release(reservation.reply_count, reservation.upper_bound_bytes);
+        self.pending_awareness_bytes = self.pending_awareness_bytes.saturating_add(message.len());
+        self.pending_ordered
+            .push_back(OutboxOrderedMessage::AwarenessBroadcast(
+                OutboxProtocolReply {
+                    request_id,
+                    message,
+                },
+            ));
     }
 
     /// Infallible post-commit installation of the completely built protocol
@@ -350,8 +418,13 @@ impl CollaborationOutbox {
 
         let kind = if self.pending_protocol.front().is_some() {
             OutboundLeaseKind::ProtocolReply
-        } else if self.pending.front().is_some() {
-            OutboundLeaseKind::DocumentUpdate
+        } else if let Some(message) = self.pending_ordered.front() {
+            match message {
+                OutboxOrderedMessage::DocumentUpdate(_) => OutboundLeaseKind::DocumentUpdate,
+                OutboxOrderedMessage::AwarenessBroadcast(_) => {
+                    OutboundLeaseKind::AwarenessBroadcast
+                }
+            }
         } else {
             return Ok(None);
         };
@@ -386,16 +459,40 @@ impl CollaborationOutbox {
                 self.pending_protocol_bytes = remaining_bytes;
             }
             OutboundLeaseKind::DocumentUpdate => {
-                let entry = self
-                    .pending
+                let entry = match self
+                    .pending_ordered
                     .front()
-                    .expect("an active document lease requires a queued document update");
+                    .expect("an active document lease requires a queued document update")
+                {
+                    OutboxOrderedMessage::DocumentUpdate(entry) => entry,
+                    OutboxOrderedMessage::AwarenessBroadcast(_) => {
+                        unreachable!("an active document lease requires a document queue front")
+                    }
+                };
                 let remaining_bytes = self
                     .pending_bytes
                     .checked_sub(entry.update_v1.len())
                     .expect("active document lease accounting underflow");
-                let _ = self.pending.pop_front();
+                let _ = self.pending_ordered.pop_front();
                 self.pending_bytes = remaining_bytes;
+            }
+            OutboundLeaseKind::AwarenessBroadcast => {
+                let entry = match self
+                    .pending_ordered
+                    .front()
+                    .expect("an active awareness lease requires a queued awareness broadcast")
+                {
+                    OutboxOrderedMessage::AwarenessBroadcast(entry) => entry,
+                    OutboxOrderedMessage::DocumentUpdate(_) => {
+                        unreachable!("an active awareness lease requires an awareness queue front")
+                    }
+                };
+                let remaining_bytes = self
+                    .pending_awareness_bytes
+                    .checked_sub(entry.message.len())
+                    .expect("active awareness lease accounting underflow");
+                let _ = self.pending_ordered.pop_front();
+                self.pending_awareness_bytes = remaining_bytes;
             }
         }
         self.active_lease = None;
@@ -418,17 +515,17 @@ impl CollaborationOutbox {
         self.active_lease = None;
     }
 
-    /// Task 11 teardown-on-restore: drop every pending framed protocol
-    /// reply. Protocol entries are transport-scoped and minted against the
-    /// prior store — a restored session resynchronizes from Sync Step 1, so
-    /// they can never become deliverable. Pending *document* updates are
-    /// untouched: restore rejects while any exist, so none can be here by
-    /// the time this runs. Infallible by construction.
+    /// Task 11 teardown-on-restore: drop every pending framed protocol reply
+    /// and awareness broadcast. Both are transport-scoped and minted against
+    /// the prior store, so they can never become deliverable after restore.
+    /// Pending *document* updates are untouched: restore rejects while any
+    /// exist, so none can be here by the time this runs. Infallible by
+    /// construction.
     pub fn clear_protocol_replies(&mut self) {
         if matches!(
             self.active_lease,
             Some(ActiveOutboundLease {
-                kind: OutboundLeaseKind::ProtocolReply,
+                kind: OutboundLeaseKind::ProtocolReply | OutboundLeaseKind::AwarenessBroadcast,
                 ..
             })
         ) {
@@ -436,13 +533,21 @@ impl CollaborationOutbox {
         }
         self.pending_protocol.clear();
         self.pending_protocol_bytes = 0;
+        self.pending_ordered
+            .retain(|message| matches!(message, OutboxOrderedMessage::DocumentUpdate(_)));
+        self.pending_awareness_bytes = 0;
     }
 
     // Not reachable from production call paths after the Task 16C legacy runtime
     // removal; exercised by crate tests.
     #[allow(dead_code)]
     pub fn pending_protocol_reply_count(&self) -> usize {
-        self.pending_protocol.len()
+        self.pending_protocol.len().saturating_add(
+            self.pending_ordered
+                .iter()
+                .filter(|message| matches!(message, OutboxOrderedMessage::AwarenessBroadcast(_)))
+                .count(),
+        )
     }
 
     // Not reachable from production call paths after the Task 16C legacy runtime
@@ -450,10 +555,13 @@ impl CollaborationOutbox {
     #[allow(dead_code)]
     pub fn pending_protocol_reply_bytes(&self) -> usize {
         self.pending_protocol_bytes
+            .saturating_add(self.pending_awareness_bytes)
     }
 
     pub fn has_pending_document_updates(&self) -> bool {
-        !self.pending.is_empty()
+        self.pending_ordered
+            .iter()
+            .any(|message| matches!(message, OutboxOrderedMessage::DocumentUpdate(_)))
     }
 
     /// Test-only observability for a retained document front. The production
@@ -466,7 +574,10 @@ impl CollaborationOutbox {
             Some(ActiveOutboundLease {
                 kind: OutboundLeaseKind::DocumentUpdate,
                 ..
-            }) => self.pending.front().map(|entry| entry.request_id),
+            }) => match self.pending_ordered.front() {
+                Some(OutboxOrderedMessage::DocumentUpdate(entry)) => Some(entry.request_id),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -475,7 +586,10 @@ impl CollaborationOutbox {
     // removal; exercised by crate tests.
     #[allow(dead_code)]
     pub fn pending_document_update_count(&self) -> usize {
-        self.pending.len()
+        self.pending_ordered
+            .iter()
+            .filter(|message| matches!(message, OutboxOrderedMessage::DocumentUpdate(_)))
+            .count()
     }
 
     // Not reachable from production call paths after the Task 16C legacy runtime
@@ -523,7 +637,7 @@ impl CollaborationOutbox {
             return Err(OutboxReservationError::Allocation);
         }
         let requested_messages = self
-            .pending
+            .pending_ordered
             .len()
             .saturating_add(self.pending_protocol.len())
             .saturating_add(self.reserved_messages())
@@ -537,6 +651,7 @@ impl CollaborationOutbox {
         }
         let requested_bytes = self
             .pending_bytes
+            .saturating_add(self.pending_awareness_bytes)
             .saturating_add(self.pending_protocol_bytes)
             .saturating_add(self.reserved_bytes())
             .saturating_add(upper_bound_bytes);
@@ -573,11 +688,28 @@ impl CollaborationOutbox {
                     .clone(),
             ),
             OutboundLeaseKind::DocumentUpdate => OutboundLeasePayload::DocumentUpdate(
-                self.pending
+                match self
+                    .pending_ordered
                     .front()
                     .expect("an active document lease requires a queued document update")
-                    .update_v1
-                    .clone(),
+                {
+                    OutboxOrderedMessage::DocumentUpdate(entry) => entry.update_v1.clone(),
+                    OutboxOrderedMessage::AwarenessBroadcast(_) => {
+                        unreachable!("an active document lease requires a document queue front")
+                    }
+                },
+            ),
+            OutboundLeaseKind::AwarenessBroadcast => OutboundLeasePayload::ProtocolReply(
+                match self
+                    .pending_ordered
+                    .front()
+                    .expect("an active awareness lease requires a queued awareness broadcast")
+                {
+                    OutboxOrderedMessage::AwarenessBroadcast(entry) => entry.message.clone(),
+                    OutboxOrderedMessage::DocumentUpdate(_) => {
+                        unreachable!("an active awareness lease requires an awareness queue front")
+                    }
+                },
             ),
         };
         OutboundLease {
@@ -683,6 +815,38 @@ mod tests {
         outbox.ack_lease(second.lease_id).unwrap();
         assert_eq!(outbox.pending_protocol_reply_count(), 0);
         assert_eq!(outbox.pending_protocol_reply_bytes(), 0);
+        assert!(outbox.lease_next().unwrap().is_none());
+    }
+
+    #[test]
+    fn awareness_broadcasts_follow_the_document_updates_they_reference() {
+        let mut outbox = CollaborationOutbox::with_ceilings(5, 64);
+
+        let first_document = outbox.reserve_document_update(1, 2).unwrap();
+        outbox.install(first_document, vec![1, 2]);
+        let first_awareness = outbox.reserve_awareness_broadcast(2).unwrap();
+        outbox.install_awareness_broadcast(first_awareness, 1, vec![11, 12]);
+
+        let second_document = outbox.reserve_document_update(2, 2).unwrap();
+        outbox.install(second_document, vec![3, 4]);
+        let second_awareness = outbox.reserve_awareness_broadcast(2).unwrap();
+        outbox.install_awareness_broadcast(second_awareness, 2, vec![13, 14]);
+
+        let sync_reply = outbox.reserve_protocol_replies(1, 2).unwrap();
+        outbox.install_protocol_replies(sync_reply, 3, vec![vec![21, 22]]);
+
+        let expected = [
+            OutboundLeasePayload::ProtocolReply(vec![21, 22]),
+            OutboundLeasePayload::DocumentUpdate(vec![1, 2]),
+            OutboundLeasePayload::ProtocolReply(vec![11, 12]),
+            OutboundLeasePayload::DocumentUpdate(vec![3, 4]),
+            OutboundLeasePayload::ProtocolReply(vec![13, 14]),
+        ];
+        for expected_payload in expected {
+            let lease = outbox.lease_next().unwrap().unwrap();
+            assert_eq!(lease.payload, expected_payload);
+            outbox.ack_lease(lease.lease_id).unwrap();
+        }
         assert!(outbox.lease_next().unwrap().is_none());
     }
 
