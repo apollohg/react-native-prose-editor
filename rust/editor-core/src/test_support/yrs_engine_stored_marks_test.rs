@@ -629,7 +629,7 @@ fn canonical_equivalent_explicit_typing_preserves_ranked_stored_marks() {
 }
 
 #[test]
-fn compatible_adjacent_delete_preserves_but_changed_structural_operation_clears() {
+fn compatible_adjacent_delete_and_caret_split_preserve_but_away_structural_operations_clear() {
     let mut deletion = engine();
     import_marked_text(&mut deletion);
     apply(
@@ -670,7 +670,34 @@ fn compatible_adjacent_delete_preserves_but_changed_structural_operation_clears(
         }],
         SelectionIntent::Preserve,
     );
-    assert_eq!(structural.stored_marks(), None);
+    // A split *at* the caret is Return: the active formatting continues onto
+    // the new block, so the stored set survives.
+    assert_eq!(mark_types(&structural), Some(vec!["bold", "italic"]));
+
+    let mut structural_away = engine();
+    import_marked_text(&mut structural_away);
+    apply(
+        &mut structural_away,
+        2,
+        vec![TypedOperation::AddMark {
+            range: range(1, 1),
+            mark: mark("italic"),
+        }],
+        SelectionIntent::Preserve,
+    );
+    apply(
+        &mut structural_away,
+        3,
+        vec![TypedOperation::SplitBlock {
+            at: before_point(0),
+            node_type: "paragraph".into(),
+            attrs: HashMap::new(),
+        }],
+        SelectionIntent::Preserve,
+    );
+    // A split away from the caret is an ordinary structural edit and still
+    // clears the stored set.
+    assert_eq!(structural_away.stored_marks(), None);
 
     let mut structural_delete = engine();
     structural_delete

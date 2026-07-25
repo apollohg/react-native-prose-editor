@@ -2087,6 +2087,10 @@ fn compile_transaction_impl(
     let mut stored_marks_state = stored_marks_context
         .as_ref()
         .map(|state| state.stored_marks.map(<[Mark]>::to_vec));
+    // Set when a caret-anchored SplitBlock carried the stored marks through.
+    // Return moves the caret across the new block boundary, so the generic
+    // "caret mapped to the same place" compatibility check cannot see it.
+    let mut split_at_caret_kept_stored_marks = false;
     let tracked_caret = stored_marks_context.as_ref().and_then(|state| {
         let super::ResolvedSelection::Text { anchor, head } = state.resolved_selection else {
             return None;
@@ -2799,6 +2803,10 @@ fn compile_transaction_impl(
                     context.document,
                 )?;
                 let pos = map_position(&composed_map, base_pos, at.affinity);
+                // Captured against the pre-split document: these are the marks
+                // the next typed character would have inherited had Return not
+                // been pressed.
+                inherited_marks = Some(super::derived_state::marks_at_position(&preview, pos));
                 let step = Step::SplitBlock {
                     pos,
                     node_type: node_type.clone(),
@@ -2822,6 +2830,7 @@ fn compile_transaction_impl(
                         context.resource_limits,
                     )?;
                 }
+                stored_marks_input = Some((pos, pos));
                 operation_result = Some(Selection::cursor(step_map.map_pos(pos)));
                 composed_map = composed_map.compose(&step_map);
                 operation_changed = next != *preview;
@@ -3177,6 +3186,26 @@ fn compile_transaction_impl(
                     // A compatible text deletion carries the current stored set
                     // through to the mapped caret without changing it.
                 }
+                TypedOperation::SplitBlock { .. } if operation_changed && operation_at_caret => {
+                    // Pressing Return carries the active formatting onto the new
+                    // block, as every comparable editor does: the marks the next
+                    // character would have taken before the split are the marks
+                    // it takes after it. A split away from the caret is still a
+                    // structural edit and falls through to the clearing arm.
+                    //
+                    // With no explicit stored set the active formatting is
+                    // whatever the text before the caret carries, so it has to be
+                    // materialised here — the new block is empty and has nothing
+                    // for the next character to inherit from.
+                    if current.is_none() {
+                        let inherited = inherited_marks.take().unwrap_or_default();
+                        if !inherited.is_empty() {
+                            *current =
+                                Some(super::derived_state::canonical_marks(&inherited, context.schema));
+                        }
+                    }
+                    split_at_caret_kept_stored_marks = true;
+                }
                 _ if operation_changed => *current = None,
                 _ => {}
             }
@@ -3386,7 +3415,9 @@ fn compile_transaction_impl(
             SelectionIntent::UseOperationResult if use_operation_result_falls_back_to_preserve => {
                 tracked_caret.is_some()
             }
-            SelectionIntent::UseOperationResult => after_is_mapped_tracked_caret,
+            SelectionIntent::UseOperationResult => {
+                after_is_mapped_tracked_caret || split_at_caret_kept_stored_marks
+            }
             SelectionIntent::Set(_) => false,
         };
         let after_is_collapsed_text = matches!(
