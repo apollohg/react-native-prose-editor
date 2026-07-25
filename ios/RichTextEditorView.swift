@@ -1111,6 +1111,10 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
     /// Last selection known to match `lastAuthorizedText`, stored in that text's UTF-16 coordinates.
     private var lastAuthorizedSelectedUtf16Range: NSRange?
     private var logicalSelectionScalarRange: (anchor: UInt32, head: UInt32)?
+    /// The UIKit selection `logicalSelectionScalarRange` was resolved to, after
+    /// any empty-block autocapitalization nudge. Lets a deliberate nudge be
+    /// told apart from the user moving the caret.
+    private var logicalSelectionUtf16Range: NSRange?
     private var selectionRevision: UInt64 = 0
     private var desiredInputTraitState = InputTraitState()
     private var appliedInputTraitState = InputTraitState()
@@ -2196,14 +2200,18 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                 deleteScalarRangeInRust(from: range.from, to: range.to)
             }
         } else {
-            // Cursor: delete one grapheme cluster backward.
-            let cursorPos = PositionBridge.textViewToScalar(selectedRange.start, in: self)
+            // Cursor: delete one grapheme cluster backward. The engine's caret
+            // is the authority — in an empty block UIKit's own caret is parked
+            // ahead of the block placeholder for autocapitalization and does
+            // not address the same position.
+            let cursorPos = PositionBridge.cursorScalarOffset(in: self)
             if cursorPos == 0 {
                 performInterceptedInput {
                     deleteBackwardAtSelectionScalarInRust(anchor: cursorPos, head: cursorPos)
                 }
                 return
             }
+
 
             let cursorUtf16Offset = offset(from: beginningOfDocument, to: selectedRange.start)
             if let marker = PositionBridge.virtualListMarker(
@@ -3855,6 +3863,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         resetPendingNativeTextMutationState()
         lastAuthorizedSelectedUtf16Range = nil
         logicalSelectionScalarRange = nil
+        logicalSelectionUtf16Range = nil
         clearPendingInputTraitRetry()
         markedTextReplacementScalarRange = nil
         markedTextReplacementUtf16Range = nil
@@ -4093,6 +4102,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             selectedRange = targetRange
             noteSelectionDidChange()
         }
+        logicalSelectionUtf16Range = selectedRange
         EditorV2Shadow.setSelectionScalar(id: editorId, scalarAnchor: anchor, scalarHead: head)
         recordAuthorizedSelectionIfPossible()
         refreshTypingAttributesForSelection()
@@ -4168,7 +4178,22 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         {
             return logicalSelectionScalarRange
         }
+        // The caret in a lone empty block is parked ahead of the block
+        // placeholder so UIKit offers autocapitalization
+        // (`autocapitalizationFriendlyEmptyBlockPosition`). That nudge makes
+        // the UIKit caret disagree with the engine's scalar by exactly the
+        // placeholder, which the comparison above cannot tell apart from the
+        // user having moved the caret. Matching the UIKit range the nudge
+        // produced keeps the engine's position authoritative; anything else
+        // still falls through as genuinely stale.
+        if let logicalSelectionScalarRange,
+           let logicalSelectionUtf16Range,
+           logicalSelectionUtf16Range == selectedRange
+        {
+            return logicalSelectionScalarRange
+        }
         logicalSelectionScalarRange = nil
+        logicalSelectionUtf16Range = nil
         return (anchor: scalarRange.from, head: scalarRange.to)
     }
 
@@ -5647,6 +5672,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
                     noteSelectionDidChange()
                 }
             }
+            logicalSelectionUtf16Range = selectedRange
             let assignmentNanos = DispatchTime.now().uptimeNanoseconds - assignmentStartedAt
             let chromeStartedAt = DispatchTime.now().uptimeNanoseconds
             showNativeSelectionChromeIfNeeded()
@@ -5682,6 +5708,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
             let resolveNanos = DispatchTime.now().uptimeNanoseconds - resolveStartedAt
             let assignmentStartedAt = DispatchTime.now().uptimeNanoseconds
             logicalSelectionScalarRange = nil
+            logicalSelectionUtf16Range = nil
             if selectedRange != targetRange {
                 selectedRange = targetRange
                 noteSelectionDidChange()
@@ -5703,6 +5730,7 @@ final class EditorTextView: UITextView, UIGestureRecognizerDelegate {
         case "all":
             let assignmentStartedAt = DispatchTime.now().uptimeNanoseconds
             logicalSelectionScalarRange = nil
+            logicalSelectionUtf16Range = nil
             selectedTextRange = textRange(from: beginningOfDocument, to: endOfDocument)
             noteSelectionDidChange()
             let assignmentNanos = DispatchTime.now().uptimeNanoseconds - assignmentStartedAt

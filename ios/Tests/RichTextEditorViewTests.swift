@@ -472,6 +472,130 @@ final class RichTextEditorViewTests: XCTestCase {
         )
     }
 
+    /// Return in an empty editor must add a blank line.
+    ///
+    /// The engine handles this (see the typing regression suite), so anything
+    /// that swallows the keystroke does so on the way in: an empty document
+    /// renders as a single zero-width placeholder, and input paths that reason
+    /// about the text storage can mistake that for "nothing to split".
+    func testReturnInAnEmptyEditorAddsABlankLine() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(id: editorId, initialHTML: "")
+
+        textView.insertText("\n")
+
+        XCTAssertEqual(
+            textView.textStorage.string,
+            "\u{200B}\n\u{200B}",
+            "Return on an empty line must leave two blank lines, each rendering "
+                + "its own empty-block placeholder"
+        )
+    }
+
+    /// The caret has to land on the blank line Return created, otherwise the
+    /// next character typed goes back onto the first line.
+    func testReturnInAnEmptyEditorLeavesTheCaretOnTheSecondLine() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(id: editorId, initialHTML: "")
+
+        textView.insertText("\n")
+        textView.insertText("x")
+
+        XCTAssertEqual(
+            textView.textStorage.string,
+            "\u{200B}\nx",
+            "typing after Return must land on the second line, not the first"
+        )
+    }
+
+    /// In an empty editor UIKit's caret is deliberately parked ahead of the
+    /// block placeholder so autocapitalization engages. The engine's caret sits
+    /// after it, and the engine's is the one commands must be positioned from —
+    /// otherwise Return splits before the block and the caret is left on the
+    /// first line, and backspace computes a range over structure instead of
+    /// text.
+    func testEmptyBlockCaretReportsTheEnginePositionDespiteTheUIKitNudge() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(id: editorId, initialHTML: "")
+        // Drive the real selection path, which applies the nudge.
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+
+        XCTAssertEqual(
+            textView.selectedRange,
+            NSRange(location: 0, length: 0),
+            "precondition: UIKit's caret is nudged ahead of the placeholder"
+        )
+        XCTAssertEqual(
+            textView.currentLogicalScalarSelection()?.head,
+            1,
+            "commands must be positioned from the engine's caret, which sits "
+                + "after the empty block placeholder"
+        )
+    }
+
+    /// Backspacing an empty bullet must remove it.
+    ///
+    /// There is nothing to walk back over: the item renders only its block
+    /// placeholder, so a range computed from the caret spans list structure and
+    /// deletes nothing. The keystroke has to reach the engine's backspace
+    /// planner, which knows to leave the list.
+    func testBackspaceInAnEmptyListItemLeavesTheList() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(id: editorId, initialHTML: "<ul><li><p></p></li></ul>")
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+
+        guard let adapter = EditorV2Registry.adapter(forLegacyId: editorId) else {
+            XCTFail("expected an adapter for the bound editor")
+            return
+        }
+        let documentBefore = editorV2GetDocumentJson(editorId: adapter.editorId).value ?? ""
+        XCTAssertTrue(
+            documentBefore.contains("bulletList"),
+            "precondition: the document holds an empty bullet, got \(documentBefore)"
+        )
+
+        textView.deleteBackward()
+
+        let documentAfter = editorV2GetDocumentJson(editorId: adapter.editorId).value ?? ""
+        XCTAssertFalse(
+            documentAfter.contains("bulletList"),
+            "backspace in an empty bullet must leave the list, got \(documentAfter)"
+        )
+    }
+
+    /// The whole point of the nudge fix: Return in an empty editor has to split
+    /// inside the block, leaving the caret on the new line.
+    func testReturnAfterTheEmptyBlockNudgeLeavesTheCaretOnTheSecondLine() {
+        let editorId = makeV2Editor()
+        defer { destroyV2Editor(id: editorId) }
+
+        let textView = EditorTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 160))
+        textView.bindEditor(id: editorId, initialHTML: "")
+        textView.applyUpdateJSON(EditorV2Shadow.getCurrentState(id: editorId), notifyDelegate: false)
+
+        textView.insertText("\n")
+        textView.insertText("x")
+
+        XCTAssertEqual(
+            textView.textStorage.string,
+            "\u{200B}\nx",
+            "Return must split inside the empty block so the next character "
+                + "lands on the second line"
+        )
+    }
+
     func testParagraphSplitAppliesTopLevelRenderPatch() {
         let editorId = makeV2Editor()
         defer { destroyV2Editor(id: editorId) }
