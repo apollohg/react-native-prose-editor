@@ -839,7 +839,26 @@ class EditorEditText @JvmOverloads constructor(
         return super.performClick()
     }
 
+    /**
+     * The core's `documentIsEmpty` from the most recent editor update, or null
+     * when the current render arrived without one.
+     */
+    private var coreReportedDocumentIsEmpty: Boolean? = null
+
+    /**
+     * Whether the document holds nothing the user authored.
+     *
+     * The core answers this and the answer arrives on every editor update, so
+     * it is used verbatim. Deriving it here cannot work: an empty list item
+     * contributes no characters, so scanning the rendered content reports it as
+     * empty and leaves the placeholder sitting on top of a visible bullet.
+     *
+     * The character scan below is only the fallback for renders that arrive
+     * without an editor update.
+     */
     private fun isRenderedContentEmpty(content: CharSequence? = text): Boolean {
+        coreReportedDocumentIsEmpty?.let { return it }
+
         val renderedContent = content ?: return true
         if (renderedContent.isEmpty()) return true
 
@@ -851,6 +870,13 @@ class EditorEditText @JvmOverloads constructor(
         }
 
         return true
+    }
+
+    /** Adopt the core's authoritative empty state from an editor update. */
+    fun setCoreReportedDocumentIsEmpty(isEmpty: Boolean?) {
+        if (coreReportedDocumentIsEmpty == isEmpty) return
+        coreReportedDocumentIsEmpty = isEmpty
+        invalidate()
     }
 
     private fun shouldDisplayPlaceholder(): Boolean {
@@ -4079,6 +4105,12 @@ class EditorEditText @JvmOverloads constructor(
         }
         cancelDeferredRustUpdateApplication()
         val parseNanos = System.nanoTime() - parseStartedAt
+
+        // The core is the authority on empty state; adopt it before anything
+        // reconsiders the placeholder.
+        setCoreReportedDocumentIsEmpty(
+            if (update.has("documentIsEmpty")) update.optBoolean("documentIsEmpty") else null
+        )
 
         val resolveRenderBlocksStartedAt = System.nanoTime()
         val renderElements = update.optJSONArray("renderElements")

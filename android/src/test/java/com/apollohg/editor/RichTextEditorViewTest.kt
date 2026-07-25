@@ -264,6 +264,46 @@ class RichTextEditorViewTest {
         assertEquals("Alpha\nBeta", editText.text?.toString())
     }
 
+    /**
+     * An empty bullet is content the user can see, so the placeholder must go.
+     *
+     * The document renders no characters at all — the bullet marker comes from
+     * block structure, never from stored text — so the view cannot work this
+     * out by scanning its own content. It has to take the core's
+     * `documentIsEmpty` from the update, which is what this drives.
+     */
+    @Test
+    fun `placeholder hides when the core reports an empty list item as content`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.placeholderText = "Type here"
+        editText.applyUpdateJSON(
+            JSONObject().apply {
+                put("renderBlocks", JSONArray())
+                put("documentIsEmpty", false)
+            }.toString()
+        )
+
+        assertFalse(editText.shouldDisplayPlaceholderForTesting())
+    }
+
+    /**
+     * The companion: a document the core reports as empty keeps its
+     * placeholder, so the fix cannot be "never show the placeholder".
+     */
+    @Test
+    fun `placeholder shows when the core reports an empty document`() {
+        val editText = EditorEditText(RuntimeEnvironment.getApplication())
+        editText.placeholderText = "Type here"
+        editText.applyUpdateJSON(
+            JSONObject().apply {
+                put("renderBlocks", JSONArray())
+                put("documentIsEmpty", true)
+            }.toString()
+        )
+
+        assertTrue(editText.shouldDisplayPlaceholderForTesting())
+    }
+
     @Test
     fun `placeholder hides for rendered non-empty paragraph`() {
         val editText = EditorEditText(RuntimeEnvironment.getApplication())
