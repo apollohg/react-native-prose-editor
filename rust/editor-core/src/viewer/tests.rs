@@ -41,6 +41,20 @@ fn compile_json(document: serde_json::Value) -> super::FfiViewerCompileResult {
     })
 }
 
+fn compile_json_with(
+    document: serde_json::Value,
+    config_json: String,
+    images_enabled: bool,
+) -> super::FfiViewerCompileResult {
+    viewer_compile(FfiViewerCompileRequest {
+        source_kind: FfiViewerSourceKind::Json,
+        source: document.to_string(),
+        config_json,
+        images_enabled,
+        mention_prefix: None,
+    })
+}
+
 #[test]
 fn json_and_html_with_the_same_content_have_the_same_semantic_key() {
     let json = serde_json::json!({
@@ -115,6 +129,110 @@ fn disabled_images_are_absent_from_the_compiled_document() {
         !matches!(element, FfiViewerElement::InlineAtom { node_type, .. } |
             FfiViewerElement::BlockAtom { node_type, .. } if node_type == "image")
     }));
+}
+
+#[test]
+fn disabled_image_only_content_is_semantically_empty() {
+    let image_only = serde_json::json!({
+        "type": "doc",
+        "content": [{"type": "image", "attrs": {"src": "https://example.test/a.png"}}]
+    });
+    let empty = serde_json::json!({"type": "doc", "content": []});
+
+    let hidden_image = compile_json_with(image_only, local_config(), false)
+        .value
+        .expect("hidden image compiles");
+    let empty_document = compile_json_with(empty, local_config(), false)
+        .value
+        .expect("empty document compiles");
+
+    assert!(hidden_image.elements().is_empty());
+    assert!(hidden_image.is_empty());
+    assert_eq!(hidden_image.elements(), empty_document.elements());
+    assert_eq!(hidden_image.semantic_key(), empty_document.semantic_key());
+    assert_eq!(hidden_image.is_empty(), empty_document.is_empty());
+}
+
+#[test]
+fn opaque_inline_and_block_attrs_are_preserved_as_canonical_json() {
+    let inline = compile_json(serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "paragraph",
+            "content": [{
+                "type": "futureInline",
+                "attrs": {"z": 2, "nested": {"b": true, "a": 1}}
+            }]
+        }]
+    }))
+    .value
+    .expect("opaque inline compiles");
+    let block = compile_json(serde_json::json!({
+        "type": "doc",
+        "content": [{
+            "type": "futureBlock",
+            "attrs": {"z": 2, "nested": {"b": true, "a": 1}}
+        }]
+    }))
+    .value
+    .expect("opaque block compiles");
+
+    let expected_inline = r#"{"opaque_placement":"inline","original_json":{"attrs":{"nested":{"a":1,"b":true},"z":2},"type":"futureInline"},"original_type":"futureInline"}"#;
+    let expected_block = r#"{"opaque_placement":"block","original_json":{"attrs":{"nested":{"a":1,"b":true},"z":2},"type":"futureBlock"},"original_type":"futureBlock"}"#;
+    assert!(inline.elements().iter().any(|element| {
+        matches!(element, FfiViewerElement::InlineAtom { node_type, attrs_json, .. }
+            if node_type == "__opaque_json" && attrs_json == expected_inline)
+    }));
+    assert!(block.elements().iter().any(|element| {
+        matches!(element, FfiViewerElement::BlockAtom { node_type, attrs_json, .. }
+            if node_type == "__opaque_json" && attrs_json == expected_block)
+    }));
+}
+
+#[test]
+fn opaque_attrs_change_compiled_elements_and_semantic_identity() {
+    let red = compile_json(serde_json::json!({
+        "type": "doc",
+        "content": [{"type": "futureBlock", "attrs": {"color": "red"}}]
+    }))
+    .value
+    .expect("red opaque block compiles");
+    let blue = compile_json(serde_json::json!({
+        "type": "doc",
+        "content": [{"type": "futureBlock", "attrs": {"color": "blue"}}]
+    }))
+    .value
+    .expect("blue opaque block compiles");
+
+    assert_ne!(red.elements(), blue.elements());
+    assert_ne!(red.semantic_key(), blue.semantic_key());
+}
+
+#[test]
+fn viewer_canonicalizes_importable_mark_order_before_compilation() {
+    let canonical = compile_json(serde_json::json!({
+        "type": "doc",
+        "content": [{"type": "paragraph", "content": [{
+            "type": "text",
+            "text": "marked",
+            "marks": [{"type": "bold"}, {"type": "italic"}]
+        }]}]
+    }))
+    .value
+    .expect("canonical marks compile");
+    let out_of_order = compile_json(serde_json::json!({
+        "type": "doc",
+        "content": [{"type": "paragraph", "content": [{
+            "type": "text",
+            "text": "marked",
+            "marks": [{"type": "italic"}, {"type": "bold"}]
+        }]}]
+    }))
+    .value
+    .expect("importable mark order is canonicalized");
+
+    assert_eq!(out_of_order.elements(), canonical.elements());
+    assert_eq!(out_of_order.semantic_key(), canonical.semantic_key());
 }
 
 #[test]
@@ -204,4 +322,37 @@ fn configured_resource_limits_apply_to_viewer_source() {
 
     assert!(result.value.is_none());
     assert!(result.error.is_some());
+}
+
+#[test]
+fn viewer_rejects_reserved_opaque_json_forgery_like_editor_import() {
+    let result = compile_json(serde_json::json!({
+        "type": "doc",
+        "content": [{"type": "__opaque", "attrs": {"html_tag": "span"}}]
+    }));
+
+    let error = result.error.expect("reserved opaque JSON must reject");
+    assert!(result.value.is_none());
+    assert_eq!(error.code, "CODEC_INVARIANT_FAILED");
+}
+
+#[test]
+fn viewer_enforces_editor_derived_output_limit() {
+    let config = serde_json::json!({
+        "initialization": {"type": "localEmpty"},
+        "limits": {"editing": {"maxDerivedOutputBytes": 1}}
+    });
+    let result = compile_json_with(
+        serde_json::json!({
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "x"}]}]
+        }),
+        config.to_string(),
+        true,
+    );
+
+    let error = result.error.expect("derived-output limit must reject");
+    assert!(result.value.is_none());
+    assert_eq!(error.code, "DOCUMENT_LIMIT_EXCEEDED");
+    assert_eq!(error.details_json.as_deref(), Some(r#"{"field":"maxDerivedOutputBytes"}"#));
 }

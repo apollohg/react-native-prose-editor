@@ -1001,24 +1001,42 @@ pub(crate) fn resolve_local_document(
                 "DOCUMENT_LIMIT_EXCEEDED",
                 "DOCUMENT_INVALID",
             )?;
-            crate::serialize::from_prosemirror_json_with_limits(
+            let document = crate::serialize::from_prosemirror_json_with_limits(
                 value.as_value(),
                 &schema,
                 crate::serialize::UnknownTypeMode::Preserve,
                 &config.resource_limits,
             )
-            .map_err(viewer_json_parse_error)?
+            .map_err(viewer_json_parse_error)?;
+            crate::yrs_engine::admit_local_import_document(
+                document,
+                &schema,
+                &config.resource_limits,
+                &config.editing_limits,
+                Some(input.as_str().len()),
+            )
+            .map_err(SessionError::from)?
         }
-        FfiViewerSourceKind::Html => crate::serialize::from_html_with_limits(
-            input.as_str(),
-            &schema,
-            &crate::serialize::FromHtmlOptions {
-                strict: false,
-                allow_base64_images: config.allow_base64_images,
-            },
-            &config.resource_limits,
-        )
-        .map_err(viewer_html_parse_error)?,
+        FfiViewerSourceKind::Html => {
+            let document = crate::serialize::from_html_with_limits(
+                input.as_str(),
+                &schema,
+                &crate::serialize::FromHtmlOptions {
+                    strict: false,
+                    allow_base64_images: config.allow_base64_images,
+                },
+                &config.resource_limits,
+            )
+            .map_err(viewer_html_parse_error)?;
+            crate::yrs_engine::admit_local_import_document(
+                document,
+                &schema,
+                &config.resource_limits,
+                &config.editing_limits,
+                None,
+            )
+            .map_err(SessionError::from)?
+        }
     };
 
     Ok(ResolvedLocalDocument {

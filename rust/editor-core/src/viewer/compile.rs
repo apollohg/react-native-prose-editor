@@ -22,7 +22,7 @@ pub(crate) fn compile(request: FfiViewerCompileRequest) -> FfiViewerCompileResul
             request.source_kind.clone(),
             &request.source,
         )?;
-        let mut elements = crate::render::incremental::flatten_render_blocks(
+        let elements = crate::render::incremental::flatten_render_blocks(
             &crate::render::incremental::render_blocks(&resolved.document, &resolved.schema),
         )
         .into_iter()
@@ -37,11 +37,13 @@ pub(crate) fn compile(request: FfiViewerCompileRequest) -> FfiViewerCompileResul
             request.mention_prefix.as_deref(),
         );
         let retained_bytes = retained_bytes(&semantic_key, &elements);
+        let is_empty = elements.is_empty()
+            || document_is_empty(&resolved.document, &resolved.schema);
 
         Ok::<_, crate::session::SessionError>(Arc::new(ViewerCompiledDocument {
             semantic_key,
             elements,
-            is_empty: document_is_empty(&resolved.document, &resolved.schema),
+            is_empty,
             retained_bytes,
         }))
     });
@@ -100,22 +102,23 @@ fn viewer_element(element: RenderElement, mention_prefix: Option<&str>) -> FfiVi
             node_type,
             doc_pos,
             label,
-            mention_theme,
+            attrs,
         } => FfiViewerElement::InlineAtom {
             label: prefixed_mention_label(&node_type, label, mention_prefix),
             node_type,
             doc_pos,
-            attrs_json: canonical_mention_theme_json(mention_theme),
+            attrs_json: canonical_attrs_json(&attrs),
         },
         RenderElement::OpaqueBlockAtom {
             node_type,
             doc_pos,
             label,
+            attrs,
         } => FfiViewerElement::BlockAtom {
             label: prefixed_mention_label(&node_type, label, mention_prefix),
             node_type,
             doc_pos,
-            attrs_json: "{}".into(),
+            attrs_json: canonical_attrs_json(&attrs),
         },
         RenderElement::BlockStart {
             node_type,
@@ -162,17 +165,6 @@ fn canonical_attrs_json(attrs: &HashMap<String, serde_json::Value>) -> String {
     );
     String::from_utf8(serialize_json_value_stack_safe(&value, 0))
         .expect("canonical JSON serialization is UTF-8")
-}
-
-fn canonical_mention_theme_json(theme: Option<HashMap<String, serde_json::Value>>) -> String {
-    let mut attrs = HashMap::new();
-    if let Some(theme) = theme {
-        attrs.insert(
-            "mentionTheme".into(),
-            serde_json::Value::Object(theme.into_iter().collect()),
-        );
-    }
-    canonical_attrs_json(&attrs)
 }
 
 fn canonical_list_context_json(context: &ListContext) -> String {

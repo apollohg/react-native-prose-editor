@@ -562,15 +562,20 @@ impl CachedRenderBlocks {
                 RenderElement::OpaqueInlineAtom {
                     node_type,
                     label,
+                    attrs,
                     mention_theme,
                     ..
                 } => node_type
                     .capacity()
                     .checked_add(label.capacity())?
+                    .checked_add(json_map_bytes(attrs)?)
                     .checked_add(mention_theme.as_ref().map_or(Some(0), json_map_bytes)?),
                 RenderElement::OpaqueBlockAtom {
-                    node_type, label, ..
-                } => node_type.capacity().checked_add(label.capacity()),
+                    node_type, label, attrs, ..
+                } => node_type
+                    .capacity()
+                    .checked_add(label.capacity())?
+                    .checked_add(json_map_bytes(attrs)?),
                 RenderElement::BlockStart {
                     node_type,
                     list_context,
@@ -1687,6 +1692,7 @@ fn generate_block_inner(
                 node_type: node.node_type().to_string(),
                 label: inline_atom_label(node.node_type(), node.attrs()),
                 doc_pos: *pos,
+                attrs: node.attrs().clone(),
                 mention_theme: inline_atom_mention_theme(node.node_type(), node.attrs()),
             });
             *pos += node.node_size();
@@ -1710,6 +1716,7 @@ fn generate_block_inner(
                         node_type: node.node_type().to_string(),
                         label: inline_atom_label(node.node_type(), node.attrs()),
                         doc_pos: *pos,
+                        attrs: node.attrs().clone(),
                         mention_theme: inline_atom_mention_theme(node.node_type(), node.attrs()),
                     });
                 } else {
@@ -1717,6 +1724,7 @@ fn generate_block_inner(
                         node_type: node.node_type().to_string(),
                         label: inline_atom_label(node.node_type(), node.attrs()),
                         doc_pos: *pos,
+                        attrs: node.attrs().clone(),
                     });
                 }
                 *pos += node.node_size();

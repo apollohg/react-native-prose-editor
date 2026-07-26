@@ -476,6 +476,7 @@ fn serialize_render_elements(elements: &[crate::render::RenderElement]) -> serde
                 node_type,
                 label,
                 doc_pos,
+                attrs,
                 mention_theme,
             } => {
                 let mut obj = serde_json::json!({
@@ -484,6 +485,19 @@ fn serialize_render_elements(elements: &[crate::render::RenderElement]) -> serde
                     "label": label,
                     "docPos": doc_pos,
                 });
+                if !attrs.is_empty() {
+                    obj["attrs"] = serde_json::Value::Object(
+                        attrs
+                            .iter()
+                            .map(|(key, value)| {
+                                (
+                                    key.clone(),
+                                    crate::boundary::clone_json_value_stack_safe(value),
+                                )
+                            })
+                            .collect(),
+                    );
+                }
                 if let Some(mention_theme) = mention_theme {
                     obj["mentionTheme"] = serde_json::Value::Object(
                         mention_theme
@@ -503,13 +517,28 @@ fn serialize_render_elements(elements: &[crate::render::RenderElement]) -> serde
                 node_type,
                 label,
                 doc_pos,
+                attrs,
             } => {
-                serde_json::json!({
+                let mut obj = serde_json::json!({
                     "type": "opaqueBlockAtom",
                     "nodeType": node_type,
                     "label": label,
                     "docPos": doc_pos,
-                })
+                });
+                if !attrs.is_empty() {
+                    obj["attrs"] = serde_json::Value::Object(
+                        attrs
+                            .iter()
+                            .map(|(key, value)| {
+                                (
+                                    key.clone(),
+                                    crate::boundary::clone_json_value_stack_safe(value),
+                                )
+                            })
+                            .collect(),
+                    );
+                }
+                obj
             }
             crate::render::RenderElement::BlockStart {
                 node_type,

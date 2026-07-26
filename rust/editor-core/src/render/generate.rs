@@ -194,6 +194,7 @@ fn walk_children(
                     node_type: child.node_type().to_string(),
                     label: inline_atom_label(child.node_type(), child.attrs()),
                     doc_pos: *pos,
+                    attrs: child.attrs().clone(),
                     mention_theme: inline_atom_mention_theme(child.node_type(), child.attrs()),
                 });
                 *pos += child.node_size();
@@ -218,6 +219,7 @@ fn walk_children(
                             node_type: child.node_type().to_string(),
                             label: inline_atom_label(child.node_type(), child.attrs()),
                             doc_pos: *pos,
+                            attrs: child.attrs().clone(),
                             mention_theme: inline_atom_mention_theme(
                                 child.node_type(),
                                 child.attrs(),
@@ -228,6 +230,7 @@ fn walk_children(
                             node_type: child.node_type().to_string(),
                             label: inline_atom_label(child.node_type(), child.attrs()),
                             doc_pos: *pos,
+                            attrs: child.attrs().clone(),
                         });
                     }
                     *pos += child.node_size();

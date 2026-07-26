@@ -606,6 +606,27 @@ impl ValidatedImportDocument {
     }
 }
 
+/// Session-free import admission for consumers that need the exact local
+/// import contract without allocating a Yjs document or editor runtime.
+pub(crate) fn admit_local_import_document(
+    document: Document,
+    schema: &Schema,
+    resource_limits: &ResourceLimits,
+    editing_limits: &EditingLimits,
+    json_input_len: Option<usize>,
+) -> YrsEngineResult<Document> {
+    let canonical_schema = CanonicalSchemaContext::new(schema);
+    let admitted = ValidatedImportDocument::new(
+        document,
+        schema,
+        &canonical_schema,
+        resource_limits,
+        json_input_len,
+    )?;
+    admit_canonical_output(&admitted.canonical_artifact, editing_limits)?;
+    Ok(admitted.document)
+}
+
 fn contains_reserved_public_json_forge(root: &crate::model::Node) -> bool {
     let mut pending = vec![root];
     while let Some(node) = pending.pop() {

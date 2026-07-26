@@ -74,6 +74,7 @@ pub enum RenderElement {
         node_type: String,
         label: String,
         doc_pos: u32,
+        attrs: std::collections::HashMap<String, serde_json::Value>,
         mention_theme: Option<std::collections::HashMap<String, serde_json::Value>>,
     },
     /// An opaque block atom (unrecognised block void).
@@ -81,6 +82,7 @@ pub enum RenderElement {
         node_type: String,
         label: String,
         doc_pos: u32,
+        attrs: std::collections::HashMap<String, serde_json::Value>,
     },
     /// Start of a block-level container (paragraph, listItem, etc.).
     BlockStart {
@@ -121,11 +123,13 @@ impl Clone for RenderElement {
                 node_type,
                 label,
                 doc_pos,
+                attrs,
                 mention_theme,
             } => Self::OpaqueInlineAtom {
                 node_type: node_type.clone(),
                 label: label.clone(),
                 doc_pos: *doc_pos,
+                attrs: crate::boundary::clone_json_object_stack_safe(attrs),
                 mention_theme: mention_theme
                     .as_ref()
                     .map(crate::boundary::clone_json_object_stack_safe),
@@ -134,10 +138,12 @@ impl Clone for RenderElement {
                 node_type,
                 label,
                 doc_pos,
+                attrs,
             } => Self::OpaqueBlockAtom {
                 node_type: node_type.clone(),
                 label: label.clone(),
                 doc_pos: *doc_pos,
+                attrs: crate::boundary::clone_json_object_stack_safe(attrs),
             },
             Self::BlockStart {
                 node_type,
@@ -161,15 +167,20 @@ impl RenderElement {
                 crate::boundary::drop_json_object_values_stack_safe(attrs);
             }
             Self::OpaqueInlineAtom {
-                mention_theme: Some(theme),
+                attrs,
+                mention_theme,
                 ..
-            } => crate::boundary::drop_json_object_values_stack_safe(theme),
-            Self::OpaqueInlineAtom {
-                mention_theme: None,
-                ..
+            } => {
+                crate::boundary::drop_json_object_values_stack_safe(attrs);
+                if let Some(theme) = mention_theme {
+                    crate::boundary::drop_json_object_values_stack_safe(theme);
+                }
             }
-            | Self::OpaqueBlockAtom { .. }
-            | Self::BlockStart { .. }
+            Self::OpaqueBlockAtom {
+                attrs,
+                ..
+            } => crate::boundary::drop_json_object_values_stack_safe(attrs),
+            Self::BlockStart { .. }
             | Self::BlockEnd => {}
         }
     }
