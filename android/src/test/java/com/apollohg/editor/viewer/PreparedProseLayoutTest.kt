@@ -83,7 +83,41 @@ class PreparedProseLayoutTest {
         viewer.measure(exactWidth(320), unspecifiedHeight())
 
         assertEquals(1, parent.subtreeChangeCount())
-        assertTrue(parent.eventTypes.contains(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED))
+        assertEquals(
+            listOf(
+                AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            ),
+            parent.eventTypes,
+        )
+    }
+
+    @Test
+    fun `direct prepared detachment clears virtual focus before removing its subtree`() {
+        val viewer = ProseViewerView(context, testRegistry(LinkLayoutEngine()))
+        val parent = CapturingAccessibilityParent(context).apply { addView(viewer) }
+
+        assertTrue(viewer.apply(jsonSource("detachment generation"), configuration()))
+        viewer.measure(exactWidth(320), unspecifiedHeight())
+        assertTrue(
+            viewer.accessibilityNodeProvider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+        parent.clearEvents()
+
+        viewer.preparePreparedHostForWindowDetachment()
+
+        assertEquals(
+            listOf(
+                AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            ),
+            parent.eventTypes,
+        )
+        assertEquals(1, parent.subtreeChangeCount())
     }
 
     @Test

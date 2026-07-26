@@ -183,11 +183,17 @@ class ProseViewerViewTest {
         measureAndLayout(viewer)
 
         assertTrue(viewer.accessibilityNodeProvider.performAction(1, AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null))
+        parent.clearEvents()
         viewer.prepareForReuse()
 
         assertFalse(viewer.accessibilityNodeProvider.performAction(1, AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS, null))
-        assertTrue(parent.events.any { it.type == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED })
-        assertTrue(parent.events.any { it.type == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED })
+        assertEquals(
+            listOf(
+                AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            ),
+            parent.events.map { it.type },
+        )
         assertEquals(1, parent.subtreeChangeCount())
     }
 
@@ -245,6 +251,10 @@ class ProseViewerViewTest {
         fun subtreeChangeCount(): Int = events.count { event ->
             event.type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
                 event.changeTypes == AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE
+        }
+
+        fun clearEvents() {
+            events.clear()
         }
 
         override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) = Unit

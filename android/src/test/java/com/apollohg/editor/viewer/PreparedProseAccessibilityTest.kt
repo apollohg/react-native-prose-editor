@@ -55,11 +55,19 @@ class PreparedProseAccessibilityTest {
         view.install(preparedArtifact("replacement"))
 
         assertEquals(1, parent.subtreeChangeCount())
-        assertTrue(parent.eventTypes.contains(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED))
+        assertEquals(
+            listOf(
+                AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            ),
+            parent.eventTypes,
+        )
 
         parent.clearEvents()
+        val installedArtifact = view.preparedLayout
         view.linkInteractionsEnabled = false
         assertEquals(1, parent.subtreeChangeCount())
+        assertTrue(view.preparedLayout === installedArtifact)
 
         parent.clearEvents()
         view.install(null)

@@ -420,15 +420,23 @@ class ProseViewerView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        preparePreparedHostForWindowDetachment()
+        pendingTapGesture = null
+        super.onDetachedFromWindow()
+    }
+
+    /**
+     * Removes a directly owned prepared subtree. Virtual focus must clear
+     * before the artifact disappears and before its subtree notification.
+     */
+    internal fun preparePreparedHostForWindowDetachment() {
+        clearVirtualAccessibilityFocus()
         if (preparedRequest != null) {
             preparedArtifact = null
             preparedDrawingView.install(null)
             preparedAccessibilityGeneration = null
             notifyAccessibilitySubtreeChanged()
         }
-        pendingTapGesture = null
-        clearVirtualAccessibilityFocus()
-        super.onDetachedFromWindow()
     }
 
     private fun reportDirectErrorIfNeeded(request: ProseViewerRequest, error: ProseViewerError?) {

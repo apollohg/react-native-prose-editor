@@ -109,6 +109,7 @@ final class PreparedProseAccessibilityTests: XCTestCase {
         XCTAssertEqual(activatedMention, UInt32.max)
 
         drawing.linkInteractionsEnabled = false
+        XCTAssertTrue(drawing.layout === layout)
         XCTAssertEqual(drawing.accessibilityElementCount(), 1)
         XCTAssertEqual(drawing.materializedAccessibilityElementCountForTesting, 0)
 

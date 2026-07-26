@@ -34,7 +34,7 @@ NSString *SourceKind(const PreparedProseViewerProps &props) {
   return props.sourceKind == PreparedProseViewerSourceKind::Html ? @"html" : @"json";
 }
 
-bool HasEquivalentProps(
+bool HasEquivalentGenerationProps(
     const PreparedProseViewerProps &left,
     const PreparedProseViewerProps &right) {
   return left.sourceKind == right.sourceKind && left.source == right.source &&
@@ -42,7 +42,6 @@ bool HasEquivalentProps(
       left.imagePolicyJson == right.imagePolicyJson &&
       left.imagesEnabled == right.imagesEnabled &&
       left.collapsesWhenEmpty == right.collapsesWhenEmpty &&
-      left.enableLinkTaps == right.enableLinkTaps &&
       left.fontEnvironmentRevision == right.fontEnvironmentRevision;
 }
 
@@ -179,12 +178,16 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 {
   [super updateProps:props oldProps:oldProps];
   const auto nextProps = std::static_pointer_cast<const PreparedProseViewerProps>(props);
-  if (!_viewerProps || !HasEquivalentProps(*_viewerProps, *nextProps)) {
+  // Link permission filters the installed interaction/accessibility host; it
+  // does not alter the prepared render generation or its Fabric lease.
+  const BOOL generationChanged =
+      !_viewerProps || !HasEquivalentGenerationProps(*_viewerProps, *nextProps);
+  if (generationChanged) {
     [self beginNewGeneration];
   }
   _viewerProps = nextProps;
   _drawingView.linkInteractionsEnabled = nextProps->enableLinkTaps;
-  if (_hasReceivedUsableLayoutMetrics) {
+  if (generationChanged && _hasReceivedUsableLayoutMetrics) {
     [self installMeasuredArtifactIfAttached];
   }
 }

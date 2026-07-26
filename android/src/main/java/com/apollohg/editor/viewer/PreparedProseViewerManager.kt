@@ -98,8 +98,11 @@ internal class PreparedProseViewerManager :
     override fun setCollapsesWhenEmpty(view: PreparedProseDrawingView, value: Boolean) =
         update(view) { collapsesWhenEmpty = value }
 
-    override fun setEnableLinkTaps(view: PreparedProseDrawingView, value: Boolean) =
-        update(view) { linkTapsEnabled = value }.also { view.linkInteractionsEnabled = value }
+    override fun setEnableLinkTaps(view: PreparedProseDrawingView, value: Boolean) {
+        // Permission only filters the installed interaction/accessibility
+        // nodes. It must not reconcile, acquire, or replace the generation.
+        view.linkInteractionsEnabled = value
+    }
 
     override fun setFontEnvironmentRevision(view: PreparedProseDrawingView, value: Int) =
         update(view) { fontEnvironmentRevision = value.coerceAtLeast(0).toLong() }
@@ -284,7 +287,6 @@ internal class PreparedProseViewerManager :
         var imagesEnabled: Boolean = true,
         var collapsesWhenEmpty: Boolean = true,
         var fontEnvironmentRevision: Long = 0,
-        var linkTapsEnabled: Boolean = true,
         var revisions: FabricStateRevisions? = null,
         var stateWrapper: StateWrapper? = null,
         var generation: FabricGenerationToken? = null,
