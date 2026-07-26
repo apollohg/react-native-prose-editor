@@ -554,6 +554,18 @@ public class NativeEditorModule: BaseModule, @preconcurrency AnyModule {
     @MainActor
     public func definition() -> ModuleDefinition {
         Name("NativeEditor")
+        // Benchmark-only controls are deterministic and surface-independent;
+        // they never participate in a viewer draw or measurement path.
+        Function("preparedProseBenchmarkBegin") {
+            PreparedProseInstrumentation.beginBenchmark()
+        }
+        Function("preparedProseBenchmarkReset") {
+            PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning()
+            PreparedProseInstrumentation.invalidated(.cacheReset)
+        }
+        Function("preparedProseBenchmarkExport") { () -> String in
+            PreparedProseInstrumentation.exportJSON()
+        }
         Events("onCollaborationTransportEvent")
 
         OnCreate {

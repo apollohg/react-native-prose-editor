@@ -18,6 +18,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import com.apollohg.editor.viewer.PreparedProseDrawingView
+import com.apollohg.editor.viewer.PreparedProseInstrumentation
 import com.apollohg.editor.viewer.PreparedProseInteraction
 import com.apollohg.editor.viewer.PreparedProseLayout
 import com.apollohg.editor.viewer.PreparedProseLayoutRegistry
@@ -286,6 +287,7 @@ class ProseViewerView @JvmOverloads constructor(
             fontEnvironmentRevision = currentFontRevision,
             attachmentRevision = 0,
         )
+        PreparedProseInstrumentation.invalidated(PreparedProseInstrumentation.InvalidationReason.CONTENT)
         attachmentRevisions.beginSemanticGeneration(next.semanticGenerationIdentity)
         preparedRequest = next
         retainedDocument = null
@@ -349,6 +351,7 @@ class ProseViewerView @JvmOverloads constructor(
      * The interaction listener is retained so holders may assign it once.
      */
     fun prepareForReuse() {
+        PreparedProseInstrumentation.invalidated(PreparedProseInstrumentation.InvalidationReason.REUSE)
         fontEnvironment.deactivate()
         clearDirectGeneration()
         clearVirtualAccessibilityFocus()
@@ -586,6 +589,12 @@ class ProseViewerView @JvmOverloads constructor(
         if (!viewerImagePipeline.acceptsCompletion(request.semanticGenerationIdentity)) return
         if (!attachmentRevisions.recordIntrinsicSize(attachment.id, attachment.ordinal, width, height, attachment.declaredSize)) return
         preparedRequest = request.copy(attachmentRevision = attachmentRevisions.revision)
+        PreparedProseInstrumentation.invalidated(PreparedProseInstrumentation.InvalidationReason.ATTACHMENT)
+        PreparedProseInstrumentation.retained(
+            PreparedProseInstrumentation.Owner.SIDECARS,
+            "direct-${System.identityHashCode(this)}",
+            attachmentRevisions.retainedPublicationBytesForTesting.toLong(),
+        )
         requestLayout()
     }
 
@@ -593,6 +602,7 @@ class ProseViewerView @JvmOverloads constructor(
         val request = preparedRequest ?: return
         if (revision <= request.fontEnvironmentRevision) return
         preparedRequest = request.copy(fontEnvironmentRevision = revision)
+        PreparedProseInstrumentation.invalidated(PreparedProseInstrumentation.InvalidationReason.FONT)
         requestLayout()
     }
 

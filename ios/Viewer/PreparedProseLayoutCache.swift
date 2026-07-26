@@ -16,6 +16,12 @@ final class PreparedProseLayoutCache {
     private var leaseKeyBySurface: [FabricSurfaceToken: FabricLeaseKey] = [:]
     private var leaseAccessOrder: [FabricLeaseKey] = []
     private var mountIndex: [ProseMountKey: ProseLayoutKey] = [:]
+#if DEBUG
+    /// A live generation must publish an artifact once for its complete
+    /// semantic/physical-width/revision key. Eviction retires only unmounted
+    /// entries, so a mounted owner can never be republished accidentally.
+    private var publishedKeys: Set<ProseLayoutKey> = []
+#endif
     private let byteBudget: Int
     private let entryBudget: Int
     private let leaseBudget: Int
@@ -35,11 +41,13 @@ final class PreparedProseLayoutCache {
         fabricSurface: FabricSurfaceToken? = nil,
         build: () throws -> PreparedProseLayout
     ) throws -> PreparedProseLayout {
+        let lookupStarted = PreparedProseInstrumentation.now()
         condition.lock()
         if let layout = completed[key] {
             touch(key)
             if let fabricSurface { leaseLocked(layout, for: key, surface: fabricSurface) }
             condition.unlock()
+            PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true)
             return layout
         }
         if let preparation = inFlight[key] {
@@ -49,16 +57,24 @@ final class PreparedProseLayoutCache {
                 leaseLocked(layout, for: key, surface: fabricSurface)
             }
             condition.unlock()
+            PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: true, waited: true)
             return try result.get()
         }
         let preparation = Preparation()
         inFlight[key] = preparation
         condition.unlock()
+        PreparedProseInstrumentation.cacheLookup(lookupStarted, hit: false)
 
         let result = Result(catching: build)
 
         condition.lock()
         if case let .success(layout) = result {
+#if DEBUG
+            if !publishedKeys.insert(key).inserted {
+                PreparedProseInstrumentation.duplicatePublication()
+                preconditionFailure("Prepared prose layout published twice for a live semantic/width/revision key.")
+            }
+#endif
             completed[key] = layout
             mountIndex[mountKey(for: key)] = key
             touch(key)
@@ -120,6 +136,10 @@ final class PreparedProseLayoutCache {
         leaseKeyBySurface.removeAll()
         leaseAccessOrder.removeAll()
         mountIndex.removeAll()
+#if DEBUG
+        publishedKeys.removeAll()
+#endif
+        PreparedProseInstrumentation.retained(.layout, scope: "unmounted-cache", bytes: 0)
         condition.unlock()
     }
 
@@ -179,6 +199,9 @@ final class PreparedProseLayoutCache {
         accessOrder.removeAll { $0 == key }
         let mountKey = mountKey(for: key)
         if mountIndex[mountKey] == key { mountIndex.removeValue(forKey: mountKey) }
+#if DEBUG
+        if !leases.values.contains(where: { $0.key == key }) { publishedKeys.remove(key) }
+#endif
     }
 
     private func removeLeaseLocked(_ key: FabricLeaseKey) {
@@ -194,32 +217,17 @@ final class PreparedProseLayoutCache {
             removeCompletedLocked(oldest)
         }
 
-        // An oversize handoff is permitted only for the newest measurement and
-        // only after every older lease has been deterministically evicted.
-        if let preferredLease,
-           let layout = leases[preferredLease],
-           layout.retainedBytes > byteBudget {
-            for key in leaseAccessOrder where key != preferredLease {
-                removeLeaseLocked(key)
-            }
-            for key in Array(completed.keys) where key != preferredLease.layout {
-                removeCompletedLocked(key)
-            }
-            removeCompletedLocked(preferredLease.layout)
-            return
-        }
-
-        while leases.count > leaseBudget, let oldest = leaseAccessOrder.first {
-            removeLeaseLocked(oldest)
-        }
-        while retainedBytesLocked() > byteBudget {
+        // Leases are handoffs to a mounted owner, not unmounted cache entries.
+        // The cache budget therefore evicts only completed LRU artifacts; a
+        // mounted artifact is never evicted by pressure or entry churn.
+        while completedRetainedBytesLocked() > byteBudget {
             if let oldest = accessOrder.first {
                 removeCompletedLocked(oldest)
                 continue
             }
-            guard let oldestLease = leaseAccessOrder.first else { break }
-            removeLeaseLocked(oldestLease)
+            break
         }
+        PreparedProseInstrumentation.retained(.layout, scope: "unmounted-cache", bytes: completedRetainedBytesLocked())
     }
 
     /// Cache and lease references commonly point at the same immutable layout.
@@ -228,6 +236,12 @@ final class PreparedProseLayoutCache {
         var uniqueLayouts: [ObjectIdentifier: PreparedProseLayout] = [:]
         for layout in completed.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
         for layout in leases.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
+        return uniqueLayouts.values.reduce(0) { $0 + $1.retainedBytes }
+    }
+
+    private func completedRetainedBytesLocked() -> Int {
+        var uniqueLayouts: [ObjectIdentifier: PreparedProseLayout] = [:]
+        for layout in completed.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
         return uniqueLayouts.values.reduce(0) { $0 + $1.retainedBytes }
     }
 }

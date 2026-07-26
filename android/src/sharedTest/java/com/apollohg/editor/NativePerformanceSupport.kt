@@ -1,6 +1,9 @@
 package com.apollohg.editor
 
 import android.graphics.Color
+import android.content.Context
+import android.view.ViewGroup
+import androidx.recyclerview.widget.RecyclerView
 import java.util.Locale
 import kotlin.math.sqrt
 import org.json.JSONArray
@@ -42,6 +45,43 @@ internal data class TimingStats(
             append("]")
         }
     }
+}
+
+/** Pixel 7 release gate, evaluated only by the Task 14 device lane. */
+internal object PreparedProsePerformanceGates {
+    private const val NS_PER_MS = 1_000_000L
+    fun assertPasses(exportJson: String, expectedDocuments: Int) {
+        val export = JSONObject(exportJson)
+        val compile = export.getJSONArray("compileNanos").longs()
+        val layout = export.getJSONArray("layoutNanos").longs()
+        val lookup = export.getJSONArray("cacheLookupNanos").longs()
+        val draw = export.getJSONArray("drawNanos").longs()
+        val frames = export.getJSONArray("frameNanos").longs()
+        check(compile.size >= expectedDocuments) { "expected compile samples for every corpus document" }
+        check(percentile(compile.zip(layout).map { it.first + it.second }, .95) < 4 * NS_PER_MS)
+        check(percentile(lookup, .99) < 100_000L)
+        check(percentile(draw, .95) < NS_PER_MS)
+        check(frames.count { it <= 16_670_000L }.toDouble() / maxOf(1, frames.size) >= .99)
+        check((frames.maxOrNull() ?: 0L) <= 33_300_000L)
+        check(export.getJSONObject("retainedBytes").optLong("layout") <= 32L * 1024L * 1024L)
+        check(export.optInt("duplicatePublications") == 0)
+    }
+    private fun JSONArray.longs() = List(length()) { getLong(it) }
+    private fun percentile(values: List<Long>, percentile: Double): Long = values.sorted()[((values.size - 1) * percentile).toInt().coerceAtLeast(0)]
+}
+
+/** RecyclerView counterpart to the example FlatList; callers supply corpus order. */
+internal class PreparedProseRecyclerHarness(context: Context) : RecyclerView(context) {
+    data class Entry(val id: String, val contentJson: String)
+    private val benchmarkAdapter = object : RecyclerView.Adapter<Holder>() {
+        var entries: List<Entry> = emptyList()
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Holder(android.widget.TextView(parent.context))
+        override fun onBindViewHolder(holder: Holder, position: Int) { holder.itemView.contentDescription = entries[position].id }
+        override fun getItemCount() = entries.size
+    }
+    init { this.adapter = benchmarkAdapter }
+    fun traverse(order: List<Entry>, imagesEnabled: Boolean, bind: (Entry, Boolean) -> Unit) { benchmarkAdapter.entries = order; benchmarkAdapter.notifyDataSetChanged(); order.forEach { bind(it, imagesEnabled) } }
+    private class Holder(view: android.view.View) : RecyclerView.ViewHolder(view)
 }
 
 internal data class ApplyUpdateTraceStats(

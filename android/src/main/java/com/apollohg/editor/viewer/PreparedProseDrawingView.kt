@@ -26,7 +26,15 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     var onFontConfigurationChanged: ((Configuration) -> Unit)? = null
     var onInteractionActivated: ((PreparedProseInteraction) -> Boolean)? = null
     var imagePixels: Map<String, Bitmap> = emptyMap()
-        set(value) { field = value; invalidate() }
+        set(value) {
+            field = value
+            PreparedProseInstrumentation.retained(
+                PreparedProseInstrumentation.Owner.IMAGE,
+                "drawing-${System.identityHashCode(this)}",
+                retainedImagePixelsBytes,
+            )
+            invalidate()
+        }
     /**
      * This surface owns only map/entry references. The shared native loader
      * cache is the sole owner charged for a decoded Bitmap allocation.
@@ -87,16 +95,19 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     }
 
     override fun onDraw(canvas: Canvas) {
+        val drawStarted = PreparedProseInstrumentation.now()
         super.onDraw(canvas)
         val artifact = preparedLayout ?: return
         onVisibleRectChanged?.invoke(Rect(canvas.clipBounds))
         val visible = mutableListOf<PreparedProseFragment>()
-        artifact.forEachBlockIntersecting(canvas.clipBounds) { visible += it.fragments }
+        var visibleBlockCount = 0
+        artifact.forEachBlockIntersecting(canvas.clipBounds) { block -> visible += block.fragments; visibleBlockCount += 1 }
         // Phases stay global across blocks: later code backgrounds cannot cover
         // an earlier quote border, and text/labels always remain foreground.
         visible.forEach { drawBackground(canvas, it) }
         visible.forEach { drawBorderOrRule(canvas, it) }
         visible.forEach { drawForeground(canvas, it) }
+        PreparedProseInstrumentation.drew(drawStarted, visibleBlockCount)
     }
 
     private fun drawBackground(canvas: Canvas, fragment: PreparedProseFragment) {

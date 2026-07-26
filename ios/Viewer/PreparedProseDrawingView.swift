@@ -9,7 +9,12 @@ import UIKit
 /// A rendering-only view: it consumes already prepared Core Text lines.
 @objc(PREPPreparedProseDrawingView)
 public final class PreparedProseDrawingView: UIView {
-    var imagePixels: [String: UIImage] = [:] { didSet { setNeedsDisplay() } }
+    var imagePixels: [String: UIImage] = [:] {
+        didSet {
+            PreparedProseInstrumentation.retained(.image, scope: "drawing-\(ObjectIdentifier(self))", bytes: retainedImagePixelsBytesForTesting)
+            setNeedsDisplay()
+        }
+    }
     /// This map owns only mapping/reference overhead. The shared native image
     /// cache is the sole owner charged for a decoded CGImage allocation.
     internal var retainedImagePixelsBytesForTesting: Int {
@@ -37,6 +42,7 @@ public final class PreparedProseDrawingView: UIView {
     var layout: PreparedProseLayout? {
         didSet {
             guard oldValue !== layout else { return }
+            PreparedProseInstrumentation.retained(.sidecars, scope: "drawing-\(ObjectIdentifier(self))", bytes: imageRevisions.retainedPublicationBytesForTesting)
             invalidateAccessibilityNodes()
             setNeedsDisplay()
         }
@@ -252,6 +258,7 @@ public final class PreparedProseDrawingView: UIView {
     }
 
     public override func draw(_ rect: CGRect) {
+        let drawStarted = PreparedProseInstrumentation.now()
         guard let layout, let context = UIGraphicsGetCurrentContext(), !layout.blocks.isEmpty else { return }
         let blocks = layout.blocks
         var lower = 0
@@ -266,10 +273,12 @@ public final class PreparedProseDrawingView: UIView {
         context.scaleBy(x: 1, y: -1)
         let scale = CGFloat(Double(bitPattern: layout.key.displayScaleBits))
         var visibleFragments: [PreparedProseFragment] = []
+        var visibleBlockCount = 0
         for index in lower..<blocks.count {
             let block = blocks[index]
             guard block.bounds.minY <= rect.maxY else { break }
             visibleFragments.append(contentsOf: block.fragments)
+            visibleBlockCount += 1
         }
         // Keep paint phases global across the visible range: a nested code
         // background must never cover a quote border from an adjacent block.
@@ -277,6 +286,7 @@ public final class PreparedProseDrawingView: UIView {
         for fragment in visibleFragments { drawBorderOrRule(fragment, in: context, scale: scale) }
         for fragment in visibleFragments { drawForeground(fragment, in: context) }
         context.restoreGState()
+        PreparedProseInstrumentation.drew(drawStarted, visibleBlocks: visibleBlockCount)
     }
 
     private func drawingRect(for fragment: PreparedProseFragment) -> CGRect {

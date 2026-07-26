@@ -1,5 +1,6 @@
 package com.apollohg.editor.viewer
 
+import com.apollohg.editor.BuildConfig
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 
@@ -18,15 +19,18 @@ internal class PreparedProseLayoutCache(
     private val leases = LinkedHashMap<FabricGenerationToken, PreparedProseLayout>(16, 0.75f, true)
     private val leaseBySurface = mutableMapOf<FabricSurfaceToken, FabricGenerationToken>()
     private val mountIndex = mutableMapOf<ProseMountKey, ProseLayoutKey>()
+    private val publishedKeys = mutableSetOf<ProseLayoutKey>()
 
     fun value(
         key: ProseLayoutKey,
         surface: FabricSurfaceToken? = null,
         build: () -> PreparedProseLayout,
     ): PreparedProseLayout {
+        val lookupStarted = PreparedProseInstrumentation.now()
         synchronized(lock) {
             completed[key]?.let { layout ->
                 if (surface != null) leaseLocked(layout, surface)
+                PreparedProseInstrumentation.cacheLookup(lookupStarted, hit = true)
                 return layout
             }
         }
@@ -35,8 +39,10 @@ internal class PreparedProseLayoutCache(
         if (existing != null) {
             val layout = existing.join()
             if (surface != null && isRetainable(layout)) synchronized(lock) { leaseLocked(layout, surface) }
+            PreparedProseInstrumentation.cacheLookup(lookupStarted, hit = true, waited = true)
             return layout
         }
+        PreparedProseInstrumentation.cacheLookup(lookupStarted, hit = false)
         val layout = try {
             build()
         } catch (throwable: Throwable) {
@@ -49,6 +55,12 @@ internal class PreparedProseLayoutCache(
             // measured it, but retaining it as either an LRU entry or a Fabric lease
             // would make the advertised byte bound false.
             if (isRetainable(layout)) {
+                if (BuildConfig.DEBUG) {
+                    check(publishedKeys.add(key)) {
+                        PreparedProseInstrumentation.duplicatePublication()
+                        "Prepared prose layout published twice for a live semantic/width/revision key."
+                    }
+                }
                 completed[key] = layout
                 mountIndex[mountKey(key)] = key
                 if (surface != null) leaseLocked(layout, surface) else enforceBudgetLocked()
@@ -96,6 +108,8 @@ internal class PreparedProseLayoutCache(
         leases.clear()
         leaseBySurface.clear()
         mountIndex.clear()
+        publishedKeys.clear()
+        PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.LAYOUT, "unmounted-cache", 0L)
     }
 
     internal val completedCountForTesting: Int get() = synchronized(lock) { completed.size }
@@ -114,17 +128,16 @@ internal class PreparedProseLayoutCache(
         layout.retainedBytes <= byteBudget
 
     private fun enforceBudgetLocked(preferredLease: FabricGenerationToken? = null) {
-        while (completed.size > entryBudget || retainedBytesLocked() > byteBudget) {
+        while (completed.size > entryBudget || completedRetainedBytesLocked() > byteBudget) {
             val oldest = completed.entries.firstOrNull() ?: break
             completed.remove(oldest.key)
+            if (leases.values.none { it.key == oldest.key }) publishedKeys.remove(oldest.key)
             val mountKey = mountKey(oldest.key)
             if (mountIndex[mountKey] == oldest.key) mountIndex.remove(mountKey)
         }
-        while (leases.size > leaseBudget || retainedBytesLocked() > byteBudget) {
-            val oldest = leases.entries.firstOrNull { it.key != preferredLease } ?: break
-            leases.remove(oldest.key)
-            if (leaseBySurface[oldest.key.surface] == oldest.key) leaseBySurface.remove(oldest.key.surface)
-        }
+        // Handoff leases represent mounted ownership and are intentionally not
+        // eligible for the unmounted-cache LRU or its byte budget.
+        PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.LAYOUT, "unmounted-cache", completedRetainedBytesLocked())
     }
 
     private fun retainedBytesLocked(): Long {
@@ -133,6 +146,11 @@ internal class PreparedProseLayoutCache(
         leases.values.forEach { layouts[it.key] = it }
         return layouts.values.sumOf { it.retainedBytes }
     }
+
+    private fun completedRetainedBytesLocked(): Long = completed.values
+        .associateBy { it.key }
+        .values
+        .sumOf { it.retainedBytes }
 
     private fun mountKey(key: ProseLayoutKey) =
         ProseMountKey(key.generationIdentity, key.widthPx, key.densityBits)

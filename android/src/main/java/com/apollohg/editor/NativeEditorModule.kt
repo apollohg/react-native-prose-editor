@@ -2,6 +2,8 @@ package com.apollohg.editor
 
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import com.apollohg.editor.viewer.PreparedProseInstrumentation
+import com.apollohg.editor.viewer.PreparedProseLayoutRegistry
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
@@ -272,6 +274,17 @@ private fun mutationResult(
 class NativeEditorModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("NativeEditor")
+        // Benchmark controls remain outside measurement/drawing paths.
+        Function("preparedProseBenchmarkBegin") {
+            PreparedProseInstrumentation.beginBenchmark()
+        }
+        Function("preparedProseBenchmarkReset") {
+            PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning()
+            PreparedProseInstrumentation.invalidated(PreparedProseInstrumentation.InvalidationReason.CACHE_RESET)
+        }
+        Function("preparedProseBenchmarkExport") {
+            PreparedProseInstrumentation.exportJson()
+        }
         Events("onCollaborationTransportEvent")
 
         OnCreate {

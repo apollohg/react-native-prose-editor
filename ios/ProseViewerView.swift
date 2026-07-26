@@ -119,6 +119,7 @@ public final class ProseViewerView: UIView {
 
     private func installPreparedLayout(_ layout: PreparedProseLayout?) {
         ownedLayout = layout
+        PreparedProseInstrumentation.retained(.sidecars, scope: "direct-\(ObjectIdentifier(self))", bytes: attachmentRevisions.retainedPublicationBytesForTesting)
         drawingView.install(layout: layout)
     }
 
@@ -149,6 +150,7 @@ public final class ProseViewerView: UIView {
             fontEnvironmentRevision: fontRevision,
             attachmentRevision: 0
         )
+        PreparedProseInstrumentation.invalidated(.content)
         _ = attachmentRevisions.beginSemanticGeneration(nextRequest.semanticGenerationIdentity)
         request = nextRequest
         compiledDocument = nil
@@ -215,6 +217,7 @@ public final class ProseViewerView: UIView {
 
     /// Releases this surface's artifact ownership without clearing its delegate.
     public func prepareForReuse() {
+        PreparedProseInstrumentation.invalidated(.reuse)
         request = nil
         compiledDocument = nil
         installPreparedLayout(nil)
@@ -335,6 +338,8 @@ public final class ProseViewerView: UIView {
             fontEnvironmentRevision: request.fontEnvironmentRevision,
             attachmentRevision: attachmentRevisions.revision
         )
+        PreparedProseInstrumentation.invalidated(.attachment)
+        PreparedProseInstrumentation.retained(.sidecars, scope: "direct-\(ObjectIdentifier(self))", bytes: attachmentRevisions.retainedPublicationBytesForTesting)
         // Metadata is the sole image completion allowed to reflow. Pixels stay
         // in the drawing cache; this schedules exactly one replacement key.
         invalidateIntrinsicContentSize()
@@ -351,6 +356,7 @@ public final class ProseViewerView: UIView {
             fontEnvironmentRevision: revision,
             attachmentRevision: request.attachmentRevision
         )
+        PreparedProseInstrumentation.invalidated(.font)
         invalidateIntrinsicContentSize()
         setNeedsLayout()
     }

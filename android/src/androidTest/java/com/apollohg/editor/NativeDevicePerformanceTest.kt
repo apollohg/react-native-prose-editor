@@ -17,6 +17,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -27,6 +28,23 @@ class NativeDevicePerformanceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val baseFontSize = 16f
     private val textColor = Color.BLACK
+
+    /**
+     * Pixel 7 Task 14 gate. The device runner drives the deterministic
+     * RecyclerView corpus harness, then passes its native counter export as an
+     * instrumentation argument so this test cannot silently relax a budget.
+     */
+    @Test
+    fun performance_preparedProseCorpusGates_pixel7() {
+        assumeTrue(
+            "runs only in the prepared viewer device lane",
+            instrumentation.arguments.getString("preparedProseBenchmark") == "1",
+        )
+        val export = requireNotNull(instrumentation.arguments.getString("preparedProseCounters")) {
+            "Task 14 must provide counters exported by the RecyclerView corpus harness."
+        }
+        PreparedProsePerformanceGates.assertPasses(export, expectedDocuments = 1_000)
+    }
 
     @Test
     fun performance_renderBridgeLargeDocument() {

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { FlatList, KeyboardAvoidingView, NativeModules, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -7,6 +7,7 @@ import {
     createNativeEditorDocumentHandle,
     DEFAULT_EDITOR_RESOURCE_LIMITS,
     NativeRichTextEditor,
+    NativeProseViewer,
     tiptapSchema,
     useYjsCollaboration,
     withMentionsSchema,
@@ -18,6 +19,7 @@ import {
     type NativeEditorV2RoomSnapshot,
     type NativeRichTextEditorRef,
 } from '@apollohg/react-native-prose-editor';
+import performanceCorpus from '../scripts/tests/viewer-performance-corpus.json';
 
 import {
     buildExampleEditorTheme,
@@ -40,6 +42,14 @@ const DEFAULT_COLLABORATION_ENDPOINT = 'ws://localhost:1234/collaboration';
 const DEFAULT_COLLABORATION_ROOM_ID = 'example-room';
 const OUTPUT_PANEL_UPDATE_DEBOUNCE_MS = 120;
 
+const preparedProseBenchmarkBridge = NativeModules.NativeEditor as
+    | {
+          preparedProseBenchmarkBegin?: () => void;
+          preparedProseBenchmarkReset?: () => void;
+          preparedProseBenchmarkExport?: () => string;
+      }
+    | undefined;
+
 function buildCollaborationSocketUrl(endpoint: string, documentId: string): string {
     const trimmedEndpoint = endpoint.trim();
     if (!trimmedEndpoint) {
@@ -61,6 +71,7 @@ function AppScreen() {
     const insets = useSafeAreaInsets();
     const editorRef = useRef<NativeRichTextEditorRef>(null);
     const [settingsTab, setSettingsTab] = useState<'editor' | 'toolbar'>('editor');
+    const [showPreparedViewerBenchmark, setShowPreparedViewerBenchmark] = useState(false);
     const [selectedThemePresetId, setSelectedThemePresetId] = useState(
         DEFAULT_EXAMPLE_THEME_PRESET_ID
     );
@@ -362,6 +373,10 @@ function AppScreen() {
         return `${collaboration.state.status} · ${peerLabel}`;
     }, [collaboration.state.status, remotePeers.length]);
 
+    if (showPreparedViewerBenchmark) {
+        return <PreparedViewerBenchmarkScreen onBack={() => setShowPreparedViewerBenchmark(false)} />;
+    }
+
     return (
         <View style={[styles.safeArea, { backgroundColor: appChrome.screenBackgroundColor }]}>
             <StatusBar style={activeThemePreset.statusBarStyle} />
@@ -396,6 +411,12 @@ function AppScreen() {
                             Live playground for manual testing of document sessions, collaboration
                             presence, and theme changes.
                         </Text>
+                        <Pressable
+                            accessibilityRole='button'
+                            onPress={() => setShowPreparedViewerBenchmark(true)}
+                            style={styles.benchmarkButton}>
+                            <Text style={styles.benchmarkButtonLabel}>Prepared viewer benchmark</Text>
+                        </Pressable>
                     </View>
 
                     <CollapsibleSection
@@ -504,6 +525,96 @@ function AppScreen() {
     );
 }
 
+type CorpusEntry = {
+    id: string;
+    category: string;
+    contentJSON: DocumentJSON;
+};
+
+type PerformanceCorpus = {
+    documents: CorpusEntry[];
+    coldTraversal: string[];
+    warmTraversal: string[];
+};
+
+const preparedViewerCorpus = performanceCorpus as PerformanceCorpus;
+
+/** Deterministic FlatList harness; it consumes the checked-in corpus verbatim. */
+function PreparedViewerBenchmarkScreen({ onBack }: { onBack: () => void }) {
+    const [traversal, setTraversal] = useState<'cold' | 'warm'>('cold');
+    const [imagesEnabled, setImagesEnabled] = useState(true);
+    const [cacheEpoch, setCacheEpoch] = useState(0);
+    const [exportedCounters, setExportedCounters] = useState('Counters not exported yet.');
+    useEffect(() => {
+        preparedProseBenchmarkBridge?.preparedProseBenchmarkBegin?.();
+    }, []);
+    const byId = useMemo(
+        () => new Map(preparedViewerCorpus.documents.map((entry) => [entry.id, entry])),
+        []
+    );
+    const entries = useMemo(
+        () =>
+            (traversal === 'cold'
+                ? preparedViewerCorpus.coldTraversal
+                : preparedViewerCorpus.warmTraversal
+            ).map((id) => byId.get(id)).filter((entry): entry is CorpusEntry => entry != null),
+        [byId, traversal]
+    );
+
+    return (
+        <View style={styles.benchmarkScreen}>
+            <Text style={styles.benchmarkTitle}>Prepared prose benchmark</Text>
+            <Text style={styles.benchmarkSubtitle}>
+                {entries.length} deterministic messages · {traversal} traversal · images{' '}
+                {imagesEnabled ? 'enabled' : 'disabled'}
+            </Text>
+            <View style={styles.benchmarkControls}>
+                <Pressable onPress={() => setTraversal('cold')} style={styles.benchmarkButton}>
+                    <Text style={styles.benchmarkButtonLabel}>Cold traversal</Text>
+                </Pressable>
+                <Pressable onPress={() => setTraversal('warm')} style={styles.benchmarkButton}>
+                    <Text style={styles.benchmarkButtonLabel}>Warm traversal</Text>
+                </Pressable>
+                <Pressable
+                    onPress={() => {
+                        preparedProseBenchmarkBridge?.preparedProseBenchmarkReset?.();
+                        setCacheEpoch((epoch) => epoch + 1);
+                    }}
+                    style={styles.benchmarkButton}>
+                    <Text style={styles.benchmarkButtonLabel}>Reset cache</Text>
+                </Pressable>
+                <Pressable onPress={() => setImagesEnabled((enabled) => !enabled)} style={styles.benchmarkButton}>
+                    <Text style={styles.benchmarkButtonLabel}>Images disabled traversal</Text>
+                </Pressable>
+                <Pressable
+                    onPress={() => setExportedCounters(preparedProseBenchmarkBridge?.preparedProseBenchmarkExport?.() ?? '{}')}
+                    style={styles.benchmarkButton}>
+                    <Text style={styles.benchmarkButtonLabel}>Export counters</Text>
+                </Pressable>
+                <Pressable onPress={onBack} style={styles.benchmarkButton}>
+                    <Text style={styles.benchmarkButtonLabel}>Back</Text>
+                </Pressable>
+            </View>
+            <Text numberOfLines={3} style={styles.benchmarkCounters}>{exportedCounters}</Text>
+            <FlatList
+                data={entries}
+                extraData={`${traversal}:${imagesEnabled}:${cacheEpoch}`}
+                keyExtractor={(item) => `${cacheEpoch}:${item.id}`}
+                initialNumToRender={12}
+                maxToRenderPerBatch={12}
+                windowSize={9}
+                renderItem={({ item }) => (
+                    <NativeProseViewer
+                        contentJSON={item.contentJSON}
+                        renderImages={imagesEnabled}
+                        style={styles.benchmarkViewer}
+                    />
+                )}
+            />
+        </View>
+    );
+}
+
 const styles = StyleSheet.create({
     safeArea: {
         flex: 1,
@@ -556,5 +667,51 @@ const styles = StyleSheet.create({
         borderRadius: 16,
         minHeight: 200,
         maxHeight: 300,
+    },
+    benchmarkButton: {
+        alignSelf: 'flex-start',
+        borderRadius: 10,
+        backgroundColor: '#165DFF',
+        paddingHorizontal: 12,
+        paddingVertical: 9,
+    },
+    benchmarkButtonLabel: {
+        color: '#FFFFFF',
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    benchmarkScreen: {
+        flex: 1,
+        backgroundColor: '#F4F6FA',
+        paddingTop: 56,
+        paddingHorizontal: 16,
+    },
+    benchmarkTitle: {
+        color: '#172033',
+        fontSize: 24,
+        fontWeight: '800',
+    },
+    benchmarkSubtitle: {
+        color: '#596579',
+        marginTop: 6,
+        marginBottom: 12,
+    },
+    benchmarkControls: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+        marginBottom: 12,
+    },
+    benchmarkViewer: {
+        backgroundColor: '#FFFFFF',
+        borderRadius: 12,
+        marginBottom: 8,
+        padding: 12,
+    },
+    benchmarkCounters: {
+        color: '#344055',
+        fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
+        fontSize: 10,
+        marginBottom: 8,
     },
 });

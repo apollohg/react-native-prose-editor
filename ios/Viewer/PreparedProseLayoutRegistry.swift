@@ -107,6 +107,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compiledInFlight[cacheKey] = compilation
         compiledCondition.unlock()
 
+        let compileStarted = PreparedProseInstrumentation.now()
         let result = Result<ViewerDocument, Error> {
             let compiled = try compile(request)
             guard compiled.semanticKey.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
@@ -118,6 +119,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             }
             return compiled
         }
+        PreparedProseInstrumentation.compiled(compileStarted)
 
         compiledCondition.lock()
         if case let .success(document) = result {
@@ -125,6 +127,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             compiledRetainedBytes += document.retainedBytes
             touchCompiled(cacheKey)
             trimCompiledToBudget()
+            PreparedProseInstrumentation.retained(.compiled, scope: "registry", bytes: compiledRetainedBytes)
         } else if case let .failure(error) = result {
             compilationFailures[cacheKey] = error
             touchCompilationFailure(cacheKey)
@@ -170,16 +173,21 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 for: key,
                 fabricSurface: fabricSurface
             ) {
+                let layoutStarted = PreparedProseInstrumentation.now()
                 self.lock.lock()
                 self.layoutPreparationCount += 1
                 self.lock.unlock()
                 do {
+                    let artifact: PreparedProseLayout
                     if let imageMeasurementState {
-                        return try FabricAttachmentSidecars.withMeasurementState(imageMeasurementState) {
+                        artifact = try FabricAttachmentSidecars.withMeasurementState(imageMeasurementState) {
                             try self.prepare(document, key, canonicalWidth, scale)
                         }
+                    } else {
+                        artifact = try self.prepare(document, key, canonicalWidth, scale)
                     }
-                    return try self.prepare(document, key, canonicalWidth, scale)
+                    PreparedProseInstrumentation.laidOut(layoutStarted)
+                    return artifact
                 } catch let error as ProseViewerError {
                     return self.errorArtifact(key: key, width: canonicalWidth, error: error)
                 } catch {
@@ -463,6 +471,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
     }
 
     @objc func didReceiveMemoryWarning() {
+        PreparedProseInstrumentation.invalidated(.memoryPressure)
         layoutCache.removeAllUnmounted()
         compiledCondition.lock()
         compiledDocuments.removeAll()
@@ -478,6 +487,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         themesRetainedBytes = 0
         compiledRetainedBytes = 0
         compiledCondition.unlock()
+        PreparedProseInstrumentation.retained(.compiled, scope: "registry", bytes: 0)
     }
 
     private func layoutKey(
@@ -718,6 +728,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 compiledRetainedBytes -= removed.retainedBytes
             }
         }
+        PreparedProseInstrumentation.retained(.compiled, scope: "registry", bytes: compiledRetainedBytes)
     }
 
     private func touchCompilationFailure(_ cacheKey: String) {

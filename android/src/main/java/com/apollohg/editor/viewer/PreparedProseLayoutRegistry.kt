@@ -43,6 +43,7 @@ internal class PreparedProseLayoutRegistry(
         val fresh = CompletableFuture<Compilation>()
         val existing = compilationInFlight.putIfAbsent(cacheKey, fresh)
         if (existing != null) return existing.join().documentOrThrow()
+        val compileStarted = PreparedProseInstrumentation.now()
         val result = try {
             Compilation.Document(compiler(request).also { document ->
                 if (!document.semanticKey.matches(Regex("[0-9a-f]{64}"))) {
@@ -58,12 +59,14 @@ internal class PreparedProseLayoutRegistry(
         } catch (throwable: Throwable) {
             Compilation.Failure(ProseViewerError.layout(throwable.message ?: "Document compilation failed."))
         }
+        PreparedProseInstrumentation.compiled(compileStarted)
         synchronized(compilerLock) {
             when (result) {
                 is Compilation.Document -> {
                     compiled[cacheKey] = result.value
                     compiledRetainedBytes += result.value.retainedBytes
                     trimCompiledLocked()
+                    PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.COMPILED, "registry", compiledRetainedBytes)
                 }
                 is Compilation.Failure -> {
                     compilationFailures[cacheKey] = result.error
@@ -103,6 +106,7 @@ internal class PreparedProseLayoutRegistry(
             val theme = resolveTheme(request, density, fontScale)
             val key = layoutKey(document, request, widthPx, densityBits)
             layoutCache.value(key, fabricSurface) {
+                val layoutStarted = PreparedProseInstrumentation.now()
                 layoutPreparationCount += 1
                 try {
                     val prepare = {
@@ -116,9 +120,11 @@ internal class PreparedProseLayoutRegistry(
                             request.semanticGenerationIdentity,
                         )
                     }
-                    if (imageMeasurementState != null) {
+                    val artifact = if (imageMeasurementState != null) {
                         FabricAttachmentSidecars.withMeasurementState(imageMeasurementState, prepare)
                     } else prepare()
+                    PreparedProseInstrumentation.laidOut(layoutStarted)
+                    artifact
                 } catch (error: ProseViewerError) {
                     PreparedProseLayout.error(key, widthPx, error)
                 } catch (throwable: Throwable) {
@@ -181,6 +187,7 @@ internal class PreparedProseLayoutRegistry(
     fun releaseFabricMountMiss(generation: FabricGenerationToken) = releaseFabricGeneration(generation)
 
     fun didReceiveMemoryWarning() {
+        PreparedProseInstrumentation.invalidated(PreparedProseInstrumentation.InvalidationReason.MEMORY_PRESSURE)
         layoutCache.removeAllUnmounted()
         synchronized(compilerLock) {
             compiled.clear()
@@ -191,6 +198,7 @@ internal class PreparedProseLayoutRegistry(
             compiledRetainedBytes = 0
             themeRetainedBytes = 0
         }
+        PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.COMPILED, "registry", 0L)
     }
 
     internal val preparedLayoutCacheCountForTesting: Int get() = layoutCache.completedCountForTesting
@@ -279,6 +287,7 @@ internal class PreparedProseLayoutRegistry(
             compiled.remove(oldest.key)
             compiledRetainedBytes -= oldest.value.retainedBytes
         }
+        PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.COMPILED, "registry", compiledRetainedBytes)
     }
 
     private fun resolveTheme(request: ProseViewerRequest, density: Float, fontScale: Float): PreparedProseTheme = synchronized(compilerLock) {

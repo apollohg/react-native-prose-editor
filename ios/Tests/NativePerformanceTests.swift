@@ -343,11 +343,104 @@ final class NativePerformanceTests: XCTestCase {
         }
     }
 
+    /// iPhone 13 release gate. This is intentionally a device-only benchmark:
+    /// Task 14 supplies the one authorized execution and records the export.
+    func testPerformance_preparedProseCorpusGates_iPhone13() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["PREPARED_PROSE_DEVICE_BENCHMARK"] == "1",
+            "Runs only on the iPhone 13 device benchmark lane."
+        )
+        let corpus = try PreparedProseBenchmarkCorpus.load()
+        let harness = PreparedProseCollectionHarness(corpus: corpus, imagesEnabled: true)
+        PreparedProseInstrumentation.beginBenchmark()
+        harness.traverse(corpus.coldTraversal)
+        harness.traverse(corpus.warmTraversal)
+        try PreparedProsePerformanceGates.assertPasses(
+            exportJSON: PreparedProseInstrumentation.exportJSON(),
+            expectedDocuments: corpus.documents.count
+        )
+    }
+
     private func measureOptions() -> XCTMeasureOptions {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
         return options
     }
+}
+
+private struct PreparedProseBenchmarkCorpus: Decodable {
+    struct Entry: Decodable { let id: String; let category: String; let contentJSON: [String: JSONValue] }
+    let documents: [Entry]
+    let coldTraversal: [String]
+    let warmTraversal: [String]
+
+    static func load() throws -> Self {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("scripts/tests/viewer-performance-corpus.json"))
+        let corpus = try JSONDecoder().decode(Self.self, from: data)
+        XCTAssertEqual(corpus.documents.count, 1_000)
+        XCTAssertEqual(Set(corpus.documents.map(\.id)).count, 1_000)
+        XCTAssertEqual(corpus.coldTraversal.count, 1_000)
+        XCTAssertEqual(corpus.warmTraversal.count, 1_000)
+        return corpus
+    }
+}
+
+private enum JSONValue: Codable {
+    case string(String), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null } else if let value = try? container.decode(Bool.self) { self = .bool(value) } else if let value = try? container.decode(Double.self) { self = .number(value) } else if let value = try? container.decode(String.self) { self = .string(value) } else if let value = try? container.decode([String: JSONValue].self) { self = .object(value) } else { self = .array(try container.decode([JSONValue].self)) }
+    }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .string(value): try container.encode(value)
+        case let .number(value): try container.encode(value)
+        case let .bool(value): try container.encode(value)
+        case let .object(value): try container.encode(value)
+        case let .array(value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+}
+
+private final class PreparedProseCollectionHarness: NSObject, UICollectionViewDataSource {
+    private let corpus: PreparedProseBenchmarkCorpus
+    private let imagesEnabled: Bool
+    private let byID: [String: PreparedProseBenchmarkCorpus.Entry]
+    private let collectionView: UICollectionView
+
+    init(corpus: PreparedProseBenchmarkCorpus, imagesEnabled: Bool) {
+        self.corpus = corpus; self.imagesEnabled = imagesEnabled
+        byID = Dictionary(uniqueKeysWithValues: corpus.documents.map { ($0.id, $0) })
+        collectionView = UICollectionView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), collectionViewLayout: UICollectionViewFlowLayout())
+        super.init(); collectionView.dataSource = self; collectionView.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "prepared")
+    }
+    func traverse(_ ids: [String]) {
+        for id in ids {
+            guard let entry = byID[id], let data = try? JSONEncoder().encode(entry.contentJSON), let source = String(data: data, encoding: .utf8) else { XCTFail("invalid corpus entry \(id)"); return }
+            let viewer = ProseViewerView(); _ = viewer.apply(source: .json(source), configuration: .init(imagesEnabled: imagesEnabled)); _ = viewer.sizeThatFits(CGSize(width: 390, height: .greatestFiniteMagnitude))
+        }
+    }
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { corpus.documents.count }
+    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell { collectionView.dequeueReusableCell(withReuseIdentifier: "prepared", for: indexPath) }
+}
+
+private enum PreparedProsePerformanceGates {
+    private struct Export: Decodable { let compileNanos: [UInt64]; let layoutNanos: [UInt64]; let cacheLookupNanos: [UInt64]; let drawNanos: [UInt64]; let frameNanos: [UInt64]; let duplicatePublications: Int; let retainedBytes: [String: Int] }
+    static func assertPasses(exportJSON: String, expectedDocuments: Int) throws {
+        let export = try JSONDecoder().decode(Export.self, from: Data(exportJSON.utf8))
+        XCTAssertGreaterThanOrEqual(export.compileNanos.count, expectedDocuments)
+        XCTAssertLessThan(percentile(zip(export.compileNanos, export.layoutNanos).map { $0 + $1 }, 0.95), 4_000_000)
+        XCTAssertLessThan(percentile(export.cacheLookupNanos, 0.99), 100_000)
+        XCTAssertLessThan(percentile(export.drawNanos, 0.95), 1_000_000)
+        XCTAssertGreaterThanOrEqual(Double(export.frameNanos.filter { $0 <= 16_670_000 }.count) / Double(max(1, export.frameNanos.count)), 0.99)
+        XCTAssertLessThanOrEqual(export.frameNanos.max() ?? 0, 33_300_000)
+        XCTAssertLessThanOrEqual(export.retainedBytes["layout"] ?? 0, 32 * 1024 * 1024)
+        XCTAssertEqual(export.duplicatePublications, 0)
+    }
+    private static func percentile(_ values: [UInt64], _ percentile: Double) -> UInt64 { guard !values.isEmpty else { return .max }; return values.sorted()[Int((Double(values.count - 1) * percentile).rounded(.up))] }
 }
 
 private enum NativePerformanceFixtureFactory {
