@@ -22,8 +22,10 @@ public final class ProseViewerView: UIView {
     private var ownedLayout: PreparedProseLayout?
     private var pendingError: ProseViewerError?
     private var errorWasReported = false
+    private var reportedResourceFailures = Set<String>()
     private let attachmentRevisions = ViewerAttachmentRevisionState()
-    private let fontEnvironment = ViewerFontEnvironment()
+    private let fontEnvironment = ViewerFontEnvironment.shared
+    private var fontEnvironmentObserver: NSObjectProtocol?
     private lazy var viewerImagePipeline = ViewerImagePipeline(policy: .default)
 
     // Temporary source compatibility for the legacy Expo adapter. It is deliberately
@@ -75,9 +77,20 @@ public final class ProseViewerView: UIView {
         viewerImagePipeline.onIntrinsicMetadata = { [weak self] attachment, size in
             self?.applyIntrinsicImageMetadata(attachment, size: size)
         }
-        fontEnvironment.onInvalidated = { [weak self] revision in self?.applyFontEnvironmentRevision(revision) }
+        viewerImagePipeline.onResourceFailure = { [weak self] attachment in self?.reportResourceFailureIfNeeded(attachment) }
+        fontEnvironmentObserver = NotificationCenter.default.addObserver(
+            forName: ViewerFontEnvironment.didInvalidateNotification,
+            object: fontEnvironment,
+            queue: .main
+        ) { [weak self] note in
+            self?.applyFontEnvironmentRevision(note.userInfo?["revision"] as? UInt64 ?? 0)
+        }
         isAccessibilityElement = false
         addSubview(drawingView)
+    }
+
+    deinit {
+        if let fontEnvironmentObserver { NotificationCenter.default.removeObserver(fontEnvironmentObserver) }
     }
 
     @discardableResult
@@ -116,6 +129,7 @@ public final class ProseViewerView: UIView {
         installPreparedLayout(nil)
         pendingError = nil
         errorWasReported = false
+        reportedResourceFailures.removeAll()
         do {
             compiledDocument = try layoutRegistry.compileDocument(request: nextRequest)
             invalidateIntrinsicContentSize()
@@ -160,6 +174,11 @@ public final class ProseViewerView: UIView {
         requestVisibleImageAttachments()
     }
 
+    public override func didMoveToWindow() {
+        super.didMoveToWindow()
+        requestVisibleImageAttachments()
+    }
+
     /// Releases this surface's artifact ownership without clearing its delegate.
     public func prepareForReuse() {
         request = nil
@@ -167,6 +186,7 @@ public final class ProseViewerView: UIView {
         installPreparedLayout(nil)
         pendingError = nil
         errorWasReported = false
+        reportedResourceFailures.removeAll()
         legacyImageLoadOwner.cancelAll()
         viewerImagePipeline.cancel()
         drawingView.imagePixels = [:]
@@ -235,26 +255,32 @@ public final class ProseViewerView: UIView {
             compiledDocument: compiledDocument
         )
         installPreparedLayout(layout)
-        beginVisibleImageRequests(for: layout)
         reportErrorIfNeeded(layout.error)
         return layout
     }
 
     private var viewerImageGeneration: String? { request?.generationIdentity }
 
-    private func beginVisibleImageRequests(for layout: PreparedProseLayout) {
+    private func configureImageGeneration(for layout: PreparedProseLayout) {
         guard let request else { return }
         viewerImagePipeline.begin(
             generation: request.generationIdentity,
             imagesEnabled: request.configuration.imagesEnabled,
             policy: ImageLoadingPolicy.from(json: request.configuration.imagePolicyJSON)
         )
-        requestVisibleImageAttachments()
     }
 
     private func requestVisibleImageAttachments() {
-        guard let layout = ownedLayout else { return }
-        viewerImagePipeline.updateVisibleRect(drawingView.bounds, attachments: layout.imageAttachments)
+        guard let layout = ownedLayout, drawingView.window != nil,
+              !drawingView.isHidden, drawingView.alpha > 0,
+              let window = drawingView.window
+        else { return }
+        let visibleRect = drawingView.convert(window.bounds, from: window).intersection(drawingView.bounds)
+        guard visibleRect.origin.x.isFinite, visibleRect.origin.y.isFinite,
+              visibleRect.size.width.isFinite, visibleRect.size.height.isFinite,
+              !visibleRect.isNull, !visibleRect.isEmpty else { return }
+        configureImageGeneration(for: layout)
+        viewerImagePipeline.updateVisibleRect(visibleRect, attachments: layout.imageAttachments)
     }
 
     private func applyIntrinsicImageMetadata(_ attachment: ViewerImageAttachment, size: CGSize) {
@@ -269,6 +295,7 @@ public final class ProseViewerView: UIView {
             fontEnvironmentRevision: request.fontEnvironmentRevision,
             attachmentRevision: attachmentRevisions.revision
         )
+        reportedResourceFailures.removeAll()
         // Metadata is the sole image completion allowed to reflow. Pixels stay
         // in the drawing cache; this schedules exactly one replacement key.
         invalidateIntrinsicContentSize()
@@ -284,6 +311,7 @@ public final class ProseViewerView: UIView {
             fontEnvironmentRevision: revision,
             attachmentRevision: request.attachmentRevision
         )
+        reportedResourceFailures.removeAll()
         invalidateIntrinsicContentSize()
         setNeedsLayout()
     }
@@ -292,6 +320,13 @@ public final class ProseViewerView: UIView {
         guard let error, !errorWasReported else { return }
         errorWasReported = true
         interactionDelegate?.proseViewer(self, didFail: error)
+    }
+
+    private func reportResourceFailureIfNeeded(_ attachment: ViewerImageAttachment) {
+        guard let generation = request?.generationIdentity,
+              reportedResourceFailures.insert("\(generation)\u{1f}\(attachment.id)").inserted
+        else { return }
+        interactionDelegate?.proseViewer(self, didFail: .resource)
     }
 
     // MARK: Temporary legacy adapter compatibility

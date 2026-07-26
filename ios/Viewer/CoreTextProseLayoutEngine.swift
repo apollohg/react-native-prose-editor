@@ -86,6 +86,7 @@ struct PreparedTextPaint {
 /// Theme parsing is deliberately outside the drawing path. A registry stores
 /// this value once per generation and every width-specific artifact reuses it.
 struct PreparedProseTheme {
+    let fontScale: CGFloat
     let text: PreparedTextPaint
     let paragraph: PreparedTextPaint
     let headings: [String: PreparedTextPaint]
@@ -111,17 +112,19 @@ struct PreparedProseTheme {
     let link: EditorLinkTheme?
     let mention: EditorMentionTheme?
 
-    static func resolve(themeJSON: String?) -> PreparedProseTheme {
+    static func resolve(themeJSON: String?, fontScale: CGFloat = 1) -> PreparedProseTheme {
         let theme = EditorTheme.from(json: themeJSON) ?? EditorTheme(dictionary: [:])
-        let baseFont = UIFont.systemFont(ofSize: 17)
+        let resolvedScale = fontScale.isFinite && fontScale > 0 ? fontScale : 1
+        let baseFont = UIFont.systemFont(ofSize: 17 * resolvedScale)
         func paint(_ style: EditorTextStyle?, fallback: PreparedTextPaint? = nil) -> PreparedTextPaint {
             let fallback = fallback ?? PreparedTextPaint(font: baseFont, color: .label, lineHeight: nil, spacingAfter: 0)
             guard let style else { return fallback }
+            let resolvedFont = style.resolvedFont(fallback: fallback.font)
             return PreparedTextPaint(
-                font: style.resolvedFont(fallback: fallback.font),
+                font: resolvedFont.withSize(style.fontSize == nil ? resolvedFont.pointSize : resolvedFont.pointSize * resolvedScale),
                 color: style.color ?? fallback.color,
-                lineHeight: style.lineHeight ?? fallback.lineHeight,
-                spacingAfter: style.spacingAfter ?? fallback.spacingAfter
+                lineHeight: style.lineHeight.map { $0 * resolvedScale } ?? fallback.lineHeight,
+                spacingAfter: style.spacingAfter.map { $0 * resolvedScale } ?? fallback.spacingAfter
             )
         }
         let text = paint(theme.text)
@@ -141,6 +144,7 @@ struct PreparedProseTheme {
             headings[name] = paint(defaultHeading.merged(with: theme.headings[name]), fallback: paragraph)
         }
         return PreparedProseTheme(
+            fontScale: resolvedScale,
             text: text,
             paragraph: paragraph,
             headings: headings,
@@ -342,7 +346,7 @@ final class CoreTextProseLayoutEngine {
             let imageWidth = max(1, contentWidth - listInset - quoteInset)
             let provisionalHeight = max(44, min(240, imageWidth * 0.56))
             let declared = image.declaredSize
-            let resolvedSize = declared ?? ViewerImageIntrinsicStore.size(for: image.id)
+            let resolvedSize = declared ?? ViewerImageIntrinsicStore.shared.size(for: image.id)
             let height = resolvedSize.map { imageWidth * $0.height / max(1, $0.width) } ?? provisionalHeight
             let bounds = CGRect(x: textX, y: cursorY, width: imageWidth, height: height)
             let attachment = ViewerImageAttachment(id: image.id, source: image.source, bounds: bounds, declaredSize: declared)
@@ -637,15 +641,17 @@ final class CoreTextProseLayoutEngine {
             }
         }
         var font = linkTheme?.resolvedFont(fallback: paint.font) ?? paint.font
+        if let linkSize = linkTheme?.fontSize { font = font.withSize(linkSize * theme.fontScale) }
         let inheritedTraits = font.fontDescriptor.symbolicTraits
+        let scaledMarkSize = fontSize.map { $0 * theme.fontScale }
         if let fontFamily {
-            if let resolved = UIFont(name: fontFamily, size: fontSize ?? font.pointSize) {
+            if let resolved = UIFont(name: fontFamily, size: scaledMarkSize ?? font.pointSize) {
                 font = resolved
             } else if ViewerFontEnvironment.shared.shouldWarnForMissingFamily(fontFamily, semanticGeneration: semanticGeneration) {
                 NSLog("PreparedProseViewer: requested font family %@ is unavailable; using system fallback", fontFamily)
             }
         }
-        if let fontSize { font = font.withSize(fontSize) }
+        if let scaledMarkSize { font = font.withSize(scaledMarkSize) }
         var markTraits: UIFontDescriptor.SymbolicTraits = []
         if wantsBold { markTraits.insert(.traitBold) }
         if wantsItalic { markTraits.insert(.traitItalic) }

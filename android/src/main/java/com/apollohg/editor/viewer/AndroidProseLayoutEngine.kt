@@ -103,6 +103,7 @@ private fun PreparedTextPaint.withStyle(style: EditorTextStyle, density: Float):
 
 internal data class PreparedProseTheme(
     val density: Float,
+    val fontDensity: Float,
     val text: PreparedTextPaint,
     val paragraph: PreparedTextPaint,
     val headings: Map<String, PreparedTextPaint>,
@@ -134,21 +135,24 @@ internal data class PreparedProseTheme(
     val atomPaddingVerticalPx: Int,
 ) {
     companion object {
-        fun resolve(themeJson: String?, density: Float): PreparedProseTheme {
+        fun resolve(themeJson: String?, density: Float, fontScale: Float = 1f): PreparedProseTheme {
             val theme = EditorTheme.fromJson(themeJson) ?: EditorTheme()
+            val resolvedFontScale = fontScale.takeIf { it.isFinite() && it > 0f } ?: 1f
+            val scaledDensity = density * resolvedFontScale
             fun px(value: Float, fallback: Float): Int = max(0, (value.takeIf { it.isFinite() } ?: fallback).times(density).toInt())
+            fun fontPx(value: Float, fallback: Float): Float = ((value.takeIf { it.isFinite() } ?: fallback) * scaledDensity)
             fun typeface(style: EditorTextStyle?, fallback: Typeface): Typeface {
                 val family = style?.fontFamily
                 return Typeface.create(family ?: fallback.familyName(), style?.typefaceStyle() ?: fallback.style)
             }
             fun paint(style: EditorTextStyle?, fallback: PreparedTextPaint? = null): PreparedTextPaint {
-                val base = fallback ?: PreparedTextPaint(Typeface.DEFAULT, 17f * density, 0xFF212121.toInt(), null, 0)
+                val base = fallback ?: PreparedTextPaint(Typeface.DEFAULT, 17f * scaledDensity, 0xFF212121.toInt(), null, 0)
                 return PreparedTextPaint(
                     typeface = typeface(style, base.typeface),
-                    sizePx = ((style?.fontSize ?: (base.sizePx / density)) * density).takeIf { it.isFinite() && it > 0f } ?: base.sizePx,
+                    sizePx = style?.fontSize?.let { fontPx(it, 17f) } ?: base.sizePx,
                     color = style?.color ?: base.color,
-                    lineHeightPx = style?.lineHeight?.let { px(it, 0f).takeIf { value -> value > 0 } } ?: base.lineHeightPx,
-                    spacingAfterPx = style?.spacingAfter?.let { px(it, 0f) } ?: base.spacingAfterPx,
+                    lineHeightPx = style?.lineHeight?.let { fontPx(it, 0f).toInt().takeIf { value -> value > 0 } } ?: base.lineHeightPx,
+                    spacingAfterPx = style?.spacingAfter?.let { fontPx(it, 0f).toInt() } ?: base.spacingAfterPx,
                 )
             }
             val text = paint(theme.text)
@@ -159,7 +163,7 @@ internal data class PreparedProseTheme(
                 name to paint(EditorTextStyle(fontSize = size, fontWeight = "700", spacingAfter = 10f).mergedWith(theme.headings[name]), paragraph)
             }
             return PreparedProseTheme(
-                density, text, paragraph, headings, quote, paint(theme.effectiveTextStyle("codeBlock"), codeFallback),
+                density, scaledDensity, text, paragraph, headings, quote, paint(theme.effectiveTextStyle("codeBlock"), codeFallback),
                 px(theme.contentInsets?.top ?: 0f, 0f), px(theme.contentInsets?.right ?: 0f, 0f), px(theme.contentInsets?.bottom ?: 0f, 0f), px(theme.contentInsets?.left ?: 0f, 0f),
                 px(theme.list?.indent ?: 28f, 28f), theme.list?.baseIndentMultiplier ?: 1f, px(theme.list?.itemSpacing ?: 4f, 4f), theme.list?.markerColor ?: text.color, theme.list?.markerScale ?: 1f,
                 px(theme.blockquote?.indent ?: 16f, 16f), theme.blockquote?.borderColor ?: 0xFFC7C7CC.toInt(), px(theme.blockquote?.borderWidth ?: 3f, 3f), px(theme.blockquote?.markerGap ?: 10f, 10f),
@@ -249,11 +253,11 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
     internal var staticLayoutsBuilt: Int = 0
         private set
     private var semanticGeneration = ""
-    private var fontRevision = 0L
+    private var fontRevision = "0\u001f0"
 
     override fun prepare(document: ViewerDocument, key: ProseLayoutKey, theme: PreparedProseTheme, widthPx: Int, density: Float, collapsesWhenEmpty: Boolean): PreparedProseLayout {
         semanticGeneration = key.generationIdentity
-        fontRevision = key.nativeFontRevision + key.fontEnvironmentRevision
+        fontRevision = "${key.nativeFontRevision}\u001f${key.fontEnvironmentRevision}"
         if (widthPx <= 0 || !density.isFinite() || density <= 0f) return PreparedProseLayout.error(key, 0, ProseViewerError.invalidWidth())
         if (document.isEmpty && collapsesWhenEmpty) return PreparedProseLayout(key, widthPx, 0, emptyList(), retainedBytes = document.retainedBytes)
         val contentWidth = max(1, widthPx - theme.insetLeftPx - theme.insetRightPx)
@@ -312,7 +316,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             val source = ViewerImageAttachment.sourceAndDeclaredSize(block)
             if (source != null) {
                 val imageWidth = max(1, contentWidth - listInset - quoteInset)
-                val resolved = source.third ?: ViewerImageIntrinsicStore.size(source.first)
+                val resolved = source.third ?: ViewerImageIntrinsicStore.shared.size(source.first)
                 val imageHeight = resolved?.let { imageWidth * it.second / max(1, it.first) } ?: max(44, minOf(240, (imageWidth * .56f).toInt()))
                 val bounds = Rect(textX, cursorY, textX + imageWidth, cursorY + imageHeight)
                 val attachment = ViewerImageAttachment(source.first, source.second, bounds, source.third)
@@ -543,24 +547,24 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         }
         // Resolve link family/size/weight/style first, then combine explicit
         // mark traits into one immutable metric span before StaticLayout sees it.
-        var resolved = link?.let { base.withStyle(it.asTextStyle(), theme.density) } ?: base
+        var resolved = link?.let { base.withStyle(it.asTextStyle(), theme.fontDensity) } ?: base
         if (family != null || size != null) {
             family?.let { requested ->
                 val resolved = Typeface.create(requested, Typeface.NORMAL)
                 if (resolved.familyName() != requested) {
-                    ViewerFontEnvironment.warnOnceForMissingFamily(requested, semanticGeneration, fontRevision)
+                ViewerFontEnvironment.warnOnceForMissingFamily(requested, semanticGeneration, fontRevision)
                 }
             }
-            resolved = resolved.withStyle(EditorTextStyle(fontFamily = family, fontSize = size), theme.density)
+            resolved = resolved.withStyle(EditorTextStyle(fontFamily = family, fontSize = size), theme.fontDensity)
         }
-        if (monospace) resolved = resolved.withStyle(EditorTextStyle(fontFamily = "monospace"), theme.density)
+        if (monospace) resolved = resolved.withStyle(EditorTextStyle(fontFamily = "monospace"), theme.fontDensity)
         if (bold || italic) {
             resolved = resolved.withStyle(
                 EditorTextStyle(
                     fontWeight = if (bold) "bold" else null,
                     fontStyle = if (italic) "italic" else null,
                 ),
-                theme.density,
+                theme.fontDensity,
             )
         }
         val result = mutableListOf<Any>(ResolvedTextStyleSpan(resolved.typeface, resolved.sizePx))

@@ -15,11 +15,36 @@ class PreparedProseRevisionTest {
         assertEquals(0, pipeline.requestCountForTesting)
     }
 
+    @Test fun imagePipelineDoesNotAcquireBeforeMountedVisibility() {
+        val pipeline = ViewerImagePipeline()
+        pipeline.begin("mounted", true)
+        assertEquals(0, pipeline.requestCountForTesting)
+    }
+
+    @Test fun zeroAndOffscreenVisibleRectsDoNotAcquireImages() {
+        val pipeline = ViewerImagePipeline()
+        pipeline.begin("visible", true)
+        val attachment = ViewerImageAttachment("i", "data:image/png;base64,", Rect(1000, 1000, 1010, 1010), null)
+        pipeline.updateVisibleRect(Rect(), listOf(attachment))
+        pipeline.updateVisibleRect(Rect(0, 0, 20, 20), listOf(attachment))
+        assertEquals(0, pipeline.requestCountForTesting)
+    }
+
     @Test fun unknownMetadataAdvancesAttachmentRevisionOnce() {
         val revisions = ViewerAttachmentRevisionState()
         assertTrue(revisions.recordIntrinsicSize("i", 10, 20, null))
         assertFalse(revisions.recordIntrinsicSize("i", 20, 40, null))
         assertEquals(1, revisions.revision)
+    }
+
+    @Test fun boundedIntrinsicMetadataEvictsOldestEntryDeterministically() {
+        val store = ViewerImageIntrinsicStore(entryLimit = 2)
+        store.store("a", 10 to 10)
+        store.store("b", 20 to 20)
+        store.store("c", 30 to 30)
+        assertEquals(null, store.size("a"))
+        assertEquals(20 to 20, store.size("b"))
+        assertEquals(30 to 30, store.size("c"))
     }
 
     @Test fun staleGenerationCompletionIsRejected() {
@@ -38,5 +63,23 @@ class PreparedProseRevisionTest {
         environment.onConfigurationChanged(Configuration().apply { fontScale = 1.3f })
         environment.onConfigurationChanged(Configuration().apply { fontScale = 1.3f })
         assertEquals(listOf(1L, 2L), revisions)
+    }
+
+    @Test fun fontScaleChangesResolvedGeometryWithoutDoubleDensity() {
+        val base = PreparedProseTheme.resolve(null, density = 2f, fontScale = 1f)
+        val scaled = PreparedProseTheme.resolve(null, density = 2f, fontScale = 1.5f)
+        assertEquals(34f, base.paragraph.sizePx)
+        assertEquals(51f, scaled.paragraph.sizePx)
+    }
+
+    @Test fun resourceFailureIsPublishedOncePerGenerationAndAttachment() {
+        val pipeline = ViewerImagePipeline()
+        var failures = 0
+        pipeline.onResourceFailure = { failures += 1 }
+        pipeline.begin("resource", true)
+        val attachment = ViewerImageAttachment("secret", "https://user:credential@example.test/a", Rect(), null)
+        pipeline.reportFailureForTesting(attachment)
+        pipeline.reportFailureForTesting(attachment)
+        assertEquals(1, failures)
     }
 }

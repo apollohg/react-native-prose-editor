@@ -580,7 +580,10 @@ public final class PreparedProseLayoutRegistry: NSObject {
             touchTheme(request.generationIdentity)
             return theme
         }
-        let theme = PreparedProseTheme.resolve(themeJSON: request.configuration.themeJSON)
+        let theme = PreparedProseTheme.resolve(
+            themeJSON: request.configuration.themeJSON,
+            fontScale: ViewerFontEnvironment.shared.fontScale(for: request.fontEnvironmentRevision)
+        )
         themesByGeneration[request.generationIdentity] = theme
         themesRetainedBytes += theme.estimatedRetainedBytes
         touchTheme(request.generationIdentity)

@@ -36,12 +36,45 @@ struct ViewerImageAttachment: Hashable {
 
 /// The only mutable image-metadata state. It records the first valid intrinsic
 /// size atomically and advances the attachment revision exactly once per id.
-enum ViewerImageIntrinsicStore {
-    private static let lock = NSLock()
-    private static var values: [String: CGSize] = [:]
+final class ViewerImageIntrinsicStore {
+    static let shared = ViewerImageIntrinsicStore()
 
-    static func size(for id: String) -> CGSize? { lock.lock(); defer { lock.unlock() }; return values[id] }
-    static func store(_ size: CGSize, for id: String) { lock.lock(); values[id] = size; lock.unlock() }
+    private struct Entry {
+        let size: CGSize
+        var access: UInt64
+    }
+
+    private let lock = NSLock()
+    private let entryLimit: Int
+    private var access: UInt64 = 0
+    private var values: [String: Entry] = [:]
+
+    init(entryLimit: Int = 256) { self.entryLimit = max(1, entryLimit) }
+
+    func size(for id: String) -> CGSize? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var entry = values[id] else { return nil }
+        access &+= 1
+        entry.access = access
+        values[id] = entry
+        return entry.size
+    }
+
+    func store(_ size: CGSize, for id: String) {
+        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        access &+= 1
+        values[id] = Entry(size: size, access: access)
+        while values.count > entryLimit,
+              let oldest = values.min(by: { lhs, rhs in
+                  lhs.value.access == rhs.value.access ? lhs.key < rhs.key : lhs.value.access < rhs.value.access
+              })
+        {
+            values.removeValue(forKey: oldest.key)
+        }
+    }
 }
 
 final class ViewerAttachmentRevisionState {
@@ -60,7 +93,7 @@ final class ViewerAttachmentRevisionState {
         lock.lock(); defer { lock.unlock() }
         guard intrinsicSizes[id] == nil else { return false }
         intrinsicSizes[id] = size
-        ViewerImageIntrinsicStore.store(size, for: id)
+        ViewerImageIntrinsicStore.shared.store(size, for: id)
         revision &+= 1
         return true
     }
@@ -82,9 +115,12 @@ final class ViewerImagePipeline {
     private var enabled = false
     private var receipts: [String: NativeImagePipeline.ImageLoadReceipt] = [:]
     private var requested = Set<String>()
+    private var failed = Set<String>()
     private(set) var requestCountForTesting = 0
     var onPixels: PixelCompletion?
     var onIntrinsicMetadata: MetadataCompletion?
+    /// Deliberately carries no source URL; hosts map it to their public error contract.
+    var onResourceFailure: ((ViewerImageAttachment) -> Void)?
 
     init(policy: ImageLoadingPolicy) {
         owner = NativeImagePipeline(policy: policy)
@@ -103,6 +139,7 @@ final class ViewerImagePipeline {
         enabled = imagesEnabled
         receipts.removeAll()
         requested.removeAll()
+        failed.removeAll()
         requestCountForTesting = 0
         lock.unlock()
     }
@@ -114,6 +151,7 @@ final class ViewerImagePipeline {
         receipts.values.forEach { $0.cancel() }
         receipts.removeAll()
         requested.removeAll()
+        failed.removeAll()
         lock.unlock()
         owner.cancelAll()
     }
@@ -124,23 +162,67 @@ final class ViewerImagePipeline {
     }
 
     func updateVisibleRect(_ visibleRect: CGRect, attachments: [ViewerImageAttachment]) {
+        guard visibleRect.origin.x.isFinite, visibleRect.origin.y.isFinite,
+              visibleRect.size.width.isFinite, visibleRect.size.height.isFinite,
+              !visibleRect.isNull, !visibleRect.isEmpty else { return }
         let expanded = visibleRect.insetBy(dx: -Self.prefetchMargin, dy: -Self.prefetchMargin)
         let eligible = attachments.filter { !$0.source.isEmpty && $0.bounds.intersects(expanded) }
-        lock.lock()
-        guard enabled, !generation.isEmpty else { lock.unlock(); return }
-        let currentGeneration = generation
-        for attachment in eligible where !requested.contains(attachment.id) {
-            requested.insert(attachment.id)
-            requestCountForTesting += 1
+        let start: (String, [ViewerImageAttachment])? = lock.withLock {
+            guard enabled, !generation.isEmpty else { return nil }
+            let next = eligible.filter { requested.insert($0.id).inserted }
+            requestCountForTesting += next.count
+            return (generation, next)
+        }
+        guard let (currentGeneration, toStart) = start else { return }
+        for attachment in toStart {
             let receipt = owner.startImageLoad(source: attachment.source) { [weak self] image in
-                guard let self, let image, self.acceptsCompletion(generation: currentGeneration) else { return }
+                guard let self, self.acceptsCompletion(generation: currentGeneration) else { return }
+                guard let image else {
+                    self.reportFailure(attachment, generation: currentGeneration)
+                    return
+                }
                 let size = image.size.applying(CGAffineTransform(scaleX: image.scale, y: image.scale))
+                guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else {
+                    self.reportFailure(attachment, generation: currentGeneration)
+                    return
+                }
                 self.onIntrinsicMetadata?(attachment, size)
                 guard self.acceptsCompletion(generation: currentGeneration) else { return }
                 self.onPixels?(attachment, image)
             }
-            if let receipt { receipts[attachment.id] = receipt }
+            if let receipt {
+                let shouldRetain = lock.withLock { () -> Bool in
+                    guard enabled, generation == currentGeneration else { return false }
+                    receipts[attachment.id] = receipt
+                    return true
+                }
+                if !shouldRetain { receipt.cancel() }
+            } else {
+                reportFailure(attachment, generation: currentGeneration)
+            }
         }
+    }
+
+    private func reportFailure(_ attachment: ViewerImageAttachment, generation: String) {
+        let callback: ((ViewerImageAttachment) -> Void)? = lock.withLock {
+            guard enabled, self.generation == generation, failed.insert(attachment.id).inserted else { return nil }
+            return onResourceFailure
+        }
+        callback?(attachment)
+    }
+
+    internal func reportFailureForTesting(_ attachment: ViewerImageAttachment) {
+        lock.lock()
+        let currentGeneration = generation
         lock.unlock()
+        reportFailure(attachment, generation: currentGeneration)
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () -> T) -> T {
+        lock()
+        defer { unlock() }
+        return body()
     }
 }

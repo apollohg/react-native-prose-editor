@@ -131,7 +131,9 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   int64_t _ownedComponentTag;
   BOOL _hasOwnedSurface;
   id _imageMetadataObserver;
-  id _contentSizeObserver;
+  id _imageResourceObserver;
+  id _fontEnvironmentObserver;
+  uint64_t _lastFontEnvironmentRevision;
 }
 
 + (ComponentDescriptorProvider)componentDescriptorProvider
@@ -156,12 +158,20 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
                 usingBlock:^(NSNotification *note) {
                   [weakSelf handleImageMetadata:note];
                 }];
-    _contentSizeObserver = [[NSNotificationCenter defaultCenter]
-        addObserverForName:UIContentSizeCategoryDidChangeNotification
-                    object:nil
+    _imageResourceObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:PREPPreparedProseDrawingView.imageResourceDidFail
+                    object:_drawingView
                      queue:NSOperationQueue.mainQueue
                 usingBlock:^(__unused NSNotification *note) {
-                  [weakSelf invalidateNativeFontEnvironment];
+                  [weakSelf handleImageResourceFailure:note];
+                }];
+    PREPViewerFontEnvironment *fontEnvironment = [PREPViewerFontEnvironment sharedEnvironment];
+    _fontEnvironmentObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:PREPViewerFontEnvironment.didInvalidateNotification
+                    object:fontEnvironment
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *note) {
+                  [weakSelf handleFontEnvironmentInvalidation:note];
                 }];
   }
   return self;
@@ -170,7 +180,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 - (void)dealloc
 {
   if (_imageMetadataObserver) [[NSNotificationCenter defaultCenter] removeObserver:_imageMetadataObserver];
-  if (_contentSizeObserver) [[NSNotificationCenter defaultCenter] removeObserver:_contentSizeObserver];
+  if (_imageResourceObserver) [[NSNotificationCenter defaultCenter] removeObserver:_imageResourceObserver];
+  if (_fontEnvironmentObserver) [[NSNotificationCenter defaultCenter] removeObserver:_fontEnvironmentObserver];
 }
 
 - (BOOL)preparedProseDrawingView:(PREPPreparedProseDrawingView *)view
@@ -244,6 +255,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   }
   _hasReceivedUsableLayoutMetrics = YES;
   [self installMeasuredArtifactIfAttached];
+  [_drawingView updateConfiguredImagesForVisibleWindow];
 }
 
 - (void)didMoveToSuperview
@@ -261,6 +273,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   // resolvable. The shared seam is idempotent, so this cannot duplicate an
   // installation or error event after a normal layout-driven mount.
   [self installMeasuredArtifactIfAttached];
+  [_drawingView updateConfiguredImagesForVisibleWindow];
 }
 
 - (void)prepareForRecycle
@@ -395,6 +408,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   [_drawingView configureImagesWithGeneration:generation
                                 imagesEnabled:props.imagesEnabled
                                   policyJSON:OptionalStringFromStdString(props.imagePolicyJson)];
+  [_drawingView updateConfiguredImagesForVisibleWindow];
   _installedMeasurementIdentity = measurementIdentityString;
   if (!_drawingView.errorCode) {
     return;
@@ -437,6 +451,28 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
         nextData.nativeFontRevision += 1;
         return std::make_shared<const PreparedProseViewerShadowNode::ConcreteState::Data>(nextData);
       });
+}
+
+- (void)handleFontEnvironmentInvalidation:(NSNotification *)note
+{
+  NSNumber *revision = note.userInfo[@"revision"];
+  if (!revision || revision.unsignedLongLongValue <= _lastFontEnvironmentRevision) return;
+  _lastFontEnvironmentRevision = revision.unsignedLongLongValue;
+  [self invalidateNativeFontEnvironment];
+}
+
+- (void)handleImageResourceFailure:(NSNotification *)note
+{
+  NSString *generation = note.userInfo[@"generation"];
+  if (!generation || ![generation isEqualToString:_ownedGeneration]) return;
+  const auto eventEmitter = std::static_pointer_cast<const PreparedProseViewerEventEmitter>(_eventEmitter);
+  if (!eventEmitter) return;
+  eventEmitter->onError({
+      .domain = "viewer.resource",
+      .code = "RESOURCE_LOAD_FAILED",
+      .message = "An image resource could not be loaded.",
+      .fatal = false,
+  });
 }
 
 @end

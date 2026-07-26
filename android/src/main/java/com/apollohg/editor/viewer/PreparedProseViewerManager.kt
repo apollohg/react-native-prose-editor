@@ -55,6 +55,7 @@ internal class PreparedProseViewerManager :
                     state.publishAttachmentRevision()
                 }
             }
+            state.imagePipeline.onResourceFailure = { attachment -> dispatchResourceError(view, attachment) }
         }
 
     override fun createShadowNodeInstance(): LayoutShadowNode = LayoutShadowNode()
@@ -140,6 +141,7 @@ internal class PreparedProseViewerManager :
         attachmentsPositions: FloatArray?,
     ): Long {
         val density = context.resources.displayMetrics.density
+        val fontScale = context.resources.configuration.fontScale
         val surface = localData?.let(::surfaceToken)
         val request = requestFrom(props, state)
         if (request == null) {
@@ -151,9 +153,9 @@ internal class PreparedProseViewerManager :
             (widthMode != YogaMeasureMode.EXACTLY && widthMode != YogaMeasureMode.AT_MOST) ||
             widthPx == null
         ) {
-            PreparedProseLayoutRegistry.shared.measure(request, 0, density, surface)
+            PreparedProseLayoutRegistry.shared.measure(request, 0, density, fabricSurface = surface, fontScale = fontScale)
         } else {
-            PreparedProseLayoutRegistry.shared.measure(request, widthPx, density, surface)
+            PreparedProseLayoutRegistry.shared.measure(request, widthPx, density, fabricSurface = surface, fontScale = fontScale)
         }
         val measuredWidth = artifact.widthPx / density
         val intrinsicHeight = artifact.heightPx / density
@@ -215,6 +217,19 @@ internal class PreparedProseViewerManager :
                 putBoolean("fatal", true)
             },
         )
+    }
+
+    private fun dispatchResourceError(view: PreparedProseDrawingView, attachment: ViewerImageAttachment) {
+        val state = states[view] ?: return
+        val request = state.requestOrNull() ?: return
+        UIManagerHelper.getReactContext(view)
+            .getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java)
+            .receiveEvent(view.id, "topError", Arguments.createMap().apply {
+                putString("domain", "viewer.resource")
+                putString("code", "RESOURCE_LOAD_FAILED")
+                putString("message", "An image resource could not be loaded.")
+                putBoolean("fatal", false)
+            })
     }
 
     private fun dispatchInteraction(view: PreparedProseDrawingView, interaction: PreparedProseInteraction): Boolean {
@@ -352,7 +367,6 @@ internal class PreparedProseViewerManager :
 
         fun beginImages(view: PreparedProseDrawingView, artifact: PreparedProseLayout, request: ProseViewerRequest) {
             imagePipeline.begin(request.generationIdentity, request.configuration.imagesEnabled, ImageLoadingPolicy.fromJson(request.configuration.imagePolicyJson))
-            imagePipeline.updateVisibleRect(visibleRect.takeIf { !it.isEmpty } ?: android.graphics.Rect(0, 0, view.width, view.height), artifact.imageAttachments)
         }
 
         fun requestVisibleImages(view: PreparedProseDrawingView, visible: android.graphics.Rect) {

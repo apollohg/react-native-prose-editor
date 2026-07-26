@@ -106,12 +106,14 @@ public enum ProseViewerError: Error, Equatable {
     case compiler(domain: String, code: String, message: String)
     case hostContract(message: String)
     case layout(message: String)
+    case resource
 
     var domain: String {
         switch self {
         case let .compiler(domain, _, _): domain
         case .hostContract: "viewer.host"
         case .layout: "viewer.layout"
+        case .resource: "viewer.resource"
         }
     }
 
@@ -120,12 +122,14 @@ public enum ProseViewerError: Error, Equatable {
         case let .compiler(_, code, _): code
         case .hostContract: "INVALID_WIDTH"
         case .layout: "LAYOUT_FAILED"
+        case .resource: "RESOURCE_LOAD_FAILED"
         }
     }
 
     var message: String {
         switch self {
         case let .compiler(_, _, message), let .hostContract(message), let .layout(message): message
+        case .resource: "An image resource could not be loaded."
         }
     }
 }

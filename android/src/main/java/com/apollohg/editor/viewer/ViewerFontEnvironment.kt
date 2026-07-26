@@ -8,15 +8,19 @@ internal class ViewerFontEnvironment {
     companion object {
         private val warningLock = Any()
         private val missingWarnings = mutableSetOf<String>()
-        fun warnOnceForMissingFamily(family: String, semanticGeneration: String, revision: Long) {
+        fun warnOnceForMissingFamily(family: String, semanticGeneration: String, revision: String) {
             val key = "$revision\u001f$semanticGeneration\u001f$family"
-            if (synchronized(warningLock) { missingWarnings.add(key) }) {
+            val shouldWarn = synchronized(warningLock) {
+                val inserted = missingWarnings.add(key)
+                while (missingWarnings.size > 512) missingWarnings.minOrNull()?.let(missingWarnings::remove)
+                inserted
+            }
+            if (shouldWarn) {
                 Log.w("NativeEditorImage", "PreparedProseViewer: requested font family $family is unavailable; using system fallback")
             }
         }
     }
     private val lock = Any()
-    private val warned = mutableSetOf<String>()
     private var fontScale = Float.NaN
     var revision: Long = 0
         private set
@@ -33,14 +37,9 @@ internal class ViewerFontEnvironment {
         invalidate()
     }
 
-    fun shouldWarnForMissingFamily(family: String, semanticGeneration: String): Boolean = synchronized(lock) {
-        warned.add("$revision\u001f$semanticGeneration\u001f$family")
-    }
-
     private fun invalidate() {
         val next = synchronized(lock) {
             revision += 1
-            warned.clear()
             revision
         }
         onInvalidated?.invoke(next)

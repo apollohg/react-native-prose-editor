@@ -84,6 +84,7 @@ internal class PreparedProseLayoutRegistry(
         density: Float,
         fabricSurface: FabricSurfaceToken? = null,
         compiledDocument: ViewerDocument? = null,
+        fontScale: Float = 1f,
     ): PreparedProseLayout {
         if (!isValidMeasurement(widthPx, density)) {
             fabricSurface?.let(::releaseFabricSurface)
@@ -93,7 +94,7 @@ internal class PreparedProseLayoutRegistry(
         val generation = fabricSurface?.let { FabricGenerationToken(it, request.generationIdentity) }
         return try {
             val document = preparedDocument(request, generation, compiledDocument)
-            val theme = resolveTheme(request, density)
+            val theme = resolveTheme(request, density, fontScale)
             val key = layoutKey(document, request, widthPx, densityBits)
             layoutCache.value(key, fabricSurface) {
                 layoutPreparationCount += 1
@@ -263,10 +264,10 @@ internal class PreparedProseLayoutRegistry(
         }
     }
 
-    private fun resolveTheme(request: ProseViewerRequest, density: Float): PreparedProseTheme = synchronized(compilerLock) {
-        val key = "${request.generationIdentity}:${density.toRawBits()}"
+    private fun resolveTheme(request: ProseViewerRequest, density: Float, fontScale: Float): PreparedProseTheme = synchronized(compilerLock) {
+        val key = "${request.generationIdentity}:${density.toRawBits()}:${fontScale.toRawBits()}"
         themes[key]?.let { return@synchronized it }
-        val resolved = PreparedProseTheme.resolve(request.configuration.themeJson, density)
+        val resolved = PreparedProseTheme.resolve(request.configuration.themeJson, density, fontScale)
         themes[key] = resolved
         themeRetainedBytes += resolved.retainedBytes
         while ((themeRetainedBytes > themeByteBudget || themes.size > themeEntryBudget) && themes.isNotEmpty()) {

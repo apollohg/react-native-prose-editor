@@ -56,6 +56,7 @@ value class ProseViewerErrorCode(val value: String) {
     companion object {
         val INVALID_WIDTH = ProseViewerErrorCode("INVALID_WIDTH")
         val LAYOUT_FAILED = ProseViewerErrorCode("LAYOUT_FAILED")
+        val RESOURCE_LOAD_FAILED = ProseViewerErrorCode("RESOURCE_LOAD_FAILED")
     }
 }
 
@@ -76,6 +77,12 @@ data class ProseViewerError(
 
         fun layout(message: String) =
             ProseViewerError("viewer.layout", ProseViewerErrorCode.LAYOUT_FAILED, message)
+
+        fun resource() = ProseViewerError(
+            "viewer.resource",
+            ProseViewerErrorCode.RESOURCE_LOAD_FAILED,
+            "An image resource could not be loaded.",
+        )
     }
 }
 
@@ -153,6 +160,7 @@ class ProseViewerView @JvmOverloads constructor(
     private var preparedArtifact: PreparedProseLayout? = null
     private var directError: ProseViewerError? = null
     private var reportedGenerationIdentity: String? = null
+    private val reportedResourceFailures = mutableSetOf<String>()
     private val attachmentRevisions = ViewerAttachmentRevisionState()
     private val fontEnvironment = ViewerFontEnvironment()
     private val viewerImagePipeline = ViewerImagePipeline()
@@ -232,6 +240,7 @@ class ProseViewerView @JvmOverloads constructor(
         viewerImagePipeline.onIntrinsicMetadata = { attachment, width, height ->
             applyIntrinsicImageMetadata(attachment, width, height)
         }
+        viewerImagePipeline.onResourceFailure = { attachment -> reportResourceFailureIfNeeded(attachment) }
         fontEnvironment.onInvalidated = { revision -> applyFontEnvironmentRevision(revision) }
         addView(
             preparedDrawingView,
@@ -266,6 +275,7 @@ class ProseViewerView @JvmOverloads constructor(
         preparedDrawingView.imagePixels = emptyMap()
         directError = null
         reportedGenerationIdentity = null
+        reportedResourceFailures.clear()
         clearVirtualAccessibilityFocus()
         preparedAccessibilityGeneration = null
         // The replacement artifact owns the observable subtree transition.
@@ -363,11 +373,11 @@ class ProseViewerView @JvmOverloads constructor(
                 widthPx = if (widthMode == MeasureSpec.UNSPECIFIED) 0 else availableWidth,
                 density = resources.displayMetrics.density,
                 compiledDocument = retainedDocument,
+                fontScale = resources.configuration.fontScale,
             )
             val artifactChanged = preparedArtifact !== artifact
             preparedArtifact = artifact
             preparedDrawingView.install(artifact)
-            beginVisibleImageRequests(artifact)
             if (artifactChanged || preparedAccessibilityGeneration != artifact.key.generationIdentity) {
                 clearVirtualAccessibilityFocus()
                 preparedAccessibilityGeneration = artifact.key.generationIdentity
@@ -452,6 +462,11 @@ class ProseViewerView @JvmOverloads constructor(
         super.onDetachedFromWindow()
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        requestVisibleImageAttachments()
+    }
+
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         fontEnvironment.onConfigurationChanged(newConfig)
@@ -482,6 +497,12 @@ class ProseViewerView @JvmOverloads constructor(
         interactionListener?.onViewerError(this, error)
     }
 
+    private fun reportResourceFailureIfNeeded(attachment: ViewerImageAttachment) {
+        val generation = preparedRequest?.generationIdentity ?: return
+        if (!reportedResourceFailures.add("$generation\u001f${attachment.id}")) return
+        interactionListener?.onViewerError(this, ProseViewerError.resource())
+    }
+
     private fun clearDirectGeneration() {
         clearVirtualAccessibilityFocus()
         preparedRequest = null
@@ -491,6 +512,7 @@ class ProseViewerView @JvmOverloads constructor(
         preparedDrawingView.imagePixels = emptyMap()
         directError = null
         reportedGenerationIdentity = null
+        reportedResourceFailures.clear()
         // apply(renderJson, themeJson) publishes the replacement subtree.
         preparedDrawingView.install(null, announceAccessibilitySubtree = false)
         preparedDrawingView.visibility = View.GONE
@@ -505,20 +527,27 @@ class ProseViewerView @JvmOverloads constructor(
         requestLayout()
     }
 
-    private fun beginVisibleImageRequests(artifact: PreparedProseLayout) {
+    private fun configureImageGeneration(artifact: PreparedProseLayout) {
         val request = preparedRequest ?: return
         viewerImagePipeline.begin(
             request.generationIdentity,
             request.configuration.imagesEnabled,
             ImageLoadingPolicy.fromJson(request.configuration.imagePolicyJson),
         )
-        requestVisibleImageAttachments()
     }
 
     private fun requestVisibleImageAttachments() {
         val artifact = preparedArtifact ?: return
+        if (!isAttachedToWindow || preparedDrawingView.visibility != View.VISIBLE || !preparedDrawingView.isShown) return
+        val visible = Rect()
+        if (!preparedDrawingView.getGlobalVisibleRect(visible) || visible.isEmpty) return
+        val location = IntArray(2)
+        preparedDrawingView.getLocationOnScreen(location)
+        visible.offset(-location[0], -location[1])
+        if (!visible.intersect(Rect(0, 0, preparedDrawingView.width, preparedDrawingView.height)) || visible.isEmpty) return
+        configureImageGeneration(artifact)
         viewerImagePipeline.updateVisibleRect(
-            Rect(0, 0, preparedDrawingView.width.coerceAtLeast(1), preparedDrawingView.height.coerceAtLeast(1)),
+            visible,
             artifact.imageAttachments,
         )
     }
@@ -528,6 +557,7 @@ class ProseViewerView @JvmOverloads constructor(
         if (!viewerImagePipeline.acceptsCompletion(request.generationIdentity)) return
         if (!attachmentRevisions.recordIntrinsicSize(attachment.id, width, height, attachment.declaredSize)) return
         preparedRequest = request.copy(attachmentRevision = attachmentRevisions.revision)
+        reportedResourceFailures.clear()
         requestLayout()
     }
 
@@ -535,6 +565,7 @@ class ProseViewerView @JvmOverloads constructor(
         val request = preparedRequest ?: return
         if (revision <= request.fontEnvironmentRevision) return
         preparedRequest = request.copy(fontEnvironmentRevision = revision)
+        reportedResourceFailures.clear()
         requestLayout()
     }
 

@@ -11,6 +11,7 @@ import UIKit
 public final class PreparedProseDrawingView: UIView {
     var imagePixels: [String: UIImage] = [:] { didSet { setNeedsDisplay() } }
     @objc public static let imageMetadataDidResolve = Notification.Name("com.apollohg.editor.viewer.imageMetadataDidResolve")
+    @objc public static let imageResourceDidFail = Notification.Name("com.apollohg.editor.viewer.imageResourceDidFail")
     private lazy var imagePipeline = ViewerImagePipeline(policy: .default)
     private let imageRevisions = ViewerAttachmentRevisionState()
     private var imageGeneration = ""
@@ -41,7 +42,28 @@ public final class PreparedProseDrawingView: UIView {
                 userInfo: ["generation": generation, "revision": self.imageRevisions.revision]
             )
         }
-        beginConfiguredImages()
+        imagePipeline.onResourceFailure = { [weak self] attachment in
+            guard let self, self.imagePipeline.acceptsCompletion(generation: generation) else { return }
+            NotificationCenter.default.post(
+                name: Self.imageResourceDidFail,
+                object: self,
+                userInfo: ["generation": generation, "attachment": attachment.id]
+            )
+        }
+        imagePipeline.begin(
+            generation: imageGeneration,
+            imagesEnabled: imageConfiguration.enabled,
+            policy: imageConfiguration.policy
+        )
+    }
+
+    @objc public func updateConfiguredImagesForVisibleWindow() {
+        guard let layout, let window, !isHidden, alpha > 0 else { return }
+        let visible = convert(window.bounds, from: window).intersection(bounds)
+        guard visible.origin.x.isFinite, visible.origin.y.isFinite,
+              visible.size.width.isFinite, visible.size.height.isFinite,
+              !visible.isNull, !visible.isEmpty else { return }
+        imagePipeline.updateVisibleRect(visible, attachments: layout.imageAttachments)
     }
 
     @objc public func cancelConfiguredImages() {
@@ -160,7 +182,6 @@ public final class PreparedProseDrawingView: UIView {
 
     public override func draw(_ rect: CGRect) {
         guard let layout, let context = UIGraphicsGetCurrentContext(), !layout.blocks.isEmpty else { return }
-        imagePipeline.updateVisibleRect(rect, attachments: layout.imageAttachments)
         let blocks = layout.blocks
         var lower = 0
         var upper = blocks.count
@@ -185,16 +206,6 @@ public final class PreparedProseDrawingView: UIView {
         for fragment in visibleFragments { drawBorderOrRule(fragment, in: context, scale: scale) }
         for fragment in visibleFragments { drawForeground(fragment, in: context) }
         context.restoreGState()
-    }
-
-    private func beginConfiguredImages() {
-        guard let layout else { return }
-        imagePipeline.begin(
-            generation: imageGeneration,
-            imagesEnabled: imageConfiguration.enabled,
-            policy: imageConfiguration.policy
-        )
-        imagePipeline.updateVisibleRect(bounds, attachments: layout.imageAttachments)
     }
 
     private func drawingRect(for fragment: PreparedProseFragment) -> CGRect {
