@@ -39,7 +39,10 @@ target_link_libraries(
   reactnative
 )
 
-target_compile_reactnative_options(${LIB_TARGET_NAME} PUBLIC)
+# Available from React Native 0.81; retain compatibility with the 0.76 floor.
+if(COMMAND target_compile_reactnative_options)
+  target_compile_reactnative_options(${LIB_TARGET_NAME} PUBLIC)
+endif()
 
 target_compile_options(
   ${LIB_TARGET_NAME}
