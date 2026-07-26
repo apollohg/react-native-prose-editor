@@ -24,9 +24,41 @@ import com.apollohg.editor.EditorMentionTheme
 import com.apollohg.editor.EditorTextStyle
 import com.apollohg.editor.EditorTheme
 import com.apollohg.editor.ProseViewerError
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
+
+/**
+ * StaticLayout occasionally reports one visual selection run as touching
+ * contours. Merge only contours that meet within one raster pixel on the same
+ * line; wider gaps remain distinct bidi hit regions.
+ */
+internal fun mergeAdjacentSameLineSelectionFragments(fragments: List<Rect>): List<Rect> {
+    val ordered = fragments.sortedWith(compareBy<Rect> { it.top }.thenBy { it.left })
+    val merged = mutableListOf<Rect>()
+    ordered.forEach { fragment ->
+        val previous = merged.lastOrNull()
+        if (
+            previous != null &&
+            abs(previous.top - fragment.top) <= SELECTION_FRAGMENT_PIXEL_TOLERANCE_PX &&
+            abs(previous.bottom - fragment.bottom) <= SELECTION_FRAGMENT_PIXEL_TOLERANCE_PX &&
+            fragment.left.toLong() <= previous.right.toLong() + SELECTION_FRAGMENT_PIXEL_TOLERANCE_PX.toLong()
+        ) {
+            merged[merged.lastIndex] = Rect(
+                min(previous.left, fragment.left),
+                min(previous.top, fragment.top),
+                max(previous.right, fragment.right),
+                max(previous.bottom, fragment.bottom),
+            )
+        } else {
+            merged += Rect(fragment)
+        }
+    }
+    return merged
+}
+
+private const val SELECTION_FRAGMENT_PIXEL_TOLERANCE_PX = 1
 
 /** Creates immutable StaticLayout fragments without depending on a mounted View. */
 internal interface AndroidProseLayoutEngine {
@@ -318,11 +350,12 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                 // StaticLayout's selection path follows its shaped visual runs.
                 // Clipping it to this line preserves discontiguous bidi pieces
                 // rather than collapsing a logical range to endpoint geometry.
-                selectionRectsForLine(layout, start, end, line, availableWidth).forEach { rect ->
+                mergeAdjacentSameLineSelectionFragments(
+                    selectionRectsForLine(layout, start, end, line, availableWidth)
+                ).forEach { rect ->
                     rect.offset(textX, textTop)
-                    // One selection-path contour is one shaped visual piece.
-                    // StaticLayout has already coalesced adjacent glyphs in the
-                    // run, so joining contours here would erase bidi splits.
+                    // This semantic target's touching contours share one visual
+                    // run. Gapped bidi contours remain separate hit regions.
                     interactionRects[index] += rect
                 }
             }

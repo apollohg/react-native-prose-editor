@@ -2030,7 +2030,7 @@ object RenderBridge {
                 "opaqueInlineAtom" -> {
                     val nodeType = element.optString("nodeType", "")
                     val label = element.optString("label", "?")
-                    val docPos = exactV2ScalarInt(element.opt("docPos") as? Number) ?: continue
+                    val docPos = exactV2U32(element.opt("docPos") as? Number)?.toLong() ?: continue
                     val mentionTheme = EditorMentionTheme.fromJson(
                         element.optJSONObject("mentionTheme")
                     )
@@ -2052,7 +2052,7 @@ object RenderBridge {
                 "opaqueBlockAtom" -> {
                     val nodeType = element.optString("nodeType", "")
                     val label = element.optString("label", "?")
-                    val docPos = exactV2ScalarInt(element.opt("docPos") as? Number) ?: continue
+                    val docPos = exactV2U32(element.opt("docPos") as? Number)?.toLong() ?: continue
                     val blockSpacing = theme?.effectiveTextStyle(nodeType)?.spacingAfter
                     if (!state.isFirstBlock) {
                         val spacingPx = ((state.nextBlockSpacingBefore ?: 0f) * density).toInt()
@@ -2528,7 +2528,7 @@ object RenderBridge {
         builder: SpannableStringBuilder,
         nodeType: String,
         label: String,
-        docPos: Int,
+        docPos: Long,
         baseFontSize: Float,
         textColor: Int,
         blockStack: MutableList<BlockContext>,
@@ -2589,7 +2589,7 @@ object RenderBridge {
         builder: SpannableStringBuilder,
         nodeType: String,
         label: String,
-        docPos: Int,
+        docPos: Long,
         baseFontSize: Float,
         textColor: Int,
         theme: EditorTheme?,

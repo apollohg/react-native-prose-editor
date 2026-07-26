@@ -92,7 +92,8 @@ private sealed interface ProseViewerTapTarget {
     val end: Int
 
     data class Mention(
-        val docPos: Int,
+        /** A Rust u32 retained in a signed [Long] without narrowing. */
+        val docPos: Long,
         val label: String,
         override val annotation: android.text.Annotation,
         override val start: Int,
@@ -211,6 +212,7 @@ class ProseViewerView @JvmOverloads constructor(
         // The public facade owns virtual accessibility. The drawing child is
         // still interactive, but must not expose a duplicate virtual subtree.
         preparedDrawingView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        preparedDrawingView.publishesAccessibilitySubtree = false
         preparedDrawingView.linkInteractionsEnabled = linkTapsEnabled
         preparedDrawingView.onInteractionActivated = { activatePreparedInteraction(it) }
         addView(
@@ -443,7 +445,6 @@ class ProseViewerView @JvmOverloads constructor(
         preparedDrawingView.install(null)
         preparedDrawingView.visibility = View.GONE
         preparedAccessibilityGeneration = null
-        notifyAccessibilitySubtreeChanged()
         proseView.visibility = View.VISIBLE
     }
 
@@ -594,7 +595,7 @@ class ProseViewerView @JvmOverloads constructor(
         return when (val target = hit.target) {
             is EditorEditText.AccessibleAnnotationTarget.Mention ->
                 ProseViewerTapTarget.Mention(
-                    target.docPos.toLong(),
+                    target.docPos,
                     target.label,
                     hit.annotation,
                     hit.start,

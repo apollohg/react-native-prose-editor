@@ -40,6 +40,16 @@ class NativeProseViewerExpoViewTest {
             contentChangeTypes += event.contentChangeTypes
             return true
         }
+
+        fun clearEvents() {
+            eventTypes.clear()
+            contentChangeTypes.clear()
+        }
+
+        fun subtreeChangeCount(): Int = eventTypes.indices.count { index ->
+            eventTypes[index] == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+                contentChangeTypes[index] == AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE
+        }
     }
 
     @Test
@@ -178,17 +188,12 @@ class NativeProseViewerExpoViewTest {
         val provider = viewer.accessibilityNodeProvider
         assertTrue(provider.createAccessibilityNodeInfo(1) != null)
 
+        parent.clearEvents()
+
         viewer.apply(paragraphRenderJson("replacement"), "{}")
 
         assertTrue(provider.createAccessibilityNodeInfo(1) == null)
-        val eventIndex = parent.eventTypes.indexOfLast {
-            it == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        }
-        assertTrue(eventIndex >= 0)
-        assertEquals(
-            AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE,
-            parent.contentChangeTypes[eventIndex]
-        )
+        assertEquals(1, parent.subtreeChangeCount())
     }
 
     @Test
@@ -199,23 +204,16 @@ class NativeProseViewerExpoViewTest {
         val provider = viewer.accessibilityNodeProvider
         assertTrue(provider.createAccessibilityNodeInfo(1) != null)
 
+        parent.clearEvents()
         viewer.linkTapsEnabled = false
 
         assertTrue(provider.createAccessibilityNodeInfo(1) == null)
-        val eventIndex = parent.eventTypes.indexOfLast {
-            it == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        }
-        assertTrue(eventIndex >= 0)
-        assertEquals(
-            AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE,
-            parent.contentChangeTypes[eventIndex]
-        )
+        assertEquals(1, parent.subtreeChangeCount())
 
+        parent.clearEvents()
         viewer.linkTapsEnabled = true
         assertTrue(provider.createAccessibilityNodeInfo(1) != null)
-        assertTrue(
-            parent.eventTypes.count { it == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED } >= 2
-        )
+        assertEquals(1, parent.subtreeChangeCount())
     }
 
     @Test

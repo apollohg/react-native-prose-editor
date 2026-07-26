@@ -20,6 +20,8 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         private set
     var onUsableMetricsChanged: (() -> Unit)? = null
     var onInteractionActivated: ((PreparedProseInteraction) -> Boolean)? = null
+    /** False when a public host owns this view's virtual subtree and notifications. */
+    var publishesAccessibilitySubtree: Boolean = true
     var linkInteractionsEnabled: Boolean = true
         set(value) {
             if (field == value) return
@@ -245,6 +247,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     }
 
     private fun notifyAccessibilitySubtreeChanged() {
+        if (!publishesAccessibilitySubtree) return
         val event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED).apply {
             packageName = context.packageName
             className = android.widget.TextView::class.java.name

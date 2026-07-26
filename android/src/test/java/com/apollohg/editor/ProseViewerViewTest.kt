@@ -112,6 +112,33 @@ class ProseViewerViewTest {
     }
 
     @Test
+    fun `legacy mention accessibility preserves unsigned positions above signed int max`() {
+        val viewer = ProseViewerView(context)
+        val listener = RecordingListener()
+        viewer.interactionListener = listener
+        viewer.apply(
+            """
+            [
+              {"type":"blockStart","nodeType":"paragraph","depth":0},
+              {"type":"opaqueInlineAtom","nodeType":"mention","label":"@Ada","docPos":4294967295},
+              {"type":"blockEnd"}
+            ]
+            """.trimIndent(),
+            "{}"
+        )
+        measureAndLayout(viewer)
+
+        assertTrue(
+            viewer.accessibilityNodeProvider.performAction(
+                1,
+                AccessibilityNodeInfo.ACTION_CLICK,
+                null,
+            )
+        )
+        assertEquals(listOf(UInt.MAX_VALUE.toLong() to "@Ada"), listener.mentions)
+    }
+
+    @Test
     fun `disabled public links are absent from accessibility and cannot activate`() {
         val viewer = ProseViewerView(context)
         viewer.apply(linkRenderJson(), "{}")
@@ -161,10 +188,7 @@ class ProseViewerViewTest {
         assertFalse(viewer.accessibilityNodeProvider.performAction(1, AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS, null))
         assertTrue(parent.events.any { it.type == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED })
         assertTrue(parent.events.any { it.type == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED })
-        assertTrue(parent.events.any {
-            it.type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
-                (it.changeTypes and AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE) != 0
-        })
+        assertEquals(1, parent.subtreeChangeCount())
     }
 
     private fun paragraphRenderJson(text: String): String =
@@ -216,6 +240,11 @@ class ProseViewerViewTest {
         override fun requestSendAccessibilityEvent(child: View, event: AccessibilityEvent): Boolean {
             events += Event(event.eventType, event.contentChangeTypes)
             return true
+        }
+
+        fun subtreeChangeCount(): Int = events.count { event ->
+            event.type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+                event.changeTypes == AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE
         }
 
         override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) = Unit

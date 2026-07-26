@@ -1,11 +1,32 @@
 package com.apollohg.editor.viewer
 
+import android.graphics.Rect
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.editor_core.FfiViewerMark
 
 class PreparedProseAccessibilityTest {
+    @Test
+    fun `selection fragments merge only touching pieces on one visual line`() {
+        assertEquals(
+            listOf(Rect(2, 10, 18, 20)),
+            mergeAdjacentSameLineSelectionFragments(
+                listOf(Rect(2, 10, 10, 20), Rect(11, 10, 18, 20))
+            )
+        )
+    }
+
+    @Test
+    fun `selection fragments preserve real gaps and separate visual lines`() {
+        assertEquals(
+            listOf(Rect(2, 10, 10, 20), Rect(14, 10, 22, 20), Rect(0, 30, 8, 40)),
+            mergeAdjacentSameLineSelectionFragments(
+                listOf(Rect(14, 10, 22, 20), Rect(0, 30, 8, 40), Rect(2, 10, 10, 20))
+            )
+        )
+    }
+
     @Test
     fun `bidi link uses discontiguous shaped selection rects in visual order`() {
         val document = ViewerDocument(

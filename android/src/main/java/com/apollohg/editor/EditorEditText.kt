@@ -99,7 +99,8 @@ class EditorEditText @JvmOverloads constructor(
     )
 
     data class MentionHit(
-        val docPos: Int,
+        /** A Rust u32 retained in a signed [Long] without narrowing. */
+        val docPos: Long,
         val label: String
     )
 
@@ -143,7 +144,8 @@ class EditorEditText @JvmOverloads constructor(
     )
 
     internal sealed interface AccessibleAnnotationTarget {
-        data class Mention(val docPos: Int, val label: String) : AccessibleAnnotationTarget
+        /** A Rust u32 retained in a signed [Long] without narrowing. */
+        data class Mention(val docPos: Long, val label: String) : AccessibleAnnotationTarget
         data class Link(val href: String, val text: String) : AccessibleAnnotationTarget
     }
 
@@ -4338,7 +4340,7 @@ class EditorEditText @JvmOverloads constructor(
         } ?: return null
         val docPos = annotations.firstOrNull { it.key == "nativeDocPos" }
             ?.value
-            ?.toIntOrNull() ?: return null
+            ?.viewerMentionDocPos() ?: return null
         val start = spannable.getSpanStart(mentionAnnotation)
         val end = spannable.getSpanEnd(mentionAnnotation)
         if (start < 0 || end <= start) {
@@ -4394,7 +4396,7 @@ class EditorEditText @JvmOverloads constructor(
                         candidate.key == "nativeDocPos" &&
                             spannable.getSpanStart(candidate) == start &&
                             spannable.getSpanEnd(candidate) == end
-                    }?.value?.toIntOrNull() ?: return@forEach
+                    }?.value?.viewerMentionDocPos() ?: return@forEach
                     AccessibleAnnotationTarget.Mention(docPos, label)
                 }
                 else -> return@forEach
@@ -4438,13 +4440,17 @@ class EditorEditText @JvmOverloads constructor(
                 it.key == "nativeDocPos" &&
                     spannable.getSpanStart(it) == start &&
                     spannable.getSpanEnd(it) == end
-            }?.value?.toIntOrNull() ?: return null
+            }?.value?.viewerMentionDocPos() ?: return null
             AccessibleAnnotationTarget.Mention(docPos, label)
         } else {
             AccessibleAnnotationTarget.Link(annotation.value, label)
         }
         return InteractiveAnnotationHit(target, annotation, start, end)
     }
+
+    /** Annotation values are decimal Rust u32 positions, never signed editor offsets. */
+    private fun String.viewerMentionDocPos(): Long? =
+        toLongOrNull()?.takeIf { it in 0L..UInt.MAX_VALUE.toLong() }
 
     private fun annotationBounds(textLayout: Layout, start: Int, end: Int): Rect {
         val firstLine = textLayout.getLineForOffset(start)
