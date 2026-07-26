@@ -1,6 +1,5 @@
 import XCTest
 import UIKit
-@testable import NativeEditor
 
 final class PreparedProseRevisionTests: XCTestCase {
     private enum FixtureError: Error { case expected }
