@@ -4,277 +4,208 @@ import UIKit
 public protocol ProseViewerInteractionDelegate: AnyObject {
     func proseViewer(_ view: ProseViewerView, didTapLink href: String, text: String)
     func proseViewer(_ view: ProseViewerView, didTapMention docPos: Int, label: String)
+    func proseViewer(_ view: ProseViewerView, didFail error: ProseViewerError)
 }
 
-/// Display-only prose viewer for UIKit hosts.
-///
-/// Input is the flat render-ops JSON array produced by the package render
-/// bridge. This view does not create or retain an editor handle.
+public extension ProseViewerInteractionDelegate {
+    func proseViewer(_ view: ProseViewerView, didFail error: ProseViewerError) {}
+}
+
+/// A direct Core Text viewer. Measurement prepares an immutable artifact; layout only installs it.
 public final class ProseViewerView: UIView {
     public weak var interactionDelegate: ProseViewerInteractionDelegate?
 
-    private let textView = EditorTextView(frame: .zero, textContainer: nil)
-    private let imageLoadOwner = RenderImageLoadOwner(policy: .default)
-    private var lastRenderJSON = "[]"
-    private var lastThemeJSON: String?
-    private var collapsesWhenEmpty = false
-    private var isCollapsedEmptyContent = false
+    private let layoutRegistry: PreparedProseLayoutRegistry
+    private let drawingView = PreparedProseDrawingView(frame: .zero)
+    private var request: ProseViewerRequest?
+    private var ownedLayout: PreparedProseLayout?
+    private var pendingError: ProseViewerError?
+    private var errorWasReported = false
 
-    internal var onContentHeightChange: ((CGFloat) -> Void)?
+    // Temporary source compatibility for the legacy Expo adapter. It is deliberately
+    // lazy so direct-content users never create a TextKit view; Task 12 removes it.
+    private lazy var legacyTextView = EditorTextView(frame: .zero, textContainer: nil)
+    private var legacyImageLoadOwner = RenderImageLoadOwner(policy: .default)
+    private var legacyCollapsesWhenEmpty = false
+    private var legacyCollapsed = false
+
+    internal var drawingViewForTesting: PreparedProseDrawingView { drawingView }
     internal var opensLinksAutomatically = false
     internal var linkTapsEnabled = true
-    internal var imageLoadingPolicyForHost: ImageLoadingPolicy { imageLoadOwner.policy }
-    internal var isContentCollapsedForHost: Bool { isCollapsedEmptyContent }
-    internal var renderedTextForTesting: String { textView.textStorage.string }
-    internal var textViewForTesting: EditorTextView { textView }
-
-    internal var contentInset: UIEdgeInsets {
-        get { textView.textContainerInset }
-        set {
-            textView.baseTextContainerInset = newValue
-            textView.textContainerInset = newValue
-        }
-    }
-
-    private lazy var interactiveTapRecognizer: UITapGestureRecognizer = {
-        let recognizer = UITapGestureRecognizer(
-            target: self,
-            action: #selector(handleInteractiveTap(_:))
-        )
-        recognizer.cancelsTouchesInView = false
-        return recognizer
-    }()
+    internal var onContentHeightChange: ((CGFloat) -> Void)?
+    internal var contentInset: UIEdgeInsets = .zero
+    internal var imageLoadingPolicyForHost: ImageLoadingPolicy { legacyImageLoadOwner.policy }
+    internal var isContentCollapsedForHost: Bool { legacyCollapsed }
+    internal var renderedTextForTesting: String { legacyTextView.textStorage.string }
+    internal var textViewForTesting: EditorTextView { legacyTextView }
 
     public override init(frame: CGRect) {
+        layoutRegistry = .shared
         super.init(frame: frame)
-        setupView()
+        setup()
+    }
+
+    init(frame: CGRect = .zero, layoutRegistry: PreparedProseLayoutRegistry) {
+        self.layoutRegistry = layoutRegistry
+        super.init(frame: frame)
+        setup()
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("ProseViewerView does not support NSCoder")
+    required init?(coder: NSCoder) { fatalError("ProseViewerView does not support NSCoder") }
+
+    private func setup() {
+        drawingView.backgroundColor = .clear
+        drawingView.isOpaque = false
+        addSubview(drawingView)
     }
 
-    deinit {
-        imageLoadOwner.cancelAll()
-    }
-
-    private func setupView() {
-        textView.imageLoadOwner = imageLoadOwner
-        textView.baseBackgroundColor = .clear
-        textView.backgroundColor = .clear
-        textView.isEditable = false
-        textView.isSelectable = false
-        textView.allowImageResizing = false
-        textView.baseTextContainerInset = .zero
-        textView.textContainerInset = .zero
-        textView.heightBehavior = .autoGrow
-        textView.onHeightMayChange = { [weak self] measuredHeight in
-            guard let self else { return }
-            self.onContentHeightChange?(
-                self.isCollapsedEmptyContent ? 0 : ceil(measuredHeight)
-            )
-        }
-        textView.addGestureRecognizer(interactiveTapRecognizer)
-        addSubview(textView)
-    }
-
-    /// Applies render-ops and theme JSON. Invalid render input clears the view.
+    /// Compiles once for this immutable generation. The first finite measurement prepares layout.
     @discardableResult
-    public func apply(renderJson: String, themeJson: String) -> Bool {
-        let accepted = Self.isRenderOpsArray(renderJson)
-        if accepted, renderJson == lastRenderJSON, themeJson == lastThemeJSON {
+    public func apply(source: ProseViewerSource, configuration: ProseViewerConfiguration) -> Bool {
+        let nextRequest = ProseViewerRequest(source: source, configuration: configuration)
+        if request == nextRequest, pendingError == nil { return true }
+        request = nextRequest
+        ownedLayout = nil
+        drawingView.layout = nil
+        pendingError = nil
+        errorWasReported = false
+        do {
+            _ = try layoutRegistry.compileDocument(request: nextRequest)
+            invalidateIntrinsicContentSize()
+            setNeedsLayout()
             return true
+        } catch let error as ProseViewerError {
+            pendingError = error
+            invalidateIntrinsicContentSize()
+            setNeedsLayout()
+            return false
+        } catch {
+            pendingError = .layout(message: String(describing: error))
+            invalidateIntrinsicContentSize()
+            setNeedsLayout()
+            return false
         }
-        if lastThemeJSON != themeJson {
-            lastThemeJSON = themeJson
-            _ = textView.applyTheme(EditorTheme.from(json: themeJson))
+    }
+
+    public override func sizeThatFits(_ size: CGSize) -> CGSize {
+        guard size.width.isFinite, size.width > 0 else { return .zero }
+        let layout = preparedLayout(width: size.width, scale: displayScale)
+        let hostHeight = size.height
+        let height = hostHeight.isFinite && hostHeight >= 0 ? min(layout.size.height, hostHeight) : layout.size.height
+        return CGSize(width: layout.size.width, height: height)
+    }
+
+    public override var intrinsicContentSize: CGSize {
+        guard bounds.width.isFinite, bounds.width > 0 else {
+            return CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
         }
-        lastRenderJSON = accepted ? renderJson : "[]"
-        renderCurrentContent()
-        return accepted
+        return preparedLayout(width: bounds.width, scale: displayScale).size
     }
 
-    /// Updates the bounded image-loading policy from its serialized form.
-    public func setImageLoadingPolicy(json: String?) {
-        let policy = ImageLoadingPolicy.from(json: json)
-        guard policy != imageLoadOwner.policy else { return }
-        imageLoadOwner.updatePolicy(policy)
-        renderCurrentContent()
-    }
-
-    /// Clears content and pending image work for a recycled host view.
-    ///
-    /// The interaction delegate is retained so cell owners may assign it once.
-    public func prepareForReuse() {
-        imageLoadOwner.cancelAll()
-        lastRenderJSON = "[]"
-        lastThemeJSON = nil
-        collapsesWhenEmpty = false
-        isCollapsedEmptyContent = false
-        _ = textView.applyTheme(nil)
-        textView.applyRenderJSON("[]")
-        imageLoadOwner.updatePolicy(.default)
-        textView.isHidden = false
-        invalidateIntrinsicContentSize()
-        setNeedsLayout()
-    }
-
-    /// Returns the current content height at a UIKit width in points.
-    public func measuredHeight(forWidth width: CGFloat) -> CGFloat {
-        guard !isCollapsedEmptyContent, width > 0 else { return 0 }
-        return ceil(textView.measuredAutoGrowHeightForTesting(width: width))
-    }
-
-    /// Measures valid render-ops without creating a viewer.
-    public static func measureHeight(
-        renderJson: String,
-        themeJson: String,
-        width: CGFloat
-    ) -> CGFloat? {
-        guard isRenderOpsArray(renderJson) else { return nil }
-        return RenderBridge.measureHeight(
-            forRenderJSON: renderJson,
-            themeJSON: themeJson,
-            width: width
-        )
-    }
-
-    internal func setCollapsesWhenEmpty(_ collapses: Bool) {
-        guard collapsesWhenEmpty != collapses else { return }
-        collapsesWhenEmpty = collapses
-        renderCurrentContent()
-    }
-
-    internal static func renderJsonContainsOnlyEmptyParagraphs(_ renderJson: String) -> Bool {
-        NativeProseViewerEmptyContent.containsOnlyEmptyParagraphs(renderJson)
-    }
-
-    private func renderCurrentContent() {
-        isCollapsedEmptyContent = collapsesWhenEmpty
-            && Self.renderJsonContainsOnlyEmptyParagraphs(lastRenderJSON)
-        imageLoadOwner.withCurrent {
-            textView.applyRenderJSON(lastRenderJSON)
-        }
-        textView.isHidden = isCollapsedEmptyContent
-        invalidateIntrinsicContentSize()
-        setNeedsLayout()
+    public override func systemLayoutSizeFitting(_ targetSize: CGSize) -> CGSize {
+        sizeThatFits(targetSize)
     }
 
     public override func layoutSubviews() {
         super.layoutSubviews()
-        if isCollapsedEmptyContent {
-            textView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 0)
-            textView.updateAutoGrowHostHeight(0)
-        } else {
-            textView.frame = bounds
-            textView.updateAutoGrowHostHeight(bounds.height)
+        drawingView.frame = bounds
+        drawingView.layout = ownedLayout
+    }
+
+    /// Releases this surface's artifact ownership without clearing its delegate.
+    public func prepareForReuse() {
+        request = nil
+        ownedLayout = nil
+        pendingError = nil
+        errorWasReported = false
+        drawingView.layout = nil
+        legacyImageLoadOwner.cancelAll()
+        legacyTextView.removeFromSuperview()
+        legacyCollapsed = false
+        invalidateIntrinsicContentSize()
+        setNeedsLayout()
+    }
+
+    private var displayScale: CGFloat {
+        let scale = window?.screen.scale ?? UIScreen.main.scale
+        return scale.isFinite && scale > 0 ? scale : 1
+    }
+
+    @discardableResult
+    private func preparedLayout(width: CGFloat, scale: CGFloat) -> PreparedProseLayout {
+        guard let request else {
+            let empty = PreparedProseLayout.error(
+                key: ProseLayoutKey(semanticKey: "empty", widthPixels: Int((width * scale).rounded()), themeDigest: "", fontRevision: 0, displayScale: scale, attachmentRevision: 0),
+                width: width,
+                error: .hostContract(message: "No prose viewer source has been applied.")
+            )
+            ownedLayout = empty
+            return empty
         }
-    }
-
-    private static func isRenderOpsArray(_ renderJson: String) -> Bool {
-        guard let data = renderJson.data(using: .utf8),
-              (try? JSONSerialization.jsonObject(with: data)) is [[String: Any]]
-        else {
-            return false
+        if let pendingError {
+            let errorLayout = PreparedProseLayout.error(
+                key: ProseLayoutKey(
+                    semanticKey: "error:" + request.compiledCacheKey,
+                    widthPixels: Int((width * scale).rounded()),
+                    themeDigest: request.themeDigest,
+                    fontRevision: request.fontRevision,
+                    displayScale: scale,
+                    attachmentRevision: request.attachmentRevision
+                ),
+                width: width,
+                error: pendingError
+            )
+            ownedLayout = errorLayout
+            drawingView.layout = errorLayout
+            reportErrorIfNeeded(pendingError)
+            return errorLayout
         }
-        return true
+        let layout = layoutRegistry.measure(request: request, widthPoints: width, scale: scale)
+        ownedLayout = layout
+        drawingView.layout = layout
+        reportErrorIfNeeded(layout.error)
+        return layout
     }
 
-    @objc private func handleInteractiveTap(_ recognizer: UITapGestureRecognizer) {
-        guard recognizer.state == .ended else { return }
-        handleTap(at: recognizer.location(in: textView))
+    private func reportErrorIfNeeded(_ error: ProseViewerError?) {
+        guard let error, !errorWasReported else { return }
+        errorWasReported = true
+        interactionDelegate?.proseViewer(self, didFail: error)
     }
 
-    internal func handleTapForTesting(at location: CGPoint) {
-        handleTap(at: location)
+    // MARK: Temporary legacy adapter compatibility
+
+    @discardableResult
+    public func apply(renderJson: String, themeJson: String) -> Bool {
+        legacyTextView.imageLoadOwner = legacyImageLoadOwner
+        legacyTextView.baseTextContainerInset = contentInset
+        legacyTextView.textContainerInset = contentInset
+        _ = legacyTextView.applyTheme(EditorTheme.from(json: themeJson))
+        let accepted = (try? JSONSerialization.jsonObject(with: Data(renderJson.utf8))) is [[String: Any]]
+        legacyTextView.applyRenderJSON(accepted ? renderJson : "[]")
+        legacyCollapsed = legacyCollapsesWhenEmpty && NativeProseViewerEmptyContent.containsOnlyEmptyParagraphs(renderJson)
+        onContentHeightChange?(legacyCollapsed ? 0 : ceil(legacyTextView.measuredAutoGrowHeightForTesting(width: bounds.width)))
+        return accepted
     }
 
-    private func handleTap(at location: CGPoint) {
-        if linkTapsEnabled, let link = linkHit(at: location) {
-            if opensLinksAutomatically {
-                openLink(link.href)
-            } else {
-                interactionDelegate?.proseViewer(
-                    self,
-                    didTapLink: link.href,
-                    text: link.text
-                )
-            }
-            return
-        }
-        guard let mention = mentionHit(at: location) else { return }
-        interactionDelegate?.proseViewer(
-            self,
-            didTapMention: mention.docPos,
-            label: mention.label
-        )
+    public func setImageLoadingPolicy(json: String?) {
+        legacyImageLoadOwner.updatePolicy(ImageLoadingPolicy.from(json: json))
     }
 
-    private func characterIndex(at location: CGPoint) -> Int? {
-        let textStorage = textView.textStorage
-        guard textStorage.length > 0 else { return nil }
-
-        let layoutManager = textView.layoutManager
-        let textContainer = textView.textContainer
-        var containerPoint = location
-        containerPoint.x -= textView.textContainerInset.left
-        containerPoint.y -= textView.textContainerInset.top
-
-        let usedRect = layoutManager.usedRect(for: textContainer)
-        guard usedRect.insetBy(dx: -6, dy: -6).contains(containerPoint) else {
-            return nil
-        }
-
-        let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: textContainer)
-        guard glyphIndex < layoutManager.numberOfGlyphs else { return nil }
-        let characterIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
-        guard characterIndex < textStorage.length else { return nil }
-        return characterIndex
+    public func measuredHeight(forWidth width: CGFloat) -> CGFloat {
+        guard width > 0 else { return 0 }
+        return ceil(legacyTextView.measuredAutoGrowHeightForTesting(width: width))
     }
 
-    private func linkHit(at location: CGPoint) -> (href: String, text: String)? {
-        let textStorage = textView.textStorage
-        guard let characterIndex = characterIndex(at: location) else { return nil }
-
-        var effectiveRange = NSRange(location: 0, length: 0)
-        let attributes = textStorage.attributes(
-            at: characterIndex,
-            effectiveRange: &effectiveRange
-        )
-        guard let href = attributes[RenderBridgeAttributes.linkHref] as? String,
-              !href.isEmpty
-        else {
-            return nil
-        }
-
-        let text = (textStorage.string as NSString).substring(with: effectiveRange)
-        return (href, text)
+    public static func measureHeight(renderJson: String, themeJson: String, width: CGFloat) -> CGFloat? {
+        guard (try? JSONSerialization.jsonObject(with: Data(renderJson.utf8))) is [[String: Any]] else { return nil }
+        return RenderBridge.measureHeight(forRenderJSON: renderJson, themeJSON: themeJson, width: width)
     }
 
-    private func mentionHit(at location: CGPoint) -> (docPos: Int, label: String)? {
-        let textStorage = textView.textStorage
-        guard let characterIndex = characterIndex(at: location) else { return nil }
-
-        var effectiveRange = NSRange(location: 0, length: 0)
-        let attributes = textStorage.attributes(
-            at: characterIndex,
-            effectiveRange: &effectiveRange
-        )
-        guard (attributes[RenderBridgeAttributes.voidNodeType] as? String) == "mention" else {
-            return nil
-        }
-
-        let docPos =
-            (attributes[RenderBridgeAttributes.docPos] as? NSNumber)?.intValue
-            ?? Int((attributes[RenderBridgeAttributes.docPos] as? UInt32) ?? 0)
-        let label = (textStorage.string as NSString).substring(with: effectiveRange)
-        return (docPos, label)
-    }
-
-    private func openLink(_ href: String) {
-        guard let url = URL(string: href) else { return }
-        UIApplication.shared.open(url, options: [:], completionHandler: nil)
+    internal func setCollapsesWhenEmpty(_ collapses: Bool) { legacyCollapsesWhenEmpty = collapses }
+    internal static func renderJsonContainsOnlyEmptyParagraphs(_ renderJson: String) -> Bool {
+        NativeProseViewerEmptyContent.containsOnlyEmptyParagraphs(renderJson)
     }
 }
 
@@ -282,42 +213,23 @@ enum NativeProseViewerEmptyContent {
     static func containsOnlyEmptyParagraphs(_ renderJson: String) -> Bool {
         guard let data = renderJson.data(using: .utf8),
               let elements = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-        else {
-            return false
-        }
-
+        else { return false }
         if elements.isEmpty { return true }
-
-        var hasParagraph = false
-        var paragraphIsOpen = false
-
+        var openParagraph = false
         for element in elements {
             guard let type = element["type"] as? String else { return false }
             switch type {
             case "blockStart":
-                guard !paragraphIsOpen,
-                      element["nodeType"] as? String == "paragraph",
-                      (element["depth"] as? NSNumber)?.intValue == 0
-                else {
-                    return false
-                }
-                paragraphIsOpen = true
-                hasParagraph = true
+                guard !openParagraph, element["nodeType"] as? String == "paragraph" else { return false }
+                openParagraph = true
             case "textRun":
-                guard paragraphIsOpen,
-                      let text = element["text"] as? String,
-                      text.allSatisfy({ $0 == "\u{200B}" })
-                else {
-                    return false
-                }
+                guard openParagraph, (element["text"] as? String)?.allSatisfy({ $0 == "\u{200B}" }) == true else { return false }
             case "blockEnd":
-                guard paragraphIsOpen else { return false }
-                paragraphIsOpen = false
-            default:
-                return false
+                guard openParagraph else { return false }
+                openParagraph = false
+            default: return false
             }
         }
-
-        return hasParagraph && !paragraphIsOpen
+        return !openParagraph
     }
 }

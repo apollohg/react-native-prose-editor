@@ -27,7 +27,7 @@ Pod::Spec.new do |s|
   install_modules_dependencies(s)
 
   # Swift source files (including generated UniFFI bindings)
-  s.source_files = ['*.swift', '../common/cpp/**/*.{h,cpp}']
+  s.source_files = ['*.swift', 'Viewer/**/*.{swift,h,mm}', '../common/cpp/**/*.{h,cpp}']
   s.header_dir = 'react/renderer/components/PreparedProseViewer'
 
   # Prebuilt Rust static library as XCFramework. CocoaPods only reliably
