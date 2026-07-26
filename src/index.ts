@@ -143,8 +143,6 @@ export {
     type NativeEditorV2SnapshotMetadata,
 } from './NativeEditorBridge';
 
-export { clearHeightCache } from './heightCache';
-
 export {
     DEFAULT_EDITOR_IMAGE_LOADING_POLICY,
     HARD_EDITOR_IMAGE_LOADING_POLICY,
