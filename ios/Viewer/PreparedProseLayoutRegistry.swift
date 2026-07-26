@@ -638,7 +638,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
             themeJSON: request.configuration.themeJSON,
             fontScale: request.nativeFontRevision > 0
                 ? request.nativeFontScale
-                : ViewerFontEnvironment.shared.fontScale(for: request.fontEnvironmentRevision)
+                : ViewerFontEnvironment.shared.fontScale(for: request.fontEnvironmentRevision),
+            semanticGeneration: request.semanticGenerationIdentity
         )
         themesByGeneration[request.generationIdentity] = theme
         themesRetainedBytes += theme.estimatedRetainedBytes

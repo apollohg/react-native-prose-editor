@@ -112,22 +112,39 @@ struct PreparedProseTheme {
     let link: EditorLinkTheme?
     let mention: EditorMentionTheme?
 
-    static func resolve(themeJSON: String?, fontScale: CGFloat = 1) -> PreparedProseTheme {
+    static func resolve(
+        themeJSON: String?,
+        fontScale: CGFloat = 1,
+        semanticGeneration: String = "standalone-theme"
+    ) -> PreparedProseTheme {
         let theme = EditorTheme.from(json: themeJSON) ?? EditorTheme(dictionary: [:])
         let resolvedScale = fontScale.isFinite && fontScale > 0 ? fontScale : 1
         let baseFont = UIFont.systemFont(ofSize: 17 * resolvedScale)
         func paint(_ style: EditorTextStyle?, fallback: PreparedTextPaint? = nil) -> PreparedTextPaint {
             let fallback = fallback ?? PreparedTextPaint(font: baseFont, color: .label, lineHeight: nil, spacingAfter: 0)
             guard let style else { return fallback }
-            let resolvedFont = style.resolvedFont(fallback: fallback.font)
+            let resolvedFont = ViewerFontEnvironment.shared.resolveFont(
+                style: style,
+                fallback: fallback.font,
+                fontScale: resolvedScale,
+                semanticGeneration: semanticGeneration
+            )
             return PreparedTextPaint(
-                font: resolvedFont.withSize(style.fontSize == nil ? resolvedFont.pointSize : resolvedFont.pointSize * resolvedScale),
+                font: resolvedFont,
                 color: style.color ?? fallback.color,
                 lineHeight: style.lineHeight.map { $0 * resolvedScale } ?? fallback.lineHeight,
                 spacingAfter: style.spacingAfter.map { $0 * resolvedScale } ?? fallback.spacingAfter
             )
         }
         let text = paint(theme.text)
+        if let linkFamily = theme.links?.fontFamily {
+            _ = ViewerFontEnvironment.shared.resolveFont(
+                family: linkFamily,
+                size: text.font.pointSize,
+                fallback: text.font,
+                semanticGeneration: semanticGeneration
+            )
+        }
         let paragraph = paint(theme.effectiveTextStyle(for: "paragraph"), fallback: text)
         let quote = paint(theme.effectiveTextStyle(for: "paragraph", inBlockquote: true), fallback: paragraph)
         let codeStyle = theme.effectiveTextStyle(for: "codeBlock")
@@ -650,33 +667,44 @@ final class CoreTextProseLayoutEngine {
             default: break
             }
         }
-        var font = linkTheme?.resolvedFont(fallback: paint.font) ?? paint.font
-        if let linkSize = linkTheme?.fontSize { font = font.withSize(linkSize * theme.fontScale) }
-        let inheritedTraits = font.fontDescriptor.symbolicTraits
+        let linkStyle = linkTheme.map {
+            EditorTextStyle(fontFamily: $0.fontFamily, fontSize: $0.fontSize, fontWeight: $0.fontWeight, fontStyle: $0.fontStyle)
+        }
+        var font = ViewerFontEnvironment.shared.resolveFont(
+            style: linkStyle,
+            fallback: paint.font,
+            fontScale: theme.fontScale,
+            semanticGeneration: warningSemanticGeneration
+        )
         let scaledMarkSize = fontSize.map { $0 * theme.fontScale }
         if let fontFamily {
-            if let resolved = UIFont(name: fontFamily, size: scaledMarkSize ?? font.pointSize) {
-                font = resolved
-            } else if ViewerFontEnvironment.shared.shouldWarnForMissingFamily(fontFamily, semanticGeneration: warningSemanticGeneration) {
-                NSLog("PreparedProseViewer: requested font family %@ is unavailable; using system fallback", fontFamily)
-            }
+            font = ViewerFontEnvironment.shared.resolveFont(
+                family: fontFamily,
+                size: scaledMarkSize ?? font.pointSize,
+                fallback: font,
+                semanticGeneration: warningSemanticGeneration
+            )
         }
         if let scaledMarkSize { font = font.withSize(scaledMarkSize) }
         var markTraits: UIFontDescriptor.SymbolicTraits = []
         if wantsBold { markTraits.insert(.traitBold) }
         if wantsItalic { markTraits.insert(.traitItalic) }
         if useMonospace {
-            font = UIFont.monospacedSystemFont(ofSize: font.pointSize, weight: markTraits.contains(.traitBold) ? .bold : .regular)
-            if markTraits.contains(.traitItalic), let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union([.traitItalic])) {
-                font = UIFont(descriptor: descriptor, size: font.pointSize)
-            }
+            font = ViewerFontEnvironment.shared.resolveFont(
+                family: "monospace",
+                size: font.pointSize,
+                fallback: font,
+                additionalTraits: markTraits,
+                semanticGeneration: warningSemanticGeneration
+            )
         } else {
-            let combinedTraits = inheritedTraits.union(font.fontDescriptor.symbolicTraits).union(markTraits)
-            if let descriptor = font.fontDescriptor.withSymbolicTraits(combinedTraits) {
-                font = UIFont(descriptor: descriptor, size: font.pointSize)
-            } else if markTraits.contains(.traitBold), let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union([.traitBold])) {
-                font = UIFont(descriptor: descriptor, size: font.pointSize)
-            }
+            font = ViewerFontEnvironment.shared.resolveFont(
+                family: nil,
+                size: font.pointSize,
+                fallback: font,
+                additionalTraits: markTraits,
+                semanticGeneration: warningSemanticGeneration
+            )
         }
         var attributes = baseAttributes(paint)
         // An explicit text-color mark is document content and therefore wins

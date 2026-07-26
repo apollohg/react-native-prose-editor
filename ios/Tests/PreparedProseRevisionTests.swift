@@ -301,6 +301,43 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertTrue(environment.shouldWarnForMissingFamily("definitely-missing", semanticGeneration: "b"))
     }
 
+    func testThemeFamiliesUseOneSemanticWarningAcrossStylesAndLayoutRevisions() {
+        let family = "missing-theme-family-\(UUID().uuidString)"
+        let semanticA = "theme-warning-a-\(UUID().uuidString)"
+        let semanticB = "theme-warning-b-\(UUID().uuidString)"
+        let theme = """
+        {"text":{"fontFamily":"\(family)"},"paragraph":{"fontFamily":"\(family)"},"blockquote":{"text":{"fontFamily":"\(family)"}},"codeBlock":{"text":{"fontFamily":"\(family)"}},"headings":{"h1":{"fontFamily":"\(family)"},"h2":{"fontFamily":"\(family)"},"h3":{"fontFamily":"\(family)"},"h4":{"fontFamily":"\(family)"},"h5":{"fontFamily":"\(family)"},"h6":{"fontFamily":"\(family)"}},"links":{"fontFamily":"\(family)"}}
+        """
+
+        _ = PreparedProseTheme.resolve(themeJSON: theme, semanticGeneration: semanticA)
+        XCTAssertFalse(ViewerFontEnvironment.shared.shouldWarnForMissingFamily(family, semanticGeneration: semanticA))
+        _ = PreparedProseTheme.resolve(themeJSON: theme, fontScale: 1.4, semanticGeneration: semanticA)
+        XCTAssertFalse(ViewerFontEnvironment.shared.shouldWarnForMissingFamily(family, semanticGeneration: semanticA))
+        _ = PreparedProseTheme.resolve(themeJSON: theme, semanticGeneration: semanticB)
+        XCTAssertFalse(ViewerFontEnvironment.shared.shouldWarnForMissingFamily(family, semanticGeneration: semanticB))
+    }
+
+    func testValidThemeFamilyRemainsSilentAndCustomFallbackPreservesBoldItalic() {
+        let validSemantic = "valid-theme-family-\(UUID().uuidString)"
+        _ = PreparedProseTheme.resolve(
+            themeJSON: #"{"paragraph":{"fontFamily":"Courier"}}"#,
+            semanticGeneration: validSemantic
+        )
+        XCTAssertTrue(ViewerFontEnvironment.shared.shouldWarnForMissingFamily("Courier", semanticGeneration: validSemantic))
+
+        let missingFamily = "missing-custom-family-\(UUID().uuidString)"
+        let fallback = UIFont(name: "Courier", size: 17)!
+        let resolved = ViewerFontEnvironment.shared.resolveFont(
+            family: missingFamily,
+            size: 17,
+            fallback: fallback,
+            additionalTraits: [.traitBold, .traitItalic],
+            semanticGeneration: "custom-fallback-\(UUID().uuidString)"
+        )
+        XCTAssertTrue(resolved.fontDescriptor.symbolicTraits.contains(.traitBold))
+        XCTAssertTrue(resolved.fontDescriptor.symbolicTraits.contains(.traitItalic))
+    }
+
     func testWarningContextUsesSemanticIdentityInsteadOfLayoutReplacementIdentity() {
         let request = ProseViewerRequest(source: .json("{\"type\":\"doc\"}"), configuration: .init())
         let replacement = ProseViewerRequest(

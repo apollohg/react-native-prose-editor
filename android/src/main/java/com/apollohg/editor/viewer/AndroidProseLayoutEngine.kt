@@ -98,7 +98,11 @@ internal data class PreparedTextPaint(
     }
 }
 
-private fun PreparedTextPaint.withStyle(style: EditorTextStyle, density: Float): PreparedTextPaint {
+private fun PreparedTextPaint.withStyle(
+    style: EditorTextStyle,
+    density: Float,
+    semanticGeneration: String,
+): PreparedTextPaint {
     val currentBold = typeface.style == Typeface.BOLD || typeface.style == Typeface.BOLD_ITALIC
     val currentItalic = typeface.style == Typeface.ITALIC || typeface.style == Typeface.BOLD_ITALIC
     val bold = style.fontWeight?.let { it == "bold" || it.toIntOrNull()?.let { value -> value >= 600 } == true } ?: currentBold
@@ -109,7 +113,7 @@ private fun PreparedTextPaint.withStyle(style: EditorTextStyle, density: Float):
         italic -> Typeface.ITALIC
         else -> Typeface.NORMAL
     }
-    val resolvedTypeface = ViewerFontEnvironment.resolveFamily(style.fontFamily, resolvedStyle, typeface).typeface
+    val resolvedTypeface = ViewerFontEnvironment.resolveFont(style.fontFamily, resolvedStyle, typeface, semanticGeneration)
     return copy(
         typeface = resolvedTypeface,
         sizePx = style.fontSize?.times(density)?.takeIf { it.isFinite() && it > 0f } ?: sizePx,
@@ -151,18 +155,24 @@ internal data class PreparedProseTheme(
     val atomPaddingVerticalPx: Int,
 ) {
     companion object {
-        fun resolve(themeJson: String?, density: Float, fontScale: Float = 1f): PreparedProseTheme {
+        fun resolve(
+            themeJson: String?,
+            density: Float,
+            fontScale: Float = 1f,
+            semanticGeneration: String = "standalone-theme",
+        ): PreparedProseTheme {
             val theme = EditorTheme.fromJson(themeJson) ?: EditorTheme()
             val resolvedFontScale = fontScale.takeIf { it.isFinite() && it > 0f } ?: 1f
             val scaledDensity = density * resolvedFontScale
             fun px(value: Float, fallback: Float): Int = max(0, (value.takeIf { it.isFinite() } ?: fallback).times(density).toInt())
             fun fontPx(value: Float, fallback: Float): Float = ((value.takeIf { it.isFinite() } ?: fallback) * scaledDensity)
             fun typeface(style: EditorTextStyle?, fallback: Typeface): Typeface {
-                return ViewerFontEnvironment.resolveFamily(
+                return ViewerFontEnvironment.resolveFont(
                     style?.fontFamily,
                     style?.typefaceStyle() ?: fallback.style,
                     fallback,
-                ).typeface
+                    semanticGeneration,
+                )
             }
             fun paint(style: EditorTextStyle?, fallback: PreparedTextPaint? = null): PreparedTextPaint {
                 val base = fallback ?: PreparedTextPaint(Typeface.DEFAULT, 17f * scaledDensity, 0xFF212121.toInt(), null, 0)
@@ -175,6 +185,11 @@ internal data class PreparedProseTheme(
                 )
             }
             val text = paint(theme.text)
+            theme.links?.let { link ->
+                link.fontFamily?.let { linkFamily ->
+                    ViewerFontEnvironment.resolveFont(linkFamily, link.asTextStyle().typefaceStyle(), text.typeface, semanticGeneration)
+                }
+            }
             val paragraph = paint(theme.effectiveTextStyle("paragraph"), text)
             val quote = paint(theme.effectiveTextStyle("paragraph", true), paragraph)
             val codeFallback = PreparedTextPaint(Typeface.MONOSPACE, text.sizePx, text.color, text.lineHeightPx, text.spacingAfterPx)
@@ -590,16 +605,11 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         }
         // Resolve link family/size/weight/style first, then combine explicit
         // mark traits into one immutable metric span before StaticLayout sees it.
-        var resolved = link?.let { base.withStyle(it.asTextStyle(), theme.fontDensity) } ?: base
+        var resolved = link?.let { base.withStyle(it.asTextStyle(), theme.fontDensity, warningSemanticGeneration) } ?: base
         if (family != null || size != null) {
-            family?.let { requested ->
-                if (ViewerFontEnvironment.resolveFamily(requested, Typeface.NORMAL, base.typeface).isDemonstrablyMissing) {
-                    ViewerFontEnvironment.warnOnceForMissingFamily(requested, warningSemanticGeneration)
-                }
-            }
-            resolved = resolved.withStyle(EditorTextStyle(fontFamily = family, fontSize = size), theme.fontDensity)
+            resolved = resolved.withStyle(EditorTextStyle(fontFamily = family, fontSize = size), theme.fontDensity, warningSemanticGeneration)
         }
-        if (monospace) resolved = resolved.withStyle(EditorTextStyle(fontFamily = "monospace"), theme.fontDensity)
+        if (monospace) resolved = resolved.withStyle(EditorTextStyle(fontFamily = "monospace"), theme.fontDensity, warningSemanticGeneration)
         if (bold || italic) {
             resolved = resolved.withStyle(
                 EditorTextStyle(
@@ -607,6 +617,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                     fontStyle = if (italic) "italic" else null,
                 ),
                 theme.fontDensity,
+                warningSemanticGeneration,
             )
         }
         val result = mutableListOf<Any>(ResolvedTextStyleSpan(resolved.typeface, resolved.sizePx))

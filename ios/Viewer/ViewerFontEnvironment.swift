@@ -72,6 +72,84 @@ public final class ViewerFontEnvironment: NSObject {
         return inserted
     }
 
+    /// The sole viewer font-family resolution contract. Theme paints and
+    /// inline marks both reach this path, so availability, deterministic
+    /// fallback, and semantic-generation warning scope cannot diverge.
+    func resolveFont(
+        family: String?,
+        size: CGFloat,
+        fallback: UIFont,
+        additionalTraits: UIFontDescriptor.SymbolicTraits = [],
+        semanticGeneration: String
+    ) -> UIFont {
+        let resolvedSize = size.isFinite && size > 0 ? size : fallback.pointSize
+        let normalized = family?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let base: UIFont
+        if normalized.isEmpty {
+            base = fallback.withSize(resolvedSize)
+        } else if let registered = UIFont(name: normalized, size: resolvedSize) {
+            base = registered
+        } else {
+            if shouldWarnForMissingFamily(normalized, semanticGeneration: semanticGeneration) {
+                NSLog("PreparedProseViewer: requested font family %@ is unavailable; using system fallback", normalized)
+            }
+            base = fallback.withSize(resolvedSize)
+        }
+        return applyingTraits(additionalTraits, to: base)
+    }
+
+    func resolveFont(
+        style: EditorTextStyle?,
+        fallback: UIFont,
+        fontScale: CGFloat,
+        semanticGeneration: String
+    ) -> UIFont {
+        guard let style else { return fallback }
+        let size = style.fontSize.map { $0 * fontScale } ?? fallback.pointSize
+        var deterministicFallback = fallback.withSize(size)
+        if (style.fontFamily?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+           let weight = style.fontWeight {
+            deterministicFallback = UIFont.systemFont(ofSize: size, weight: EditorTheme.fontWeight(from: weight))
+        }
+        var traits: UIFontDescriptor.SymbolicTraits = []
+        if EditorTheme.shouldApplyBoldTrait(style.fontWeight) { traits.insert(.traitBold) }
+        if style.fontStyle == "italic" { traits.insert(.traitItalic) }
+        return resolveFont(
+            family: style.fontFamily,
+            size: size,
+            fallback: deterministicFallback,
+            additionalTraits: traits,
+            semanticGeneration: semanticGeneration
+        )
+    }
+
+    /// Apply traits one at a time. Some custom families expose bold and italic
+    /// separately but not a combined face; if either transform cannot be
+    /// represented, switch deterministically to a system face and synthesize
+    /// the full requested pair rather than silently losing italic.
+    private func applyingTraits(_ additionalTraits: UIFontDescriptor.SymbolicTraits, to font: UIFont) -> UIFont {
+        let requested = font.fontDescriptor.symbolicTraits.union(additionalTraits)
+        let requestedEmphasis: UIFontDescriptor.SymbolicTraits = [.traitBold, .traitItalic]
+        func applySequentially(to source: UIFont) -> UIFont {
+            var resolved = source
+            for trait in [UIFontDescriptor.SymbolicTraits.traitBold, .traitItalic] where requested.contains(trait) && !resolved.fontDescriptor.symbolicTraits.contains(trait) {
+                guard let descriptor = resolved.fontDescriptor.withSymbolicTraits(resolved.fontDescriptor.symbolicTraits.union([trait])) else { continue }
+                resolved = UIFont(descriptor: descriptor, size: resolved.pointSize)
+            }
+            return resolved
+        }
+
+        let sequential = applySequentially(to: font)
+        if sequential.fontDescriptor.symbolicTraits.intersection(requestedEmphasis) == requested.intersection(requestedEmphasis) {
+            return sequential
+        }
+        let systemFallback = UIFont.systemFont(
+            ofSize: font.pointSize,
+            weight: requested.contains(.traitBold) ? .bold : .regular
+        )
+        return applySequentially(to: systemFallback)
+    }
+
     private func invalidateContentSizeCategory(_ category: UIContentSizeCategory?) {
         let resolvedCategory = category ?? UIApplication.shared.preferredContentSizeCategory
         lock.lock()

@@ -289,6 +289,56 @@ class PreparedProseRevisionTest {
         }
     }
 
+    @Test fun themeFamiliesUseOneSemanticWarningAcrossStylesAndLayoutRevisions() {
+        ViewerFontEnvironment.resetFamilyRegistryForTesting()
+        ViewerFontEnvironment.resetMissingWarningsForTesting()
+        try {
+            val family = "missing-theme-family-${System.nanoTime()}"
+            val semanticA = "theme-warning-a-${System.nanoTime()}"
+            val semanticB = "theme-warning-b-${System.nanoTime()}"
+            val theme = """{"text":{"fontFamily":"$family"},"paragraph":{"fontFamily":"$family"},"blockquote":{"text":{"fontFamily":"$family"}},"codeBlock":{"text":{"fontFamily":"$family"}},"headings":{"h1":{"fontFamily":"$family"},"h2":{"fontFamily":"$family"},"h3":{"fontFamily":"$family"},"h4":{"fontFamily":"$family"},"h5":{"fontFamily":"$family"},"h6":{"fontFamily":"$family"}},"links":{"fontFamily":"$family"}}"""
+            ViewerFontEnvironment.setPlatformFamilyResolverForTesting { false }
+
+            PreparedProseTheme.resolve(theme, 1f, semanticGeneration = semanticA)
+            assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily(family, semanticA))
+            PreparedProseTheme.resolve(theme, 1f, fontScale = 1.4f, semanticGeneration = semanticA)
+            assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily(family, semanticA))
+            PreparedProseTheme.resolve(theme, 1f, semanticGeneration = semanticB)
+            assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily(family, semanticB))
+        } finally {
+            ViewerFontEnvironment.resetMissingWarningsForTesting()
+            ViewerFontEnvironment.resetFamilyRegistryForTesting()
+        }
+    }
+
+    @Test fun validThemeFamilyRemainsSilentAndCustomFallbackPreservesBoldItalic() {
+        ViewerFontEnvironment.resetFamilyRegistryForTesting()
+        ViewerFontEnvironment.resetMissingWarningsForTesting()
+        try {
+            val validSemantic = "valid-theme-family-${System.nanoTime()}"
+            ViewerFontEnvironment.registerAvailableFamily("viewer-theme-family", Typeface.DEFAULT)
+            PreparedProseTheme.resolve(
+                """{"paragraph":{"fontFamily":"viewer-theme-family"}}""",
+                1f,
+                semanticGeneration = validSemantic,
+            )
+            assertTrue(ViewerFontEnvironment.warnOnceForMissingFamily("viewer-theme-family", validSemantic))
+
+            val missingFamily = "missing-custom-family-${System.nanoTime()}"
+            ViewerFontEnvironment.markFamilyUnavailable(missingFamily)
+            val resolved = ViewerFontEnvironment.resolveFont(
+                missingFamily,
+                Typeface.BOLD_ITALIC,
+                Typeface.create("serif", Typeface.NORMAL),
+                "custom-fallback-${System.nanoTime()}",
+            )
+            assertEquals(Typeface.BOLD_ITALIC, resolved.style)
+        } finally {
+            ViewerFontEnvironment.resetMissingWarningsForTesting()
+            ViewerFontEnvironment.resetFamilyRegistryForTesting()
+        }
+    }
+
     @Test fun warningContextUsesSemanticIdentityInsteadOfLayoutReplacementIdentity() {
         val base = ProseViewerRequest(ProseViewerSource.Json("{\"type\":\"doc\"}"), ProseViewerConfiguration())
         val replacement = base.copy(nativeFontRevision = 1, fontEnvironmentRevision = 2, attachmentRevision = 3)

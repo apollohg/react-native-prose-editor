@@ -284,7 +284,12 @@ internal class PreparedProseLayoutRegistry(
     private fun resolveTheme(request: ProseViewerRequest, density: Float, fontScale: Float): PreparedProseTheme = synchronized(compilerLock) {
         val key = "${request.generationIdentity}:${density.toRawBits()}:${fontScale.toRawBits()}"
         themes[key]?.let { return@synchronized it }
-        val resolved = PreparedProseTheme.resolve(request.configuration.themeJson, density, fontScale)
+        val resolved = PreparedProseTheme.resolve(
+            request.configuration.themeJson,
+            density,
+            fontScale,
+            request.semanticGenerationIdentity,
+        )
         themes[key] = resolved
         themeRetainedBytes += resolved.retainedBytes
         while ((themeRetainedBytes > themeByteBudget || themes.size > themeEntryBudget) && themes.isNotEmpty()) {

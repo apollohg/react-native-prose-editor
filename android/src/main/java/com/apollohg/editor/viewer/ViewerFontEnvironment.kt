@@ -83,6 +83,25 @@ internal class ViewerFontEnvironment {
             return ResolvedFamily(resolved, !available)
         }
 
+        /**
+         * The sole viewer font-family resolution contract. Theme paints and
+         * inline marks both use it so availability, fallback, and warning
+         * scope remain identical.
+         */
+        internal fun resolveFont(
+            family: String?,
+            style: Int,
+            fallback: Typeface,
+            semanticGeneration: String,
+        ): Typeface {
+            val normalized = family?.trim().orEmpty()
+            val resolved = resolveFamily(normalized, style, fallback)
+            if (normalized.isNotEmpty() && resolved.isDemonstrablyMissing) {
+                warnOnceForMissingFamily(normalized, semanticGeneration)
+            }
+            return resolved.typeface
+        }
+
         private fun resolvePlatformFamilyAvailability(family: String): Boolean {
             if (family.lowercase() in genericPlatformFamilies) return true
             if (Build.VERSION.SDK_INT < 34) return true
