@@ -26,7 +26,8 @@ NSString *SourceKind(const PreparedProseViewerProps &props) {
 } // namespace
 
 Size PreparedProseMeasurementsManager::measure(
-    SurfaceId /*surfaceId*/,
+    SurfaceId surfaceId,
+    Tag componentTag,
     const PreparedProseViewerProps &props,
     Float effectiveWidth,
     Float pointScaleFactor,
@@ -35,7 +36,9 @@ Size PreparedProseMeasurementsManager::measure(
     uint64_t fontEnvironmentRevision) const {
   @autoreleasepool {
     const auto size = [[PREPPreparedProseLayoutRegistry sharedRegistry]
-        measureSourceKind:SourceKind(props)
+        measureSurfaceId:static_cast<int64_t>(surfaceId)
+          componentTag:static_cast<int64_t>(componentTag)
+            sourceKind:SourceKind(props)
                     source:StringFromStdString(props.source)
                 configJSON:StringFromStdString(props.configJson)
                  themeJSON:OptionalStringFromStdString(props.themeJson)

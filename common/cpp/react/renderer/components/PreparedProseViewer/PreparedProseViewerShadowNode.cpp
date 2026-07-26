@@ -68,6 +68,7 @@ Size PreparedProseViewerShadowNode::measureContent(
   const auto& state = getStateData();
   return measurementsManager_->measure(
       getSurfaceId(),
+      getTag(),
       props,
       effectiveWidth,
       pointScaleFactor,

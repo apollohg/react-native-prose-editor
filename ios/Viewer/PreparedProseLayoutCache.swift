@@ -1,6 +1,8 @@
 import Foundation
 
-/// A cache that admits exactly one completed immutable artifact for each key.
+/// Owns unmounted layouts and the bounded Yoga-to-Fabric handoff. A lease
+/// shares its immutable artifact with the LRU; bytes are counted once across
+/// both owners so handoff cannot silently bypass the cache budget.
 final class PreparedProseLayoutCache {
     private final class Preparation {
         var result: Result<PreparedProseLayout, Error>?
@@ -10,10 +12,10 @@ final class PreparedProseLayoutCache {
     private var completed: [ProseLayoutKey: PreparedProseLayout] = [:]
     private var accessOrder: [ProseLayoutKey] = []
     private var inFlight: [ProseLayoutKey: Preparation] = [:]
-    private var leases: [ProseLayoutKey: PreparedProseLayout] = [:]
-    private var leasedKeyByGeneration: [String: ProseLayoutKey] = [:]
-    private var leaseAccessOrder: [ProseLayoutKey] = []
-    private var retainedBytes = 0
+    private var leases: [FabricLeaseKey: PreparedProseLayout] = [:]
+    private var leaseKeyBySurface: [FabricSurfaceToken: FabricLeaseKey] = [:]
+    private var leaseAccessOrder: [FabricLeaseKey] = []
+    private var mountIndex: [ProseMountKey: ProseLayoutKey] = [:]
     private let byteBudget: Int
     private let entryBudget: Int
     private let leaseBudget: Int
@@ -30,23 +32,21 @@ final class PreparedProseLayoutCache {
 
     func value(
         for key: ProseLayoutKey,
-        retainForFabricMount: Bool = false,
+        fabricSurface: FabricSurfaceToken? = nil,
         build: () throws -> PreparedProseLayout
     ) throws -> PreparedProseLayout {
         condition.lock()
         if let layout = completed[key] {
             touch(key)
-            if retainForFabricMount {
-                leaseLocked(layout, for: key)
-            }
+            if let fabricSurface { leaseLocked(layout, for: key, surface: fabricSurface) }
             condition.unlock()
             return layout
         }
         if let preparation = inFlight[key] {
             while preparation.result == nil { condition.wait() }
             let result = preparation.result!
-            if case let .success(layout) = result, retainForFabricMount {
-                leaseLocked(layout, for: key)
+            if case let .success(layout) = result, let fabricSurface {
+                leaseLocked(layout, for: key, surface: fabricSurface)
             }
             condition.unlock()
             return try result.get()
@@ -60,12 +60,10 @@ final class PreparedProseLayoutCache {
         condition.lock()
         if case let .success(layout) = result {
             completed[key] = layout
-            retainedBytes += layout.retainedBytes
+            mountIndex[mountKey(for: key)] = key
             touch(key)
-            if retainForFabricMount {
-                leaseLocked(layout, for: key)
-            }
-            trimToBudget()
+            if let fabricSurface { leaseLocked(layout, for: key, surface: fabricSurface) }
+            enforceBudgetLocked()
         }
         preparation.result = result
         inFlight.removeValue(forKey: key)
@@ -74,42 +72,41 @@ final class PreparedProseLayoutCache {
         return try result.get()
     }
 
-    func cachedValue(for key: ProseLayoutKey) -> PreparedProseLayout? {
-        condition.lock()
-        defer { condition.unlock() }
-        guard let layout = completed[key] else { return nil }
-        touch(key)
-        return layout
-    }
-
-    /// Holds the latest Yoga result for a generation until Fabric consumes it.
-    /// Leases deliberately sit outside the LRU so a single oversized artifact
-    /// survives long enough to be mounted, but their count is bounded.
-    private func leaseLocked(_ layout: PreparedProseLayout, for key: ProseLayoutKey) {
-        releaseLease(forGeneration: key.generationIdentity)
-        leases[key] = layout
-        leasedKeyByGeneration[key.generationIdentity] = key
-        touchLease(key)
-        trimLeasesToBudget()
-    }
-
-    func acquireLeasedValue(
+    /// Used only by Fabric mount. It never builds, compiles, or prepares.
+    func acquireForFabricMount(
+        surface: FabricSurfaceToken,
         generationIdentity: String,
         widthPixels: Int,
         displayScale: CGFloat
     ) -> PreparedProseLayout? {
         condition.lock()
         defer { condition.unlock() }
-        guard let key = leasedKeyByGeneration[generationIdentity],
-              key.widthPixels == widthPixels,
-              key.displayScaleBits == Double(displayScale).bitPattern,
-              let layout = leases.removeValue(forKey: key)
-        else {
-            return nil
+
+        let mountKey = ProseMountKey(
+            generationIdentity: generationIdentity,
+            widthPixels: widthPixels,
+            displayScale: displayScale
+        )
+        if let leaseKey = leaseKeyBySurface[surface],
+           leaseKey.layout.generationIdentity == generationIdentity,
+           leaseKey.layout.widthPixels == widthPixels,
+           leaseKey.layout.displayScaleBits == Double(displayScale).bitPattern,
+           let layout = leases.removeValue(forKey: leaseKey) {
+            leaseKeyBySurface.removeValue(forKey: surface)
+            leaseAccessOrder.removeAll { $0 == leaseKey }
+            return layout
         }
-        leasedKeyByGeneration.removeValue(forKey: generationIdentity)
-        leaseAccessOrder.removeAll { $0 == key }
+        guard let key = mountIndex[mountKey], let layout = completed[key] else { return nil }
+        touch(key)
         return layout
+    }
+
+    func releaseLease(for surface: FabricSurfaceToken, generationIdentity: String? = nil) {
+        condition.lock()
+        if generationIdentity == nil || leaseKeyBySurface[surface]?.layout.generationIdentity == generationIdentity {
+            releaseLeaseLocked(for: surface)
+        }
+        condition.unlock()
     }
 
     func removeAllUnmounted() {
@@ -117,9 +114,9 @@ final class PreparedProseLayoutCache {
         completed.removeAll()
         accessOrder.removeAll()
         leases.removeAll()
-        leasedKeyByGeneration.removeAll()
+        leaseKeyBySurface.removeAll()
         leaseAccessOrder.removeAll()
-        retainedBytes = 0
+        mountIndex.removeAll()
         condition.unlock()
     }
 
@@ -129,38 +126,105 @@ final class PreparedProseLayoutCache {
         return completed.count
     }
 
+    var retainedBytesForTesting: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return retainedBytesLocked()
+    }
+
+    var oversizedLeaseCountForTesting: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return leases.values.filter { $0.retainedBytes > byteBudget }.count
+    }
+
+    private func leaseLocked(
+        _ layout: PreparedProseLayout,
+        for key: ProseLayoutKey,
+        surface: FabricSurfaceToken
+    ) {
+        releaseLeaseLocked(for: surface)
+        let leaseKey = FabricLeaseKey(surface: surface, layout: key)
+        leases[leaseKey] = layout
+        leaseKeyBySurface[surface] = leaseKey
+        touchLease(leaseKey)
+        enforceBudgetLocked(preferredLease: leaseKey)
+    }
+
+    private func releaseLeaseLocked(for surface: FabricSurfaceToken) {
+        guard let leaseKey = leaseKeyBySurface.removeValue(forKey: surface) else { return }
+        leases.removeValue(forKey: leaseKey)
+        leaseAccessOrder.removeAll { $0 == leaseKey }
+    }
+
     private func touch(_ key: ProseLayoutKey) {
         accessOrder.removeAll { $0 == key }
         accessOrder.append(key)
     }
 
-    private func trimToBudget() {
-        while (retainedBytes > byteBudget || completed.count > entryBudget), let oldest = accessOrder.first {
-            accessOrder.removeFirst()
-            if let removed = completed.removeValue(forKey: oldest) {
-                retainedBytes -= removed.retainedBytes
-            }
-        }
-    }
-
-    private func releaseLease(forGeneration generationIdentity: String) {
-        guard let key = leasedKeyByGeneration.removeValue(forKey: generationIdentity) else { return }
-        leases.removeValue(forKey: key)
-        leaseAccessOrder.removeAll { $0 == key }
-    }
-
-    private func touchLease(_ key: ProseLayoutKey) {
+    private func touchLease(_ key: FabricLeaseKey) {
         leaseAccessOrder.removeAll { $0 == key }
         leaseAccessOrder.append(key)
     }
 
-    private func trimLeasesToBudget() {
-        while leases.count > leaseBudget, let oldest = leaseAccessOrder.first {
-            leaseAccessOrder.removeFirst()
-            if let removed = leases.removeValue(forKey: oldest),
-               leasedKeyByGeneration[removed.key.generationIdentity] == oldest {
-                leasedKeyByGeneration.removeValue(forKey: removed.key.generationIdentity)
-            }
+    private func mountKey(for layoutKey: ProseLayoutKey) -> ProseMountKey {
+        ProseMountKey(generationIdentity: layoutKey.generationIdentity, widthPixels: layoutKey.widthPixels, displayScaleBits: layoutKey.displayScaleBits)
+    }
+
+    private func removeCompletedLocked(_ key: ProseLayoutKey) {
+        completed.removeValue(forKey: key)
+        accessOrder.removeAll { $0 == key }
+        let mountKey = mountKey(for: key)
+        if mountIndex[mountKey] == key { mountIndex.removeValue(forKey: mountKey) }
+    }
+
+    private func removeLeaseLocked(_ key: FabricLeaseKey) {
+        leases.removeValue(forKey: key)
+        leaseAccessOrder.removeAll { $0 == key }
+        if leaseKeyBySurface[key.surface] == key {
+            leaseKeyBySurface.removeValue(forKey: key.surface)
         }
+    }
+
+    private func enforceBudgetLocked(preferredLease: FabricLeaseKey? = nil) {
+        while completed.count > entryBudget, let oldest = accessOrder.first {
+            removeCompletedLocked(oldest)
+        }
+
+        // An oversize handoff is permitted only for the newest measurement and
+        // only after every older lease has been deterministically evicted.
+        if let preferredLease,
+           let layout = leases[preferredLease],
+           layout.retainedBytes > byteBudget {
+            for key in leaseAccessOrder where key != preferredLease {
+                removeLeaseLocked(key)
+            }
+            for key in Array(completed.keys) where key != preferredLease.layout {
+                removeCompletedLocked(key)
+            }
+            removeCompletedLocked(preferredLease.layout)
+            return
+        }
+
+        while leases.count > leaseBudget, let oldest = leaseAccessOrder.first {
+            removeLeaseLocked(oldest)
+        }
+        while retainedBytesLocked() > byteBudget {
+            if let oldest = accessOrder.first {
+                removeCompletedLocked(oldest)
+                continue
+            }
+            guard let oldestLease = leaseAccessOrder.first else { break }
+            removeLeaseLocked(oldestLease)
+        }
+    }
+
+    /// Cache and lease references commonly point at the same immutable layout.
+    /// Count each artifact once to reflect retained memory, not reference count.
+    private func retainedBytesLocked() -> Int {
+        var uniqueLayouts: [ObjectIdentifier: PreparedProseLayout] = [:]
+        for layout in completed.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
+        for layout in leases.values { uniqueLayouts[ObjectIdentifier(layout)] = layout }
+        return uniqueLayouts.values.reduce(0) { $0 + $1.retainedBytes }
     }
 }

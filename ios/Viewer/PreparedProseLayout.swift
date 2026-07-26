@@ -57,6 +57,45 @@ struct ProseLayoutKey: Hashable {
     }
 }
 
+/// Fabric recycles component views, so the handoff owner must identify both
+/// the mounted surface and the component instance within it.
+struct FabricSurfaceToken: Hashable {
+    let surfaceId: Int64
+    let componentTag: Int64
+}
+
+struct FabricLeaseKey: Hashable {
+    let surface: FabricSurfaceToken
+    let layout: ProseLayoutKey
+}
+
+struct FabricGenerationToken: Hashable {
+    let surface: FabricSurfaceToken
+    let generationIdentity: String
+}
+
+/// This identity intentionally excludes the surface owner: completed immutable
+/// layouts may be shared, while leases remain surface-scoped.
+struct ProseMountKey: Hashable {
+    let generationIdentity: String
+    let widthPixels: Int
+    let displayScaleBits: UInt64
+
+    init(generationIdentity: String, widthPixels: Int, displayScale: CGFloat) {
+        self.init(
+            generationIdentity: generationIdentity,
+            widthPixels: widthPixels,
+            displayScaleBits: Double(displayScale).bitPattern
+        )
+    }
+
+    init(generationIdentity: String, widthPixels: Int, displayScaleBits: UInt64) {
+        self.generationIdentity = generationIdentity
+        self.widthPixels = widthPixels
+        self.displayScaleBits = displayScaleBits
+    }
+}
+
 final class PreparedProseBlock {
     let line: CTLine
     /// Core Text baseline measured down from the artifact's top edge.

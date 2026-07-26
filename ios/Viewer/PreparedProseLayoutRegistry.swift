@@ -22,9 +22,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
     private var compiledInFlight: [String: Compilation] = [:]
     private var compilationFailures: [String: Error] = [:]
     private var compilationFailureAccessOrder: [String] = []
+    private var documentsByFabricGeneration: [FabricGenerationToken: ViewerDocument] = [:]
+    private var failuresByFabricGeneration: [FabricGenerationToken: Error] = [:]
     private var compiledRetainedBytes = 0
     private let compiledByteBudget: Int
-    private let compilationFailureBudget = 128
+    private let compilationFailureBudget: Int
     private let layoutCache: PreparedProseLayoutCache
     private let compile: DocumentCompiler
     private let prepare: LayoutPreparation
@@ -36,6 +38,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
         defer { compiledCondition.unlock() }
         return compiledRetainedBytes
     }
+    var layoutRetainedBytesForTesting: Int { layoutCache.retainedBytesForTesting }
+    var oversizedLeaseCountForTesting: Int { layoutCache.oversizedLeaseCountForTesting }
 
     override convenience init() {
         self.init(compile: Self.compileWithRust, prepare: Self.prepareWithCoreText)
@@ -44,6 +48,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
     init(
         byteBudget: Int = 32 * 1024 * 1024,
         compiledByteBudget: Int = 8 * 1024 * 1024,
+        compilationFailureBudget: Int = 128,
         compile: @escaping DocumentCompiler,
         prepare: @escaping LayoutPreparation = Self.prepareWithCoreText
     ) {
@@ -51,6 +56,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         self.prepare = prepare
         layoutCache = PreparedProseLayoutCache(byteBudget: byteBudget)
         self.compiledByteBudget = compiledByteBudget
+        self.compilationFailureBudget = compilationFailureBudget
         super.init()
         NotificationCenter.default.addObserver(
             self,
@@ -119,9 +125,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
         request: ProseViewerRequest,
         widthPoints: CGFloat,
         scale: CGFloat,
-        leaseForFabricMount: Bool = true
+        compiledDocument: ViewerDocument? = nil,
+        fabricSurface: FabricSurfaceToken? = nil
     ) -> PreparedProseLayout {
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
+            if let fabricSurface { layoutCache.releaseLease(for: fabricSurface) }
             return invalidWidthArtifact(
                 request: request,
                 scale: scale,
@@ -130,11 +138,15 @@ public final class PreparedProseLayoutRegistry: NSObject {
         }
         let canonicalWidth = ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
         do {
-            let document = try preparedDocument(request: request)
+            let document = try preparedDocument(
+                request: request,
+                compiledDocument: compiledDocument,
+                fabricSurface: fabricSurface
+            )
             let key = layoutKey(for: document, request: request, widthPixels: widthPixels, scale: scale)
             let layout = try layoutCache.value(
                 for: key,
-                retainForFabricMount: leaseForFabricMount
+                fabricSurface: fabricSurface
             ) {
                 self.lock.lock()
                 self.layoutPreparationCount += 1
@@ -158,7 +170,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 widthPixels: widthPixels,
                 scale: scale,
                 error: error,
-                retainForFabricMount: leaseForFabricMount
+                fabricSurface: fabricSurface
             )
             return layout
         } catch {
@@ -167,14 +179,16 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 widthPixels: widthPixels,
                 scale: scale,
                 error: .layout(message: String(describing: error)),
-                retainForFabricMount: leaseForFabricMount
+                fabricSurface: fabricSurface
             )
             return layout
         }
     }
 
-    @objc(measureSourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:fontEnvironmentRevision:widthPoints:scale:)
+    @objc(measureSurfaceId:componentTag:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:fontEnvironmentRevision:widthPoints:scale:)
     public func measure(
+        surfaceId: Int64,
+        componentTag: Int64,
         sourceKind: NSString,
         source: NSString,
         configJSON: NSString,
@@ -200,12 +214,19 @@ public final class PreparedProseLayoutRegistry: NSObject {
             nativeFontRevision: nativeFontRevision,
             fontEnvironmentRevision: fontEnvironmentRevision
         )
-        return measure(request: request, widthPoints: widthPoints, scale: scale).size
+        return measure(
+            request: request,
+            widthPoints: widthPoints,
+            scale: scale,
+            fabricSurface: FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag)
+        ).size
     }
 
-    @objc(installCachedLayoutInDrawingView:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:fontEnvironmentRevision:widthPoints:scale:)
+    @objc(installCachedLayoutInDrawingView:surfaceId:componentTag:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:fontEnvironmentRevision:widthPoints:scale:)
     public func installCachedLayout(
         in drawingView: PreparedProseDrawingView,
+        surfaceId: Int64,
+        componentTag: Int64,
         sourceKind: NSString,
         source: NSString,
         configJSON: NSString,
@@ -234,7 +255,9 @@ public final class PreparedProseLayoutRegistry: NSObject {
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: scale) else {
             return false
         }
-        if let artifact = layoutCache.acquireLeasedValue(
+        let fabricSurface = FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag)
+        if let artifact = layoutCache.acquireForFabricMount(
+            surface: fabricSurface,
             generationIdentity: request.generationIdentity,
             widthPixels: widthPixels,
             displayScale: scale
@@ -242,18 +265,78 @@ public final class PreparedProseLayoutRegistry: NSObject {
             drawingView.install(layout: artifact)
             return true
         }
-        do {
-            let document = try preparedDocument(request: request)
-            let key = layoutKey(for: document, request: request, widthPixels: widthPixels, scale: scale)
-            guard let artifact = layoutCache.cachedValue(for: key) else { return false }
-            drawingView.install(layout: artifact)
-            return true
-        } catch {
-            let key = errorLayoutKey(request: request, widthPixels: widthPixels, scale: scale)
-            guard let artifact = layoutCache.cachedValue(for: key) else { return false }
-            drawingView.install(layout: artifact)
-            return true
-        }
+        return false
+    }
+
+    // XCTest and UIKit-only callers have no Fabric owner. Production Fabric
+    // mounting always uses the surface/component overload above.
+    func installCachedLayout(
+        in drawingView: PreparedProseDrawingView,
+        sourceKind: NSString,
+        source: NSString,
+        configJSON: NSString,
+        themeJSON: NSString?,
+        imagePolicyJSON: NSString?,
+        imagesEnabled: Bool,
+        collapsesWhenEmpty: Bool,
+        attachmentRevision: UInt64,
+        nativeFontRevision: UInt64,
+        fontEnvironmentRevision: UInt64,
+        widthPoints: CGFloat,
+        scale: CGFloat
+    ) -> Bool {
+        installCachedLayout(
+            in: drawingView,
+            surfaceId: 0,
+            componentTag: 0,
+            sourceKind: sourceKind,
+            source: source,
+            configJSON: configJSON,
+            themeJSON: themeJSON,
+            imagePolicyJSON: imagePolicyJSON,
+            imagesEnabled: imagesEnabled,
+            collapsesWhenEmpty: collapsesWhenEmpty,
+            attachmentRevision: attachmentRevision,
+            nativeFontRevision: nativeFontRevision,
+            fontEnvironmentRevision: fontEnvironmentRevision,
+            widthPoints: widthPoints,
+            scale: scale
+        )
+    }
+
+    func releaseFabricSurface(_ surface: FabricSurfaceToken) {
+        layoutCache.releaseLease(for: surface)
+        compiledCondition.lock()
+        documentsByFabricGeneration = documentsByFabricGeneration.filter { $0.key.surface != surface }
+        failuresByFabricGeneration = failuresByFabricGeneration.filter { $0.key.surface != surface }
+        compiledCondition.unlock()
+    }
+
+    func releaseFabricGeneration(_ generation: FabricGenerationToken) {
+        layoutCache.releaseLease(for: generation.surface, generationIdentity: generation.generationIdentity)
+        compiledCondition.lock()
+        documentsByFabricGeneration.removeValue(forKey: generation)
+        failuresByFabricGeneration.removeValue(forKey: generation)
+        compiledCondition.unlock()
+    }
+
+    @objc(releaseFabricSurfaceId:componentTag:)
+    public func releaseFabricSurface(surfaceId: Int64, componentTag: Int64) {
+        releaseFabricSurface(FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag))
+    }
+
+    @objc(releaseFabricGenerationSurfaceId:componentTag:generationIdentity:)
+    public func releaseFabricGeneration(
+        surfaceId: Int64,
+        componentTag: Int64,
+        generationIdentity: NSString
+    ) {
+        releaseFabricGeneration(
+            FabricGenerationToken(
+                surface: FabricSurfaceToken(surfaceId: surfaceId, componentTag: componentTag),
+                generationIdentity: generationIdentity as String
+            )
+        )
     }
 
     @objc func didReceiveMemoryWarning() {
@@ -263,6 +346,8 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compiledAccessOrder.removeAll()
         compilationFailures.removeAll()
         compilationFailureAccessOrder.removeAll()
+        documentsByFabricGeneration.removeAll()
+        failuresByFabricGeneration.removeAll()
         compiledRetainedBytes = 0
         compiledCondition.unlock()
     }
@@ -298,11 +383,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
         widthPixels: Int,
         scale: CGFloat,
         error: ProseViewerError,
-        retainForFabricMount: Bool
+        fabricSurface: FabricSurfaceToken?
     ) -> PreparedProseLayout {
         let key = errorLayoutKey(request: request, widthPixels: widthPixels, scale: scale)
         let width = ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
-        return (try? layoutCache.value(for: key, retainForFabricMount: retainForFabricMount) {
+        return (try? layoutCache.value(for: key, fabricSurface: fabricSurface) {
             self.errorArtifact(key: key, width: width, error: error)
         }) ?? errorArtifact(key: key, width: width, error: error)
     }
@@ -337,8 +422,56 @@ public final class PreparedProseLayoutRegistry: NSObject {
         )
     }
 
-    private func preparedDocument(request: ProseViewerRequest) throws -> ViewerDocument {
-        var document = try compileDocument(request: request)
+    private func preparedDocument(
+        request: ProseViewerRequest,
+        compiledDocument: ViewerDocument?,
+        fabricSurface: FabricSurfaceToken?
+    ) throws -> ViewerDocument {
+        let generation = fabricSurface.map {
+            FabricGenerationToken(surface: $0, generationIdentity: request.generationIdentity)
+        }
+        compiledCondition.lock()
+        if let generation {
+            documentsByFabricGeneration = documentsByFabricGeneration.filter {
+                $0.key.surface != generation.surface || $0.key == generation
+            }
+            failuresByFabricGeneration = failuresByFabricGeneration.filter {
+                $0.key.surface != generation.surface || $0.key == generation
+            }
+        }
+        if let generation, let document = documentsByFabricGeneration[generation] {
+            compiledCondition.unlock()
+            return documentForEmptyContentPolicy(document, request: request)
+        }
+        if let generation, let failure = failuresByFabricGeneration[generation] {
+            compiledCondition.unlock()
+            throw failure
+        }
+        compiledCondition.unlock()
+
+        do {
+            let document = compiledDocument ?? (try compileDocument(request: request))
+            if let generation {
+                compiledCondition.lock()
+                documentsByFabricGeneration[generation] = document
+                compiledCondition.unlock()
+            }
+            return documentForEmptyContentPolicy(document, request: request)
+        } catch {
+            if let generation {
+                compiledCondition.lock()
+                failuresByFabricGeneration[generation] = error
+                compiledCondition.unlock()
+            }
+            throw error
+        }
+    }
+
+    private func documentForEmptyContentPolicy(
+        _ compiledDocument: ViewerDocument,
+        request: ProseViewerRequest
+    ) -> ViewerDocument {
+        var document = compiledDocument
         if document.isEmpty && !request.configuration.collapsesWhenEmpty {
             document = ViewerDocument(
                 semanticKey: document.semanticKey,

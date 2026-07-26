@@ -1,6 +1,7 @@
 #import "PREPPreparedProseViewerComponentView.h"
 
 #import "ReactNativeProseEditor-Swift.h"
+#import <React/RCTComponent.h>
 
 #include <react/renderer/components/PreparedProseViewer/PreparedProseViewerComponentDescriptor.h>
 #include <react/renderer/components/PreparedProseViewer/PreparedProseViewerState.h>
@@ -9,6 +10,7 @@
 #include <react/renderer/core/ConcreteComponentDescriptor.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -116,6 +118,15 @@ bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
   return RoundedWidthPixels(contentFrame.size.width, layoutMetrics.pointScaleFactor).has_value();
 }
 
+std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
+  for (UIView *candidate = view; candidate != nil; candidate = candidate.superview) {
+    if (RCTIsReactRootView(@(candidate.tag))) {
+      return static_cast<int64_t>(candidate.tag);
+    }
+  }
+  return std::nullopt;
+}
+
 } // namespace
 
 @implementation PREPPreparedProseViewerComponentView {
@@ -126,6 +137,9 @@ bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
   BOOL _hasReceivedUsableLayoutMetrics;
   NSString *_reportedErrorGeneration;
   NSString *_installedMeasurementIdentity;
+  NSString *_ownedGeneration;
+  int64_t _leaseSurfaceId;
+  BOOL _hasLeaseSurface;
 }
 
 + (ComponentDescriptorProvider)componentDescriptorProvider
@@ -186,6 +200,7 @@ bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
 
 - (void)prepareForRecycle
 {
+  [self releaseAllFabricOwnership];
   [super prepareForRecycle];
   _viewerProps.reset();
   _viewerState.reset();
@@ -193,15 +208,42 @@ bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
   _hasReceivedUsableLayoutMetrics = NO;
   _reportedErrorGeneration = nil;
   _installedMeasurementIdentity = nil;
+  _ownedGeneration = nil;
 }
 
 - (void)beginNewGeneration
 {
+  [self releaseFabricOwnership];
   // Keep the last complete artifact visible while a new generation has no
   // representable layout metrics. `installMeasuredArtifact` clears it only
   // after independently validating the replacement measurement.
   _installedMeasurementIdentity = nil;
   _reportedErrorGeneration = nil;
+}
+
+- (void)releaseFabricOwnership
+{
+  if (!_hasLeaseSurface || !_ownedGeneration) {
+    return;
+  }
+  [[PREPPreparedProseLayoutRegistry sharedRegistry]
+      releaseFabricGenerationSurfaceId:_leaseSurfaceId
+                          componentTag:static_cast<int64_t>(self.tag)
+                    generationIdentity:_ownedGeneration];
+  _hasLeaseSurface = NO;
+  _ownedGeneration = nil;
+}
+
+- (void)releaseAllFabricOwnership
+{
+  if (!_hasLeaseSurface) {
+    return;
+  }
+  [[PREPPreparedProseLayoutRegistry sharedRegistry]
+      releaseFabricSurfaceId:_leaseSurfaceId
+                componentTag:static_cast<int64_t>(self.tag)];
+  _hasLeaseSurface = NO;
+  _ownedGeneration = nil;
 }
 
 - (void)installMeasuredArtifact
@@ -213,6 +255,17 @@ bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
   const auto contentFrame = _layoutMetrics.getContentFrame();
   const CGFloat width = contentFrame.size.width;
   const CGFloat scale = _layoutMetrics.pointScaleFactor;
+  const auto surfaceId = SurfaceIdForComponentView(self);
+  if (!surfaceId) {
+    return;
+  }
+  if (_hasLeaseSurface && _leaseSurfaceId != *surfaceId) {
+    [[PREPPreparedProseLayoutRegistry sharedRegistry]
+        releaseFabricSurfaceId:_leaseSurfaceId
+                  componentTag:static_cast<int64_t>(self.tag)];
+    _hasLeaseSurface = NO;
+    _ownedGeneration = nil;
+  }
   const auto measurementIdentity = MeasurementIdentity(props, _viewerState.get(), width, scale);
   const auto measurementIdentityString = StringFromStdString(measurementIdentity);
   if (![_installedMeasurementIdentity isEqualToString:measurementIdentityString]) {
@@ -221,6 +274,8 @@ bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
   }
   const BOOL installed = [[PREPPreparedProseLayoutRegistry sharedRegistry]
       installCachedLayoutInDrawingView:_drawingView
+                             surfaceId:*surfaceId
+                          componentTag:static_cast<int64_t>(self.tag)
                             sourceKind:SourceKind(props)
                                 source:StringFromStdString(props.source)
                             configJSON:StringFromStdString(props.configJson)
@@ -236,6 +291,9 @@ bool HasUsableLayoutMetrics(const LayoutMetrics &layoutMetrics) {
   if (!installed) {
     return;
   }
+  _leaseSurfaceId = *surfaceId;
+  _hasLeaseSurface = YES;
+  _ownedGeneration = StringFromStdString(GenerationIdentity(props, _viewerState.get()));
   _installedMeasurementIdentity = measurementIdentityString;
   if (!_drawingView.errorCode) {
     return;

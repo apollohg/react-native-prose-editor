@@ -18,6 +18,7 @@ public final class ProseViewerView: UIView {
     private let layoutRegistry: PreparedProseLayoutRegistry
     private let drawingView = PreparedProseDrawingView(frame: .zero)
     private var request: ProseViewerRequest?
+    private var compiledDocument: ViewerDocument?
     private var ownedLayout: PreparedProseLayout?
     private var pendingError: ProseViewerError?
     private var errorWasReported = false
@@ -66,12 +67,13 @@ public final class ProseViewerView: UIView {
         let nextRequest = ProseViewerRequest(source: source, configuration: configuration)
         if request == nextRequest { return pendingError == nil }
         request = nextRequest
+        compiledDocument = nil
         ownedLayout = nil
         drawingView.layout = nil
         pendingError = nil
         errorWasReported = false
         do {
-            _ = try layoutRegistry.compileDocument(request: nextRequest)
+            compiledDocument = try layoutRegistry.compileDocument(request: nextRequest)
             invalidateIntrinsicContentSize()
             setNeedsLayout()
             return true
@@ -116,6 +118,7 @@ public final class ProseViewerView: UIView {
     /// Releases this surface's artifact ownership without clearing its delegate.
     public func prepareForReuse() {
         request = nil
+        compiledDocument = nil
         ownedLayout = nil
         pendingError = nil
         errorWasReported = false
@@ -184,7 +187,7 @@ public final class ProseViewerView: UIView {
             request: request,
             widthPoints: width,
             scale: scale,
-            leaseForFabricMount: false
+            compiledDocument: compiledDocument
         )
         ownedLayout = layout
         drawingView.layout = layout

@@ -391,9 +391,13 @@ final class PreparedProseLayoutTests: XCTestCase {
     }
 
     func testOversizedMeasurementLeaseSurvivesEvictionUntilFabricMount() {
+        var compilations = 0
         let registry = PreparedProseLayoutRegistry(
             byteBudget: 1,
-            compile: { [document = self.document] _ in document },
+            compile: { [document = self.document] _ in
+                compilations += 1
+                return document
+            },
             prepare: { _, key, width, _ in
                 PreparedProseLayout(
                     key: key,
@@ -427,6 +431,7 @@ final class PreparedProseLayoutTests: XCTestCase {
             )
         )
         XCTAssertTrue(drawingView.layout === measured)
+        XCTAssertEqual(compilations, 1)
         XCTAssertFalse(
             registry.installCachedLayout(
                 in: PreparedProseDrawingView(frame: .zero),
@@ -444,6 +449,151 @@ final class PreparedProseLayoutTests: XCTestCase {
                 scale: 2
             )
         )
+    }
+
+    func testIdenticalFabricGenerationsKeepSeparateSurfaceLeases() {
+        let registry = makeRegistry { document, key, width, scale in
+            try CoreTextProseLayoutEngine().prepare(
+                document: document,
+                key: key,
+                widthPoints: width,
+                displayScale: scale
+            )
+        }
+        let request = request()
+        let firstSurface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let secondSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
+
+        let measured = registry.measure(
+            request: request,
+            widthPoints: 160,
+            scale: 2,
+            fabricSurface: firstSurface
+        )
+        _ = registry.measure(
+            request: request,
+            widthPoints: 160,
+            scale: 2,
+            fabricSurface: secondSurface
+        )
+
+        let firstDrawingView = PreparedProseDrawingView(frame: .zero)
+        let secondDrawingView = PreparedProseDrawingView(frame: .zero)
+        XCTAssertTrue(install(request, in: firstDrawingView, surface: firstSurface, registry: registry))
+        XCTAssertTrue(install(request, in: secondDrawingView, surface: secondSurface, registry: registry))
+        XCTAssertTrue(firstDrawingView.layout === measured)
+        XCTAssertTrue(secondDrawingView.layout === measured)
+    }
+
+    func testReleasingSurfaceLeasePreventsStaleGenerationMount() {
+        let registry = makeRegistry { document, key, width, scale in
+            try CoreTextProseLayoutEngine().prepare(
+                document: document,
+                key: key,
+                widthPoints: width,
+                displayScale: scale
+            )
+        }
+        let request = request()
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: surface)
+
+        registry.releaseFabricSurface(surface)
+        registry.didReceiveMemoryWarning()
+
+        XCTAssertFalse(install(request, in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
+    }
+
+    func testLeaseBudgetCountsHandoffArtifactsAndKeepsOnlyOneOversizedLease() {
+        let registry = PreparedProseLayoutRegistry(
+            byteBudget: 10,
+            compile: { [document = self.document] _ in document },
+            prepare: { _, key, width, _ in
+                PreparedProseLayout(
+                    key: key,
+                    size: CGSize(width: width, height: 20),
+                    blocks: [],
+                    retainedBytes: 11
+                )
+            }
+        )
+        let request = request()
+        let firstSurface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let secondSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
+
+        _ = registry.measure(request: request, widthPoints: 160, scale: 2, fabricSurface: firstSurface)
+        _ = registry.measure(request: request, widthPoints: 120, scale: 2, fabricSurface: secondSurface)
+
+        XCTAssertEqual(registry.layoutRetainedBytesForTesting, 11)
+        XCTAssertEqual(registry.oversizedLeaseCountForTesting, 1)
+        XCTAssertFalse(install(request, in: PreparedProseDrawingView(frame: .zero), surface: firstSurface, registry: registry))
+        XCTAssertTrue(install(request, in: PreparedProseDrawingView(frame: .zero), surface: secondSurface, registry: registry, width: 120))
+    }
+
+    func testFabricMountMissNeverCompiles() {
+        var compilations = 0
+        let registry = PreparedProseLayoutRegistry(
+            compile: { [document = self.document] _ in
+                compilations += 1
+                return document
+            }
+        )
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+
+        XCTAssertFalse(install(request(), in: PreparedProseDrawingView(frame: .zero), surface: surface, registry: registry))
+        XCTAssertEqual(compilations, 0)
+    }
+
+    func testUIKitApplyRetainsCompiledDocumentThroughRegistryEviction() throws {
+        var compilations = 0
+        let registry = PreparedProseLayoutRegistry(
+            compiledByteBudget: 1,
+            compile: { request in
+                compilations += 1
+                return ViewerDocument(
+                    semanticKey: String(repeating: request.source.value == "first" ? "a" : "b", count: 64),
+                    paragraphs: [ViewerParagraph(text: request.source.value)],
+                    isEmpty: false,
+                    retainedBytes: 2
+                )
+            }
+        )
+        let viewer = ProseViewerView(layoutRegistry: registry)
+
+        XCTAssertTrue(viewer.apply(source: .json("first"), configuration: configuration()))
+        _ = try registry.compileDocument(request: request(source: "second"))
+        _ = viewer.sizeThatFits(CGSize(width: 160, height: .greatestFiniteMagnitude))
+
+        XCTAssertEqual(compilations, 2)
+    }
+
+    func testSurfaceGenerationPinsCompilerFailuresUntilReleased() {
+        var compilations = 0
+        let registry = PreparedProseLayoutRegistry(
+            compilationFailureBudget: 1,
+            compile: { request in
+                compilations += 1
+                throw ProseViewerError.compiler(
+                    domain: "viewer",
+                    code: request.source.value,
+                    message: "Malformed content"
+                )
+            }
+        )
+        let surface = FabricSurfaceToken(surfaceId: 11, componentTag: 101)
+        let otherSurface = FabricSurfaceToken(surfaceId: 12, componentTag: 102)
+        let first = request(source: "first")
+        let second = request(source: "second")
+
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface)
+        _ = registry.measure(request: second, widthPoints: 160, scale: 2, fabricSurface: otherSurface)
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface)
+        XCTAssertEqual(compilations, 2)
+
+        registry.releaseFabricSurface(surface)
+        registry.didReceiveMemoryWarning()
+        _ = registry.measure(request: first, widthPoints: 160, scale: 2, fabricSurface: surface)
+        XCTAssertEqual(compilations, 3)
     }
 
     func testRevisionVariantsUseDistinctPreparedArtifacts() {
@@ -563,6 +713,32 @@ final class PreparedProseLayoutTests: XCTestCase {
         PreparedProseLayoutRegistry(
             compile: { [document = self.document] _ in document },
             prepare: prepare
+        )
+    }
+
+    private func install(
+        _ request: ProseViewerRequest,
+        in drawingView: PreparedProseDrawingView,
+        surface: FabricSurfaceToken,
+        registry: PreparedProseLayoutRegistry,
+        width: CGFloat = 160
+    ) -> Bool {
+        registry.installCachedLayout(
+            in: drawingView,
+            surfaceId: surface.surfaceId,
+            componentTag: surface.componentTag,
+            sourceKind: "json",
+            source: request.source.value as NSString,
+            configJSON: request.configuration.configJSON as NSString,
+            themeJSON: nil,
+            imagePolicyJSON: nil,
+            imagesEnabled: request.configuration.imagesEnabled,
+            collapsesWhenEmpty: request.configuration.collapsesWhenEmpty,
+            attachmentRevision: request.attachmentRevision,
+            nativeFontRevision: request.nativeFontRevision,
+            fontEnvironmentRevision: request.fontEnvironmentRevision,
+            widthPoints: width,
+            scale: 2
         )
     }
 

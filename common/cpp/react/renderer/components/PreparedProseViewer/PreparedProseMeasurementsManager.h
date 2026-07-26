@@ -5,6 +5,7 @@
 
 #include <react/renderer/components/ReactNativeProseEditorSpec/Props.h>
 #include <react/renderer/core/LayoutConstraints.h>
+#include <react/renderer/core/ReactPrimitives.h>
 #include <react/renderer/core/SurfaceId.h>
 #include <react/utils/ContextContainer.h>
 
@@ -18,6 +19,7 @@ class PreparedProseMeasurementsManager {
 
   Size measure(
       SurfaceId surfaceId,
+      Tag componentTag,
       const PreparedProseViewerProps& props,
       Float effectiveWidth,
       Float pointScaleFactor,
