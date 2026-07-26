@@ -109,7 +109,7 @@ public final class ViewerFontEnvironment: NSObject {
             }
             base = fallback.withSize(resolvedSize)
         }
-        return applyingTraits(additionalTraits, to: base, preservesFallbackFamily: normalized.isEmpty)
+        return Self.applyingTraits(additionalTraits, to: base)
     }
 
     func resolveFont(
@@ -171,16 +171,28 @@ public final class ViewerFontEnvironment: NSObject {
         }
     }
 
-    /// Apply traits one at a time. An inherited family stays authoritative
-    /// when it cannot represent a requested trait; an explicit unavailable
-    /// family still falls back deterministically to a system face.
-    private func applyingTraits(
+    /// Shared emphasis-satisfaction contract for editor and prepared viewer
+    /// font resolution. Callers must not accept a face that contains only a
+    /// subset of the requested bold/italic marks.
+    static func satisfiesRequestedEmphasis(
+        _ font: UIFont,
+        requestedTraits: UIFontDescriptor.SymbolicTraits
+    ) -> Bool {
+        let requested = requestedTraits.intersection(Self.emphasisTraits)
+        return font.fontDescriptor.symbolicTraits.intersection(requested) == requested
+    }
+
+    private static let emphasisTraits: UIFontDescriptor.SymbolicTraits = [.traitBold, .traitItalic]
+
+    /// Apply requested traits one at a time. Retain a custom/inherited face
+    /// only when it can express the complete requested emphasis set; otherwise
+    /// deterministically choose a system or monospaced system fallback that
+    /// preserves the whole set.
+    private static func applyingTraits(
         _ additionalTraits: UIFontDescriptor.SymbolicTraits,
-        to font: UIFont,
-        preservesFallbackFamily: Bool
+        to font: UIFont
     ) -> UIFont {
         let requested = font.fontDescriptor.symbolicTraits.union(additionalTraits)
-        let requestedEmphasis: UIFontDescriptor.SymbolicTraits = [.traitBold, .traitItalic]
         func applySequentially(to source: UIFont) -> UIFont {
             var resolved = source
             for trait in [UIFontDescriptor.SymbolicTraits.traitBold, .traitItalic] where requested.contains(trait) && !resolved.fontDescriptor.symbolicTraits.contains(trait) {
@@ -191,15 +203,25 @@ public final class ViewerFontEnvironment: NSObject {
         }
 
         let sequential = applySequentially(to: font)
-        if sequential.fontDescriptor.symbolicTraits.intersection(requestedEmphasis) == requested.intersection(requestedEmphasis) {
+        if satisfiesRequestedEmphasis(sequential, requestedTraits: requested) {
             return sequential
         }
-        if preservesFallbackFamily { return sequential }
-        let systemFallback = UIFont.systemFont(
-            ofSize: font.pointSize,
-            weight: requested.contains(.traitBold) ? .bold : .regular
-        )
-        return applySequentially(to: systemFallback)
+        let fallback = prefersMonospacedFallback(for: font)
+            ? UIFont.monospacedSystemFont(
+                ofSize: font.pointSize,
+                weight: requested.contains(.traitBold) ? .bold : .regular
+            )
+            : UIFont.systemFont(
+                ofSize: font.pointSize,
+                weight: requested.contains(.traitBold) ? .bold : .regular
+            )
+        return applySequentially(to: fallback)
+    }
+
+    private static func prefersMonospacedFallback(for font: UIFont) -> Bool {
+        if font.fontDescriptor.symbolicTraits.contains(.traitMonoSpace) { return true }
+        let name = "\(font.fontName) \(font.familyName)".lowercased()
+        return name.contains("mono") || name.contains("courier")
     }
 
     private func invalidateContentSizeCategory(_ category: UIContentSizeCategory?) {

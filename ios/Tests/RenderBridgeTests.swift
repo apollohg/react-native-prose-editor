@@ -1532,6 +1532,66 @@ final class RenderBridgeTests: XCTestCase {
         )
     }
 
+    /// Inline code must retain every requested emphasis trait through the same
+    /// monospace resolver used by prepared viewer runs.
+    func testRender_inlineCodeMatchesViewerForBoldAndItalicCombinations() {
+        let cases: [(name: String, marks: [Any], traits: UIFontDescriptor.SymbolicTraits)] = [
+            ("bold", ["code", "bold"], [.traitBold]),
+            ("italic", ["code", "italic"], [.traitItalic]),
+            ("bold italic", ["code", "bold", "italic"], [.traitBold, .traitItalic]),
+        ]
+        let viewer = ViewerFontEnvironment(notificationCenter: .default)
+
+        for fixture in cases {
+            let editor = RenderBridge.attributesForMarks(
+                fixture.marks,
+                baseFont: baseFont,
+                textColor: textColor
+            )[.font] as? UIFont
+            let preparedViewer = viewer.resolveFont(
+                family: "monospace",
+                size: baseFont.pointSize,
+                fallback: baseFont,
+                additionalTraits: fixture.traits,
+                semanticGeneration: "inline-code-parity-\(fixture.name)"
+            )
+
+            XCTAssertNotNil(editor, "\(fixture.name) inline code should resolve a font")
+            XCTAssertTrue(editor!.fontDescriptor.symbolicTraits.contains(.traitMonoSpace))
+            XCTAssertTrue(
+                ViewerFontEnvironment.satisfiesRequestedEmphasis(editor!, requestedTraits: fixture.traits),
+                "editor inline code must retain \(fixture.name) emphasis"
+            )
+            XCTAssertTrue(
+                ViewerFontEnvironment.satisfiesRequestedEmphasis(preparedViewer, requestedTraits: fixture.traits),
+                "prepared viewer inline code must retain \(fixture.name) emphasis"
+            )
+            XCTAssertEqual(
+                editor!.fontDescriptor.symbolicTraits.intersection([.traitBold, .traitItalic]),
+                preparedViewer.fontDescriptor.symbolicTraits.intersection([.traitBold, .traitItalic]),
+                "editor and prepared viewer must agree for \(fixture.name) inline code"
+            )
+        }
+    }
+
+    func testRender_inlineCodePreservesTraitsWithThemedCustomLinkFamily() {
+        let theme = EditorTheme(dictionary: [
+            "links": ["fontFamily": "AppleColorEmoji"],
+        ])
+        let requested: UIFontDescriptor.SymbolicTraits = [.traitBold, .traitItalic]
+        let font = RenderBridge.attributesForMarks(
+            ["link", "code", "bold", "italic"],
+            baseFont: baseFont,
+            textColor: textColor,
+            theme: theme
+        )[.font] as? UIFont
+
+        XCTAssertNotNil(font)
+        XCTAssertTrue(font!.fontDescriptor.symbolicTraits.contains(.traitMonoSpace))
+        XCTAssertTrue(ViewerFontEnvironment.satisfiesRequestedEmphasis(font!, requestedTraits: requested))
+        XCTAssertNotEqual(font!.familyName, UIFont(name: "AppleColorEmoji", size: 17)!.familyName)
+    }
+
     // MARK: - Code Block
 
     /// A code block with no marks and no theme override must still render as

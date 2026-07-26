@@ -424,6 +424,69 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertTrue(resolved.fontDescriptor.symbolicTraits.contains(.traitItalic))
     }
 
+    /// An inherited custom fallback may remain in use only when it supplies
+    /// every requested emphasis trait. A face without those traits must take
+    /// the deterministic system fallback instead of returning partial bold or
+    /// italic styling.
+    func testInheritedCustomFallbackMissingEmphasisUsesSystemFallback() {
+        let environment = ViewerFontEnvironment(notificationCenter: .default)
+        let custom = UIFont(name: "AppleColorEmoji", size: 17)!
+        let requested: UIFontDescriptor.SymbolicTraits = [.traitBold, .traitItalic]
+        let resolved = environment.resolveFont(
+            family: nil,
+            size: 17,
+            fallback: custom,
+            additionalTraits: requested,
+            semanticGeneration: "inherited-custom-missing-emphasis"
+        )
+
+        XCTAssertTrue(ViewerFontEnvironment.satisfiesRequestedEmphasis(resolved, requestedTraits: requested))
+        XCTAssertNotEqual(resolved.familyName, custom.familyName)
+    }
+
+    /// A registered custom family remains authoritative when it can express
+    /// the requested pair, while an explicit family that cannot does not
+    /// silently return an incomplete face.
+    func testExplicitCustomFamilyTraitResolutionPrefersCompleteFaceOrFallsBack() {
+        let environment = ViewerFontEnvironment(notificationCenter: .default)
+        let requested: UIFontDescriptor.SymbolicTraits = [.traitBold, .traitItalic]
+        let complete = environment.resolveFont(
+            family: "Courier",
+            size: 17,
+            fallback: UIFont.systemFont(ofSize: 17),
+            additionalTraits: requested,
+            semanticGeneration: "explicit-custom-complete"
+        )
+        let incomplete = environment.resolveFont(
+            family: "AppleColorEmoji",
+            size: 17,
+            fallback: UIFont.systemFont(ofSize: 17),
+            additionalTraits: requested,
+            semanticGeneration: "explicit-custom-incomplete"
+        )
+
+        XCTAssertEqual(complete.familyName, "Courier")
+        XCTAssertTrue(ViewerFontEnvironment.satisfiesRequestedEmphasis(complete, requestedTraits: requested))
+        XCTAssertNotEqual(incomplete.familyName, UIFont(name: "AppleColorEmoji", size: 17)!.familyName)
+        XCTAssertTrue(ViewerFontEnvironment.satisfiesRequestedEmphasis(incomplete, requestedTraits: requested))
+    }
+
+    func testGenericMonospaceFallbackPreservesRequestedEmphasis() {
+        let environment = ViewerFontEnvironment(notificationCenter: .default)
+        let requested: UIFontDescriptor.SymbolicTraits = [.traitBold, .traitItalic]
+        let resolved = environment.resolveFont(
+            family: "ui-monospace",
+            size: 17,
+            fallback: UIFont.systemFont(ofSize: 17),
+            additionalTraits: requested,
+            semanticGeneration: "generic-monospace-emphasis"
+        )
+
+        XCTAssertTrue(resolved.fontDescriptor.symbolicTraits.contains(.traitMonoSpace))
+        XCTAssertTrue(ViewerFontEnvironment.satisfiesRequestedEmphasis(resolved, requestedTraits: requested))
+        XCTAssertFalse(environment.shouldWarnForMissingFamily("ui-monospace", semanticGeneration: "generic-monospace-emphasis"))
+    }
+
     func testWarningContextUsesSemanticIdentityInsteadOfLayoutReplacementIdentity() {
         let request = ProseViewerRequest(source: .json("{\"type\":\"doc\"}"), configuration: .init())
         let replacement = ProseViewerRequest(
