@@ -48,7 +48,10 @@ internal class PreparedProseViewerManager :
     override fun updateExtraData(root: PreparedProseDrawingView, extraData: Any?) = Unit
 
     override fun onDropViewInstance(view: PreparedProseDrawingView) {
-        states.remove(view)?.release()
+        states.remove(view)?.let { state ->
+            state.finishWithoutMountedReplacement(view)
+            state.release()
+        }
         view.onUsableMetricsChanged = null
         view.onInteractionActivated = null
         view.install(null)
@@ -154,17 +157,24 @@ internal class PreparedProseViewerManager :
         val state = states[view] ?: return
         val request = state.requestOrNull() ?: return
         val surfaceId = UIManagerHelper.getSurfaceId(view)
-        if (surfaceId < 0 || view.id <= 0 || view.width <= 0) return
+        if (surfaceId < 0 || view.id <= 0 || view.width <= 0) {
+            state.finishWithoutMountedReplacement(view)
+            return
+        }
         val density = view.resources.displayMetrics.density
-        val widthPx = widthToPixels(view.width / density, density) ?: return
+        val widthPx = widthToPixels(view.width / density, density) ?: run {
+            state.finishWithoutMountedReplacement(view)
+            return
+        }
         val surface = FabricSurfaceToken(surfaceId, view.id)
         val generation = state.adopt(surface, request)
         val artifact = PreparedProseLayoutRegistry.shared.acquireForFabricMount(surface, request, widthPx, density)
         if (artifact == null) {
             PreparedProseLayoutRegistry.shared.releaseFabricMountMiss(generation)
+            state.finishWithoutMountedReplacement(view)
             return
         }
-        view.install(artifact)
+        state.installMountedReplacement(view, artifact)
         artifact.error?.let { dispatchError(view, request, it) }
     }
 
@@ -291,6 +301,8 @@ internal class PreparedProseViewerManager :
         var stateWrapper: StateWrapper? = null,
         var generation: FabricGenerationToken? = null,
         val errorReporter: FabricErrorReporter = FabricErrorReporter(),
+        private val replacementAccessibilityTransaction: FabricReplacementAccessibilityTransaction =
+            FabricReplacementAccessibilityTransaction(),
     ) {
         fun requestOrNull(): ProseViewerRequest? = revisions?.let { revisions ->
             ProseViewerRequest(
@@ -316,17 +328,27 @@ internal class PreparedProseViewerManager :
 
         fun releaseGeneration(
             view: PreparedProseDrawingView,
-            announceAccessibilitySubtree: Boolean = true,
         ) {
             generation?.let(PreparedProseLayoutRegistry.shared::releaseFabricGeneration)
             generation = null
-            view.install(null, announceAccessibilitySubtree)
+            replacementAccessibilityTransaction.finishWithoutMountedReplacement(view)
+            view.install(null)
         }
 
         fun releaseReplacedGeneration(request: ProseViewerRequest, view: PreparedProseDrawingView) {
             val previous = generation ?: return
             if (previous.generationIdentity == request.generationIdentity) return
-            releaseGeneration(view, announceAccessibilitySubtree = false)
+            PreparedProseLayoutRegistry.shared.releaseFabricGeneration(previous)
+            generation = null
+            replacementAccessibilityTransaction.clearReplacing(view)
+        }
+
+        fun installMountedReplacement(view: PreparedProseDrawingView, artifact: PreparedProseLayout) {
+            replacementAccessibilityTransaction.installMountedReplacement(view, artifact)
+        }
+
+        fun finishWithoutMountedReplacement(view: PreparedProseDrawingView) {
+            replacementAccessibilityTransaction.finishWithoutMountedReplacement(view)
         }
 
         fun adopt(
@@ -353,6 +375,41 @@ internal class PreparedProseViewerManager :
 
     companion object {
         const val REACT_CLASS = "PreparedProseViewer"
+    }
+}
+
+/**
+ * Makes replacement accessibility notification ownership explicit. A removed
+ * old subtree is announced by either the final mounted artifact or, if Fabric
+ * cannot mount it, by the removal itself—never by both.
+ */
+internal class FabricReplacementAccessibilityTransaction {
+    private enum class NotificationOwner {
+        NONE,
+        FINAL_INSTALL,
+        REMOVED_SUBTREE,
+    }
+
+    private var notificationOwner = NotificationOwner.NONE
+
+    fun clearReplacing(view: PreparedProseDrawingView) {
+        if (view.preparedLayout == null) return
+        view.install(null, announceAccessibilitySubtree = false)
+        notificationOwner = NotificationOwner.FINAL_INSTALL
+    }
+
+    fun installMountedReplacement(view: PreparedProseDrawingView, artifact: PreparedProseLayout) {
+        view.install(
+            artifact,
+            announceAccessibilitySubtree = notificationOwner != NotificationOwner.REMOVED_SUBTREE,
+        )
+        notificationOwner = NotificationOwner.NONE
+    }
+
+    fun finishWithoutMountedReplacement(view: PreparedProseDrawingView) {
+        if (notificationOwner != NotificationOwner.FINAL_INSTALL) return
+        view.announceAccessibilitySubtreeChanged()
+        notificationOwner = NotificationOwner.REMOVED_SUBTREE
     }
 }
 

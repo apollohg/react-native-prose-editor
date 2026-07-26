@@ -2,6 +2,38 @@ import UIKit
 import XCTest
 
 final class PreparedProseAccessibilityTests: XCTestCase {
+    func testSameLineInteractionGeometryMergesOnlyOverlappingOrEdgeTouchingPieces() {
+        var edgeTouching = [CGRect(x: 2, y: 10, width: 8, height: 10)]
+        PreparedProseInteractionGeometry.appendSameLinePiece(
+            CGRect(x: 10, y: 10, width: 8, height: 10),
+            to: &edgeTouching,
+            mayMergeWithPrior: true
+        )
+        XCTAssertEqual(edgeTouching, [CGRect(x: 2, y: 10, width: 16, height: 10)])
+
+        var positiveGap = [CGRect(x: 2, y: 10, width: 8, height: 10)]
+        PreparedProseInteractionGeometry.appendSameLinePiece(
+            CGRect(x: 10.25, y: 10, width: 8, height: 10),
+            to: &positiveGap,
+            mayMergeWithPrior: true
+        )
+        XCTAssertEqual(
+            positiveGap,
+            [
+                CGRect(x: 2, y: 10, width: 8, height: 10),
+                CGRect(x: 10.25, y: 10, width: 8, height: 10)
+            ]
+        )
+
+        var oppositeDirection = [CGRect(x: 2, y: 10, width: 8, height: 10)]
+        PreparedProseInteractionGeometry.appendSameLinePiece(
+            CGRect(x: 10, y: 10, width: 8, height: 10),
+            to: &oppositeDirection,
+            mayMergeWithPrior: false
+        )
+        XCTAssertEqual(oppositeDirection.count, 2)
+    }
+
     func testBidiLinkUsesDiscontiguousShapedRunRectsInVisualOrder() throws {
         let document = ViewerDocument(
             semanticKey: "bidi-link-fixture",

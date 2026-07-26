@@ -27,7 +27,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
             if (field == value) return
             field = value
             clearVirtualAccessibilityFocus()
-            notifyAccessibilitySubtreeChanged()
+            announceAccessibilitySubtreeChanged()
         }
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
@@ -46,7 +46,7 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         if (preparedLayout === layout) return
         preparedLayout = layout
         clearVirtualAccessibilityFocus()
-        if (announceAccessibilitySubtree) notifyAccessibilitySubtreeChanged()
+        if (announceAccessibilitySubtree) announceAccessibilitySubtreeChanged()
         invalidate()
     }
 
@@ -254,7 +254,8 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
         parent?.requestSendAccessibilityEvent(this, event)
     }
 
-    private fun notifyAccessibilitySubtreeChanged() {
+    /** Publishes a logical prepared-subtree transition without changing its artifact. */
+    internal fun announceAccessibilitySubtreeChanged() {
         if (!publishesAccessibilitySubtree) return
         val event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED).apply {
             packageName = context.packageName

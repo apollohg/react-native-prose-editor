@@ -75,6 +75,69 @@ class PreparedProseAccessibilityTest {
     }
 
     @Test
+    fun `Fabric mount success lets final installation own one replacement subtree notification`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = PreparedProseDrawingView(context)
+        val parent = CapturingAccessibilityParent(context).apply { addView(view) }
+        val transaction = FabricReplacementAccessibilityTransaction()
+        view.install(preparedArtifact("first"))
+        assertTrue(
+            view.accessibilityNodeProvider.performAction(
+                1,
+                android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+
+        parent.clearEvents()
+        transaction.clearReplacing(view)
+        transaction.installMountedReplacement(view, preparedArtifact("replacement"))
+
+        assertEquals(1, parent.subtreeChangeCount())
+        assertEquals(
+            listOf(
+                AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            ),
+            parent.eventTypes,
+        )
+    }
+
+    @Test
+    fun `Fabric mount miss announces a removed subtree once and suppresses a later deferred install`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = PreparedProseDrawingView(context)
+        val parent = CapturingAccessibilityParent(context).apply { addView(view) }
+        val transaction = FabricReplacementAccessibilityTransaction()
+        view.install(preparedArtifact("first"))
+        assertTrue(
+            view.accessibilityNodeProvider.performAction(
+                1,
+                android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS,
+                null,
+            )
+        )
+
+        parent.clearEvents()
+        transaction.clearReplacing(view)
+        transaction.finishWithoutMountedReplacement(view)
+
+        assertEquals(1, parent.subtreeChangeCount())
+        assertEquals(
+            listOf(
+                AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            ),
+            parent.eventTypes,
+        )
+
+        parent.clearEvents()
+        transaction.installMountedReplacement(view, preparedArtifact("deferred replacement"))
+        assertEquals(0, parent.subtreeChangeCount())
+        assertEquals(emptyList<Int>(), parent.eventTypes)
+    }
+
+    @Test
     fun `bidi link uses discontiguous shaped selection rects in visual order`() {
         val document = ViewerDocument(
             semanticKey = "bidi-link-fixture",

@@ -13,22 +13,26 @@ private extension Int {
     }
 }
 
-private enum PreparedProseInteractionGeometry {
+enum PreparedProseInteractionGeometry {
     static func visualOrder(_ left: CGRect, _ right: CGRect) -> Bool {
-        left.minY == right.minY ? left.minX < right.minX : left.minY < right.minY
+        if left.minY != right.minY { return left.minY < right.minY }
+        if left.minX != right.minX { return left.minX < right.minX }
+        if left.maxY != right.maxY { return left.maxY < right.maxY }
+        return left.maxX < right.maxX
     }
 
     static func appendSameLinePiece(
         _ rect: CGRect,
         to rects: inout [CGRect],
-        displayScale: CGFloat,
         mayMergeWithPrior: Bool
     ) {
-        let pixel = 1 / max(1, displayScale)
         guard mayMergeWithPrior,
               let prior = rects.last,
               prior.minY == rect.minY,
-              prior.maxX >= rect.minX - pixel
+              // A semantic hit region may include only real glyph geometry:
+              // overlapping pieces and exact edge contact are contiguous; any
+              // positive gap must remain separately hittable/accessibility-visible.
+              prior.maxX >= rect.minX
         else {
             rects.append(rect)
             return
@@ -277,7 +281,7 @@ final class CoreTextProseLayoutEngine {
         interactions.sort { lhs, rhs in
             let left = lhs.rects.first ?? .zero
             let right = rhs.rects.first ?? .zero
-            return left.minY == right.minY ? left.minX < right.minX : left.minY < right.minY
+            return PreparedProseInteractionGeometry.visualOrder(left, right)
         }
         let accessibilityNodes = interactions.enumerated().map { index, interaction in
             PreparedProseAccessibilityNode(
@@ -416,7 +420,6 @@ final class CoreTextProseLayoutEngine {
                     PreparedProseInteractionGeometry.appendSameLinePiece(
                         piece.rect,
                         to: &interactionRects[index],
-                        displayScale: displayScale,
                         // Do not join adjacent opposite-direction runs: they
                         // are separately shaped visual geometry even when their
                         // x edges touch.
