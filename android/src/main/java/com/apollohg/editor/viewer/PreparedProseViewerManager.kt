@@ -162,10 +162,8 @@ internal class PreparedProseViewerManager :
             return YogaMeasureOutput.make(0f, 0f)
         }
         val widthPx = widthToPixels(width, density)
-        // Yoga is the first consumer that can consult intrinsic metadata. Reset
-        // this surface before preparation so stale semantic fallback cannot
-        // influence a new artifact.
-        surface?.let { FabricAttachmentSidecars.begin(it, request.semanticGenerationIdentity) }
+        // The registry begins and scopes this exact surface/component sidecar
+        // around preparation, so an LRU miss cannot borrow another surface.
         val artifact = if (
             (widthMode != YogaMeasureMode.EXACTLY && widthMode != YogaMeasureMode.AT_MOST) ||
             widthPx == null

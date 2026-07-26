@@ -288,7 +288,8 @@ public final class ProseViewerView: UIView {
             request: request,
             widthPoints: width,
             scale: scale,
-            compiledDocument: compiledDocument
+            compiledDocument: compiledDocument,
+            measurementImageState: attachmentRevisions
         )
         installPreparedLayout(layout)
         reportErrorIfNeeded(layout.error)

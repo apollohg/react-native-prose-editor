@@ -3,6 +3,8 @@ import UIKit
 @testable import NativeEditor
 
 final class PreparedProseRevisionTests: XCTestCase {
+    private enum FixtureError: Error { case expected }
+
     func testDisabledImagesDoNotCreateAttachmentsOrRequests() {
         let pipeline = ViewerImagePipeline(policy: .default)
         pipeline.begin(generation: "disabled", imagesEnabled: false)
@@ -116,7 +118,6 @@ final class PreparedProseRevisionTests: XCTestCase {
                 + ViewerAttachmentRevisionState.collectionRetainedBytes * 5
                 + (count + 7) / 8 * 2
                 + count * (MemoryLayout<CGSize>.stride + MemoryLayout<String?>.stride + MemoryLayout<Int>.stride)
-                + ViewerAttachmentRevisionState.activeRegistrationRetainedBytes
                 + semanticIdentity.utf8.count * 2
                 + (0..<count).reduce(0) { $0 + "\($1):https://example.test/image".utf8.count * 2 }
         )
@@ -124,7 +125,7 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 2, height: 2), for: "0:https://example.test/image", ordinal: 0, declaredSize: nil))
     }
 
-    func testGlobalMetadataLRUEvictionFallsBackToActiveSidecarWithoutRepublishing() {
+    func testGlobalMetadataLRUEvictionFallsBackToOwnMeasurementSidecarWithoutRepublishing() {
         let state = ViewerAttachmentRevisionState()
         ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting(1)
         defer { ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting() }
@@ -133,7 +134,9 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertTrue(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "7:https://example.test/a", ordinal: 0, declaredSize: nil))
         ViewerImageIntrinsicStore.shared.store(CGSize(width: 20, height: 40), for: "8:https://example.test/b")
         XCTAssertNil(ViewerImageIntrinsicStore.shared.globalSize(for: "7:https://example.test/a"))
-        XCTAssertEqual(ViewerImageIntrinsicStore.shared.size(for: "7:https://example.test/a"), CGSize(width: 40, height: 20))
+        XCTAssertEqual(FabricAttachmentSidecars.withMeasurementState(state) {
+            ViewerImageIntrinsicStore.shared.size(for: "7:https://example.test/a")
+        }, CGSize(width: 40, height: 20))
         XCTAssertFalse(state.recordIntrinsicSize(CGSize(width: 40, height: 20), for: "7:https://example.test/a", ordinal: 0, declaredSize: nil))
         XCTAssertEqual(state.revision, 1)
     }
@@ -175,6 +178,82 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertNil(FabricAttachmentSidecars.withMeasurementState(incoming) {
             ViewerImageIntrinsicStore.shared.size(for: id)
         })
+    }
+
+    func testConcurrentFabricMeasurementScopesKeepEvictedIntrinsicMetadataSurfaceLocalAndCleanUp() {
+        let first = FabricSurfaceToken(surfaceId: 91, componentTag: 1)
+        let second = FabricSurfaceToken(surfaceId: 92, componentTag: 1)
+        // This deliberately collides an attachment identity across semantic
+        // source/revision states; only the stable Fabric token may select it.
+        let id = "7:https://example.test/shared"
+        let ready = DispatchGroup()
+        ready.enter()
+        ready.enter()
+        let proceed = DispatchSemaphore(value: 0)
+        let completed = expectation(description: "concurrent Fabric measurements")
+        completed.expectedFulfillmentCount = 2
+        let resultLock = NSLock()
+        var firstResult: CGSize?
+        var secondResult: CGSize?
+        ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting(1)
+        defer {
+            FabricAttachmentSidecars.remove(first)
+            FabricAttachmentSidecars.remove(second)
+            ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting()
+        }
+
+        let firstState = FabricAttachmentSidecars.begin(first, semanticIdentity: "source-a-revision-1")
+        firstState.admit(attachmentCount: 1)
+        XCTAssertTrue(firstState.recordIntrinsicSize(CGSize(width: 80, height: 40), for: id, ordinal: 0, declaredSize: nil))
+        let secondState = FabricAttachmentSidecars.begin(second, semanticIdentity: "source-b-revision-2")
+        secondState.admit(attachmentCount: 1)
+        XCTAssertTrue(secondState.recordIntrinsicSize(CGSize(width: 30, height: 60), for: id, ordinal: 0, declaredSize: nil))
+        XCTAssertEqual(firstState.revision, 1)
+        XCTAssertEqual(secondState.revision, 1)
+        ViewerImageIntrinsicStore.shared.store(CGSize(width: 1, height: 1), for: "8:https://example.test/evict")
+        XCTAssertNil(ViewerImageIntrinsicStore.shared.globalSize(for: id))
+
+        DispatchQueue.global().async {
+            let size = FabricAttachmentSidecars.withMeasurementState(firstState) {
+                ready.leave()
+                _ = proceed.wait(timeout: .now() + 1)
+                return ViewerImageIntrinsicStore.shared.size(for: id)
+            }
+            resultLock.lock()
+            firstResult = size
+            resultLock.unlock()
+            completed.fulfill()
+        }
+        DispatchQueue.global().async {
+            let size = FabricAttachmentSidecars.withMeasurementState(secondState) {
+                ready.leave()
+                _ = proceed.wait(timeout: .now() + 1)
+                return ViewerImageIntrinsicStore.shared.size(for: id)
+            }
+            resultLock.lock()
+            secondResult = size
+            resultLock.unlock()
+            completed.fulfill()
+        }
+        XCTAssertEqual(ready.wait(timeout: .now() + 1), .success)
+        proceed.signal()
+        proceed.signal()
+        wait(for: [completed], timeout: 1)
+        XCTAssertEqual(firstResult, CGSize(width: 80, height: 40))
+        XCTAssertEqual(secondResult, CGSize(width: 30, height: 60))
+
+        FabricAttachmentSidecars.withMeasurementState(firstState) {
+            XCTAssertThrowsError(try FabricAttachmentSidecars.withMeasurementState(secondState) {
+                throw FixtureError.expected
+            })
+            XCTAssertTrue(FabricAttachmentSidecars.currentMeasurementState === firstState)
+        }
+        XCTAssertNil(FabricAttachmentSidecars.currentMeasurementState)
+
+        FabricAttachmentSidecars.remove(first)
+        FabricAttachmentSidecars.remove(second)
+        XCTAssertNil(FabricAttachmentSidecars.state(for: first))
+        XCTAssertNil(FabricAttachmentSidecars.state(for: second))
     }
 
     private func paddedImage(bytesPerRow: Int, height: Int) -> UIImage {

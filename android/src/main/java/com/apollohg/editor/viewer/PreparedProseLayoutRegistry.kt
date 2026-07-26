@@ -85,6 +85,7 @@ internal class PreparedProseLayoutRegistry(
         fabricSurface: FabricSurfaceToken? = null,
         compiledDocument: ViewerDocument? = null,
         fontScale: Float = 1f,
+        measurementImageState: ViewerAttachmentRevisionState? = null,
     ): PreparedProseLayout {
         if (!isValidMeasurement(widthPx, density)) {
             fabricSurface?.let(::releaseFabricSurface)
@@ -92,6 +93,11 @@ internal class PreparedProseLayoutRegistry(
         }
         val densityBits = density.toRawBits().toLong()
         val generation = fabricSurface?.let { FabricGenerationToken(it, request.generationIdentity) }
+        // Fabric resolves exactly its stable surface/component sidecar; direct
+        // hosts pass their own mounted state. Neither path scans other hosts.
+        val imageMeasurementState = fabricSurface?.let {
+            FabricAttachmentSidecars.begin(it, request.semanticGenerationIdentity)
+        } ?: measurementImageState
         return try {
             val document = preparedDocument(request, generation, compiledDocument)
             val theme = resolveTheme(request, density, fontScale)
@@ -99,15 +105,20 @@ internal class PreparedProseLayoutRegistry(
             layoutCache.value(key, fabricSurface) {
                 layoutPreparationCount += 1
                 try {
-                    layoutEngine.prepare(
-                        document,
-                        key,
-                        theme,
-                        widthPx,
-                        density,
-                        request.configuration.collapsesWhenEmpty,
-                        request.semanticGenerationIdentity,
-                    )
+                    val prepare = {
+                        layoutEngine.prepare(
+                            document,
+                            key,
+                            theme,
+                            widthPx,
+                            density,
+                            request.configuration.collapsesWhenEmpty,
+                            request.semanticGenerationIdentity,
+                        )
+                    }
+                    if (imageMeasurementState != null) {
+                        FabricAttachmentSidecars.withMeasurementState(imageMeasurementState, prepare)
+                    } else prepare()
                 } catch (error: ProseViewerError) {
                     PreparedProseLayout.error(key, widthPx, error)
                 } catch (throwable: Throwable) {
@@ -145,6 +156,7 @@ internal class PreparedProseLayoutRegistry(
 
     fun releaseFabricSurface(surface: FabricSurfaceToken) {
         layoutCache.releaseLease(surface)
+        FabricAttachmentSidecars.remove(surface)
         synchronized(compilerLock) {
             documentsByFabricGeneration.keys.removeAll { it.surface == surface }
             failuresByFabricGeneration.keys.removeAll { it.surface == surface }
@@ -159,6 +171,7 @@ internal class PreparedProseLayoutRegistry(
      */
     fun releaseFabricSurfaceId(surfaceId: Int) {
         layoutCache.releaseSurfaceId(surfaceId)
+        FabricAttachmentSidecars.removeSurface(surfaceId)
         synchronized(compilerLock) {
             documentsByFabricGeneration.keys.removeAll { it.surface.surfaceId == surfaceId }
             failuresByFabricGeneration.keys.removeAll { it.surface.surfaceId == surfaceId }

@@ -393,6 +393,7 @@ class ProseViewerView @JvmOverloads constructor(
                 density = resources.displayMetrics.density,
                 compiledDocument = retainedDocument,
                 fontScale = resources.configuration.fontScale,
+                measurementImageState = attachmentRevisions,
             )
             val artifactChanged = preparedArtifact !== artifact
             preparedArtifact = artifact

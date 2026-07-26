@@ -57,8 +57,8 @@ final class ViewerImageIntrinsicStore {
 
     init(entryLimit: Int = 256) { self.entryLimit = max(1, entryLimit) }
 
-    /// A Fabric prepare may only see its own surface sidecar. UIKit has no
-    /// shadow-tree surface, so it deliberately keeps the process cache path.
+    /// Preparation may only see its explicitly scoped local sidecar. The
+    /// process cache remains global, but an LRU miss never scans another host.
     func size(for id: String) -> CGSize? {
         lock.lock()
         if var entry = values[id] {
@@ -69,20 +69,17 @@ final class ViewerImageIntrinsicStore {
             return entry.size
         }
         lock.unlock()
-        if let surfaceState = FabricAttachmentSidecars.currentMeasurementState {
-            return surfaceState.intrinsicSize(forSourceQualifiedID: id)
-        }
-        return ViewerAttachmentRevisionState.authoritativeSize(for: id)
+        return FabricAttachmentSidecars.currentMeasurementState?.intrinsicSize(forSourceQualifiedID: id)
     }
 
-    /// Test-only global-LRU inspection. `size(for:)` intentionally falls back
-    /// to mounted sidecars, so it cannot prove an LRU eviction on its own.
+    /// Test-only global-LRU inspection. `size(for:)` may consult its scoped
+    /// owner, so it cannot prove an LRU eviction on its own.
     func globalSize(for id: String) -> CGSize? {
         lock.withLock { values[id]?.size }
     }
 
     /// Test-only control of the actual process-global LRU. `size(for:)` keeps
-    /// its active-sidecar fallback, while this inspection proves eviction.
+    /// its scoped-sidecar fallback, while this inspection proves eviction.
     func clearAndSetEntryLimitForTesting(_ limit: Int = 256) {
         lock.withLock {
             entryLimit = max(1, limit)
@@ -115,13 +112,6 @@ final class ViewerAttachmentRevisionState {
     /// proportional collection. Payload is charged below at native stride.
     static let fixedRetainedBytes = 160
     static let collectionRetainedBytes = 32
-    static let activeRegistrationRetainedBytes = 48
-    private final class WeakState {
-        weak var value: ViewerAttachmentRevisionState?
-        init(_ value: ViewerAttachmentRevisionState) { self.value = value }
-    }
-    private static let activeStateLock = NSLock()
-    private static var activeStates: [WeakState] = []
     private let lock = NSLock()
     private var publishedBits: [UInt8] = []
     private var reportedErrorBits: [UInt8] = []
@@ -135,12 +125,11 @@ final class ViewerAttachmentRevisionState {
     /// Exact per-surface retained state. This is not an immutable layout cost:
     /// it belongs to the mounted host, including both bitsets, dimensions,
     /// source identity references, ordinal addresses, collection headers, and
-    /// active-sidecar registration.
+    /// explicitly scoped preparation ownership.
     var retainedPublicationBytesForTesting: Int {
         lock.withLock {
             Self.fixedRetainedBytes
                 + Self.collectionRetainedBytes * 5
-                + Self.activeRegistrationRetainedBytes
                 + publishedBits.count
                 + reportedErrorBits.count
                 + intrinsicSizes.count * MemoryLayout<CGSize>.stride
@@ -162,7 +151,6 @@ final class ViewerAttachmentRevisionState {
             semanticGenerationIdentity = identity
             return true
         }
-        if changed { Self.unregister(self) }
         return changed
     }
 
@@ -177,7 +165,6 @@ final class ViewerAttachmentRevisionState {
             sourceQualifiedIDs = Array(repeating: nil, count: count)
             attachmentOrdinals = Array(0..<count)
         }
-        if count > 0 { Self.register(self) }
     }
 
     func reset() {
@@ -185,7 +172,6 @@ final class ViewerAttachmentRevisionState {
             clearLocked()
             semanticGenerationIdentity = nil
         }
-        Self.unregister(self)
     }
 
     @discardableResult
@@ -243,25 +229,6 @@ final class ViewerAttachmentRevisionState {
         revision = 0
     }
 
-    static func authoritativeSize(for id: String) -> CGSize? {
-        activeStateLock.withLock {
-            activeStates.removeAll { $0.value == nil }
-            return activeStates.compactMap { $0.value?.intrinsicSize(forSourceQualifiedID: id) }.first
-        }
-    }
-
-    private static func register(_ state: ViewerAttachmentRevisionState) {
-        activeStateLock.withLock {
-            activeStates.removeAll { $0.value == nil }
-            if !activeStates.contains(where: { $0.value === state }) { activeStates.append(WeakState(state)) }
-        }
-    }
-
-    private static func unregister(_ state: ViewerAttachmentRevisionState) {
-        activeStateLock.withLock { activeStates.removeAll { $0.value == nil || $0.value === state } }
-    }
-
-    deinit { Self.unregister(self) }
 }
 
 /// Fabric preparation has no mounted UIView to own mutable image publication.

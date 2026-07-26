@@ -49,10 +49,12 @@ internal class ViewerImageIntrinsicStore(entryLimit: Int = 256) {
                 entry.access = access
             }?.size
         }
-        return cached ?: ViewerAttachmentRevisionState.authoritativeSize(id)
+        // The global LRU is process-wide, but sidecar fallback must be the
+        // measurement owner's explicit local state. Never scan another host.
+        return cached ?: FabricAttachmentSidecars.currentMeasurementState?.intrinsicSizeForSourceQualifiedId(id)
     }
 
-    /** Test-only global-LRU inspection; [size] intentionally consults active sidecars. */
+    /** Test-only global-LRU inspection; [size] can consult its scoped owner. */
     fun globalSize(id: String): Pair<Int, Int>? = synchronized(lock) { values[id]?.size }
 
     /** Test-only seam for the actual process-global store, never a fixture-local LRU. */
@@ -82,23 +84,6 @@ internal class ViewerAttachmentRevisionState {
     companion object {
         const val FIXED_RETAINED_BYTES = 160
         const val COLLECTION_RETAINED_BYTES = 32
-        const val ACTIVE_REGISTRATION_RETAINED_BYTES = 48
-        private val activeStateLock = Any()
-        private val activeStates = mutableListOf<java.lang.ref.WeakReference<ViewerAttachmentRevisionState>>()
-
-        fun authoritativeSize(id: String): Pair<Int, Int>? = synchronized(activeStateLock) {
-            activeStates.removeAll { it.get() == null }
-            activeStates.firstNotNullOfOrNull { it.get()?.intrinsicSizeForSourceQualifiedId(id) }
-        }
-
-        private fun register(state: ViewerAttachmentRevisionState) = synchronized(activeStateLock) {
-            activeStates.removeAll { it.get() == null }
-            if (activeStates.none { it.get() === state }) activeStates += java.lang.ref.WeakReference(state)
-        }
-
-        private fun unregister(state: ViewerAttachmentRevisionState) = synchronized(activeStateLock) {
-            activeStates.removeAll { it.get() == null || it.get() === state }
-        }
     }
     private val lock = Any()
     private var publishedBits = ByteArray(0)
@@ -116,7 +101,6 @@ internal class ViewerAttachmentRevisionState {
     val retainedPublicationBytesForTesting: Int get() = synchronized(lock) {
         FIXED_RETAINED_BYTES +
             COLLECTION_RETAINED_BYTES * 5 +
-            ACTIVE_REGISTRATION_RETAINED_BYTES +
             publishedBits.size + reportedErrorBits.size +
             intrinsicWidths.size * Int.SIZE_BYTES +
             intrinsicHeights.size * Int.SIZE_BYTES +
@@ -134,7 +118,6 @@ internal class ViewerAttachmentRevisionState {
             semanticGenerationIdentity = identity
             true
         }
-        if (changed) unregister(this)
         return changed
     }
 
@@ -150,13 +133,12 @@ internal class ViewerAttachmentRevisionState {
             sourceQualifiedIds = arrayOfNulls(count)
             attachmentOrdinals = IntArray(count) { it }
         }
-        if (count > 0) register(this)
     }
 
     fun reset() = synchronized(lock) {
         clearLocked()
         semanticGenerationIdentity = null
-    }.also { unregister(this) }
+    }
 
     fun recordIntrinsicSize(id: String, ordinal: Int, width: Int, height: Int, declaredSize: Pair<Int, Int>?): Boolean = synchronized(lock) {
         if (declaredSize != null || width <= 0 || height <= 0 || ordinal !in 0 until admittedAttachmentCount) return@synchronized false
@@ -188,7 +170,7 @@ internal class ViewerAttachmentRevisionState {
         true
     }
 
-    private fun intrinsicSizeForSourceQualifiedId(id: String): Pair<Int, Int>? = synchronized(lock) {
+    fun intrinsicSizeForSourceQualifiedId(id: String): Pair<Int, Int>? = synchronized(lock) {
         val index = sourceQualifiedIds.indexOfFirst { it == id }
         if (index < 0) return@synchronized null
         val ordinal = attachmentOrdinals[index]

@@ -10,6 +10,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class PreparedProseRevisionTest {
     @Test fun disabledImagesDoNotCreateRequests() {
@@ -125,7 +128,6 @@ class PreparedProseRevisionTest {
                 ViewerAttachmentRevisionState.COLLECTION_RETAINED_BYTES * 5 +
                 (count + 7) / 8 * 2 +
                 count * (Int.SIZE_BYTES * 3 + Long.SIZE_BYTES) +
-                ViewerAttachmentRevisionState.ACTIVE_REGISTRATION_RETAINED_BYTES +
                 semanticIdentity.length * 2 +
                     (0 until count).sumOf { "$it:https://example.test/image".length * 2 },
             state.retainedPublicationBytesForTesting,
@@ -134,7 +136,7 @@ class PreparedProseRevisionTest {
         assertFalse(state.recordIntrinsicSize("0:https://example.test/image", 0, 2, 2, null))
     }
 
-    @Test fun globalMetadataLRUEvictionFallsBackToActiveSidecarWithoutRepublishing() {
+    @Test fun globalMetadataLRUEvictionFallsBackToOwnMeasurementSidecarWithoutRepublishing() {
         val state = ViewerAttachmentRevisionState()
         ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting(1)
         try {
@@ -143,10 +145,77 @@ class PreparedProseRevisionTest {
             assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
             ViewerImageIntrinsicStore.shared.store("8:https://example.test/b", 20 to 10)
             assertEquals(null, ViewerImageIntrinsicStore.shared.globalSize("7:https://example.test/a"))
-            assertEquals(10 to 20, ViewerImageIntrinsicStore.shared.size("7:https://example.test/a"))
+            assertEquals(10 to 20, FabricAttachmentSidecars.withMeasurementState(state) {
+                ViewerImageIntrinsicStore.shared.size("7:https://example.test/a")
+            })
             assertFalse(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
             assertEquals(1, state.revision)
         } finally {
+            ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting()
+        }
+    }
+
+    @Test fun concurrentFabricMeasurementScopesKeepEvictedIntrinsicMetadataSurfaceLocalAndCleanUp() {
+        val first = FabricSurfaceToken(91, 1)
+        val second = FabricSurfaceToken(92, 1)
+        // This deliberately collides an attachment identity across semantic
+        // source/revision states; only the stable Fabric token may select it.
+        val id = "7:https://example.test/shared"
+        val executor = Executors.newFixedThreadPool(2)
+        ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting(1)
+        try {
+            val firstState = FabricAttachmentSidecars.begin(first, "source-a-revision-1")
+            firstState.admit(1)
+            assertTrue(firstState.recordIntrinsicSize(id, 0, 80, 40, null))
+            val secondState = FabricAttachmentSidecars.begin(second, "source-b-revision-2")
+            secondState.admit(1)
+            assertTrue(secondState.recordIntrinsicSize(id, 0, 30, 60, null))
+            assertEquals(1, firstState.revision)
+            assertEquals(1, secondState.revision)
+            ViewerImageIntrinsicStore.shared.store("8:https://example.test/evict", 1 to 1)
+            assertEquals(null, ViewerImageIntrinsicStore.shared.globalSize(id))
+
+            val ready = CountDownLatch(2)
+            val proceed = CountDownLatch(1)
+            val firstResult = executor.submit<Pair<Int, Int>?> {
+                FabricAttachmentSidecars.withMeasurementState(firstState) {
+                    ready.countDown()
+                    assertTrue(proceed.await(1, TimeUnit.SECONDS))
+                    ViewerImageIntrinsicStore.shared.size(id)
+                }
+            }
+            val secondResult = executor.submit<Pair<Int, Int>?> {
+                FabricAttachmentSidecars.withMeasurementState(secondState) {
+                    ready.countDown()
+                    assertTrue(proceed.await(1, TimeUnit.SECONDS))
+                    ViewerImageIntrinsicStore.shared.size(id)
+                }
+            }
+            assertTrue(ready.await(1, TimeUnit.SECONDS))
+            proceed.countDown()
+            assertEquals(80 to 40, firstResult.get(1, TimeUnit.SECONDS))
+            assertEquals(30 to 60, secondResult.get(1, TimeUnit.SECONDS))
+
+            FabricAttachmentSidecars.withMeasurementState(firstState) {
+                try {
+                    FabricAttachmentSidecars.withMeasurementState(secondState) {
+                        throw IllegalStateException("fixture failure")
+                    }
+                } catch (_: IllegalStateException) {
+                    // The nested exception must restore the outer scope first.
+                }
+                assertTrue(FabricAttachmentSidecars.currentMeasurementState === firstState)
+            }
+            assertEquals(null, FabricAttachmentSidecars.currentMeasurementState)
+
+            FabricAttachmentSidecars.remove(first)
+            FabricAttachmentSidecars.remove(second)
+            assertEquals(null, FabricAttachmentSidecars.state(first))
+            assertEquals(null, FabricAttachmentSidecars.state(second))
+        } finally {
+            executor.shutdownNow()
+            FabricAttachmentSidecars.remove(first)
+            FabricAttachmentSidecars.remove(second)
             ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting()
         }
     }
