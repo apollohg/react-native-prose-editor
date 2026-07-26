@@ -18,7 +18,7 @@ final class PreparedProseRenderingTests: XCTestCase {
                 let first = try prepare(document, themeJSON: Fixture.themeJSON)
                 let second = try prepare(document, themeJSON: Fixture.themeJSON)
 
-                XCTAssertEqual(first.size.height, second.size.height, fixture.name)
+                assertPreparedLayoutsEqual(first, second, fixture: fixture.name)
                 XCTAssertTrue(fixture.expectedKinds.isSubset(of: Set(first.blocks.flatMap(\.fragments).map(\.kind))), fixture.name)
                 XCTAssertTrue(fixture.assertDocument(document), fixture.name)
                 assertGeometryContained(first, fixture: fixture.name)
@@ -38,14 +38,26 @@ final class PreparedProseRenderingTests: XCTestCase {
                 XCTAssertEqual(leaves.filter { $0.1.listItemBoundary!.isFinalRenderableLeaf }.count, 1)
             }
 
+            let theme = PreparedProseTheme.resolve(themeJSON: Fixture.themeJSON)
             let layout = try prepare(document, themeJSON: Fixture.themeJSON)
             let layoutByItem = Dictionary(grouping: zip(document.blocks, layout.blocks).compactMap { pair in
                 let (block, prepared) = pair
                 block.listItemBoundary.map { ($0.identity, (block, prepared)) }
             }, by: \.0)
             for (_, leaves) in layoutByItem {
-                let textOrigins = leaves.compactMap { $0.1.fragments.first(where: { $0.kind == .text })?.bounds.minX }
-                XCTAssertEqual(Set(textOrigins).count, 1, "all leaves in one item reserve the same marker gutter")
+                let contentAnchors = leaves.compactMap { block, prepared -> CGFloat? in
+                    guard let content = prepared.fragments.first(where: { $0.kind == .text || $0.kind == .atom }) else {
+                        return nil
+                    }
+                    let internalPadding = block.nodeType == "codeBlock" ? theme.codePaddingHorizontal : 0
+                    return content.bounds.minX - internalPadding
+                }
+                XCTAssertEqual(contentAnchors.count, leaves.count, "every list leaf exposes a content anchor")
+                if let sharedContentAnchor = contentAnchors.first {
+                    for contentAnchor in contentAnchors.dropFirst() {
+                        XCTAssertEqual(contentAnchor, sharedContentAnchor, accuracy: 0.001, "all leaves in one item reserve the same list content/gutter anchor")
+                    }
+                }
                 XCTAssertEqual(leaves.flatMap { $0.1.fragments }.filter { $0.kind == .marker }.count, 1)
             }
 
@@ -65,6 +77,12 @@ final class PreparedProseRenderingTests: XCTestCase {
 
             let outerLeaves = outerOrdered!.sorted { $0.1.bounds.minY < $1.1.bounds.minY }
             XCTAssertEqual(outerLeaves.count, 3, "paragraph, code, and opaque block must share one outer item")
+            let paragraph = try XCTUnwrap(outerLeaves[0].1.fragments.first(where: { $0.kind == .text }))
+            let code = try XCTUnwrap(outerLeaves[1].1.fragments.first(where: { $0.kind == .text }))
+            let opaque = try XCTUnwrap(outerLeaves[2].1.fragments.first(where: { $0.kind == .atom }))
+            let sharedContentAnchor = paragraph.bounds.minX
+            XCTAssertEqual(opaque.bounds.minX, sharedContentAnchor, accuracy: 0.001)
+            XCTAssertEqual(code.bounds.minX, sharedContentAnchor + theme.codePaddingHorizontal, accuracy: 0.001)
             XCTAssertEqual(outerLeaves[0].1.bounds.maxY, outerLeaves[1].1.bounds.minY, accuracy: 0.001)
             XCTAssertEqual(outerLeaves[1].1.bounds.maxY, outerLeaves[2].1.bounds.minY, accuracy: 0.001)
             let nestedFirstY = nestedOrdered!.map(\.1.bounds.minY).min()!
@@ -155,6 +173,66 @@ final class PreparedProseRenderingTests: XCTestCase {
                 XCTAssertTrue(artifact.insetBy(dx: -tolerance, dy: -tolerance).contains(fragment.bounds), "fragment escapes artifact: \(fixture)")
             }
         }
+    }
+
+    private func assertPreparedLayoutsEqual(
+        _ first: PreparedProseLayout,
+        _ second: PreparedProseLayout,
+        fixture: String,
+        accuracy: CGFloat = 0.001
+    ) {
+        assertEqual(first.size, second.size, accuracy: accuracy, "artifact size", fixture: fixture)
+        XCTAssertEqual(first.blocks.count, second.blocks.count, "block count: \(fixture)")
+        XCTAssertEqual(first.interactions, second.interactions, "interaction payload: \(fixture)")
+        XCTAssertEqual(first.accessibilityNodes, second.accessibilityNodes, "accessibility payload: \(fixture)")
+
+        for (blockIndex, pair) in zip(first.blocks, second.blocks).enumerated() {
+            let (firstBlock, secondBlock) = pair
+            assertEqual(firstBlock.bounds, secondBlock.bounds, accuracy: accuracy, "block \(blockIndex) bounds", fixture: fixture)
+            XCTAssertEqual(firstBlock.fragments.count, secondBlock.fragments.count, "block \(blockIndex) fragment count: \(fixture)")
+
+            for (fragmentIndex, fragmentPair) in zip(firstBlock.fragments, secondBlock.fragments).enumerated() {
+                let (firstFragment, secondFragment) = fragmentPair
+                XCTAssertEqual(firstFragment.kind, secondFragment.kind, "block \(blockIndex) fragment \(fragmentIndex) kind: \(fixture)")
+                assertEqual(firstFragment.origin, secondFragment.origin, accuracy: accuracy, "block \(blockIndex) fragment \(fragmentIndex) origin", fixture: fixture)
+                assertEqual(firstFragment.bounds, secondFragment.bounds, accuracy: accuracy, "block \(blockIndex) fragment \(fragmentIndex) bounds", fixture: fixture)
+                XCTAssertEqual(firstFragment.line != nil, secondFragment.line != nil, "block \(blockIndex) fragment \(fragmentIndex) line presence: \(fixture)")
+                XCTAssertEqual(firstFragment.label, secondFragment.label, "block \(blockIndex) fragment \(fragmentIndex) label: \(fixture)")
+                XCTAssertEqual(firstFragment.checked, secondFragment.checked, "block \(blockIndex) fragment \(fragmentIndex) checked state: \(fixture)")
+                XCTAssertEqual(firstFragment.cornerRadius, secondFragment.cornerRadius, accuracy: accuracy, "block \(blockIndex) fragment \(fragmentIndex) corner radius: \(fixture)")
+                XCTAssertEqual(firstFragment.strokeWidth, secondFragment.strokeWidth, accuracy: accuracy, "block \(blockIndex) fragment \(fragmentIndex) stroke width: \(fixture)")
+                assertEqual(firstFragment.padding, secondFragment.padding, accuracy: accuracy, "block \(blockIndex) fragment \(fragmentIndex) padding", fixture: fixture)
+
+                if let firstLine = firstFragment.line, let secondLine = secondFragment.line {
+                    let firstRange = CTLineGetStringRange(firstLine)
+                    let secondRange = CTLineGetStringRange(secondLine)
+                    XCTAssertEqual(firstRange.location, secondRange.location, "block \(blockIndex) fragment \(fragmentIndex) line range location: \(fixture)")
+                    XCTAssertEqual(firstRange.length, secondRange.length, "block \(blockIndex) fragment \(fragmentIndex) line range length: \(fixture)")
+                }
+            }
+        }
+    }
+
+    private func assertEqual(_ first: CGSize, _ second: CGSize, accuracy: CGFloat, _ component: String, fixture: String) {
+        XCTAssertEqual(first.width, second.width, accuracy: accuracy, "\(component) width: \(fixture)")
+        XCTAssertEqual(first.height, second.height, accuracy: accuracy, "\(component) height: \(fixture)")
+    }
+
+    private func assertEqual(_ first: CGPoint, _ second: CGPoint, accuracy: CGFloat, _ component: String, fixture: String) {
+        XCTAssertEqual(first.x, second.x, accuracy: accuracy, "\(component) x: \(fixture)")
+        XCTAssertEqual(first.y, second.y, accuracy: accuracy, "\(component) y: \(fixture)")
+    }
+
+    private func assertEqual(_ first: CGRect, _ second: CGRect, accuracy: CGFloat, _ component: String, fixture: String) {
+        assertEqual(first.origin, second.origin, accuracy: accuracy, "\(component) origin", fixture: fixture)
+        assertEqual(first.size, second.size, accuracy: accuracy, "\(component) size", fixture: fixture)
+    }
+
+    private func assertEqual(_ first: UIEdgeInsets, _ second: UIEdgeInsets, accuracy: CGFloat, _ component: String, fixture: String) {
+        XCTAssertEqual(first.top, second.top, accuracy: accuracy, "\(component) top: \(fixture)")
+        XCTAssertEqual(first.left, second.left, accuracy: accuracy, "\(component) left: \(fixture)")
+        XCTAssertEqual(first.bottom, second.bottom, accuracy: accuracy, "\(component) bottom: \(fixture)")
+        XCTAssertEqual(first.right, second.right, accuracy: accuracy, "\(component) right: \(fixture)")
     }
 
     /// Dropping both the result field and the local optional before returning
