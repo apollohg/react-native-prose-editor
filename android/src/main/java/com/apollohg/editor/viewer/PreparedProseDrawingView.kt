@@ -27,10 +27,8 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
     var imagePixels: Map<String, Bitmap> = emptyMap()
         set(value) { field = value; invalidate() }
     /**
-     * Pixels are owned by this mounted surface, not by the immutable layout or
-     * the shared decode cache. Count map/entry ownership once per mapping and
-     * backing allocation once per distinct bitmap so replacement and recycle
-     * naturally recalculate a current total.
+     * This surface owns only map/entry references. The shared native loader
+     * cache is the sole owner charged for a decoded Bitmap allocation.
      */
     internal val retainedImagePixelsBytesForTesting: Long
         get() = retainedImagePixelsBytes(imagePixels)
@@ -54,24 +52,11 @@ internal class PreparedProseDrawingView @JvmOverloads constructor(context: Conte
 
         fun retainedImagePixelsBytes(pixels: Map<String, Bitmap>): Long {
             if (pixels.isEmpty()) return 0L
-            val seen = java.util.IdentityHashMap<Bitmap, Unit>()
             var retained = IMAGE_PIXEL_MAP_RETAINED_BYTES
-            pixels.values.forEach { bitmap ->
+            pixels.values.forEach {
                 retained = saturatingAdd(retained, IMAGE_PIXEL_ENTRY_RETAINED_BYTES)
-                if (seen.put(bitmap, Unit) == null) retained = saturatingAdd(retained, bitmapAllocationBytes(bitmap))
             }
             return retained
-        }
-
-        private fun bitmapAllocationBytes(bitmap: Bitmap): Long {
-            val allocation = runCatching { bitmap.allocationByteCount.toLong() }.getOrNull()
-            if (allocation != null && allocation >= 0L) return allocation
-            return runCatching {
-                saturatingMultiply(
-                    saturatingMultiply(bitmap.width.coerceAtLeast(0).toLong(), bitmap.height.coerceAtLeast(0).toLong()),
-                    4L,
-                )
-            }.getOrDefault(0L)
         }
 
         private fun saturatingAdd(left: Long, right: Long): Long =

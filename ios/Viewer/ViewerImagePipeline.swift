@@ -57,6 +57,8 @@ final class ViewerImageIntrinsicStore {
 
     init(entryLimit: Int = 256) { self.entryLimit = max(1, entryLimit) }
 
+    /// A Fabric prepare may only see its own surface sidecar. UIKit has no
+    /// shadow-tree surface, so it deliberately keeps the process cache path.
     func size(for id: String) -> CGSize? {
         lock.lock()
         if var entry = values[id] {
@@ -67,6 +69,9 @@ final class ViewerImageIntrinsicStore {
             return entry.size
         }
         lock.unlock()
+        if let surfaceState = FabricAttachmentSidecars.currentMeasurementState {
+            return surfaceState.intrinsicSize(forSourceQualifiedID: id)
+        }
         return ViewerAttachmentRevisionState.authoritativeSize(for: id)
     }
 
@@ -219,7 +224,7 @@ final class ViewerAttachmentRevisionState {
         }
     }
 
-    private func intrinsicSize(forSourceQualifiedID id: String) -> CGSize? {
+    fileprivate func intrinsicSize(forSourceQualifiedID id: String) -> CGSize? {
         lock.withLock {
             guard let index = sourceQualifiedIDs.firstIndex(where: { $0 == id }) else { return nil }
             let ordinal = attachmentOrdinals[index]
@@ -257,6 +262,49 @@ final class ViewerAttachmentRevisionState {
     }
 
     deinit { Self.unregister(self) }
+}
+
+/// Fabric preparation has no mounted UIView to own mutable image publication.
+/// Keep that state at the stable surface/component token and install it into a
+/// thread-local measurement scope before Core Text can inspect intrinsic data.
+final class FabricAttachmentSidecars {
+    private static let lock = NSLock()
+    private static var states: [FabricSurfaceToken: ViewerAttachmentRevisionState] = [:]
+    private static let measurementStateKey = "com.apollohg.editor.viewer.fabricImageMeasurementState"
+
+    static var currentMeasurementState: ViewerAttachmentRevisionState? {
+        Thread.current.threadDictionary[measurementStateKey] as? ViewerAttachmentRevisionState
+    }
+
+    static func begin(_ surface: FabricSurfaceToken, semanticIdentity: String) -> ViewerAttachmentRevisionState {
+        lock.withLock {
+            let state = states[surface] ?? ViewerAttachmentRevisionState()
+            states[surface] = state
+            _ = state.beginSemanticGeneration(semanticIdentity)
+            return state
+        }
+    }
+
+    static func withMeasurementState<T>(_ state: ViewerAttachmentRevisionState, _ body: () throws -> T) rethrows -> T {
+        let dictionary = Thread.current.threadDictionary
+        let previous = dictionary[measurementStateKey]
+        dictionary[measurementStateKey] = state
+        defer {
+            if let previous { dictionary[measurementStateKey] = previous }
+            else { dictionary.removeObject(forKey: measurementStateKey) }
+        }
+        return try body()
+    }
+
+    static func state(for surface: FabricSurfaceToken) -> ViewerAttachmentRevisionState? { lock.withLock { states[surface] } }
+
+    static func remove(_ surface: FabricSurfaceToken) { lock.withLock { states.removeValue(forKey: surface)?.reset() } }
+
+    static func remove(surfaceId: Int64) {
+        lock.withLock {
+            states.keys.filter { $0.surfaceId == surfaceId }.forEach { states.removeValue(forKey: $0)?.reset() }
+        }
+    }
 }
 
 /// Bounded/cancellable viewer facade over the editor's existing native image

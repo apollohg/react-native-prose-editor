@@ -138,25 +138,43 @@ final class PreparedProseRevisionTests: XCTestCase {
         XCTAssertEqual(state.revision, 1)
     }
 
-    func testMountedPixelOwnershipCountsMapEntriesAndUniqueCGImageBackingExactly() {
+    func testMountedPixelOwnershipCountsOnlySurfaceMapEntries() {
         let drawing = PreparedProseDrawingView()
         let image = paddedImage(bytesPerRow: 64, height: 2)
         drawing.imagePixels = ["first": image, "second": image]
         XCTAssertEqual(
             PreparedProseDrawingView.imagePixelMapRetainedBytes
-                + PreparedProseDrawingView.imagePixelEntryRetainedBytes * 2
-                + 128,
+                + PreparedProseDrawingView.imagePixelEntryRetainedBytes * 2,
             drawing.retainedImagePixelsBytesForTesting
         )
         drawing.imagePixels = ["replacement": paddedImage(bytesPerRow: 32, height: 3)]
         XCTAssertEqual(
             PreparedProseDrawingView.imagePixelMapRetainedBytes
-                + PreparedProseDrawingView.imagePixelEntryRetainedBytes
-                + 96,
+                + PreparedProseDrawingView.imagePixelEntryRetainedBytes,
             drawing.retainedImagePixelsBytesForTesting
         )
         drawing.imagePixels = [:]
         XCTAssertEqual(drawing.retainedImagePixelsBytesForTesting, 0)
+    }
+
+    func testFabricMeasurementScopeCannotConsultAnotherSurfaceSidecar() {
+        let first = FabricSurfaceToken(surfaceId: 91, componentTag: 1)
+        let second = FabricSurfaceToken(surfaceId: 92, componentTag: 1)
+        let id = "7:https://example.test/a"
+        defer {
+            FabricAttachmentSidecars.remove(first)
+            FabricAttachmentSidecars.remove(second)
+        }
+        let outgoing = FabricAttachmentSidecars.begin(first, semanticIdentity: "outgoing")
+        outgoing.admit(attachmentCount: 1)
+        XCTAssertTrue(outgoing.recordIntrinsicSize(CGSize(width: 10, height: 20), for: id, ordinal: 0, declaredSize: nil))
+        let incoming = FabricAttachmentSidecars.begin(second, semanticIdentity: "incoming")
+        incoming.admit(attachmentCount: 1)
+        ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting(1)
+        defer { ViewerImageIntrinsicStore.shared.clearAndSetEntryLimitForTesting() }
+        XCTAssertNil(FabricAttachmentSidecars.withMeasurementState(incoming) {
+            ViewerImageIntrinsicStore.shared.size(for: id)
+        })
     }
 
     private func paddedImage(bytesPerRow: Int, height: Int) -> UIImage {

@@ -151,19 +151,17 @@ class PreparedProseRevisionTest {
         }
     }
 
-    @Test fun mountedPixelOwnershipCountsMapEntriesAndUniqueBitmapAllocationsExactly() {
+    @Test fun mountedPixelOwnershipCountsOnlySurfaceMapEntries() {
         val shared = Bitmap.createBitmap(3, 2, Bitmap.Config.ARGB_8888)
         val replacement = Bitmap.createBitmap(4, 2, Bitmap.Config.ARGB_8888)
         assertEquals(
             PreparedProseDrawingView.IMAGE_PIXEL_MAP_RETAINED_BYTES +
-                PreparedProseDrawingView.IMAGE_PIXEL_ENTRY_RETAINED_BYTES * 2 +
-                shared.allocationByteCount.toLong(),
+                PreparedProseDrawingView.IMAGE_PIXEL_ENTRY_RETAINED_BYTES * 2,
             PreparedProseDrawingView.retainedImagePixelsBytes(mapOf("first" to shared, "second" to shared)),
         )
         assertEquals(
             PreparedProseDrawingView.IMAGE_PIXEL_MAP_RETAINED_BYTES +
-                PreparedProseDrawingView.IMAGE_PIXEL_ENTRY_RETAINED_BYTES +
-                replacement.allocationByteCount.toLong(),
+                PreparedProseDrawingView.IMAGE_PIXEL_ENTRY_RETAINED_BYTES,
             PreparedProseDrawingView.retainedImagePixelsBytes(mapOf("first" to replacement)),
         )
         assertEquals(0, PreparedProseDrawingView.retainedImagePixelsBytes(emptyMap()))
@@ -208,10 +206,10 @@ class PreparedProseRevisionTest {
         ViewerFontEnvironment.resetFamilyRegistryForTesting()
         ViewerFontEnvironment.registerAvailableFamily("viewer-test-font", Typeface.DEFAULT)
         assertFalse(ViewerFontEnvironment.resolveFamily("viewer-test-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
-        ViewerFontEnvironment.setPlatformFamilyResolverForTesting { _, _ -> Typeface.DEFAULT }
+        ViewerFontEnvironment.setPlatformFamilyResolverForTesting { false }
         assertTrue(ViewerFontEnvironment.resolveFamily("ordinary-missing-font", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
-        assertTrue(ViewerFontEnvironment.warnOnceForMissingFamily("ordinary-missing-font", "semantic", "revision"))
-        assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily("ordinary-missing-font", "semantic", "revision"))
+        assertTrue(ViewerFontEnvironment.warnOnceForMissingFamily("ordinary-missing-font", "semantic"))
+        assertFalse(ViewerFontEnvironment.warnOnceForMissingFamily("ordinary-missing-font", "semantic"))
         assertFalse(ViewerFontEnvironment.resolveFamily("sans-serif", Typeface.NORMAL, Typeface.SANS_SERIF).isDemonstrablyMissing)
         ViewerFontEnvironment.resetFamilyRegistryForTesting()
     }

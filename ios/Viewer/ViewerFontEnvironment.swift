@@ -49,7 +49,10 @@ public final class ViewerFontEnvironment: NSObject {
     func shouldWarnForMissingFamily(_ family: String, semanticGeneration: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        let inserted = missingWarnings.insert("\(revision)\u{1f}\(semanticGeneration)\u{1f}\(family)").inserted
+        // A layout/environment revision is not a new semantic request. Keep
+        // this bounded process registry keyed solely by semantic generation
+        // and family so attachment/font reinstalls cannot re-log.
+        let inserted = missingWarnings.insert("\(semanticGeneration)\u{1f}\(family)").inserted
         while missingWarnings.count > 512, let oldest = missingWarnings.sorted().first {
             missingWarnings.remove(oldest)
         }

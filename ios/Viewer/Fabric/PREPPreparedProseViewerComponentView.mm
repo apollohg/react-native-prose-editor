@@ -424,6 +424,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   _ownedComponentTag = componentTag;
   _hasOwnedSurface = YES;
   _ownedGeneration = generation;
+  [_drawingView bindFabricAttachmentStateSurfaceId:_ownedSurfaceId
+                                      componentTag:_ownedComponentTag];
   const BOOL installed = [[PREPPreparedProseLayoutRegistry sharedRegistry]
       installCachedLayoutInDrawingView:_drawingView
                              surfaceId:_ownedSurfaceId

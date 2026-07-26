@@ -253,12 +253,9 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
     /** Test seam: drawing must never increment this prepared-layout counter. */
     internal var staticLayoutsBuilt: Int = 0
         private set
-    private var semanticGeneration = ""
-    private var fontRevision = "0\u001f0"
 
     override fun prepare(document: ViewerDocument, key: ProseLayoutKey, theme: PreparedProseTheme, widthPx: Int, density: Float, collapsesWhenEmpty: Boolean): PreparedProseLayout {
-        semanticGeneration = key.generationIdentity
-        fontRevision = "${key.nativeFontRevision}\u001f${key.fontEnvironmentRevision}"
+        val warningSemanticGeneration = key.generationIdentity
         if (widthPx <= 0 || !density.isFinite() || density <= 0f) return PreparedProseLayout.error(key, 0, ProseViewerError.invalidWidth())
         if (document.isEmpty && collapsesWhenEmpty) return PreparedProseLayout(key, widthPx, 0, emptyList(), retainedBytes = document.retainedBytes)
         val contentWidth = max(1, widthPx - theme.insetLeftPx - theme.insetRightPx)
@@ -275,7 +272,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             }
         }
         val blocks = document.blocks.map { block ->
-            val prepared = prepareBlock(block, imageAttachments.size, markers, theme, contentWidth, cursorY)
+            val prepared = prepareBlock(block, imageAttachments.size, markers, theme, contentWidth, cursorY, warningSemanticGeneration)
             cursorY = prepared.nextY
             retained += prepared.block.retainedBytes + prepared.extraBytes
             interactions += prepared.interactions
@@ -300,7 +297,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
 
     private data class BlockResult(val block: PreparedProseBlock, val interactions: List<PreparedProseInteraction>, val attachment: ViewerImageAttachment? = null, val nextY: Int, val extraBytes: Long)
 
-    private fun prepareBlock(block: ViewerBlock, attachmentOrdinal: Int, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int): BlockResult {
+    private fun prepareBlock(block: ViewerBlock, attachmentOrdinal: Int, measuredMarkers: Map<Int, PreparedMarker>, theme: PreparedProseTheme, contentWidth: Int, cursorY: Int, warningSemanticGeneration: String): BlockResult {
         val paint = theme.paintFor(block)
         val ancestors = listItemAncestors(block)
         val ancestorMarkers = ancestors.mapNotNull { ancestor -> measuredMarkers[ancestor.identity]?.let { ancestor to it } }
@@ -349,7 +346,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         }
 
         val availableWidth = max(1, contentWidth - listInset - quoteInset - codeInset * 2)
-        val attributed = attributed(block.inlines, paint, theme)
+        val attributed = attributed(block.inlines, paint, theme, warningSemanticGeneration)
         val layout = staticLayout(attributed.text, paint, availableWidth)
         val firstBaseline = layout.getLineBaseline(0)
         // A marker can be taller than the first text line. Reserve its excess
@@ -466,7 +463,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         data class Mention(override val start: Int, override val end: Int, val docPos: Long, val label: String) : PreparedSemanticRange
     }
 
-    private fun attributed(inlines: List<ViewerInline>, base: PreparedTextPaint, theme: PreparedProseTheme): AttributedBlock {
+    private fun attributed(inlines: List<ViewerInline>, base: PreparedTextPaint, theme: PreparedProseTheme, warningSemanticGeneration: String): AttributedBlock {
         val source = StringBuilder()
         val spans = mutableListOf<(SpannableString) -> Unit>()
         val atoms = mutableListOf<PreparedAtomSpec>()
@@ -476,7 +473,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
                 val start = source.length
                 source.append(inline.text)
                 val end = source.length
-                val markSpans = markSpans(inline.marks, base, theme)
+                val markSpans = markSpans(inline.marks, base, theme, warningSemanticGeneration)
                 spans += { value -> markSpans.forEach { value.setSpan(it, start, end, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) } }
                 href(inline.marks)?.let { href ->
                     val previous = semanticRanges.lastOrNull() as? PreparedSemanticRange.Link
@@ -517,7 +514,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
     private fun href(marks: List<uniffi.editor_core.FfiViewerMark>): String? = marks.firstOrNull { it.markType == "link" }
         ?.let { runCatching { org.json.JSONObject(it.attrsJson).optString("href") }.getOrNull()?.takeIf(String::isNotEmpty) }
 
-    private fun markSpans(marks: List<uniffi.editor_core.FfiViewerMark>, base: PreparedTextPaint, theme: PreparedProseTheme): List<Any> {
+    private fun markSpans(marks: List<uniffi.editor_core.FfiViewerMark>, base: PreparedTextPaint, theme: PreparedProseTheme, warningSemanticGeneration: String): List<Any> {
         var explicitColor: Int? = null
         var background: Int? = null
         var underline = false
@@ -554,7 +551,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         if (family != null || size != null) {
             family?.let { requested ->
                 if (ViewerFontEnvironment.resolveFamily(requested, Typeface.NORMAL, base.typeface).isDemonstrablyMissing) {
-                    ViewerFontEnvironment.warnOnceForMissingFamily(requested, semanticGeneration, fontRevision)
+                    ViewerFontEnvironment.warnOnceForMissingFamily(requested, warningSemanticGeneration)
                 }
             }
             resolved = resolved.withStyle(EditorTextStyle(fontFamily = family, fontSize = size), theme.fontDensity)

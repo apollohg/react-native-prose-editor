@@ -153,6 +153,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
             )
         }
         let canonicalWidth = ProseLayoutMetrics.canonicalWidth(widthPixels: widthPixels, scale: scale)
+        // Yoga can prepare before a component view exists. Reset the matching
+        // surface sidecar before Core Text asks for intrinsic fallback.
+        let fabricImageState = fabricSurface.map {
+            FabricAttachmentSidecars.begin($0, semanticIdentity: request.semanticGenerationIdentity)
+        }
         do {
             let document = try preparedDocument(
                 request: request,
@@ -168,6 +173,11 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 self.layoutPreparationCount += 1
                 self.lock.unlock()
                 do {
+                    if let fabricImageState {
+                        return try FabricAttachmentSidecars.withMeasurementState(fabricImageState) {
+                            try self.prepare(document, key, canonicalWidth, scale)
+                        }
+                    }
                     return try self.prepare(document, key, canonicalWidth, scale)
                 } catch let error as ProseViewerError {
                     return self.errorArtifact(key: key, width: canonicalWidth, error: error)
@@ -392,6 +402,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
 
     func releaseFabricSurface(_ surface: FabricSurfaceToken) {
         layoutCache.releaseLease(for: surface)
+        FabricAttachmentSidecars.remove(surface)
         compiledCondition.lock()
         documentsByFabricGeneration = documentsByFabricGeneration.filter { $0.key.surface != surface }
         failuresByFabricGeneration = failuresByFabricGeneration.filter { $0.key.surface != surface }

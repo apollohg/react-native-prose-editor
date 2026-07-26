@@ -10,25 +10,13 @@ import UIKit
 @objc(PREPPreparedProseDrawingView)
 public final class PreparedProseDrawingView: UIView {
     var imagePixels: [String: UIImage] = [:] { didSet { setNeedsDisplay() } }
-    /// This map is the mounted surface's pixel owner. Immutable layouts and
-    /// shared decode caches retain no image pixels, and a shared UIImage is
-    /// charged only once even when multiple attachments reference it.
+    /// This map owns only mapping/reference overhead. The shared native image
+    /// cache is the sole owner charged for a decoded CGImage allocation.
     internal var retainedImagePixelsBytesForTesting: Int {
         guard !imagePixels.isEmpty else { return 0 }
-        var seen = Set<ObjectIdentifier>()
         var retained = Self.imagePixelMapRetainedBytes
-        for image in imagePixels.values {
+        for _ in imagePixels.values {
             retained = Self.saturatingAdd(retained, Self.imagePixelEntryRetainedBytes)
-            // UIImage wrappers can share one CGImage backing allocation.
-            let identity: ObjectIdentifier
-            if let cgImage = image.cgImage {
-                identity = ObjectIdentifier(cgImage)
-            } else {
-                identity = ObjectIdentifier(image)
-            }
-            if seen.insert(identity).inserted {
-                retained = Self.saturatingAdd(retained, Self.pixelAllocationBytes(for: image))
-            }
         }
         return retained
     }
@@ -43,7 +31,7 @@ public final class PreparedProseDrawingView: UIView {
     @objc public static let imageMetadataDidResolve = Notification.Name("com.apollohg.editor.viewer.imageMetadataDidResolve")
     @objc public static let imageResourceDidFail = Notification.Name("com.apollohg.editor.viewer.imageResourceDidFail")
     private lazy var imagePipeline = ViewerImagePipeline(policy: .default)
-    private let imageRevisions = ViewerAttachmentRevisionState()
+    private var imageRevisions = ViewerAttachmentRevisionState()
     private var imageGeneration = ""
     private var imageConfiguration: (enabled: Bool, policy: ImageLoadingPolicy) = (false, .default)
     var layout: PreparedProseLayout? {
@@ -100,6 +88,15 @@ public final class PreparedProseDrawingView: UIView {
         imageGeneration = ""
         imagePipeline.cancel()
         imagePixels = [:]
+    }
+
+    /// Fabric has already reset this sidecar during Yoga preparation. Mount
+    /// only transfers the stable surface owner; it must not reopen metadata or
+    /// error publication by resetting a second time.
+    @objc(bindFabricAttachmentStateSurfaceId:componentTag:)
+    public func bindFabricAttachmentState(surfaceId: Int64, componentTag: Int64) {
+        guard let state = FabricAttachmentSidecars.state(for: .init(surfaceId: surfaceId, componentTag: componentTag)) else { return }
+        imageRevisions = state
     }
 
     @objc public func updateConfiguredImagesForVisibleWindow() {

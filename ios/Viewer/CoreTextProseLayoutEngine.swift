@@ -238,14 +238,13 @@ private struct PreparedListMarker {
 
 /// Performs the width-dependent, immutable Core Text preparation step.
 final class CoreTextProseLayoutEngine {
-    private var semanticGeneration = ""
     func prepare(
         document: ViewerDocument,
         key: ProseLayoutKey,
         widthPoints: CGFloat,
         displayScale: CGFloat
     ) throws -> PreparedProseLayout {
-        semanticGeneration = key.generationIdentity
+        let warningSemanticGeneration = key.generationIdentity
         guard let widthPixels = ProseLayoutMetrics.widthPixels(widthPoints: widthPoints, scale: displayScale) else {
             return .error(key: key, width: 0, error: .hostContract(message: "A finite positive width is required for prose measurement."))
         }
@@ -277,7 +276,8 @@ final class CoreTextProseLayoutEngine {
                 theme: theme,
                 width: canonicalWidth,
                 cursorY: cursorY,
-                displayScale: displayScale
+                displayScale: displayScale,
+                warningSemanticGeneration: warningSemanticGeneration
             )
             blocks.append(prepared.block)
             interactions.append(contentsOf: prepared.interactions)
@@ -322,7 +322,8 @@ final class CoreTextProseLayoutEngine {
         theme: PreparedProseTheme,
         width: CGFloat,
         cursorY: CGFloat,
-        displayScale: CGFloat
+        displayScale: CGFloat,
+        warningSemanticGeneration: String
     ) -> (block: PreparedProseBlock, interactions: [PreparedProseInteraction], attachment: ViewerImageAttachment?, nextY: CGFloat, retainedBytes: Int) {
         let contentX = theme.contentInsets.left
         let contentWidth = max(1, width - theme.contentInsets.left - theme.contentInsets.right)
@@ -389,7 +390,7 @@ final class CoreTextProseLayoutEngine {
         }
 
         let availableWidth = max(1, contentWidth - listInset - quoteInset - codeInset * 2)
-        let attributed = makeAttributedString(block.inlines, paint: paint, theme: theme)
+        let attributed = makeAttributedString(block.inlines, paint: paint, theme: theme, warningSemanticGeneration: warningSemanticGeneration)
         let typesetter = CTTypesetterCreateWithAttributedString(attributed.string)
         var location = 0
         var fragments: [PreparedProseFragment] = []
@@ -530,7 +531,8 @@ final class CoreTextProseLayoutEngine {
     private func makeAttributedString(
         _ inlines: [ViewerInline],
         paint: PreparedTextPaint,
-        theme: PreparedProseTheme
+        theme: PreparedProseTheme,
+        warningSemanticGeneration: String
     ) -> PreparedAttributedBlock {
         let result = NSMutableAttributedString()
         var atoms: [PreparedAtomSpec] = []
@@ -539,7 +541,7 @@ final class CoreTextProseLayoutEngine {
             switch inline {
             case let .text(text: text, marks: marks):
                 let start = result.length
-                result.append(NSAttributedString(string: text, attributes: attributes(for: marks, paint: paint, theme: theme)))
+                result.append(NSAttributedString(string: text, attributes: attributes(for: marks, paint: paint, theme: theme, warningSemanticGeneration: warningSemanticGeneration)))
                 if let href = href(in: marks), !text.isEmpty {
                     let range = NSRange(location: start, length: (text as NSString).length)
                     if case let .link(previous, previousHref, previousText)? = semanticRanges.last,
@@ -607,7 +609,7 @@ final class CoreTextProseLayoutEngine {
         return nil
     }
 
-    private func attributes(for marks: [FfiViewerMark], paint: PreparedTextPaint, theme: PreparedProseTheme) -> [NSAttributedString.Key: Any] {
+    private func attributes(for marks: [FfiViewerMark], paint: PreparedTextPaint, theme: PreparedProseTheme, warningSemanticGeneration: String) -> [NSAttributedString.Key: Any] {
         var linkTheme: EditorLinkTheme?
         var explicitForeground: UIColor?
         var background: UIColor?
@@ -651,7 +653,7 @@ final class CoreTextProseLayoutEngine {
         if let fontFamily {
             if let resolved = UIFont(name: fontFamily, size: scaledMarkSize ?? font.pointSize) {
                 font = resolved
-            } else if ViewerFontEnvironment.shared.shouldWarnForMissingFamily(fontFamily, semanticGeneration: semanticGeneration) {
+            } else if ViewerFontEnvironment.shared.shouldWarnForMissingFamily(fontFamily, semanticGeneration: warningSemanticGeneration) {
                 NSLog("PreparedProseViewer: requested font family %@ is unavailable; using system fallback", fontFamily)
             }
         }

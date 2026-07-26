@@ -2,6 +2,7 @@ package com.apollohg.editor.viewer
 
 import android.content.res.Configuration
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -16,12 +17,16 @@ internal class ViewerFontEnvironment {
         private val registeredFamilies = mutableMapOf<String, Typeface>()
         private val demonstrablyMissingFamilies = mutableSetOf<String>()
         private val familyObservers = FamilyObservers()
-        private val platformFamilyNames = setOf(
+        private val genericPlatformFamilies = setOf(
             "default", "sans", "sans-serif", "serif", "monospace", "cursive", "casual",
             "sans-serif-smallcaps", "sans-serif-condensed", "sans-serif-light", "sans-serif-medium",
             "sans-serif-black", "sans-serif-thin", "sans-serif-condensed-light",
         )
-        private var platformResolverForTesting: ((String, Int) -> Typeface)? = null
+        private val platformFamilyAvailability = object : LinkedHashMap<String, Boolean>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean = size > 128
+        }
+        /** Test seam models the platform family resolver, not Typeface equality. */
+        private var platformResolverForTesting: ((String) -> Boolean)? = null
 
         internal data class ResolvedFamily(val typeface: Typeface, val isDemonstrablyMissing: Boolean)
 
@@ -60,20 +65,31 @@ internal class ViewerFontEnvironment {
                 registeredFamilies[normalized]?.let { return ResolvedFamily(Typeface.create(it, style), false) }
                 if (normalized in demonstrablyMissingFamilies) return ResolvedFamily(Typeface.create(fallback, style), true)
             }
-            // Typeface.create silently returns the platform default for an
-            // unknown family. Compare that result to the same styled default;
-            // known Android generic family aliases are valid even when they
-            // intentionally resolve to that default. Registrations above win
-            // before this comparison so custom families never false-warn.
+            // API 34 exposes the resolved system family name. That is a public
+            // resolver, unlike the old DEFAULT equality heuristic; cache it
+            // outside layout/draw hot paths. On older releases an unknown
+            // family is not demonstrably absent, so retain fallback silently.
             val resolved = synchronized(familyLock) {
-                platformResolverForTesting?.invoke(normalized, style)
-            } ?: Typeface.create(normalized, style)
-            val platformFallback = Typeface.create(Typeface.DEFAULT, style)
-            val isKnownPlatformFamily = normalized.lowercase() in platformFamilyNames
-            return ResolvedFamily(resolved, !isKnownPlatformFamily && resolved == platformFallback)
+                Typeface.create(normalized, style)
+            }
+            val available = synchronized(familyLock) {
+                platformResolverForTesting?.invoke(normalized)
+                    ?: platformFamilyAvailability[normalized.lowercase()]
+                    ?: resolvePlatformFamilyAvailability(normalized).also {
+                        platformFamilyAvailability[normalized.lowercase()] = it
+                    }
+            }
+            return ResolvedFamily(resolved, !available)
         }
 
-        internal fun setPlatformFamilyResolverForTesting(resolver: ((String, Int) -> Typeface)?) {
+        private fun resolvePlatformFamilyAvailability(family: String): Boolean {
+            if (family.lowercase() in genericPlatformFamilies) return true
+            if (Build.VERSION.SDK_INT < 34) return true
+            val resolvedName = Typeface.create(family, Typeface.NORMAL).systemFontFamilyName
+            return resolvedName.equals(family, ignoreCase = true)
+        }
+
+        internal fun setPlatformFamilyResolverForTesting(resolver: ((String) -> Boolean)?) {
             synchronized(familyLock) { platformResolverForTesting = resolver }
         }
 
@@ -82,12 +98,13 @@ internal class ViewerFontEnvironment {
                 registeredFamilies.clear()
                 demonstrablyMissingFamilies.clear()
                 platformResolverForTesting = null
+                platformFamilyAvailability.clear()
             }
             familyObservers.resetForTesting()
         }
 
-        fun warnOnceForMissingFamily(family: String, semanticGeneration: String, revision: String): Boolean {
-            val key = "$revision\u001f$semanticGeneration\u001f$family"
+        fun warnOnceForMissingFamily(family: String, semanticGeneration: String): Boolean {
+            val key = "$semanticGeneration\u001f$family"
             val shouldWarn = synchronized(warningLock) {
                 val inserted = missingWarnings.add(key)
                 while (missingWarnings.size > 512) missingWarnings.minOrNull()?.let(missingWarnings::remove)
