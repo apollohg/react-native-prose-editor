@@ -24,6 +24,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
     private var compilationFailureAccessOrder: [String] = []
     private var documentsByFabricGeneration: [FabricGenerationToken: ViewerDocument] = [:]
     private var failuresByFabricGeneration: [FabricGenerationToken: Error] = [:]
+    private var themesByGeneration: [String: PreparedProseTheme] = [:]
     private var compiledRetainedBytes = 0
     private let compiledByteBudget: Int
     private let compilationFailureBudget: Int
@@ -399,6 +400,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         compilationFailureAccessOrder.removeAll()
         documentsByFabricGeneration.removeAll()
         failuresByFabricGeneration.removeAll()
+        themesByGeneration.removeAll()
         compiledRetainedBytes = 0
         compiledCondition.unlock()
     }
@@ -492,7 +494,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
         }
         if let generation, let document = documentsByFabricGeneration[generation] {
             compiledCondition.unlock()
-            return documentForEmptyContentPolicy(document, request: request)
+            return documentForEmptyContentPolicy(document, request: request).withPreparedTheme(preparedTheme(for: request))
         }
         if let generation, let failure = failuresByFabricGeneration[generation] {
             compiledCondition.unlock()
@@ -507,7 +509,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
                 documentsByFabricGeneration[generation] = document
                 compiledCondition.unlock()
             }
-            return documentForEmptyContentPolicy(document, request: request)
+            return documentForEmptyContentPolicy(document, request: request).withPreparedTheme(preparedTheme(for: request))
         } catch {
             if let generation {
                 compiledCondition.lock()
@@ -526,12 +528,23 @@ public final class PreparedProseLayoutRegistry: NSObject {
         if document.isEmpty && !request.configuration.collapsesWhenEmpty {
             document = ViewerDocument(
                 semanticKey: document.semanticKey,
-                paragraphs: document.paragraphs,
+                blocks: document.blocks,
                 isEmpty: false,
                 retainedBytes: document.retainedBytes
             )
         }
         return document
+    }
+
+    /// Parsed paint values are immutable and shared across all width-specific
+    /// layouts for the same semantic generation.
+    private func preparedTheme(for request: ProseViewerRequest) -> PreparedProseTheme {
+        compiledCondition.lock()
+        defer { compiledCondition.unlock() }
+        if let theme = themesByGeneration[request.generationIdentity] { return theme }
+        let theme = PreparedProseTheme.resolve(themeJSON: request.configuration.themeJSON)
+        themesByGeneration[request.generationIdentity] = theme
+        return theme
     }
 
     private func makeRequest(

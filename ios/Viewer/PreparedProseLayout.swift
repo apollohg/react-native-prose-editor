@@ -96,18 +96,66 @@ struct ProseMountKey: Hashable {
     }
 }
 
-final class PreparedProseBlock {
-    let line: CTLine
+enum PreparedProseFragmentKind: String, Hashable {
+    case text
+    case marker
+    case background
+    case border
+    case rule
+    case atom
+}
+
+/// A fully prepared paint operation. Core Text lines, colours, metrics, and
+/// rectangles are all frozen before this reaches the drawing view.
+final class PreparedProseFragment {
+    let kind: PreparedProseFragmentKind
+    let line: CTLine?
     /// Core Text baseline measured down from the artifact's top edge.
     let origin: CGPoint
-    let range: NSRange
     let bounds: CGRect
+    let color: CGColor?
+    let cornerRadius: CGFloat
+    let strokeWidth: CGFloat
+    let label: String?
+    let checked: Bool
 
-    init(line: CTLine, origin: CGPoint, range: NSRange, bounds: CGRect) {
+    init(
+        kind: PreparedProseFragmentKind,
+        line: CTLine? = nil,
+        origin: CGPoint = .zero,
+        bounds: CGRect,
+        color: CGColor? = nil,
+        cornerRadius: CGFloat = 0,
+        strokeWidth: CGFloat = 0,
+        label: String? = nil,
+        checked: Bool = false
+    ) {
+        self.kind = kind
         self.line = line
         self.origin = origin
-        self.range = range
         self.bounds = bounds
+        self.color = color
+        self.cornerRadius = cornerRadius
+        self.strokeWidth = strokeWidth
+        self.label = label
+        self.checked = checked
+    }
+}
+
+/// A vertical-culling unit, sorted by its top edge. It owns every paint
+/// operation needed for one semantic block so draw(_:) never shapes text.
+final class PreparedProseBlock {
+    let fragments: [PreparedProseFragment]
+    let bounds: CGRect
+
+    init(fragments: [PreparedProseFragment], bounds: CGRect) {
+        self.fragments = fragments
+        self.bounds = bounds
+    }
+
+    /// Compatibility initializer retained for Task 3 test seams.
+    convenience init(line: CTLine, origin: CGPoint, range _: NSRange, bounds: CGRect) {
+        self.init(fragments: [.init(kind: .text, line: line, origin: origin, bounds: bounds)], bounds: bounds)
     }
 }
 

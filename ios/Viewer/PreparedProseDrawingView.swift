@@ -37,17 +37,72 @@ public final class PreparedProseDrawingView: UIView {
         context.saveGState()
         context.translateBy(x: 0, y: bounds.height)
         context.scaleBy(x: 1, y: -1)
+        let scale = CGFloat(Double(bitPattern: layout.key.displayScaleBits))
         for index in lower..<blocks.count {
             let block = blocks[index]
             guard block.bounds.minY <= rect.maxY else { break }
-            let textPosition = Self.textPosition(
-                baselineFromArtifactTop: block.origin.y,
-                in: bounds,
-                artifactHeight: layout.size.height
-            )
-            context.textPosition = CGPoint(x: block.origin.x, y: textPosition.y)
-            CTLineDraw(block.line, context)
+            for fragment in block.fragments {
+                draw(fragment, in: context, scale: scale)
+            }
         }
         context.restoreGState()
+    }
+
+    private func draw(_ fragment: PreparedProseFragment, in context: CGContext, scale: CGFloat) {
+        let rect = CGRect(
+            x: fragment.bounds.minX,
+            y: bounds.height - fragment.bounds.maxY,
+            width: fragment.bounds.width,
+            height: fragment.bounds.height
+        )
+        switch fragment.kind {
+        case .background:
+            context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
+            context.fill(UIBezierPath(roundedRect: rect, cornerRadius: fragment.cornerRadius).cgPath)
+        case .border:
+            context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
+            context.fill(rect)
+        case .rule:
+            let unit = scale.isFinite && scale > 0 ? 1 / scale : 1
+            let alignedY = (rect.minY / unit).rounded() * unit
+            context.setFillColor(fragment.color ?? UIColor.clear.cgColor)
+            context.fill(CGRect(x: rect.minX, y: alignedY, width: rect.width, height: max(unit, rect.height)))
+        case .text:
+            guard let line = fragment.line else { return }
+            context.textPosition = CGPoint(x: fragment.origin.x, y: bounds.height - fragment.origin.y)
+            CTLineDraw(line, context)
+        case .atom:
+            context.setFillColor(fragment.color ?? UIColor.systemGray5.cgColor)
+            context.fill(UIBezierPath(roundedRect: rect, cornerRadius: fragment.cornerRadius).cgPath)
+            guard let line = fragment.line else { return }
+            context.textPosition = CGPoint(x: fragment.origin.x, y: bounds.height - fragment.origin.y)
+            CTLineDraw(line, context)
+        case .marker:
+            if let line = fragment.line {
+                context.textPosition = CGPoint(x: fragment.origin.x, y: bounds.height - fragment.origin.y)
+                CTLineDraw(line, context)
+            } else {
+                drawTaskMarker(in: rect, checked: fragment.checked, color: UIColor(cgColor: fragment.color ?? UIColor.label.cgColor))
+            }
+        }
+    }
+
+    private func drawTaskMarker(in rect: CGRect, checked: Bool, color: UIColor) {
+        let inset = max(1, rect.height * 0.2)
+        let box = CGRect(x: rect.minX + inset, y: rect.minY + inset, width: rect.height - inset * 2, height: rect.height - inset * 2)
+        let path = UIBezierPath(roundedRect: box, cornerRadius: box.width * 0.2)
+        color.setStroke()
+        path.lineWidth = max(1, box.width * 0.1)
+        path.stroke()
+        guard checked else { return }
+        let check = UIBezierPath()
+        check.move(to: CGPoint(x: box.minX + box.width * 0.2, y: box.midY))
+        check.addLine(to: CGPoint(x: box.minX + box.width * 0.43, y: box.maxY - box.height * 0.2))
+        check.addLine(to: CGPoint(x: box.maxX - box.width * 0.16, y: box.minY + box.height * 0.2))
+        check.lineCapStyle = .round
+        check.lineJoinStyle = .round
+        check.lineWidth = max(1.4, box.width * 0.12)
+        color.setStroke()
+        check.stroke()
     }
 }

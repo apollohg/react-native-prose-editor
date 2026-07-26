@@ -134,48 +134,168 @@ struct ViewerParagraph: Hashable {
     let text: String
 }
 
-/// Width-independent native projection of the Rust compiled document.
-struct ViewerDocument: Hashable {
+/// A declarative list marker inherited by a text block from its list-item.
+struct ViewerListContext: Hashable {
+    let ordered: Bool
+    let index: Int
+    let kind: String?
+    let checked: Bool
+}
+
+enum ViewerInline: Hashable {
+    case text(text: String, marks: [FfiViewerMark])
+    case atom(nodeType: String, docPos: UInt32, attrsJSON: String, label: String)
+}
+
+/// A renderable leaf block. Container nodes are represented by the inherited
+/// context instead of being re-laid out as synthetic paragraphs.
+struct ViewerBlock: Hashable {
+    let nodeType: String
+    let depth: UInt16
+    let inBlockquote: Bool
+    let listContext: ViewerListContext?
+    let inlines: [ViewerInline]
+}
+
+/// Width-independent native projection of the Rust compiled document. The
+/// prepared theme is attached only to the measurement copy; cached compiler
+/// output remains semantic/theme independent.
+struct ViewerDocument {
     let semanticKey: String
-    let paragraphs: [ViewerParagraph]
+    let blocks: [ViewerBlock]
     let isEmpty: Bool
     let retainedBytes: Int
+    let preparedTheme: PreparedProseTheme?
+
+    var paragraphs: [ViewerParagraph] {
+        blocks.compactMap { block in
+            let text = block.inlines.reduce(into: "") { partial, inline in
+                switch inline {
+                case let .text(text: value, marks: _): partial.append(value)
+                case let .atom(nodeType: _, docPos: _, attrsJSON: _, label: label): partial.append(label)
+                }
+            }
+            return ViewerParagraph(text: text)
+        }
+    }
 
     init(semanticKey: String, paragraphs: [ViewerParagraph], isEmpty: Bool, retainedBytes: Int) {
         self.semanticKey = semanticKey
-        self.paragraphs = paragraphs
+        blocks = paragraphs.map {
+            ViewerBlock(
+                nodeType: "paragraph",
+                depth: 0,
+                inBlockquote: false,
+                listContext: nil,
+                inlines: [.text(text: $0.text, marks: [])]
+            )
+        }
         self.isEmpty = isEmpty
         self.retainedBytes = retainedBytes
+        preparedTheme = nil
+    }
+
+    init(
+        semanticKey: String,
+        blocks: [ViewerBlock],
+        isEmpty: Bool,
+        retainedBytes: Int,
+        preparedTheme: PreparedProseTheme? = nil
+    ) {
+        self.semanticKey = semanticKey
+        self.blocks = blocks
+        self.isEmpty = isEmpty
+        self.retainedBytes = retainedBytes
+        self.preparedTheme = preparedTheme
     }
 
     init(compiled: ViewerCompiledDocument) throws {
         semanticKey = compiled.semanticKey()
         isEmpty = compiled.isEmpty()
         retainedBytes = Int(compiled.retainedBytesDecimal()) ?? 0
+        preparedTheme = nil
 
-        var paragraphs: [ViewerParagraph] = []
-        var text = ""
-        var isInBlock = false
+        struct Builder {
+            let nodeType: String
+            let depth: UInt16
+            let listContext: ViewerListContext?
+            var inlines: [ViewerInline]
+        }
+
+        var stack: [Builder] = []
+        var rendered: [ViewerBlock] = []
         for element in compiled.elements() {
             switch element {
-            case .blockStart:
-                if isInBlock { paragraphs.append(ViewerParagraph(text: text)); text = "" }
-                isInBlock = true
-            case let .textRun(text: value, marks: _):
-                text.append(value)
-            case let .inlineAtom(nodeType: _, docPos: _, attrsJson: _, label: label),
-                 let .blockAtom(nodeType: _, docPos: _, attrsJson: _, label: label):
-                text.append(label)
+            case let .blockStart(nodeType: nodeType, depth: depth, listContextJson: listContextJSON):
+                stack.append(
+                    Builder(
+                        nodeType: nodeType,
+                        depth: depth,
+                        listContext: Self.listContext(from: listContextJSON),
+                        inlines: []
+                    )
+                )
+            case let .textRun(text: text, marks: marks):
+                guard !stack.isEmpty else { continue }
+                stack[stack.count - 1].inlines.append(.text(text: text, marks: marks))
+            case let .inlineAtom(nodeType: nodeType, docPos: docPos, attrsJson: attrsJson, label: label):
+                guard !stack.isEmpty else { continue }
+                stack[stack.count - 1].inlines.append(
+                    .atom(nodeType: nodeType, docPos: docPos, attrsJSON: attrsJson, label: label)
+                )
+            case let .blockAtom(nodeType: nodeType, docPos: docPos, attrsJson: attrsJson, label: label):
+                let listContext = stack.reversed().compactMap(\.listContext).first
+                rendered.append(
+                    ViewerBlock(
+                        nodeType: nodeType,
+                        depth: stack.last?.depth ?? 0,
+                        inBlockquote: stack.contains { $0.nodeType == "blockquote" },
+                        listContext: listContext,
+                        inlines: [.atom(nodeType: nodeType, docPos: docPos, attrsJSON: attrsJson, label: label)]
+                    )
+                )
             case .blockEnd:
-                paragraphs.append(ViewerParagraph(text: text))
-                text = ""
-                isInBlock = false
+                guard let builder = stack.popLast(), !builder.inlines.isEmpty else { continue }
+                let ancestors = stack + [builder]
+                let listContext = ancestors.reversed().compactMap(\.listContext).first
+                let inBlockquote = ancestors.contains { $0.nodeType == "blockquote" }
+                rendered.append(
+                    ViewerBlock(
+                        nodeType: builder.nodeType,
+                        depth: builder.depth,
+                        inBlockquote: inBlockquote,
+                        listContext: listContext,
+                        inlines: builder.inlines
+                    )
+                )
             }
         }
-        if isInBlock || (!text.isEmpty && paragraphs.isEmpty) {
-            paragraphs.append(ViewerParagraph(text: text))
-        }
-        self.paragraphs = paragraphs.isEmpty ? [ViewerParagraph(text: "")] : paragraphs
+        blocks = rendered.isEmpty && !isEmpty
+            ? [ViewerBlock(nodeType: "paragraph", depth: 0, inBlockquote: false, listContext: nil, inlines: [.text(text: "", marks: [])])]
+            : rendered
+    }
+
+    func withPreparedTheme(_ theme: PreparedProseTheme) -> ViewerDocument {
+        ViewerDocument(
+            semanticKey: semanticKey,
+            blocks: blocks,
+            isEmpty: isEmpty,
+            retainedBytes: retainedBytes,
+            preparedTheme: theme
+        )
+    }
+
+    private static func listContext(from json: String?) -> ViewerListContext? {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return ViewerListContext(
+            ordered: (value["ordered"] as? Bool) ?? false,
+            index: (value["index"] as? NSNumber)?.intValue ?? 1,
+            kind: value["kind"] as? String,
+            checked: (value["checked"] as? Bool) ?? false
+        )
     }
 }
 
