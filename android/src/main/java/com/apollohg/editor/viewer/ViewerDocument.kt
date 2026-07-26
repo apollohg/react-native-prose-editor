@@ -76,8 +76,22 @@ internal data class ProseViewerRequest(
         sha256(listOf(source.value, configuration.configJson, configuration.imagePolicyJson.orEmpty(), if (configuration.imagesEnabled) "1" else "0", mentionPrefix(configuration.configJson).orEmpty(), source.kind).joinToString("\u001f"))
     }
     val themeDigest: String by lazy { sha256(configuration.themeJson.orEmpty()) }
+    /** Semantic publication identity; layout/font revisions deliberately do not enter it. */
+    val semanticGenerationIdentity: String by lazy {
+        sha256(listOf(
+            source.kind,
+            source.value,
+            configuration.configJson,
+            configuration.themeJson.orEmpty(),
+            configuration.imagePolicyJson.orEmpty(),
+            if (configuration.imagesEnabled) "1" else "0",
+            if (configuration.collapsesWhenEmpty) "1" else "0",
+            mentionPrefix.orEmpty(),
+        ).joinToString("\u001f"))
+    }
+    /** Immutable layout/cache identity including permitted state-only revisions. */
     val generationIdentity: String by lazy {
-        sha256(listOf(compiledCacheKey, themeDigest, if (configuration.collapsesWhenEmpty) "1" else "0", attachmentRevision.toString(), nativeFontRevision.toString(), fontEnvironmentRevision.toString()).joinToString("\u001f"))
+        sha256(listOf(semanticGenerationIdentity, attachmentRevision.toString(), nativeFontRevision.toString(), fontEnvironmentRevision.toString()).joinToString("\u001f"))
     }
     val mentionPrefix: String? get() = mentionPrefix(configuration.configJson)
 }

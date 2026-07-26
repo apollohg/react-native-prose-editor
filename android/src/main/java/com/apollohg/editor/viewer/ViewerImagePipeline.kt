@@ -42,13 +42,16 @@ internal class ViewerImageIntrinsicStore(private val entryLimit: Int = 256) {
 
     fun size(id: String): Pair<Int, Int>? {
         val cached = synchronized(lock) {
-        values[id]?.also { entry ->
-            access += 1
-            entry.access = access
-        }?.size
+            values[id]?.also { entry ->
+                access += 1
+                entry.access = access
+            }?.size
         }
         return cached ?: ViewerAttachmentRevisionState.authoritativeSize(id)
     }
+
+    /** Test-only global-LRU inspection; [size] intentionally consults active sidecars. */
+    fun globalSize(id: String): Pair<Int, Int>? = synchronized(lock) { values[id]?.size }
 
     fun store(id: String, size: Pair<Int, Int>) = synchronized(lock) {
         if (size.first <= 0 || size.second <= 0) return@synchronized
@@ -77,6 +80,9 @@ internal object NativeImagePipeline {
  */
 internal class ViewerAttachmentRevisionState {
     companion object {
+        const val FIXED_RETAINED_BYTES = 160
+        const val COLLECTION_RETAINED_BYTES = 32
+        const val ACTIVE_REGISTRATION_RETAINED_BYTES = 48
         private val activeStateLock = Any()
         private val activeStates = mutableListOf<java.lang.ref.WeakReference<ViewerAttachmentRevisionState>>()
 
@@ -96,16 +102,40 @@ internal class ViewerAttachmentRevisionState {
     }
     private val lock = Any()
     private var publishedBits = ByteArray(0)
+    private var reportedErrorBits = ByteArray(0)
     private var intrinsicWidths = IntArray(0)
     private var intrinsicHeights = IntArray(0)
     private var sourceQualifiedIds = arrayOfNulls<String>(0)
+    private var attachmentOrdinals = IntArray(0)
     private var admittedAttachmentCount = 0
+    private var semanticGenerationIdentity: String? = null
     var revision: Long = 0
         private set
 
-    /** Exact per-host state: one bit for every admitted immutable attachment. */
+    /** Exact mounted-sidecar state; immutable layout/cache bytes exclude this owner. */
     val retainedPublicationBytesForTesting: Int get() = synchronized(lock) {
-        publishedBits.size + intrinsicWidths.size * Int.SIZE_BYTES + intrinsicHeights.size * Int.SIZE_BYTES + sourceQualifiedIds.size * Long.SIZE_BYTES
+        FIXED_RETAINED_BYTES +
+            COLLECTION_RETAINED_BYTES * 5 +
+            ACTIVE_REGISTRATION_RETAINED_BYTES +
+            publishedBits.size + reportedErrorBits.size +
+            intrinsicWidths.size * Int.SIZE_BYTES +
+            intrinsicHeights.size * Int.SIZE_BYTES +
+            sourceQualifiedIds.size * Long.SIZE_BYTES +
+            attachmentOrdinals.size * Int.SIZE_BYTES +
+            sourceQualifiedIds.filterNotNull().sumOf { it.length * 2 } +
+            (semanticGenerationIdentity?.length ?: 0) * 2
+    }
+
+    /** Clears once for a true semantic replacement; revision-only reinstalls preserve state. */
+    fun beginSemanticGeneration(identity: String): Boolean {
+        val changed = synchronized(lock) {
+            if (semanticGenerationIdentity == identity) return@synchronized false
+            clearLocked()
+            semanticGenerationIdentity = identity
+            true
+        }
+        if (changed) unregister(this)
+        return changed
     }
 
     fun admit(attachmentCount: Int) {
@@ -114,20 +144,18 @@ internal class ViewerAttachmentRevisionState {
             if (admittedAttachmentCount == count) return@synchronized
             admittedAttachmentCount = count
             publishedBits = ByteArray((count + 7) / 8)
+            reportedErrorBits = ByteArray((count + 7) / 8)
             intrinsicWidths = IntArray(count)
             intrinsicHeights = IntArray(count)
             sourceQualifiedIds = arrayOfNulls(count)
+            attachmentOrdinals = IntArray(count) { it }
         }
         if (count > 0) register(this)
     }
 
     fun reset() = synchronized(lock) {
-        publishedBits = ByteArray(0)
-        intrinsicWidths = IntArray(0)
-        intrinsicHeights = IntArray(0)
-        sourceQualifiedIds = arrayOfNulls(0)
-        admittedAttachmentCount = 0
-        revision = 0
+        clearLocked()
+        semanticGenerationIdentity = null
     }.also { unregister(this) }
 
     fun recordIntrinsicSize(id: String, ordinal: Int, width: Int, height: Int, declaredSize: Pair<Int, Int>?): Boolean = synchronized(lock) {
@@ -151,12 +179,33 @@ internal class ViewerAttachmentRevisionState {
         else intrinsicWidths[ordinal] to intrinsicHeights[ordinal]
     }
 
+    fun recordResourceFailure(ordinal: Int): Boolean = synchronized(lock) {
+        if (ordinal !in 0 until admittedAttachmentCount) return@synchronized false
+        val byteIndex = ordinal / 8
+        val mask = 1 shl (ordinal % 8)
+        if ((reportedErrorBits[byteIndex].toInt() and mask) != 0) return@synchronized false
+        reportedErrorBits[byteIndex] = (reportedErrorBits[byteIndex].toInt() or mask).toByte()
+        true
+    }
+
     private fun intrinsicSizeForSourceQualifiedId(id: String): Pair<Int, Int>? = synchronized(lock) {
-        val ordinal = sourceQualifiedIds.indexOfFirst { it == id }
-        if (ordinal < 0) return@synchronized null
+        val index = sourceQualifiedIds.indexOfFirst { it == id }
+        if (index < 0) return@synchronized null
+        val ordinal = attachmentOrdinals[index]
         val mask = 1 shl (ordinal % 8)
         if ((publishedBits[ordinal / 8].toInt() and mask) == 0) null
         else intrinsicWidths[ordinal] to intrinsicHeights[ordinal]
+    }
+
+    private fun clearLocked() {
+        publishedBits = ByteArray(0)
+        reportedErrorBits = ByteArray(0)
+        intrinsicWidths = IntArray(0)
+        intrinsicHeights = IntArray(0)
+        sourceQualifiedIds = arrayOfNulls(0)
+        attachmentOrdinals = IntArray(0)
+        admittedAttachmentCount = 0
+        revision = 0
     }
 }
 
@@ -175,7 +224,6 @@ internal class ViewerImagePipeline(
     private var enabled = false
     private var policy = ImageLoadingPolicy.DEFAULT
     private val requested = mutableSetOf<String>()
-    private val failed = mutableSetOf<String>()
     private val receipts = mutableMapOf<String, RenderImageLoader.LoadHandle>()
     var requestCountForTesting: Int = 0
         private set
@@ -189,7 +237,6 @@ internal class ViewerImagePipeline(
         receipts.values.forEach(RenderImageLoader.LoadHandle::cancel)
         receipts.clear()
         requested.clear()
-        failed.clear()
         requestCountForTesting = 0
         this.generation = generation
         this.enabled = imagesEnabled
@@ -202,7 +249,6 @@ internal class ViewerImagePipeline(
         receipts.values.forEach(RenderImageLoader.LoadHandle::cancel)
         receipts.clear()
         requested.clear()
-        failed.clear()
     }
 
     fun acceptsCompletion(generation: String): Boolean = synchronized(lock) {
@@ -238,7 +284,7 @@ internal class ViewerImagePipeline(
 
     private fun reportFailure(attachment: ViewerImageAttachment, requestGeneration: String) {
         val callback = synchronized(lock) {
-            if (!enabled || generation != requestGeneration || !failed.add(attachment.id)) null else onResourceFailure
+            if (!enabled || generation != requestGeneration) null else onResourceFailure
         }
         callback?.invoke(attachment)
     }

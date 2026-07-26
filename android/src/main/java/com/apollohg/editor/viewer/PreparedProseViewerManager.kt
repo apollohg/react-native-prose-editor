@@ -46,7 +46,7 @@ internal class PreparedProseViewerManager :
             state.fontEnvironment.onInvalidated = { revision -> state.publishFontRevision(revision) }
             state.imagePipeline.onPixels = { attachment, bitmap ->
                 val request = state.requestOrNull()
-                if (request != null && state.imagePipeline.acceptsCompletion(request.generationIdentity)) {
+                if (request != null && state.imagePipeline.acceptsCompletion(request.semanticGenerationIdentity)) {
                     view.imagePixels = view.imagePixels + (attachment.id to bitmap)
                 }
             }
@@ -169,9 +169,7 @@ internal class PreparedProseViewerManager :
 
     private fun update(view: PreparedProseDrawingView, mutation: ViewState.() -> Unit) {
         val state = states.getOrPut(view, ::ViewState)
-        val semanticIdentity = state.semanticIdentity()
         state.mutation()
-        if (semanticIdentity != state.semanticIdentity()) state.resetIntrinsicPublication()
         reconcile(view, state)
     }
 
@@ -207,7 +205,7 @@ internal class PreparedProseViewerManager :
         error: ProseViewerError,
     ) {
         val state = states[view] ?: return
-        if (!state.errorReporter.shouldReport(request.generationIdentity)) return
+        if (!state.errorReporter.shouldReport(request.semanticGenerationIdentity)) return
         val context = UIManagerHelper.getReactContext(view)
         context.getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java).receiveEvent(
             view.id,
@@ -224,6 +222,7 @@ internal class PreparedProseViewerManager :
     private fun dispatchResourceError(view: PreparedProseDrawingView, attachment: ViewerImageAttachment) {
         val state = states[view] ?: return
         val request = state.requestOrNull() ?: return
+        if (!state.attachmentRevisions.recordResourceFailure(attachment.ordinal)) return
         UIManagerHelper.getReactContext(view)
             .getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java)
             .receiveEvent(view.id, "topError", Arguments.createMap().apply {
@@ -367,23 +366,11 @@ internal class PreparedProseViewerManager :
         val imagePipeline = ViewerImagePipeline()
         private var visibleRect: android.graphics.Rect = android.graphics.Rect()
 
-        data class IntrinsicPublicationIdentity(
-            val sourceKind: String,
-            val source: String,
-            val configJson: String,
-            val imagesEnabled: Boolean,
-        )
-
-        fun semanticIdentity() = IntrinsicPublicationIdentity(
-            sourceKind, source, configJson, imagesEnabled,
-        )
-
-        fun resetIntrinsicPublication() = attachmentRevisions.reset()
-
         fun beginImages(view: PreparedProseDrawingView, artifact: PreparedProseLayout, request: ProseViewerRequest) {
+            attachmentRevisions.beginSemanticGeneration(request.semanticGenerationIdentity)
             attachmentRevisions.admit(artifact.imageAttachments.size)
             fontEnvironment.activate()
-            imagePipeline.begin(request.generationIdentity, request.configuration.imagesEnabled, ImageLoadingPolicy.fromJson(request.configuration.imagePolicyJson))
+            imagePipeline.begin(request.semanticGenerationIdentity, request.configuration.imagesEnabled, ImageLoadingPolicy.fromJson(request.configuration.imagePolicyJson))
         }
 
         fun requestVisibleImages(view: PreparedProseDrawingView, visible: android.graphics.Rect) {

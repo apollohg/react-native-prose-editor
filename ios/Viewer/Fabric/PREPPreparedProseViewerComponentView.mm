@@ -49,13 +49,6 @@ bool HasEquivalentGenerationProps(
 
 // Attachment publication belongs to the immutable source/configuration, not
 // to Fabric's derived attachment/font revisions or a layout-only replacement.
-bool HasEquivalentAttachmentPublicationProps(
-    const PreparedProseViewerProps &left,
-    const PreparedProseViewerProps &right) {
-  return left.sourceKind == right.sourceKind && left.source == right.source &&
-      left.configJson == right.configJson && left.imagesEnabled == right.imagesEnabled;
-}
-
 uint64_t Revision(const PreparedProseViewerShadowNode::ConcreteState::Shared &state, bool attachment) {
   if (!state) {
     return 0;
@@ -142,6 +135,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   NSString *_reportedErrorGeneration;
   NSString *_installedMeasurementIdentity;
   NSString *_ownedGeneration;
+  NSString *_ownedSemanticGeneration;
   int64_t _ownedSurfaceId;
   int64_t _ownedComponentTag;
   BOOL _hasOwnedSurface;
@@ -234,10 +228,6 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   // does not alter the prepared render generation or its Fabric lease.
   const BOOL generationChanged =
       !_viewerProps || !HasEquivalentGenerationProps(*_viewerProps, *nextProps);
-  if (!_viewerProps ||
-      !HasEquivalentAttachmentPublicationProps(*_viewerProps, *nextProps)) {
-    [_drawingView resetIntrinsicImagePublication];
-  }
   if (generationChanged) {
     [self beginNewGeneration];
   }
@@ -310,6 +300,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   _reportedErrorGeneration = nil;
   _installedMeasurementIdentity = nil;
   _ownedGeneration = nil;
+  _ownedSemanticGeneration = nil;
 }
 
 - (void)beginNewGeneration
@@ -320,7 +311,6 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   // representable layout metrics. The install gate clears it only
   // after independently validating the replacement measurement.
   _installedMeasurementIdentity = nil;
-  _reportedErrorGeneration = nil;
 }
 
 - (void)releaseFabricOwnership
@@ -375,6 +365,18 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
                    nativeFontScale:NativeFontScale(_viewerState)
             fontEnvironmentRevision:FontEnvironmentRevision(props)];
   const auto measurementIdentityString = MeasurementIdentity(generation, width, scale);
+  const auto semanticGeneration = [[PREPPreparedProseLayoutRegistry sharedRegistry]
+      fabricSemanticGenerationIdentitySourceKind:SourceKind(props)
+                              source:StringFromStdString(props.source)
+                          configJSON:StringFromStdString(props.configJson)
+                           themeJSON:OptionalStringFromStdString(props.themeJson)
+                     imagePolicyJSON:OptionalStringFromStdString(props.imagePolicyJson)
+                      imagesEnabled:props.imagesEnabled
+                collapsesWhenEmpty:props.collapsesWhenEmpty
+                 attachmentRevision:Revision(_viewerState, true)
+                 nativeFontRevision:Revision(_viewerState, false)
+                   nativeFontScale:NativeFontScale(_viewerState)
+            fontEnvironmentRevision:FontEnvironmentRevision(props)];
   if (_hasOwnedSurface && _ownedSurfaceId == *surfaceId &&
       _ownedComponentTag == componentTag &&
       [_ownedGeneration isEqualToString:generation] &&
@@ -429,7 +431,8 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
     _ownedGeneration = nil;
     return;
   }
-  [_drawingView configureImagesWithGeneration:generation
+  _ownedSemanticGeneration = semanticGeneration;
+  [_drawingView configureImagesWithGeneration:semanticGeneration
                                 imagesEnabled:props.imagesEnabled
                                   policyJSON:OptionalStringFromStdString(props.imagePolicyJson)];
   [_drawingView updateConfiguredImagesForVisibleWindow];
@@ -437,10 +440,10 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
   if (!_drawingView.errorCode) {
     return;
   }
-  if ([_reportedErrorGeneration isEqualToString:generation]) {
+  if ([_reportedErrorGeneration isEqualToString:semanticGeneration]) {
     return;
   }
-  _reportedErrorGeneration = generation;
+  _reportedErrorGeneration = semanticGeneration;
   const auto eventEmitter = std::static_pointer_cast<const PreparedProseViewerEventEmitter>(_eventEmitter);
   if (eventEmitter) {
     eventEmitter->onError({
@@ -455,7 +458,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 - (void)handleImageMetadata:(NSNotification *)note
 {
   NSString *generation = note.userInfo[@"generation"];
-  if (!generation || !_viewerState || ![_ownedGeneration isEqualToString:generation]) return;
+  if (!generation || !_viewerState || ![_ownedSemanticGeneration isEqualToString:generation]) return;
   _viewerState->updateState(
       [](const PreparedProseViewerShadowNode::ConcreteState::Data &oldData)
           -> PreparedProseViewerShadowNode::ConcreteState::SharedData {
@@ -490,7 +493,7 @@ std::optional<int64_t> SurfaceIdForComponentView(UIView *view) {
 - (void)handleImageResourceFailure:(NSNotification *)note
 {
   NSString *generation = note.userInfo[@"generation"];
-  if (!generation || ![generation isEqualToString:_ownedGeneration]) return;
+  if (!generation || ![generation isEqualToString:_ownedSemanticGeneration]) return;
   const auto eventEmitter = std::static_pointer_cast<const PreparedProseViewerEventEmitter>(_eventEmitter);
   if (!eventEmitter) return;
   eventEmitter->onError({

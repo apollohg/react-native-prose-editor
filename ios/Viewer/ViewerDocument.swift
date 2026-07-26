@@ -84,12 +84,27 @@ struct ProseViewerRequest: Hashable {
 
     var themeDigest: String { SHA256Digest.hex(configuration.themeJSON ?? "") }
 
-    /// Includes every input that makes a mounted generation genuinely different.
+    /// Canonical publication identity. State-only layout/font revisions are
+    /// intentionally excluded so cancellation/reinstall cannot reopen image
+    /// metadata or resource-error publication for the same semantic source.
+    var semanticGenerationIdentity: String {
+        SHA256Digest.hex([
+            source.kind == .json ? "json" : "html",
+            source.value,
+            configuration.configJSON,
+            configuration.themeJSON ?? "",
+            configuration.imagePolicyJSON ?? "",
+            configuration.imagesEnabled ? "1" : "0",
+            configuration.collapsesWhenEmpty ? "1" : "0",
+            mentionPrefix ?? "",
+        ].joined(separator: "\u{1F}"))
+    }
+
+    /// Includes the semantic generation plus the permitted state-only layout
+    /// revisions. This remains the immutable layout/cache identity.
     var generationIdentity: String {
         SHA256Digest.hex([
-            compiledCacheKey,
-            themeDigest,
-            configuration.collapsesWhenEmpty ? "1" : "0",
+            semanticGenerationIdentity,
             String(attachmentRevision),
             String(nativeFontRevision),
             String(Double(nativeFontScale).bitPattern),

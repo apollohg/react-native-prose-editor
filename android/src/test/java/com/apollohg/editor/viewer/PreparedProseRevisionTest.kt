@@ -3,6 +3,8 @@ package com.apollohg.editor.viewer
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.content.res.Configuration
+import com.apollohg.editor.ProseViewerConfiguration
+import com.apollohg.editor.ProseViewerSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -41,6 +43,7 @@ class PreparedProseRevisionTest {
 
     @Test fun intrinsicMetadataDoesNotReopenAcrossFabricReinstall() {
         val state = ViewerAttachmentRevisionState()
+        assertTrue(state.beginSemanticGeneration("semantic-a"))
         state.admit(1)
         assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
         state.admit(1)
@@ -48,27 +51,80 @@ class PreparedProseRevisionTest {
         assertEquals(1, state.revision)
     }
 
+    @Test fun semanticIdentityIncludesAllPublicationInputsButExcludesStateRevisions() {
+        val base = ProseViewerRequest(
+            ProseViewerSource.Json("{\"type\":\"doc\"}"),
+            ProseViewerConfiguration(
+                configJson = "{\"mentions\":{\"prefix\":\"@\"},\"maxLines\":2,\"overflow\":\"clip\"}",
+                themeJson = "{\"paragraph\":{\"fontSize\":16}}",
+                imagePolicyJson = "{\"maxDecodedBytes\":1024}",
+                imagesEnabled = true,
+                collapsesWhenEmpty = true,
+            ),
+        )
+        val stateRevision = base.copy(nativeFontRevision = 3, fontEnvironmentRevision = 4, attachmentRevision = 5)
+        assertEquals(base.semanticGenerationIdentity, stateRevision.semanticGenerationIdentity)
+        assertFalse(base.generationIdentity == stateRevision.generationIdentity)
+
+        val variants = listOf(
+            base.copy(source = ProseViewerSource.Html(base.source.value)),
+            base.copy(configuration = base.configuration.copy(configJson = "{\"mentions\":{\"prefix\":\"#\"},\"maxLines\":2,\"overflow\":\"clip\"}")),
+            base.copy(configuration = base.configuration.copy(themeJson = "{\"paragraph\":{\"fontSize\":18}}")),
+            base.copy(configuration = base.configuration.copy(imagePolicyJson = "{\"maxDecodedBytes\":2048}")),
+            base.copy(configuration = base.configuration.copy(imagesEnabled = false)),
+            base.copy(configuration = base.configuration.copy(collapsesWhenEmpty = false)),
+        )
+        variants.forEach { assertFalse(base.semanticGenerationIdentity == it.semanticGenerationIdentity) }
+    }
+
+    @Test fun semanticReplacementResetsPublicationAndResourceErrorBitsExactlyOnce() {
+        val state = ViewerAttachmentRevisionState()
+        assertTrue(state.beginSemanticGeneration("semantic-a"))
+        state.admit(1)
+        assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 0, 40, 20, null))
+        assertTrue(state.recordResourceFailure(0))
+        assertFalse(state.beginSemanticGeneration("semantic-a"))
+        assertFalse(state.recordResourceFailure(0))
+        assertTrue(state.beginSemanticGeneration("semantic-b"))
+        state.admit(1)
+        assertEquals(0, state.revision)
+        assertTrue(state.recordResourceFailure(0))
+    }
+
     @Test fun allAdmittedUnknownAttachmentsBeyond256PublishOnceWithCompactBitset() {
         val state = ViewerAttachmentRevisionState()
         val count = 513
+        val semanticIdentity = "semantic-byte-fixture"
+        assertTrue(state.beginSemanticGeneration(semanticIdentity))
         state.admit(count)
         repeat(count) { index ->
             assertTrue(state.recordIntrinsicSize("$index:https://example.test/image", index, 1, 1, null))
         }
         assertEquals(count.toLong(), state.revision)
-        assertEquals((count + 7) / 8 + count * (Int.SIZE_BYTES * 2 + Long.SIZE_BYTES), state.retainedPublicationBytesForTesting)
+        assertEquals(
+            ViewerAttachmentRevisionState.FIXED_RETAINED_BYTES +
+                ViewerAttachmentRevisionState.COLLECTION_RETAINED_BYTES * 5 +
+                (count + 7) / 8 * 2 +
+                count * (Int.SIZE_BYTES * 3 + Long.SIZE_BYTES) +
+                ViewerAttachmentRevisionState.ACTIVE_REGISTRATION_RETAINED_BYTES +
+                semanticIdentity.length * 2 +
+                    (0 until count).sumOf { "$it:https://example.test/image".length * 2 },
+            state.retainedPublicationBytesForTesting,
+        )
         assertEquals(1 to 1, state.intrinsicSize(count - 1))
         assertFalse(state.recordIntrinsicSize("0:https://example.test/image", 0, 2, 2, null))
     }
 
-    @Test fun globalMetadataLRUEvictionDoesNotRepublishTheSameSemanticGeneration() {
+    @Test fun globalMetadataLRUEvictionFallsBackToActiveSidecarWithoutRepublishing() {
         val state = ViewerAttachmentRevisionState()
         val evictedMetadata = ViewerImageIntrinsicStore(entryLimit = 1)
+        assertTrue(state.beginSemanticGeneration("semantic-a"))
         state.admit(1)
         assertTrue(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
         evictedMetadata.store("7:https://example.test/a", 10 to 20)
         evictedMetadata.store("8:https://example.test/b", 20 to 10)
-        assertEquals(null, evictedMetadata.size("7:https://example.test/a"))
+        assertEquals(null, evictedMetadata.globalSize("7:https://example.test/a"))
+        assertEquals(10 to 20, evictedMetadata.size("7:https://example.test/a"))
         assertFalse(state.recordIntrinsicSize("7:https://example.test/a", 0, 10, 20, null))
     }
 
@@ -142,13 +198,14 @@ class PreparedProseRevisionTest {
     }
 
     @Test fun resourceFailureIsPublishedOncePerGenerationAndAttachment() {
-        val pipeline = ViewerImagePipeline()
-        var failures = 0
-        pipeline.onResourceFailure = { failures += 1 }
-        pipeline.begin("resource", true)
-        val attachment = ViewerImageAttachment("secret", "https://user:credential@example.test/a", Rect(), null)
-        pipeline.reportFailureForTesting(attachment)
-        pipeline.reportFailureForTesting(attachment)
-        assertEquals(1, failures)
+        val state = ViewerAttachmentRevisionState()
+        assertTrue(state.beginSemanticGeneration("resource"))
+        state.admit(1)
+        assertTrue(state.recordResourceFailure(0))
+        assertFalse(state.recordResourceFailure(0))
+        // A Fabric attachment-revision reinstall cancels/reconfigures requests,
+        // but remains in the same semantic generation.
+        assertFalse(state.beginSemanticGeneration("resource"))
+        assertFalse(state.recordResourceFailure(0))
     }
 }

@@ -272,6 +272,38 @@ public final class PreparedProseLayoutRegistry: NSObject {
         ).generationIdentity as NSString
     }
 
+    /// Fabric image publication/error state must use the same canonical
+    /// semantic key as direct UIKit. Layout revisions are intentionally
+    /// excluded so attachment/font reinstallation preserves that state.
+    @objc(fabricSemanticGenerationIdentitySourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:)
+    public func fabricSemanticGenerationIdentity(
+        sourceKind: NSString,
+        source: NSString,
+        configJSON: NSString,
+        themeJSON: NSString?,
+        imagePolicyJSON: NSString?,
+        imagesEnabled: Bool,
+        collapsesWhenEmpty: Bool,
+        attachmentRevision: UInt64,
+        nativeFontRevision: UInt64,
+        nativeFontScale: CGFloat = 1,
+        fontEnvironmentRevision: UInt64
+    ) -> NSString {
+        makeRequest(
+            sourceKind: sourceKind,
+            source: source,
+            configJSON: configJSON,
+            themeJSON: themeJSON,
+            imagePolicyJSON: imagePolicyJSON,
+            imagesEnabled: imagesEnabled,
+            collapsesWhenEmpty: collapsesWhenEmpty,
+            attachmentRevision: attachmentRevision,
+            nativeFontRevision: nativeFontRevision,
+            nativeFontScale: nativeFontScale,
+            fontEnvironmentRevision: fontEnvironmentRevision
+        ).semanticGenerationIdentity as NSString
+    }
+
     @objc(installCachedLayoutInDrawingView:surfaceId:componentTag:sourceKind:source:configJSON:themeJSON:imagePolicyJSON:imagesEnabled:collapsesWhenEmpty:attachmentRevision:nativeFontRevision:nativeFontScale:fontEnvironmentRevision:widthPoints:scale:)
     public func installCachedLayout(
         in drawingView: PreparedProseDrawingView,

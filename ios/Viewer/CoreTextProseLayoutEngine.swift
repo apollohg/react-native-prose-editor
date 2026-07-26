@@ -302,9 +302,8 @@ final class CoreTextProseLayoutEngine {
         }
         retainedBytes += interactions.reduce(0) { $0 + $1.estimatedRetainedBytes }
             + accessibilityNodes.reduce(0) { $0 + $1.estimatedRetainedBytes }
-        // A mounted host owns one compact publication bit per immutable image
-        // attachment. Reserve that bounded proportional cost with the artifact.
-        retainedBytes += (imageAttachments.count + 7) / 8
+        // Mounted image-publication sidecars are runtime surface ownership,
+        // not immutable artifact/cache ownership; account them at the host.
         return PreparedProseLayout(
             key: key,
             size: CGSize(width: canonicalWidth, height: pixelHeight / displayScale),

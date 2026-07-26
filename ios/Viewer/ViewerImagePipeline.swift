@@ -70,6 +70,12 @@ final class ViewerImageIntrinsicStore {
         return ViewerAttachmentRevisionState.authoritativeSize(for: id)
     }
 
+    /// Test-only global-LRU inspection. `size(for:)` intentionally falls back
+    /// to mounted sidecars, so it cannot prove an LRU eviction on its own.
+    func globalSize(for id: String) -> CGSize? {
+        lock.withLock { values[id]?.size }
+    }
+
     func store(_ size: CGSize, for id: String) {
         guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
         lock.lock()
@@ -90,6 +96,11 @@ final class ViewerImageIntrinsicStore {
 /// bitset, so the global LRU is only an optimization. It resets only for a
 /// semantic replacement or recycle/teardown, never request cancellation.
 final class ViewerAttachmentRevisionState {
+    /// Project accounting convention: fixed owner plus one header per retained
+    /// proportional collection. Payload is charged below at native stride.
+    static let fixedRetainedBytes = 160
+    static let collectionRetainedBytes = 32
+    static let activeRegistrationRetainedBytes = 48
     private final class WeakState {
         weak var value: ViewerAttachmentRevisionState?
         init(_ value: ViewerAttachmentRevisionState) { self.value = value }
@@ -98,19 +109,46 @@ final class ViewerAttachmentRevisionState {
     private static var activeStates: [WeakState] = []
     private let lock = NSLock()
     private var publishedBits: [UInt8] = []
+    private var reportedErrorBits: [UInt8] = []
     private var intrinsicSizes: [CGSize] = []
     private var sourceQualifiedIDs: [String?] = []
+    private var attachmentOrdinals: [Int] = []
     private var admittedAttachmentCount = 0
+    private var semanticGenerationIdentity: String?
     private(set) var revision: UInt64 = 0
 
-    /// This is the exact compact state retained by the host: one bit per
-    /// already-admitted immutable attachment, never one heap entry per ID.
+    /// Exact per-surface retained state. This is not an immutable layout cost:
+    /// it belongs to the mounted host, including both bitsets, dimensions,
+    /// source identity references, ordinal addresses, collection headers, and
+    /// active-sidecar registration.
     var retainedPublicationBytesForTesting: Int {
         lock.withLock {
-            publishedBits.count
+            Self.fixedRetainedBytes
+                + Self.collectionRetainedBytes * 5
+                + Self.activeRegistrationRetainedBytes
+                + publishedBits.count
+                + reportedErrorBits.count
                 + intrinsicSizes.count * MemoryLayout<CGSize>.stride
                 + sourceQualifiedIDs.count * MemoryLayout<String?>.stride
+                + attachmentOrdinals.count * MemoryLayout<Int>.stride
+                + sourceQualifiedIDs.compactMap { $0 }.reduce(0) { $0 + $1.utf8.count * 2 }
+                + (semanticGenerationIdentity?.utf8.count ?? 0) * 2
         }
+    }
+
+    /// Returns true exactly when a true semantic replacement has cleared all
+    /// generation-scoped correctness state. State-revision reinstalls return
+    /// false and preserve metadata/error publication.
+    @discardableResult
+    func beginSemanticGeneration(_ identity: String) -> Bool {
+        let changed = lock.withLock {
+            guard semanticGenerationIdentity != identity else { return false }
+            clearLocked()
+            semanticGenerationIdentity = identity
+            return true
+        }
+        if changed { Self.unregister(self) }
+        return changed
     }
 
     func admit(attachmentCount: Int) {
@@ -119,19 +157,18 @@ final class ViewerAttachmentRevisionState {
             guard admittedAttachmentCount != count else { return }
             admittedAttachmentCount = count
             publishedBits = Array(repeating: 0, count: (count + 7) / 8)
+            reportedErrorBits = Array(repeating: 0, count: (count + 7) / 8)
             intrinsicSizes = Array(repeating: .zero, count: count)
             sourceQualifiedIDs = Array(repeating: nil, count: count)
+            attachmentOrdinals = Array(0..<count)
         }
         if count > 0 { Self.register(self) }
     }
 
     func reset() {
         lock.withLock {
-            publishedBits.removeAll(keepingCapacity: false)
-            intrinsicSizes.removeAll(keepingCapacity: false)
-            sourceQualifiedIDs.removeAll(keepingCapacity: false)
-            admittedAttachmentCount = 0
-            revision = 0
+            clearLocked()
+            semanticGenerationIdentity = nil
         }
         Self.unregister(self)
     }
@@ -160,12 +197,35 @@ final class ViewerAttachmentRevisionState {
         }
     }
 
+    @discardableResult
+    func recordResourceFailure(for ordinal: Int) -> Bool {
+        lock.withLock {
+            guard ordinal >= 0, ordinal < admittedAttachmentCount else { return false }
+            let byteIndex = ordinal / 8
+            let mask = UInt8(1 << (ordinal % 8))
+            guard reportedErrorBits[byteIndex] & mask == 0 else { return false }
+            reportedErrorBits[byteIndex] |= mask
+            return true
+        }
+    }
+
     private func intrinsicSize(forSourceQualifiedID id: String) -> CGSize? {
         lock.withLock {
-            guard let ordinal = sourceQualifiedIDs.firstIndex(where: { $0 == id }) else { return nil }
+            guard let index = sourceQualifiedIDs.firstIndex(where: { $0 == id }) else { return nil }
+            let ordinal = attachmentOrdinals[index]
             let mask = UInt8(1 << (ordinal % 8))
             return publishedBits[ordinal / 8] & mask == 0 ? nil : intrinsicSizes[ordinal]
         }
+    }
+
+    private func clearLocked() {
+        publishedBits.removeAll(keepingCapacity: false)
+        reportedErrorBits.removeAll(keepingCapacity: false)
+        intrinsicSizes.removeAll(keepingCapacity: false)
+        sourceQualifiedIDs.removeAll(keepingCapacity: false)
+        attachmentOrdinals.removeAll(keepingCapacity: false)
+        admittedAttachmentCount = 0
+        revision = 0
     }
 
     static func authoritativeSize(for id: String) -> CGSize? {
@@ -205,7 +265,6 @@ final class ViewerImagePipeline {
     private var enabled = false
     private var receipts: [String: NativeImagePipeline.ImageLoadReceipt] = [:]
     private var requested = Set<String>()
-    private var failed = Set<String>()
     private(set) var requestCountForTesting = 0
     var onPixels: PixelCompletion?
     var onIntrinsicMetadata: MetadataCompletion?
@@ -229,7 +288,6 @@ final class ViewerImagePipeline {
         enabled = imagesEnabled
         receipts.removeAll()
         requested.removeAll()
-        failed.removeAll()
         requestCountForTesting = 0
         lock.unlock()
     }
@@ -241,7 +299,6 @@ final class ViewerImagePipeline {
         receipts.values.forEach { $0.cancel() }
         receipts.removeAll()
         requested.removeAll()
-        failed.removeAll()
         lock.unlock()
         owner.cancelAll()
     }
@@ -295,7 +352,7 @@ final class ViewerImagePipeline {
 
     private func reportFailure(_ attachment: ViewerImageAttachment, generation: String) {
         let callback: ((ViewerImageAttachment) -> Void)? = lock.withLock {
-            guard enabled, self.generation == generation, failed.insert(attachment.id).inserted else { return nil }
+            guard enabled, self.generation == generation else { return nil }
             return onResourceFailure
         }
         callback?(attachment)

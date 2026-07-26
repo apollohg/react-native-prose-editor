@@ -293,9 +293,8 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
             )
         }
         retained += interactions.sumOf { it.retainedBytes } + nodes.sumOf { it.retainedBytes }
-        // One mounted host retains one compact publication bit per immutable
-        // attachment; include the bounded proportional reservation in layout cost.
-        retained += ((imageAttachments.size + 7) / 8).toLong()
+        // Mounted image-publication sidecars are runtime surface ownership,
+        // not immutable artifact/cache ownership; account them at the host.
         return PreparedProseLayout(key, widthPx, height, blocks, interactions, nodes, imageAttachments, retained)
     }
 

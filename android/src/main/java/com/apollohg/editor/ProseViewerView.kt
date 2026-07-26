@@ -161,7 +161,6 @@ class ProseViewerView @JvmOverloads constructor(
     private var preparedArtifact: PreparedProseLayout? = null
     private var directError: ProseViewerError? = null
     private var reportedGenerationIdentity: String? = null
-    private val reportedResourceFailures = mutableSetOf<String>()
     private val attachmentRevisions = ViewerAttachmentRevisionState()
     private val fontEnvironment = ViewerFontEnvironment()
     private val viewerImagePipeline = ViewerImagePipeline()
@@ -202,6 +201,9 @@ class ProseViewerView @JvmOverloads constructor(
     internal var onMentionTapForTesting: (() -> Unit)? = null
     internal val preparedLayoutForTesting: PreparedProseLayout?
         get() = preparedArtifact
+    /** Mounted host total; the shared layout cache excludes mutable sidecars. */
+    internal val preparedSurfaceRetainedBytesForTesting: Long
+        get() = (preparedArtifact?.retainedBytes ?: 0L) + attachmentRevisions.retainedPublicationBytesForTesting
 
     init {
         proseView.setBaseStyle(
@@ -234,7 +236,7 @@ class ProseViewerView @JvmOverloads constructor(
         preparedDrawingView.onInteractionActivated = { activatePreparedInteraction(it) }
         viewerImagePipeline.onPixels = { attachment, bitmap ->
             val current = preparedRequest
-            if (current != null && viewerImagePipeline.acceptsCompletion(current.generationIdentity)) {
+            if (current != null && viewerImagePipeline.acceptsCompletion(current.semanticGenerationIdentity)) {
                 preparedDrawingView.imagePixels = preparedDrawingView.imagePixels + (attachment.id to bitmap)
             }
         }
@@ -280,7 +282,7 @@ class ProseViewerView @JvmOverloads constructor(
             fontEnvironmentRevision = currentFontRevision,
             attachmentRevision = 0,
         )
-        attachmentRevisions.reset()
+        attachmentRevisions.beginSemanticGeneration(next.semanticGenerationIdentity)
         preparedRequest = next
         retainedDocument = null
         preparedArtifact = null
@@ -288,7 +290,6 @@ class ProseViewerView @JvmOverloads constructor(
         preparedDrawingView.imagePixels = emptyMap()
         directError = null
         reportedGenerationIdentity = null
-        reportedResourceFailures.clear()
         clearVirtualAccessibilityFocus()
         preparedAccessibilityGeneration = null
         // The replacement artifact owns the observable subtree transition.
@@ -510,14 +511,13 @@ class ProseViewerView @JvmOverloads constructor(
     }
 
     private fun reportDirectErrorIfNeeded(request: ProseViewerRequest, error: ProseViewerError?) {
-        if (error == null || reportedGenerationIdentity == request.generationIdentity) return
-        reportedGenerationIdentity = request.generationIdentity
+        if (error == null || reportedGenerationIdentity == request.semanticGenerationIdentity) return
+        reportedGenerationIdentity = request.semanticGenerationIdentity
         interactionListener?.onViewerError(this, error)
     }
 
     private fun reportResourceFailureIfNeeded(attachment: ViewerImageAttachment) {
-        val generation = preparedRequest?.generationIdentity ?: return
-        if (!reportedResourceFailures.add("$generation\u001f${attachment.id}")) return
+        if (!attachmentRevisions.recordResourceFailure(attachment.ordinal)) return
         interactionListener?.onViewerError(this, ProseViewerError.resource())
     }
 
@@ -531,7 +531,6 @@ class ProseViewerView @JvmOverloads constructor(
         preparedDrawingView.imagePixels = emptyMap()
         directError = null
         reportedGenerationIdentity = null
-        reportedResourceFailures.clear()
         // apply(renderJson, themeJson) publishes the replacement subtree.
         preparedDrawingView.install(null, announceAccessibilitySubtree = false)
         preparedDrawingView.visibility = View.GONE
@@ -548,9 +547,10 @@ class ProseViewerView @JvmOverloads constructor(
 
     private fun configureImageGeneration(artifact: PreparedProseLayout) {
         val request = preparedRequest ?: return
+        attachmentRevisions.beginSemanticGeneration(request.semanticGenerationIdentity)
         attachmentRevisions.admit(artifact.imageAttachments.size)
         viewerImagePipeline.begin(
-            request.generationIdentity,
+            request.semanticGenerationIdentity,
             request.configuration.imagesEnabled,
             ImageLoadingPolicy.fromJson(request.configuration.imagePolicyJson),
         )
@@ -574,10 +574,9 @@ class ProseViewerView @JvmOverloads constructor(
 
     private fun applyIntrinsicImageMetadata(attachment: ViewerImageAttachment, width: Int, height: Int) {
         val request = preparedRequest ?: return
-        if (!viewerImagePipeline.acceptsCompletion(request.generationIdentity)) return
+        if (!viewerImagePipeline.acceptsCompletion(request.semanticGenerationIdentity)) return
         if (!attachmentRevisions.recordIntrinsicSize(attachment.id, attachment.ordinal, width, height, attachment.declaredSize)) return
         preparedRequest = request.copy(attachmentRevision = attachmentRevisions.revision)
-        reportedResourceFailures.clear()
         requestLayout()
     }
 
@@ -585,7 +584,6 @@ class ProseViewerView @JvmOverloads constructor(
         val request = preparedRequest ?: return
         if (revision <= request.fontEnvironmentRevision) return
         preparedRequest = request.copy(fontEnvironmentRevision = revision)
-        reportedResourceFailures.clear()
         requestLayout()
     }
 

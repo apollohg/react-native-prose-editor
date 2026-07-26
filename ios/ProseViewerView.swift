@@ -22,7 +22,6 @@ public final class ProseViewerView: UIView {
     private var ownedLayout: PreparedProseLayout?
     private var pendingError: ProseViewerError?
     private var errorWasReported = false
-    private var reportedResourceFailures = Set<String>()
     private let attachmentRevisions = ViewerAttachmentRevisionState()
     private let fontEnvironment = ViewerFontEnvironment.shared
     private var fontEnvironmentObserver: NSObjectProtocol?
@@ -49,6 +48,11 @@ public final class ProseViewerView: UIView {
     internal var isContentCollapsedForHost: Bool { legacyCollapsed }
     internal var renderedTextForTesting: String { legacyTextView.textStorage.string }
     internal var textViewForTesting: EditorTextView { legacyTextView }
+    /// Mounted host total; the layout cache intentionally excludes this
+    /// mutable sidecar because it is not shared immutable layout state.
+    internal var preparedSurfaceRetainedBytesForTesting: Int {
+        (ownedLayout?.retainedBytes ?? 0) + attachmentRevisions.retainedPublicationBytesForTesting
+    }
 
     public override init(frame: CGRect) {
         layoutRegistry = .shared
@@ -71,7 +75,7 @@ public final class ProseViewerView: UIView {
         drawingView.linkInteractionsEnabled = linkTapsEnabled
         drawingView.onActivateInteraction = { [weak self] interaction in self?.activate(interaction) ?? false }
         viewerImagePipeline.onPixels = { [weak self] attachment, image in
-            guard let self, self.request?.generationIdentity == self.viewerImageGeneration else { return }
+            guard let self, self.request?.semanticGenerationIdentity == self.viewerImageGeneration else { return }
             self.drawingView.imagePixels[attachment.id] = image
         }
         viewerImagePipeline.onIntrinsicMetadata = { [weak self] attachment, size in
@@ -139,7 +143,7 @@ public final class ProseViewerView: UIView {
             fontEnvironmentRevision: fontRevision,
             attachmentRevision: 0
         )
-        attachmentRevisions.reset()
+        _ = attachmentRevisions.beginSemanticGeneration(nextRequest.semanticGenerationIdentity)
         request = nextRequest
         compiledDocument = nil
         viewerImagePipeline.cancel()
@@ -147,7 +151,6 @@ public final class ProseViewerView: UIView {
         installPreparedLayout(nil)
         pendingError = nil
         errorWasReported = false
-        reportedResourceFailures.removeAll()
         do {
             compiledDocument = try layoutRegistry.compileDocument(request: nextRequest)
             invalidateIntrinsicContentSize()
@@ -211,7 +214,6 @@ public final class ProseViewerView: UIView {
         installPreparedLayout(nil)
         pendingError = nil
         errorWasReported = false
-        reportedResourceFailures.removeAll()
         legacyImageLoadOwner.cancelAll()
         viewerImagePipeline.cancel()
         attachmentRevisions.reset()
@@ -285,13 +287,14 @@ public final class ProseViewerView: UIView {
         return layout
     }
 
-    private var viewerImageGeneration: String? { request?.generationIdentity }
+    private var viewerImageGeneration: String? { request?.semanticGenerationIdentity }
 
     private func configureImageGeneration(for layout: PreparedProseLayout) {
         guard let request else { return }
+        _ = attachmentRevisions.beginSemanticGeneration(request.semanticGenerationIdentity)
         attachmentRevisions.admit(attachmentCount: layout.imageAttachments.count)
         viewerImagePipeline.begin(
-            generation: request.generationIdentity,
+            generation: request.semanticGenerationIdentity,
             imagesEnabled: request.configuration.imagesEnabled,
             policy: ImageLoadingPolicy.from(json: request.configuration.imagePolicyJSON)
         )
@@ -312,7 +315,7 @@ public final class ProseViewerView: UIView {
 
     private func applyIntrinsicImageMetadata(_ attachment: ViewerImageAttachment, size: CGSize) {
         guard let request,
-              viewerImagePipeline.acceptsCompletion(generation: request.generationIdentity),
+              viewerImagePipeline.acceptsCompletion(generation: request.semanticGenerationIdentity),
               attachmentRevisions.recordIntrinsicSize(size, for: attachment.id, ordinal: attachment.ordinal, declaredSize: attachment.declaredSize)
         else { return }
         self.request = ProseViewerRequest(
@@ -323,7 +326,6 @@ public final class ProseViewerView: UIView {
             fontEnvironmentRevision: request.fontEnvironmentRevision,
             attachmentRevision: attachmentRevisions.revision
         )
-        reportedResourceFailures.removeAll()
         // Metadata is the sole image completion allowed to reflow. Pixels stay
         // in the drawing cache; this schedules exactly one replacement key.
         invalidateIntrinsicContentSize()
@@ -340,7 +342,6 @@ public final class ProseViewerView: UIView {
             fontEnvironmentRevision: revision,
             attachmentRevision: request.attachmentRevision
         )
-        reportedResourceFailures.removeAll()
         invalidateIntrinsicContentSize()
         setNeedsLayout()
     }
@@ -352,8 +353,7 @@ public final class ProseViewerView: UIView {
     }
 
     private func reportResourceFailureIfNeeded(_ attachment: ViewerImageAttachment) {
-        guard let generation = request?.generationIdentity,
-              reportedResourceFailures.insert("\(generation)\u{1f}\(attachment.id)").inserted
+        guard attachmentRevisions.recordResourceFailure(for: attachment.ordinal)
         else { return }
         interactionDelegate?.proseViewer(self, didFail: .resource)
     }

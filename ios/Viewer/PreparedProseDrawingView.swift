@@ -43,13 +43,17 @@ public final class PreparedProseDrawingView: UIView {
             )
         }
         imagePipeline.onResourceFailure = { [weak self] attachment in
-            guard let self, self.imagePipeline.acceptsCompletion(generation: generation) else { return }
+            guard let self,
+                  self.imagePipeline.acceptsCompletion(generation: generation),
+                  self.imageRevisions.recordResourceFailure(for: attachment.ordinal)
+            else { return }
             NotificationCenter.default.post(
                 name: Self.imageResourceDidFail,
                 object: self,
                 userInfo: ["generation": generation, "attachment": attachment.id]
             )
         }
+        _ = imageRevisions.beginSemanticGeneration(generation)
         imagePipeline.begin(
             generation: imageGeneration,
             imagesEnabled: imageConfiguration.enabled,
