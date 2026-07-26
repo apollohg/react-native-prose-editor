@@ -171,7 +171,7 @@ fn semantic_elements_are_empty(
 
 fn viewer_mark(mark: RenderMark) -> FfiViewerMark {
     FfiViewerMark {
-        mark_type: mark.mark_type,
+        mark_type: mark.mark_type.clone(),
         attrs_json: canonical_attrs_json(&mark.attrs),
     }
 }
@@ -314,7 +314,7 @@ fn hash_u64(digest: &mut Sha256, value: u64) {
 fn retained_bytes(semantic_key: &str, elements: &[FfiViewerElement]) -> usize {
     let element_bytes = elements.iter().map(element_retained_bytes).sum::<usize>();
     std::mem::size_of::<ViewerCompiledDocument>()
-        .saturating_add(semantic_key.capacity())
+        .saturating_add(semantic_key.len())
         .saturating_add(
             elements
                 .len()

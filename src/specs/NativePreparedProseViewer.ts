@@ -7,14 +7,14 @@ import type {
 } from 'react-native/Libraries/Types/CodegenTypes';
 
 export interface NativeProps extends ViewProps {
-    sourceKind: WithDefault<'json' | 'html', 'json'>;
+    sourceKind?: WithDefault<'json' | 'html', 'json'>;
     source: string;
     configJson: string;
     themeJson?: string;
     imagePolicyJson?: string;
-    imagesEnabled: WithDefault<boolean, true>;
-    collapsesWhenEmpty: WithDefault<boolean, true>;
-    enableLinkTaps: WithDefault<boolean, true>;
+    imagesEnabled?: WithDefault<boolean, true>;
+    collapsesWhenEmpty?: WithDefault<boolean, true>;
+    enableLinkTaps?: WithDefault<boolean, true>;
     fontEnvironmentRevision: Int32;
     onPressLink?: DirectEventHandler<{ href: string; text: string }>;
     onPressMention?: DirectEventHandler<{ docPos: Int32; label: string }>;

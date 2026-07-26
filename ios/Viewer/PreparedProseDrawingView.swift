@@ -24,7 +24,7 @@ public final class PreparedProseDrawingView: UIView {
         CGPoint(x: 0, y: bounds.height - baselineFromArtifactTop)
     }
 
-    override func draw(_ rect: CGRect) {
+    public override func draw(_ rect: CGRect) {
         guard let layout, let context = UIGraphicsGetCurrentContext(), !layout.blocks.isEmpty else { return }
         let blocks = layout.blocks
         var lower = 0

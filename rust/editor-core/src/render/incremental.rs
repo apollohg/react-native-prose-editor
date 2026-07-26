@@ -568,7 +568,7 @@ impl CachedRenderBlocks {
                 } => node_type
                     .capacity()
                     .checked_add(label.capacity())?
-                    .checked_add(json_map_bytes(attrs)?)
+                    .checked_add(json_map_bytes(attrs)?)?
                     .checked_add(mention_theme.as_ref().map_or(Some(0), json_map_bytes)?),
                 RenderElement::OpaqueBlockAtom {
                     node_type, label, attrs, ..

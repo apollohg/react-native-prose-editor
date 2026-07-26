@@ -214,7 +214,7 @@ class PreparedProseLayoutTest {
     @Test
     fun `culling skips a large offscreen prefix and visits each visible block once`() {
         val blockLayout = StaticLayout.Builder
-            .obtain("x", TextPaint().apply { textSize = 14f }, 10)
+            .obtain("x", 0, 1, TextPaint().apply { textSize = 14f }, 10)
             .build()
         val artifact = PreparedProseLayout(
             key = ProseLayoutKey("culling", 10, "", 0, 0, 0, "culling"),

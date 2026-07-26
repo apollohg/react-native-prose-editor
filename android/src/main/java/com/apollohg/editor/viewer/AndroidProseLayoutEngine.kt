@@ -42,7 +42,7 @@ internal class StaticLayoutAndroidProseLayoutEngine : AndroidProseLayoutEngine {
         var top = 0
         document.paragraphs.forEach { paragraph ->
             val text = if (paragraph.isEmpty()) "\u200B" else paragraph
-            val layout = StaticLayout.Builder.obtain(text, paint, widthPx)
+            val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint, widthPx)
                 .setAlignment(Layout.Alignment.ALIGN_NORMAL)
                 .setIncludePad(false)
                 .setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY)

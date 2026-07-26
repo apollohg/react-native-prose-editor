@@ -23,8 +23,8 @@ final class PreparedProseLayoutTests: XCTestCase {
         let viewer = ProseViewerView(layoutRegistry: registry)
 
         XCTAssertTrue(viewer.apply(source: .json("{\"type\":\"doc\"}"), configuration: configuration()))
-        let first = viewer.sizeThatFits(CGSize(width: 160, height: .greatestFiniteMagnitude))
-        let second = viewer.sizeThatFits(CGSize(width: 160.1, height: .greatestFiniteMagnitude))
+        let first = viewer.sizeThatFits(CGSize(width: 160, height: CGFloat.greatestFiniteMagnitude))
+        let second = viewer.sizeThatFits(CGSize(width: 160.1, height: CGFloat.greatestFiniteMagnitude))
         XCTAssertGreaterThan(first.height, 0)
         XCTAssertEqual(first.height, second.height)
 
@@ -50,9 +50,9 @@ final class PreparedProseLayoutTests: XCTestCase {
         let viewer = ProseViewerView(layoutRegistry: registry)
 
         XCTAssertTrue(viewer.apply(source: .json("{\"type\":\"doc\"}"), configuration: configuration()))
-        _ = viewer.sizeThatFits(CGSize(width: 160, height: .greatestFiniteMagnitude))
-        _ = viewer.sizeThatFits(CGSize(width: 120, height: .greatestFiniteMagnitude))
-        _ = viewer.sizeThatFits(CGSize(width: 120.1, height: .greatestFiniteMagnitude))
+        _ = viewer.sizeThatFits(CGSize(width: 160, height: CGFloat.greatestFiniteMagnitude))
+        _ = viewer.sizeThatFits(CGSize(width: 120, height: CGFloat.greatestFiniteMagnitude))
+        _ = viewer.sizeThatFits(CGSize(width: 120.1, height: CGFloat.greatestFiniteMagnitude))
 
         XCTAssertEqual(preparations, 2)
         XCTAssertEqual(registry.layoutPreparationCount, 2)
@@ -74,11 +74,11 @@ final class PreparedProseLayoutTests: XCTestCase {
 
         XCTAssertFalse(viewer.apply(source: .json("not valid"), configuration: configuration()))
         XCTAssertEqual(
-            viewer.sizeThatFits(CGSize(width: 160, height: .greatestFiniteMagnitude)).height,
+            viewer.sizeThatFits(CGSize(width: 160, height: CGFloat.greatestFiniteMagnitude)).height,
             0
         )
         XCTAssertEqual(
-            viewer.sizeThatFits(CGSize(width: 160, height: .greatestFiniteMagnitude)).height,
+            viewer.sizeThatFits(CGSize(width: 160, height: CGFloat.greatestFiniteMagnitude)).height,
             0
         )
 
@@ -103,8 +103,8 @@ final class PreparedProseLayoutTests: XCTestCase {
         viewer.interactionDelegate = delegate
 
         XCTAssertTrue(viewer.apply(source: .json("{\"type\":\"doc\"}"), configuration: configuration()))
-        XCTAssertEqual(viewer.sizeThatFits(CGSize(width: .infinity, height: 100)).height, 0)
-        XCTAssertEqual(viewer.sizeThatFits(CGSize(width: .infinity, height: 100)).height, 0)
+        XCTAssertEqual(viewer.sizeThatFits(CGSize(width: CGFloat.infinity, height: 100)).height, 0)
+        XCTAssertEqual(viewer.sizeThatFits(CGSize(width: CGFloat.infinity, height: 100)).height, 0)
         XCTAssertEqual(delegate.errors.map(\.code), ["INVALID_WIDTH"])
         XCTAssertEqual(preparations, 0)
         XCTAssertEqual(registry.preparedLayoutCacheCountForTesting, 0)
@@ -159,14 +159,14 @@ final class PreparedProseLayoutTests: XCTestCase {
                 attachmentRevision: request.attachmentRevision,
                 nativeFontRevision: request.nativeFontRevision,
                 fontEnvironmentRevision: request.fontEnvironmentRevision,
-                widthPoints: .infinity,
+                widthPoints: CGFloat.infinity,
                 scale: 0
             )
         )
         XCTAssertTrue(drawingView.layout === mountedLayout)
         XCTAssertEqual(preparations, 1)
 
-        let invalidYogaMeasurement = registry.measure(request: request, widthPoints: .infinity, scale: 0)
+        let invalidYogaMeasurement = registry.measure(request: request, widthPoints: CGFloat.infinity, scale: 0)
         XCTAssertEqual(invalidYogaMeasurement.error?.code, "INVALID_WIDTH")
         XCTAssertTrue(
             registry.installCachedLayout(
@@ -261,7 +261,7 @@ final class PreparedProseLayoutTests: XCTestCase {
 
         let overflowing = registry.measure(
             request: request,
-            widthPoints: .greatestFiniteMagnitude,
+            widthPoints: CGFloat.greatestFiniteMagnitude,
             scale: 2
         )
 
@@ -280,7 +280,7 @@ final class PreparedProseLayoutTests: XCTestCase {
                 attachmentRevision: request.attachmentRevision,
                 nativeFontRevision: request.nativeFontRevision,
                 fontEnvironmentRevision: request.fontEnvironmentRevision,
-                widthPoints: .greatestFiniteMagnitude,
+                widthPoints: CGFloat.greatestFiniteMagnitude,
                 scale: 2
             )
         )
@@ -621,7 +621,7 @@ final class PreparedProseLayoutTests: XCTestCase {
 
         XCTAssertTrue(viewer.apply(source: .json("first"), configuration: configuration()))
         _ = try registry.compileDocument(request: request(source: "second"))
-        _ = viewer.sizeThatFits(CGSize(width: 160, height: .greatestFiniteMagnitude))
+        _ = viewer.sizeThatFits(CGSize(width: 160, height: CGFloat.greatestFiniteMagnitude))
 
         XCTAssertEqual(compilations, 2)
     }
@@ -736,7 +736,7 @@ final class PreparedProseLayoutTests: XCTestCase {
         let viewer = ProseViewerView(layoutRegistry: registry)
 
         XCTAssertTrue(viewer.apply(source: .json("{\"type\":\"doc\"}"), configuration: configuration()))
-        _ = viewer.sizeThatFits(CGSize(width: 160, height: .greatestFiniteMagnitude))
+        _ = viewer.sizeThatFits(CGSize(width: 160, height: CGFloat.greatestFiniteMagnitude))
         guard let mountedArtifact = viewer.drawingViewForTesting.layout else {
             return XCTFail("Measurement should install the prepared artifact in the drawing view.")
         }

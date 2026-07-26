@@ -2,6 +2,7 @@ import groovy.json.JsonSlurper
 
 plugins {
     id 'com.android.library'
+    id 'com.facebook.react'
     id 'expo-module-gradle-plugin'
 }
 

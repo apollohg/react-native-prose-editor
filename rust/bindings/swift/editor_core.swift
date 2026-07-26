@@ -400,6 +400,22 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt16: FfiConverterPrimitive {
+    typealias FfiType = UInt16
+    typealias SwiftType = UInt16
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt16 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -495,6 +511,155 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
         writeBytes(&buf, value)
     }
 }
+
+
+
+
+public protocol ViewerCompiledDocumentProtocol: AnyObject, Sendable {
+
+    func elements()  -> [FfiViewerElement]
+
+    func isEmpty()  -> Bool
+
+    func retainedBytesDecimal()  -> String
+
+    func semanticKey()  -> String
+
+}
+open class ViewerCompiledDocument: ViewerCompiledDocumentProtocol, @unchecked Sendable {
+    fileprivate let pointer: UnsafeMutableRawPointer!
+
+    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoPointer {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noPointer: NoPointer) {
+        self.pointer = nil
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
+        return try! rustCall { uniffi_editor_core_fn_clone_viewercompileddocument(self.pointer, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        guard let pointer = pointer else {
+            return
+        }
+
+        try! rustCall { uniffi_editor_core_fn_free_viewercompileddocument(pointer, $0) }
+    }
+
+
+
+
+open func elements() -> [FfiViewerElement]  {
+    return try!  FfiConverterSequenceTypeFfiViewerElement.lift(try! rustCall() {
+    uniffi_editor_core_fn_method_viewercompileddocument_elements(self.uniffiClonePointer(),$0
+    )
+})
+}
+
+open func isEmpty() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_editor_core_fn_method_viewercompileddocument_is_empty(self.uniffiClonePointer(),$0
+    )
+})
+}
+
+open func retainedBytesDecimal() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_method_viewercompileddocument_retained_bytes_decimal(self.uniffiClonePointer(),$0
+    )
+})
+}
+
+open func semanticKey() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_editor_core_fn_method_viewercompileddocument_semantic_key(self.uniffiClonePointer(),$0
+    )
+})
+}
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeViewerCompiledDocument: FfiConverter {
+
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = ViewerCompiledDocument
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> ViewerCompiledDocument {
+        return ViewerCompiledDocument(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: ViewerCompiledDocument) -> UnsafeMutableRawPointer {
+        return value.uniffiClonePointer()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ViewerCompiledDocument {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: ViewerCompiledDocument, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeViewerCompiledDocument_lift(_ pointer: UnsafeMutableRawPointer) throws -> ViewerCompiledDocument {
+    return try FfiConverterTypeViewerCompiledDocument.lift(pointer)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeViewerCompiledDocument_lower(_ value: ViewerCompiledDocument) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeViewerCompiledDocument.lower(value)
+}
+
+
 
 
 public struct FfiError {
@@ -1055,6 +1220,404 @@ public func FfiConverterTypeFfiUnitResult_lower(_ value: FfiUnitResult) -> RustB
     return FfiConverterTypeFfiUnitResult.lower(value)
 }
 
+
+public struct FfiViewerCompileRequest {
+    public var sourceKind: FfiViewerSourceKind
+    public var source: String
+    public var configJson: String
+    public var imagesEnabled: Bool
+    public var mentionPrefix: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sourceKind: FfiViewerSourceKind, source: String, configJson: String, imagesEnabled: Bool, mentionPrefix: String?) {
+        self.sourceKind = sourceKind
+        self.source = source
+        self.configJson = configJson
+        self.imagesEnabled = imagesEnabled
+        self.mentionPrefix = mentionPrefix
+    }
+}
+
+#if compiler(>=6)
+extension FfiViewerCompileRequest: Sendable {}
+#endif
+
+
+extension FfiViewerCompileRequest: Equatable, Hashable {
+    public static func ==(lhs: FfiViewerCompileRequest, rhs: FfiViewerCompileRequest) -> Bool {
+        if lhs.sourceKind != rhs.sourceKind {
+            return false
+        }
+        if lhs.source != rhs.source {
+            return false
+        }
+        if lhs.configJson != rhs.configJson {
+            return false
+        }
+        if lhs.imagesEnabled != rhs.imagesEnabled {
+            return false
+        }
+        if lhs.mentionPrefix != rhs.mentionPrefix {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(sourceKind)
+        hasher.combine(source)
+        hasher.combine(configJson)
+        hasher.combine(imagesEnabled)
+        hasher.combine(mentionPrefix)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiViewerCompileRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiViewerCompileRequest {
+        return
+            try FfiViewerCompileRequest(
+                sourceKind: FfiConverterTypeFfiViewerSourceKind.read(from: &buf),
+                source: FfiConverterString.read(from: &buf),
+                configJson: FfiConverterString.read(from: &buf),
+                imagesEnabled: FfiConverterBool.read(from: &buf),
+                mentionPrefix: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiViewerCompileRequest, into buf: inout [UInt8]) {
+        FfiConverterTypeFfiViewerSourceKind.write(value.sourceKind, into: &buf)
+        FfiConverterString.write(value.source, into: &buf)
+        FfiConverterString.write(value.configJson, into: &buf)
+        FfiConverterBool.write(value.imagesEnabled, into: &buf)
+        FfiConverterOptionString.write(value.mentionPrefix, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiViewerCompileRequest_lift(_ buf: RustBuffer) throws -> FfiViewerCompileRequest {
+    return try FfiConverterTypeFfiViewerCompileRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiViewerCompileRequest_lower(_ value: FfiViewerCompileRequest) -> RustBuffer {
+    return FfiConverterTypeFfiViewerCompileRequest.lower(value)
+}
+
+
+public struct FfiViewerCompileResult {
+    public var value: ViewerCompiledDocument?
+    public var error: FfiError?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(value: ViewerCompiledDocument?, error: FfiError?) {
+        self.value = value
+        self.error = error
+    }
+}
+
+#if compiler(>=6)
+extension FfiViewerCompileResult: Sendable {}
+#endif
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiViewerCompileResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiViewerCompileResult {
+        return
+            try FfiViewerCompileResult(
+                value: FfiConverterOptionTypeViewerCompiledDocument.read(from: &buf),
+                error: FfiConverterOptionTypeFfiError.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiViewerCompileResult, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeViewerCompiledDocument.write(value.value, into: &buf)
+        FfiConverterOptionTypeFfiError.write(value.error, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiViewerCompileResult_lift(_ buf: RustBuffer) throws -> FfiViewerCompileResult {
+    return try FfiConverterTypeFfiViewerCompileResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiViewerCompileResult_lower(_ value: FfiViewerCompileResult) -> RustBuffer {
+    return FfiConverterTypeFfiViewerCompileResult.lower(value)
+}
+
+
+public struct FfiViewerMark {
+    public var markType: String
+    public var attrsJson: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(markType: String, attrsJson: String) {
+        self.markType = markType
+        self.attrsJson = attrsJson
+    }
+}
+
+#if compiler(>=6)
+extension FfiViewerMark: Sendable {}
+#endif
+
+
+extension FfiViewerMark: Equatable, Hashable {
+    public static func ==(lhs: FfiViewerMark, rhs: FfiViewerMark) -> Bool {
+        if lhs.markType != rhs.markType {
+            return false
+        }
+        if lhs.attrsJson != rhs.attrsJson {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(markType)
+        hasher.combine(attrsJson)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiViewerMark: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiViewerMark {
+        return
+            try FfiViewerMark(
+                markType: FfiConverterString.read(from: &buf),
+                attrsJson: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FfiViewerMark, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.markType, into: &buf)
+        FfiConverterString.write(value.attrsJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiViewerMark_lift(_ buf: RustBuffer) throws -> FfiViewerMark {
+    return try FfiConverterTypeFfiViewerMark.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiViewerMark_lower(_ value: FfiViewerMark) -> RustBuffer {
+    return FfiConverterTypeFfiViewerMark.lower(value)
+}
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum FfiViewerElement {
+
+    case textRun(text: String, marks: [FfiViewerMark]
+    )
+    case inlineAtom(nodeType: String, docPos: UInt32, attrsJson: String, label: String
+    )
+    case blockAtom(nodeType: String, docPos: UInt32, attrsJson: String, label: String
+    )
+    case blockStart(nodeType: String, depth: UInt16, listContextJson: String?
+    )
+    case blockEnd
+}
+
+
+#if compiler(>=6)
+extension FfiViewerElement: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiViewerElement: FfiConverterRustBuffer {
+    typealias SwiftType = FfiViewerElement
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiViewerElement {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .textRun(text: try FfiConverterString.read(from: &buf), marks: try FfiConverterSequenceTypeFfiViewerMark.read(from: &buf)
+        )
+
+        case 2: return .inlineAtom(nodeType: try FfiConverterString.read(from: &buf), docPos: try FfiConverterUInt32.read(from: &buf), attrsJson: try FfiConverterString.read(from: &buf), label: try FfiConverterString.read(from: &buf)
+        )
+
+        case 3: return .blockAtom(nodeType: try FfiConverterString.read(from: &buf), docPos: try FfiConverterUInt32.read(from: &buf), attrsJson: try FfiConverterString.read(from: &buf), label: try FfiConverterString.read(from: &buf)
+        )
+
+        case 4: return .blockStart(nodeType: try FfiConverterString.read(from: &buf), depth: try FfiConverterUInt16.read(from: &buf), listContextJson: try FfiConverterOptionString.read(from: &buf)
+        )
+
+        case 5: return .blockEnd
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FfiViewerElement, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .textRun(text,marks):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(text, into: &buf)
+            FfiConverterSequenceTypeFfiViewerMark.write(marks, into: &buf)
+
+
+        case let .inlineAtom(nodeType,docPos,attrsJson,label):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(nodeType, into: &buf)
+            FfiConverterUInt32.write(docPos, into: &buf)
+            FfiConverterString.write(attrsJson, into: &buf)
+            FfiConverterString.write(label, into: &buf)
+
+
+        case let .blockAtom(nodeType,docPos,attrsJson,label):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(nodeType, into: &buf)
+            FfiConverterUInt32.write(docPos, into: &buf)
+            FfiConverterString.write(attrsJson, into: &buf)
+            FfiConverterString.write(label, into: &buf)
+
+
+        case let .blockStart(nodeType,depth,listContextJson):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(nodeType, into: &buf)
+            FfiConverterUInt16.write(depth, into: &buf)
+            FfiConverterOptionString.write(listContextJson, into: &buf)
+
+
+        case .blockEnd:
+            writeInt(&buf, Int32(5))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiViewerElement_lift(_ buf: RustBuffer) throws -> FfiViewerElement {
+    return try FfiConverterTypeFfiViewerElement.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiViewerElement_lower(_ value: FfiViewerElement) -> RustBuffer {
+    return FfiConverterTypeFfiViewerElement.lower(value)
+}
+
+
+extension FfiViewerElement: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum FfiViewerSourceKind {
+
+    case json
+    case html
+}
+
+
+#if compiler(>=6)
+extension FfiViewerSourceKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFfiViewerSourceKind: FfiConverterRustBuffer {
+    typealias SwiftType = FfiViewerSourceKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FfiViewerSourceKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .json
+
+        case 2: return .html
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FfiViewerSourceKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .json:
+            writeInt(&buf, Int32(1))
+
+
+        case .html:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiViewerSourceKind_lift(_ buf: RustBuffer) throws -> FfiViewerSourceKind {
+    return try FfiConverterTypeFfiViewerSourceKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFfiViewerSourceKind_lower(_ value: FfiViewerSourceKind) -> RustBuffer {
+    return FfiConverterTypeFfiViewerSourceKind.lower(value)
+}
+
+
+extension FfiViewerSourceKind: Equatable, Hashable {}
+
+
+
+
+
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -1154,6 +1717,30 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeViewerCompiledDocument: FfiConverterRustBuffer {
+    typealias SwiftType = ViewerCompiledDocument?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeViewerCompiledDocument.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeViewerCompiledDocument.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeFfiError: FfiConverterRustBuffer {
     typealias SwiftType = FfiError?
 
@@ -1220,6 +1807,56 @@ fileprivate struct FfiConverterOptionTypeFfiSnapshotExport: FfiConverterRustBuff
         case 1: return try FfiConverterTypeFfiSnapshotExport.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFfiViewerMark: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiViewerMark]
+
+    public static func write(_ value: [FfiViewerMark], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiViewerMark.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiViewerMark] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiViewerMark]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiViewerMark.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFfiViewerElement: FfiConverterRustBuffer {
+    typealias SwiftType = [FfiViewerElement]
+
+    public static func write(_ value: [FfiViewerElement], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFfiViewerElement.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FfiViewerElement] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FfiViewerElement]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFfiViewerElement.read(from: &buf))
+        }
+        return seq
     }
 }
 /**
@@ -1515,6 +2152,13 @@ public func editorV2Undo(editorId: String, requestJson: String) -> FfiJsonResult
     )
 })
 }
+public func viewerCompile(request: FfiViewerCompileRequest) -> FfiViewerCompileResult  {
+    return try!  FfiConverterTypeFfiViewerCompileResult_lift(try! rustCall() {
+    uniffi_editor_core_fn_func_viewer_compile(
+        FfiConverterTypeFfiViewerCompileRequest_lower(request),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -1625,6 +2269,21 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_editor_core_checksum_func_editor_v2_undo() != 2492) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_func_viewer_compile() != 60070) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_method_viewercompileddocument_elements() != 50589) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_method_viewercompileddocument_is_empty() != 2370) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_method_viewercompileddocument_retained_bytes_decimal() != 13333) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_editor_core_checksum_method_viewercompileddocument_semantic_key() != 2241) {
         return InitializationResult.apiChecksumMismatch
     }
 

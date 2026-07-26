@@ -62,9 +62,9 @@ internal fun compileWithRust(request: ProseViewerRequest): ViewerDocument {
     val result = viewerCompile(
         FfiViewerCompileRequest(
             sourceKind = if (request.source is ProseViewerSource.Html) {
-                FfiViewerSourceKind.Html
+                FfiViewerSourceKind.HTML
             } else {
-                FfiViewerSourceKind.Json
+                FfiViewerSourceKind.JSON
             },
             source = request.source.value,
             configJson = request.configuration.configJson,
