@@ -42,6 +42,32 @@ target_link_libraries(
 # Available from React Native 0.81; retain compatibility with the 0.76 floor.
 if(COMMAND target_compile_reactnative_options)
   target_compile_reactnative_options(${LIB_TARGET_NAME} PUBLIC)
+else()
+  # Match the React Native 0.76 application's C++ and Folly flags for
+  # codegen targets when the 0.81 helper is unavailable.
+  target_compile_options(
+    ${LIB_TARGET_NAME}
+    PUBLIC
+    -Wall
+    -Werror
+    -fexceptions
+    -frtti
+    -std=c++20
+    -DLOG_TAG=\"ReactNative\"
+    -DFOLLY_NO_CONFIG=1
+    -DFOLLY_HAVE_CLOCK_GETTIME=1
+    -DFOLLY_USE_LIBCPP=1
+    -DFOLLY_CFG_NO_COROUTINES=1
+    -DFOLLY_MOBILE=1
+    -DFOLLY_HAVE_RECVMMSG=1
+    -DFOLLY_HAVE_PTHREAD=1
+    -DFOLLY_HAVE_XSI_STRERROR_R=1
+  )
+  target_compile_definitions(
+    ${LIB_TARGET_NAME}
+    PUBLIC
+    RN_SERIALIZABLE_STATE
+  )
 endif()
 
 target_compile_options(
