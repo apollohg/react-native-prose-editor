@@ -2383,20 +2383,26 @@ impl DocumentValidator {
 /// Valid input order is otherwise irrelevant because semantic previews
 /// canonicalize it after applying the operation.
 pub(crate) fn validate_input_mark_set(marks: &[Mark], schema: &Schema) -> BoundaryResult<()> {
-    validate_mark_set(marks, schema, false)
+    validate_mark_set(marks, schema, false).map(|_| ())
 }
 
-/// Validate that a mark set is canonical and representable by standard Yjs
-/// text attributes.
-pub(crate) fn validate_canonical_mark_set(marks: &[Mark], schema: &Schema) -> BoundaryResult<()> {
-    validate_mark_set(marks, schema, true)
+/// Whether a validated mark set was already in schema-rank order.
+///
+/// Rank order is the one non-canonical property of an incoming mark set that
+/// [`canonicalize_yrs_document`] repairs by sorting. Duplicate same-type
+/// marks, unknown marks, and invalid attributes stay fatal: no sort makes
+/// them representable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MarkSetOrder {
+    Canonical,
+    NeedsCanonicalization,
 }
 
 fn validate_mark_set(
     marks: &[Mark],
     schema: &Schema,
     require_canonical_order: bool,
-) -> BoundaryResult<()> {
+) -> BoundaryResult<MarkSetOrder> {
     let work_limit = marks.len().saturating_mul(128).max(128);
     let budget = WorkBudget::new(work_limit);
     let mut seen = (marks.len() > 8).then(|| {
@@ -2405,6 +2411,7 @@ fn validate_mark_set(
         HashSet::with_capacity(marks.len())
     });
     let mut previous_rank = None;
+    let mut order = MarkSetOrder::Canonical;
     for (index, mark) in marks.iter().enumerate() {
         let duplicate = match &mut seen {
             Some(seen) => !seen.insert(mark.mark_type()),
@@ -2430,16 +2437,19 @@ fn validate_mark_set(
                 format!("unknown mark '{}'", mark.mark_type()),
             )
         })?;
-        if require_canonical_order && previous_rank.is_some_and(|previous| rank < previous) {
-            let mut error = BoundaryError::new(
-                "DOCUMENT_INVALID",
-                "mark order does not match ProseMirror schema rank",
-            );
-            error.details = Some(serde_json::json!({
-                "field": "marks",
-                "reason": "nonCanonicalOrder",
-            }));
-            return Err(error);
+        if previous_rank.is_some_and(|previous| rank < previous) {
+            if require_canonical_order {
+                let mut error = BoundaryError::new(
+                    "DOCUMENT_INVALID",
+                    "mark order does not match ProseMirror schema rank",
+                );
+                error.details = Some(serde_json::json!({
+                    "field": "marks",
+                    "reason": "nonCanonicalOrder",
+                }));
+                return Err(error);
+            }
+            order = MarkSetOrder::NeedsCanonicalization;
         }
         let spec = schema
             .mark(mark.mark_type())
@@ -2454,7 +2464,7 @@ fn validate_mark_set(
         )?;
         previous_rank = Some(rank);
     }
-    Ok(())
+    Ok(order)
 }
 
 /// Validate canonical mark representation throughout an immutable document.
@@ -2466,14 +2476,42 @@ pub(crate) fn validate_canonical_marks_with_evidence<'schema>(
     document: &Document,
     schema: &'schema Schema,
 ) -> BoundaryResult<CanonicalMarksEvidence<'schema>> {
-    fn visit(root: &Node, schema: &Schema) -> BoundaryResult<bool> {
+    validate_marks_with_evidence(document, schema, true)
+}
+
+/// As [`validate_canonical_marks_with_evidence`], but for a document being
+/// admitted from outside the engine.
+///
+/// An importable document is not required to arrive in schema-rank mark
+/// order. `<em><strong>x</strong></em>` and `<strong><em>x</em></strong>` are
+/// the same document, and a serialized ProseMirror doc preserves whatever
+/// order its producer applied. Non-canonical order is therefore reported as
+/// evidence, which makes the caller canonicalize — the same sort every step
+/// already performs — rather than rejecting content the engine is about to
+/// repair anyway. Everything that no sort can fix stays fatal.
+pub(crate) fn validate_importable_marks_with_evidence<'schema>(
+    document: &Document,
+    schema: &'schema Schema,
+) -> BoundaryResult<CanonicalMarksEvidence<'schema>> {
+    validate_marks_with_evidence(document, schema, false)
+}
+
+fn validate_marks_with_evidence<'schema>(
+    document: &Document,
+    schema: &'schema Schema,
+    require_canonical_order: bool,
+) -> BoundaryResult<CanonicalMarksEvidence<'schema>> {
+    fn visit(root: &Node, schema: &Schema, require_canonical_order: bool) -> BoundaryResult<bool> {
         let mut pending = vec![root];
         let mut is_canonical = true;
         while let Some(node) = pending.pop() {
             #[cfg(test)]
             crate::yrs_engine::observability::record_canonical_mark_node_visited();
-            if node.is_text() {
-                validate_canonical_mark_set(node.marks(), schema)?;
+            if node.is_text()
+                && validate_mark_set(node.marks(), schema, require_canonical_order)?
+                    == MarkSetOrder::NeedsCanonicalization
+            {
+                is_canonical = false;
             }
             if let Some(content) = node.content() {
                 let mut previous = None;
@@ -2497,7 +2535,7 @@ pub(crate) fn validate_canonical_marks_with_evidence<'schema>(
 
     #[cfg(test)]
     crate::yrs_engine::observability::record_canonical_mark_validation_attempt();
-    let result = visit(document.root(), schema).map(|is_canonical| CanonicalMarksEvidence {
+    let result = visit(document.root(), schema, require_canonical_order).map(|is_canonical| CanonicalMarksEvidence {
         source_root: document.root().clone(),
         source_schema: schema,
         is_canonical,
@@ -2866,8 +2904,9 @@ mod document_validation_stats_tests {
     use super::{
         canonicalize_yrs_document, canonicalize_yrs_document_with_evidence,
         reset_mark_set_hash_allocations_for_test, take_mark_set_hash_allocations_for_test,
-        validate_canonical_mark_set, validate_canonical_marks,
-        validate_canonical_marks_with_evidence, validate_input_mark_set, DocumentValidator,
+        validate_canonical_marks, validate_canonical_marks_with_evidence,
+        validate_importable_marks_with_evidence, validate_input_mark_set, validate_mark_set,
+        DocumentValidator,
     };
     use crate::boundary::ResourceLimits;
     use crate::model::{Document, Fragment, Mark, Node};
@@ -3656,7 +3695,7 @@ mod document_validation_stats_tests {
             mark_with_attrs("bold", &[("invalid", json!(true))]),
         ];
         let error =
-            validate_canonical_mark_set(&noncanonical_before_bad_attrs, &schema).unwrap_err();
+            validate_mark_set(&noncanonical_before_bad_attrs, &schema, true).unwrap_err();
         assert_eq!(error.code, "DOCUMENT_INVALID");
         assert_eq!(
             error.message,
@@ -3683,6 +3722,75 @@ mod document_validation_stats_tests {
             "'bold' contains undeclared attribute 'invalid'"
         );
         assert_eq!(error.details, None);
+    }
+
+    fn document_with_marked_text(marks: Vec<Mark>) -> Document {
+        Document::new(Node::element(
+            "doc".into(),
+            HashMap::new(),
+            Fragment::from(vec![Node::element(
+                "paragraph".into(),
+                HashMap::new(),
+                Fragment::from(vec![Node::text("x".to_string(), marks)]),
+            )]),
+        ))
+    }
+
+    #[test]
+    fn importable_mark_validation_reports_order_the_canonicalizer_repairs() {
+        let schema = tiptap_schema();
+        let out_of_order = document_with_marked_text(vec![mark("italic"), mark("bold")]);
+
+        // Strict validation is what the engine holds its own output to.
+        let error = validate_canonical_marks_with_evidence(&out_of_order, &schema).unwrap_err();
+        assert_eq!(
+            error.message,
+            "mark order does not match ProseMirror schema rank"
+        );
+
+        // An import instead reports it, so admission canonicalizes.
+        let evidence = validate_importable_marks_with_evidence(&out_of_order, &schema).unwrap();
+        let canonical = canonicalize_yrs_document_with_evidence(&out_of_order, &schema, evidence);
+        assert_eq!(
+            canonical
+                .root()
+                .content()
+                .and_then(|content| content.iter().next().cloned())
+                .and_then(|paragraph| paragraph
+                    .content()
+                    .and_then(|content| content.iter().next().cloned()))
+                .expect("the canonical document keeps its text node")
+                .marks()
+                .iter()
+                .map(|mark| mark.mark_type().to_string())
+                .collect::<Vec<_>>(),
+            vec!["bold".to_string(), "italic".to_string()],
+            "the evidence must make admission sort the marks, not skip canonicalization"
+        );
+
+        // An already-canonical import is left exactly as it arrived.
+        let in_order = document_with_marked_text(vec![mark("bold"), mark("italic")]);
+        let evidence = validate_importable_marks_with_evidence(&in_order, &schema).unwrap();
+        assert_eq!(
+            canonicalize_yrs_document_with_evidence(&in_order, &schema, evidence),
+            in_order
+        );
+    }
+
+    #[test]
+    fn importable_mark_validation_still_refuses_unrepresentable_mark_sets() {
+        let schema = tiptap_schema();
+
+        let duplicate = document_with_marked_text(vec![mark("bold"), mark("bold")]);
+        let error = validate_importable_marks_with_evidence(&duplicate, &schema).unwrap_err();
+        assert_eq!(
+            error.message,
+            "duplicate same-type marks cannot be represented by standard Yjs attributes"
+        );
+
+        let unknown = document_with_marked_text(vec![mark("unknown")]);
+        let error = validate_importable_marks_with_evidence(&unknown, &schema).unwrap_err();
+        assert_eq!(error.code, "UNKNOWN_MARK");
     }
 }
 

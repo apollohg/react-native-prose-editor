@@ -11,7 +11,7 @@ pub(crate) use apply::DocumentStats;
 pub use apply::DocumentValidator;
 pub(crate) use apply::{
     apply_step_canonical_marks, canonicalize_yrs_document, canonicalize_yrs_document_with_evidence,
-    validate_canonical_marks, validate_canonical_marks_with_evidence, validate_input_mark_set,
+    validate_canonical_marks, validate_importable_marks_with_evidence, validate_input_mark_set,
     CanonicalMarksEvidence,
 };
 pub(crate) use apply::{DocumentValidationMetrics, DocumentValidationReport};

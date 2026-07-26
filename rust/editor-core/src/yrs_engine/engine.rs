@@ -28,7 +28,7 @@ use crate::serialize::{
 };
 use crate::transform::{
     canonicalize_yrs_document, canonicalize_yrs_document_with_evidence,
-    validate_canonical_marks_with_evidence, CanonicalMarksEvidence, DocumentValidationReport,
+    validate_importable_marks_with_evidence, CanonicalMarksEvidence, DocumentValidationReport,
     DocumentValidator, StepMap,
 };
 
@@ -7562,11 +7562,14 @@ fn snapshot_derived_error(mut error: YrsEngineError, field: &'static str) -> Yrs
     error
 }
 
+/// Mark validation for a document arriving from outside the engine. Rank
+/// order is canonicalized by the admission that follows, not required of the
+/// producer; every other mark defect is still refused here.
 fn validate_yrs_mark_representation<'schema>(
     document: &Document,
     schema: &'schema Schema,
 ) -> YrsEngineResult<CanonicalMarksEvidence<'schema>> {
-    validate_canonical_marks_with_evidence(document, schema).map_err(|error| YrsEngineError {
+    validate_importable_marks_with_evidence(document, schema).map_err(|error| YrsEngineError {
         code: error.code,
         message: error.message,
         limit: error.limit,
