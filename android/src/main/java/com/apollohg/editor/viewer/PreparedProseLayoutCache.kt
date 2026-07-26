@@ -32,7 +32,7 @@ internal class PreparedProseLayoutCache(private val byteBudget: Long = 32L * 102
         }
         fresh.complete(layout); inFlight.remove(key, fresh); return layout
     }
-    fun registerDirectMount(owner: String, layout: PreparedProseLayout) = synchronized(lock) { directMounted[owner] = layout; publishOwnersLocked() }
+    fun registerDirectMount(owner: String, layout: PreparedProseLayout) = synchronized(lock) { directMounted[owner] = layout; retireUnownedPublicationsLocked(); publishOwnersLocked() }
     fun releaseDirectMount(owner: String) = synchronized(lock) { directMounted.remove(owner); retireUnownedPublicationsLocked(); publishOwnersLocked() }
     /** Acquisition does not consume the lease; it remains live until Fabric release. */
     fun acquireForFabricMount(surface: FabricSurfaceToken, generationIdentity: String, widthPx: Int, densityBits: Long): PreparedProseLayout? = synchronized(lock) {
@@ -46,7 +46,7 @@ internal class PreparedProseLayoutCache(private val byteBudget: Long = 32L * 102
     internal val completedCountForTesting: Int get() = synchronized(lock) { completed.size }
     internal val retainedBytesForTesting: Long get() = synchronized(lock) { unmountedBytesLocked() }
     internal val leaseCountForTesting: Int get() = synchronized(lock) { leases.size }
-    private fun leaseLocked(layout: PreparedProseLayout, surface: FabricSurfaceToken) { val old = leaseBySurface.remove(surface); if (old != null) leases.remove(old); val token = FabricGenerationToken(surface, layout.key.generationIdentity); leases[token] = layout; leaseBySurface[surface] = token }
+    private fun leaseLocked(layout: PreparedProseLayout, surface: FabricSurfaceToken) { val old = leaseBySurface.remove(surface); if (old != null) leases.remove(old); val token = FabricGenerationToken(surface, layout.key.generationIdentity); leases[token] = layout; leaseBySurface[surface] = token; retireUnownedPublicationsLocked(); publishOwnersLocked() }
     private fun enforceBudgetLocked() { while (unmountedBytesLocked() > byteBudget) { val oldest = completed.entries.firstOrNull() ?: break; completed.remove(oldest.key); if (mountIndex[mountKey(oldest.key)] == oldest.key) mountIndex.remove(mountKey(oldest.key)) }; retireUnownedPublicationsLocked() }
     private fun retireUnownedPublicationsLocked() { publishedKeys.retainAll((completed.keys + leases.values.map { it.key } + directMounted.values.map { it.key }).toSet()) }
     private fun publishOwnersLocked() { PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.UNMOUNTED_LAYOUT, "cache", unmountedBytesLocked()); PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.FABRIC_LEASE_HANDOFF, "leases", uniqueBytes(leases.values)); PreparedProseInstrumentation.retained(PreparedProseInstrumentation.Owner.DIRECT_MOUNTED, "views", uniqueBytes(directMounted.values)) }

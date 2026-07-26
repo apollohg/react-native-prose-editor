@@ -59,7 +59,7 @@ internal class PreparedProseLayoutRegistry(
         } catch (throwable: Throwable) {
             Compilation.Failure(ProseViewerError.layout(throwable.message ?: "Document compilation failed."))
         }
-        PreparedProseInstrumentation.compiled(compileStarted)
+        PreparedProseInstrumentation.compiled(compileStarted, request.generationIdentity)
         synchronized(compilerLock) {
             when (result) {
                 is Compilation.Document -> {
@@ -123,7 +123,7 @@ internal class PreparedProseLayoutRegistry(
                     val artifact = if (imageMeasurementState != null) {
                         FabricAttachmentSidecars.withMeasurementState(imageMeasurementState, prepare)
                     } else prepare()
-                    PreparedProseInstrumentation.laidOut(layoutStarted)
+                    PreparedProseInstrumentation.laidOut(layoutStarted, request.generationIdentity)
                     artifact
                 } catch (error: ProseViewerError) {
                     PreparedProseLayout.error(key, widthPx, error)

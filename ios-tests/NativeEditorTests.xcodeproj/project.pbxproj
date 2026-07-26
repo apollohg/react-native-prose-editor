@@ -34,6 +34,7 @@
 		A3B6C71D4E5F60718293A4BF /* PreparedProseLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B6C71D4E5F60718293A4C0 /* PreparedProseLayoutTests.swift */; };
 		A3B6C71D4E5F60718293A4C5 /* PreparedProseRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B6C71D4E5F60718293A4C6 /* PreparedProseRenderingTests.swift */; };
 		A3B6C71D4E5F60718293A4D1 /* PreparedProseAccessibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B6C71D4E5F60718293A4D2 /* PreparedProseAccessibilityTests.swift */; };
+		A3B6C71D4E5F60718293A4D4 /* PreparedProseInstrumentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B6C71D4E5F60718293A4D3 /* PreparedProseInstrumentation.swift */; };
 		B9D001010000000000000011 /* PreparedProseRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D001010000000000000001 /* PreparedProseRevisionTests.swift */; };
 		B9D001010000000000000012 /* ViewerImagePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D001010000000000000002 /* ViewerImagePipeline.swift */; };
 		B9D001010000000000000013 /* ViewerFontEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D001010000000000000003 /* ViewerFontEnvironment.swift */; };
@@ -81,6 +82,7 @@
 		A3B6C71D4E5F60718293A4C0 /* PreparedProseLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseLayoutTests.swift; sourceTree = "<group>"; };
 		A3B6C71D4E5F60718293A4C6 /* PreparedProseRenderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseRenderingTests.swift; sourceTree = "<group>"; };
 		A3B6C71D4E5F60718293A4D2 /* PreparedProseAccessibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseAccessibilityTests.swift; sourceTree = "<group>"; };
+		A3B6C71D4E5F60718293A4D3 /* PreparedProseInstrumentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseInstrumentation.swift; sourceTree = "<group>"; };
 		B9D001010000000000000001 /* PreparedProseRevisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedProseRevisionTests.swift; sourceTree = "<group>"; };
 		B9D001010000000000000002 /* ViewerImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerImagePipeline.swift; sourceTree = "<group>"; };
 		B9D001010000000000000003 /* ViewerFontEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerFontEnvironment.swift; sourceTree = "<group>"; };
@@ -217,6 +219,7 @@
 				A3B6C71D4E5F60718293A4BA /* PreparedProseLayout.swift */,
 				A3B6C71D4E5F60718293A4BC /* PreparedProseLayoutCache.swift */,
 				A3B6C71D4E5F60718293A4BE /* PreparedProseLayoutRegistry.swift */,
+				A3B6C71D4E5F60718293A4D3 /* PreparedProseInstrumentation.swift */,
 				B9D001010000000000000002 /* ViewerImagePipeline.swift */,
 				B9D001010000000000000003 /* ViewerFontEnvironment.swift */,
 				A3B6C71D4E5F60718293A4C2 /* ViewerDocument.swift */,
@@ -514,6 +517,7 @@
 				A3B6C71D4E5F60718293A4B9 /* PreparedProseLayout.swift in Sources */,
 				A3B6C71D4E5F60718293A4BB /* PreparedProseLayoutCache.swift in Sources */,
 				A3B6C71D4E5F60718293A4BD /* PreparedProseLayoutRegistry.swift in Sources */,
+				A3B6C71D4E5F60718293A4D4 /* PreparedProseInstrumentation.swift in Sources */,
 				A3B6C71D4E5F60718293A4BF /* PreparedProseLayoutTests.swift in Sources */,
 				A3B6C71D4E5F60718293A4C5 /* PreparedProseRenderingTests.swift in Sources */,
 				A3B6C71D4E5F60718293A4D1 /* PreparedProseAccessibilityTests.swift in Sources */,

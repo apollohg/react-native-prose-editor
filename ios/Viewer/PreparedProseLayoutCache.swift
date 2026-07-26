@@ -122,7 +122,7 @@ final class PreparedProseLayoutCache {
     }
 
     func registerDirectMount(_ owner: String, layout: PreparedProseLayout) {
-        condition.lock(); directMounted[owner] = layout; publishOwnerBytesLocked(); condition.unlock()
+        condition.lock(); directMounted[owner] = layout; retireUnownedPublicationKeysLocked(); publishOwnerBytesLocked(); condition.unlock()
     }
 
     func releaseDirectMount(_ owner: String) {
@@ -170,12 +170,17 @@ final class PreparedProseLayoutCache {
         leaseKeyBySurface[surface] = leaseKey
         touchLease(leaseKey)
         enforceBudgetLocked(preferredLease: leaseKey)
+        publishOwnerBytesLocked()
     }
 
     private func releaseLeaseLocked(for surface: FabricSurfaceToken) {
         guard let leaseKey = leaseKeyBySurface.removeValue(forKey: surface) else { return }
         leases.removeValue(forKey: leaseKey)
         leaseAccessOrder.removeAll { $0 == leaseKey }
+        // The final lease release may retire this publication only when no
+        // completed entry, direct owner, or other lease keeps it live.
+        retireUnownedPublicationKeysLocked()
+        publishOwnerBytesLocked()
     }
 
     private func touch(_ key: ProseLayoutKey) {

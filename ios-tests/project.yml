@@ -63,6 +63,10 @@ targets:
           - editor_coreFFI
           - editor_coreFFI.h
           - editor_coreFFI.modulemap
+          - Viewer/PreparedProseInstrumentation.swift
+      # Keep the debug/device collector in the actual checked-in source phase
+      # exactly once; the broad ios source root excludes this explicit entry.
+      - path: ../ios/Viewer/PreparedProseInstrumentation.swift
       - path: ../ios/Tests
       # Bundled so RenderBridgeTests can read the shared security fixtures on
       # physical devices, where the repository host path is unavailable.

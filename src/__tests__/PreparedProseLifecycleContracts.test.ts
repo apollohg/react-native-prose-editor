@@ -14,6 +14,43 @@ function methodBody(source: string, signature: string): string {
     return source.slice(start, nextMethod === -1 ? source.length : nextMethod);
 }
 
+function visitCorpusNode(
+    node: unknown,
+    nodeTypes: Set<string>,
+    markTypes: Set<string>,
+    state: { nestedList: boolean; imageAttrs: Set<string>; orderedStart: boolean; checkedItem: boolean }
+): void {
+    if (node == null || typeof node !== 'object' || Array.isArray(node)) return;
+    const value = node as { type?: unknown; attrs?: unknown; marks?: unknown; content?: unknown };
+    if (typeof value.type === 'string') nodeTypes.add(value.type);
+    if (value.type === 'orderedList' && value.attrs != null && typeof value.attrs === 'object') {
+        state.orderedStart = Object.prototype.hasOwnProperty.call(value.attrs, 'start');
+    }
+    if (value.type === 'listItem' && value.attrs != null && typeof value.attrs === 'object') {
+        state.checkedItem ||= Object.prototype.hasOwnProperty.call(value.attrs, 'checked');
+    }
+    if (value.type === 'image' && value.attrs != null && typeof value.attrs === 'object') {
+        Object.keys(value.attrs as Record<string, unknown>).forEach((name) => state.imageAttrs.add(name));
+    }
+    if (Array.isArray(value.marks)) {
+        value.marks.forEach((mark) => {
+            if (mark != null && typeof mark === 'object' && typeof (mark as { type?: unknown }).type === 'string') {
+                markTypes.add((mark as { type: string }).type);
+            }
+        });
+    }
+    if (Array.isArray(value.content)) {
+        const children = value.content as unknown[];
+        if (value.type === 'listItem') {
+            state.nestedList ||= children.some((child) => {
+                const type = child != null && typeof child === 'object' ? (child as { type?: unknown }).type : undefined;
+                return type === 'orderedList' || type === 'bulletList' || type === 'taskList';
+            });
+        }
+        children.forEach((child) => visitCorpusNode(child, nodeTypes, markTypes, state));
+    }
+}
+
 describe('prepared prose native lifecycle contracts', () => {
     it('keeps an iOS Fabric artifact generation intact for link-permission-only updates', () => {
         const source = readSource('ios/Viewer/Fabric/PREPPreparedProseViewerComponentView.mm');
@@ -98,5 +135,95 @@ describe('prepared prose native lifecycle contracts', () => {
         expect(releaseSidecar).toContain('_hasOwnedSidecar = NO;');
         expect(releaseSidecar).not.toContain('self.tag');
         expect(install).toContain('[self releaseFabricSidecarOwnership];');
+    });
+
+    it('keeps every very-long literal independently complete and preserves the exact traversal contract', () => {
+        const corpus = JSON.parse(readSource('scripts/tests/viewer-performance-corpus.json')) as {
+            documents: Array<{ id: string; category: string; contentJSON: unknown }>;
+            coldTraversal: string[];
+            warmTraversal: string[];
+        };
+        expect(corpus.documents).toHaveLength(1_000);
+        expect(new Set(corpus.documents.map(({ id }) => id)).size).toBe(1_000);
+        expect(corpus.documents.filter(({ category }) => category === 'short')).toHaveLength(900);
+        expect(corpus.documents.filter(({ category }) => category === 'medium-multi-block')).toHaveLength(80);
+        expect(corpus.documents.filter(({ category }) => category === 'image-bearing')).toHaveLength(15);
+        const longEntries = corpus.documents.filter(({ category }) => category === 'very-long-all-elements-marks');
+        expect(longEntries).toHaveLength(5);
+        expect(corpus.coldTraversal).toEqual(corpus.documents.map(({ id }) => id));
+        expect(corpus.warmTraversal).toEqual([...corpus.coldTraversal].reverse());
+
+        for (const entry of longEntries) {
+            const nodeTypes = new Set<string>();
+            const markTypes = new Set<string>();
+            const state = { nestedList: false, imageAttrs: new Set<string>(), orderedStart: false, checkedItem: false };
+            visitCorpusNode(entry.contentJSON, nodeTypes, markTypes, state);
+            [
+                'paragraph', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'codeBlock',
+                'orderedList', 'bulletList', 'taskList', 'listItem', 'hardBreak', 'image', 'mention', 'opaque', 'opaqueBlock',
+            ].forEach((type) => expect(nodeTypes.has(type)).toBe(true));
+            [
+                'bold', 'italic', 'underline', 'strike', 'code', 'link', 'textColor', 'highlight', 'textStyle',
+            ].forEach((type) => expect(markTypes.has(type)).toBe(true));
+            expect(state.nestedList).toBe(true);
+            expect(state.orderedStart).toBe(true);
+            expect(state.checkedItem).toBe(true);
+            ['src', 'alt', 'title', 'width', 'height'].forEach((name) => expect(state.imageAttrs.has(name)).toBe(true));
+        }
+    });
+
+    it('makes device evidence phase-scoped, nonempty, and attached to real traversal surfaces', () => {
+        const iosInstrumentation = readSource('ios/Viewer/PreparedProseInstrumentation.swift');
+        const androidInstrumentation = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseInstrumentation.kt');
+        const iosHarness = readSource('ios/Tests/NativePerformanceTests.swift');
+        const androidDevice = readSource('android/src/androidTest/java/com/apollohg/editor/NativeDevicePerformanceTest.kt');
+        const androidHarness = readSource('android/src/sharedTest/java/com/apollohg/editor/NativePerformanceSupport.kt');
+
+        [iosInstrumentation, androidInstrumentation].forEach((source) => {
+            expect(source).toContain('TraversalPhase');
+            expect(source).toContain('combined');
+            expect(source).toContain('drawCount');
+            expect(source).toContain('phaseSamples');
+        });
+        [iosHarness, androidHarness].forEach((source) => {
+            expect(source).toContain('requireNonEmpty');
+            expect(source).toContain('drawCount');
+        });
+        expect(iosHarness).toContain('viewerFrameNanos');
+        expect(androidHarness).toContain('warmViewerFrames');
+        expect(androidDevice).toContain('import org.json.JSONObject');
+        expect(androidDevice).toContain('activity.setContentView');
+        expect(androidDevice).toContain('instrumentation.waitForIdleSync()');
+        expect(androidDevice).toContain('harness.traverseFromInstrumentationThread');
+        expect(androidHarness).toContain('CountDownLatch');
+        expect(androidHarness).toContain('Choreographer.getInstance().postFrameCallback');
+        expect(androidHarness).toContain('RecyclerView');
+    });
+
+    it('releases and reacquires direct and Fabric ownership without evicting mounted artifacts', () => {
+        const iosView = readSource('ios/ProseViewerView.swift');
+        const androidView = readSource('android/src/main/java/com/apollohg/editor/ProseViewerView.kt');
+        const iosCache = readSource('ios/Viewer/PreparedProseLayoutCache.swift');
+        const androidCache = readSource('android/src/main/java/com/apollohg/editor/viewer/PreparedProseLayoutCache.kt');
+
+        expect(iosView).toContain('releaseDirectMounted(preparedInstrumentationOwner)');
+        expect(iosView).toContain('registerDirectMounted(preparedInstrumentationOwner, layout: layout)');
+        expect(androidView).toContain('override fun onAttachedToWindow()');
+        expect(androidView).toContain('override fun onDetachedFromWindow()');
+        expect(androidView).toContain('releaseDirectMounted(preparedInstrumentationOwner)');
+        expect(androidView).toContain('registerDirectMounted(preparedInstrumentationOwner, artifact)');
+        expect(iosCache).toContain('retireUnownedPublicationKeysLocked');
+        expect(iosCache).toContain('releaseLease');
+        expect(iosCache).toContain('publishOwnerBytesLocked');
+        expect(androidCache).toContain('retireUnownedPublicationsLocked');
+        expect(androidCache).toContain('releaseLease');
+        expect(androidCache).toContain('publishOwnersLocked');
+    });
+
+    it('ships iOS instrumentation in the actual test target exactly once', () => {
+        const projectYml = readSource('ios-tests/project.yml');
+        const pbxproj = readSource('ios-tests/NativeEditorTests.xcodeproj/project.pbxproj');
+        expect(projectYml).toContain('../ios/Viewer/PreparedProseInstrumentation.swift');
+        expect((pbxproj.match(/PreparedProseInstrumentation\.swift/g) ?? [])).toHaveLength(4);
     });
 });

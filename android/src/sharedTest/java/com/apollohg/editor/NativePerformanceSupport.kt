@@ -1,6 +1,7 @@
 package com.apollohg.editor
 
 import android.graphics.Color
+import android.app.Instrumentation
 import android.content.Context
 import android.view.ViewGroup
 import android.view.Choreographer
@@ -9,6 +10,8 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.apollohg.editor.viewer.PreparedProseInstrumentation
 import com.apollohg.editor.viewer.PreparedProseLayoutRegistry
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.sqrt
 import org.json.JSONArray
 import org.json.JSONObject
@@ -56,27 +59,35 @@ internal object PreparedProsePerformanceGates {
     private const val NS_PER_MS = 1_000_000L
     fun assertPasses(exportJson: String, expectedDocuments: Int) {
         val export = JSONObject(exportJson)
-        val compile = export.getJSONArray("compileNanos").longs()
-        val layout = export.getJSONArray("layoutNanos").longs()
-        val lookup = export.getJSONArray("cacheLookupNanos").longs()
-        val draw = export.getJSONArray("drawNanos").longs()
-        val coldFrames = export.getJSONArray("coldFrameNanos").longs()
-        val warmFrames = export.getJSONArray("warmFrameNanos").longs()
-        val imagesDisabledFrames = export.getJSONArray("imagesDisabledFrameNanos").longs()
-        val warmViewerFrames = export.getJSONArray("warmViewerFrameNanos").longs()
-        check(compile.size >= expectedDocuments) { "expected compile samples for every corpus document" }
-        check(percentile(compile.zip(layout).map { it.first + it.second }, .95) < 4 * NS_PER_MS)
+        val phases = export.getJSONObject("phaseSamples")
+        val cold = phases.getJSONObject("cold")
+        val warm = phases.getJSONObject("warm")
+        val imagesDisabled = phases.getJSONObject("images_disabled")
+        val combined = cold.getJSONArray("combinedCompileLayoutNanos").longs()
+        val lookup = cold.getJSONArray("cacheLookupNanos").longs()
+        val draw = cold.getJSONArray("drawNanos").longs()
+        requireNonEmpty(combined, "cold compile+layout")
+        requireNonEmpty(lookup, "cold cache lookup")
+        requireNonEmpty(draw, "cold draw")
+        check(combined.size >= expectedDocuments) { "expected cold compile+layout samples for every corpus document" }
+        check(percentile(combined, .95) < 4 * NS_PER_MS)
         check(percentile(lookup, .99) < 100_000L)
         check(percentile(draw, .95) < NS_PER_MS)
         check(export.getString("percentileDefinition") == "nearest-rank: sorted[ceil(p*n)-1]")
-        listOf(coldFrames, warmFrames, imagesDisabledFrames).filter { it.isNotEmpty() }.forEach { frames ->
+        listOf(cold, warm, imagesDisabled).forEach { phase ->
+            check(phase.getInt("drawCount") > 0) { "phase must contain actual viewer draw evidence" }
+            val frames = phase.getJSONArray("frameNanos").longs()
+            requireNonEmpty(frames, "${phase} frame")
             check(frames.count { it <= 16_670_000L }.toDouble() / frames.size >= .99)
         }
-        check((warmViewerFrames.maxOrNull() ?: 0L) <= 33_300_000L)
+        val warmViewerFrames = warm.getJSONArray("viewerFrameNanos").longs()
+        requireNonEmpty(warmViewerFrames, "warm viewer-attributed frame")
+        check(warmViewerFrames.max() <= 33_300_000L)
         check(export.getJSONObject("retainedBytes").optLong("unmounted_layout") <= 32L * 1024L * 1024L)
         check(export.optInt("duplicatePublications") == 0)
     }
     private fun JSONArray.longs() = List(length()) { getLong(it) }
+    private fun requireNonEmpty(values: List<Long>, name: String) = check(values.isNotEmpty()) { "$name evidence must be nonempty" }
     /** Nearest rank shared with iOS: sorted[ceil(p * n) - 1]. */
     private fun percentile(values: List<Long>, percentile: Double): Long = values.sorted()[(kotlin.math.ceil(values.size * percentile).toInt() - 1).coerceAtLeast(0)]
 }
@@ -95,19 +106,32 @@ internal class PreparedProseRecyclerHarness(context: Context) : RecyclerView(con
     private val frameCallback = object : Choreographer.FrameCallback { override fun doFrame(frameTimeNanos: Long) { PreparedProseInstrumentation.onDisplayFrame(frameTimeNanos); if (measuring) Choreographer.getInstance().postFrameCallback(this) } }
     private var measuring = false
     init { layoutManager = LinearLayoutManager(context); adapter = benchmarkAdapter; layoutParams = ViewGroup.LayoutParams(390, 844) }
-    fun traverse(order: List<Entry>, phase: PreparedProseInstrumentation.TraversalPhase, imagesEnabled: Boolean) {
-        PreparedProseInstrumentation.beginTraversal(phase); benchmarkAdapter.entries = order; benchmarkAdapter.imagesEnabled = imagesEnabled; benchmarkAdapter.notifyDataSetChanged()
-        measuring = true; Choreographer.getInstance().postFrameCallback(frameCallback)
-        measure(MeasureSpec.makeMeasureSpec(390, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(844, MeasureSpec.EXACTLY)); layout(0, 0, 390, 844)
-        order.indices.forEach { position ->
-            scrollToPosition(position)
-            // The attached device window performs the actual draw; this only
-            // advances RecyclerView's real layout/recycling/visibility state.
-            measure(MeasureSpec.makeMeasureSpec(390, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(844, MeasureSpec.EXACTLY))
-            layout(0, 0, 390, 844)
-            postInvalidateOnAnimation()
+    /** The instrumentation thread owns traversal; main only binds, lays out,
+     * draws, and services Choreographer. This avoids ActivityScenario deadlock. */
+    fun traverseFromInstrumentationThread(instrumentation: Instrumentation, order: List<Entry>, phase: PreparedProseInstrumentation.TraversalPhase, imagesEnabled: Boolean) {
+        instrumentation.runOnMainSync {
+            check(isAttachedToWindow) { "RecyclerView must be attached before traversal" }
+            PreparedProseInstrumentation.beginTraversal(phase)
+            benchmarkAdapter.entries = order; benchmarkAdapter.imagesEnabled = imagesEnabled; benchmarkAdapter.notifyDataSetChanged()
+            measuring = true; Choreographer.getInstance().postFrameCallback(frameCallback)
+            requestLayout(); postInvalidateOnAnimation()
         }
-        measuring = false; Choreographer.getInstance().removeFrameCallback(frameCallback); PreparedProseInstrumentation.endTraversal()
+        settle(instrumentation)
+        order.indices.forEach { position ->
+            instrumentation.runOnMainSync { scrollToPosition(position); requestLayout(); postInvalidateOnAnimation() }
+            settle(instrumentation)
+        }
+        // Keep the callback through a final rendered frame so frame evidence
+        // belongs to the current surface before its phase closes.
+        settle(instrumentation)
+        instrumentation.runOnMainSync { measuring = false; Choreographer.getInstance().removeFrameCallback(frameCallback); PreparedProseInstrumentation.endTraversal() }
+    }
+    private fun settle(instrumentation: Instrumentation) {
+        instrumentation.waitForIdleSync()
+        val frame = CountDownLatch(1)
+        instrumentation.runOnMainSync { Choreographer.getInstance().postFrameCallback { frame.countDown() } }
+        check(frame.await(5, TimeUnit.SECONDS)) { "timed out waiting for main-loop layout/draw frame" }
+        instrumentation.waitForIdleSync()
     }
     fun resetCache() { PreparedProseLayoutRegistry.shared.didReceiveMemoryWarning() }
     private class Holder(val viewer: ProseViewerView) : RecyclerView.ViewHolder(viewer) {

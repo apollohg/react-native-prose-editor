@@ -16,6 +16,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.apollohg.editor.viewer.PreparedProseInstrumentation
 import java.io.BufferedReader
 import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -44,19 +45,17 @@ class NativeDevicePerformanceTest {
         }
         fun ordered(name: String) = corpus.getJSONArray(name).let { ids -> List(ids.length()) { byId.getValue(ids.getString(it)) } }
         ActivityScenario.launch(NativeEditorOutsideTapActivity::class.java).use { scenario ->
-            scenario.onActivity { activity ->
-                val harness = PreparedProseRecyclerHarness(activity)
-                // Attach to a real device window before traversal so RecyclerView
-                // layout, recycling, visibility/culling, draw, and Choreographer
-                // callbacks are attributed to the same mounted viewer surface.
-                activity.setContentView(harness)
-                PreparedProseInstrumentation.beginBenchmark()
-                harness.traverse(ordered("coldTraversal"), PreparedProseInstrumentation.TraversalPhase.COLD, imagesEnabled = true)
-                harness.traverse(ordered("warmTraversal"), PreparedProseInstrumentation.TraversalPhase.WARM, imagesEnabled = true)
-                harness.traverse(ordered("coldTraversal"), PreparedProseInstrumentation.TraversalPhase.IMAGES_DISABLED, imagesEnabled = false)
-                harness.resetCache()
-            }
+            lateinit var harness: PreparedProseRecyclerHarness
+            scenario.onActivity { activity -> activity.setContentView(PreparedProseRecyclerHarness(activity).also { harness = it }) }
             instrumentation.waitForIdleSync()
+            PreparedProseInstrumentation.beginBenchmark()
+            // ActivityScenario is used only to bind a real window. The test
+            // thread drives deterministic scroll steps and waits between them;
+            // it never blocks the UI thread inside onActivity.
+            harness.traverseFromInstrumentationThread(instrumentation, ordered("coldTraversal"), PreparedProseInstrumentation.TraversalPhase.COLD, imagesEnabled = true)
+            harness.traverseFromInstrumentationThread(instrumentation, ordered("warmTraversal"), PreparedProseInstrumentation.TraversalPhase.WARM, imagesEnabled = true)
+            harness.traverseFromInstrumentationThread(instrumentation, ordered("coldTraversal"), PreparedProseInstrumentation.TraversalPhase.IMAGES_DISABLED, imagesEnabled = false)
+            instrumentation.runOnMainSync { harness.resetCache() }
         }
         PreparedProsePerformanceGates.assertPasses(PreparedProseInstrumentation.exportJson(), expectedDocuments = 1_000)
     }

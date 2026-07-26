@@ -119,7 +119,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
             }
             return compiled
         }
-        PreparedProseInstrumentation.compiled(compileStarted)
+        PreparedProseInstrumentation.compiled(compileStarted, generation: request.generationIdentity)
 
         compiledCondition.lock()
         if case let .success(document) = result {
@@ -186,7 +186,7 @@ public final class PreparedProseLayoutRegistry: NSObject {
                     } else {
                         artifact = try self.prepare(document, key, canonicalWidth, scale)
                     }
-                    PreparedProseInstrumentation.laidOut(layoutStarted)
+                    PreparedProseInstrumentation.laidOut(layoutStarted, generation: request.generationIdentity)
                     return artifact
                 } catch let error as ProseViewerError {
                     return self.errorArtifact(key: key, width: canonicalWidth, error: error)

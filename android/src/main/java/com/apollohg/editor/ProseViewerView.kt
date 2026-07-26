@@ -161,6 +161,9 @@ class ProseViewerView @JvmOverloads constructor(
     private var preparedRequest: ProseViewerRequest? = null
     private var retainedDocument: ViewerDocument? = null
     private var preparedArtifact: PreparedProseLayout? = null
+    // Detach drops the direct registration but deliberately retains the
+    // immutable artifact for exact, no-recompile reattachment.
+    private var directMountedArtifact: PreparedProseLayout? = null
     private var directError: ProseViewerError? = null
     private var reportedGenerationIdentity: String? = null
     private val attachmentRevisions = ViewerAttachmentRevisionState()
@@ -293,6 +296,7 @@ class ProseViewerView @JvmOverloads constructor(
         preparedRequest = next
         retainedDocument = null
         preparedArtifact = null
+        releaseDirectMountedArtifact()
         viewerImagePipeline.cancel()
         preparedDrawingView.imagePixels = emptyMap()
         directError = null
@@ -401,7 +405,7 @@ class ProseViewerView @JvmOverloads constructor(
             )
             val artifactChanged = preparedArtifact !== artifact
             preparedArtifact = artifact
-            layoutRegistry.registerDirectMounted(preparedInstrumentationOwner, artifact)
+            registerDirectMountedArtifact(artifact)
             preparedDrawingView.install(artifact)
             if (artifactChanged || preparedAccessibilityGeneration != artifact.key.generationIdentity) {
                 clearVirtualAccessibilityFocus()
@@ -495,6 +499,7 @@ class ProseViewerView @JvmOverloads constructor(
         // remains installed, so a direct host can draw/measure immediately on
         // reattach without a semantic replacement or republish.
         if (preparedRequest != null) {
+            preparedArtifact?.let(::registerDirectMountedArtifact)
             requestLayout()
             preparedDrawingView.invalidate()
         }
@@ -515,6 +520,7 @@ class ProseViewerView @JvmOverloads constructor(
      */
     internal fun preparePreparedHostForWindowDetachment() {
         clearVirtualAccessibilityFocus()
+        releaseDirectMountedArtifact()
         if (preparedRequest != null) {
             viewerImagePipeline.cancel()
             // Cancellation/detachment does not create a new semantic source;
@@ -540,7 +546,7 @@ class ProseViewerView @JvmOverloads constructor(
         preparedRequest = null
         retainedDocument = null
         preparedArtifact = null
-        layoutRegistry.releaseDirectMounted(preparedInstrumentationOwner)
+        releaseDirectMountedArtifact()
         viewerImagePipeline.cancel()
         attachmentRevisions.reset()
         preparedDrawingView.imagePixels = emptyMap()
@@ -551,6 +557,19 @@ class ProseViewerView @JvmOverloads constructor(
         preparedDrawingView.visibility = View.GONE
         preparedAccessibilityGeneration = null
         proseView.visibility = View.VISIBLE
+    }
+
+    private fun registerDirectMountedArtifact(artifact: PreparedProseLayout) {
+        if (directMountedArtifact === artifact) return
+        releaseDirectMountedArtifact()
+        layoutRegistry.registerDirectMounted(preparedInstrumentationOwner, artifact)
+        directMountedArtifact = artifact
+    }
+
+    private fun releaseDirectMountedArtifact() {
+        if (directMountedArtifact == null) return
+        layoutRegistry.releaseDirectMounted(preparedInstrumentationOwner)
+        directMountedArtifact = null
     }
 
     private fun renderCurrentContent() {

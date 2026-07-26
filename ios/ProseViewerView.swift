@@ -101,6 +101,7 @@ public final class ProseViewerView: UIView {
     }
 
     deinit {
+        layoutRegistry.releaseDirectMounted(preparedInstrumentationOwner)
         if let fontEnvironmentObserver { NotificationCenter.default.removeObserver(fontEnvironmentObserver) }
     }
 
@@ -123,6 +124,7 @@ public final class ProseViewerView: UIView {
         if let layout {
             layoutRegistry.registerDirectMounted(preparedInstrumentationOwner, layout: layout)
         } else {
+            layoutRegistry.releaseDirectMounted(preparedInstrumentationOwner)
         }
         PreparedProseInstrumentation.retained(.sidecars, scope: "direct-\(ObjectIdentifier(self))", bytes: attachmentRevisions.retainedPublicationBytesForTesting)
         drawingView.install(layout: layout)
@@ -217,6 +219,9 @@ public final class ProseViewerView: UIView {
             // publication bits and revision for a later remount.
             drawingView.imagePixels = [:]
             return
+        }
+        if let ownedLayout {
+            layoutRegistry.registerDirectMounted(preparedInstrumentationOwner, layout: ownedLayout)
         }
         requestVisibleImageAttachments()
     }

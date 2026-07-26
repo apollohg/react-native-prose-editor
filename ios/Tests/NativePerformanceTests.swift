@@ -468,21 +468,31 @@ private final class PreparedProseCollectionCell: UICollectionViewCell {
 }
 
 private enum PreparedProsePerformanceGates {
-    private struct Export: Decodable { let percentileDefinition: String; let compileNanos: [UInt64]; let layoutNanos: [UInt64]; let cacheLookupNanos: [UInt64]; let drawNanos: [UInt64]; let coldFrameNanos: [UInt64]; let warmFrameNanos: [UInt64]; let imagesDisabledFrameNanos: [UInt64]; let warmViewerFrameNanos: [UInt64]; let duplicatePublications: Int; let retainedBytes: [String: Int] }
+    private struct Phase: Decodable { let combinedCompileLayoutNanos: [UInt64]; let cacheLookupNanos: [UInt64]; let drawNanos: [UInt64]; let frameNanos: [UInt64]; let viewerFrameNanos: [UInt64]; let drawCount: Int }
+    private struct Export: Decodable { let percentileDefinition: String; let phaseSamples: [String: Phase]; let duplicatePublications: Int; let retainedBytes: [String: Int] }
     static func assertPasses(exportJSON: String, expectedDocuments: Int) throws {
         let export = try JSONDecoder().decode(Export.self, from: Data(exportJSON.utf8))
-        XCTAssertGreaterThanOrEqual(export.compileNanos.count, expectedDocuments)
-        XCTAssertLessThan(percentile(zip(export.compileNanos, export.layoutNanos).map { $0 + $1 }, 0.95), 4_000_000)
-        XCTAssertLessThan(percentile(export.cacheLookupNanos, 0.99), 100_000)
-        XCTAssertLessThan(percentile(export.drawNanos, 0.95), 1_000_000)
+        guard let cold = export.phaseSamples["cold"], let warm = export.phaseSamples["warm"], let imagesDisabled = export.phaseSamples["imagesDisabled"] else { XCTFail("every traversal phase must export samples"); return }
+        requireNonEmpty(cold.combinedCompileLayoutNanos, "cold compile+layout")
+        requireNonEmpty(cold.cacheLookupNanos, "cold cache lookup")
+        requireNonEmpty(cold.drawNanos, "cold draw")
+        XCTAssertGreaterThanOrEqual(cold.combinedCompileLayoutNanos.count, expectedDocuments)
+        XCTAssertLessThan(percentile(cold.combinedCompileLayoutNanos, 0.95), 4_000_000)
+        XCTAssertLessThan(percentile(cold.cacheLookupNanos, 0.99), 100_000)
+        XCTAssertLessThan(percentile(cold.drawNanos, 0.95), 1_000_000)
         XCTAssertEqual(export.percentileDefinition, "nearest-rank: sorted[ceil(p*n)-1]")
-        for frames in [export.coldFrameNanos, export.warmFrameNanos, export.imagesDisabledFrameNanos] where !frames.isEmpty {
+        for phase in [cold, warm, imagesDisabled] {
+            XCTAssertGreaterThan(phase.drawCount, 0, "phase must include actual viewer draw evidence")
+            requireNonEmpty(phase.frameNanos, "phase frame")
+            let frames = phase.frameNanos
             XCTAssertGreaterThanOrEqual(Double(frames.filter { $0 <= 16_670_000 }.count) / Double(frames.count), 0.99)
         }
-        XCTAssertLessThanOrEqual(export.warmViewerFrameNanos.max() ?? 0, 33_300_000)
+        requireNonEmpty(warm.viewerFrameNanos, "warm viewer-attributed frame")
+        XCTAssertLessThanOrEqual(warm.viewerFrameNanos.max() ?? .max, 33_300_000)
         XCTAssertLessThanOrEqual(export.retainedBytes["unmountedLayout"] ?? 0, 32 * 1024 * 1024)
         XCTAssertEqual(export.duplicatePublications, 0)
     }
+    private static func requireNonEmpty(_ values: [UInt64], _ name: String) { XCTAssertFalse(values.isEmpty, "\(name) evidence must be nonempty") }
     private static func percentile(_ values: [UInt64], _ percentile: Double) -> UInt64 { guard !values.isEmpty else { return .max }; return values.sorted()[max(0, Int((Double(values.count) * percentile).rounded(.up)) - 1)] }
 }
 
